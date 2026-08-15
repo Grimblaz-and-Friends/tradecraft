@@ -12,10 +12,11 @@ The small set of decisions everything else answers to. Each ADR carries its exhi
 | [ADR-006](ADR-006-process-defaults.md) | Minimal lane default; review is artifact-positional (position beats depth); filing is the exception; ledger from day one | Accepted, amended |
 | [ADR-007](ADR-007-cross-runtime.md) | Runtime-neutral practice; GitHub as interchange; substrate: **Python** (ruled) | Accepted |
 | [ADR-008](ADR-008-memory.md) | The repo is the memory; vendor stores are inboxes with same-session landing; the wipe test | Accepted |
+| [ADR-009](ADR-009-predecessor-disposition.md) | Predecessor is reference material, not a source tree: nothing carries by default, pull-based rewrite, no presumption of correctness | Accepted |
 
 ## Open rulings
 
-1. **Port vs rewrite**: what, if anything, carries over from the predecessor repo. Proposed: treat it purely as an evidence base — pull-based rewrite, nothing carried by default. Becomes ADR-009 when ruled.
+None. The constitution is complete for the skeleton phase; new rulings are added here as they arise.
 
 ## Amending
 
