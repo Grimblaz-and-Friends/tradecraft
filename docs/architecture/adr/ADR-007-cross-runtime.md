@@ -1,6 +1,6 @@
 # ADR-007: Cross-runtime — Claude and Codex above one practice
 
-**Status:** Accepted 2026-08-15 (substrate choice: **proposed**, see below)
+**Status:** Accepted 2026-08-15 · Substrate ruled 2026-08-15: **Python**
 
 ## Context
 
@@ -13,9 +13,9 @@ The predecessor's cross-tool bet (Copilot + Claude) taught both halves of a less
 3. **Root instructions have one canonical home.** `AGENTS.md` is canonical (Codex reads it natively); `CLAUDE.md` is a pointer to it, never a fork of it. Same doctrine budget (ADR-003) applies to the canonical file.
 4. **Both-runtime CI from the skeleton commit.** The core library's tests run on Linux and Windows in Actions from day one; Codex-compatibility is a standing CI dimension, not a retrofit.
 
-### Substrate (proposed, not yet ruled)
+### Substrate: Python (ruled 2026-08-15)
 
-The core library and skill scripts need one cross-platform substrate. **Proposed: Python** — present by default in Codex sandboxes, no build step, cross-platform, and the substrate models write with the fewest silent-corruption traps. Alternative considered: TypeScript/Node (stronger typing for boundary schemas, at the cost of a toolchain step). PowerShell is explicitly rejected for new code on the evidence above. This section flips to Accepted when the owner rules.
+The core library and skill scripts use **Python**: present by default in Codex sandboxes, no build step, cross-platform, and the substrate models write with the fewest silent-corruption traps. Alternative considered and declined: TypeScript/Node (stronger typing for boundary schemas, at the cost of a toolchain step). PowerShell is explicitly rejected for new code on the evidence above.
 
 ## Consequences
 

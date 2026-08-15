@@ -10,13 +10,12 @@ The small set of decisions everything else answers to. Each ADR carries its exhi
 | [ADR-004](ADR-004-two-zones.md) | Repo-only vs shipped zones, lint-enforced | Accepted |
 | [ADR-005](ADR-005-interaction-charter.md) | Gate taxonomy; gate vs question; consent travels with the decision; two lanes | Accepted |
 | [ADR-006](ADR-006-process-defaults.md) | Minimal lane default; review is artifact-positional (position beats depth); filing is the exception; ledger from day one | Accepted, amended |
-| [ADR-007](ADR-007-cross-runtime.md) | Runtime-neutral practice; GitHub as interchange; substrate **proposed: Python** | Accepted / substrate proposed |
+| [ADR-007](ADR-007-cross-runtime.md) | Runtime-neutral practice; GitHub as interchange; substrate: **Python** (ruled) | Accepted |
 | [ADR-008](ADR-008-memory.md) | The repo is the memory; vendor stores are inboxes with same-session landing; the wipe test | Accepted |
 
 ## Open rulings
 
-1. **Substrate** (ADR-007): Python proposed; TypeScript the considered alternative.
-2. **Port vs rewrite**: what, if anything, carries over from the predecessor repo. Proposed: treat it purely as an evidence base — port lessons and tests, rewrite prose at frontier-model weight. Becomes ADR-008 when ruled.
+1. **Port vs rewrite**: what, if anything, carries over from the predecessor repo. Proposed: treat it purely as an evidence base — pull-based rewrite, nothing carried by default. Becomes ADR-009 when ruled.
 
 ## Amending
 
