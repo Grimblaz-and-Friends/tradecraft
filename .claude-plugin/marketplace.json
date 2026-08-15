@@ -1,0 +1,13 @@
+{
+  "name": "tradecraft",
+  "owner": {
+    "name": "Grimblaz-and-Friends"
+  },
+  "plugins": [
+    {
+      "name": "tradecraft",
+      "source": "./",
+      "description": "A house engineering practice for frontier models: standards, memory, and judgment structure that turn raw capability into work you can trust."
+    }
+  ]
+}

@@ -18,18 +18,18 @@ Every touchpoint answers: **what does the human uniquely provide at this moment?
 
 ### Gate vs. question
 
-The *check* always runs. The *question* fires only when the outcome is genuinely indeterminate — when the human's answer can actually change what happens next. A gate whose evidence determines the answer announces its conclusion, names the deciding evidence, carries a standing override, and proceeds.
+The *check* always runs. The *question* fires only when the outcome is genuinely indeterminate — and "determined" has a narrow meaning: **determined by a recorded human decision** (a standing rule, or a prior approval at the same or broader scope), never by evidence the model has read on its own. Intent, taste, priorities, and risk appetite are exactly the inputs a model will believe it inferred from evidence; inference does not determine a gate. A gate whose answer is covered by a recorded decision announces its conclusion, names that decision, carries a standing override, and proceeds.
 
 ### Consent travels with the decision
 
-Once the human approves a decision, everything entailed by it executes without re-asking. Per-action re-approval is how approval fatigue destroys the gates that matter.
+Once the human approves a decision, everything entailed by it executes without re-asking. Per-action re-approval is how approval fatigue destroys the gates that matter. One bound: **consent never travels across a later gate type** — commitment approval (the plan) never carries release consent (the merge, publish, or delete); each gate type's check still runs, answered by its own recorded decisions.
 
 ### Two lanes, structurally distinct
 
 - **Attended**: conversational. Gates fire inline. Every question arrives as an argued recommendation — state, conflict, and evidence first, then the ask — batched at phase seams, never dribbled mid-stream.
 - **Unattended**: **zero questions by construction.** Everything either proceeds by pre-approved rule or halts with a typed, legible halt report processed on the human's schedule. Free-prose stops that could be mistaken for completion are forbidden.
 
-Every skill that can pause declares which lane it runs in. "Maybe ask, maybe halt" is the worst of both and is not a lawful shape.
+Every skill that can pause declares its **pause discipline** in its own prose — ask-inline (attended lanes only) or typed-halt (safe in either lane). That declaration is about the skill's own stopping behavior; lane *shapes* (sequencing, composition) remain the composition layer's knowledge alone (ADR-003). "Maybe ask, maybe halt" is the worst of both and is not a lawful shape.
 
 ## Consequences
 

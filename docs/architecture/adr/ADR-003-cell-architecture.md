@@ -24,7 +24,7 @@ Skills ship together in **one plugin** — discovered together, versioned togeth
 
 ### The five layers
 
-1. **State substrate** — durable state lives on GitHub (issues, PR comments, checks), never in session memory. All reads and writes go through the core library.
+1. **State substrate** — durable state lives on GitHub, never in session memory. "State" here means structured records — markers, ledger rows, version stamps, the boundary formats of ADR-002 — carried on issues, PR comments, and checks; those reads and writes go through the core library once it exists. Ordinary git operations (commit, push) are runtime plumbing, not boundary formats, and skills may perform them directly.
 2. **Core library** — boundary-format emit/parse/validate and shared primitives. Small by constitutional intent.
 3. **Skills** — the cells.
 4. **Composition** — commands, thin dispatch shells (ADR-001), and lanes. All sequencing and all coupling live here, explicitly, so coupling is cheap to see and change.

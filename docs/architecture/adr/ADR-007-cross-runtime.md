@@ -11,7 +11,7 @@ The predecessor's cross-tool bet (Copilot + Claude) taught both halves of a less
 1. **The practice is runtime-neutral by construction.** Skills are written tool-agnostically; anything Claude- or Codex-specific lives in a declared adapter surface at the composition layer, never in a skill body.
 2. **State on GitHub is the interchange layer.** Either runtime resumes any work from the durable record; no session-local state is load-bearing across sessions or tools.
 3. **Root instructions have one canonical home.** `AGENTS.md` is canonical (Codex reads it natively); `CLAUDE.md` is a pointer to it, never a fork of it. Same doctrine budget (ADR-003) applies to the canonical file.
-4. **Both-runtime CI from the skeleton commit.** The core library's tests run on Linux and Windows in Actions from day one; Codex-compatibility is a standing CI dimension, not a retrofit.
+4. **Both-OS CI from the skeleton commit.** Tests run on Linux and Windows in Actions from day one. The Linux leg is the current *proxy* for Codex compatibility (Codex sandboxes are Linux with default Python) — a true Codex check, meaning the suite exercised by a Codex agent with a defined failure condition, does not exist yet and is pulled into existence when real Codex work arrives (ADR-009), not asserted before then.
 
 ### Substrate: Python (ruled 2026-08-15)
 

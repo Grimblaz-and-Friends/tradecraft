@@ -14,9 +14,11 @@ The small set of decisions everything else answers to. Each ADR carries its exhi
 | [ADR-008](ADR-008-memory.md) | The repo is the memory; vendor stores are inboxes with same-session landing; the wipe test | Accepted |
 | [ADR-009](ADR-009-predecessor-disposition.md) | Predecessor is reference material, not a source tree: nothing carries by default, pull-based rewrite, no presumption of correctness | Accepted |
 
-## Open rulings
+## Open rulings and open questions
 
-None. The constitution is complete for the skeleton phase; new rulings are added here as they arise.
+No rulings are pending from the owner. One evidence-driven question stays open inside its ADR: persona-framing value (ADR-001), decided per skill by ledger or eval evidence — no one needs to decide it now.
+
+2026-08-15: a full-repo adversarial review (5 prosecutors, defense, judge) sustained 35 findings against the constitution, lint, and seed skill; all are fixed or recorded, with rows in [../../ledger.jsonl](../../ledger.jsonl) and transcribed-claim provenance in [../evidence.md](../evidence.md).
 
 ## Amending
 
