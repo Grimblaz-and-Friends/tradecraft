@@ -22,4 +22,4 @@ jobs:
       - name: Tests
         run: |
           pip install pytest
-          python -m pytest tools/tests -q
+          python -m pytest tools/tests skills -q
