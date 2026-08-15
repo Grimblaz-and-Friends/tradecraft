@@ -1,10 +1,10 @@
 # ADR-001: Identity — a practice, not an orchestrator
 
-**Status:** Accepted 2026-08-15
+**Status:** Accepted 2026-08-15 · Amended 2026-08-15 (real timing; persona value reopened)
 
 ## Context
 
-This project's predecessor (agent-orchestra) spent three years as a multi-agent orchestration system and spent those years collapsing its own premise: it began with a cast of persona agents (Experience-Owner, Solution-Designer, Issue-Planner, Code-Conductor, a dozen specialist shells) and ended with a single executor plus skill-as-adapter — the methodology had moved into skills, and the personas turned out to be costumes for weaker models. Meanwhile every capability it wrapped (subagents, planning, memory, review commands) was progressively shipped natively by the vendors underneath it.
+This project's predecessor (agent-orchestra, first commit 2025-12-07) went in **eight months** from a cast of persona agents (Experience-Owner, Solution-Designer, Issue-Planner, Code-Conductor, a dozen specialist shells) to a single executor plus skill-as-adapter — the methodology had moved into skills, and maintaining the personas as separate agents proved to be cost without demonstrated benefit. That the collapse took only eight months sharpens the lesson: this structure decays fast. Meanwhile every capability it wrapped (subagents, planning, memory, review commands) was progressively shipped natively by the vendors underneath it.
 
 ## Decision
 
@@ -16,7 +16,9 @@ Agents are retained only as a **mechanism**, used when structurally required for
 2. **Adversarial independence** — a reviewer must not share the author's context, or it inherits the author's blind spots.
 3. **Parallelism** — fan-out over independent work.
 
-No persona agents. No agent is the home of methodology; methodology lives in skills (ADR-003).
+### Personas: structure ruled, value open
+
+Two claims must not be conflated. **Ruled:** methodology never lives inside a persona — skills are its home (ADR-003), and no workflow may *depend* on a persona existing. This is what the predecessor's evidence actually supports: persona agents as structural units cost real maintenance and their removal lost nothing measured. **Open:** whether persona *framing* — casting a dispatch or skill prompt as an expert role — improves output quality. The research is genuinely mixed: a systematic study across 162 personas and four model families found no-to-slightly-negative accuracy effects ([Zheng et al., EMNLP 2024](https://arxiv.org/abs/2311.10054)), and later work found expert personas improve alignment but damage accuracy ([2026](https://arxiv.org/pdf/2603.18507)); yet task-specific gains from carefully designed expert personas are also reported ([2026](https://arxiv.org/pdf/2605.29420)), alongside real value for behavioral diversity in multi-agent settings and for tone. Disposition per ADR-002: persona framing may be adopted *per skill* where local evidence (ledger or eval) shows it helps that task, and is dropped where it doesn't. It starts as model judgment like everything else; it just never becomes load-bearing structure.
 
 ## Consequences
 

@@ -4,7 +4,7 @@
 
 ## Context
 
-The predecessor's cross-tool bet (Copilot + Claude) taught both halves of a lesson. What survived cheaply: tool-agnostic methodology bodies with thin per-platform adapters, and durable state on GitHub — neutral ground either runtime can read. What died expensively: deep per-tool machinery, and a scripting substrate (PowerShell) that carried Windows-shaped assumptions, a long catalog of silent-corruption traps, and friction against Linux sandboxes. Its Linux CI arrived in year three.
+The predecessor's cross-tool bet (Copilot + Claude) taught both halves of a lesson. What survived cheaply: tool-agnostic methodology bodies with thin per-platform adapters, and durable state on GitHub — neutral ground either runtime can read. What died expensively: deep per-tool machinery, and a scripting substrate (PowerShell) that carried Windows-shaped assumptions, a long catalog of silent-corruption traps, and friction against Linux sandboxes. Its Linux CI arrived only in its eighth month (2026-08), retrofitted as its own multi-chunk project rather than existing from the start.
 
 ## Decision
 
