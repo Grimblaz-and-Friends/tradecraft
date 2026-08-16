@@ -62,15 +62,27 @@ LEDGER_ARTIFACTS = {
 # the review *stage* that actually found it. The single merged set these replace
 # mixed both kinds and could express no position earlier than the prose, so all
 # three fields held one value across the entire corpus and the axis ADR-006 §5
-# governs by was unmeasurable by construction. Where no listed value fits, a row
-# records `unrecorded` — never the nearest wrong one — and a new position is
-# added by ADR amendment, editing this one definition site.
+# governs by was unmeasurable by construction.
+#
+# `unrecorded` means ONE thing on either axis: not judged. It is not a fallback
+# for a judged value that fits nothing listed — that reading restores the double
+# duty `authoring` was retired for. A judged value with no lawful slot means the
+# vocabulary is short, and the fix is an ADR amendment editing these two sets.
+#
+# NOTHING CHECKS THAT THESE SETS MATCH ADR-006 §5's PROSE, in either direction:
+# widening either set passes lint and the whole suite. The correspondence is a
+# stated, unenforced property (§5 names it alongside the axis ordering and the
+# two `ref` properties) rather than a guarded one — ADR-002 earns code by
+# recurrence, and a guard here would have to read and parse ADR text.
 LEDGER_POSITIONS = {
     "framing", "design", "plan", "implementation", "unrecorded",
 }
+# post-fix and external are stages ADR-006 §5's own found_by contract names; a
+# corpus written without them maps 32 real catches onto `adversarial-review`,
+# which is precisely the "nearest wrong one" the section forbids.
 LEDGER_STAGES = {
-    "authoring-review", "adversarial-review", "ci",
-    "post-merge", "consumer", "unrecorded",
+    "authoring-review", "adversarial-review", "post-fix", "external",
+    "ci", "post-merge", "consumer", "unrecorded",
 }
 LEDGER_DISPOSITIONS = {"fixed", "reworded", "recorded", "owner-pending"}
 LEDGER_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
