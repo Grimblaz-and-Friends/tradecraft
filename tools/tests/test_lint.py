@@ -196,7 +196,7 @@ def test_valid_ledger_row_is_clean(tmp_path):
         '{"id": "X1", "date": "2026-08-15", "artifact": "lint", "severity": "low",'
         ' "introduced": "authoring", "catchable": "authoring-review",'
         ' "caught": "adversarial-review", "source": "review-2026-08-15",'
-        ' "disposition": "fixed"}\n',
+        ' "disposition": "fixed", "found_by": "defense"}\n',
         encoding="utf-8",
     )
     assert lint.run(tmp_path) == []

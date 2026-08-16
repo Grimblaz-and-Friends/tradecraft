@@ -49,7 +49,7 @@ REL_PREFIX_TAIL = re.compile(r"(?:\.\.?[\\/])+$")
 
 LEDGER_FIELDS = {
     "id", "date", "artifact", "severity", "introduced",
-    "catchable", "caught", "source", "disposition",
+    "catchable", "caught", "source", "disposition", "found_by",
 }
 LEDGER_SEVERITIES = {"high", "medium", "low"}
 
