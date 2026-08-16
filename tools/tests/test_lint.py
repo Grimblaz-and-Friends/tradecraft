@@ -260,8 +260,9 @@ def test_ledger_row_unhashable_vocab_value_is_a_finding_not_a_crash(tmp_path):
 
 
 def test_ledger_unhashable_id_is_a_finding_not_a_crash(tmp_path):
-    """The 5132ec8 fix guarded vocab values but not the (source, id) key, so a
-    list-valued id crashed the whole lint and suppressed every other finding."""
+    """A prior fix guarded vocab values but not the (source, id) key, so a
+    list-valued id crashed the whole lint and suppressed every other finding.
+    https://github.com/Grimblaz-and-Friends/tradecraft/pull/2"""
     make_clean_tree(tmp_path)
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -287,6 +288,23 @@ def test_ledger_found_by_must_be_a_lowercase_token(tmp_path):
         target.mkdir()
         _write_ledger(target, _ledger_row(found_by=bad))
         assert any("found_by" in f for f in lint.run(target)), bad
+
+
+def test_ledger_malformed_row_keeps_partials_and_never_silences_later_rows(tmp_path):
+    """Pins the exception boundary itself: a row that raises mid-check must keep
+    the findings already gathered for it and must not suppress the rows after it.
+    Deleting the boundary turns this red instead of leaving the suite green."""
+    make_clean_tree(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "ledger.jsonl").write_text(
+        '["not", "a", "row"]\n' + json.dumps(_ledger_row(artifact="banana")) + "\n",
+        encoding="utf-8",
+    )
+    findings = lint.run(tmp_path)
+    assert any("could not be fully validated" in f for f in findings)
+    assert any("missing field" in f for f in findings)
+    assert any("banana" in f for f in findings)
 
 
 def test_ledger_ref_must_be_a_url(tmp_path):

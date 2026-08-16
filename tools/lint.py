@@ -26,6 +26,7 @@ Exit 0 when clean, 1 with findings listed one per line.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import sys
@@ -61,11 +62,11 @@ LEDGER_PHASES = {
     "ci", "post-merge", "consumer",
 }
 LEDGER_DISPOSITIONS = {"fixed", "reworded", "recorded", "owner-pending"}
-LEDGER_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+LEDGER_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 # found_by is an open set (seats may be swapped in), so the check is on form:
 # a lowercase token with no whitespace, so "Cold-Read" and "wiring falsifier"
 # cannot silently fork one seat's yield across two buckets.
-LEDGER_FOUND_BY = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+LEDGER_FOUND_BY = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 
 
 def _read_text(path: Path) -> str | None:
@@ -220,25 +221,39 @@ def check_ledger(root: Path) -> list[str]:
     ):
         if not line.strip():
             continue
+        # One malformed row must never silence the rest, so both the decode and
+        # the per-field checks report rather than raise — decoding included,
+        # since a JSONDecodeError is not the only way a line can fail to parse.
+        # Findings already accumulated for the row survive: the checker appends
+        # to the shared list rather than returning one.
         try:
             row = json.loads(line)
-        except json.JSONDecodeError as exc:
-            findings.append(f"ledger (ADR-006): docs/ledger.jsonl:{lineno} is not valid JSON ({exc.msg})")
-            continue
-        # A defect in one row must never suppress the findings of the others:
-        # any unexpected shape is reported as a finding, not raised.
-        try:
-            findings.extend(_check_ledger_row(row, lineno, seen_keys))
         except Exception as exc:  # noqa: BLE001 - report, never crash the lint
             findings.append(
-                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} could not be "
+                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} is not valid JSON "
+                f"({type(exc).__name__}: {exc})"
+            )
+            continue
+        try:
+            _check_ledger_row(row, lineno, seen_keys, findings)
+        except Exception as exc:  # noqa: BLE001 - report, never crash the lint
+            findings.append(
+                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} could not be fully "
                 f"validated ({type(exc).__name__}: {exc})"
             )
     return findings
 
 
-def _check_ledger_row(row: dict, lineno: int, seen_keys: set) -> list[str]:
-    findings = []
+def _is_calendar_day(value: str) -> bool:
+    """LEDGER_DATE pins the shape; this rejects 2026-13-45 and 2026-02-30."""
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) -> None:
     missing = LEDGER_FIELDS - set(row)
     if missing:
         findings.append(
@@ -271,8 +286,8 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set) -> list[str]:
     ):
         findings.append(
             f"ledger (ADR-006): docs/ledger.jsonl:{lineno} found_by "
-            f"'{row.get('found_by')}' must be a lowercase seat or stage name "
-            f"with no spaces"
+            f"'{row.get('found_by')}' must be a lowercase name of digits, "
+            f"letters and hyphens — one seat, one bucket"
         )
     if "ref" in row and (
         not isinstance(row["ref"], str) or not row["ref"].startswith("https://")
@@ -282,7 +297,9 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set) -> list[str]:
             f"'{row.get('ref')}' must be an https URL to the review's durable record"
         )
     if "date" in row and (
-        not isinstance(row["date"], str) or not LEDGER_DATE.match(row["date"])
+        not isinstance(row["date"], str)
+        or not LEDGER_DATE.match(row["date"])
+        or not _is_calendar_day(row["date"])
     ):
         findings.append(
             f"ledger (ADR-006): docs/ledger.jsonl:{lineno} date "
