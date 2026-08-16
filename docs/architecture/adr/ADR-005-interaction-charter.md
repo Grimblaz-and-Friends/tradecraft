@@ -31,6 +31,10 @@ Once the human approves a decision, everything entailed by it executes without r
 
 Every skill that can pause declares its **pause discipline** in its own prose — ask-inline (attended lanes only) or typed-halt (safe in either lane). That declaration is about the skill's own stopping behavior; lane *shapes* (sequencing, composition) remain the composition layer's knowledge alone (ADR-003). "Maybe ask, maybe halt" is the worst of both and is not a lawful shape.
 
+### The release gate's enforcement surface
+
+The release gate is designed-in, but on this repo it is not *enforced* by the platform: `main` requires a pull request and passing checks, allows squash merges only, and refuses force-pushes and deletion — and requires **zero** approving reviews. Nothing outside this charter stops an agent merging its own PR. That gap is recorded rather than papered over: the gate holds because the agent stops, and a rule that depends on the agent's compliance must be written where the agent reads it (AGENTS.md carries the always-on form). The repository ruleset is the source of truth for these settings; this paragraph describes it and will drift if it changes, so treat a conflict as the ruleset winning and this text needing a commit.
+
 ## Consequences
 
 - Human time concentrates at the four gate types and the batched exception queues of unattended runs; everything else is designed to cost nothing.

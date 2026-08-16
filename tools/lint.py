@@ -49,7 +49,7 @@ REL_PREFIX_TAIL = re.compile(r"(?:\.\.?[\\/])+$")
 
 LEDGER_FIELDS = {
     "id", "date", "artifact", "severity", "introduced",
-    "catchable", "caught", "source", "disposition", "found_by",
+    "catchable", "caught", "source", "disposition", "found_by", "ref",
 }
 LEDGER_SEVERITIES = {"high", "medium", "low"}
 LEDGER_ARTIFACTS = {
@@ -273,6 +273,13 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set) -> list[str]:
             f"ledger (ADR-006): docs/ledger.jsonl:{lineno} found_by "
             f"'{row.get('found_by')}' must be a lowercase seat or stage name "
             f"with no spaces"
+        )
+    if "ref" in row and (
+        not isinstance(row["ref"], str) or not row["ref"].startswith("https://")
+    ):
+        findings.append(
+            f"ledger (ADR-006): docs/ledger.jsonl:{lineno} ref "
+            f"'{row.get('ref')}' must be an https URL to the review's durable record"
         )
     if "date" in row and (
         not isinstance(row["date"], str) or not LEDGER_DATE.match(row["date"])

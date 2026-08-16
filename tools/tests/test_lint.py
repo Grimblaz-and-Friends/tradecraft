@@ -195,6 +195,7 @@ def _ledger_row(**overrides: str) -> dict:
         "introduced": "authoring", "catchable": "authoring-review",
         "caught": "adversarial-review", "source": "review-2026-08-15",
         "disposition": "fixed", "found_by": "defense",
+        "ref": "https://github.com/example/repo/pull/1",
     }
     row.update(overrides)
     return row
@@ -286,6 +287,14 @@ def test_ledger_found_by_must_be_a_lowercase_token(tmp_path):
         target.mkdir()
         _write_ledger(target, _ledger_row(found_by=bad))
         assert any("found_by" in f for f in lint.run(target)), bad
+
+
+def test_ledger_ref_must_be_a_url(tmp_path):
+    for n, bad in enumerate(("", "see PR 3", "F2", 7)):
+        target = tmp_path / f"case{n}"
+        target.mkdir()
+        _write_ledger(target, _ledger_row(ref=bad))
+        assert any("ref" in f for f in lint.run(target)), bad
 
 
 def test_ledger_date_must_be_iso(tmp_path):

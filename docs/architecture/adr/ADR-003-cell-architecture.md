@@ -22,6 +22,8 @@ Skills may depend **downward** on one sanctioned core library — boundary forma
 
 Skills ship together in **one plugin** — discovered together, versioned together, firing independently. One plugin, because independent versioning multiplies release-hygiene machinery that already hurt at N=1, and no second audience with a different upgrade cadence exists yet. The no-sideways-dependency rule keeps a future split mechanical, so this decision is cheap to defer; revisit when a real second audience exists.
 
+Because the bundle is versioned as a unit, **a change to any shipped-zone file bumps the plugin version in the same commit** — a consumer's only signal that installed and current differ. This stays prose: the rule has been missed twice, but a check would have to reason about changed paths across a diff, which is workflow-shaped code of exactly the kind ADR-002 says rots first. It earns promotion on a third instance, once ledger rows carry enough to prove the recurrence.
+
 ### The five layers
 
 1. **State substrate** — durable state lives on GitHub, never in session memory. "State" here means structured records — markers, ledger rows, version stamps, the boundary formats of ADR-002 — carried on issues, PR comments, and checks; those reads and writes go through the core library once it exists. Ordinary git operations (commit, push) are runtime plumbing, not boundary formats, and skills may perform them directly.
