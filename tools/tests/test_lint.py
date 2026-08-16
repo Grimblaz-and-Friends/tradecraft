@@ -195,6 +195,7 @@ def _ledger_row(**overrides: str) -> dict:
         "introduced": "authoring", "catchable": "authoring-review",
         "caught": "adversarial-review", "source": "review-2026-08-15",
         "disposition": "fixed", "found_by": "defense",
+        "ref": "https://github.com/example/repo/pull/1",
     }
     row.update(overrides)
     return row
@@ -256,6 +257,74 @@ def test_ledger_row_unhashable_vocab_value_is_a_finding_not_a_crash(tmp_path):
     findings = lint.run(tmp_path)
     assert any("artifact" in f for f in findings)
     assert any("caught" in f for f in findings)
+
+
+def test_ledger_unhashable_id_is_a_finding_not_a_crash(tmp_path):
+    """A prior fix guarded vocab values but not the (source, id) key, so a
+    list-valued id crashed the whole lint and suppressed every other finding.
+    https://github.com/Grimblaz-and-Friends/tradecraft/pull/2"""
+    make_clean_tree(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    bad_vocab = json.dumps(_ledger_row(id="A", severity="BOGUS"))
+    unhashable = json.dumps(_ledger_row(id=["x", "y"]))
+    (docs / "ledger.jsonl").write_text(
+        bad_vocab + "\n" + unhashable + "\n", encoding="utf-8"
+    )
+    findings = lint.run(tmp_path)
+    assert any("severity" in f and "BOGUS" in f for f in findings)
+    assert any("id" in f and "must be a string" in f for f in findings)
+
+
+def test_ledger_int_and_string_id_do_not_evade_uniqueness(tmp_path):
+    _write_ledger(tmp_path, _ledger_row(id=7))
+    findings = lint.run(tmp_path)
+    assert any("id" in f and "must be a string" in f for f in findings)
+
+
+def test_ledger_found_by_must_be_a_lowercase_token(tmp_path):
+    for n, bad in enumerate(("Cold-Read", "wiring falsifier", "   ")):
+        target = tmp_path / f"case{n}"
+        target.mkdir()
+        _write_ledger(target, _ledger_row(found_by=bad))
+        assert any("found_by" in f for f in lint.run(target)), bad
+
+
+def test_ledger_malformed_row_keeps_partials_and_never_silences_later_rows(tmp_path):
+    """Pins the exception boundary itself: a row that raises mid-check must keep
+    the findings already gathered for it and must not suppress the rows after it.
+    Deleting the boundary turns this red instead of leaving the suite green."""
+    make_clean_tree(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "ledger.jsonl").write_text(
+        '["not", "a", "row"]\n' + json.dumps(_ledger_row(artifact="banana")) + "\n",
+        encoding="utf-8",
+    )
+    findings = lint.run(tmp_path)
+    assert any("could not be fully validated" in f for f in findings)
+    assert any("missing field" in f for f in findings)
+    assert any("banana" in f for f in findings)
+
+
+def test_ledger_ref_must_be_a_url(tmp_path):
+    for n, bad in enumerate(("", "see PR 3", "F2", 7)):
+        target = tmp_path / f"case{n}"
+        target.mkdir()
+        _write_ledger(target, _ledger_row(ref=bad))
+        assert any("ref" in f for f in lint.run(target)), bad
+
+
+def test_ledger_date_must_be_iso(tmp_path):
+    # 2026-02-30 and 2026-13-45 are shape-valid and calendar-invalid: they reach
+    # the calendar parse, which nothing else in this list exercises.
+    for n, bad in enumerate(
+        ("2026-8-15", "not-a-date", 20260815, "2026-02-30", "2026-13-45")
+    ):
+        target = tmp_path / f"case{n}"
+        target.mkdir()
+        _write_ledger(target, _ledger_row(date=bad))
+        assert any("date" in f for f in lint.run(target)), bad
 
 
 def test_ledger_duplicate_source_id_pair_is_a_finding(tmp_path):
