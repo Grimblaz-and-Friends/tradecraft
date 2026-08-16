@@ -11,6 +11,7 @@ Always-on rules:
 - **Lessons land same-session** in their repo home (skill prose, guard, or ADR). Vendor memory is an inbox, never an archive. (ADR-008)
 - **The predecessor** ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra)) **is reference material with no presumption of correctness.** Pull lessons, never artifacts. (ADR-009)
 - **Substrate is Python**, stdlib-first, tested on Linux and Windows. (ADR-007)
-- **Before committing:** `python tools/lint.py`. `main` is protected: land work on a branch and open a PR — direct pushes are refused, and both CI checks gate the merge.
+- **Before committing:** branch — `main` refuses direct pushes, so work lands on its own branch and reaches `main` through a PR whose CI checks must pass. Merging is the human's release gate (ADR-005), never the agent's.
+- **Before committing, also:** `python tools/lint.py`
 
 `CLAUDE.md` is a pointer to this file and must never fork from it.
