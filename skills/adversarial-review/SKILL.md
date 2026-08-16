@@ -7,12 +7,13 @@ description: Adversarial review of a changeset or artifact — a differentiated 
 
 Review as prosecution under evidence rules: seats hunt defects, a defense tries to disprove them, a judge rules on what survives, and the fixes are then re-validated by execution. The shape scales with the artifact; the evidence standards never do.
 
-This skill never asks a question mid-pipeline: from the first seat's dispatch to the judge's ruling the pipeline is atomic — no interim fixes, no edits to the artifact under review, no engagement prompts. A finding that needs an owner decision is surfaced in the judge's report as exactly that (and recorded with disposition `owner-pending` where a defect ledger exists), and the report is where the pipeline stops. Safe in attended and unattended lanes alike.
+This skill never asks a question mid-pipeline: from the first seat's dispatch to the judge's ruling the pipeline is atomic — no interim fixes, no edits to the artifact under review, no engagement prompts. A finding that needs an owner decision is surfaced in the judge's report as exactly that (and recorded with disposition `owner-pending` where a defect ledger exists — that row is its durable home, resurfaced by the opening step below, never a filed follow-up), and the report is where the pipeline stops. Safe in attended and unattended lanes alike.
 
 ## Choosing the shape
 
 In this skill's home repo, ADR-006 owns the default and this skill executes it; in any other repo, the shape rules below stand on their own, and sustained findings' attribution goes wherever that repo records defects — or stays in the review report when nowhere else exists.
 
+- **Open the ledger first.** Where a defect ledger exists, read it before choosing the shape: it carries the de-escalation evidence, the accumulated seat yield, and any `owner-pending` rows — batch those open rows into one argued question, put it at this review's opening seam, and re-disposition to `recorded` (with a one-line reason) any that several reviews have now failed to get answered.
 - **Routine change**: one adversarial pass that reads the artifact **cold**, then defense, then executable re-validation of any fixes. Defense's evidence verdicts terminate — no separate judge; the defense is the filter for this lane.
 - **Substantial artifact** (newly written foundational prose, new scripts, high blast radius — and when in doubt, this lane: going below the default is bought only by ledger evidence, never by argument): the **four-seat differentiated panel** below, then defense, then judge, then executable re-validation. Width beyond four, or an additional external fresh-session reviewer, is bought by declared risk.
 - **Record the classification.** The review report states which lane was chosen and why in one line — an unrecorded shape choice can never be audited or de-escalated later.
