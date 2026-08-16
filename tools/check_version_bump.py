@@ -111,6 +111,22 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     if code != 0:
         return UNDETERMINED, [f"version-bump (ADR-003): could not diff against {base[:7]}"]
     changed = [f for f in out.splitlines() if f.strip()]
+
+    # Committed history alone answers the CI question, where the tree is clean —
+    # and gives a FALSE PASS locally, reporting "untouched" while shipped-zone
+    # edits sit uncommitted in front of you. Untracked files are the sharper
+    # half: a whole new skill is invisible to `git diff` until it is added, and
+    # that is the canonical new-skill case. Both are folded in, so a local run
+    # answers the same question CI will.
+    for args in (("diff", "--name-only", "HEAD"),
+                 ("ls-files", "--others", "--exclude-standard")):
+        code, out = _git(*args)
+        if code != 0:
+            return UNDETERMINED, [
+                "version-bump (ADR-003): could not read the working tree "
+                f"({' '.join(args)} failed) — refusing to answer from committed history alone"
+            ]
+        changed.extend(f for f in out.splitlines() if f.strip())
     touched = sorted(
         f for f in changed
         if any(f.startswith(p) for p in SHIPPED) and f != MANIFEST
@@ -132,11 +148,11 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
             f"version {shown[0]} -> {shown[1]} ({why})"
         )
         return PASS, lines
-    verb = "unchanged at" if new == old else f"went BACKWARDS {shown[0]} -> "
+    detail = (f"is unchanged at {shown[1]}" if new == old
+              else f"went BACKWARDS, {shown[0]} -> {shown[1]}")
     lines.append(
         f"version-bump (ADR-003): {len(touched)} shipped-zone file(s) changed but "
-        f"the plugin version {verb}{shown[1] if new == old else shown[1]} — "
-        f"a consumer cannot tell installed from current"
+        f"the plugin version {detail} — a consumer cannot tell installed from current"
     )
     lines.extend(f"    {f}" for f in touched)
     return FAIL, lines

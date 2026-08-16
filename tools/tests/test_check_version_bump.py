@@ -172,3 +172,34 @@ def test_main_returns_the_status_as_exit_code(repo, capsys, setup, expected):
     assert "version-bump (ADR-003)" in out
     if expected == UNDETERMINED:
         assert "UNDETERMINED is a failure" in out
+
+
+# --- the working tree, which committed history alone cannot see ---
+
+def test_uncommitted_shipped_edit_is_seen(repo):
+    """A local run must answer the question CI will answer. Committed history
+    alone reports "untouched" while a shipped-zone edit sits uncommitted in
+    front of the author — a false pass, and the shape the predecessor guard was
+    withdrawn for. Found by trying to exercise this guard's own FAIL path."""
+    (repo / "skills" / "a.md").write_text("changed, not committed\n", encoding="utf-8")
+    status, lines = cvb.check("main")
+    assert status == FAIL
+    assert any("skills/a.md" in line for line in lines)
+
+
+def test_untracked_new_skill_is_seen(repo):
+    """The canonical new-skill case: a whole directory `git diff` cannot see
+    until it is added. The withdrawn predecessor was blind to exactly this."""
+    (repo / "skills" / "brand-new").mkdir()
+    (repo / "skills" / "brand-new" / "SKILL.md").write_text("new\n", encoding="utf-8")
+    status, lines = cvb.check("main")
+    assert status == FAIL
+    assert any("skills/brand-new/SKILL.md" in line for line in lines)
+
+
+def test_uncommitted_edit_with_a_bump_passes(repo):
+    """The working tree is read for the bump too, so an uncommitted edit paired
+    with an uncommitted bump is lawful — this must not become a false FAIL."""
+    (repo / "skills" / "a.md").write_text("changed\n", encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    assert cvb.check("main")[0] == PASS
