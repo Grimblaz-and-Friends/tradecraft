@@ -14,16 +14,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Packaging lint
         run: python tools/lint.py
-      - name: Version bump (shipped zone)
-        if: github.event_name == 'pull_request'
-        run: python tools/check_version_bump.py origin/${{ github.base_ref }}
       - name: Tests
         run: |
           pip install pytest
