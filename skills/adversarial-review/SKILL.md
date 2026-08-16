@@ -23,7 +23,7 @@ Why a panel and not one strong pass: in the predecessor's record, across the six
 
 Seats differ or they are waste; these four names are also the canonical `found_by` values (with the stages: `defense`, `judge`, `post-fix`, `external`, `ci`):
 
-- **`cold-read`** — fresh vantage, no lens brief: forms its own view of the artifact before any prior findings exist for it. Cold sole-finds were load-bearing three separate times in the predecessor's record, twice described in its own dispositions as "missed by all three review lenses and caught only by the convergence cold-read" ([#922](https://github.com/Grimblaz/agent-orchestra/issues/922)).
+- **`cold-read`** — fresh vantage, no lens brief: forms its own view of the artifact before any prior findings exist for it. Cold sole-finds were load-bearing three separate times in the predecessor's record; its dispositions record one verbatim as "Missed by all three review lenses and caught only by the convergence cold-read" ([#922](https://github.com/Grimblaz/agent-orchestra/issues/922)).
 - **`claims-vs-evidence`** — for prose: verify every load-bearing claim, number, and quotation against its cited source. Newly written generalized prose is where defects concentrate ([#844](https://github.com/Grimblaz/agent-orchestra/issues/844): 15 of 15 sustained findings, none in carried-verbatim text).
 - **`wiring-falsifier`** — for scripts and contracts: does the code enforce what the prose claims, does anything call it, can each guard actually fail? Probe by execution, not reading.
 - **`operational`** — walk the artifact as its consumer: a fresh executor following the text, reporting where it under-determines or misleads action. This is the differently-positioned vantage that caught what panels read past ([#878](https://github.com/Grimblaz/agent-orchestra/issues/878)'s escape fell to exactly this position).
@@ -38,11 +38,11 @@ Seats differ or they are waste; these four names are also the canonical `found_b
 
 ## Staffing and effort
 
-Every seat runs at the strongest model tier its runtime's budget bears; **the bottom tier never seats** — the one cliff the seat-yield record establishes (the predecessor's cheapest seat was weakest in every attributed round). Where the top tier is scarce, concentrate it where open-ended perception lives — the `cold-read` — and where single dispatches carry the most leverage — the judge of foundational reviews; briefed lens seats showed no measured yield gap one tier down. On a runtime where the top tier is not scarce, this rule collapses to "top tier everywhere."
+Every seat runs at the strongest model tier its runtime's budget bears; **the bottom tier does not seat by default** — a recorded judgment, not a record-established cliff: in the attributed rounds the cheapest seat was never a round's strongest finder and was its weakest in three of the four panel rounds, but not all four (once it ranked second of five), and no briefed lens seat ever ran at two tiers, so tier equivalence below the top was never measured — the one same-lens two-tier pair on record (the two generalists) favored the higher tier in every round where either scored. Where the top tier is scarce, concentrate it where open-ended perception lives — the `cold-read` — and where single dispatches carry the most leverage — the judge of foundational reviews. This allocation is budget judgment awaiting `found_by` evidence, revisable in either direction; on a runtime where the top tier is not scarce, it collapses to "top tier everywhere."
 
 Reasoning effort: terminal stages (defense, judge) run at least the seats' effort, escalated where the runtime offers it; width escalations are governed by the panel rules above, never by effort settings — orchestration scale and per-dispatch reasoning are different levers and are not exchanged for one another.
 
-*Dated example (2026-08, demotable per ADR-002 — an application of the rule, never the rule):* on Claude Code here, `cold-read` runs Fable, briefed seats and defense run Opus (defense one effort step up), the judge runs Opus at max — Fable for constitution-touching reviews; on a flat-budget runtime (e.g. Codex today), top tier throughout. The tier evidence is Claude-family only; `source` on each ledger row should name the runtime/model that staffed the finding's seat so per-runtime evidence accumulates.
+*Dated example (2026-08, demotable per ADR-002 — an application of the rule, never the rule):* on Claude Code here, `cold-read` runs Fable, briefed seats and defense run Opus (defense one effort step up), the judge runs Opus at max — Fable for constitution-touching reviews; on a flat-budget runtime (e.g. Codex today), top tier throughout. The tier evidence is Claude-family only; the review report records which runtime and model staffed each seat so per-runtime evidence can accumulate alongside the rows (`source` itself stays the review-event key, per the constitution's ledger contract).
 
 ## Evidence standards — every seat, every stage
 
@@ -56,7 +56,7 @@ Reasoning effort: terminal stages (defense, judge) run at least the seats' effor
 
 The parent (the dispatching session) merges the seats' ledgers before defense sees them: a duplicate is the **same failure mode at the same location**; the merged finding keeps **every finder** (primary first — the primary is the projection a defect-ledger row carries, per the constitution's `found_by` contract), and dual credit is preserved in the review report. The defense receives the merged ledger plus access to the artifact; the judge receives the merged ledger, the defense report, and access to the artifact — both must be able to re-execute any probe a verdict rests on.
 
-**Error states**: a seat that fails or returns unusable output is re-dispatched once; a panel still short a seat after retry proceeds, and the report and the ledger rows record the degraded width. Zero findings from all seats is a valid outcome — the defense has nothing to examine, the report says so, and no defect rows are written.
+**Error states**: a seat that fails or returns unusable output is re-dispatched once; a panel still short a seat after retry proceeds, and the report records the degraded width. Zero findings from all seats is a valid outcome — the defense has nothing to examine, the report says so, and no defect rows are written.
 
 ## Defense — one pass, always
 

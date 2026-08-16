@@ -209,6 +209,7 @@ def check_ledger(root: Path) -> list[str]:
     ledger = root / "docs" / "ledger.jsonl"
     if not ledger.is_file():
         return findings
+    seen_keys: set[tuple] = set()
     for lineno, line in enumerate(
         ledger.read_text(encoding="utf-8", errors="replace").splitlines(), 1
     ):
@@ -248,6 +249,14 @@ def check_ledger(root: Path) -> list[str]:
                 f"ledger (ADR-006): docs/ledger.jsonl:{lineno} found_by must be "
                 f"a non-empty string naming a seat or stage"
             )
+        if "source" in row and "id" in row:
+            key = (row["source"], row["id"])
+            if key in seen_keys:
+                findings.append(
+                    f"ledger (ADR-006): docs/ledger.jsonl:{lineno} duplicate "
+                    f"(source, id) pair {key!r} — ids must be unique within a source"
+                )
+            seen_keys.add(key)
     return findings
 
 
