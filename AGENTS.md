@@ -4,7 +4,7 @@ This repo is governed by its constitution: [docs/architecture/adr/README.md](doc
 
 Always-on rules:
 
-- **Skills are self-contained cells.** Never reference one skill from another; shared code lives only in `lib/`. Depth goes in the skill's own `references/`, loaded on demand. (ADR-003)
+- **Skills are self-contained cells.** No skill requires another skill; shared code lives only in `lib/`. Depth goes in the skill's own `references/`, loaded on demand. (ADR-003)
 - **Two zones.** Nothing in the shipped zone (`skills/`, `lib/`, `commands/`, `agents/`, `.claude-plugin/`) may reference `docs/`, `tools/`, or `.github/`. (ADR-004)
 - **Rules are earned.** New rules start as model judgment; prose is promoted by incident, code by recurrence + stability. Boundary formats (GitHub markers, ledger rows, version stamps) are the one day-one-code exception. (ADR-002)
 - **Findings: fix now or drop with a one-line reason.** Filing an issue requires rejecting both the fix-here home and the guard home, and passing the pickup test. (ADR-006)

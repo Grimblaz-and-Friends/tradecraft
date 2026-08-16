@@ -49,9 +49,18 @@ REL_PREFIX_TAIL = re.compile(r"(?:\.\.?[\\/])+$")
 
 LEDGER_FIELDS = {
     "id", "date", "artifact", "severity", "introduced",
-    "catchable", "caught", "source", "disposition",
+    "catchable", "caught", "source", "disposition", "found_by",
 }
 LEDGER_SEVERITIES = {"high", "medium", "low"}
+LEDGER_ARTIFACTS = {
+    "constitution", "repo-docs", "skill-prose", "script",
+    "lint", "tests", "ci", "packaging",
+}
+LEDGER_PHASES = {
+    "authoring", "authoring-review", "adversarial-review",
+    "ci", "post-merge", "consumer",
+}
+LEDGER_DISPOSITIONS = {"fixed", "reworded", "recorded", "owner-pending"}
 
 
 def _read_text(path: Path) -> str | None:
@@ -200,6 +209,7 @@ def check_ledger(root: Path) -> list[str]:
     ledger = root / "docs" / "ledger.jsonl"
     if not ledger.is_file():
         return findings
+    seen_keys: set[tuple] = set()
     for lineno, line in enumerate(
         ledger.read_text(encoding="utf-8", errors="replace").splitlines(), 1
     ):
@@ -216,11 +226,41 @@ def check_ledger(root: Path) -> list[str]:
                 f"ledger (ADR-006): docs/ledger.jsonl:{lineno} missing field(s) "
                 f"{', '.join(sorted(missing))}"
             )
-        elif row.get("severity") not in LEDGER_SEVERITIES:
+        # Each present field is validated independently of the others, so one
+        # lint run surfaces every defect in a row (single-pass repair).
+        vocab_checks = (
+            ("severity", LEDGER_SEVERITIES),
+            ("artifact", LEDGER_ARTIFACTS),
+            ("introduced", LEDGER_PHASES),
+            ("catchable", LEDGER_PHASES),
+            ("caught", LEDGER_PHASES),
+            ("disposition", LEDGER_DISPOSITIONS),
+        )
+        for field, vocab in vocab_checks:
+            # Membership is tested only on strings: a JSON list or object is
+            # unhashable and would raise instead of reporting the finding.
+            if field in row and (
+                not isinstance(row[field], str) or row[field] not in vocab
+            ):
+                findings.append(
+                    f"ledger (ADR-006): docs/ledger.jsonl:{lineno} {field} "
+                    f"'{row[field]}' not in {sorted(vocab)}"
+                )
+        if "found_by" in row and (
+            not isinstance(row["found_by"], str) or not row["found_by"].strip()
+        ):
             findings.append(
-                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} severity "
-                f"'{row.get('severity')}' not in {sorted(LEDGER_SEVERITIES)}"
+                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} found_by must be "
+                f"a non-empty string naming a seat or stage"
             )
+        if "source" in row and "id" in row:
+            key = (row["source"], row["id"])
+            if key in seen_keys:
+                findings.append(
+                    f"ledger (ADR-006): docs/ledger.jsonl:{lineno} duplicate "
+                    f"(source, id) pair {key!r} — ids must be unique within a source"
+                )
+            seen_keys.add(key)
     return findings
 
 

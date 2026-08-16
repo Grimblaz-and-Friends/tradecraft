@@ -4,6 +4,7 @@ The evasion-form cases exist because the 2026-08-15 adversarial review
 showed the original regexes missed every relative, uppercase, and
 backslash form (findings M1/M2/M4/M5/M6 in docs/ledger.jsonl)."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -188,18 +189,83 @@ def test_ledger_row_missing_field_is_a_finding(tmp_path):
     assert len(findings) == 1 and "ledger" in findings[0] and "missing field" in findings[0]
 
 
+def _ledger_row(**overrides: str) -> dict:
+    row = {
+        "id": "X1", "date": "2026-08-15", "artifact": "lint", "severity": "low",
+        "introduced": "authoring", "catchable": "authoring-review",
+        "caught": "adversarial-review", "source": "review-2026-08-15",
+        "disposition": "fixed", "found_by": "defense",
+    }
+    row.update(overrides)
+    return row
+
+
+def _write_ledger(root: Path, row: dict) -> None:
+    make_clean_tree(root)
+    docs = root / "docs"
+    docs.mkdir()
+    (docs / "ledger.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+
 def test_valid_ledger_row_is_clean(tmp_path):
+    _write_ledger(tmp_path, _ledger_row())
+    assert lint.run(tmp_path) == []
+
+
+def test_ledger_row_without_found_by_is_a_finding(tmp_path):
+    row = _ledger_row()
+    del row["found_by"]
+    _write_ledger(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "found_by" in findings[0]
+
+
+def test_ledger_row_empty_found_by_is_a_finding(tmp_path):
+    _write_ledger(tmp_path, _ledger_row(found_by="   "))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "found_by" in findings[0]
+
+
+def test_ledger_row_bad_severity_is_a_finding_even_with_missing_fields(tmp_path):
+    row = _ledger_row(severity="critical")
+    del row["found_by"]
+    _write_ledger(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert any("missing field" in f for f in findings)
+    assert any("severity" in f and "critical" in f for f in findings)
+
+
+def test_ledger_row_bad_vocab_values_are_findings(tmp_path):
+    _write_ledger(
+        tmp_path,
+        _ledger_row(
+            artifact="banana", introduced="lunch", catchable="brunch",
+            caught="dinner", disposition="vibes",
+        ),
+    )
+    findings = lint.run(tmp_path)
+    assert any("artifact" in f and "banana" in f for f in findings)
+    assert any("introduced" in f and "lunch" in f for f in findings)
+    assert any("catchable" in f and "brunch" in f for f in findings)
+    assert any("caught" in f and "dinner" in f for f in findings)
+    assert any("disposition" in f and "vibes" in f for f in findings)
+
+
+def test_ledger_row_unhashable_vocab_value_is_a_finding_not_a_crash(tmp_path):
+    _write_ledger(tmp_path, _ledger_row(artifact=[], caught={"phase": "ci"}))
+    findings = lint.run(tmp_path)
+    assert any("artifact" in f for f in findings)
+    assert any("caught" in f for f in findings)
+
+
+def test_ledger_duplicate_source_id_pair_is_a_finding(tmp_path):
     make_clean_tree(tmp_path)
     docs = tmp_path / "docs"
     docs.mkdir()
-    (docs / "ledger.jsonl").write_text(
-        '{"id": "X1", "date": "2026-08-15", "artifact": "lint", "severity": "low",'
-        ' "introduced": "authoring", "catchable": "authoring-review",'
-        ' "caught": "adversarial-review", "source": "review-2026-08-15",'
-        ' "disposition": "fixed"}\n',
-        encoding="utf-8",
-    )
-    assert lint.run(tmp_path) == []
+    row = json.dumps(_ledger_row())
+    (docs / "ledger.jsonl").write_text(row + "\n" + row + "\n", encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "duplicate" in findings[0]
 
 
 # --- the live repo obeys its own lint --------------------------------------
