@@ -267,10 +267,25 @@ def test_ledger_vocabularies_are_exactly_what_the_adr_states():
     }
 
 
+def test_ledger_accepts_a_defect_made_early_and_detectable_late(tmp_path):
+    """`introduced: design, catchable: implementation` — the shape ADR-006 §5
+    says the position axis exists to measure, and the one no row has ever held.
+    Goes red if anything ever re-imposes the retired rule that set `catchable`
+    from `introduced`, which is the amendment's central act and was otherwise
+    pinned by nothing: the rule can be reinstated in the lint with every other
+    test green, because no other fixture has the two fields differing."""
+    _write_ledger(
+        tmp_path,
+        _ledger_row(introduced="design", catchable="implementation"),
+    )
+    assert lint.run(tmp_path) == []
+
+
 def test_ledger_position_fields_reject_stage_values(tmp_path):
     """The two axes are separate vocabularies. Goes red the moment they are
-    merged back into one set — the state in which every row held a single value
-    per field and ADR-006 §5's own retirement test could not fail."""
+    merged back into one set. That merge was the schema half of what kept the
+    retirement test from failing; the rule half outlived it and was retired
+    separately (ADR-006 §5), so this pin does not claim to have cured the test."""
     _write_ledger(
         tmp_path,
         _ledger_row(introduced="adversarial-review", catchable="post-merge"),
