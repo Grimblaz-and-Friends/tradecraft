@@ -7,6 +7,12 @@ fails every intermediate commit of a multi-commit branch. A first attempt at thi
 guard enforced per-branch while citing per-commit; the mismatch was a review
 finding, and ADR-003 was corrected rather than the guard.
 
+The file set is that merge-base diff **plus the working tree** — unstaged,
+staged, and untracked — and the version is read from the working tree too. So a
+local run answers "would this be lawful if I committed everything right now",
+which is deliberately *not* the same question CI answers: CI checks out clean,
+sees only commits, and will differ from a dirty local run in both directions.
+
 Three outcomes, not two — and the third is why this exists at all:
 
     0  pass          shipped zone untouched, or touched and the version rose
@@ -38,14 +44,39 @@ MANIFEST = ".claude-plugin/plugin.json"
 SHIPPED = ("skills/", "lib/", "commands/", "agents/", ".claude-plugin/")
 
 PASS, FAIL, UNDETERMINED = 0, 1, 2
+NUL = chr(0)
 
 
-def _git(*args: str) -> tuple[int, str]:
+def _git(*args: str) -> tuple[int, str, str]:
+    """Returns (returncode, stdout, stderr).
+
+    `core.quotePath=false` is not optional: git's default octal-escapes any
+    non-ASCII path and wraps it in double quotes, so `"skills/cafÃ©.md"`
+    never matches `startswith("skills/")` and a shipped-zone file goes unseen —
+    a false pass, which is the one outcome this guard exists to refuse. It was
+    named in the predecessor guard's own withdrawal list, alongside the
+    untracked-files gap, and closing one without the other left it live.
+
+    stderr is returned because an UNDETERMINED that names the command but not
+    the failure leaves the operator with nothing to act on.
+    """
     proc = subprocess.run(
-        ["git", "-C", str(ROOT), *args],
+        ["git", "-C", str(ROOT), "-c", "core.quotePath=false", *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
-    return proc.returncode, (proc.stdout or "").strip()
+    return proc.returncode, (proc.stdout or ""), (proc.stderr or "").strip()
+
+
+def _paths(out: str) -> list[str]:
+    """Split NUL-delimited git output.
+
+    `-z` rather than line-splitting because `core.quotePath=false` only stops
+    git quoting non-ASCII: newlines, double quotes and backslashes in a path are
+    C-quoted regardless, and a line-oriented read then misses the shipped-zone
+    prefix — a false pass. Deliberately no `.strip()` on stdout either; that
+    would eat a trailing space from the final pathname.
+    """
+    return [f for f in out.split(NUL) if f]
 
 
 def _resolve_base(explicit: str | None) -> tuple[str | None, str]:
@@ -53,11 +84,12 @@ def _resolve_base(explicit: str | None) -> tuple[str | None, str]:
     candidates = [explicit] if explicit else ["origin/main", "main"]
     tried = []
     for ref in candidates:
-        code, _ = _git("rev-parse", "--verify", f"{ref}^{{commit}}")
+        code, _, _ = _git("rev-parse", "--verify", f"{ref}^{{commit}}")
         if code != 0:
             tried.append(f"{ref} does not resolve")
             continue
-        code, sha = _git("merge-base", "HEAD", ref)
+        code, sha, _ = _git("merge-base", "HEAD", ref)
+        sha = sha.strip()   # _git returns raw stdout now, for -z path parsing
         if code != 0 or not sha:
             tried.append(f"no merge base between HEAD and {ref}")
             continue
@@ -82,7 +114,7 @@ def _version_at(ref: str | None) -> tuple[tuple[int, ...] | None, str]:
             return None, f"{MANIFEST} is absent from the working tree"
         text = path.read_text(encoding="utf-8")
     else:
-        code, text = _git("show", f"{ref}:{MANIFEST}")
+        code, text, _ = _git("show", f"{ref}:{MANIFEST}")
         if code != 0:
             return None, f"{MANIFEST} is absent at {ref[:7]}"
     try:
@@ -107,14 +139,45 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     # the ref tip keeps every test green, because `...` rescues it. Redundant on
     # purpose; the withdrawn predecessor had neither and went silent on exactly
     # this state, which every merge into the base produces.
-    code, out = _git("diff", "--name-only", f"{base}...HEAD")
+    # Two-dot: base vs the PROJECTED tree (HEAD plus every uncommitted change),
+    # not base...HEAD unioned with the tree diffs. Unioning two name-lists cannot
+    # represent cancellation — an uncommitted edit reversing a committed one
+    # leaves the tree identical to the base while both lists still name the path,
+    # so the guard would FAIL a branch that lands no shipped-zone change at all.
+    # This is the shape the withdrawn predecessor used, and on this point it was
+    # right.
+    code, out, err = _git("diff", "--name-only", "--no-renames", "-z", base)
     if code != 0:
-        return UNDETERMINED, [f"version-bump (ADR-003): could not diff against {base[:7]}"]
-    changed = [f for f in out.splitlines() if f.strip()]
-    touched = sorted(
+        return UNDETERMINED, [
+            f"version-bump (ADR-003): could not diff against {base[:7]}"
+            + (f" — {err}" if err else "")
+        ]
+    changed = _paths(out)
+
+    # Untracked files are the half no diff can see: a whole new skill is
+    # invisible until it is added, which is the canonical new-skill case.
+    #
+    # Folding both in answers "would this be lawful if I committed everything
+    # now" — NOT the same question CI answers, and it diverges both ways: a
+    # committed edit whose bump is still uncommitted passes here and fails CI,
+    # and an untracked scratch file under skills/ fails here and is invisible
+    # to CI. The local answer is about the tree you are about to land; CI's is
+    # about the commits you did.
+    # Untracked files only: the two-dot diff above already carries tracked
+    # changes, staged or not.
+    for args in (("ls-files", "--others", "--exclude-standard", "-z"),):
+        code, out, err = _git(*args)
+        if code != 0:
+            return UNDETERMINED, [
+                "version-bump (ADR-003): could not read the working tree "
+                f"({' '.join(args)} failed{': ' + err if err else ''}) — "
+                "refusing to answer from committed history alone"
+            ]
+        changed.extend(_paths(out))
+    touched = sorted({
         f for f in changed
         if any(f.startswith(p) for p in SHIPPED) and f != MANIFEST
-    )
+    })
     if not touched:
         return PASS, [f"version-bump (ADR-003): shipped zone untouched ({why})"]
 
@@ -132,18 +195,24 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
             f"version {shown[0]} -> {shown[1]} ({why})"
         )
         return PASS, lines
-    verb = "unchanged at" if new == old else f"went BACKWARDS {shown[0]} -> "
+    detail = (f"is unchanged at {shown[1]}" if new == old
+              else f"went BACKWARDS, {shown[0]} -> {shown[1]}")
     lines.append(
         f"version-bump (ADR-003): {len(touched)} shipped-zone file(s) changed but "
-        f"the plugin version {verb}{shown[1] if new == old else shown[1]} — "
-        f"a consumer cannot tell installed from current"
+        f"the plugin version {detail} — a consumer cannot tell installed from "
+        f"current. Raise \"version\" in {MANIFEST} (see ADR-003 §25)"
     )
     lines.extend(f"    {f}" for f in touched)
     return FAIL, lines
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        # The outcome table is the point of --help; the default formatter
+        # collapses it into one run-on line.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--base", default=None, help="base ref (default: origin/main, then main)")
     args = parser.parse_args(argv)
     status, lines = check(args.base)
