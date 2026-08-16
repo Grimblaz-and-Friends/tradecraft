@@ -192,7 +192,7 @@ def test_ledger_row_missing_field_is_a_finding(tmp_path):
 def _ledger_row(**overrides: str) -> dict:
     row = {
         "id": "X1", "date": "2026-08-15", "artifact": "lint", "severity": "low",
-        "introduced": "authoring", "catchable": "authoring-review",
+        "introduced": "design", "catchable": "design",
         "caught": "adversarial-review", "source": "review-2026-08-15",
         "disposition": "fixed", "found_by": "defense",
         "ref": "https://github.com/example/repo/pull/1",
@@ -250,6 +250,107 @@ def test_ledger_row_bad_vocab_values_are_findings(tmp_path):
     assert any("catchable" in f and "brunch" in f for f in findings)
     assert any("caught" in f and "dinner" in f for f in findings)
     assert any("disposition" in f and "vibes" in f for f in findings)
+
+
+def test_ledger_vocabularies_are_exactly_what_the_adr_states():
+    """Every value ADR-006 §5 enumerates, pinned. Without this, 7 of the 11
+    original values could be deleted from the lint with the suite green and the
+    live lint clean — the guard covering only the values the fixtures happen to
+    use. Nothing checks these against the ADR's prose (§5 names that as a
+    stated-unenforced property), so this is the one place a deletion is caught."""
+    assert lint.LEDGER_POSITIONS == {
+        "framing", "design", "plan", "implementation", "unrecorded",
+    }
+    assert lint.LEDGER_STAGES == {
+        "authoring-review", "adversarial-review", "post-fix", "external",
+        "ci", "post-merge", "consumer", "unrecorded",
+    }
+
+
+def test_ledger_position_fields_reject_stage_values(tmp_path):
+    """The two axes are separate vocabularies. Goes red the moment they are
+    merged back into one set — the state in which every row held a single value
+    per field and ADR-006 §5's own retirement test could not fail."""
+    _write_ledger(
+        tmp_path,
+        _ledger_row(introduced="adversarial-review", catchable="post-merge"),
+    )
+    findings = lint.run(tmp_path)
+    assert any("introduced" in f and "adversarial-review" in f for f in findings)
+    assert any("catchable" in f and "post-merge" in f for f in findings)
+
+
+def test_ledger_caught_accepts_post_fix_stage(tmp_path):
+    """`post-fix` discriminates where `design` cannot. The pre-split vocabulary
+    rejected it everywhere; the split makes it lawful for `caught`, so this goes
+    red against the merged set — which `caught="design"` never did, design being
+    rejected before the split too. A pin that cannot fail on the old code pins
+    nothing (SKILL.md § evidence standards: red against the pre-fix revision)."""
+    _write_ledger(tmp_path, _ledger_row(caught="post-fix"))
+    assert lint.run(tmp_path) == []
+
+
+def test_ledger_caught_rejects_a_position_value(tmp_path):
+    """The reverse boundary, which nothing else covers.
+
+    The other pins show positions rejecting a stage and `caught` accepting one.
+    None of them shows `caught` *rejecting* a position — so a validator that
+    accepted the union of both sets would pass the whole suite. That hole was
+    opened by this branch: the test that used to cover it was deleted for not
+    discriminating against the pre-split lint, and its coverage was not
+    replaced. Found by an external reviewer on PR #6, sustained on that ground.
+
+    Like its sibling below, this is a forward pin, not a discriminating one:
+    `implementation` was absent from the pre-split vocabulary too."""
+    _write_ledger(tmp_path, _ledger_row(caught="implementation"))
+    findings = lint.run(tmp_path)
+    assert any("caught" in f and "implementation" in f for f in findings)
+
+
+def test_ledger_position_rejects_post_fix_stage(tmp_path):
+    """The asymmetry's other half: lawful for the stage field, unlawful for a
+    position.
+
+    Honest about what this one is: it does **not** go red against the pre-split
+    lint, because that vocabulary rejected `post-fix` in every field. It is a
+    forward pin — it fires if `post-fix` is ever added to the positions — not a
+    discriminating one, and saying so is the point. Its sibling above carries
+    the discriminating half. Claiming otherwise is the defect this fix batch was
+    correcting, and it would have been reproduced here by silence."""
+    _write_ledger(tmp_path, _ledger_row(introduced="post-fix"))
+    findings = lint.run(tmp_path)
+    assert any("introduced" in f and "post-fix" in f for f in findings)
+
+
+def test_ledger_retired_authoring_value_is_rejected_in_both_axes(tmp_path):
+    """ADR-006 §5: "No value doubles as a judgment and a default." `authoring`
+    is gone from both vocabularies because it was doing exactly that — though
+    that reading of its history is this repo's own account of the value, not
+    something §5 states, so the citation covers the rule and not the diagnosis."""
+    _write_ledger(tmp_path, _ledger_row(introduced="authoring", caught="authoring"))
+    findings = lint.run(tmp_path)
+    assert any("introduced" in f and "authoring" in f for f in findings)
+    assert any("caught" in f and "authoring" in f for f in findings)
+
+
+def test_ledger_unjudged_position_is_lawful(tmp_path):
+    """A row that never judged its position says so, rather than asserting the
+    last position by default."""
+    _write_ledger(tmp_path, _ledger_row(introduced="unrecorded", catchable="unrecorded"))
+    assert lint.run(tmp_path) == []
+
+
+def test_ledger_judged_implementation_position_is_lawful(tmp_path):
+    _write_ledger(tmp_path, _ledger_row(introduced="implementation", catchable="implementation"))
+    assert lint.run(tmp_path) == []
+
+
+def test_ledger_unjudged_and_implementation_are_separate_values():
+    """No value doubles as a judgment and a default. Goes red if the not-judged
+    value is ever collapsed onto a real position. (An earlier version of this
+    test also asserted `"unrecorded" != "implementation"` — two string literals,
+    constant-true under every state of the code, and inert as a pin.)"""
+    assert {"unrecorded", "implementation"} <= lint.LEDGER_POSITIONS
 
 
 def test_ledger_row_unhashable_vocab_value_is_a_finding_not_a_crash(tmp_path):

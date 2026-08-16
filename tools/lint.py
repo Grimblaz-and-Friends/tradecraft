@@ -57,9 +57,36 @@ LEDGER_ARTIFACTS = {
     "constitution", "repo-docs", "skill-prose", "script",
     "lint", "tests", "ci", "packaging",
 }
-LEDGER_PHASES = {
-    "authoring", "authoring-review", "adversarial-review",
-    "ci", "post-merge", "consumer",
+# Two axes, not one. `introduced` and `catchable` name the artifact *position*
+# where the defect was made and where it was earliest catchable; `caught` names
+# the review *stage* that actually found it. The single merged set these replace
+# mixed both kinds and could express no position earlier than the prose, so all
+# three fields held one value across the entire corpus and the axis ADR-006 §5
+# governs by was unmeasurable by construction.
+#
+# `unrecorded` means ONE thing on either axis: not judged. It is not a fallback
+# for a judged value that fits nothing listed — that reading restores the double
+# duty `authoring` was retired for. A judged value with no lawful slot means the
+# vocabulary is short, and the fix is an ADR amendment editing these two sets.
+#
+# NOTHING CHECKS THAT THESE SETS MATCH ADR-006 §5's PROSE, in either direction:
+# widening either set passes the lint. It does NOT pass the suite — a test pins
+# these literals exactly, which catches a local edit but still cannot see the
+# ADR, so prose and code can drift together. The correspondence is a
+# stated, unenforced property (§5 names it alongside the axis ordering and the
+# two `ref` properties) rather than a guarded one — ADR-002 earns code by
+# recurrence, and a guard here would have to read and parse ADR text.
+LEDGER_POSITIONS = {
+    "framing", "design", "plan", "implementation", "unrecorded",
+}
+# post-fix and external are here because they name a review STAGE a defect can
+# be caught at. Not every found_by value qualifies: defense, judge and owner are
+# equally named by §5's found_by contract and are finders within or outside a
+# stage, not stages themselves. Without these two, 29 real catches mapped onto
+# `adversarial-review` — precisely the "nearest wrong one" the section forbids.
+LEDGER_STAGES = {
+    "authoring-review", "adversarial-review", "post-fix", "external",
+    "ci", "post-merge", "consumer", "unrecorded",
 }
 LEDGER_DISPOSITIONS = {"fixed", "reworded", "recorded", "owner-pending"}
 LEDGER_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
@@ -265,9 +292,9 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
     vocab_checks = (
         ("severity", LEDGER_SEVERITIES),
         ("artifact", LEDGER_ARTIFACTS),
-        ("introduced", LEDGER_PHASES),
-        ("catchable", LEDGER_PHASES),
-        ("caught", LEDGER_PHASES),
+        ("introduced", LEDGER_POSITIONS),
+        ("catchable", LEDGER_POSITIONS),
+        ("caught", LEDGER_STAGES),
         ("disposition", LEDGER_DISPOSITIONS),
     )
     for field, vocab in vocab_checks:
