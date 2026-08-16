@@ -44,6 +44,7 @@ MANIFEST = ".claude-plugin/plugin.json"
 SHIPPED = ("skills/", "lib/", "commands/", "agents/", ".claude-plugin/")
 
 PASS, FAIL, UNDETERMINED = 0, 1, 2
+NUL = chr(0)
 
 
 def _git(*args: str) -> tuple[int, str, str]:
@@ -63,7 +64,19 @@ def _git(*args: str) -> tuple[int, str, str]:
         ["git", "-C", str(ROOT), "-c", "core.quotePath=false", *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
-    return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+    return proc.returncode, (proc.stdout or ""), (proc.stderr or "").strip()
+
+
+def _paths(out: str) -> list[str]:
+    """Split NUL-delimited git output.
+
+    `-z` rather than line-splitting because `core.quotePath=false` only stops
+    git quoting non-ASCII: newlines, double quotes and backslashes in a path are
+    C-quoted regardless, and a line-oriented read then misses the shipped-zone
+    prefix — a false pass. Deliberately no `.strip()` on stdout either; that
+    would eat a trailing space from the final pathname.
+    """
+    return [f for f in out.split(NUL) if f]
 
 
 def _resolve_base(explicit: str | None) -> tuple[str | None, str]:
@@ -76,6 +89,7 @@ def _resolve_base(explicit: str | None) -> tuple[str | None, str]:
             tried.append(f"{ref} does not resolve")
             continue
         code, sha, _ = _git("merge-base", "HEAD", ref)
+        sha = sha.strip()   # _git returns raw stdout now, for -z path parsing
         if code != 0 or not sha:
             tried.append(f"no merge base between HEAD and {ref}")
             continue
@@ -125,19 +139,23 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     # the ref tip keeps every test green, because `...` rescues it. Redundant on
     # purpose; the withdrawn predecessor had neither and went silent on exactly
     # this state, which every merge into the base produces.
-    code, out, err = _git("diff", "--name-only", "--no-renames", f"{base}...HEAD")
+    # Two-dot: base vs the PROJECTED tree (HEAD plus every uncommitted change),
+    # not base...HEAD unioned with the tree diffs. Unioning two name-lists cannot
+    # represent cancellation — an uncommitted edit reversing a committed one
+    # leaves the tree identical to the base while both lists still name the path,
+    # so the guard would FAIL a branch that lands no shipped-zone change at all.
+    # This is the shape the withdrawn predecessor used, and on this point it was
+    # right.
+    code, out, err = _git("diff", "--name-only", "--no-renames", "-z", base)
     if code != 0:
         return UNDETERMINED, [
             f"version-bump (ADR-003): could not diff against {base[:7]}"
             + (f" — {err}" if err else "")
         ]
-    changed = [f for f in out.splitlines() if f.strip()]
+    changed = _paths(out)
 
-    # Committed history alone answers the CI question, where the tree is clean —
-    # and gives a FALSE PASS locally, reporting "untouched" while shipped-zone
-    # edits sit uncommitted in front of you. Untracked files are the sharper
-    # half: a whole new skill is invisible to `git diff` until it is added, and
-    # that is the canonical new-skill case.
+    # Untracked files are the half no diff can see: a whole new skill is
+    # invisible until it is added, which is the canonical new-skill case.
     #
     # Folding both in answers "would this be lawful if I committed everything
     # now" — NOT the same question CI answers, and it diverges both ways: a
@@ -145,8 +163,9 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     # and an untracked scratch file under skills/ fails here and is invisible
     # to CI. The local answer is about the tree you are about to land; CI's is
     # about the commits you did.
-    for args in (("diff", "--name-only", "--no-renames", "HEAD"),
-                 ("ls-files", "--others", "--exclude-standard")):
+    # Untracked files only: the two-dot diff above already carries tracked
+    # changes, staged or not.
+    for args in (("ls-files", "--others", "--exclude-standard", "-z"),):
         code, out, err = _git(*args)
         if code != 0:
             return UNDETERMINED, [
@@ -154,7 +173,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
                 f"({' '.join(args)} failed{': ' + err if err else ''}) — "
                 "refusing to answer from committed history alone"
             ]
-        changed.extend(f for f in out.splitlines() if f.strip())
+        changed.extend(_paths(out))
     touched = sorted({
         f for f in changed
         if any(f.startswith(p) for p in SHIPPED) and f != MANIFEST

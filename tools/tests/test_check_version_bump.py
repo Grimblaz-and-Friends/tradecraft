@@ -2,13 +2,15 @@
 
 The predecessor of this guard was withdrawn because it failed open four ways
 while printing a clean-pass line, and because three mutations of its exit path
-survived green — nothing tested `main()`. Both gaps are pinned here: **all five**
-undetermined branches assert exit 2, and `main()` is exercised directly.
+survived green — nothing tested `main()`. Both gaps are pinned here: **every**
+undetermined branch asserts exit 2, and `main()` is exercised directly.
 
-That claim was false when it was first written — three of the five sites were
-unpinned, two inherited and one added by the very commit that made the claim. It
-is now held by `test_git_failure_is_undetermined_not_a_pass`, which enumerates
-the sites, so the sentence cannot drift from the code again.
+That claim was false when it was first written — three of the then-five sites
+were unpinned, two inherited and one added by the very commit that made the
+claim. It is now held by `test_git_failure_is_undetermined_not_a_pass`, which
+enumerates the sites, so the sentence cannot drift from the code again. The
+count is deliberately not restated as a number: the external pass on PR #9
+collapsed two sites into one, and a number here would have gone stale again.
 """
 from __future__ import annotations
 
@@ -182,7 +184,9 @@ def test_main_returns_the_status_as_exit_code(repo, capsys, setup, expected):
 # --- the working tree, which committed history alone cannot see ---
 
 def test_uncommitted_shipped_edit_is_seen(repo):
-    """A local run must answer the question CI will answer. Committed history
+    """A local run answers "would this be lawful if I committed everything
+    now" — deliberately NOT the question CI answers, which is about the commits
+    you actually made. Committed history
     alone reports "untouched" while a shipped-zone edit sits uncommitted in
     front of the author — a false pass, and the shape the predecessor guard was
     withdrawn for. Found by trying to exercise this guard's own FAIL path.
@@ -219,18 +223,20 @@ def test_uncommitted_edit_with_a_bump_passes(repo):
 
 # --- every UNDETERMINED site, enumerated so the docstring cannot drift ---
 
-@pytest.mark.parametrize("failing", ["diff-base", "diff-tree", "ls-files"])
+@pytest.mark.parametrize("failing", ["diff", "ls-files"])
 def test_git_failure_is_undetermined_not_a_pass(repo, monkeypatch, failing):
-    """Three sites answer only when git does, and all three were unpinned —
-    mutating any of them to fail open left the whole suite green. The tree-read
-    site was added by the commit whose message said every branch was pinned."""
+    """Both path-listing sites answer only when git does, and both were unpinned
+    — mutating either to fail open left the whole suite green. The untracked site
+    was added by the commit whose message said every branch was pinned.
+
+    (This was three cases until the external pass on PR #9 collapsed the two
+    tracked-file reads into one two-dot diff against the projected tree; a
+    union of two name-lists cannot represent a cancellation.)"""
     real = cvb._git
 
     def fake(*args):
-        if failing == "diff-base" and args[0] == "diff" and "..." in args[-1]:
+        if failing == "diff" and args[0] == "diff":
             return 128, "", "fatal: bad revision"
-        if failing == "diff-tree" and args[0] == "diff" and args[-1] == "HEAD":
-            return 128, "", "fatal: index file smaller than expected"
         if failing == "ls-files" and args[0] == "ls-files":
             return 128, "", "fatal: unable to read index"
         return real(*args)
@@ -325,5 +331,35 @@ def test_git_stderr_reaches_the_operator(repo):
     call sites and never exercises `_git`'s own capture of `proc.stderr` —
     dropping that capture left 79 tests green. This calls the real thing."""
     code, out, err = cvb._git("rev-parse", "--verify", "definitely-not-a-ref")
-    assert code != 0 and out == ""
+    assert code != 0
+    assert out.strip() == ""
     assert err, "git's own reason must survive _git, or UNDETERMINED says nothing actionable"
+
+
+def test_an_uncommitted_reversal_cancels(repo):
+    """A union of two name-lists cannot represent cancellation.
+
+    Commit a shipped-zone edit, then revert it in the working tree: the
+    projected tree is byte-identical to the merge base, so the branch lands no
+    shipped-zone change and needs no bump. Unioning `base...HEAD` with the tree
+    diff named the path twice and FAILed — a false FAIL that would have sent an
+    author chasing a bump their PR does not need. Found by the external pass on
+    PR #9; the fix is a two-dot diff against the projected tree."""
+    (repo / "skills" / "a.md").write_text("changed\n", encoding="utf-8")
+    _commit(repo, "skill edit")
+    (repo / "skills" / "a.md").write_text("base\n", encoding="utf-8")   # reverted
+    status, lines = cvb.check("main")
+    assert status == PASS, lines
+    assert "untouched" in lines[0]
+
+
+def test_a_path_git_must_quote_is_still_seen(repo):
+    """`core.quotePath=false` only stops git quoting non-ASCII. A newline, quote
+    or backslash in a path is C-quoted regardless, and a line-oriented read then
+    misses the shipped-zone prefix — a false pass. `-z` is what makes the read
+    safe; this pins the parser rather than the filesystem, since not every OS
+    permits such a name."""
+    assert cvb._paths("skills/a.md\0skills/we ird.md\0") == [
+        "skills/a.md", "skills/we ird.md"]
+    # a trailing space in the final name survives: no .strip() on stdout
+    assert cvb._paths("skills/trailing .md\0") == ["skills/trailing .md"]
