@@ -4,6 +4,7 @@ The evasion-form cases exist because the 2026-08-15 adversarial review
 showed the original regexes missed every relative, uppercase, and
 backslash form (findings M1/M2/M4/M5/M6 in docs/ledger.jsonl)."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -188,7 +189,7 @@ def test_ledger_row_missing_field_is_a_finding(tmp_path):
     assert len(findings) == 1 and "ledger" in findings[0] and "missing field" in findings[0]
 
 
-def _ledger_row(**overrides):
+def _ledger_row(**overrides: str) -> dict:
     row = {
         "id": "X1", "date": "2026-08-15", "artifact": "lint", "severity": "low",
         "introduced": "authoring", "catchable": "authoring-review",
@@ -199,10 +200,9 @@ def _ledger_row(**overrides):
     return row
 
 
-def _write_ledger(tmp_path, row):
-    import json
-    make_clean_tree(tmp_path)
-    docs = tmp_path / "docs"
+def _write_ledger(root: Path, row: dict) -> None:
+    make_clean_tree(root)
+    docs = root / "docs"
     docs.mkdir()
     (docs / "ledger.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
 
@@ -252,7 +252,6 @@ def test_ledger_row_bad_vocab_values_are_findings(tmp_path):
 
 
 def test_ledger_duplicate_source_id_pair_is_a_finding(tmp_path):
-    import json
     make_clean_tree(tmp_path)
     docs = tmp_path / "docs"
     docs.mkdir()
