@@ -252,7 +252,7 @@ def test_ledger_row_bad_vocab_values_are_findings(tmp_path):
     assert any("disposition" in f and "vibes" in f for f in findings)
 
 
-def test_ledger_vocabularies_are_exactly_what_the_adr_states(tmp_path):
+def test_ledger_vocabularies_are_exactly_what_the_adr_states():
     """Every value ADR-006 §5 enumerates, pinned. Without this, 7 of the 11
     original values could be deleted from the lint with the suite green and the
     live lint clean — the guard covering only the values the fixtures happen to
@@ -288,6 +288,23 @@ def test_ledger_caught_accepts_post_fix_stage(tmp_path):
     nothing (SKILL.md § evidence standards: red against the pre-fix revision)."""
     _write_ledger(tmp_path, _ledger_row(caught="post-fix"))
     assert lint.run(tmp_path) == []
+
+
+def test_ledger_caught_rejects_a_position_value(tmp_path):
+    """The reverse boundary, which nothing else covers.
+
+    The other pins show positions rejecting a stage and `caught` accepting one.
+    None of them shows `caught` *rejecting* a position — so a validator that
+    accepted the union of both sets would pass the whole suite. That hole was
+    opened by this branch: the test that used to cover it was deleted for not
+    discriminating against the pre-split lint, and its coverage was not
+    replaced. Found by an external reviewer on PR #6, sustained on that ground.
+
+    Like its sibling below, this is a forward pin, not a discriminating one:
+    `implementation` was absent from the pre-split vocabulary too."""
+    _write_ledger(tmp_path, _ledger_row(caught="implementation"))
+    findings = lint.run(tmp_path)
+    assert any("caught" in f and "implementation" in f for f in findings)
 
 
 def test_ledger_position_rejects_post_fix_stage(tmp_path):
