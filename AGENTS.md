@@ -12,7 +12,7 @@ Always-on rules:
 - **The predecessor** ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra)) **is reference material with no presumption of correctness.** Pull lessons, never artifacts. (ADR-009)
 - **Substrate is Python**, stdlib-first, tested on Linux and Windows. (ADR-007)
 - **Before committing:** branch first — `main` refuses direct pushes, so work lands on its own branch and reaches `main` through a PR whose CI checks must pass — then `python tools/lint.py`. Merging is the human's release gate (ADR-005), never the agent's.
-- **The PR body states what it closes.** `Closes #N` for every issue the change discharges, or one line saying it closes none and why. Keywords fire only from the PR **body** or a commit on `main` — never from a comment — so an issue whose work has landed stays open silently otherwise. Saying "closes none" is a real outcome, not a skipped step: silence and a deliberate no are indistinguishable without it.
 - **Then, without being asked: publish the branch, open the PR, run the review, reconcile the external comments** — in that order, so automated reviewers run concurrently with it. On a change that has a PR, running the review is a check, never a question; handing it back for the human to run invents a gate the charter does not have. Upstream artifacts (framing, design, plan) are different — their review *is* the convergence gate, and that one asks. (ADR-006 §3)
+- **The PR body says what it closes** — `Closes #N`, or one line saying it closes none and why; silence and a deliberate no are otherwise the same string. (ADR-006 §3)
 
 `CLAUDE.md` is a pointer to this file and must never fork from it.
