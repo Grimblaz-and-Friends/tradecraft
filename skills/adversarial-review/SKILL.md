@@ -74,6 +74,7 @@ The judge's test per finding: **will acting on this improve the artifact?** Yes 
 - **No party is deferred to** — a judge may reject a finding the defense conceded, and raise severity the defense argued down; both happened in the record and both rulings were right.
 - **Settle severity** at the evidence, not the average of the parties' positions.
 - One ruling per merged finding, no rebuttal rounds; the ruling carries the finding's `found_by` unchanged.
+- **Post the ruling to the review's durable surface** — the pull request or issue the ledger's `ref` points at — before the fix batch begins. A ruling that lives only in a session cannot be read by the stage that follows it, by a later review asking what a row was about, or by anyone auditing whether a sustained finding was actually fixed.
 
 ## Post-fix re-validation — mandatory, executable, fix-wide
 

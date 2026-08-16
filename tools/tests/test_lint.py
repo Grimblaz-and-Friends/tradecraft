@@ -316,7 +316,11 @@ def test_ledger_ref_must_be_a_url(tmp_path):
 
 
 def test_ledger_date_must_be_iso(tmp_path):
-    for n, bad in enumerate(("2026-8-15", "not-a-date", 20260815)):
+    # 2026-02-30 and 2026-13-45 are shape-valid and calendar-invalid: they reach
+    # the calendar parse, which nothing else in this list exercises.
+    for n, bad in enumerate(
+        ("2026-8-15", "not-a-date", 20260815, "2026-02-30", "2026-13-45")
+    ):
         target = tmp_path / f"case{n}"
         target.mkdir()
         _write_ledger(target, _ledger_row(date=bad))
