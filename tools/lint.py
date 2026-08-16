@@ -237,7 +237,11 @@ def check_ledger(root: Path) -> list[str]:
             ("disposition", LEDGER_DISPOSITIONS),
         )
         for field, vocab in vocab_checks:
-            if field in row and row[field] not in vocab:
+            # Membership is tested only on strings: a JSON list or object is
+            # unhashable and would raise instead of reporting the finding.
+            if field in row and (
+                not isinstance(row[field], str) or row[field] not in vocab
+            ):
                 findings.append(
                     f"ledger (ADR-006): docs/ledger.jsonl:{lineno} {field} "
                     f"'{row[field]}' not in {sorted(vocab)}"

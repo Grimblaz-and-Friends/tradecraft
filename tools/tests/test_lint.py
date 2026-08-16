@@ -251,6 +251,13 @@ def test_ledger_row_bad_vocab_values_are_findings(tmp_path):
     assert any("disposition" in f and "vibes" in f for f in findings)
 
 
+def test_ledger_row_unhashable_vocab_value_is_a_finding_not_a_crash(tmp_path):
+    _write_ledger(tmp_path, _ledger_row(artifact=[], caught={"phase": "ci"}))
+    findings = lint.run(tmp_path)
+    assert any("artifact" in f for f in findings)
+    assert any("caught" in f for f in findings)
+
+
 def test_ledger_duplicate_source_id_pair_is_a_finding(tmp_path):
     make_clean_tree(tmp_path)
     docs = tmp_path / "docs"
