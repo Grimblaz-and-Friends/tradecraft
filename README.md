@@ -21,4 +21,4 @@ The constitution — the small set of decisions everything else answers to — l
 
 ## Status
 
-Walking skeleton complete: the constitution (ADRs 001–009, argued and amended), the packaging lint with Linux + Windows CI, and the first shipped skill (`persist-changes`). The predecessor freeze trigger of ADR-009 is live. A full-repo adversarial review ran 2026-08-15; its sustained findings and their outcomes are the first rows of [docs/ledger.jsonl](docs/ledger.jsonl).
+Walking skeleton complete: the constitution (ADRs 001–009, argued and amended), the packaging lint with Linux + Windows CI, and two shipped skills (`persist-changes`, `adversarial-review`). The predecessor freeze trigger of ADR-009 is live. A full-repo adversarial review ran 2026-08-15; its sustained findings and their outcomes are the first rows of [docs/ledger.jsonl](docs/ledger.jsonl), and the review practice's own four-seat panel review of PR #2 supplied the first seat-attributed rows.

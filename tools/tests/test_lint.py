@@ -188,18 +188,62 @@ def test_ledger_row_missing_field_is_a_finding(tmp_path):
     assert len(findings) == 1 and "ledger" in findings[0] and "missing field" in findings[0]
 
 
-def test_valid_ledger_row_is_clean(tmp_path):
+def _ledger_row(**overrides):
+    row = {
+        "id": "X1", "date": "2026-08-15", "artifact": "lint", "severity": "low",
+        "introduced": "authoring", "catchable": "authoring-review",
+        "caught": "adversarial-review", "source": "review-2026-08-15",
+        "disposition": "fixed", "found_by": "defense",
+    }
+    row.update(overrides)
+    return row
+
+
+def _write_ledger(tmp_path, row):
+    import json
     make_clean_tree(tmp_path)
     docs = tmp_path / "docs"
     docs.mkdir()
-    (docs / "ledger.jsonl").write_text(
-        '{"id": "X1", "date": "2026-08-15", "artifact": "lint", "severity": "low",'
-        ' "introduced": "authoring", "catchable": "authoring-review",'
-        ' "caught": "adversarial-review", "source": "review-2026-08-15",'
-        ' "disposition": "fixed", "found_by": "defense"}\n',
-        encoding="utf-8",
-    )
+    (docs / "ledger.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+
+def test_valid_ledger_row_is_clean(tmp_path):
+    _write_ledger(tmp_path, _ledger_row())
     assert lint.run(tmp_path) == []
+
+
+def test_ledger_row_without_found_by_is_a_finding(tmp_path):
+    row = _ledger_row()
+    del row["found_by"]
+    _write_ledger(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "found_by" in findings[0]
+
+
+def test_ledger_row_empty_found_by_is_a_finding(tmp_path):
+    _write_ledger(tmp_path, _ledger_row(found_by="   "))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "found_by" in findings[0]
+
+
+def test_ledger_row_bad_severity_is_a_finding_even_with_missing_fields(tmp_path):
+    row = _ledger_row(severity="critical")
+    del row["found_by"]
+    _write_ledger(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert any("missing field" in f for f in findings)
+    assert any("severity" in f and "critical" in f for f in findings)
+
+
+def test_ledger_row_bad_vocab_values_are_findings(tmp_path):
+    _write_ledger(
+        tmp_path,
+        _ledger_row(artifact="banana", introduced="lunch", disposition="vibes"),
+    )
+    findings = lint.run(tmp_path)
+    assert any("artifact" in f and "banana" in f for f in findings)
+    assert any("introduced" in f and "lunch" in f for f in findings)
+    assert any("disposition" in f and "vibes" in f for f in findings)
 
 
 # --- the live repo obeys its own lint --------------------------------------

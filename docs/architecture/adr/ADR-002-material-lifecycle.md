@@ -24,7 +24,7 @@ A one-axis rule ("if it can be violated silently, make it code") produces the se
 - Prose is pruned when models stop needing it. Every prose rule carries its exhibit (why it exists), so a future sweep can tell load-bearing from vestigial.
 - A code guard whose condition can no longer recur (the process it guarded changed) is deleted, not maintained. A test suite you are afraid to delete from is doctrine accreting in a compiler.
 
-**The one exception that skips the lifecycle: boundary formats.** Formats and state at the GitHub boundary (markers, ledger rows, version stamps) are interchange formats whose whole point is durability across sessions and runtimes — stable by nature, and the site of every historical silent-violation incident. These are code from day one: the model never hand-writes them; it calls an emitter and a validator.
+**The one exception that skips the lifecycle: boundary formats.** Formats and state at the GitHub boundary (markers, ledger rows, version stamps) are interchange formats whose whole point is durability across sessions and runtimes — stable by nature, and the site of every historical silent-violation incident. These are code from day one: the model never hand-writes them; it calls an emitter and a validator. (Interim waiver, recorded in ADR-006 §5: until the emitter library exists, ledger rows are hand-written and validated by the packaging lint — the smallest honest discharge of this rule, not an exception to it.)
 
 ## Consequences
 
