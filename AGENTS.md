@@ -6,7 +6,7 @@ Always-on rules:
 
 - **Skills are self-contained cells.** No skill requires another skill; shared code lives only in `lib/`. Depth goes in the skill's own `references/`, loaded on demand. (ADR-003)
 - **Two zones.** Nothing in the shipped zone (`skills/`, `lib/`, `commands/`, `agents/`, `.claude-plugin/`) may reference `docs/`, `tools/`, or `.github/`. (ADR-004)
-- **Rules are earned.** New rules start as model judgment; prose is promoted by incident, code by recurrence + stability. Boundary formats (GitHub markers, ledger rows, version stamps) are the one day-one-code exception. (ADR-002)
+- **Rules are earned.** New *rules* start as model judgment; prose is promoted by incident, code by recurrence + stability. A **mechanism** has no judgment-tier form (a gate procedure, a skill, a script, a field, a format), so it takes the other road: the owner admits it as a **marked trial** that states its falsifier and review trigger up front, produces ledger rows, and is **cut by default** at that trigger — doing nothing removes it. Boundary formats (GitHub markers, ledger rows, version stamps) are the one day-one-code exception. (ADR-002)
 - **Findings: fix now or drop with a one-line reason.** Filing an issue requires rejecting both the fix-here home and the guard home, and passing the pickup test. (ADR-006)
 - **Lessons land same-session** in their repo home (skill prose, guard, or ADR). Vendor memory is an inbox, never an archive. (ADR-008)
 - **The predecessor** ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra)) **is reference material with no presumption of correctness.** Pull lessons, never artifacts. (ADR-009)

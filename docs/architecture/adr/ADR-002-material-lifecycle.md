@@ -1,6 +1,6 @@
 # ADR-002: The three materials, and the lifecycle between them
 
-**Status:** Accepted 2026-08-15
+**Status:** Accepted 2026-08-15 · Amended 2026-08-16 (a second road into the lifecycle — admission by trial — for mechanisms that have no judgment-tier form — evidence: the convergence gate was piloted end to end in [PR #6](https://github.com/Grimblaz-and-Friends/tradecraft/pull/6) under no rule permitting a pilot, and a session then read this ADR as forbidding the pilot and stopped, stalling two open items — [issue #14](https://github.com/Grimblaz-and-Friends/tradecraft/issues/14))
 
 ## Context
 
@@ -32,8 +32,27 @@ A one-axis rule ("if it can be violated silently, make it code") produces the se
 
 **The one exception that skips the lifecycle: boundary formats.** Formats and state at the GitHub boundary (markers, ledger rows, version stamps) are interchange formats whose whole point is durability across sessions and runtimes — stable by nature, and the site of every historical silent-violation incident. These are code from day one: the model never hand-writes them; it calls an emitter and a validator. (Interim waiver, recorded in ADR-006 §5: until the emitter library exists, ledger rows are hand-written and validated by the packaging lint — the smallest honest discharge of this rule, not an exception to it.)
 
+**The second road in: admission by trial.** Promotion is one way into this lifecycle, and until 2026-08-16 it was the only one. It cannot serve everything, because **a rule can start as nothing and a mechanism cannot.** A gate procedure, a skill, a script, a ledger field, a format: none has a judgment-tier form. ADR-005 defines a gate as *"designed-in, non-overridable by pacing directives"*, which is definitionally not model judgment, and the same holds for anything a session must be able to read, call, or emit — it does not exist until it is written. For that class "start as nothing" means *never start*, and the promotion trigger can never fire, because the incidents it demands are produced only by the mechanism running. Zero pilots, zero incidents, not earned, no pilot permitted, zero pilots. The loop closes, and its verdict is indistinguishable from evidence weighing against the mechanism. This is the third instance of one class here: [PR #6](https://github.com/Grimblaz-and-Friends/tradecraft/pull/6) found a *schema* that could only answer no, [PR #12](https://github.com/Grimblaz-and-Friends/tradecraft/pull/12) found the *rule* above it doing the same, and this is the *lifecycle* above both — ADR-006 §5's sentence for the first two governs it unchanged: an evidence loop whose instrument cannot express the finding it tests for is not evidence.
+
+So the owner may **admit a mechanism as a trial, before any evidence exists.** Six properties, each carrying the failure it blocks, because a property whose point is invisible is one a later reader tidies away:
+
+1. **Mechanisms only; rules keep the promotion road.** The road opens for what has no judgment-tier form and closes to everything else. Blocks the predecessor's paragraph tax — a root file past 30k characters because every incident defaulted to prose — accreting through a door built for something else.
+2. **Marked as a trial wherever it is used.** Blocks speculation laundering itself as evidence: a trial a reader cannot distinguish from an earned rule is worse than no trial, because it spends the credibility the earned ones paid for.
+3. **Cut by default at its review trigger.** A trial that has not produced evidence *for itself* **is removed** — *doing nothing removes it*, and retaining it takes an argument. Blocks accretion, which turns wherever the default is "keep." ADR-005 already holds this shape for gates: one that cannot state what the human uniquely decides *"is automation wearing interaction's clothes, and is cut."*
+4. **States its falsifier and review trigger before it runs**, in a unit the instrument actually counts. Blocks the defect ADR-006 §5 caught in its own grandfathering rule — a governing distinction written in a unit the instrument does not carry is one nothing can evaluate.
+5. **The owner admits it.** Blocks the pretence that this is evidence. It is intent and risk appetite: ADR-005's first answer, judgment no model capability substitutes for.
+6. **A trial produces ledger rows while it runs.** Blocks a slower ratchet — this is what makes the road pay for itself, by manufacturing exactly the record promotion demands.
+
+Properties 3 and 6 are the structural argument, and neither works alone: a trial is **self-liquidating**, promoted on the evidence it generated or cut for generating none. It cannot sit and become furniture.
+
+**A cut trial leaves no record beyond the ones that already exist** — the pull request and this ADR's own status line, immutable and append-only respectively. A dedicated graveyard would be a maintained corpus, the exit ADR-006 §2 forbids. **The cost is real and is not being hidden:** a cut trial is then discoverable only by reading history, so its lesson resurfaces weakly, and someone may try the same thing twice. That was ruled acceptable against the cost of a corpus (owner, 2026-08-16). Nothing caps how many trials run at once, on the same day's ruling: a cap is a number, this section holds that numbers in rule prose cannot rot, and one invented with zero live trials would be exactly the speculative figure the rest of this ADR forbids. Property 3 is the pressure; if trials accumulate and it is observably not cutting them, that record earns the cap.
+
+**This road's own falsifier is property 1's boundary failing in use.** Everything rests on a reader telling *a thing a model can just do* from *a thing that must exist before it can be done*. That line is untested prose. If it does not hold — if trials are admitted for things that had a judgment-tier form all along — the failure is the incident that earns a stronger material, and this section is demoted or replaced rather than defended (owner, 2026-08-16).
+
+**The evidence for this section is thin, and saying so is part of it:** two incidents, one day, in a repository days old. What weighs against that is the class being thrice-recorded above and the cost being live rather than hypothetical — two open items were stalled behind the closed loop when this was written. It is enough to open a road and not enough to claim the road is proven; this section is the first thing that should be re-read when the ledger has anything to say about it.
+
 ## Consequences
 
-- New rules are cheap to try (they start as nothing) and expensive to fossilize (promotion requires an incident record).
+- New rules are cheap to try (they start as nothing) and expensive to fossilize (promotion requires an incident record). Mechanisms, which cannot start as nothing, are cheap to try by trial and expensive to keep (retention requires evidence the trial produced).
 - Code volume stays proportional to *proven* stability, which is the brittleness control: when models or requirements change, the demolition surface is small.
 - Every promotion and demotion is a recordable event, which is what lets process weight be governed by evidence (ADR-006).
