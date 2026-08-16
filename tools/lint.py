@@ -57,9 +57,20 @@ LEDGER_ARTIFACTS = {
     "constitution", "repo-docs", "skill-prose", "script",
     "lint", "tests", "ci", "packaging",
 }
-LEDGER_PHASES = {
-    "authoring", "authoring-review", "adversarial-review",
-    "ci", "post-merge", "consumer",
+# Two axes, not one. `introduced` and `catchable` name the artifact *position*
+# where the defect was made and where it was earliest catchable; `caught` names
+# the review *stage* that actually found it. The single merged set these replace
+# mixed both kinds and could express no position earlier than the prose, so all
+# three fields held one value across the entire corpus and the axis ADR-006 §5
+# governs by was unmeasurable by construction. Where no listed value fits, a row
+# records `unrecorded` — never the nearest wrong one — and a new position is
+# added by ADR amendment, editing this one definition site.
+LEDGER_POSITIONS = {
+    "framing", "design", "plan", "implementation", "unrecorded",
+}
+LEDGER_STAGES = {
+    "authoring-review", "adversarial-review", "ci",
+    "post-merge", "consumer", "unrecorded",
 }
 LEDGER_DISPOSITIONS = {"fixed", "reworded", "recorded", "owner-pending"}
 LEDGER_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
@@ -265,9 +276,9 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
     vocab_checks = (
         ("severity", LEDGER_SEVERITIES),
         ("artifact", LEDGER_ARTIFACTS),
-        ("introduced", LEDGER_PHASES),
-        ("catchable", LEDGER_PHASES),
-        ("caught", LEDGER_PHASES),
+        ("introduced", LEDGER_POSITIONS),
+        ("catchable", LEDGER_POSITIONS),
+        ("caught", LEDGER_STAGES),
         ("disposition", LEDGER_DISPOSITIONS),
     )
     for field, vocab in vocab_checks:

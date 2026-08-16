@@ -192,7 +192,7 @@ def test_ledger_row_missing_field_is_a_finding(tmp_path):
 def _ledger_row(**overrides: str) -> dict:
     row = {
         "id": "X1", "date": "2026-08-15", "artifact": "lint", "severity": "low",
-        "introduced": "authoring", "catchable": "authoring-review",
+        "introduced": "design", "catchable": "design",
         "caught": "adversarial-review", "source": "review-2026-08-15",
         "disposition": "fixed", "found_by": "defense",
         "ref": "https://github.com/example/repo/pull/1",
@@ -250,6 +250,62 @@ def test_ledger_row_bad_vocab_values_are_findings(tmp_path):
     assert any("catchable" in f and "brunch" in f for f in findings)
     assert any("caught" in f and "dinner" in f for f in findings)
     assert any("disposition" in f and "vibes" in f for f in findings)
+
+
+def test_ledger_position_fields_reject_stage_values(tmp_path):
+    """The two axes are separate vocabularies. Goes red the moment they are
+    merged back into one set — which is the state that made all 142 rows hold
+    a single value per field and left ADR-006 §5's own test unable to fail."""
+    _write_ledger(
+        tmp_path,
+        _ledger_row(introduced="adversarial-review", catchable="post-merge"),
+    )
+    findings = lint.run(tmp_path)
+    assert any("introduced" in f and "adversarial-review" in f for f in findings)
+    assert any("catchable" in f and "post-merge" in f for f in findings)
+
+
+def test_ledger_caught_rejects_position_values(tmp_path):
+    """The converse direction: a stage field will not take a position."""
+    _write_ledger(tmp_path, _ledger_row(caught="design"))
+    findings = lint.run(tmp_path)
+    assert any("caught" in f and "design" in f for f in findings)
+
+
+def test_ledger_retired_authoring_value_is_rejected_in_both_axes(tmp_path):
+    """`authoring` served as both 'judged, at the prose' and 'never judged'.
+    No value may do both (ADR-006 §5), so it is gone from both vocabularies."""
+    _write_ledger(tmp_path, _ledger_row(introduced="authoring", caught="authoring"))
+    findings = lint.run(tmp_path)
+    assert any("introduced" in f and "authoring" in f for f in findings)
+    assert any("caught" in f and "authoring" in f for f in findings)
+
+
+def test_ledger_unjudged_position_is_lawful(tmp_path):
+    """A row that never judged its position says so, rather than asserting the
+    last position by default."""
+    _write_ledger(tmp_path, _ledger_row(introduced="unrecorded", catchable="unrecorded"))
+    assert lint.run(tmp_path) == []
+
+
+def test_ledger_judged_implementation_position_is_lawful(tmp_path):
+    _write_ledger(tmp_path, _ledger_row(introduced="implementation", catchable="implementation"))
+    assert lint.run(tmp_path) == []
+
+
+def test_ledger_unjudged_and_implementation_are_separate_values():
+    """Criterion: no value doubles as a judgment and a default. Goes red if the
+    not-judged value is ever collapsed onto a real position."""
+    assert {"unrecorded", "implementation"} <= lint.LEDGER_POSITIONS
+    assert "unrecorded" != "implementation"
+
+
+def test_ledger_found_by_owner_is_lawful(tmp_path):
+    """The maintainer is a finder. Pins the value against a later narrowing of
+    found_by to a closed set of seat names, which would silently drop the row
+    class ADR-006 §5 added it for."""
+    _write_ledger(tmp_path, _ledger_row(found_by="owner"))
+    assert lint.run(tmp_path) == []
 
 
 def test_ledger_row_unhashable_vocab_value_is_a_finding_not_a_crash(tmp_path):
