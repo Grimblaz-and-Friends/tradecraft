@@ -14,11 +14,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The version-bump guard resolves a merge base; a shallow clone has
+          # none, and the guard exits 2 (undetermined) rather than passing.
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Packaging lint
         run: python tools/lint.py
+      - name: Version bump (ADR-003)
+        if: github.event_name == 'pull_request'
+        run: python tools/check_version_bump.py --base "origin/${{ github.base_ref }}"
       - name: Tests
         run: |
           pip install pytest

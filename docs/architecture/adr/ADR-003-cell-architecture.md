@@ -22,7 +22,13 @@ Skills may depend **downward** on one sanctioned core library — boundary forma
 
 Skills ship together in **one plugin** — discovered together, versioned together, firing independently. One plugin, because independent versioning multiplies release-hygiene machinery that already hurt at N=1, and no second audience with a different upgrade cadence exists yet. The no-sideways-dependency rule keeps a future split mechanical, so this decision is cheap to defer; revisit when a real second audience exists.
 
-Because the bundle is versioned as a unit, **a change to any shipped-zone file bumps the plugin version in the same commit** — a consumer's only signal that installed and current differ. This stays prose: the rule has been missed twice, but a check would have to reason about changed paths across a diff, which is workflow-shaped code of exactly the kind ADR-002 says rots first. It earns promotion on a third instance, once ledger rows carry enough to prove the recurrence.
+Because the bundle is versioned as a unit, **a pull request that changes any shipped-zone file bumps the plugin version before it merges** — a consumer's only signal that installed and current differ. **Promoted to code 2026-08-16** (`tools/check_version_bump.py`, wired into CI): the owner's decision, taken after the rule was missed again on the very PR that recorded the previous miss.
+
+The unit is the **pull request measured against its merge base**, not the individual commit. That is a deliberate correction to this rule's earlier wording, which said "in the same commit": this repository squash-merges, so the PR *is* the commit that lands, and a per-commit reading fails every intermediate commit of a multi-commit branch. The first attempt at this guard silently enforced per-branch while citing per-commit, and a panel found the mismatch — the rule was wrong, not the guard.
+
+**The recurrence count that once gated this promotion is withdrawn, not satisfied.** An earlier version of this paragraph said the rule "has been missed twice" and would earn promotion "on a third instance". That basis was refuted by review: at commit granularity the misses run to eight, at merge granularity to zero, and no reconstructible basis produces three. Promotion here rests on the owner's decision plus the guard's own design, and a count nobody can reproduce is not evidence for anything. The counter is therefore gone rather than incremented, so nothing is left to go stale again.
+
+**Two design constraints, both bought by the first attempt's withdrawal.** A guard that cannot determine the answer **exits non-zero** — the withdrawn one went silent whenever its base had moved, a state every merge produces, and printed the same line as a clean pass, so four failure modes were invisible. And the version must **strictly increase** as a semantic version; the withdrawn guard accepted a decrement.
 
 ### The five layers
 

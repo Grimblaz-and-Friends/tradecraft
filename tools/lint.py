@@ -70,16 +70,20 @@ LEDGER_ARTIFACTS = {
 # vocabulary is short, and the fix is an ADR amendment editing these two sets.
 #
 # NOTHING CHECKS THAT THESE SETS MATCH ADR-006 §5's PROSE, in either direction:
-# widening either set passes lint and the whole suite. The correspondence is a
+# widening either set passes the lint. It does NOT pass the suite — a test pins
+# these literals exactly, which catches a local edit but still cannot see the
+# ADR, so prose and code can drift together. The correspondence is a
 # stated, unenforced property (§5 names it alongside the axis ordering and the
 # two `ref` properties) rather than a guarded one — ADR-002 earns code by
 # recurrence, and a guard here would have to read and parse ADR text.
 LEDGER_POSITIONS = {
     "framing", "design", "plan", "implementation", "unrecorded",
 }
-# post-fix and external are stages ADR-006 §5's own found_by contract names; a
-# corpus written without them maps 32 real catches onto `adversarial-review`,
-# which is precisely the "nearest wrong one" the section forbids.
+# post-fix and external are here because they name a review STAGE a defect can
+# be caught at. Not every found_by value qualifies: defense, judge and owner are
+# equally named by §5's found_by contract and are finders within or outside a
+# stage, not stages themselves. Without these two, 29 real catches mapped onto
+# `adversarial-review` — precisely the "nearest wrong one" the section forbids.
 LEDGER_STAGES = {
     "authoring-review", "adversarial-review", "post-fix", "external",
     "ci", "post-merge", "consumer", "unrecorded",
