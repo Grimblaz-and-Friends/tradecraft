@@ -90,7 +90,9 @@ LEDGER_STAGES = {
 }
 LEDGER_DISPOSITIONS = {"fixed", "reworded", "recorded", "owner-pending"}
 LEDGER_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
-# found_by is an open set (seats may be swapped in), so the check is on form:
+# found_by is half-open: seat names may be swapped in freely, while the
+# non-seat values are closed and grow only by amending ADR-006 §5. The lint
+# holds neither half — the check is on form:
 # a lowercase token with no whitespace, so "Cold-Read" and "wiring falsifier"
 # cannot silently fork one seat's yield across two buckets.
 LEDGER_FOUND_BY = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
