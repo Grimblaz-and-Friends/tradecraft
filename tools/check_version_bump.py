@@ -7,6 +7,12 @@ fails every intermediate commit of a multi-commit branch. A first attempt at thi
 guard enforced per-branch while citing per-commit; the mismatch was a review
 finding, and ADR-003 was corrected rather than the guard.
 
+The file set is that merge-base diff **plus the working tree** — unstaged,
+staged, and untracked — and the version is read from the working tree too. So a
+local run answers "would this be lawful if I committed everything right now",
+which is deliberately *not* the same question CI answers: CI checks out clean,
+sees only commits, and will differ from a dirty local run in both directions.
+
 Three outcomes, not two — and the third is why this exists at all:
 
     0  pass          shipped zone untouched, or touched and the version rose
@@ -40,12 +46,24 @@ SHIPPED = ("skills/", "lib/", "commands/", "agents/", ".claude-plugin/")
 PASS, FAIL, UNDETERMINED = 0, 1, 2
 
 
-def _git(*args: str) -> tuple[int, str]:
+def _git(*args: str) -> tuple[int, str, str]:
+    """Returns (returncode, stdout, stderr).
+
+    `core.quotePath=false` is not optional: git's default octal-escapes any
+    non-ASCII path and wraps it in double quotes, so `"skills/cafÃ©.md"`
+    never matches `startswith("skills/")` and a shipped-zone file goes unseen —
+    a false pass, which is the one outcome this guard exists to refuse. It was
+    named in the predecessor guard's own withdrawal list, alongside the
+    untracked-files gap, and closing one without the other left it live.
+
+    stderr is returned because an UNDETERMINED that names the command but not
+    the failure leaves the operator with nothing to act on.
+    """
     proc = subprocess.run(
-        ["git", "-C", str(ROOT), *args],
+        ["git", "-C", str(ROOT), "-c", "core.quotePath=false", *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
-    return proc.returncode, (proc.stdout or "").strip()
+    return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
 
 
 def _resolve_base(explicit: str | None) -> tuple[str | None, str]:
@@ -53,11 +71,11 @@ def _resolve_base(explicit: str | None) -> tuple[str | None, str]:
     candidates = [explicit] if explicit else ["origin/main", "main"]
     tried = []
     for ref in candidates:
-        code, _ = _git("rev-parse", "--verify", f"{ref}^{{commit}}")
+        code, _, _ = _git("rev-parse", "--verify", f"{ref}^{{commit}}")
         if code != 0:
             tried.append(f"{ref} does not resolve")
             continue
-        code, sha = _git("merge-base", "HEAD", ref)
+        code, sha, _ = _git("merge-base", "HEAD", ref)
         if code != 0 or not sha:
             tried.append(f"no merge base between HEAD and {ref}")
             continue
@@ -82,7 +100,7 @@ def _version_at(ref: str | None) -> tuple[tuple[int, ...] | None, str]:
             return None, f"{MANIFEST} is absent from the working tree"
         text = path.read_text(encoding="utf-8")
     else:
-        code, text = _git("show", f"{ref}:{MANIFEST}")
+        code, text, _ = _git("show", f"{ref}:{MANIFEST}")
         if code != 0:
             return None, f"{MANIFEST} is absent at {ref[:7]}"
     try:
@@ -107,30 +125,40 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     # the ref tip keeps every test green, because `...` rescues it. Redundant on
     # purpose; the withdrawn predecessor had neither and went silent on exactly
     # this state, which every merge into the base produces.
-    code, out = _git("diff", "--name-only", f"{base}...HEAD")
+    code, out, err = _git("diff", "--name-only", "--no-renames", f"{base}...HEAD")
     if code != 0:
-        return UNDETERMINED, [f"version-bump (ADR-003): could not diff against {base[:7]}"]
+        return UNDETERMINED, [
+            f"version-bump (ADR-003): could not diff against {base[:7]}"
+            + (f" — {err}" if err else "")
+        ]
     changed = [f for f in out.splitlines() if f.strip()]
 
     # Committed history alone answers the CI question, where the tree is clean —
     # and gives a FALSE PASS locally, reporting "untouched" while shipped-zone
     # edits sit uncommitted in front of you. Untracked files are the sharper
     # half: a whole new skill is invisible to `git diff` until it is added, and
-    # that is the canonical new-skill case. Both are folded in, so a local run
-    # answers the same question CI will.
-    for args in (("diff", "--name-only", "HEAD"),
+    # that is the canonical new-skill case.
+    #
+    # Folding both in answers "would this be lawful if I committed everything
+    # now" — NOT the same question CI answers, and it diverges both ways: a
+    # committed edit whose bump is still uncommitted passes here and fails CI,
+    # and an untracked scratch file under skills/ fails here and is invisible
+    # to CI. The local answer is about the tree you are about to land; CI's is
+    # about the commits you did.
+    for args in (("diff", "--name-only", "--no-renames", "HEAD"),
                  ("ls-files", "--others", "--exclude-standard")):
-        code, out = _git(*args)
+        code, out, err = _git(*args)
         if code != 0:
             return UNDETERMINED, [
                 "version-bump (ADR-003): could not read the working tree "
-                f"({' '.join(args)} failed) — refusing to answer from committed history alone"
+                f"({' '.join(args)} failed{': ' + err if err else ''}) — "
+                "refusing to answer from committed history alone"
             ]
         changed.extend(f for f in out.splitlines() if f.strip())
-    touched = sorted(
+    touched = sorted({
         f for f in changed
         if any(f.startswith(p) for p in SHIPPED) and f != MANIFEST
-    )
+    })
     if not touched:
         return PASS, [f"version-bump (ADR-003): shipped zone untouched ({why})"]
 
@@ -152,7 +180,8 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
               else f"went BACKWARDS, {shown[0]} -> {shown[1]}")
     lines.append(
         f"version-bump (ADR-003): {len(touched)} shipped-zone file(s) changed but "
-        f"the plugin version {detail} — a consumer cannot tell installed from current"
+        f"the plugin version {detail} — a consumer cannot tell installed from "
+        f"current. Raise \"version\" in {MANIFEST} (see ADR-003 §25)"
     )
     lines.extend(f"    {f}" for f in touched)
     return FAIL, lines
