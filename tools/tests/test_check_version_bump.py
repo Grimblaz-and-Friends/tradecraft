@@ -305,3 +305,25 @@ def test_a_file_changed_twice_is_counted_once(repo):
     assert status == FAIL
     assert "1 shipped-zone file(s)" in lines[0]
     assert sum(1 for line in lines if line.strip() == "skills/a.md") == 1
+
+
+def test_uncommitted_move_out_of_the_zone_is_seen(repo):
+    """The working-tree half of the rename fix, which was unpinned: its sibling
+    commits the move, so it exercised only the base diff. This is the half the
+    pre-commit line in AGENTS.md actually runs, and dropping `--no-renames`
+    there left the whole suite green."""
+    _run(repo, "mv", "skills/a.md", "docs-a.md")     # staged, not committed
+    status, lines = cvb.check("main")
+    assert status == FAIL
+    assert any("skills/a.md" in line for line in lines)
+
+
+def test_git_stderr_reaches_the_operator(repo):
+    """The stderr plumbing itself, not its interpolation.
+
+    The parametrized failure test monkeypatches `_git` wholesale, so it pins the
+    call sites and never exercises `_git`'s own capture of `proc.stderr` —
+    dropping that capture left 79 tests green. This calls the real thing."""
+    code, out, err = cvb._git("rev-parse", "--verify", "definitely-not-a-ref")
+    assert code != 0 and out == ""
+    assert err, "git's own reason must survive _git, or UNDETERMINED says nothing actionable"

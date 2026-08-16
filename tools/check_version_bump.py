@@ -188,7 +188,12 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        # The outcome table is the point of --help; the default formatter
+        # collapses it into one run-on line.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--base", default=None, help="base ref (default: origin/main, then main)")
     args = parser.parse_args(argv)
     status, lines = check(args.base)
