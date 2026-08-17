@@ -1,6 +1,6 @@
 # ADR-005: The interaction charter — where the human's time goes
 
-**Status:** Accepted 2026-08-15
+**Status:** Accepted 2026-08-15 · Amended 2026-08-17 (commitment's question scoped by what the work's artifact states, on this charter's own cut test — evidence: the gate had never been asked what the human uniquely decides at it, and had zero pilots, on the day the question was put to it — [issue #11](https://github.com/Grimblaz-and-Friends/tradecraft/issues/11))
 
 ## Context
 
@@ -13,6 +13,8 @@ Human attention is the scarcest resource in the system, and the predecessor lear
 Every touchpoint answers: **what does the human uniquely provide at this moment?** Three possible answers, each dictating a structure:
 
 1. **Judgment only the human can supply** — intent, taste, priorities, risk appetite, and anything irreversible or outward-facing. These are **gates**: designed-in, non-overridable by pacing directives, and worth human time precisely because no model capability substitutes for them. The gate set (expected to evolve by evidence, not by accretion): *framing* ("is this the problem?"), *convergence* ("is this the approach?"), *commitment* ("is this the bet?" — scope/plan approval), and *release* (merge, publish, delete). A gate must be able to state what the human uniquely decides at it; a gate that cannot is automation wearing interaction's clothes, and is cut.
+
+   **Commitment is scoped by what the work's artifact states, not by its weight.** In the **minimal lane its question does not fire where the affirmed artifact states the work's scope** — the boundary statement ADR-006 §2 weights the artifact's shape toward — because affirming the artifact as a whole approves that scope in the same act, leaving nothing for a second gate to uniquely decide. That is this charter's ordinary machinery, not an exception to it: the answer is covered by a recorded decision, so the session **announces that conclusion, names the affirmed artifact as the decision covering it, and proceeds**, and the owner's standing override to invoke commitment anyway is preserved and exercised in conversation. **Where the artifact states no scope** — §2 permits *"a stated approach a paragraph long"* and weights the shape toward a boundary statement without mandating one — **the gate has something left to decide, and fires.** So does it wherever a lane produces a **design and a plan as separate artifacts**: those are two decisions, *this is the shape* and *this is the amount we are betting on it*, and commitment states what it uniquely decides and stands. The gate is **scoped, not deleted** — it stays in the set above, its check still runs, and only its question is answered early; struck from the set it would read as the set shrinking by convenience, against this paragraph's own rule that it evolves by evidence rather than by accretion. Ruled by the owner 2026-08-16 ([#11](https://github.com/Grimblaz-and-Friends/tradecraft/issues/11)); the framing gate is untouched and still has no procedure, and neither does commitment in the lanes where it is retained.
 2. **Information the system can obtain** — never ask. A question containing a fact the agent could have looked up is a defect.
 3. **Confirmation of the predictable** — do not ask. Act and report if reversible; if not, batch into an argued-case gate (per-item recommendation with reasoning; the human's approve/modify/drop is the interaction).
 
@@ -37,6 +39,6 @@ The release gate is designed-in, but on this repo it is not *enforced* by the pl
 
 ## Consequences
 
-- Human time concentrates at the four gate types and the batched exception queues of unattended runs; everything else is designed to cost nothing.
+- Human time concentrates at the gate types that fire for the lane in hand — on the default path fewer than four, since framing has no procedure and commitment's question is answered by the affirmed artifact — and at the batched exception queues of unattended runs; everything else is designed to cost nothing.
 - Question quality is reviewable: a transcript's questions can be audited against answers 2 and 3 above.
 - Pacing directives ("don't stop to ask") apply to preference questions and never to gates — the lever to skip a gate is the option the gate itself offers.
