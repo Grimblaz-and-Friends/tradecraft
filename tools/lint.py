@@ -18,6 +18,11 @@ Checks, each anchored to the ADR it enforces:
      skips imports inside code spans and loads nothing from an absent file.
   4. ledger (ADR-006): docs/ledger.jsonl, when present, parses and carries
      the required fields per row.
+  5. seat record (ADR-006): docs/seat-record.jsonl, when present, parses and
+     carries the required fields per row — per-seat raw/merged/sustained
+     counts, the precision axis the defect ledger is structurally silent
+     about. It ships with this check rather than owing one: §5's interim
+     waiver for hand-written rows *is* the lint.
 
 All shipped files are scanned regardless of extension; binary content (NUL
 byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
@@ -88,8 +93,19 @@ LEDGER_STAGES = {
     "authoring-review", "adversarial-review", "post-fix", "external",
     "ci", "post-merge", "consumer", "unrecorded",
 }
-LEDGER_DISPOSITIONS = {"fixed", "reworded", "recorded", "owner-pending"}
+# `filed` was added 2026-08-17: §4 makes filing the exception and requires both
+# other homes rejected, but a finding that lawfully cleared that bar had no value
+# to say so and was written `recorded` with an issue named as the reason. That is
+# a different claim — `recorded` says nobody will act, `filed` says someone will,
+# at the surface `ref` names.
+LEDGER_DISPOSITIONS = {"fixed", "reworded", "recorded", "owner-pending", "filed"}
 LEDGER_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+# Optional on a ledger row and on a seat-record row: the trial whose evidence the
+# row is (ADR-002's second road, ADR-006 §5). Optional rather than required with a
+# sentinel — absent means "not a trial's evidence", which is nearly every row, and
+# a sentinel on every row would serve none of them. Same form rule as `found_by`,
+# so `SELECT DISTINCT trial` enumerates the live trials in one bucket each.
+TOKEN = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 # found_by is half-open: seat names may be swapped in freely, while the
 # non-seat values are closed and grow only by amending ADR-006 §5. The lint
 # holds neither half — the check is on form:
@@ -318,6 +334,17 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
             f"'{row.get('found_by')}' must be a lowercase name of digits, "
             f"letters and hyphens — one seat, one bucket"
         )
+    # Optional, so absence is lawful; present-but-malformed is not, because a
+    # trial that cannot be selected by name attributes nothing (ADR-002's
+    # properties 4 and 6 are what this field exists to make dischargeable).
+    if "trial" in row and (
+        not isinstance(row["trial"], str) or not TOKEN.match(row["trial"])
+    ):
+        findings.append(
+            f"ledger (ADR-006): docs/ledger.jsonl:{lineno} trial "
+            f"'{row.get('trial')}' must be a lowercase name of digits, letters "
+            f"and hyphens — one trial, one bucket"
+        )
     if "ref" in row and (
         not isinstance(row["ref"], str) or not row["ref"].startswith("https://")
     ):
@@ -352,12 +379,146 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
         seen_keys.add(key)
 
 
+SEAT_RECORD_FIELDS = {
+    "source", "date", "seat", "model", "runtime",
+    "lane", "raw", "merged", "sustained", "status", "isolated",
+}
+# `clean` ran and found nothing; `failed` was still unusable after its one
+# re-dispatch. Both carry zeros, so without this field they are the same row —
+# which is the collapse the file exists to close (ADR-006 §5, ADR-002's own
+# note that the ledger cannot say a trial ran clean).
+SEAT_STATUSES = {"ran", "clean", "failed"}
+SEAT_LANES = {"panel", "routine"}
+SEAT_COUNTS = ("raw", "merged", "sustained")
+SEAT_TOKEN_FIELDS = ("seat", "model", "runtime")
+
+
+def check_seat_record(root: Path) -> list[str]:
+    """ADR-006 §5: per-seat precision counts, the ledger's companion.
+
+    The defect ledger holds only sustained findings, so it measures yield and is
+    silent about precision. These rows carry both, and they ship with this check
+    rather than owing one: the interim waiver §5 takes for hand-written rows *is*
+    the lint, so a format arriving without a validator is ADR-002's day-one-code
+    exception being taken rather than discharged.
+    """
+    findings: list[str] = []
+    record = root / "docs" / "seat-record.jsonl"
+    if not record.is_file():
+        return findings
+    seen: set[tuple] = set()
+    for lineno, line in enumerate(
+        record.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+    ):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except Exception as exc:  # noqa: BLE001 - report, never crash the lint
+            findings.append(
+                f"seat-record (ADR-006): docs/seat-record.jsonl:{lineno} is not "
+                f"valid JSON ({type(exc).__name__}: {exc})"
+            )
+            continue
+        try:
+            _check_seat_row(row, lineno, seen, findings)
+        except Exception as exc:  # noqa: BLE001 - report, never crash the lint
+            findings.append(
+                f"seat-record (ADR-006): docs/seat-record.jsonl:{lineno} could "
+                f"not be fully validated ({type(exc).__name__}: {exc})"
+            )
+    return findings
+
+
+def _check_seat_row(row: dict, lineno: int, seen: set, findings: list) -> None:
+    where = f"seat-record (ADR-006): docs/seat-record.jsonl:{lineno}"
+    missing = SEAT_RECORD_FIELDS - set(row)
+    if missing:
+        findings.append(f"{where} missing field(s) {', '.join(sorted(missing))}")
+    for field, vocab in (("status", SEAT_STATUSES), ("lane", SEAT_LANES)):
+        if field in row and (
+            not isinstance(row[field], str) or row[field] not in vocab
+        ):
+            findings.append(
+                f"{where} {field} '{row[field]}' not in {sorted(vocab)}"
+            )
+    for field in SEAT_TOKEN_FIELDS:
+        if field in row and (
+            not isinstance(row[field], str) or not TOKEN.match(row[field])
+        ):
+            findings.append(
+                f"{where} {field} '{row.get(field)}' must be a lowercase name of "
+                f"digits, letters and hyphens — one name, one bucket"
+            )
+    if "trial" in row and (
+        not isinstance(row["trial"], str) or not TOKEN.match(row["trial"])
+    ):
+        findings.append(
+            f"{where} trial '{row.get('trial')}' must be a lowercase name of "
+            f"digits, letters and hyphens"
+        )
+    for field in SEAT_COUNTS:
+        # bool is a subclass of int, so it is excluded explicitly: True would
+        # otherwise pass as a count of 1 and read as a real number downstream.
+        if field in row and (
+            isinstance(row[field], bool)
+            or not isinstance(row[field], int)
+            or row[field] < 0
+        ):
+            findings.append(
+                f"{where} {field} '{row.get(field)}' must be a non-negative "
+                f"integer"
+            )
+    if "isolated" in row and not isinstance(row["isolated"], bool):
+        findings.append(
+            f"{where} isolated '{row.get('isolated')}' must be a boolean — the "
+            f"field exists to make an omission visible, so it cannot be absent "
+            f"in spirit by carrying a string"
+        )
+    if "date" in row and (
+        not isinstance(row["date"], str)
+        or not LEDGER_DATE.match(row["date"])
+        or not _is_calendar_day(row["date"])
+    ):
+        findings.append(
+            f"{where} date '{row.get('date')}' is not an ISO YYYY-MM-DD date"
+        )
+    if "source" in row and not isinstance(row["source"], str):
+        findings.append(
+            f"{where} source must be a string (got {type(row['source']).__name__})"
+        )
+    # A seat cannot appear twice for one review event: two rows for one seat make
+    # every per-seat sum ambiguous, which is the one thing this file is read for.
+    if isinstance(row.get("source"), str) and isinstance(row.get("seat"), str):
+        key = (row["source"], row["seat"])
+        if key in seen:
+            findings.append(
+                f"{where} duplicate (source, seat) pair {key!r} — one seat, one "
+                f"row per review event"
+            )
+        seen.add(key)
+    # `clean` and `failed` both mean "found nothing", so a non-zero count
+    # contradicts the status the row carries.
+    if row.get("status") in {"clean", "failed"}:
+        nonzero = [
+            f for f in SEAT_COUNTS
+            if isinstance(row.get(f), int) and not isinstance(row.get(f), bool)
+            and row[f] != 0
+        ]
+        if nonzero:
+            findings.append(
+                f"{where} status '{row['status']}' carries non-zero "
+                f"{', '.join(nonzero)} — a seat that found nothing has no counts"
+            )
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
         + check_sideways_deps(root)
         + check_doctrine(root)
         + check_ledger(root)
+        + check_seat_record(root)
     )
 
 
