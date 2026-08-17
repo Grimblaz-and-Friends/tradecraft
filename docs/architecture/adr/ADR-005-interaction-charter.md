@@ -1,6 +1,6 @@
 # ADR-005: The interaction charter — where the human's time goes
 
-**Status:** Accepted 2026-08-15
+**Status:** Accepted 2026-08-15 · Amended 2026-08-17 (the commitment gate scoped by lane on this charter's own cut test — evidence: in the minimal lane the pre-implementation artifact carries acceptance criteria and the boundary statement, so affirming it answers convergence and commitment in one act, and a gate with nothing left to decide is the approval fatigue this ADR was written against — [issue #11](https://github.com/Grimblaz-and-Friends/tradecraft/issues/11))
 
 ## Context
 
@@ -13,6 +13,8 @@ Human attention is the scarcest resource in the system, and the predecessor lear
 Every touchpoint answers: **what does the human uniquely provide at this moment?** Three possible answers, each dictating a structure:
 
 1. **Judgment only the human can supply** — intent, taste, priorities, risk appetite, and anything irreversible or outward-facing. These are **gates**: designed-in, non-overridable by pacing directives, and worth human time precisely because no model capability substitutes for them. The gate set (expected to evolve by evidence, not by accretion): *framing* ("is this the problem?"), *convergence* ("is this the approach?"), *commitment* ("is this the bet?" — scope/plan approval), and *release* (merge, publish, delete). A gate must be able to state what the human uniquely decides at it; a gate that cannot is automation wearing interaction's clothes, and is cut.
+
+   **Commitment is scoped by the lane, on that test.** In the **minimal lane it does not fire**: the pre-implementation artifact carries acceptance criteria *and* the boundary statement (ADR-006 §2), so affirming it answers *is this the approach?* and *is this the bet?* in a single act — the boundary statement **is** the scope approval. A second gate with nothing left to decide is exactly the approval fatigue "Consent travels with the decision" exists to prevent. Where a lane produces a **design and a plan as separate artifacts**, they are two decisions — *this is the shape*, and *this is the amount we are betting on that shape* — and commitment states what it uniquely decides and stands. So the gate is **scoped, not deleted**: struck from the set it would read as the set shrinking by convenience, against this paragraph's own rule that it evolves by evidence rather than by accretion, and the heavier lanes would silently lose a gate they still need. Ruled by the owner 2026-08-17 ([#11](https://github.com/Grimblaz-and-Friends/tradecraft/issues/11)); the framing gate is untouched and still has no procedure.
 2. **Information the system can obtain** — never ask. A question containing a fact the agent could have looked up is a defect.
 3. **Confirmation of the predictable** — do not ask. Act and report if reversible; if not, batch into an argued-case gate (per-item recommendation with reasoning; the human's approve/modify/drop is the interaction).
 
