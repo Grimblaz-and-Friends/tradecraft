@@ -12,3 +12,8 @@
 {"source": "pr34-panel-2026-08-17", "date": "2026-08-17", "seat": "claims-vs-evidence", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 14, "merged": 14, "sustained": 13, "status": "ran", "isolated": false}
 {"source": "pr34-panel-2026-08-17", "date": "2026-08-17", "seat": "revision-diff", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 9, "merged": 9, "sustained": 7, "status": "ran", "isolated": false}
 {"source": "pr34-panel-2026-08-17", "date": "2026-08-17", "seat": "operational", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 11, "merged": 11, "sustained": 11, "status": "ran", "isolated": false}
+{"source": "pr43-panel-2026-08-17", "date": "2026-08-17", "seat": "cold-read", "model": "fable", "runtime": "claude-code", "lane": "panel", "raw": 3, "merged": 3, "sustained": 3, "status": "ran", "isolated": false}
+{"source": "pr43-panel-2026-08-17", "date": "2026-08-17", "seat": "claims-vs-evidence", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 6, "merged": 6, "sustained": 5, "status": "ran", "isolated": false}
+{"source": "pr43-panel-2026-08-17", "date": "2026-08-17", "seat": "revision-diff", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 10, "merged": 10, "sustained": 7, "status": "ran", "isolated": false}
+{"source": "pr43-panel-2026-08-17", "date": "2026-08-17", "seat": "operational", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 13, "merged": 13, "sustained": 6, "status": "ran", "isolated": false}
+{"source": "pr43-panel-2026-08-17", "date": "2026-08-17", "seat": "wiring-falsifier", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 8, "merged": 8, "sustained": 6, "status": "ran", "isolated": false}
