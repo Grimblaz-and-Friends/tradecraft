@@ -22,12 +22,20 @@ Why a panel and not one strong pass: seats find largely different defects, so on
 
 ## The default roster — four seats
 
-Seats differ or they are waste; these four names are also canonical `found_by` values, alongside the stages and non-seat finders `defense`, `judge`, `post-fix`, `external`, `ci`, `owner` (the maintainer, catching outside any review — a real finder, and the one most easily lost from the record), `consumer`, `authoring-review` (an author catching its own work before any review stage ran — the roster seats cannot take this case, since independence bars them from the artifact's author), and `unrecorded` for rows predating attribution. **Seat names are open and swapped in freely; these non-seat values are not, and grow only where the ledger's own contract defines them** — a distinction worth stating because the field is validated by form alone, so a wrong guess is accepted silently and forks one finder's yield across two buckets:
+Seats differ or they are waste. The panel is four seats: three stand, and the fourth is chosen by the artifact's shape — so the roster names five seats for four slots. All five names are canonical `found_by` values, alongside the stages and non-seat finders `defense`, `judge`, `post-fix`, `external`, `ci`, `owner` (the maintainer, catching outside any review — a real finder, and the one most easily lost from the record), `consumer`, `authoring-review` (an author catching its own work before any review stage ran — the roster seats cannot take this case, since independence bars them from the artifact's author), and `unrecorded` for rows predating attribution. **Seat names are open and swapped in freely; these non-seat values are not, and grow only where the ledger's own contract defines them** — a distinction worth stating because the field is validated by form alone, so a wrong guess is accepted silently and forks one finder's yield across two buckets:
 
 - **`cold-read`** — fresh vantage, no lens brief: forms its own view of the artifact before any prior findings exist for it. A brief aims attention, and aimed attention has a shadow; this seat is what falls in it. Cold sole-finds were load-bearing three separate times in the predecessor's record; its dispositions record one verbatim as "Missed by all three review lenses and caught only by the convergence cold-read" ([#922](https://github.com/Grimblaz/agent-orchestra/issues/922)).
-- **`claims-vs-evidence`** — for prose: verify every load-bearing claim, number, and quotation against its cited source. Newly written generalized prose is where defects concentrate ([#844](https://github.com/Grimblaz/agent-orchestra/issues/844): 15 of 15 sustained findings, none in carried-verbatim text).
 - **`wiring-falsifier`** — for scripts and contracts: does the code enforce what the prose claims, does anything call it, can each guard actually fail? Probe by execution, not reading.
 - **`operational`** — walk the artifact as its consumer: a fresh executor following the text, reporting where it under-determines or misleads action. This is the differently-positioned vantage that caught what panels read past ([#878](https://github.com/Grimblaz/agent-orchestra/issues/878)'s escape fell to exactly this position).
+
+**The fourth seat is selected by the artifact's shape**, because the two candidates pay on different material and neither pays on the other's:
+
+- **`claims-vs-evidence`** — when the artifact is **substantially new prose**: verify every load-bearing claim, number, and quotation against its cited source. Newly written generalized prose is where defects concentrate ([#844](https://github.com/Grimblaz/agent-orchestra/issues/844): 15 of 15 sustained findings, none in carried-verbatim text) — which is the same finding read the other way, that carried text does not repay this lens.
+- **`revision-diff`** — when the artifact **amends existing governing prose**: read it against the revision it replaces and report every load-bearing sentence whose *meaning* changed without the change being recorded. Three cases, and the third is the one that escapes: a sentence rewritten silently; a sentence whose scope quietly broadened; and **a sentence whose characters did not change at all while a term it turns on was redefined elsewhere in the same commit**. A seat that only reads edited text misses the third — so the unit of comparison is the governing claim, not the diff hunk, and an unchanged line whose meaning moved is this seat's finding to make.
+
+  Its exhibit is this repo's own constitution, which records the escape against itself: a governing test was rewritten twice and redefined once, and *"four seats read the new text forward and none diffed it against the old"*; the second rewrite fell to the defense, the first to the post-fix pass, **and the redefinition to neither** — caught only because it had been written down as an acceptance criterion beforehand.
+
+Both fourth-seat names enter `found_by` as used, so the ledger can say which one ran and what it returned. An artifact that is genuinely both — new prose landing inside an amended document — takes `revision-diff`, on the evidence that the panel's recorded escapes are all in the amended half; `claims-vs-evidence` is then the first width escalation if risk is declared.
 
 **Substitution, not silence**: a write path or trust boundary earns a `security` seat; an artifact built on an unreviewed design earns a `position` seat (review the earlier artifact first — ADR-006's position axis, the stronger escalation). Swaps and additions are recorded in the review report, and a swapped-in seat's name enters `found_by` as used.
 
@@ -62,6 +70,29 @@ Reasoning effort: terminal stages (defense, judge) run at least the seats' effor
 The parent (the dispatching session) merges the seats' ledgers before defense sees them: a duplicate is the **same failure mode at the same location**; the merged finding keeps **every finder** (primary first — the primary is the projection a defect-ledger row carries, per the constitution's `found_by` contract), and dual credit is preserved in the review report. The defense receives the merged ledger plus access to the artifact; the judge receives the merged ledger, the defense report, and access to the artifact — both must be able to re-execute any probe a verdict rests on.
 
 **Error states**: a seat that fails or returns unusable output is re-dispatched once; a panel still short a seat after retry proceeds, and the report records the degraded width. Zero findings from all seats is a valid outcome — the defense has nothing to examine, the report says so, and no defect rows are written.
+
+## The seat record — what makes a seat retirable
+
+The defect ledger records **only sustained findings**; disproved ones write no row. So `found_by` measures a seat's *yield* and can never measure its *precision*: a seat that files thirty findings and lands three is indistinguishable in the ledger from one that files three and lands three. Every rule above that promises seats "retire by ledger evidence" is, on the precision axis, promising an answer from an instrument that cannot produce one — and the seat most often complained about is the one this blind spot hides.
+
+So the review report carries a **seat record**, in one fixed shape, for every panel and routine review:
+
+````
+```seat-record
+{"source": "pr16-panel-2026-08-16",
+ "runtime": "claude-code",
+ "seats":  [{"seat": "cold-read", "model": "fable", "raw": 14, "merged": 6, "sustained": 6}],
+ "stages": [{"stage": "defense", "originated": 3, "disproved": 4, "conceded": 3}]}
+```
+````
+
+`raw` is what the seat filed, `merged` what survived deduplication, `sustained` what the terminal stage kept. `source` is the same review-event key the ledger's rows carry, which is what joins the two. Three properties are worth stating because each has been lost before:
+
+- **Both polarities are recorded.** A seat that filed nothing writes a row of zeros rather than being omitted — an absent seat and a silent one are otherwise the same string, which is the failure the external pass already learned.
+- **`raw` minus `sustained` is the number this record exists for.** It is not a scoreboard: a high-volume seat feeding a strict terminal stage is the design working, and the coverage-first rule above is what produces it. What the record buys is that a seat's cost becomes *arguable from evidence* instead of from whoever read the last review.
+- **It is hand-written, and that is a debt, not a design.** ADR-002 makes formats at the GitHub boundary code from day one precisely because they are where silent violations happen; this one takes the same interim waiver ADR-006 §5 took for ledger rows — the smallest honest discharge — and owes an emitter and a validator. Until then a malformed block fails silently, which is exactly what the rule predicts.
+
+**Do not read one review's record as evidence.** Seat strength moved nearly every round in the predecessor's attributed corpus, so a single review's spread is noise; the record is built to be read across reviews, and a retirement argued from one is the mistake it was built to prevent.
 
 ## Defense — one pass, always
 
@@ -105,4 +136,6 @@ Its yield is real and positional: on this repo's own record an external pass sol
 
 ## Closing a recurring class
 
-When the same defect class returns — across findings, reviews, or repos — the fix is never another seat: it is a **promoted lens** (ADR-002's lifecycle), worded so it would have caught the class's own motivating exemplar, and carried in this skill's evidence standards or seat lenses. The predecessor's sibling-write-path class bit eight times across five issues, survived fifteen seat-readings and two post-fix cycles, and stopped recurring only when a checklist lens was worded to trace full write paths including downstream helpers ([#886](https://github.com/Grimblaz/agent-orchestra/issues/886) filed it; [PR #890](https://github.com/Grimblaz/agent-orchestra/pull/890) promoted it). Seats catch instances; lenses retire classes.
+When the same defect class returns — across findings, reviews, or repos — the fix is never another seat: it is a **promoted lens** (ADR-002's lifecycle), worded so it would have caught the class's own motivating exemplar, and carried in this skill's evidence standards or seat lenses.
+
+**One class of exception, and it is about position rather than appetite.** A lens closes a class the panel *could* have seen and did not. Where every seat is standing somewhere the defect is invisible from, no wording reaches it — a lens instructing seats to compare against the prior revision does nothing when all four are reading HEAD and none has been given the prior revision to read. That is a **vantage** gap, and vantage is the strongest differentiation axis above; the remedy is the missing vantage, which is a seat. The test before taking this exit: name the sentence a lens would have to carry, then check whether a seat holding the panel's existing vantages could act on it. If it could, the lens is the fix and this paragraph does not apply. `revision-diff` is the one seat added under it, and the promoted-lens rule is otherwise untouched — the sibling-write-path class below is still the shape this section is mostly about. The predecessor's sibling-write-path class bit eight times across five issues, survived fifteen seat-readings and two post-fix cycles, and stopped recurring only when a checklist lens was worded to trace full write paths including downstream helpers ([#886](https://github.com/Grimblaz/agent-orchestra/issues/886) filed it; [PR #890](https://github.com/Grimblaz/agent-orchestra/pull/890) promoted it). Seats catch instances; lenses retire classes.

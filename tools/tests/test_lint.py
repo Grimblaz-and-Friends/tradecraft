@@ -453,6 +453,167 @@ def test_ledger_duplicate_source_id_pair_is_a_finding(tmp_path):
     assert len(findings) == 1 and "duplicate" in findings[0]
 
 
+# --- citations -------------------------------------------------------------
+#
+# Each fire-case reproduces a recorded instance rather than an invented one:
+# the list-break case is PR #6's M3 ("every '§5' citation pointed outside §5"),
+# and the row-count case is PR #12's M3 ("'253 rows' is wrong; the ledger holds
+# 261") and PR #6's M25 ("'all 142 rows' where the corpus is 192").
+
+ADR_DIR = ("docs", "architecture", "adr")
+
+
+def _write_adr(root: Path, number: str, decision_body: str) -> Path:
+    adr = root.joinpath(*ADR_DIR)
+    adr.mkdir(parents=True, exist_ok=True)
+    path = adr / f"ADR-{number}-example.md"
+    path.write_text(
+        f"# ADR-{number}: example\n\n## Context\n\nWhy.\n\n## Decision\n\n"
+        f"{decision_body}\n\n## Consequences\n\nSo what.\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+SOUND_DECISION = "1. **First.** Body.\n2. **Second.** Body.\n3. **Third.** Body."
+
+
+def test_citation_clean_adr_and_resolvable_reference(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_adr(tmp_path, "006", SOUND_DECISION)
+    (tmp_path / "AGENTS.md").write_text(
+        "# root\nThe rule lives in ADR-006 §2.\n", encoding="utf-8"
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_citation_fires_on_section_that_resolves_to_nothing(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_adr(tmp_path, "006", SOUND_DECISION)
+    (tmp_path / "AGENTS.md").write_text(
+        "# root\nThe rule lives in ADR-006 §9.\n", encoding="utf-8"
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "resolves to nothing" in findings[0]
+
+
+def test_citation_fires_on_column_zero_paragraph_closing_the_list(tmp_path):
+    """PR #6 M3, reproduced. The source still reads 1..3 contiguously — the
+    break is only visible in the renderer, which is why an earlier draft of
+    this checker counted the digits and passed the very defect it exists to
+    catch. The test pins the renderer's rule, not the source's appearance."""
+    make_clean_tree(tmp_path)
+    _write_adr(
+        tmp_path,
+        "006",
+        "1. **First.** Body.\n2. **Second.** Body.\n\n"
+        "A paragraph at column 0, which closes the list.\n\n"
+        "3. **Third.** Body.",
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "closes the ordered list" in findings[0]
+
+
+def test_citation_indented_continuation_does_not_break_the_list(tmp_path):
+    """The counterweight to the case above: ADR-006 carries most of its bulk as
+    indented continuation paragraphs, and they are lawful. A checker that
+    flagged them would be unusable on the artifact it was written for."""
+    make_clean_tree(tmp_path)
+    _write_adr(
+        tmp_path,
+        "006",
+        "1. **First.** Body.\n\n   A continuation paragraph, indented.\n\n"
+        "2. **Second.** Body.\n3. **Third.** Body.",
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_citation_fires_on_source_renumbering(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_adr(tmp_path, "006", "1. **First.** Body.\n2. **Second.** Body.\n4. **Fourth.** Body.")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "not contiguous" in findings[0]
+
+
+def test_citation_bare_section_resolves_against_its_own_adr(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_adr(tmp_path, "006", SOUND_DECISION + "\n\n   Cross-reference to §7 above.")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "'§7'" in findings[0]
+
+
+def test_citation_bare_section_outside_an_adr_is_not_guessed_at(tmp_path):
+    """A `§4` in a skill addresses nothing this checker can resolve. Guessing a
+    target would invent findings; the boundary is stated in check_citations."""
+    make_clean_tree(tmp_path)
+    _write_adr(tmp_path, "006", SOUND_DECISION)
+    (tmp_path / "skills" / "example-skill" / "SKILL.md").write_text(
+        "# example-skill\nAs §4 requires.\n", encoding="utf-8"
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_citation_unknown_adr_is_not_a_finding(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_adr(tmp_path, "006", SOUND_DECISION)
+    (tmp_path / "AGENTS.md").write_text(
+        "# root\nThe predecessor's ADR-042 §3 said otherwise.\n", encoding="utf-8"
+    )
+    assert lint.run(tmp_path) == []
+
+
+def _write_ledger_rows(root: Path, count: int) -> None:
+    docs = root / "docs"
+    docs.mkdir(exist_ok=True)
+    rows = [json.dumps(_ledger_row(id=f"M{n}")) for n in range(count)]
+    (docs / "ledger.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_citation_fires_on_stale_ledger_row_count(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_ledger_rows(tmp_path, 5)
+    (tmp_path / "AGENTS.md").write_text(
+        "# root\n`docs/ledger.jsonl` holds 253 rows today.\n", encoding="utf-8"
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "which holds 5" in findings[0]
+
+
+def test_citation_accepts_a_correct_ledger_row_count(tmp_path):
+    """The point of the check: a literal count becomes safe to write. ADR-006 §5
+    declines to carry one precisely because it went stale within the hour."""
+    make_clean_tree(tmp_path)
+    _write_ledger_rows(tmp_path, 5)
+    (tmp_path / "AGENTS.md").write_text(
+        "# root\n`docs/ledger.jsonl` holds 5 rows today.\n", encoding="utf-8"
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_citation_leaves_a_count_that_names_no_file_alone(tmp_path):
+    """Historical and scoped counts are claims about a past tree, not the
+    current one, and this checker only knows the current one. The window is
+    what keeps them out — widening it would manufacture findings against
+    evidence.md's 'all 192 rows then on `main`'."""
+    make_clean_tree(tmp_path)
+    _write_ledger_rows(tmp_path, 5)
+    (tmp_path / "AGENTS.md").write_text(
+        "# root\nAll 192 rows then on `main` carried one value.\n", encoding="utf-8"
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_citation_count_window_is_measured_from_the_claim(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_ledger_rows(tmp_path, 5)
+    far = "x" * (lint.LEDGER_COUNT_WINDOW + 20)
+    (tmp_path / "AGENTS.md").write_text(
+        f"# root\n`docs/ledger.jsonl` {far} held 253 rows.\n", encoding="utf-8"
+    )
+    assert lint.run(tmp_path) == []
+
+
 # --- the live repo obeys its own lint --------------------------------------
 
 def test_live_repo_is_clean():

@@ -18,6 +18,11 @@ Checks, each anchored to the ADR it enforces:
      skips imports inside code spans and loads nothing from an absent file.
   4. ledger (ADR-006): docs/ledger.jsonl, when present, parses and carries
      the required fields per row.
+  5. citations (ADR-006): a `§N` citation resolves to a real decision item,
+     and a claimed docs/ledger.jsonl row count matches the file. Promoted
+     from the review seats on recorded recurrence, not on plausibility; its
+     coverage is deliberately narrower than the class it is drawn from and
+     the boundary is stated on check_citations itself.
 
 All shipped files are scanned regardless of extension; binary content (NUL
 byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
@@ -350,7 +355,219 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
                 f"(source, id) pair {key!r} — ids must be unique within a source"
             )
         seen_keys.add(key)
+
+
+def _adr_decision_items(text: str) -> tuple[list[int], str | None]:
+    """Top-level decision items of an ADR, and the first defect breaking them.
+
+    `§N` addresses the Nth entry of the ordered list under `## Decision`. Items
+    are counted at column 0 only: an indented `1.` is a sub-list, and the
+    continuation paragraphs that carry most of ADR-006 are indented under their
+    item.
+
+    Two ways the addressing breaks, and **the second is the one that has
+    actually happened** (PR #6's `M3`):
+
+      * the source numbers skip or repeat — visible to anyone reading the file;
+      * a non-list line sits at **column 0 between two items**, which terminates
+        the list in the renderer and restarts numbering at the next item, while
+        the source still reads an unbroken `1.`..`6.`. Nothing about the prose
+        looks wrong. This is why the checker models the renderer's rule rather
+        than counting the digits it can see: a guard that reads only what the
+        source says would pass the exact defect it exists to catch, which is the
+        shape this repo has already shipped once.
+
+    Returns the item numbers and a defect description, or None when sound.
+    """
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "## decision":
+            start = i + 1
+            break
+    if start is None:
+        return [], None
+    body: list[tuple[int, str]] = []
+    for offset, line in enumerate(lines[start:]):
+        if line.startswith("## "):
+            break  # next top-level section ends the Decision list
+        body.append((start + offset + 1, line))
+
+    items: list[int] = []
+    first_item_index = None
+    for index, (_, line) in enumerate(body):
+        if re.match(r"\d+\. ", line):  # column 0 only — no leading space
+            items.append(int(re.match(r"(\d+)\. ", line).group(1)))
+            if first_item_index is None:
+                first_item_index = index
+    if not items:
+        return [], None
+    last_item_index = max(
+        i for i, (_, line) in enumerate(body) if re.match(r"\d+\. ", line)
+    )
+
+    # A column-0 line that is neither blank nor an item, sitting between the
+    # first and last item, is what closes the list in the renderer.
+    for lineno, line in body[first_item_index:last_item_index]:
+        if not line.strip():
+            continue
+        if line[:1].isspace() or re.match(r"\d+\. ", line):
+            continue
+        return items, (
+            f"line {lineno} sits at column 0 between decision items "
+            f"({line.strip()[:48]!r}...), which closes the ordered list in the "
+            f"renderer and restarts numbering below it"
+        )
+    if items != list(range(1, len(items) + 1)):
+        return items, f"source numbering is not contiguous 1..N (reads {items})"
+    return items, None
+
+
+# A citation is `§N`, optionally carrying its own ADR ("ADR-006 §5"). A bare
+# `§N` resolves against the ADR it appears in; in a non-ADR file it addresses
+# nothing this checker can resolve and is skipped rather than guessed at.
+SECTION_CITATION = re.compile(r"(?:ADR-(\d{3})\s*)?§\s*(\d+)")
+ADR_FILENAME = re.compile(r"\AADR-(\d{3})-")
+# Scanned for citations: the constitution, the repo docs that cite it, the root
+# doctrine file, and the shipped zone. lint.py lives in tools/ (repo-only), so
+# reading across both zones is lawful for it — ADR-004 binds what the *shipped*
+# files may reference, not what this checker may read.
+CITATION_SCAN_DIRS = ("docs", "skills", "lib", "commands", "agents")
+CITATION_SCAN_FILES = ("AGENTS.md",)
+
+
+def check_citations(root: Path) -> list[str]:
+    """ADR-002 §24 / ADR-006: mechanically decidable citation defects.
+
+    Two classes, each promoted on recorded instances rather than on plausibility
+    (ADR-002 earns code by recurrence):
+
+      1. **A `§N` citation that resolves to nothing.** Exhibit: PR #6's `M3` —
+         two paragraphs written at column 0 closed ADR-006's Decision list, so
+         *"every '§5' citation pointed outside §5"*, and the panel read past it.
+         The contiguity check is what catches that class: a broken list
+         renumbers, so the defect shows up as items no longer running 1..N,
+         which no reader diffing prose would see.
+      2. **A stale `docs/ledger.jsonl` row count.** Exhibits: PR #12's `M3`
+         (*"'253 rows' is wrong; the ledger holds 261"*) and PR #6's `M25`
+         (*"'all 142 rows' where the corpus is 192"*).
+
+    **Coverage is narrower than the class, deliberately, and the boundary is
+    stated so the guard is not mistaken for the whole rule.** Not covered:
+    directional prose about content position that names no resolvable target
+    (PR #12's `M18`, *"both `ref` properties below"* — the referent is a phrase,
+    not an anchor); enumerated counts in free prose (PR #6's `PF13`, *"Three
+    properties"* introducing four); arithmetic inside a review's own tallies.
+    Those stay with the seats. A count claim is checked only where it names
+    `ledger.jsonl` within LEDGER_COUNT_WINDOW characters, which is what keeps
+    historical and scoped counts ("all 192 rows *then on `main`*") out of scope
+    — they are claims about a past tree, and this checker only knows the
+    current one.
+    """
+    findings: list[str] = []
+    adr_dir = root / "docs" / "architecture" / "adr"
+    items_by_adr: dict[str, tuple[list[int], bool]] = {}
+    if adr_dir.is_dir():
+        for path in sorted(adr_dir.glob("ADR-*.md")):
+            match = ADR_FILENAME.match(path.name)
+            if not match:
+                continue
+            text = _read_text(path)
+            if text is None:
+                continue
+            items, defect = _adr_decision_items(text)
+            items_by_adr[match.group(1)] = (items, defect)
+            if defect is not None:
+                findings.append(
+                    f"citation (ADR-006): {path.relative_to(root).as_posix()} "
+                    f"Decision list is broken — {defect}; every §N citation "
+                    f"into it re-points silently"
+                )
+
+    ledger_rows = _ledger_row_count(root)
+
+    for path in _iter_citation_files(root):
+        text = _read_text(path)
+        if text is None:
+            continue
+        rel_file = path.relative_to(root).as_posix()
+        own = ADR_FILENAME.match(path.name)
+        own_adr = own.group(1) if own else None
+        for lineno, line in enumerate(text.splitlines(), 1):
+            findings.extend(
+                _citation_hits(line, lineno, rel_file, own_adr, items_by_adr)
+            )
+            if ledger_rows is not None:
+                findings.extend(
+                    _ledger_count_hits(line, lineno, rel_file, ledger_rows)
+                )
     return findings
+
+
+def _iter_citation_files(root: Path):
+    for name in CITATION_SCAN_FILES:
+        path = root / name
+        if path.is_file():
+            yield path
+    for dirname in CITATION_SCAN_DIRS:
+        base = root / dirname
+        if base.is_dir():
+            for path in _iter_files(base):
+                if path.suffix.lower() == ".md":
+                    yield path
+
+
+def _ledger_row_count(root: Path) -> int | None:
+    ledger = root / "docs" / "ledger.jsonl"
+    if not ledger.is_file():
+        return None
+    text = _read_text(ledger)
+    if text is None:
+        return None
+    return sum(1 for line in text.splitlines() if line.strip())
+
+
+def _citation_hits(line, lineno, rel_file, own_adr, items_by_adr):
+    for match in SECTION_CITATION.finditer(line):
+        target_adr = match.group(1) or own_adr
+        if target_adr is None:
+            continue  # bare §N outside an ADR — no resolvable target
+        entry = items_by_adr.get(target_adr)
+        if entry is None:
+            continue  # cites an ADR this repo does not carry — not this check
+        items, _ = entry
+        section = int(match.group(2))
+        if section not in items:
+            yield (
+                f"citation (ADR-006): {rel_file}:{lineno} '{match.group(0)}' "
+                f"resolves to nothing — ADR-{target_adr}'s Decision list holds "
+                f"items {items}"
+            )
+
+
+# A count claim is checked only when it names the file it is counting, within
+# this window. Widening it pulls in historical counts, which are claims about a
+# past tree and are not this checker's to judge; narrowing it below the longest
+# lawful phrasing silently drops live claims. Measured against the tree at the
+# time of writing: no live claim sits between 80 and 200 characters of its
+# subject, so the value is not on a cliff in either direction.
+LEDGER_COUNT_WINDOW = 80
+LEDGER_COUNT_CLAIM = re.compile(r"(\d[\d,]*)\s+rows\b")
+
+
+def _ledger_count_hits(line, lineno, rel_file, ledger_rows):
+    for match in LEDGER_COUNT_CLAIM.finditer(line):
+        lo = max(0, match.start() - LEDGER_COUNT_WINDOW)
+        hi = min(len(line), match.end() + LEDGER_COUNT_WINDOW)
+        if "ledger.jsonl" not in line[lo:hi]:
+            continue
+        claimed = int(match.group(1).replace(",", ""))
+        if claimed != ledger_rows:
+            yield (
+                f"citation (ADR-006): {rel_file}:{lineno} claims "
+                f"'{match.group(0)}' of docs/ledger.jsonl, which holds "
+                f"{ledger_rows}"
+            )
 
 
 def run(root: Path) -> list[str]:
@@ -359,6 +576,7 @@ def run(root: Path) -> list[str]:
         + check_sideways_deps(root)
         + check_doctrine(root)
         + check_ledger(root)
+        + check_citations(root)
     )
 
 
