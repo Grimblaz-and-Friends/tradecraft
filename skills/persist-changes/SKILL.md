@@ -7,7 +7,7 @@ description: Land finished work on the current branch safely — stage exactly t
 
 Lands finished work on the current branch: deliberate staging, an honest commit message, a verified push to the right remote. The mechanical sequence is owned by a script; the judgment about *what* to land and *what to say* stays with you.
 
-This skill never asks a question: every stop is a typed one-line `not-persisted: <reason>`, so it is safe in unattended runs.
+**Pause discipline: typed-halt** — ADR-005's vocabulary, named so an audit conducted in the charter's own terms can find it. This skill never asks a question: every stop the script's own logic reaches is a typed one-line `not-persisted: <reason>`, so it is safe in unattended runs. The judgment section below is what you decide *before* invoking it and *after* it stops, never a question the skill puts to you mid-run.
 
 ## When to use
 
