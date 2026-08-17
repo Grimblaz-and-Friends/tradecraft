@@ -1,6 +1,6 @@
 # ADR-007: Cross-runtime — Claude and Codex above one practice
 
-**Status:** Accepted 2026-08-15 · Substrate ruled 2026-08-15: **Python**
+**Status:** Accepted 2026-08-15 · Amended† 2026-08-15 (the Context's timing claim corrected — the predecessor's Linux CI arrived not *in year three* but in its eighth month, 2026-08, retrofitted as its own multi-chunk project — evidence: [`6652ac8`](https://github.com/Grimblaz-and-Friends/tradecraft/commit/6652ac8)) · Substrate ruled 2026-08-15: **Python** · Amended† 2026-08-15 (§4 narrowed from *both-runtime* to **both-OS** CI: the Linux leg is the current *proxy* for Codex compatibility, and a true Codex check — the suite exercised by a Codex agent with a defined failure condition — does not exist yet and is not asserted before it does — evidence: the 35-finding full-repo adversarial pass, [`fa3345b`](https://github.com/Grimblaz-and-Friends/tradecraft/commit/fa3345b)) — † *recorded retroactively 2026-08-17 by the index sweep in [issue #18](https://github.com/Grimblaz-and-Friends/tradecraft/issues/18): a marked entry is dated by the commit that landed the change, and its motivation is reconstructed from that commit's own record rather than stated at the time.*
 
 ## Context
 

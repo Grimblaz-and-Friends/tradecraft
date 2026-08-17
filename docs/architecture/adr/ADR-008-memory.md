@@ -1,6 +1,6 @@
 # ADR-008: Memory — the repo is the memory; vendor stores are inboxes
 
-**Status:** Accepted 2026-08-15
+**Status:** Accepted 2026-08-15 · Amended† 2026-08-15 (§4 gains **one dated instrument**: every inbox entry carries its capture date and an entry older than **14 days is lapsed** — landed immediately or deleted — replacing the *"survives a few triages untouched"* pickup-test triage it had relied on, and the escape hatch narrowed from *if the inbox ever seems to need governance* to *more governance than this* — evidence: the retrospective proof that ADR-006's pickup prediction was false; the 35-finding full-repo adversarial pass, [`fa3345b`](https://github.com/Grimblaz-and-Friends/tradecraft/commit/fa3345b)) — † *recorded retroactively 2026-08-17 by the index sweep in [issue #18](https://github.com/Grimblaz-and-Friends/tradecraft/issues/18): a marked entry is dated by the commit that landed the change, and its motivation is reconstructed from that commit's own record rather than stated at the time.*
 
 ## Context
 
