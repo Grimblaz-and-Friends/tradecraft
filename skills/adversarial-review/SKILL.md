@@ -83,7 +83,7 @@ The defect ledger records **only sustained findings**; disproved ones write no r
 
 So every panel and routine review writes a **seat record**: one row per seat, in the repo's own seat-record file where it has one — a committed companion beside the defect ledger, validated by the same lint, never a comment on a pull request. That location matters and was got wrong first: an earlier draft put these counts in a report comment and claimed the ledger's interim waiver for hand-writing them, which was not available to it. **That waiver *is* the lint check.** A hand-written block with no validator is ADR-002's day-one-code exception being taken rather than discharged, and a malformed one fails silently — which is the failure the exception exists to prevent. Where a repo has no such file, the counts go in the review report and the report says the instrument is missing.
 
-Row fields — `source`, `date`, `seat`, `model`, `runtime`, `lane`, `raw`, `merged`, `sustained`, `status`, `isolated`. Contracts, stated because an undefined field in a shared format is a fork waiting to happen:
+Row fields — `source`, `date`, `seat`, `model`, `runtime`, `lane`, `raw`, `merged`, `sustained`, `status`, `isolated`, and an optional `trial` where the seat is one. Contracts, stated because an undefined field in a shared format is a fork waiting to happen:
 
 - **`raw`** is what the seat filed; **`merged`** what survived deduplication; **`sustained`** what the terminal stage kept — the judge on panels, the defense on routine reviews. So the rows are written **after** that stage, in the commit that carries the fixes, and never before `sustained` is knowable.
 - **A merged finding credits every finder in `merged` and `sustained`, not only the primary.** The defect ledger's row carries the primary alone; this is where dual credit survives. So per-seat sums may exceed the merged list's length, by design — these are per-seat counts, not a partition of the findings.
@@ -95,8 +95,6 @@ Row fields — `source`, `date`, `seat`, `model`, `runtime`, `lane`, `raw`, `mer
 **`raw` minus `sustained` is the number this record exists for** — and it is not a scoreboard. A high-volume seat feeding a strict terminal stage is the design working; the coverage-first rule above is what produces it. What the record buys is that a seat's cost becomes *arguable from evidence* rather than from whoever read the last review. **One review's spread is noise** — seat strength moved nearly every round in the attributed corpus — so this is read across reviews, and a retirement argued from a single one is the mistake it was built to prevent.
 
 The stages' counts (defense verdicts, judge rulings) stay in the review report as prose. They are not seat precision and adding them here would need a second row shape in one file; the defense's verdicts are three — **disproved, conceded, insufficient-to-disprove** — so a report that records only the first two loses a class and its arithmetic will not close.
-
-**Do not read one review's record as evidence.** Seat strength moved nearly every round in the predecessor's attributed corpus, so a single review's spread is noise; the record is built to be read across reviews, and a retirement argued from one is the mistake it was built to prevent.
 
 ## Defense — one pass, always
 

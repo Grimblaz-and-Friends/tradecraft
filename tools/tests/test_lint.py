@@ -418,8 +418,12 @@ def test_ledger_malformed_row_keeps_partials_and_never_silences_later_rows(tmp_p
         encoding="utf-8",
     )
     findings = lint.run(tmp_path)
-    assert any("could not be fully validated" in f for f in findings)
-    assert any("missing field" in f for f in findings)
+    # The array row is now rejected as "not a JSON object" rather than diffed
+    # against its own values — that older behaviour reported the row's *entries*
+    # as present fields, a false negative dressed as a finding. The exception
+    # boundary it used to exercise is still pinned, by the unhashable-id test.
+    assert any("is not a JSON object" in f for f in findings)
+    assert not any("missing field" in f for f in findings)
     assert any("banana" in f for f in findings)
 
 
@@ -629,6 +633,84 @@ def test_seat_record_trial_is_optional_and_form_checked(tmp_path):
     assert len(findings) == 1 and "trial" in findings[0]
 
 
+def test_seat_row_every_count_field_is_checked(tmp_path):
+    """PF7: only `raw` was exercised, so narrowing the loop to ("raw",) survived
+    the whole suite. Each count gets its own case."""
+    make_clean_tree(tmp_path)
+    for field in ("raw", "merged", "sustained"):
+        target = tmp_path / f"c-{field}"
+        target.mkdir()
+        make_clean_tree(target)
+        _write_seat_record(target, _seat_row(**{field: -1}))
+        findings = lint.run(target)
+        assert any(field in f and "non-negative" in f for f in findings), (field, findings)
+
+
+def test_seat_row_failed_status_cannot_carry_counts(tmp_path):
+    """PF8: the `failed` half of the status/counts cross-check had no case, so
+    narrowing the set to {"clean"} survived."""
+    make_clean_tree(tmp_path)
+    _write_seat_record(tmp_path, _seat_row(status="failed", raw=3, merged=0, sustained=0))
+    findings = lint.run(tmp_path)
+    assert any("found nothing" in f for f in findings)
+
+
+def test_seat_row_counts_must_be_nested(tmp_path):
+    """PF9: the fields are defined as nested subsets and "raw minus sustained" is
+    the number the file exists for; it must not be able to go negative."""
+    make_clean_tree(tmp_path)
+    _write_seat_record(tmp_path, _seat_row(raw=0, merged=5, sustained=99))
+    findings = lint.run(tmp_path)
+    assert any("not nested" in f for f in findings)
+
+
+def test_seat_row_nested_equal_counts_are_clean(tmp_path):
+    """The counterweight: a seat every finding of which survived is raw == merged
+    == sustained, which is lawful and is what cold-read did on this review."""
+    make_clean_tree(tmp_path)
+    _write_seat_record(tmp_path, _seat_row(raw=12, merged=12, sustained=12))
+    assert lint.run(tmp_path) == []
+
+
+def test_seat_row_ran_with_zero_raw_must_be_clean(tmp_path):
+    """PF10: `clean` is reserved for a zero-yield run, so allowing `ran` with a
+    zero raw count gave that run two lawful encodings — the ambiguity `status`
+    was added to remove, re-admitted one level down."""
+    make_clean_tree(tmp_path)
+    _write_seat_record(tmp_path, _seat_row(status="ran", raw=0, merged=0, sustained=0))
+    findings = lint.run(tmp_path)
+    assert any("is 'clean'" in f for f in findings)
+
+
+def test_seat_row_source_must_be_non_empty(tmp_path):
+    """PF17: `source` is the join key and half the duplicate key, so an empty one
+    silently collapses every seat of every review into one bucket."""
+    make_clean_tree(tmp_path)
+    for bad in ("", "   ", 7, None):
+        target = tmp_path / f"src{abs(hash(str(bad)))}"
+        target.mkdir()
+        make_clean_tree(target)
+        _write_seat_record(target, _seat_row(source=bad))
+        assert any("source" in f for f in lint.run(target)), bad
+
+
+def test_seat_record_array_row_is_rejected_as_a_non_object(tmp_path):
+    """PF16: the missing-field diff ran before anything checked the row was a
+    mapping, so an array was diffed against its values and its entries were
+    reported as present fields. Both checkers had the hole; both are closed."""
+    make_clean_tree(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "seat-record.jsonl").write_text(
+        '["source", "status"]\n' + json.dumps(_seat_row(status="skipped")) + "\n",
+        encoding="utf-8",
+    )
+    findings = lint.run(tmp_path)
+    assert any("is not a JSON object" in f for f in findings)
+    assert not any("missing field" in f for f in findings)
+    assert any("status" in f for f in findings)  # the later row still checked
+
+
 def test_seat_record_vocabularies_are_exactly_what_the_adr_states():
     """Pins the literals so a local widening fails here even though nothing can
     read the ADR — the same stated-unenforced gap the ledger sets carry."""
@@ -641,6 +723,20 @@ def test_seat_record_vocabularies_are_exactly_what_the_adr_states():
     assert lint.LEDGER_DISPOSITIONS == {
         "fixed", "reworded", "recorded", "owner-pending", "filed",
     }
+    # PF18: the loop targets are pinned too. Without these, narrowing either
+    # tuple silently removes checks while this test keeps passing.
+    assert lint.SEAT_COUNTS == ("raw", "merged", "sustained")
+    assert lint.SEAT_TOKEN_FIELDS == ("seat", "model", "runtime")
+    # One form rule, one definition site. This has to be checked against the
+    # SOURCE, not at runtime: `re.compile` caches, so two identical patterns
+    # return the same object and `LEDGER_FOUND_BY is TOKEN` holds even when the
+    # duplicate has been reintroduced. An `is` assertion here passes the mutant.
+    source = (Path(lint.__file__)).read_text(encoding="utf-8")
+    assert source.count('re.compile(r"\\A[a-z0-9][a-z0-9-]*\\Z")') == 1, (
+        "the name-token pattern has more than one definition site; the skill says "
+        "these fields are tokens 'like found_by and for the same reason', so two "
+        "copies would drift silently"
+    )
 
 
 # --- the live repo obeys its own lint --------------------------------------
