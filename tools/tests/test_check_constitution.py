@@ -343,3 +343,110 @@ def test_entry_hosted_supersession_pointer_is_seen(repo):
     _run("git", "commit", "-aqm", "false pointer", cwd=repo)
     out = _findings(repo)
     assert any("no such entry exists" in f for f in out), out
+
+
+# --- pins for branches a sabotage sweep found unread (post-fix cycle) --------
+
+
+def test_accepted_file_losing_its_status_line_is_caught(repo):
+    """Reported as a SHAPE defect, never append-only: the two carry different
+    remedies, and this one's remedy is 'repair before it lands'."""
+    p = repo / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md"
+    _write(p, p.read_text(encoding="utf-8").replace(
+        "**Status:** Accepted 2026-08-18 (PR #53)\n", ""))
+    _run("git", "commit", "-aqm", "drop status", cwd=repo)
+    out = _findings(repo)
+    assert any("has no `**Status:**` line" in f for f in out), out
+
+
+def test_status_line_rewritten_rather_than_appended_is_caught(repo):
+    """Distinct from the malformed-append branch: here the accepted prefix is
+    gone, so the file's own history has been rewritten, not extended."""
+    p = repo / "docs/architecture/adr/ADR-001-identity.md"
+    _write(p, p.read_text(encoding="utf-8").replace(
+        "**Status:** Accepted 2026-08-15", "**Status:** Accepted 2026-08-16"))
+    _run("git", "commit", "-aqm", "rewrite status", cwd=repo)
+    out = _findings(repo)
+    assert any("rewritten rather than appended" in f for f in out), out
+
+
+def test_citation_to_a_nonexistent_adr_is_caught(repo):
+    """Out-of-bounds and no-such-ADR are separate branches; only the first was pinned."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8").replace("[ADR-001:7]", "[ADR-404:7]"))
+    _run("git", "commit", "-aqm", "dangling adr", cwd=repo)
+    out = _findings(repo)
+    assert any("no such ADR" in f for f in out), out
+
+
+def test_duplicate_rule_lead_in_is_caught(repo):
+    """Identity must be unique or it is not identity — a second rule sharing a
+    lead-in reads as an edit of the first, so the added-rule check never runs."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8")
+           + "\n## 2. Other\n\n- **A rule.** A different reason. [ADR-001:7]\n")
+    _run("git", "commit", "-aqm", "duplicate lead-in", cwd=repo)
+    out = _findings(repo)
+    assert any("more than one rule with the lead-in" in f for f in out), out
+
+
+def test_accepted_entry_is_not_re_checked_for_shape(repo):
+    """The trap N1 closed, reproduced by N1's own remedy: an entry that landed
+    malformed cannot be repaired, so re-checking it makes it permanently red."""
+    p = repo / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md"
+    _write(p, p.read_text(encoding="utf-8").replace("## Evidence\n\nnone.\n", ""))
+    _run("git", "commit", "-aqm", "base has a malformed entry", cwd=repo)
+    _run("git", "branch", "-f", "base-ref", cwd=repo)
+    _run("git", "commit", "-q", "--allow-empty", "-m", "later work", cwd=repo)
+    out = _findings(repo)
+    assert not any("Evidence" in f for f in out), out
+
+
+def test_draft_entry_missing_a_section_is_caught(repo):
+    """The other half of the same rule: while still a draft, shape is checked."""
+    _write(repo / "docs/architecture/decisions/D-61-2026-08-19-later.md",
+           "# D-61: y\n\n**Status:** Accepted 2026-08-19 (PR #61)\n\n## Context\n\nc.\n\n"
+           "## Decision\n\n**Changes no operative rule.**\n\n## Rejected\n\nnone.\n")
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "draft entry", cwd=repo)
+    out = _findings(repo)
+    assert any("Evidence" in f for f in out), out
+
+
+def test_the_adr_index_is_frozen_too(repo):
+    """It carries the freeze marker, so the guard must reach it — a file that
+    asserts a freeze nothing enforces is worse than one that says nothing."""
+    _write(repo / "docs/architecture/adr/README.md",
+           f"# ADR index\n\n**Status:** Frozen 2026-08-18\n\n{MARKER}\n\nHistorical.\n")
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "add index", cwd=repo)
+    _run("git", "branch", "-f", "base-ref", cwd=repo)
+    _write(repo / "docs/architecture/adr/README.md",
+           f"# ADR index\n\n**Status:** Frozen 2026-08-18\n\n{MARKER}\n\nRewritten.\n")
+    _run("git", "commit", "-aqm", "rewrite the index", cwd=repo)
+    out = _findings(repo)
+    assert any("changed outside" in f for f in out), out
+
+
+def test_a_displacement_declared_by_another_entry_does_not_license_this_one(repo):
+    """Scoped to THIS change's entry. A union over all history only grows, so a
+    target displaced once would license dropping it from any rule, forever."""
+    _write(repo / "docs/architecture/decisions/D-60-2026-08-19-earlier.md",
+           "# D-60: y\n\n**Status:** Accepted 2026-08-19 (PR #60)\n\n## Context\n\nc.\n\n"
+           "## Decision\n\n**Statute delta:** none.\n**Displaces:** [ADR-001:7]\n\n"
+           "## Rejected\n\nnone.\n\n## Evidence\n\nnone.\n")
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "an entry that displaces ADR-001:7", cwd=repo)
+    _run("git", "branch", "-f", "base-ref", cwd=repo)
+
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8").replace(
+        "- **A rule.** Its reason. [ADR-001:7]", "- **A rule.** Its opposite. [D-60]"))
+    _write(repo / "docs/architecture/decisions/D-61-2026-08-19-later.md",
+           "# D-61: z\n\n**Status:** Accepted 2026-08-19 (PR #61)\n\n## Context\n\nc.\n\n"
+           "## Decision\n\n**Changes no operative rule.**\n\n## Rejected\n\nnone.\n\n"
+           "## Evidence\n\nnone.\n")
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "migrate the citation, declaring nothing", cwd=repo)
+    out = _findings(repo, 61)
+    assert any("ADR-001:7" in f and "displace" in f.lower() for f in out), out

@@ -126,10 +126,25 @@ def _rules(text: str) -> dict[str, str]:
     return out
 
 
+def _duplicate_lead_ins(text: str) -> list[str]:
+    """Identity must be unique or it is not identity: a second rule sharing a
+    lead-in reads as an edit of the first, so the added-rule check never runs and
+    the original becomes invisible to every later comparison."""
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for line in text.split("\n"):
+        m = LEAD_IN.match(line)
+        if m and RULE_UNIT.match(line):
+            if m.group(1) in seen:
+                dupes.append(m.group(1))
+            seen.add(m.group(1))
+    return dupes
+
+
 def check_append_only(base_sha: str) -> list[str]:
     findings: list[str] = []
     for path in _changed(base_sha):
-        is_adr = path.startswith(f"{ADR_DIR}/ADR-")
+        is_adr = path.startswith(f"{ADR_DIR}/")  # the index froze with the preamble it indexes
         is_entry = path.startswith(f"{LOG_DIR}/") and path != LOG_INDEX
         if not (is_adr or is_entry):
             continue  # the log's index grows with every entry and is never frozen
@@ -198,10 +213,14 @@ def _entry_numbers() -> set[int]:
 
 
 def check_entry_shape(base_sha: str) -> list[str]:
-    """Checked on drafts, which is the only moment it can be repaired."""
+    """Drafts only. An accepted entry cannot be repaired — the repair is itself a
+    diff to an accepted entry — so re-checking one would make it permanently red
+    for a defect nobody can fix. That is the trap this check was added to close."""
     findings: list[str] = []
     for f in _entry_files():
         rel = f.relative_to(ROOT).as_posix()
+        if _at(base_sha, rel) is not None:
+            continue  # accepted at the merge base: immutable, and past repair
         text = f.read_text(encoding="utf-8")
         for pattern, described in ENTRY_SKELETON:
             if not pattern.search(text):
@@ -224,6 +243,11 @@ def check_citations(base_sha: str, pr: int | None) -> list[str]:
             f"citation (§12): {STATUTE}:{n} is neither a section heading nor a rule unit "
             f"— {line.strip()[:60]!r}"
         )
+    for lead in _duplicate_lead_ins(text):
+        findings.append(
+            f"citation (§12): {STATUTE} states more than one rule with the lead-in {lead[:60]} "
+            f"— a rule is identified by its lead-in, so it must be unique"
+        )
     for n, line in enumerate(lines, 1):
         if RULE_UNIT.match(line) and not CITATION.search(line):
             findings.append(
@@ -231,7 +255,7 @@ def check_citations(base_sha: str, pr: int | None) -> list[str]:
             )
 
     known = _entry_numbers()
-    for f in [statute, *sorted((ROOT / ADR_DIR).glob("ADR-*.md")), *_entry_files()]:
+    for f in [statute, *sorted((ROOT / ADR_DIR).glob("*.md")), *_entry_files()]:
         rel = f.relative_to(ROOT).as_posix()
         for n, line in enumerate(f.read_text(encoding="utf-8").split("\n"), 1):
             for num, ln, frag in ADR_TOKEN.findall(line):
@@ -279,14 +303,17 @@ def _check_rule_changes(base_sha: str, head_text: str, pr: int | None) -> list[s
     if base_text is None:
         return findings  # the statute is new in this change; nothing to compare
     was, now = _rules(base_text), _rules(head_text)
-    declared_all = {t for targets in _declared().values() for t in targets}
+    # Scoped to THIS change's entry. A union over all history only grows, so a
+    # target displaced once would license dropping it from any rule, forever.
+    declared = _declared()
+    declared_now = declared.get(pr, set()) if pr else set()
 
     for lead, line in now.items():
         if lead in was:
             b_adr = {(a, l) for a, l, _ in ADR_TOKEN.findall(was[lead])}
             n_adr = {(a, l) for a, l, _ in ADR_TOKEN.findall(line)}
             for tgt in sorted(b_adr - n_adr):
-                if tgt not in declared_all:
+                if tgt not in declared_now:
                     findings.append(
                         f"citation (§12): the rule {lead[:50]}… dropped its citation "
                         f"[ADR-{tgt[0]}:{tgt[1]}] and no entry declares it displaced"
@@ -298,7 +325,7 @@ def _check_rule_changes(base_sha: str, head_text: str, pr: int | None) -> list[s
             )
     for lead in sorted(set(was) - set(now)):
         b_adr = {(a, l) for a, l, _ in ADR_TOKEN.findall(was[lead])}
-        if not (b_adr & declared_all):
+        if not (b_adr & declared_now):
             findings.append(
                 f"citation (§12): the rule {lead[:50]}… was removed from the statute and no "
                 f"entry declares its displacement"
@@ -312,7 +339,7 @@ def _check_displacements() -> list[str]:
     pointers: dict[int, set[tuple[str, str]]] = {}
     # Entry status lines carry pointers too — globbing only the ADRs made an entry's
     # status line a lawful place to write a supersession claim nothing could see.
-    for f in [*sorted((ROOT / ADR_DIR).glob("ADR-*.md")), *_entry_files()]:
+    for f in [*sorted((ROOT / ADR_DIR).glob("*.md")), *_entry_files()]:
         status = _status_line(f.read_text(encoding="utf-8")) or ""
         for pm in POINTER.finditer(status):
             tgt = pm.group(3)
