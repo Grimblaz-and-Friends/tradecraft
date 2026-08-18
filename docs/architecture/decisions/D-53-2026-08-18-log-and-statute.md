@@ -59,6 +59,14 @@ The freeze markers were inserted first, then citations taken from the tree as it
 5. **Minting `statute` / `decision-log` / `frozen-adr` as `artifact` values** — rejected on the grounds in carve-out 5.
 6. **A lint size budget on the statute** — rejected: the number would be speculative, and the doctrine budget guards an always-loaded file, where the statute is read on demand.
 
+### The guards, and the verification that they block
+
+Two guards ship in `tools/check_constitution.py`, both form/position/existence only, with 17 committed red-first pins in `tools/tests/test_check_constitution.py`. Each runs as a `pull_request`-gated step **inside the existing `lint-and-test` job**, never a new job.
+
+**Ruleset verified 2026-08-18** (`gh api repos/Grimblaz-and-Friends/tradecraft/rulesets/20898154`): the required status checks are exactly `lint-and-test (ubuntu-latest)` and `lint-and-test (windows-latest)`, and **`strict_required_status_checks_policy` is `true`**. Both facts are load-bearing and are recorded so a later relaxation is a visible dependency break rather than a silent one: the required contexts are why a step in that job *blocks*, and the strict policy is what forces branch currency before merge, which is what makes evaluating append-only against the merge base sound rather than bypassable by a stale branch.
+
+The guards exit **2 when they cannot determine** an answer. A guard that goes quiet when its base has moved prints the same line as a clean pass, which is how four failure modes became invisible in this repository's first version of the version-bump guard.
+
 ## Evidence
 
 - The work's issue and its full design record, including all five artifact revisions, the panel review, the post-fix cycle, and the affirmations: [#42](https://github.com/Grimblaz-and-Friends/tradecraft/issues/42).

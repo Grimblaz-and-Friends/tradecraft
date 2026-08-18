@@ -17,8 +17,8 @@ Anything that is a *capability* — orchestration, subagents, planning modes, me
 
 The unit of everything is the **skill**: a self-contained cell carrying whatever mix of prose (methodology), code (contracts), and tests its job requires. Skills never depend on each other sideways. The plugin is just the bundle they ship in.
 
-The constitution — the small set of decisions everything else answers to — lives in [docs/architecture/adr/](docs/architecture/adr/). Start with [ADR-001](docs/architecture/adr/ADR-001-identity.md).
+The constitution — the small set of decisions everything else answers to — is a statute plus a log. The rules in force are [docs/architecture/constitution.md](docs/architecture/constitution.md); how each was decided is in the [decision log](docs/architecture/decisions/) or, for anything decided before the split, in the frozen [ADRs](docs/architecture/adr/README.md) its citation names.
 
 ## Status
 
-Walking skeleton complete: the constitution (ADRs 001–009, argued and amended), the packaging lint with Linux + Windows CI, and two shipped skills (`persist-changes`, `adversarial-review`). The predecessor freeze trigger of ADR-009 is live. A full-repo adversarial review ran 2026-08-15; its sustained findings and their outcomes are the first rows of [docs/ledger.jsonl](docs/ledger.jsonl), and the review practice's own four-seat panel review of PR #2 supplied the first seat-attributed rows.
+Walking skeleton complete: the constitution (a statute of twelve sections over a frozen nine-ADR preamble), the packaging lint with Linux + Windows CI, and two shipped skills (`persist-changes`, `adversarial-review`). The predecessor freeze trigger of ADR-009 is live. A full-repo adversarial review ran 2026-08-15; its sustained findings and their outcomes are the first rows of [docs/ledger.jsonl](docs/ledger.jsonl), and the review practice's own four-seat panel review of PR #2 supplied the first seat-attributed rows.

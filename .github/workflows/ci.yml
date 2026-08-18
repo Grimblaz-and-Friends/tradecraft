@@ -26,6 +26,16 @@ jobs:
       - name: Version bump (ADR-003)
         if: github.event_name == 'pull_request'
         run: python tools/check_version_bump.py --base "origin/${{ github.base_ref }}"
+      # A step inside the existing required job, never a new job: a guard whose
+      # job the ruleset does not require blocks nothing. Both constitutional
+      # guards resolve a merge base, so they are pull_request-gated like the
+      # version bump above.
+      - name: Constitutional format (statute §12)
+        if: github.event_name == 'pull_request'
+        run: >
+          python tools/check_constitution.py
+          --base "origin/${{ github.base_ref }}"
+          --pr "${{ github.event.pull_request.number }}"
       - name: Tests
         run: |
           pip install pytest
