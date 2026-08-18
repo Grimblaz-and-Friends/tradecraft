@@ -36,6 +36,7 @@ The two deltas are enumerated rather than blurred. Bundling two rule changes und
 - **This resolves a contradiction, not merely a drift.** §6's unqualified *does lawfully ask* asserted an exception to §5's zero-questions construction that §5 does not grant. After this change no statute rule contradicts it.
 - **The aging backstop is untouched.** *Several such surfacings → `recorded`* keeps its threshold and its vagueness. What is added is the consequence that makes the existing word safe: an unattended run puts no question **and so is not a surfacing**. The amendment is what creates, *in this statute*, reviews that are not surfacings — the skill has produced them since #30 — so it is the amendment's business to say so.
 - **The §6/§7 twin is kept, and that asymmetry with delta 1 is deliberate.** Both sections stated the seam rule at the merge base, cross-pointing at each other, so this change widens a twin it did not create; collapsing it would retire a rule in a section this decision is not otherwise amending, which is a second change smuggled into one.
+- **The seam fails closed where the lane is undetermined**, both rules treating such a run as unattended. Added on the owner's ruling of 2026-08-18, surfaced with three argued options after this change's own review sustained that *attended* is load-bearing here and defined nowhere in the repository. It is the cheaper direction: a question wrongly withheld waits on a durable row, where a question wrongly put breaches §5 outright. **This amends the affirmed artifact's boundary statement**, which had put the lane set out of scope; nothing else in that boundary moves.
 - **The skill's fuller gloss was not copied into the statute.** `SKILL.md` says *"surfacings, not reviews, since a run that skipped the seam never put the question and cannot count against it"*; the clause above delivers the same distinction where it is created, without buying a third structurally forced twin for it.
 
 ### The shipped zone, and the twin this decision accepts
@@ -59,6 +60,8 @@ Filing the skill's half as a follow-up was rejected as unlawful rather than mere
 9. **Reverting the skill and typed-halting unattended reviews at the seam** — #45's option B, declined by the owner. Dominated: the halt delivers the question no sooner than the durable row already does, and costs the unattended lane its purpose.
 10. **A passive line in every unattended run's report listing open `owner-pending` rows** — #45's option C, deferred by the owner as the evidence-earned add-on if rows demonstrably age ("A for now"). Not built here, and not filed; it returns if the evidence arrives.
 11. **A guard on question form.** See delta 1.
+12. **Defining `attended` with a test**, rather than stating a fail-closed direction — declined by the owner: it closes the gap outright but costs a new rule unit and lead-in and changes what this decision decides, and §2 does not earn a rule for a distinction judgment carries until an incident says otherwise.
+13. **Leaving the lane question to judgment**, keeping the `owner-pending` row open — declined by the owner: free, and the class is presently empty, but the record could then not distinguish a lawful skip from a wrong guess, which is the defect `SKILL.md`'s seam-polarity line prevents one level down.
 
 ## Evidence
 
