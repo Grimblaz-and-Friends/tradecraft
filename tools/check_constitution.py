@@ -49,7 +49,7 @@ STATUS_LINE = re.compile(r"^\*\*Status:\*\*")
 # numbers, so a form naming only ADRs left entry-to-entry supersession unwritable.
 POINTER = re.compile(
     r" · Superseded in part by \[D-(\d+)\] \((\d{4}-\d{2}-\d{2})\): "
-    r"(ADR-\d{3}:\d+(?:, \d+)*|D-\d+) — [^·]+"
+    r"(ADR-\d{3}:\d+(?:, \d+)*|D-\d+) — .+?(?= · Superseded in part by |\Z)"
 )
 ENTRY_NAME = re.compile(r"\AD-(\d+)-\d{4}-\d{2}-\d{2}-[a-z0-9-]+\.md\Z")
 # A rule unit is a bold-led list item at ANY indent. The statute states 35 of its
@@ -173,8 +173,9 @@ def check_append_only(base_sha: str) -> list[str]:
             )
             continue
 
+        b_all = [x for x in base_text.split(chr(10)) if STATUS_LINE.match(x)]
         h_all = [x for x in head.split(chr(10)) if STATUS_LINE.match(x)]
-        if len(h_all) > 1:
+        if len(h_all) > 1 and len(h_all) > len(b_all):
             # The canonical status line is exempt from the body comparison below,
             # so a SECOND one rides that exemption and carries arbitrary content
             # through untouched. Found independently by both external reviewers.
@@ -234,14 +235,20 @@ def check_entry_shape(base_sha: str) -> list[str]:
         text = f.read_text(encoding="utf-8")
         # Three sites name one entry. Left free to disagree, [D-N] resolves to
         # whichever the reader happened to consult.
+        extra = [x for x in text.split(chr(10)) if STATUS_LINE.match(x)]
+        if len(extra) > 1:
+            findings.append(
+                f"entry-shape (§12): {rel} has {len(extra)} `**Status:**` lines — repair it "
+                f"before it lands; afterwards the record can be neither superseded nor fixed"
+            )
         own = ENTRY_NAME.match(f.name).group(1)
         for pat, site in ((rf"^# D-(\d+):", "heading"),
                           (rf"^\*\*Status:\*\* Accepted \d{{4}}-\d{{2}}-\d{{2}} \(PR #(\d+)\)", "status line")):
             m = re.search(pat, text, re.MULTILINE)
-            if m and m.group(1) != own:
+            if m and int(m.group(1)) != int(own):
                 findings.append(
-                    f"entry-shape (§12): {rel} is named D-{own} but its {site} says "
-                    f"D-{m.group(1)} — one entry, one number"
+                    f"entry-shape (§12): {rel} is named D-{int(own)} but its {site} says "
+                    f"D-{int(m.group(1))} — one entry, one number"
                 )
         for pattern, described in ENTRY_SKELETON:
             if not pattern.search(text):
@@ -355,8 +362,7 @@ def _check_rule_changes(base_sha: str, head_text: str, pr: int | None) -> list[s
                 f"not cite [D-{pr}]"
             )
     for lead in sorted(set(was) - set(now)):
-        b_adr = {(a, l) for a, l, _ in ADR_TOKEN.findall(was[lead])}
-        if not (b_adr & declared_now):
+        if not (_targets(was[lead]) & declared_now):
             findings.append(
                 f"citation (§12): the rule {lead[:50]}… was removed from the statute and no "
                 f"entry declares its displacement"
@@ -395,10 +401,11 @@ def _check_displacements() -> list[str]:
             )
             continue
         for tgt in sorted(targets):
-            if tgt[0] != "D" and tgt not in declared[num]:
+            if tgt not in declared[num]:
+                where = "for line " + tgt[1] if tgt[0] != "D" else ""
                 findings.append(
-                    f"citation (§12): {tgt[0]}'s status line points at [D-{num}] for line "
-                    f"{tgt[1]}, which D-{num} does not list in Displaces"
+                    f"citation (§12): a status line points at [D-{num}] {where}"
+                    f"superseding {_show(tgt)}, which D-{num} does not list in Displaces"
                 )
     return findings
 

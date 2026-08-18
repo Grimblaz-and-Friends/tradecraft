@@ -49,3 +49,4 @@
 {"source": "pr53-postfix-2026-08-18", "date": "2026-08-18", "seat": "wiring-falsifier", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 5, "merged": 4, "sustained": 4, "status": "ran", "isolated": true}
 {"source": "pr53-postfix-2026-08-18", "date": "2026-08-18", "seat": "revision-diff", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 4, "merged": 3, "sustained": 3, "status": "ran", "isolated": true}
 {"source": "pr53-external-2026-08-18", "date": "2026-08-18", "seat": "external", "model": "other", "runtime": "github-actions", "lane": "routine", "raw": 17, "merged": 15, "sustained": 6, "status": "ran", "isolated": false}
+{"source": "pr53-wiring-2026-08-18", "date": "2026-08-18", "seat": "wiring-falsifier", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 5, "merged": 5, "sustained": 5, "status": "ran", "isolated": true}

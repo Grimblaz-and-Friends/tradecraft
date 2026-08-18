@@ -503,3 +503,142 @@ def test_a_cosmetic_edit_needs_no_entry(repo):
         "Its reason. [ADR-001:7]", "Its reason, typo fixed. [ADR-001:7]"))
     _run("git", "commit", "-aqm", "cosmetic", cwd=repo)
     assert _findings(repo, 61) == [], _findings(repo, 61)
+
+
+# --- pins from the scoped wiring look (W1-W5) -------------------------------
+# All of these are FALSE POSITIVES or vocabulary splits. A sabotage sweep cannot
+# reach any of them: neutering a findings.append detects only findings that are
+# MISSING. These fire when they must not, which is why a green sweep read as
+# reassurance while two high regressions sat in the same commit.
+
+ENTRY = '# D-{h}: y\n\n**Status:** Accepted 2026-08-19 (PR #{p})\n\n## Context\n\nc.\n\n## Decision\n\n{decision}\n\n## Rejected\n\nnone.\n\n## Evidence\n\nnone.\n'
+
+
+def test_a_declared_rule_removal_is_lawful(repo):
+    """W1 - unifying the displacement vocabulary reached three consumers and
+    missed the fourth, making its intersection structurally empty: no rule could
+    ever be retired from the statute again, however correctly declared."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8").replace(
+        "- **A rule.** Its reason. [ADR-001:7]" + chr(10), ""))
+    _write(repo / "docs/architecture/decisions/D-61-2026-08-19-retire.md",
+           ENTRY.format(h=61, p=61, decision="**Statute delta:** one rule retired."
+                        + chr(10) + "**Displaces:** [ADR-001:7]"))
+    a = repo / "docs/architecture/adr/ADR-001-identity.md"
+    _write(a, a.read_text(encoding="utf-8").replace(
+        "**Status:** Accepted 2026-08-15",
+        "**Status:** Accepted 2026-08-15 · Superseded in part by [D-61] "
+        "(2026-08-19): ADR-001:7 — retired"))
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "retire a rule, fully declared", cwd=repo)
+    assert _findings(repo, 61) == [], _findings(repo, 61)
+
+
+def test_a_declared_removal_of_a_d_cited_rule_is_lawful(repo):
+    """The same on the forward path: every rule minted after this migration
+    cites [D-N], and that branch read only the ADR form."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8") + "- **A newer rule.** Its reason. [D-53]" + chr(10))
+    _run("git", "commit", "-aqm", "a rule whose provenance is an entry", cwd=repo)
+    _run("git", "branch", "-f", "base-ref", cwd=repo)
+    _write(p, p.read_text(encoding="utf-8").replace(
+        "- **A newer rule.** Its reason. [D-53]" + chr(10), ""))
+    _write(repo / "docs/architecture/decisions/D-61-2026-08-19-retire.md",
+           ENTRY.format(h=61, p=61, decision="**Statute delta:** one rule retired."
+                        + chr(10) + "**Displaces:** [D-53]"))
+    # The declaration binds both ways, so the displaced entry carries the pointer
+    # back. Its status line is the one surface an accepted entry may still grow.
+    d = repo / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md"
+    _write(d, d.read_text(encoding="utf-8").replace(
+        "**Status:** Accepted 2026-08-18 (PR #53)",
+        "**Status:** Accepted 2026-08-18 (PR #53) · Superseded in part by [D-61] "
+        "(2026-08-19): D-53 — the rule it minted is retired"))
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "retire a D-cited rule", cwd=repo)
+    assert _findings(repo, 61) == [], _findings(repo, 61)
+
+
+def test_a_record_quoting_the_status_format_stays_supersedable(repo):
+    """W2 - STATUS_LINE is a naive line prefix, so a fenced block documenting the
+    format counts as a second status line. On an absolute count such a record
+    could then be neither superseded nor repaired: the N1 trap, one function up."""
+    a = repo / "docs/architecture/adr/ADR-001-identity.md"
+    _write(a, a.read_text(encoding="utf-8") + chr(10) + "```" + chr(10)
+           + "**Status:** Accepted YYYY-MM-DD" + chr(10) + "```" + chr(10))
+    _run("git", "commit", "-aqm", "an ADR that quotes the format", cwd=repo)
+    _run("git", "branch", "-f", "base-ref", cwd=repo)
+    _write(a, a.read_text(encoding="utf-8").replace(
+        "**Status:** Accepted 2026-08-15" + chr(10),
+        "**Status:** Accepted 2026-08-15 · Superseded in part by [D-53] "
+        "(2026-08-18): ADR-001:7 — moved" + chr(10), 1))
+    d = repo / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md"
+    _write(d, d.read_text(encoding="utf-8").replace(
+        "**Statute delta:** none.",
+        "**Statute delta:** none." + chr(10) + "**Displaces:** [ADR-001:7]"))
+    _run("git", "commit", "-aqm", "the one lawful later diff", cwd=repo)
+    out = _findings(repo)
+    assert not any("`**Status:**` lines" in f for f in out), out
+
+
+def test_a_second_status_line_is_caught_while_still_a_draft(repo):
+    """W2's other half. A draft is the only moment the extra line can be
+    removed, so that is where the count has to happen."""
+    _write(repo / "docs/architecture/decisions/D-61-2026-08-19-x.md",
+           ENTRY.format(h=61, p=61, decision="**Changes no operative rule.**").replace(
+               "(PR #61)" + chr(10), "(PR #61)" + chr(10) + "**Status:** smuggled payload" + chr(10)))
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "draft with two status lines", cwd=repo)
+    out = _findings(repo, 61)
+    assert any("`**Status:**` lines" in f for f in out), out
+
+
+def test_a_record_can_be_superseded_more_than_once(repo):
+    """W3 - the pointer clause consumed the space its own separator needs, so
+    finditer saw only the first and a record could be superseded exactly once."""
+    a = repo / "docs/architecture/adr/ADR-001-identity.md"
+    _write(a, a.read_text(encoding="utf-8").replace(
+        "**Status:** Accepted 2026-08-15",
+        "**Status:** Accepted 2026-08-15 · Superseded in part by [D-53] "
+        "(2026-08-18): ADR-001:7 — first"))
+    d = repo / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md"
+    _write(d, d.read_text(encoding="utf-8").replace(
+        "**Statute delta:** none.",
+        "**Statute delta:** none." + chr(10) + "**Displaces:** [ADR-001:7]"))
+    _run("git", "commit", "-aqm", "first supersession", cwd=repo)
+    _run("git", "branch", "-f", "base-ref", cwd=repo)
+
+    _write(a, a.read_text(encoding="utf-8").replace(
+        "— first", "— first · Superseded in part by [D-61] "
+        "(2026-08-19): ADR-001:9 — second"))
+    _write(repo / "docs/architecture/decisions/D-61-2026-08-19-x.md",
+           ENTRY.format(h=61, p=61, decision="**Statute delta:** none."
+                        + chr(10) + "**Displaces:** [ADR-001:9]"))
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "second supersession", cwd=repo)
+    assert _findings(repo, 61) == [], _findings(repo, 61)
+
+
+def test_an_entry_to_entry_pointer_is_cross_checked_too(repo):
+    """W4 - the forward half of the cross-check became D-aware while the reverse
+    half stayed ADR-only, so the two halves policed different vocabularies."""
+    d = repo / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md"
+    _write(d, d.read_text(encoding="utf-8").replace(
+        "**Status:** Accepted 2026-08-18 (PR #53)",
+        "**Status:** Accepted 2026-08-18 (PR #53) · Superseded in part by [D-61] "
+        "(2026-08-19): D-53 — claimed"))
+    _write(repo / "docs/architecture/decisions/D-61-2026-08-19-x.md",
+           ENTRY.format(h=61, p=61, decision="**Changes no operative rule.**"))
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "an unbacked entry-to-entry claim", cwd=repo)
+    out = _findings(repo, 61)
+    assert any("does not list in Displaces" in f for f in out), out
+
+
+def test_a_zero_padded_entry_number_is_not_a_mismatch(repo):
+    """W5 - compared as strings, while every other consumer int()s them."""
+    _write(repo / "docs/architecture/decisions/D-061-2026-08-19-x.md",
+           ENTRY.format(h=61, p=61, decision="**Changes no operative rule.**"))
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "zero-padded name", cwd=repo)
+    out = _findings(repo, 61)
+    assert not any("one entry, one number" in f for f in out), out
