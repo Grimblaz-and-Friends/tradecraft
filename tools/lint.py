@@ -58,13 +58,14 @@ LEDGER_FIELDS = {
     "catchable", "caught", "source", "disposition", "found_by", "ref",
 }
 LEDGER_SEVERITIES = {"high", "medium", "low"}
-# `work-prose` (D-59) is the off-tree half: prose the statute requires of a unit
-# of work and homes on an issue or a pull request — the pre-implementation
-# artifact, the affirmation record, the PR body, a review's report. Its test is
-# WHERE THE MATERIAL LIVES, not which position it sits at; `repo-docs` is the
-# in-tree half, and widening that one to cover both was rejected as the double
-# duty `authoring` was retired for. Without it, two reviews' sustained findings
-# had no lawful row: the design review on issue #42 and `DF1`/`M24(a)` on PR #50.
+# `work-prose` (D-59) is the off-tree half: prose the constitution requires of a
+# unit of work and homes outside the tree (in practice an issue or a pull
+# request) — the pre-implementation artifact, the affirmation record, the PR
+# body, a review's report. Its test is WHERE THE MATERIAL LIVES, not which
+# position it sits at; widening `repo-docs` to cover both sides of that line was
+# rejected, because one value would then carry two denotations at once. Without
+# it, two reviews' sustained findings had no correct value: the design review on
+# issue #42 and `DF1`/`M24(a)` on PR #50.
 LEDGER_ARTIFACTS = {
     "constitution", "repo-docs", "work-prose", "skill-prose", "script",
     "lint", "tests", "ci", "packaging",
