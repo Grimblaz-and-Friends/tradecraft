@@ -2,6 +2,8 @@
 
 **Status:** Accepted 2026-08-15
 
+**Frozen 2026-08-18 by [D-53].** Historical record; operative rules live in the statute. Only status-line supersession pointers may be appended.
+
 ## Context
 
 The predecessor ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra), 2025-12 → 2026-08) contains ~60 skills, a large script library with tests, and eight months of recorded lessons. The question was what carries into tradecraft. Three options were weighed: bulk port (fails the constitution on contact — sideways references, doctrine volume, prose-embedded formats, a rejected substrate), bulk rewrite up front (a speculative migration project, and the predecessor's own strongest evidence warns against it: the last time its repo-specific guidance was generalized for carry-over, all 15 of 15 sustained review findings were in the newly generalized prose — rewriting is precisely where claims outrun evidence), and pull-based rewrite.

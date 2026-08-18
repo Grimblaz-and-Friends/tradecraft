@@ -74,7 +74,7 @@ LEDGER_ARTIFACTS = {
 # duty `authoring` was retired for. A judged value with no lawful slot means the
 # vocabulary is short, and the fix is an ADR amendment editing these two sets.
 #
-# NOTHING CHECKS THAT THESE SETS MATCH ADR-006 §5's PROSE, in either direction:
+# NOTHING CHECKS THAT THESE SETS MATCH THE STATUTE'S §8 PROSE, in either direction:
 # widening either set passes the lint. It does NOT pass the suite — a test pins
 # these literals exactly, which catches a local edit but still cannot see the
 # ADR, so prose and code can drift together. The correspondence is a
@@ -106,7 +106,7 @@ LEDGER_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 # `SELECT DISTINCT` over any of them enumerates what is actually in use.
 TOKEN = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 # found_by is half-open: seat names may be swapped in freely, while the
-# non-seat values are closed and grow only by amending ADR-006 §5. The lint
+# non-seat values are closed and grow only by amending the statute's §8. The lint
 # holds neither half — the check is on form, and it is TOKEN: one form rule with
 # one definition site, because the skill says these fields are tokens "like
 # found_by and for the same reason", and two identical regexes would drift

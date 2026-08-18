@@ -1,6 +1,16 @@
-# The constitution
+# The frozen ADRs — the constitution's historical preamble
 
-The small set of decisions everything else answers to. Each ADR carries its exhibits — the evidence it was learned from — so a future sweep can tell load-bearing from vestigial (per ADR-002, that applies to these documents too).
+**Status:** Frozen 2026-08-18
+
+**Frozen 2026-08-18 by [D-53].** This index is part of the frozen preamble; open questions moved to `../open-questions.md` when the split landed, because a live section inside a frozen file cannot be told from dead law.
+
+**Frozen 2026-08-18 by [D-53](../decisions/D-53-2026-08-18-log-and-statute.md). Nothing here is in force.** The rules these nine documents once carried live in the [statute](../constitution.md); each statute rule cites the ADR line or [decision entry](../decisions/) that last shaped it. These files are the record of how those rules were decided, and they keep their exhibits — the evidence each was learned from — so a sweep can still tell load-bearing from vestigial.
+
+**The only lawful diff to a file here is a status-line supersession pointer** (statute §12). Every status-line entry, every `†` note, and every inline record remains readable at the path it has always had; the freeze moves where *new* history is born, never where old history lives.
+
+## The nine, as they stood at the freeze
+
+The Status column below is a historical record as of 2026-08-18 and is no longer maintained — the obligation to move it with each amendment retired with the amendment procedure that carried it (D-53, carve-out 1).
 
 | ADR | Decision | Status |
 | --- | --- | --- |
@@ -14,13 +24,9 @@ The small set of decisions everything else answers to. Each ADR carries its exhi
 | [ADR-008](ADR-008-memory.md) | The repo is the memory; vendor stores are inboxes with same-session landing; the wipe test | Accepted, amended |
 | [ADR-009](ADR-009-predecessor-disposition.md) | Predecessor is reference material, not a source tree: nothing carries by default, pull-based rewrite, no presumption of correctness | Accepted |
 
-## Open rulings and open questions
+## Amending — superseded, kept for the record
 
-No rulings are pending from the owner. One evidence-driven question stays open inside its ADR: persona-framing value (ADR-001), decided per skill by ledger or eval evidence — no one needs to decide it now.
-
-2026-08-15: a full-repo adversarial review (5 prosecutors, defense, judge) sustained 35 findings against the constitution, lint, and seed skill. The practice has since reviewed itself again, each review's sustained findings carried with its seat attribution in [../../ledger.jsonl](../../ledger.jsonl) and transcribed-claim provenance in [../evidence.md](../evidence.md).
-
-## Amending
+**This section is superseded by the statute's §12** and is preserved rather than deleted, because it is the nearest ancestor of the procedure that replaced it: it named the recording surface for an amendment, and §12 moves that surface from a status line to a decision entry. What follows is the text as it stood at the freeze.
 
 An ADR changes by commit like anything else, but the change must name the evidence that motivated it, and any lint rule enforcing the old text changes in the same commit (ADR-004).
 

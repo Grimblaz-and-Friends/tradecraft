@@ -2,6 +2,8 @@
 
 **Status:** Accepted 2026-08-15 · Amended 2026-08-15 (real timing; persona value reopened) · Amended† 2026-08-15 (the belonging test replaced outright — *would a vendor ever ship this?* gives way to *name the standard, judgment rule, or recorded lesson this artifact enforces*, so a vendor shipping the same underlying action no longer disqualifies an artifact; and the structural persona ruling made reopenable by ledger or eval evidence, where it had read as settled — evidence: the 35-finding full-repo adversarial pass, [`fa3345b`](https://github.com/Grimblaz-and-Friends/tradecraft/commit/fa3345b))
 
+**Frozen 2026-08-18 by [D-53].** Historical record; operative rules live in the statute. Only status-line supersession pointers may be appended.
+
 † *An entry marked this way was recorded retroactively on 2026-08-17 by the index sweep in [issue #18](https://github.com/Grimblaz-and-Friends/tradecraft/issues/18): it is dated by the commit that landed the change, and its motivation is reconstructed from that commit's own record rather than stated at the time. New entries append to the status line above, never past this note.*
 
 ## Context
