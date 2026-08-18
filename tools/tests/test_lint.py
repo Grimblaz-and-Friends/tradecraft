@@ -725,9 +725,12 @@ def test_seat_record_array_row_is_rejected_as_a_non_object(tmp_path):
     assert any("status" in f for f in findings)  # the later row still checked
 
 
-def test_seat_record_vocabularies_are_exactly_what_the_adr_states():
+def test_seat_record_vocabularies_are_exactly_what_the_statute_states():
     """Pins the literals so a local widening fails here even though nothing can
-    read the ADR — the same stated-unenforced gap the ledger sets carry."""
+    read the statute — the same stated-unenforced gap the ledger sets carry.
+    D-53 moved the seat record into the statute too (§8 states `status`, `lane`,
+    `isolated` and the field set), and `LEDGER_DISPOSITIONS` below is a *ledger*
+    vocabulary the statute states, so the ADR was the wrong source at both."""
     assert lint.SEAT_STATUSES == {"ran", "clean", "failed"}
     assert lint.SEAT_LANES == {"panel", "routine"}
     assert lint.SEAT_RECORD_FIELDS == {
