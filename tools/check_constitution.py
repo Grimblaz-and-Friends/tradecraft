@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
 """Constitutional format guards — the statute and the decision log (D-53).
 
-Two guards, both form/position/existence only. Correspondence — whether an
-entry's content describes the change, whether a "Changes no operative rule"
-declaration is true, whether meaning was preserved — is review's, and nothing
-here is claimed to reach it (statute §12).
+Form, position and existence only. Correspondence — whether an entry's content
+describes the change, whether a "Changes no operative rule" declaration is true,
+whether meaning was preserved — is review's, and nothing here reaches it
+(statute §12).
 
   1. append-only. Evaluated against the MERGE BASE, which is what makes the
-     lifecycle work with no extra state: an entry is *accepted* when it is
-     present at the merge base, and a frozen ADR is *frozen* when it carried
-     its freeze marker there. Before that, both are drafts and freely
-     revisable — including on the pull request that introduces them, which is
-     why this guard can land in the same change as the files it guards.
-     A diff touching an accepted entry or a frozen ADR beyond a status-line
-     append of the fixed pointer form fails. Malformed appends fail. Entry
-     filenames must match `D-<digits>-YYYY-MM-DD-<slug>.md`.
+     lifecycle work with no extra state: an entry is *accepted* when present at
+     the merge base, and an ADR is *frozen* when it carried its freeze marker
+     there. Before that both are drafts and freely revisable — which is why this
+     guard lands in the same change as the files it guards and still passes.
 
-  2. citation. Every statute rule unit ends in a citation token; the statute
-     holds nothing but section headings and rule units; `[ADR-NNN:L]` targets
-     must exist and be line-bound; `[D-N]` targets must exist wherever the
-     token appears in a constitutional file; a rule unit added in the diff
-     must cite this pull request's own entry; and displacement is cross-checked
-     in three directions so a pointer and a Displaces field cannot disagree.
+  2. citation. Rules are identified by their bold lead-in, at any indent, and
+     compared per rule against the merge base: a rule added must cite this pull
+     request's entry, a rule that drops an `[ADR-NNN:L]` or `[D-N]` citation must
+     have that displacement declared, and a rule that vanishes must be displaced
+     by an entry. Quoted fragments must appear on the line they cite.
 
-Exit 0 clean, 1 with findings, **2 when the answer cannot be determined** —
-a guard that goes quiet when its base has moved prints the same line as a
-clean pass, and every failure mode it meets becomes invisible (statute §3).
+  3. entry shape. A decision entry's required-field skeleton, checked while it is
+     still a draft — because an entry that lands malformed can never be repaired:
+     the repair is itself a diff to an accepted entry.
+
+Exit 0 clean, 1 with findings, **2 when the answer cannot be determined** — a
+guard that goes quiet when its base has moved prints the same line as a clean
+pass, and every failure mode it meets becomes invisible (statute §3).
 
 Usage: python tools/check_constitution.py [--base origin/main] [--pr N]
 """
@@ -41,21 +40,39 @@ ROOT = Path(__file__).resolve().parent.parent
 STATUTE = "docs/architecture/constitution.md"
 ADR_DIR = "docs/architecture/adr"
 LOG_DIR = "docs/architecture/decisions"
+LOG_INDEX = f"{LOG_DIR}/README.md"
 
-FREEZE_MARKER = re.compile(r"^\*\*Frozen \d{4}-\d{2}-\d{2} by \[D-\d+\]\.\*\*")
+FREEZE_MARKER = re.compile(r"^\*\*Frozen \d{4}-\d{2}-\d{2} by \[D-\d+\]")
 STATUS_LINE = re.compile(r"^\*\*Status:\*\*")
-# The one lawful post-freeze diff, and the one lawful edit to an accepted
-# entry: a status-line append of exactly this shape (statute §12).
+# The one lawful post-freeze diff, and the one lawful edit to an accepted entry.
+# The target admits a frozen ADR's lines or another entry — an entry has no line
+# numbers, so a form naming only ADRs left entry-to-entry supersession unwritable.
 POINTER = re.compile(
     r" · Superseded in part by \[D-(\d+)\] \((\d{4}-\d{2}-\d{2})\): "
-    r"(ADR-\d{3}:\d+(?:, \d+)*) — [^·]+"
+    r"(ADR-\d{3}:\d+(?:, \d+)*|D-\d+) — [^·]+"
 )
 ENTRY_NAME = re.compile(r"\AD-(\d+)-\d{4}-\d{2}-\d{2}-[a-z0-9-]+\.md\Z")
-RULE_UNIT = re.compile(r"\A- \*\*")
+# A rule unit is a bold-led list item at ANY indent. The statute states 35 of its
+# rules as nested bullets and contains no continuation lines at all, so anchoring
+# at column 0 put those 35 outside every check.
+RULE_UNIT = re.compile(r"\A\s*- \*\*")
+LEAD_IN = re.compile(r"\A\s*- (\*\*.+?\*\*)")
 CITATION = re.compile(r"\[(?:ADR-\d{3}:\d+(?: \"[^\"]*\")?|D-\d+)\]\s*\Z")
-ADR_TOKEN = re.compile(r"\[ADR-(\d{3}):(\d+)(?: \"[^\"]*\")?\]")
+ADR_TOKEN = re.compile(r"\[ADR-(\d{3}):(\d+)(?: \"([^\"]*)\")?\]")
 D_TOKEN = re.compile(r"\[D-(\d+)\]")
 DISPLACES = re.compile(r"^\*\*Displaces:\*\*(.*)$", re.MULTILINE)
+
+ENTRY_SKELETON = (
+    (re.compile(r"^# D-\d+: \S", re.MULTILINE), "a `# D-<N>: <title>` heading"),
+    (re.compile(r"^\*\*Status:\*\* Accepted \d{4}-\d{2}-\d{2} \(PR #\d+\)", re.MULTILINE),
+     "a `**Status:** Accepted YYYY-MM-DD (PR #<N>)` line"),
+    (re.compile(r"^## Context\s*$", re.MULTILINE), "a `## Context` section"),
+    (re.compile(r"^## Decision\s*$", re.MULTILINE), "a `## Decision` section"),
+    (re.compile(r"^\*\*Statute delta:\*\*|^\*\*Changes no operative rule\.\*\*", re.MULTILINE),
+     "a `**Statute delta:**` or `**Changes no operative rule.**` opener in `## Decision`"),
+    (re.compile(r"^## Rejected\s*$", re.MULTILINE), "a `## Rejected` section"),
+    (re.compile(r"^## Evidence\s*$", re.MULTILINE), "an `## Evidence` section"),
+)
 
 
 class Undetermined(Exception):
@@ -83,7 +100,6 @@ def _merge_base(base: str) -> str:
 
 
 def _at(sha: str, path: str) -> str | None:
-    """File content at a revision, or None when it did not exist there."""
     out = subprocess.run(
         ["git", "show", f"{sha}:{path}"], cwd=ROOT, capture_output=True, text=True,
         encoding="utf-8", errors="replace",
@@ -92,98 +108,105 @@ def _at(sha: str, path: str) -> str | None:
 
 
 def _changed(sha: str) -> list[str]:
-    names = _git("diff", "--name-only", f"{sha}...HEAD").splitlines()
-    return [n for n in names if n.strip()]
+    return [n for n in _git("diff", "--name-only", f"{sha}...HEAD").splitlines() if n.strip()]
 
 
 def _status_line(text: str) -> str | None:
+    return next((l for l in text.split("\n") if STATUS_LINE.match(l)), None)
+
+
+def _rules(text: str) -> dict[str, str]:
+    """Rule identity is the bold lead-in. Keyed so a rule can be followed across
+    a diff — line-set comparison could not tell an edited rule from a new one."""
+    out: dict[str, str] = {}
     for line in text.split("\n"):
-        if STATUS_LINE.match(line):
-            return line
-    return None
-
-
-def _was_frozen(base_text: str | None) -> bool:
-    if base_text is None:
-        return False
-    return any(FREEZE_MARKER.match(l) for l in base_text.split("\n"))
+        m = LEAD_IN.match(line)
+        if m and RULE_UNIT.match(line):
+            out[m.group(1)] = line
+    return out
 
 
 def check_append_only(base_sha: str) -> list[str]:
     findings: list[str] = []
     for path in _changed(base_sha):
-        if not (path.startswith(f"{ADR_DIR}/ADR-") or path.startswith(f"{LOG_DIR}/")):
-            continue
+        is_adr = path.startswith(f"{ADR_DIR}/ADR-")
+        is_entry = path.startswith(f"{LOG_DIR}/") and path != LOG_INDEX
+        if not (is_adr or is_entry):
+            continue  # the log's index grows with every entry and is never frozen
         base_text = _at(base_sha, path)
-        head = (ROOT / path).read_text(encoding="utf-8") if (ROOT / path).is_file() else None
+        head_path = ROOT / path
+        head = head_path.read_text(encoding="utf-8") if head_path.is_file() else None
 
-        if path.startswith(f"{LOG_DIR}/"):
+        if is_entry:
             name = Path(path).name
-            if name != "README.md" and not ENTRY_NAME.match(name):
+            if not ENTRY_NAME.match(name):
                 findings.append(
                     f"append-only (§12): {path} is not a lawful entry filename — "
                     f"expected D-<pr>-YYYY-MM-DD-<slug>.md"
                 )
             accepted = base_text is not None
         else:
-            accepted = _was_frozen(base_text)
-
+            accepted = base_text is not None and any(
+                FREEZE_MARKER.match(l) for l in base_text.split("\n")
+            )
         if not accepted:
-            continue  # a draft, or not yet frozen at the base: freely revisable
+            continue
         if head is None:
             findings.append(
-                f"append-only (§12): {path} was accepted at the merge base and is "
-                f"deleted at head — reversal is by superseding entry, never by removal"
+                f"append-only (§12): {path} was accepted at the merge base and is deleted "
+                f"at head — reversal is by superseding entry, never by removal"
             )
             continue
 
-        b_lines, h_lines = base_text.split("\n"), head.split("\n")
         b_status, h_status = _status_line(base_text), _status_line(head)
         if b_status is None or h_status is None:
-            findings.append(f"append-only (§12): {path} has no **Status:** line")
-            continue
-        # Everything except the status line must be byte-identical.
-        if [l for l in b_lines if not STATUS_LINE.match(l)] != [
-            l for l in h_lines if not STATUS_LINE.match(l)
-        ]:
+            # Never an append-only finding: a missing status line is a SHAPE defect,
+            # and reporting it here made the repair its own trigger — an entry that
+            # landed malformed could never be fixed and stayed CI-red forever.
             findings.append(
-                f"append-only (§12): {path} is accepted/frozen and changed outside "
-                f"its status line — the only lawful diff is a status-line append"
+                f"entry-shape (§12): {path} has no `**Status:**` line — repair it before "
+                f"it lands; an accepted entry cannot be edited afterwards"
+            )
+            continue
+        strip = lambda t: [l for l in t.split("\n") if not STATUS_LINE.match(l)]  # noqa: E731
+        if strip(base_text) != strip(head):
+            findings.append(
+                f"append-only (§12): {path} is accepted/frozen and changed outside its "
+                f"status line — the only lawful diff is a status-line append"
             )
         if h_status != b_status:
             if not h_status.startswith(b_status):
                 findings.append(
-                    f"append-only (§12): {path} status line was rewritten rather than "
-                    f"appended to"
+                    f"append-only (§12): {path} status line was rewritten rather than appended to"
                 )
-            else:
-                appended = h_status[len(b_status):]
-                if not POINTER.fullmatch(appended):
-                    findings.append(
-                        f"append-only (§12): {path} status-line append is malformed — "
-                        f"expected ' · Superseded in part by [D-N] (YYYY-MM-DD): "
-                        f"ADR-NNN:L[, L…] — <one clause>', got {appended!r}"
-                    )
+            elif not POINTER.fullmatch(h_status[len(b_status):]):
+                findings.append(
+                    f"append-only (§12): {path} status-line append is malformed — expected "
+                    f"' · Superseded in part by [D-N] (YYYY-MM-DD): <ADR-NNN:L[, L…] | D-N> "
+                    f"— <one clause>', got {h_status[len(b_status):]!r}"
+                )
     return findings
 
 
-def _entry_numbers() -> set[int]:
+def _entry_files() -> list[Path]:
     d = ROOT / LOG_DIR
-    if not d.is_dir():
-        return set()
-    out = set()
-    for f in d.glob("D-*.md"):
-        m = ENTRY_NAME.match(f.name)
-        if m:
-            out.add(int(m.group(1)))
-    return out
+    return sorted(f for f in d.rglob("D-*.md") if ENTRY_NAME.match(f.name)) if d.is_dir() else []
 
 
-def _constitutional_files() -> list[Path]:
-    files = [ROOT / STATUTE]
-    files += sorted((ROOT / ADR_DIR).glob("ADR-*.md"))
-    files += sorted((ROOT / LOG_DIR).glob("D-*.md"))
-    return [f for f in files if f.is_file()]
+def _entry_numbers() -> set[int]:
+    return {int(ENTRY_NAME.match(f.name).group(1)) for f in _entry_files()}
+
+
+def check_entry_shape(base_sha: str) -> list[str]:
+    """Checked on drafts, which is the only moment it can be repaired."""
+    findings: list[str] = []
+    for f in _entry_files():
+        rel = f.relative_to(ROOT).as_posix()
+        text = f.read_text(encoding="utf-8")
+        for pattern, described in ENTRY_SKELETON:
+            if not pattern.search(text):
+                findings.append(f"entry-shape (§12): {rel} is missing {described}")
+    return findings
 
 
 def check_citations(base_sha: str, pr: int | None) -> list[str]:
@@ -191,19 +214,15 @@ def check_citations(base_sha: str, pr: int | None) -> list[str]:
     statute = ROOT / STATUTE
     if not statute.is_file():
         return [f"citation (§12): {STATUTE} is missing"]
-    lines = statute.read_text(encoding="utf-8").split("\n")
+    text = statute.read_text(encoding="utf-8")
+    lines = text.split("\n")
 
-    # The statute holds nothing but section headings and rule units. Content
-    # outside that shape exits the citation regime silently, which is why the
-    # shape is checked and not merely recommended.
     for n, line in enumerate(lines, 1):
-        if not line.strip():
-            continue
-        if line.startswith(("# ", "## ")) or line.startswith("  ") or RULE_UNIT.match(line):
+        if not line.strip() or line.startswith(("# ", "## ")) or RULE_UNIT.match(line):
             continue
         findings.append(
-            f"citation (§12): {STATUTE}:{n} is neither a section heading nor a rule "
-            f"unit — {line[:60]!r}"
+            f"citation (§12): {STATUTE}:{n} is neither a section heading nor a rule unit "
+            f"— {line.strip()[:60]!r}"
         )
     for n, line in enumerate(lines, 1):
         if RULE_UNIT.match(line) and not CITATION.search(line):
@@ -212,10 +231,10 @@ def check_citations(base_sha: str, pr: int | None) -> list[str]:
             )
 
     known = _entry_numbers()
-    for f in _constitutional_files():
+    for f in [statute, *sorted((ROOT / ADR_DIR).glob("ADR-*.md")), *_entry_files()]:
         rel = f.relative_to(ROOT).as_posix()
         for n, line in enumerate(f.read_text(encoding="utf-8").split("\n"), 1):
-            for num, ln in ADR_TOKEN.findall(line):
+            for num, ln, frag in ADR_TOKEN.findall(line):
                 target = list((ROOT / ADR_DIR).glob(f"ADR-{num}-*.md"))
                 if not target:
                     findings.append(f"citation (§12): {rel}:{n} [ADR-{num}:{ln}] — no such ADR")
@@ -226,60 +245,91 @@ def check_citations(base_sha: str, pr: int | None) -> list[str]:
                         f"citation (§12): {rel}:{n} [ADR-{num}:{ln}] is out of bounds "
                         f"({target[0].name} has {len(body)} lines)"
                     )
+                elif frag and frag not in body[int(ln) - 1]:
+                    # The fragment is the reader's only check on a frozen line, so an
+                    # unverified one is worse than none — it looks like corroboration.
+                    findings.append(
+                        f"citation (§12): {rel}:{n} [ADR-{num}:{ln}] quotes {frag!r}, which "
+                        f"does not appear on that line"
+                    )
             for num in D_TOKEN.findall(line):
                 if int(num) not in known:
-                    findings.append(
-                        f"citation (§12): {rel}:{n} [D-{num}] — no entry file for it"
-                    )
+                    findings.append(f"citation (§12): {rel}:{n} [D-{num}] — no entry file for it")
 
-    # A rule unit added in this diff must cite this pull request's own entry:
-    # a new rule arrives with the decision that made it, or the entry is missing.
-    base_statute = _at(base_sha, STATUTE)
-    if base_statute is not None and pr:
-        was = {l for l in base_statute.split("\n") if RULE_UNIT.match(l)}
-        for n, line in enumerate(lines, 1):
-            if RULE_UNIT.match(line) and line not in was:
-                if f"[D-{pr}]" not in line:
-                    findings.append(
-                        f"citation (§12): {STATUTE}:{n} is a rule unit added in this "
-                        f"change and does not cite [D-{pr}]"
-                    )
-
-    findings += _check_displacements(base_sha, known)
+    findings += _check_rule_changes(base_sha, text, pr)
+    findings += _check_displacements()
     return findings
 
 
-def _check_displacements(base_sha: str, known: set[int]) -> list[str]:
-    """Three directions, so a pointer and a Displaces field cannot disagree."""
-    findings: list[str] = []
-    declared: dict[int, set[tuple[str, str]]] = {}
-    for f in sorted((ROOT / LOG_DIR).glob("D-*.md")):
-        m = ENTRY_NAME.match(f.name)
-        if not m:
-            continue
-        num = int(m.group(1))
-        text = f.read_text(encoding="utf-8")
-        d = DISPLACES.search(text)
-        declared[num] = set(ADR_TOKEN.findall(d.group(1))) if d else set()
+def _declared() -> dict[int, set[tuple[str, str]]]:
+    out: dict[int, set[tuple[str, str]]] = {}
+    for f in _entry_files():
+        num = int(ENTRY_NAME.match(f.name).group(1))
+        m = DISPLACES.search(f.read_text(encoding="utf-8"))
+        out[num] = {(a, l) for a, l, _ in ADR_TOKEN.findall(m.group(1))} if m else set()
+    return out
 
+
+def _check_rule_changes(base_sha: str, head_text: str, pr: int | None) -> list[str]:
+    """Per-rule, keyed on the bold lead-in. A whole-file token-set comparison let a
+    rule drop its citation whenever any other rule still cited the same target —
+    179 of 271 citation instances, on the corpus that motivated this."""
+    findings: list[str] = []
+    base_text = _at(base_sha, STATUTE)
+    if base_text is None:
+        return findings  # the statute is new in this change; nothing to compare
+    was, now = _rules(base_text), _rules(head_text)
+    declared_all = {t for targets in _declared().values() for t in targets}
+
+    for lead, line in now.items():
+        if lead in was:
+            b_adr = {(a, l) for a, l, _ in ADR_TOKEN.findall(was[lead])}
+            n_adr = {(a, l) for a, l, _ in ADR_TOKEN.findall(line)}
+            for tgt in sorted(b_adr - n_adr):
+                if tgt not in declared_all:
+                    findings.append(
+                        f"citation (§12): the rule {lead[:50]}… dropped its citation "
+                        f"[ADR-{tgt[0]}:{tgt[1]}] and no entry declares it displaced"
+                    )
+        elif pr and f"[D-{pr}]" not in line:
+            findings.append(
+                f"citation (§12): the rule {lead[:50]}… is added in this change and does "
+                f"not cite [D-{pr}]"
+            )
+    for lead in sorted(set(was) - set(now)):
+        b_adr = {(a, l) for a, l, _ in ADR_TOKEN.findall(was[lead])}
+        if not (b_adr & declared_all):
+            findings.append(
+                f"citation (§12): the rule {lead[:50]}… was removed from the statute and no "
+                f"entry declares its displacement"
+            )
+    return findings
+
+
+def _check_displacements() -> list[str]:
+    findings: list[str] = []
+    declared = _declared()
     pointers: dict[int, set[tuple[str, str]]] = {}
-    for f in sorted((ROOT / ADR_DIR).glob("ADR-*.md")):
+    # Entry status lines carry pointers too — globbing only the ADRs made an entry's
+    # status line a lawful place to write a supersession claim nothing could see.
+    for f in [*sorted((ROOT / ADR_DIR).glob("ADR-*.md")), *_entry_files()]:
         status = _status_line(f.read_text(encoding="utf-8")) or ""
         for pm in POINTER.finditer(status):
-            n = int(pm.group(1))
-            adr = pm.group(3).split(":")[0].replace("ADR-", "")
-            for ln in re.findall(r"\d+", pm.group(3).split(":", 1)[1]):
-                pointers.setdefault(n, set()).add((adr, ln))
+            tgt = pm.group(3)
+            if tgt.startswith("ADR-"):
+                adr, rest = tgt.split(":", 1)
+                for ln in re.findall(r"\d+", rest):
+                    pointers.setdefault(int(pm.group(1)), set()).add((adr.replace("ADR-", ""), ln))
+            else:
+                pointers.setdefault(int(pm.group(1)), set()).add(("D", tgt.replace("D-", "")))
 
-    # (i) every Displaces target has its pointer appended
     for num, targets in declared.items():
         for adr, ln in targets:
             if (adr, ln) not in pointers.get(num, set()):
                 findings.append(
-                    f"citation (§12): D-{num} declares Displaces ADR-{adr}:{ln} but that "
-                    f"ADR's status line carries no matching supersession pointer"
+                    f"citation (§12): D-{num} declares Displaces ADR-{adr}:{ln} but that ADR's "
+                    f"status line carries no matching supersession pointer"
                 )
-    # (ii) every pointer naming [D-N] is matched by that entry's Displaces
     for num, targets in pointers.items():
         if num not in declared:
             findings.append(
@@ -287,35 +337,39 @@ def _check_displacements(base_sha: str, known: set[int]) -> list[str]:
             )
             continue
         for adr, ln in targets:
-            if (adr, ln) not in declared[num]:
+            if adr != "D" and (adr, ln) not in declared[num]:
                 findings.append(
-                    f"citation (§12): ADR-{adr}'s status line points at [D-{num}] for line "
-                    f"{ln}, which D-{num} does not list in Displaces"
-                )
-    # (iii) a statute citation that migrated [ADR-NNN:L] -> [D-N] must be declared
-    base_statute = _at(base_sha, STATUTE)
-    if base_statute is not None:
-        was = set(ADR_TOKEN.findall(base_statute))
-        now = set(ADR_TOKEN.findall((ROOT / STATUTE).read_text(encoding="utf-8")))
-        for adr, ln in sorted(was - now):
-            if not any((adr, ln) in t for t in declared.values()):
-                findings.append(
-                    f"citation (§12): [ADR-{adr}:{ln}] was cited in the statute at the "
-                    f"merge base and is gone at head, with no entry declaring it displaced"
+                    f"citation (§12): ADR-{adr}'s status line points at [D-{num}] for line {ln}, "
+                    f"which D-{num} does not list in Displaces"
                 )
     return findings
 
 
 def run(base: str, pr: int | None) -> list[str]:
     base_sha = _merge_base(base)
-    return check_append_only(base_sha) + check_citations(base_sha, pr)
+    return (
+        check_append_only(base_sha)
+        + check_entry_shape(base_sha)
+        + check_citations(base_sha, pr)
+    )
 
 
 def main() -> int:
+    # stdout is not UTF-8 by default on Windows, and findings echo document content
+    # that contains characters cp1252 cannot encode — the guard died mid-report.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):  # pragma: no cover - non-reconfigurable stream
+        pass
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--pr", type=int, default=None)
     args = ap.parse_args()
+    if args.pr is None:
+        print(
+            "constitution: NOTE — no --pr given, so the added-rule check is skipped. "
+            "CI passes it; a clean run here is weaker than a clean run there."
+        )
     try:
         findings = run(args.base, args.pr)
     except Undetermined as exc:

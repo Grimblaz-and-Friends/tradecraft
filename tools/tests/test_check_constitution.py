@@ -1,10 +1,12 @@
 """Red-first pins for the constitutional guards.
 
-Statute §12 requires each guard to be demonstrated to fail *and* to block, with
-the pins committed rather than shown in a transcript — a guard merged untested
-is the predecessor's never-wired-live class. Every test here mutates a real
-temporary git repository and asserts the guard's exit status, so a check that
-stops reading its input, or that goes quiet, fails the suite.
+This repository's practice — not a rule the statute states — is that each guard
+is demonstrated to fail *and* to block, with the pins committed rather than shown
+in a transcript, because a guard merged untested is the predecessor's
+never-wired-live class. Every test here mutates a real temporary git repository;
+the last group invokes the guard as a subprocess and asserts its **exit status**,
+which is the only channel CI reads — the in-process pins cannot see it, and
+sabotaging `main()` once left all of them green.
 """
 from __future__ import annotations
 
@@ -45,8 +47,9 @@ def repo(tmp_path, monkeypatch):
            f"# ADR-001\n\n**Status:** Accepted 2026-08-15\n\n{MARKER}\n\n## Decision\n\n"
            "Some frozen rule.\n")
     _write(r / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md",
-           "# D-53: x\n\n**Status:** Accepted 2026-08-18 (PR #53)\n\n## Decision\n\n"
-           "**Statute delta:** none.\n")
+           "# D-53: x\n\n**Status:** Accepted 2026-08-18 (PR #53)\n\n## Context\n\nc.\n\n"
+           "## Decision\n\n**Statute delta:** none.\n\n## Rejected\n\nnone.\n\n"
+           "## Evidence\n\nnone.\n")
     _write(r / "docs/architecture/constitution.md",
            "# The constitution\n\n## 1. Identity\n\n- **A rule.** Its reason. [ADR-001:7]\n")
     _run("git", "add", "-A", cwd=r)
@@ -93,8 +96,9 @@ def test_lawful_amendment_passes(repo):
         "**Status:** Accepted 2026-08-15"
         " · Superseded in part by [D-54] (2026-08-19): ADR-001:9 — moved to the statute."))
     _write(repo / "docs/architecture/decisions/D-54-2026-08-19-later.md",
-           "# D-54: later\n\n**Status:** Accepted 2026-08-19 (PR #54)\n\n## Decision\n\n"
-           "**Statute delta:** none.\n**Displaces:** [ADR-001:9]\n")
+           "# D-54: later\n\n**Status:** Accepted 2026-08-19 (PR #54)\n\n## Context\n\nc.\n\n"
+           "## Decision\n\n**Statute delta:** none.\n**Displaces:** [ADR-001:9]\n\n"
+           "## Rejected\n\nnone.\n\n## Evidence\n\nnone.\n")
     _run("git", "add", "-A", cwd=repo)
     _run("git", "commit", "-qm", "lawful amendment", cwd=repo)
     out = _findings(repo)
@@ -209,7 +213,7 @@ def test_silently_dropped_adr_citation_is_caught(repo):
     _write(p, "# The constitution\n\n## 1. Identity\n\n- **A rule.** Its reason. [D-53]\n")
     _run("git", "commit", "-aqm", "dropped cite", cwd=repo)
     out = _findings(repo)
-    assert any("no entry declaring it displaced" in f for f in out), out
+    assert any("dropped its citation" in f for f in out), out
 
 
 # --- the guard must never go quiet -----------------------------------------
@@ -222,3 +226,120 @@ def test_undeterminable_base_exits_two(repo):
 
 def test_clean_tree_reports_nothing(repo):
     assert _findings(repo) == []
+
+
+# --- the exit code is the only channel CI reads (statute §3) -----------------
+
+def _install_guard(repo: Path) -> Path:
+    """ROOT is derived from the guard's own path, so a subprocess must run a copy
+    that lives inside the temp repo."""
+    src = Path(__file__).resolve().parent.parent / "check_constitution.py"
+    dst = repo / "tools" / "check_constitution.py"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    return dst
+
+
+def _exit_code(repo: Path, *extra: str) -> int:
+    """Invoke the guard as CI does. The pins above call run() in-process, which
+    cannot see main()'s return value — sabotaging it left all of them green."""
+    guard = _install_guard(repo)
+    return subprocess.run(
+        [sys.executable, str(guard), "--base", "base-ref", *extra],
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    ).returncode
+
+
+def test_exit_code_is_one_when_findings_exist(repo):
+    """RED-FIRST: findings must exit non-zero, or CI reads success."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8") + "- **An uncited rule.** No token.\n")
+    _run("git", "commit", "-aqm", "uncited", cwd=repo)
+    assert _exit_code(repo) == 1
+
+
+def test_exit_code_is_two_when_undeterminable(repo):
+    """ADR-003's constraint, on the channel that carries it: undeterminable is
+    never a pass. A guard that goes quiet prints the same line as a clean run."""
+    guard = _install_guard(repo)
+    r = subprocess.run(
+        [sys.executable, str(guard), "--base", "no-such-ref-anywhere"],
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 2, r.stdout
+
+
+def test_exit_code_is_zero_on_a_clean_tree(repo):
+    assert _exit_code(repo) == 0
+
+
+# --- what the review's twelve highs bought -----------------------------------
+
+def test_nested_rule_is_not_exempt(repo):
+    """H6: 35 real rules sat behind an exemption written for continuation lines
+    the statute does not contain. A nested rule is a rule."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8") + "  - **A nested rule.** No citation at all.\n")
+    _run("git", "commit", "-aqm", "nested", cwd=repo)
+    out = _findings(repo, pr=54)
+    assert any("does not end in a citation token" in f for f in out), out
+
+
+def test_quoted_fragment_must_appear_on_its_line(repo):
+    """H12: the fragment is the reader's only check on a frozen line, so an
+    unverified one looks like corroboration and is worse than none."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8")
+           + '- **A rule.** Reason. [ADR-001:7 "words that are not on line 7"]\n')
+    _run("git", "commit", "-aqm", "bad fragment", cwd=repo)
+    out = _findings(repo)
+    assert any("does not appear on that line" in f for f in out), out
+
+
+def test_malformed_entry_is_caught_while_still_a_draft(repo):
+    """N1: a malformed entry that lands can never be repaired — the repair is a
+    diff to an accepted entry. So the skeleton is checked while it is a draft."""
+    _write(repo / "docs/architecture/decisions/D-54-2026-08-19-shapeless.md",
+           "garbage, no title, no status line, no sections at all\n")
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "shapeless", cwd=repo)
+    out = _findings(repo)
+    assert any("is missing" in f and "entry-shape" in f for f in out), out
+
+
+def test_deleting_a_d_cited_rule_is_caught(repo):
+    """H5: deletion protection scanned ADR tokens only, so it decayed to zero on
+    the forward path — every rule minted after the split cites [D-N]."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8") + "- **A minted rule.** Reason. [D-53]\n")
+    _run("git", "commit", "-aqm", "add minted", cwd=repo)
+    _run("git", "branch", "-f", "base-ref", "HEAD", cwd=repo)
+    _write(p, "# The constitution\n\n## 1. Identity\n\n- **A rule.** Its reason. [ADR-001:7]\n")
+    _run("git", "commit", "-aqm", "delete minted", cwd=repo)
+    out = _findings(repo)
+    assert any("no entry declares its displacement" in f for f in out), out
+
+
+def test_log_index_is_editable(repo):
+    """H1: the log's index grows with every entry. Freezing it made the log's
+    normal operation fail required CI with a message naming a false cause."""
+    _write(repo / "docs/architecture/decisions/README.md", "# The decision log\n\n| D-53 |\n")
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "index", cwd=repo)
+    _write(repo / "docs/architecture/decisions/README.md",
+           "# The decision log\n\n| D-53 |\n| D-54 |\n")
+    _run("git", "commit", "-aqm", "index grows", cwd=repo)
+    out = _findings(repo)
+    assert not any("README" in f for f in out), out
+
+
+def test_entry_hosted_supersession_pointer_is_seen(repo):
+    """H2: entry status lines were globbed by nothing, so an entry's status line
+    was a lawful place to write a supersession claim no cross-check could see."""
+    p = repo / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md"
+    _write(p, p.read_text(encoding="utf-8").replace(
+        "(PR #53)",
+        "(PR #53) · Superseded in part by [D-99] (2026-08-20): D-53 — reversed."))
+    _run("git", "commit", "-aqm", "false pointer", cwd=repo)
+    out = _findings(repo)
+    assert any("no such entry exists" in f for f in out), out

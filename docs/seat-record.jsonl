@@ -40,3 +40,9 @@
 {"source": "pr50-postfix-2-2026-08-18", "date": "2026-08-18", "seat": "post-fix", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 3, "merged": 3, "sustained": 3, "status": "ran", "isolated": true}
 {"source": "pr50-postfix-3-2026-08-18", "date": "2026-08-18", "seat": "post-fix", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 6, "merged": 6, "sustained": 6, "status": "ran", "isolated": true}
 {"source": "pr50-postfix-3-2026-08-18", "date": "2026-08-18", "seat": "defense", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 1, "merged": 1, "sustained": 1, "status": "ran", "isolated": true}
+{"source": "pr53-panel-2026-08-18", "date": "2026-08-18", "seat": "cold-read", "model": "fable", "runtime": "claude-code", "lane": "panel", "raw": 12, "merged": 10, "sustained": 9, "status": "ran", "isolated": false}
+{"source": "pr53-panel-2026-08-18", "date": "2026-08-18", "seat": "operational", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 14, "merged": 12, "sustained": 11, "status": "ran", "isolated": false}
+{"source": "pr53-panel-2026-08-18", "date": "2026-08-18", "seat": "revision-diff", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 21, "merged": 15, "sustained": 13, "status": "ran", "isolated": false}
+{"source": "pr53-panel-2026-08-18", "date": "2026-08-18", "seat": "claims-vs-evidence", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 13, "merged": 10, "sustained": 9, "status": "ran", "isolated": false}
+{"source": "pr53-panel-2026-08-18", "date": "2026-08-18", "seat": "wiring-falsifier", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 7, "merged": 6, "sustained": 6, "status": "ran", "isolated": true}
+{"source": "pr53-panel-2026-08-18", "date": "2026-08-18", "seat": "defense", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 3, "merged": 3, "sustained": 3, "status": "ran", "isolated": true}

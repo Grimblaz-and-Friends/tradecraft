@@ -1,5 +1,9 @@
 # The frozen ADRs — the constitution's historical preamble
 
+**Status:** Frozen 2026-08-18
+
+**Frozen 2026-08-18 by [D-53].** This index is part of the frozen preamble; open questions moved to `../open-questions.md` when the split landed, because a live section inside a frozen file cannot be told from dead law.
+
 **Frozen 2026-08-18 by [D-53](../decisions/D-53-2026-08-18-log-and-statute.md). Nothing here is in force.** The rules these nine documents once carried live in the [statute](../constitution.md); each statute rule cites the ADR line or [decision entry](../decisions/) that last shaped it. These files are the record of how those rules were decided, and they keep their exhibits — the evidence each was learned from — so a sweep can still tell load-bearing from vestigial.
 
 **The only lawful diff to a file here is a status-line supersession pointer** (statute §12). Every status-line entry, every `†` note, and every inline record remains readable at the path it has always had; the freeze moves where *new* history is born, never where old history lives.
@@ -19,14 +23,6 @@ The Status column below is a historical record as of 2026-08-18 and is no longer
 | [ADR-007](ADR-007-cross-runtime.md) | Runtime-neutral practice; GitHub as interchange; substrate: **Python** (ruled) | Accepted, amended |
 | [ADR-008](ADR-008-memory.md) | The repo is the memory; vendor stores are inboxes with same-session landing; the wipe test | Accepted, amended |
 | [ADR-009](ADR-009-predecessor-disposition.md) | Predecessor is reference material, not a source tree: nothing carries by default, pull-based rewrite, no presumption of correctness | Accepted |
-
-## Open rulings and open questions
-
-**This section stays live.** It is the named home for constitutional content that is not a rule — an open question binds nobody and so has no statute rule to live in, and the statute holds nothing but headings and rule units.
-
-No rulings are pending from the owner. One evidence-driven question stays open inside its ADR: persona-framing value (ADR-001), decided per skill by ledger or eval evidence — no one needs to decide it now.
-
-2026-08-15: a full-repo adversarial review (5 prosecutors, defense, judge) sustained 35 findings against the constitution, lint, and seed skill. The practice has since reviewed itself again, each review's sustained findings carried with its seat attribution in [../../ledger.jsonl](../../ledger.jsonl) and transcribed-claim provenance in [../evidence.md](../evidence.md).
 
 ## Amending — superseded, kept for the record
 
