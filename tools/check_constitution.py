@@ -223,11 +223,29 @@ def _entry_numbers() -> set[int]:
     return {int(ENTRY_NAME.match(f.name).group(1)) for f in _entry_files()}
 
 
+def _duplicate_entry_numbers() -> dict[int, list[str]]:
+    """One number must resolve to one file. Zero-padding is lawful in a filename
+    and invisible to every consumer, all of which key on the int — so a second
+    file claiming a taken number silently overwrites the first's `Displaces`."""
+    by_num: dict[int, list[str]] = {}
+    for f in _entry_files():
+        by_num.setdefault(int(ENTRY_NAME.match(f.name).group(1)), []).append(f.name)
+    return {n: sorted(names) for n, names in by_num.items() if len(names) > 1}
+
+
 def check_entry_shape(base_sha: str) -> list[str]:
     """Drafts only. An accepted entry cannot be repaired — the repair is itself a
     diff to an accepted entry — so re-checking one would make it permanently red
     for a defect nobody can fix. That is the trap this check was added to close."""
     findings: list[str] = []
+    for num, names in sorted(_duplicate_entry_numbers().items()):
+        # Reported only when this change introduces one of the colliding files,
+        # for the same reason the rest of this function is draft-scoped.
+        if any(_at(base_sha, f"{LOG_DIR}/{n}") is None for n in names):
+            findings.append(
+                f"entry-shape (§12): {len(names)} entries claim the number D-{num} "
+                f"({', '.join(names)}) — one number, one file"
+            )
     for f in _entry_files():
         rel = f.relative_to(ROOT).as_posix()
         if _at(base_sha, rel) is not None:
@@ -242,8 +260,8 @@ def check_entry_shape(base_sha: str) -> list[str]:
                 f"before it lands; afterwards the record can be neither superseded nor fixed"
             )
         own = ENTRY_NAME.match(f.name).group(1)
-        for pat, site in ((rf"^# D-(\d+):", "heading"),
-                          (rf"^\*\*Status:\*\* Accepted \d{{4}}-\d{{2}}-\d{{2}} \(PR #(\d+)\)", "status line")):
+        for pat, site in ((r"^# D-(\d+):", "heading"),
+                          (r"^\*\*Status:\*\* Accepted \d{4}-\d{2}-\d{2} \(PR #(\d+)\)", "status line")):
             m = re.search(pat, text, re.MULTILINE)
             if m and int(m.group(1)) != int(own):
                 findings.append(
@@ -402,7 +420,7 @@ def _check_displacements() -> list[str]:
             continue
         for tgt in sorted(targets):
             if tgt not in declared[num]:
-                where = "for line " + tgt[1] if tgt[0] != "D" else ""
+                where = f"for line {tgt[1]} " if tgt[0] != "D" else ""
                 findings.append(
                     f"citation (§12): a status line points at [D-{num}] {where}"
                     f"superseding {_show(tgt)}, which D-{num} does not list in Displaces"

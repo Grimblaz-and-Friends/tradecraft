@@ -565,19 +565,22 @@ def test_a_record_quoting_the_status_format_stays_supersedable(repo):
     a = repo / "docs/architecture/adr/ADR-001-identity.md"
     _write(a, a.read_text(encoding="utf-8") + chr(10) + "```" + chr(10)
            + "**Status:** Accepted YYYY-MM-DD" + chr(10) + "```" + chr(10))
+    # Both halves of the base state land BEFORE the re-point. Editing an accepted
+    # entry's body afterwards is itself an append-only violation, and asserting
+    # only the absence of one finding cannot see it.
+    d = repo / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md"
+    _write(d, d.read_text(encoding="utf-8").replace(
+        "**Statute delta:** none.",
+        "**Statute delta:** none." + chr(10) + "**Displaces:** [ADR-001:7]"))
     _run("git", "commit", "-aqm", "an ADR that quotes the format", cwd=repo)
     _run("git", "branch", "-f", "base-ref", cwd=repo)
     _write(a, a.read_text(encoding="utf-8").replace(
         "**Status:** Accepted 2026-08-15" + chr(10),
         "**Status:** Accepted 2026-08-15 · Superseded in part by [D-53] "
         "(2026-08-18): ADR-001:7 — moved" + chr(10), 1))
-    d = repo / "docs/architecture/decisions/D-53-2026-08-18-log-and-statute.md"
-    _write(d, d.read_text(encoding="utf-8").replace(
-        "**Statute delta:** none.",
-        "**Statute delta:** none." + chr(10) + "**Displaces:** [ADR-001:7]"))
     _run("git", "commit", "-aqm", "the one lawful later diff", cwd=repo)
-    out = _findings(repo)
-    assert not any("`**Status:**` lines" in f for f in out), out
+    # The whole run must be clean, not merely free of the count finding.
+    assert _findings(repo) == [], _findings(repo)
 
 
 def test_a_second_status_line_is_caught_while_still_a_draft(repo):
@@ -642,3 +645,36 @@ def test_a_zero_padded_entry_number_is_not_a_mismatch(repo):
     _run("git", "commit", "-qm", "zero-padded name", cwd=repo)
     out = _findings(repo, 61)
     assert not any("one entry, one number" in f for f in out), out
+
+
+# --- pins from the second external reconciliation (X3-X5) -------------------
+
+
+def test_two_entries_cannot_claim_one_number(repo):
+    """X4 - W5 made a zero-padded filename lawful, and every consumer keys on the
+    int, so a second file claiming a taken number silently overwrites the first's
+    Displaces. The remedy for one defect opened the next."""
+    for name, dec in (("D-61-2026-08-19-real.md",
+                       "**Statute delta:** retired." + chr(10) + "**Displaces:** [ADR-001:7]"),
+                      ("D-061-2026-08-19-decoy.md", "**Changes no operative rule.**")):
+        _write(repo / "docs/architecture/decisions" / name,
+               ENTRY.format(h=61, p=61, decision=dec))
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "two entries, one number", cwd=repo)
+    out = _findings(repo, 61)
+    assert any("one number, one file" in f for f in out), out
+
+
+def test_a_pointer_mismatch_names_its_line_readably(repo):
+    """X5 - two adjacent f-strings concatenated with no separator, so an ADR
+    target rendered as "for line 7superseding". The finding fired correctly and
+    said something no reader could parse, which is the same as not firing."""
+    a = repo / "docs/architecture/adr/ADR-001-identity.md"
+    _write(a, a.read_text(encoding="utf-8").replace(
+        "**Status:** Accepted 2026-08-15",
+        "**Status:** Accepted 2026-08-15 · Superseded in part by [D-53] "
+        "(2026-08-18): ADR-001:7 — unbacked"))
+    _run("git", "commit", "-aqm", "a pointer D-53 does not declare", cwd=repo)
+    out = [f for f in _findings(repo) if "does not list in Displaces" in f]
+    assert out, _findings(repo)
+    assert "for line 7 superseding" in out[0], out[0]
