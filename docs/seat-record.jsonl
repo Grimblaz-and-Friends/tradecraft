@@ -27,3 +27,5 @@
 {"source": "pr50-panel-2026-08-18", "date": "2026-08-18", "seat": "claims-vs-evidence", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 8, "merged": 7, "sustained": 6, "status": "ran", "isolated": false}
 {"source": "pr50-panel-2026-08-18", "date": "2026-08-18", "seat": "wiring-falsifier", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 5, "merged": 3, "sustained": 1, "status": "ran", "isolated": true}
 {"source": "pr50-panel-2026-08-18", "date": "2026-08-18", "seat": "defense", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 3, "merged": 3, "sustained": 3, "status": "ran", "isolated": true}
+{"source": "pr50-postfix-2026-08-18", "date": "2026-08-18", "seat": "post-fix", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 7, "merged": 7, "sustained": 7, "status": "ran", "isolated": true}
+{"source": "pr50-postfix-2026-08-18", "date": "2026-08-18", "seat": "defense", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 1, "merged": 1, "sustained": 1, "status": "ran", "isolated": true}
