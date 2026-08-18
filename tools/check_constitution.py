@@ -173,6 +173,16 @@ def check_append_only(base_sha: str) -> list[str]:
             )
             continue
 
+        h_all = [x for x in head.split(chr(10)) if STATUS_LINE.match(x)]
+        if len(h_all) > 1:
+            # The canonical status line is exempt from the body comparison below,
+            # so a SECOND one rides that exemption and carries arbitrary content
+            # through untouched. Found independently by both external reviewers.
+            findings.append(
+                f"append-only (§12): {path} has {len(h_all)} `**Status:**` lines — exactly "
+                f"one is lawful; any other rides the status-line exemption"
+            )
+            continue
         b_status, h_status = _status_line(base_text), _status_line(head)
         if b_status is None or h_status is None:
             # Never an append-only finding: a missing status line is a SHAPE defect,
@@ -222,6 +232,17 @@ def check_entry_shape(base_sha: str) -> list[str]:
         if _at(base_sha, rel) is not None:
             continue  # accepted at the merge base: immutable, and past repair
         text = f.read_text(encoding="utf-8")
+        # Three sites name one entry. Left free to disagree, [D-N] resolves to
+        # whichever the reader happened to consult.
+        own = ENTRY_NAME.match(f.name).group(1)
+        for pat, site in ((rf"^# D-(\d+):", "heading"),
+                          (rf"^\*\*Status:\*\* Accepted \d{{4}}-\d{{2}}-\d{{2}} \(PR #(\d+)\)", "status line")):
+            m = re.search(pat, text, re.MULTILINE)
+            if m and m.group(1) != own:
+                findings.append(
+                    f"entry-shape (§12): {rel} is named D-{own} but its {site} says "
+                    f"D-{m.group(1)} — one entry, one number"
+                )
         for pattern, described in ENTRY_SKELETON:
             if not pattern.search(text):
                 findings.append(f"entry-shape (§12): {rel} is missing {described}")
@@ -285,12 +306,24 @@ def check_citations(base_sha: str, pr: int | None) -> list[str]:
     return findings
 
 
+def _targets(text: str) -> set[tuple[str, str]]:
+    """Both citation forms in one vocabulary. Reading only the ADR form made the
+    displacement rule decay to nothing on exactly the forward path, since every
+    rule minted after this migration cites [D-N]."""
+    return ({(f"ADR-{a}", ln) for a, ln, _ in ADR_TOKEN.findall(text)}
+            | {("D", n) for n in D_TOKEN.findall(text)})
+
+
+def _show(tgt: tuple[str, str]) -> str:
+    return f"[D-{tgt[1]}]" if tgt[0] == "D" else f"[{tgt[0]}:{tgt[1]}]"
+
+
 def _declared() -> dict[int, set[tuple[str, str]]]:
     out: dict[int, set[tuple[str, str]]] = {}
     for f in _entry_files():
         num = int(ENTRY_NAME.match(f.name).group(1))
         m = DISPLACES.search(f.read_text(encoding="utf-8"))
-        out[num] = {(a, l) for a, l, _ in ADR_TOKEN.findall(m.group(1))} if m else set()
+        out[num] = _targets(m.group(1)) if m else set()
     return out
 
 
@@ -310,13 +343,11 @@ def _check_rule_changes(base_sha: str, head_text: str, pr: int | None) -> list[s
 
     for lead, line in now.items():
         if lead in was:
-            b_adr = {(a, l) for a, l, _ in ADR_TOKEN.findall(was[lead])}
-            n_adr = {(a, l) for a, l, _ in ADR_TOKEN.findall(line)}
-            for tgt in sorted(b_adr - n_adr):
+            for tgt in sorted(_targets(was[lead]) - _targets(line)):
                 if tgt not in declared_now:
                     findings.append(
                         f"citation (§12): the rule {lead[:50]}… dropped its citation "
-                        f"[ADR-{tgt[0]}:{tgt[1]}] and no entry declares it displaced"
+                        f"{_show(tgt)} and no entry declares it displaced"
                     )
         elif pr and f"[D-{pr}]" not in line:
             findings.append(
@@ -346,15 +377,15 @@ def _check_displacements() -> list[str]:
             if tgt.startswith("ADR-"):
                 adr, rest = tgt.split(":", 1)
                 for ln in re.findall(r"\d+", rest):
-                    pointers.setdefault(int(pm.group(1)), set()).add((adr.replace("ADR-", ""), ln))
+                    pointers.setdefault(int(pm.group(1)), set()).add((adr, ln))
             else:
                 pointers.setdefault(int(pm.group(1)), set()).add(("D", tgt.replace("D-", "")))
 
     for num, targets in declared.items():
-        for adr, ln in targets:
-            if (adr, ln) not in pointers.get(num, set()):
+        for tgt in sorted(targets):
+            if tgt not in pointers.get(num, set()):
                 findings.append(
-                    f"citation (§12): D-{num} declares Displaces ADR-{adr}:{ln} but that ADR's "
+                    f"citation (§12): D-{num} declares Displaces {_show(tgt)} but that record's "
                     f"status line carries no matching supersession pointer"
                 )
     for num, targets in pointers.items():
@@ -363,11 +394,11 @@ def _check_displacements() -> list[str]:
                 f"citation (§12): a supersession pointer names [D-{num}] but no such entry exists"
             )
             continue
-        for adr, ln in targets:
-            if adr != "D" and (adr, ln) not in declared[num]:
+        for tgt in sorted(targets):
+            if tgt[0] != "D" and tgt not in declared[num]:
                 findings.append(
-                    f"citation (§12): ADR-{adr}'s status line points at [D-{num}] for line {ln}, "
-                    f"which D-{num} does not list in Displaces"
+                    f"citation (§12): {tgt[0]}'s status line points at [D-{num}] for line "
+                    f"{tgt[1]}, which D-{num} does not list in Displaces"
                 )
     return findings
 

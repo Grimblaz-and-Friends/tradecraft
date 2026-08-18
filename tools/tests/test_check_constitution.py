@@ -450,3 +450,56 @@ def test_a_displacement_declared_by_another_entry_does_not_license_this_one(repo
     _run("git", "commit", "-qm", "migrate the citation, declaring nothing", cwd=repo)
     out = _findings(repo, 61)
     assert any("ADR-001:7" in f and "displace" in f.lower() for f in out), out
+
+
+# --- pins from the external reconciliation (CodeRabbit / Codex) --------------
+
+
+def test_a_second_status_line_is_caught(repo):
+    """The canonical status line is exempt from the body comparison, so a second
+    one rides that exemption and carries arbitrary content through untouched.
+    Found independently by both external reviewers."""
+    p = repo / "docs/architecture/adr/ADR-001-identity.md"
+    _write(p, p.read_text(encoding="utf-8") + "**Status:** arbitrary mutable payload\n")
+    _run("git", "commit", "-aqm", "smuggle a payload", cwd=repo)
+    out = _findings(repo)
+    assert any("`**Status:**` lines" in f for f in out), out
+
+
+def test_dropping_a_d_citation_needs_a_declaration(repo):
+    """The docstring promised `[ADR-NNN:L]` or `[D-N]`; only the first was read.
+    Every rule minted after this migration cites [D-N], so the rule decayed to
+    nothing on exactly the forward path."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8") + "- **A newer rule.** Its reason. [D-53]\n")
+    _run("git", "commit", "-aqm", "a rule whose provenance is an entry", cwd=repo)
+    _run("git", "branch", "-f", "base-ref", cwd=repo)
+    _write(p, p.read_text(encoding="utf-8").replace(
+        "- **A newer rule.** Its reason. [D-53]", "- **A newer rule.** Its reason. [ADR-001:7]"))
+    _run("git", "commit", "-aqm", "migrate a D citation silently", cwd=repo)
+    out = _findings(repo, 61)
+    assert any("[D-53]" in f and "declares it displaced" in f for f in out), out
+
+
+def test_entry_number_must_agree_across_its_three_sites(repo):
+    """Filename, heading and status PR number all name one entry. Left free to
+    disagree, [D-N] resolves to whichever site the reader happened to consult."""
+    _write(repo / "docs/architecture/decisions/D-61-2026-08-19-x.md",
+           "# D-52: y\n\n**Status:** Accepted 2026-08-19 (PR #52)\n\n## Context\n\nc.\n\n"
+           "## Decision\n\n**Changes no operative rule.**\n\n## Rejected\n\nnone.\n\n"
+           "## Evidence\n\nnone.\n")
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "mismatched entry", cwd=repo)
+    out = _findings(repo, 61)
+    assert sum("one entry, one number" in f for f in out) == 2, out
+
+
+def test_a_cosmetic_edit_needs_no_entry(repo):
+    """The converse, pinned because an external reviewer read it as broken: §12
+    exempts cosmetic changes, and rule identity is what makes the exemption
+    reachable — an edit keeps its lead-in, so it is not an added rule."""
+    p = repo / "docs/architecture/constitution.md"
+    _write(p, p.read_text(encoding="utf-8").replace(
+        "Its reason. [ADR-001:7]", "Its reason, typo fixed. [ADR-001:7]"))
+    _run("git", "commit", "-aqm", "cosmetic", cwd=repo)
+    assert _findings(repo, 61) == [], _findings(repo, 61)
