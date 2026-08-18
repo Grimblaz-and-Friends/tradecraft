@@ -56,7 +56,7 @@ Filing the skill's half as a follow-up was rejected as unlawful rather than mere
 5. **Silence on the one-live-option case, or a hard floor of two or more options always.** The first leaves the rule unstatable in a case that will arise; the second mandates the fabrication the rule exists to prevent, and contradicts §5's *confirmation of the predictable: do not ask*.
 6. **Copying `SKILL.md`'s full "surfacings, not reviews" gloss into the statute** with D-53's twin-maintenance rule attached. A third forced twin plus its standing obligation, bought for a distinction the shorter clause already delivers.
 7. **Leaving `skills/adversarial-review/SKILL.md` untouched.** It would knowingly ship a skill whose central instruction has a meaning stated only in the repo-only zone — precisely the failure ADR-004's wall exists to prevent.
-8. **Filing the skill's half as a follow-up issue.** Fails §7's filing precondition, both remedy homes not having been rejected. Filing by default.
+8. **Filing the skill's half as a follow-up issue.** Fails §7's filing precondition, both remedy homes not having been rejected — which makes it filing by default, the practice that section exists to prevent.
 9. **Reverting the skill and typed-halting unattended reviews at the seam** — #45's option B, declined by the owner. Dominated: the halt delivers the question no sooner than the durable row already does, and costs the unattended lane its purpose.
 10. **A passive line in every unattended run's report listing open `owner-pending` rows** — #45's option C, deferred by the owner as the evidence-earned add-on if rows demonstrably age ("A for now"). Not built here, and not filed; it returns if the evidence arrives.
 11. **A guard on question form.** See delta 1.
