@@ -252,11 +252,11 @@ def test_ledger_row_bad_vocab_values_are_findings(tmp_path):
     assert any("disposition" in f and "vibes" in f for f in findings)
 
 
-def test_ledger_vocabularies_are_exactly_what_the_adr_states():
-    """Every value ADR-006 §5 enumerates, pinned. Without this, 7 of the 11
+def test_ledger_vocabularies_are_exactly_what_the_statute_states():
+    """Every value the statute's §8 enumerates, pinned. Without this, 7 of the 11
     original values could be deleted from the lint with the suite green and the
     live lint clean — the guard covering only the values the fixtures happen to
-    use. Nothing checks these against the ADR's prose (§5 names that as a
+    use. Nothing checks these against the statute's prose (§8 names that as a
     stated-unenforced property), so this is the one place a deletion is caught."""
     assert lint.LEDGER_POSITIONS == {
         "framing", "design", "plan", "implementation", "unrecorded",
@@ -264,6 +264,20 @@ def test_ledger_vocabularies_are_exactly_what_the_adr_states():
     assert lint.LEDGER_STAGES == {
         "authoring-review", "adversarial-review", "post-fix", "external",
         "ci", "post-merge", "consumer", "unrecorded",
+    }
+    # D-59: `artifact` had no pin — nor did `LEDGER_SEVERITIES` or
+    # `LEDGER_FIELDS`; D-59's review pinned all three. Each widened or narrowed
+    # with the suite green and the live lint clean, so the vocabulary being
+    # amended was the one an edit reaches first and the two beside it were the
+    # ones nobody would have looked for once this pin claimed the class closed.
+    assert lint.LEDGER_ARTIFACTS == {
+        "constitution", "repo-docs", "work-prose", "skill-prose", "script",
+        "lint", "tests", "ci", "packaging",
+    }
+    assert lint.LEDGER_SEVERITIES == {"high", "medium", "low"}
+    assert lint.LEDGER_FIELDS == {
+        "id", "date", "artifact", "severity", "introduced",
+        "catchable", "caught", "source", "disposition", "found_by", "ref",
     }
 
 
@@ -711,9 +725,12 @@ def test_seat_record_array_row_is_rejected_as_a_non_object(tmp_path):
     assert any("status" in f for f in findings)  # the later row still checked
 
 
-def test_seat_record_vocabularies_are_exactly_what_the_adr_states():
+def test_seat_record_vocabularies_are_exactly_what_the_statute_states():
     """Pins the literals so a local widening fails here even though nothing can
-    read the ADR — the same stated-unenforced gap the ledger sets carry."""
+    read the statute — the same stated-unenforced gap the ledger sets carry.
+    D-53 moved the seat record into the statute too (§8 states `status`, `lane`,
+    `isolated` and the field set), and `LEDGER_DISPOSITIONS` below is a *ledger*
+    vocabulary the statute states, so the ADR was the wrong source at both."""
     assert lint.SEAT_STATUSES == {"ran", "clean", "failed"}
     assert lint.SEAT_LANES == {"panel", "routine"}
     assert lint.SEAT_RECORD_FIELDS == {
