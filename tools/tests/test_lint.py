@@ -265,6 +265,14 @@ def test_ledger_vocabularies_are_exactly_what_the_adr_states():
         "authoring-review", "adversarial-review", "post-fix", "external",
         "ci", "post-merge", "consumer", "unrecorded",
     }
+    # D-59: `artifact` was the one vocabulary in this file with no pin, so a
+    # local widening or narrowing of it passed both the suite and the live lint.
+    # It is also the set an edit reaches first: it gained a growth rule only in
+    # D-53 and took its first new value in the same change that adds this pin.
+    assert lint.LEDGER_ARTIFACTS == {
+        "constitution", "repo-docs", "work-prose", "skill-prose", "script",
+        "lint", "tests", "ci", "packaging",
+    }
 
 
 def test_ledger_accepts_a_defect_made_early_and_detectable_late(tmp_path):
