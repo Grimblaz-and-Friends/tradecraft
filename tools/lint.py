@@ -21,7 +21,7 @@ Checks, each anchored to the ADR it enforces:
   5. seat record (§8): docs/seat-record.jsonl, when present, parses and
      carries the required fields per row — per-seat raw/merged/sustained
      counts, the precision axis the defect ledger is structurally silent
-     about. It ships with this check rather than owing one: §5's interim
+     about. It ships with this check rather than owing one: §8's interim
      waiver for hand-written rows *is* the lint.
 
 All shipped files are scanned regardless of extension; binary content (NUL
@@ -80,13 +80,13 @@ LEDGER_ARTIFACTS = {
 # `unrecorded` means ONE thing on either axis: not judged. It is not a fallback
 # for a judged value that fits nothing listed — that reading restores the double
 # duty `authoring` was retired for. A judged value with no lawful slot means the
-# vocabulary is short, and the fix is an ADR amendment editing these two sets.
+# vocabulary is short, and the fix is a decision entry amending these two sets.
 #
 # NOTHING CHECKS THAT THESE SETS MATCH THE STATUTE'S §8 PROSE, in either direction:
 # widening either set passes the lint. It does NOT pass the suite — a test pins
 # these literals exactly, which catches a local edit but still cannot see the
-# ADR, so prose and code can drift together. The correspondence is a
-# stated, unenforced property (§5 names it alongside the axis ordering and the
+# statute, so prose and code can drift together. The correspondence is a
+# stated, unenforced property (§8 names it alongside the axis ordering and the
 # two `ref` properties) rather than a guarded one — §2 earns code by
 # recurrence, and a guard here would have to read and parse ADR text.
 LEDGER_POSITIONS = {
@@ -94,14 +94,14 @@ LEDGER_POSITIONS = {
 }
 # post-fix and external are here because they name a review STAGE a defect can
 # be caught at. Not every found_by value qualifies: defense, judge and owner are
-# equally named by §5's found_by contract and are finders within or outside a
+# equally named by §8's found_by contract and are finders within or outside a
 # stage, not stages themselves. Without these two, 29 real catches mapped onto
 # `adversarial-review` — precisely the "nearest wrong one" the section forbids.
 LEDGER_STAGES = {
     "authoring-review", "adversarial-review", "post-fix", "external",
     "ci", "post-merge", "consumer", "unrecorded",
 }
-# `filed` was added 2026-08-17: §4 makes filing the exception and requires both
+# `filed` was added 2026-08-17: §7 makes filing the exception and requires both
 # other homes rejected, but a finding that lawfully cleared that bar had no value
 # to say so and was written `recorded` with an issue named as the reason. That is
 # a different claim — `recorded` says nobody will act, `filed` says someone will,
@@ -425,7 +425,7 @@ def check_seat_record(root: Path) -> list[str]:
 
     The defect ledger holds only sustained findings, so it measures yield and is
     silent about precision. These rows carry both, and they ship with this check
-    rather than owing one: the interim waiver §5 takes for hand-written rows *is*
+    rather than owing one: the interim waiver §8 takes for hand-written rows *is*
     the lint, so a format arriving without a validator is §2's day-one-code
     exception being taken rather than discharged.
     """
