@@ -289,12 +289,25 @@ def test_review_row_report_must_be_https(tmp_path):
     assert len(findings) == 1 and "must be an https URL" in findings[0]
 
 
-def test_review_row_report_rejects_empty_host(tmp_path):
+def test_review_row_report_rejects_hostless_urls(tmp_path):
+    # netloc is non-empty for the userinfo and port-only forms, so the check
+    # reads hostname; a malformed authority must report, never raise.
     make_clean_tree(tmp_path)
-    for hostless in ("https://", "https:///report"):
-        _write_index(tmp_path, _review_row(report=hostless))
+    hostless = (
+        "https://",
+        "https:///report",
+        "https://@/report",
+        "https://:443/report",
+        "https://[::1/report",
+    )
+    for value in hostless:
+        _write_index(tmp_path, _review_row(report=value))
         findings = lint.run(tmp_path)
-        assert len(findings) == 1 and "must be an https URL" in findings[0]
+        assert len(findings) == 1
+        assert "must be an https URL" in findings[0]
+    # ...and a real host still passes.
+    _write_index(tmp_path, _review_row(report="https://github.com/o/r/pull/1#issuecomment-2"))
+    assert lint.run(tmp_path) == []
 
 
 def test_review_row_seats_must_be_non_empty_mapping(tmp_path):

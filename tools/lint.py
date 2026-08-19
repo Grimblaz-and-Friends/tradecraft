@@ -224,6 +224,22 @@ def _is_calendar_day(value: str) -> bool:
     return True
 
 
+def _is_https_url(value) -> bool:
+    """An https URL with a real host.
+
+    `netloc` alone is not that test: it is non-empty for `https://@/x` and
+    `https://:443/x`, neither of which names a host a reader can reach.
+    `hostname` is None for both. A malformed authority raises from urlsplit,
+    which is a failed check rather than a crashed lint.
+    """
+    if not isinstance(value, str) or not value.startswith("https://"):
+        return False
+    try:
+        return bool(urlsplit(value).hostname)
+    except ValueError:
+        return False
+
+
 def _not_a_mapping(row, where: str, findings: list) -> bool:
     """A JSON array or scalar row must be rejected before any field is read."""
     if not isinstance(row, dict):
@@ -288,11 +304,7 @@ def _check_review_row(row, where: str, findings: list) -> None:
         not isinstance(row["lane"], str) or row["lane"] not in REVIEW_LANES
     ):
         findings.append(f"{where} lane '{row.get('lane')}' not in {sorted(REVIEW_LANES)}")
-    if "report" in row and (
-        not isinstance(row["report"], str)
-        or not row["report"].startswith("https://")
-        or not urlsplit(row["report"]).netloc
-    ):
+    if "report" in row and not _is_https_url(row["report"]):
         findings.append(
             f"{where} report '{row.get('report')}' must be an https URL to the "
             f"review's report — the row holds counts, the report holds the findings"
