@@ -1,3 +1,7 @@
+# The constitution — superseded, frozen as history
+
+> **This statute was superseded in whole on 2026-08-19 by [D-74](decisions/D-74-2026-08-19-constitutional-reset.md) (PR #74).** The rules in force are `AGENTS.md` and the skills it routes to. This document, the nine ADRs, the evidence registry, `docs/ledger.jsonl`, and `docs/seat-record.jsonl` are a frozen archive: readable history, never binding, never maintained.
+
 # The constitution
 
 ## 1. Identity and scope
