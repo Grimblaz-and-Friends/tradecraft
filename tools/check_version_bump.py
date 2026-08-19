@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ADR-003 §25: a PR touching the shipped zone bumps the plugin version.
+"""§3: a PR touching the shipped zone bumps the plugin version.
 
 Measured as **the pull request against its merge base**, never per-commit: this
 repo squash-merges, so the PR is the commit that lands, and a per-commit reading
@@ -38,7 +38,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ".claude-plugin/plugin.json"
-# ADR-004's shipped zone. The manifest itself is excluded: bumping the version
+# §4's shipped zone. The manifest itself is excluded: bumping the version
 # is what this guard demands, so counting it as a shipped-zone change would make
 # every bump its own justification.
 SHIPPED = ("skills/", "lib/", "commands/", "agents/", ".claude-plugin/")
@@ -131,7 +131,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     lines: list[str] = []
     base, why = _resolve_base(base_ref)
     if base is None:
-        return UNDETERMINED, [f"version-bump (ADR-003): cannot determine a base — {why}"]
+        return UNDETERMINED, [f"version-bump (§3): cannot determine a base — {why}"]
 
     # Two independent mechanisms give the moved-base answer, and either alone
     # suffices: `base` is resolved to a merge base above, AND `...` re-derives
@@ -149,7 +149,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     code, out, err = _git("diff", "--name-only", "--no-renames", "-z", base)
     if code != 0:
         return UNDETERMINED, [
-            f"version-bump (ADR-003): could not diff against {base[:7]}"
+            f"version-bump (§3): could not diff against {base[:7]}"
             + (f" — {err}" if err else "")
         ]
     changed = _paths(out)
@@ -169,7 +169,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         code, out, err = _git(*args)
         if code != 0:
             return UNDETERMINED, [
-                "version-bump (ADR-003): could not read the working tree "
+                "version-bump (§3): could not read the working tree "
                 f"({' '.join(args)} failed{': ' + err if err else ''}) — "
                 "refusing to answer from committed history alone"
             ]
@@ -179,28 +179,28 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         if any(f.startswith(p) for p in SHIPPED) and f != MANIFEST
     })
     if not touched:
-        return PASS, [f"version-bump (ADR-003): shipped zone untouched ({why})"]
+        return PASS, [f"version-bump (§3): shipped zone untouched ({why})"]
 
     old, old_err = _version_at(base)
     new, new_err = _version_at(None)
     if old is None:
-        return UNDETERMINED, [f"version-bump (ADR-003): base version unreadable — {old_err}"]
+        return UNDETERMINED, [f"version-bump (§3): base version unreadable — {old_err}"]
     if new is None:
-        return UNDETERMINED, [f"version-bump (ADR-003): current version unreadable — {new_err}"]
+        return UNDETERMINED, [f"version-bump (§3): current version unreadable — {new_err}"]
 
     shown = ".".join(map(str, old)), ".".join(map(str, new))
     if new > old:
         lines.append(
-            f"version-bump (ADR-003): {len(touched)} shipped-zone file(s) changed, "
+            f"version-bump (§3): {len(touched)} shipped-zone file(s) changed, "
             f"version {shown[0]} -> {shown[1]} ({why})"
         )
         return PASS, lines
     detail = (f"is unchanged at {shown[1]}" if new == old
               else f"went BACKWARDS, {shown[0]} -> {shown[1]}")
     lines.append(
-        f"version-bump (ADR-003): {len(touched)} shipped-zone file(s) changed but "
+        f"version-bump (§3): {len(touched)} shipped-zone file(s) changed but "
         f"the plugin version {detail} — a consumer cannot tell installed from "
-        f"current. Raise \"version\" in {MANIFEST} (see ADR-003 §25)"
+        f"current. Raise \"version\" in {MANIFEST} (see §3)"
     )
     lines.extend(f"    {f}" for f in touched)
     return FAIL, lines
@@ -219,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     for line in lines:
         print(line)
     if status == UNDETERMINED:
-        print("version-bump (ADR-003): UNDETERMINED is a failure, not a pass — see ADR-003 §25")
+        print("version-bump (§3): UNDETERMINED is a failure, not a pass — see §3")
     return status
 
 

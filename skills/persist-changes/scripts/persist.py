@@ -4,7 +4,7 @@
 Guard rationale and incident records live in the skill's SKILL.md — the
 broad-staging guard carries recorded incidents; the others carry service
 rationale from the predecessor project, promoted with the skill under
-ADR-009 and awaiting their first recorded incident here.
+§11 of the constitutional statute and awaiting their first recorded incident here.
 
 Mechanical contract:
   - operates on the repository containing the caller's cwd; all paths are

@@ -282,7 +282,7 @@ def test_ledger_vocabularies_are_exactly_what_the_statute_states():
 
 
 def test_ledger_accepts_a_defect_made_early_and_detectable_late(tmp_path):
-    """`introduced: design, catchable: implementation` — the shape ADR-006 §5
+    """`introduced: design, catchable: implementation` — the shape §8
     says the position axis exists to measure, and the one no row has ever held.
     Goes red if anything ever re-imposes the retired rule that set `catchable`
     from `introduced`, which is the amendment's central act and was otherwise
@@ -299,7 +299,7 @@ def test_ledger_position_fields_reject_stage_values(tmp_path):
     """The two axes are separate vocabularies. Goes red the moment they are
     merged back into one set. That merge was the schema half of what kept the
     retirement test from failing; the rule half outlived it and was retired
-    separately (ADR-006 §5), so this pin does not claim to have cured the test."""
+    separately (§8), so this pin does not claim to have cured the test."""
     _write_ledger(
         tmp_path,
         _ledger_row(introduced="adversarial-review", catchable="post-merge"),
@@ -352,7 +352,7 @@ def test_ledger_position_rejects_post_fix_stage(tmp_path):
 
 
 def test_ledger_retired_authoring_value_is_rejected_in_both_axes(tmp_path):
-    """ADR-006 §5: "No value doubles as a judgment and a default." `authoring`
+    """§8: "No value doubles as a judgment and a default." `authoring`
     is gone from both vocabularies because it was doing exactly that — though
     that reading of its history is this repo's own account of the value, not
     something §5 states, so the citation covers the rule and not the diagnosis."""

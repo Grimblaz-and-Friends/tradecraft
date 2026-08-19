@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""tradecraft packaging lint — the constitution's enforcement arm (ADR-004).
+"""tradecraft packaging lint — the constitution's enforcement arm (§4).
 
 Checks, each anchored to the ADR it enforces:
 
-  1. zone wall (ADR-004): no file in the shipped zone may reference the
+  1. zone wall (§4): no file in the shipped zone may reference the
      repo-only zone (docs/, tools/, .github/) by any path form — rooted,
      relative (../ or ./), backslashed, or case-shifted. Full web URLs are
      lawful: they resolve for consumers; repo paths do not.
-  2. sideways deps (ADR-003): no skill may reference another skill by path
+  2. sideways deps (§3): no skill may reference another skill by path
      (rooted or relative), and lib/ may not reference any skill (deps point
      down). Name-form coupling ("load the beta skill") is not machine-
      checkable; it is reviewed, not linted — these checks are the checkable
      subset, not the whole rule.
-  3. doctrine (ADR-003/ADR-007): AGENTS.md exists and stays within budget;
+  3. doctrine (§3/§9): AGENTS.md exists and stays within budget;
      CLAUDE.md exists and is a live @AGENTS.md import — checked by position
      (first non-empty line, unquoted), not substring, because Claude Code
      skips imports inside code spans and loads nothing from an absent file.
-  4. ledger (ADR-006): docs/ledger.jsonl, when present, parses and carries
+  4. ledger (§8): docs/ledger.jsonl, when present, parses and carries
      the required fields per row.
-  5. seat record (ADR-006): docs/seat-record.jsonl, when present, parses and
+  5. seat record (§8): docs/seat-record.jsonl, when present, parses and
      carries the required fields per row — per-seat raw/merged/sustained
      counts, the precision axis the defect ledger is structurally silent
      about. It ships with this check rather than owing one: §5's interim
@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SHIPPED_DIRS = ("skills", "lib", "commands", "agents", ".claude-plugin")
 REPO_ONLY_NAMES = {"docs", "tools", ".github"}
 
-# ADR-003 "deliberately tiny": the predecessor's root file passed 30k chars in
+# §3's "deliberately tiny": the predecessor's root file passed 30k chars in
 # eight months because every incident defaulted to a paragraph. The budget is
 # the structural counterweight; raising it is an ADR amendment, not an edit.
 AGENTS_BUDGET_CHARS = 8_000
@@ -74,7 +74,7 @@ LEDGER_ARTIFACTS = {
 # where the defect was made and where it was earliest catchable; `caught` names
 # the review *stage* that actually found it. The single merged set these replace
 # mixed both kinds and could express no position earlier than the prose, so all
-# three fields held one value across the entire corpus and the axis ADR-006 §5
+# three fields held one value across the entire corpus and the axis §8
 # governs by was unmeasurable by construction.
 #
 # `unrecorded` means ONE thing on either axis: not judged. It is not a fallback
@@ -87,7 +87,7 @@ LEDGER_ARTIFACTS = {
 # these literals exactly, which catches a local edit but still cannot see the
 # ADR, so prose and code can drift together. The correspondence is a
 # stated, unenforced property (§5 names it alongside the axis ordering and the
-# two `ref` properties) rather than a guarded one — ADR-002 earns code by
+# two `ref` properties) rather than a guarded one — §2 earns code by
 # recurrence, and a guard here would have to read and parse ADR text.
 LEDGER_POSITIONS = {
     "framing", "design", "plan", "implementation", "unrecorded",
@@ -184,13 +184,13 @@ def check_zone_wall(root: Path) -> list[str]:
             for lineno, line in enumerate(text.splitlines(), 1):
                 for hit in _rooted_zone_hits(line):
                     findings.append(
-                        f"zone-wall (ADR-004): {rel_file}:{lineno} references "
+                        f"zone-wall (§4): {rel_file}:{lineno} references "
                         f"repo-only path '{hit}'"
                     )
                 for raw, parts in _resolved_relative_targets(root, path, line):
                     if parts and parts[0].lower() in REPO_ONLY_NAMES:
                         findings.append(
-                            f"zone-wall (ADR-004): {rel_file}:{lineno} relative "
+                            f"zone-wall (§4): {rel_file}:{lineno} relative "
                             f"reference '{raw}' resolves into repo-only '{parts[0]}/'"
                         )
     return findings
@@ -218,7 +218,7 @@ def check_sideways_deps(root: Path) -> list[str]:
                     target = match.group(1)
                     if own is None or target.lower() != own.lower():
                         findings.append(
-                            f"sideways-dep (ADR-003): {rel_file}:{lineno} references "
+                            f"sideways-dep (§3): {rel_file}:{lineno} references "
                             f"skill '{target}'" + (f" from skill '{own}'" if own else " from lib/")
                         )
                 for raw, parts in _resolved_relative_targets(root, path, line):
@@ -226,7 +226,7 @@ def check_sideways_deps(root: Path) -> list[str]:
                         target = parts[1]
                         if own is None or target.lower() != own.lower():
                             findings.append(
-                                f"sideways-dep (ADR-003): {rel_file}:{lineno} relative "
+                                f"sideways-dep (§3): {rel_file}:{lineno} relative "
                                 f"reference '{raw}' resolves into skill '{target}'"
                                 + (f" from skill '{own}'" if own else " from lib/")
                             )
@@ -237,18 +237,18 @@ def check_doctrine(root: Path) -> list[str]:
     findings = []
     agents = root / "AGENTS.md"
     if not agents.is_file():
-        findings.append("doctrine (ADR-007): AGENTS.md is missing (it is the canonical root file)")
+        findings.append("doctrine (§9): AGENTS.md is missing (it is the canonical root file)")
     else:
         size = len(agents.read_text(encoding="utf-8", errors="replace"))
         if size > AGENTS_BUDGET_CHARS:
             findings.append(
-                f"doctrine-budget (ADR-003): AGENTS.md is {size} chars, "
+                f"doctrine-budget (§3): AGENTS.md is {size} chars, "
                 f"budget is {AGENTS_BUDGET_CHARS} — move guidance into the skill it governs"
             )
     pointer = root / "CLAUDE.md"
     if not pointer.is_file():
         findings.append(
-            "doctrine-pointer (ADR-007): CLAUDE.md is missing — Claude Code loads "
+            "doctrine-pointer (§9): CLAUDE.md is missing — Claude Code loads "
             "no root doctrine without it; it must be a live @AGENTS.md import"
         )
         return findings
@@ -256,7 +256,7 @@ def check_doctrine(root: Path) -> list[str]:
     first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     if first_line != "@AGENTS.md" or len(text) > POINTER_BUDGET_CHARS:
         findings.append(
-            "doctrine-pointer (ADR-007): CLAUDE.md must begin with a bare "
+            "doctrine-pointer (§9): CLAUDE.md must begin with a bare "
             "'@AGENTS.md' import line and stay a short pointer — a backticked or "
             "buried mention does not import, and any fork diverges the runtimes"
         )
@@ -283,7 +283,7 @@ def check_ledger(root: Path) -> list[str]:
             row = json.loads(line)
         except Exception as exc:  # noqa: BLE001 - report, never crash the lint
             findings.append(
-                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} is not valid JSON "
+                f"ledger (§8): docs/ledger.jsonl:{lineno} is not valid JSON "
                 f"({type(exc).__name__}: {exc})"
             )
             continue
@@ -291,7 +291,7 @@ def check_ledger(root: Path) -> list[str]:
             _check_ledger_row(row, lineno, seen_keys, findings)
         except Exception as exc:  # noqa: BLE001 - report, never crash the lint
             findings.append(
-                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} could not be fully "
+                f"ledger (§8): docs/ledger.jsonl:{lineno} could not be fully "
                 f"validated ({type(exc).__name__}: {exc})"
             )
     return findings
@@ -324,12 +324,12 @@ def _not_a_mapping(row, where: str, findings: list) -> bool:
 
 
 def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) -> None:
-    if _not_a_mapping(row, f"ledger (ADR-006): docs/ledger.jsonl:{lineno}", findings):
+    if _not_a_mapping(row, f"ledger (§8): docs/ledger.jsonl:{lineno}", findings):
         return
     missing = LEDGER_FIELDS - set(row)
     if missing:
         findings.append(
-            f"ledger (ADR-006): docs/ledger.jsonl:{lineno} missing field(s) "
+            f"ledger (§8): docs/ledger.jsonl:{lineno} missing field(s) "
             f"{', '.join(sorted(missing))}"
         )
     # Each present field is validated independently of the others, so one
@@ -349,7 +349,7 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
             not isinstance(row[field], str) or row[field] not in vocab
         ):
             findings.append(
-                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} {field} "
+                f"ledger (§8): docs/ledger.jsonl:{lineno} {field} "
                 f"'{row[field]}' not in {sorted(vocab)}"
             )
     if "found_by" in row and (
@@ -357,18 +357,18 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
         or not LEDGER_FOUND_BY.match(row["found_by"])
     ):
         findings.append(
-            f"ledger (ADR-006): docs/ledger.jsonl:{lineno} found_by "
+            f"ledger (§8): docs/ledger.jsonl:{lineno} found_by "
             f"'{row.get('found_by')}' must be a lowercase name of digits, "
             f"letters and hyphens — one seat, one bucket"
         )
     # Optional, so absence is lawful; present-but-malformed is not, because a
-    # trial that cannot be selected by name attributes nothing (ADR-002's
+    # trial that cannot be selected by name attributes nothing (§2's
     # properties 4 and 6 are what this field exists to make dischargeable).
     if "trial" in row and (
         not isinstance(row["trial"], str) or not TOKEN.match(row["trial"])
     ):
         findings.append(
-            f"ledger (ADR-006): docs/ledger.jsonl:{lineno} trial "
+            f"ledger (§8): docs/ledger.jsonl:{lineno} trial "
             f"'{row.get('trial')}' must be a lowercase name of digits, letters "
             f"and hyphens — one trial, one bucket"
         )
@@ -376,7 +376,7 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
         not isinstance(row["ref"], str) or not row["ref"].startswith("https://")
     ):
         findings.append(
-            f"ledger (ADR-006): docs/ledger.jsonl:{lineno} ref "
+            f"ledger (§8): docs/ledger.jsonl:{lineno} ref "
             f"'{row.get('ref')}' must be an https URL to the review's durable record"
         )
     if "date" in row and (
@@ -385,7 +385,7 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
         or not _is_calendar_day(row["date"])
     ):
         findings.append(
-            f"ledger (ADR-006): docs/ledger.jsonl:{lineno} date "
+            f"ledger (§8): docs/ledger.jsonl:{lineno} date "
             f"'{row.get('date')}' is not an ISO YYYY-MM-DD date"
         )
     # The key is built only from strings: an unhashable id or source would
@@ -393,14 +393,14 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
     for field in ("id", "source"):
         if field in row and not isinstance(row[field], str):
             findings.append(
-                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} {field} "
+                f"ledger (§8): docs/ledger.jsonl:{lineno} {field} "
                 f"must be a string (got {type(row[field]).__name__})"
             )
     if isinstance(row.get("source"), str) and isinstance(row.get("id"), str):
         key = (row["source"], row["id"])
         if key in seen_keys:
             findings.append(
-                f"ledger (ADR-006): docs/ledger.jsonl:{lineno} duplicate "
+                f"ledger (§8): docs/ledger.jsonl:{lineno} duplicate "
                 f"(source, id) pair {key!r} — ids must be unique within a source"
             )
         seen_keys.add(key)
@@ -412,7 +412,7 @@ SEAT_RECORD_FIELDS = {
 }
 # `clean` ran and found nothing; `failed` was still unusable after its one
 # re-dispatch. Both carry zeros, so without this field they are the same row —
-# which is the collapse the file exists to close (ADR-006 §5, ADR-002's own
+# which is the collapse the file exists to close (§8, §2's own
 # note that the ledger cannot say a trial ran clean).
 SEAT_STATUSES = {"ran", "clean", "failed"}
 SEAT_LANES = {"panel", "routine"}
@@ -421,12 +421,12 @@ SEAT_TOKEN_FIELDS = ("seat", "model", "runtime")
 
 
 def check_seat_record(root: Path) -> list[str]:
-    """ADR-006 §5: per-seat precision counts, the ledger's companion.
+    """§8: per-seat precision counts, the ledger's companion.
 
     The defect ledger holds only sustained findings, so it measures yield and is
     silent about precision. These rows carry both, and they ship with this check
     rather than owing one: the interim waiver §5 takes for hand-written rows *is*
-    the lint, so a format arriving without a validator is ADR-002's day-one-code
+    the lint, so a format arriving without a validator is §2's day-one-code
     exception being taken rather than discharged.
     """
     findings: list[str] = []
@@ -443,7 +443,7 @@ def check_seat_record(root: Path) -> list[str]:
             row = json.loads(line)
         except Exception as exc:  # noqa: BLE001 - report, never crash the lint
             findings.append(
-                f"seat-record (ADR-006): docs/seat-record.jsonl:{lineno} is not "
+                f"seat-record (§8): docs/seat-record.jsonl:{lineno} is not "
                 f"valid JSON ({type(exc).__name__}: {exc})"
             )
             continue
@@ -451,14 +451,14 @@ def check_seat_record(root: Path) -> list[str]:
             _check_seat_row(row, lineno, seen, findings)
         except Exception as exc:  # noqa: BLE001 - report, never crash the lint
             findings.append(
-                f"seat-record (ADR-006): docs/seat-record.jsonl:{lineno} could "
+                f"seat-record (§8): docs/seat-record.jsonl:{lineno} could "
                 f"not be fully validated ({type(exc).__name__}: {exc})"
             )
     return findings
 
 
 def _check_seat_row(row: dict, lineno: int, seen: set, findings: list) -> None:
-    where = f"seat-record (ADR-006): docs/seat-record.jsonl:{lineno}"
+    where = f"seat-record (§8): docs/seat-record.jsonl:{lineno}"
     if _not_a_mapping(row, where, findings):
         return
     missing = SEAT_RECORD_FIELDS - set(row)
