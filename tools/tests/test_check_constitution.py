@@ -678,3 +678,54 @@ def test_a_pointer_mismatch_names_its_line_readably(repo):
     out = [f for f in _findings(repo) if "does not list in Displaces" in f]
     assert out, _findings(repo)
     assert "for line 7 superseding" in out[0], out[0]
+
+
+# --- pins from PR #66's panel (M46) -----------------------------------------
+
+
+def _draft_entry(repo: Path, displaces: str) -> None:
+    """A draft entry — absent from the merge base, so entry-shape reads it."""
+    _write(repo / "docs/architecture/decisions/D-66-2026-08-18-boundary.md",
+           "# D-66: x\n\n**Status:** Accepted 2026-08-18 (PR #66)\n\n## Context\n\nc.\n\n"
+           f"## Decision\n\n**Statute delta:** none.\n\n{displaces}\n\n"
+           "## Rejected\n\nnone.\n\n## Evidence\n\nnone.\n")
+    _run("git", "add", "-A", cwd=repo)
+    _run("git", "commit", "-qm", "draft entry", cwd=repo)
+
+
+def test_a_second_displaces_line_is_caught(repo):
+    """RED-FIRST. `_declared` uses `.search`, so only the first line is read: an
+    innocent `—` in front lets a real declaration ride through, and the ADR it
+    names never gets the supersession pointer §12 makes obligatory. The same
+    collapse the `**Status:**` twin already checks, one field over."""
+    _draft_entry(repo, "**Displaces:** —\n\n**Displaces:** [ADR-001:7]")
+    out = _findings(repo, 66)
+    assert any("`**Displaces:**` lines" in f for f in out), out
+
+
+def test_an_unbracketed_displaces_target_is_caught(repo):
+    """RED-FIRST. `_targets` matches only bracketed tokens, so `ADR-001:7` reads
+    to a person as a declaration and to the guard as the empty set — the
+    cross-check silently does not run and CI is green on a stale ADR."""
+    _draft_entry(repo, "**Displaces:** ADR-001:7")
+    out = _findings(repo, 66)
+    assert any("unbracketed" in f for f in out), out
+
+
+def test_the_lawful_declares_nothing_forms_stay_green(repo):
+    """Mutation answers one direction only. §12 requires the line only where any
+    are displaced, so these must not fire — a guard blocking lawful work fails
+    exactly as hard as one passing unlawful work."""
+    for form in ("**Displaces:** —", "**Displaces:** None", "**Displaces:**"):
+        _run("git", "checkout", "-q", "main", "--", ".", cwd=repo)
+        _run("git", "clean", "-qfd", cwd=repo)
+        _draft_entry(repo, form)
+        out = [f for f in _findings(repo, 66) if "Displaces" in f]
+        assert out == [], (form, out)
+
+
+def test_a_bracketed_declaration_still_reaches_the_cross_check(repo):
+    """The control: hardening the shape must not cost the check it guards."""
+    _draft_entry(repo, "**Displaces:** [ADR-001:7]")
+    out = _findings(repo, 66)
+    assert any("supersession pointer" in f for f in out), out

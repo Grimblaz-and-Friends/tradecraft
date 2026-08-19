@@ -61,6 +61,9 @@ CITATION = re.compile(r"\[(?:ADR-\d{3}:\d+(?: \"[^\"]*\")?|D-\d+)\]\s*\Z")
 ADR_TOKEN = re.compile(r"\[ADR-(\d{3}):(\d+)(?: \"([^\"]*)\")?\]")
 D_TOKEN = re.compile(r"\[D-(\d+)\]")
 DISPLACES = re.compile(r"^\*\*Displaces:\*\*(.*)$", re.MULTILINE)
+# The forms that lawfully declare nothing. §12 requires the line only where any
+# are displaced, so an absent line and these are the same statement.
+_DISPLACES_NONE = {"", "—", "-", "none", "n/a"}
 
 ENTRY_SKELETON = (
     (re.compile(r"^# D-\d+: \S", re.MULTILINE), "a `# D-<N>: <title>` heading"),
@@ -267,6 +270,27 @@ def check_entry_shape(base_sha: str) -> list[str]:
                 findings.append(
                     f"entry-shape (§12): {rel} is named D-{int(own)} but its {site} says "
                     f"D-{int(m.group(1))} — one entry, one number"
+                )
+        # Same collapse as the `**Status:**` twin above, one field over: `_declared`
+        # reads the first match, so a second line rides behind an innocent one and
+        # its targets never reach the supersession cross-check §12 makes obligatory.
+        decl = [x for x in text.split(chr(10)) if DISPLACES.match(x)]
+        if len(decl) > 1:
+            findings.append(
+                f"entry-shape (§12): {rel} has {len(decl)} `**Displaces:**` lines — only the "
+                f"first is read, so the rest declare nothing and demand no supersession pointer"
+            )
+        # A target written without brackets reads to a person as a declaration and to
+        # `_targets` as the empty set, so the cross-check silently does not run.
+        for line in decl:
+            payload = DISPLACES.match(line).group(1).strip()
+            if payload.lower() in _DISPLACES_NONE:
+                continue
+            residue = ADR_TOKEN.sub("", D_TOKEN.sub("", payload)).strip(" ,;.")
+            if residue:
+                findings.append(
+                    f"entry-shape (§12): {rel} declares Displaces `{payload}`, which carries "
+                    f"unbracketed text ({residue!r}) — a target is only read as [ADR-NNN:L] or [D-N]"
                 )
         for pattern, described in ENTRY_SKELETON:
             if not pattern.search(text):
