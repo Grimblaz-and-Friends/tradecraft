@@ -13,8 +13,8 @@ description: Adversarial review of an artifact against its stated purpose — a 
 
 Every review begins from the artifact's stated purpose, audience, and success criteria; for an implementation, the affirmed acceptance criteria on its issue. Where no statement exists, that absence is the review's first finding, and the review proceeds against the best statement the dispatching session can supply, recorded in the report.
 
-- **A finding names the success criterion it impairs, for the stated audience.** "A reader might misread this" is a finding only if the stated audience plausibly would — and the audience for governing prose in this practice is a strong senior engineer. A true observation that impairs no criterion is dismissed at the terminal stage without ceremony.
-- **Deletions have equal standing with additions.** Any seat may propose that text or code be removed, held to the same evidence standards; on governing prose — prose a later session is expected to act on — net growth is itself a finding, and the burden of argument sits on keeping the words.
+- **A finding names the success criterion it impairs, for the stated audience.** "A reader might misread this" is a finding only if the stated audience plausibly would — and the audience for governing prose — prose a later session is expected to act on — is, in this practice, a strong senior engineer. A true observation that impairs no criterion is dismissed at the terminal stage without ceremony.
+- **Deletions have equal standing with additions.** Any seat may propose that text or code be removed, held to the same evidence standards; on governing prose, net growth is itself a finding, and the burden of argument sits on keeping the words.
 - **The terminal ruling is about the artifact, not the finding count**: fit for purpose, fit once the named fixes land, or not fit. Fit-for-purpose can be the ruling while true findings stand unfixed.
 
 ## Choosing the shape
