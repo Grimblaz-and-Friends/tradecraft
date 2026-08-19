@@ -362,8 +362,10 @@ def _check_ledger_row(row: dict, lineno: int, seen_keys: set, findings: list) ->
             f"letters and hyphens — one seat, one bucket"
         )
     # Optional, so absence is lawful; present-but-malformed is not, because a
-    # trial that cannot be selected by name attributes nothing (ADR-002's
-    # properties 4 and 6 are what this field exists to make dischargeable).
+    # trial that cannot be selected by name attributes nothing (D-69's properties
+    # 4 and 6 are what this field exists to make dischargeable, for the trials
+    # whose instrument is the ledger — D-69 admits others, which this token
+    # cannot see; the marker, not this field, enumerates every live trial).
     if "trial" in row and (
         not isinstance(row["trial"], str) or not TOKEN.match(row["trial"])
     ):
@@ -412,8 +414,9 @@ SEAT_RECORD_FIELDS = {
 }
 # `clean` ran and found nothing; `failed` was still unusable after its one
 # re-dispatch. Both carry zeros, so without this field they are the same row —
-# which is the collapse the file exists to close (ADR-006 §5, ADR-002's own
-# note that the ledger cannot say a trial ran clean).
+# which is the collapse the file exists to close (ADR-006 §5, and D-69's rule
+# that an instrument recording only what a trial found cannot say it ran clean
+# — this record does say so, which is why `clean` is a value here at all).
 SEAT_STATUSES = {"ran", "clean", "failed"}
 SEAT_LANES = {"panel", "routine"}
 SEAT_COUNTS = ("raw", "merged", "sustained")
