@@ -68,3 +68,5 @@
 {"source": "pr66-panel-2026-08-18", "date": "2026-08-18", "seat": "claims-vs-evidence", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 17, "merged": 16, "sustained": 14, "status": "ran", "isolated": false}
 {"source": "pr66-panel-2026-08-18", "date": "2026-08-18", "seat": "cold-read", "model": "fable", "runtime": "claude-code", "lane": "panel", "raw": 15, "merged": 13, "sustained": 11, "status": "ran", "isolated": false}
 {"source": "pr66-panel-2026-08-18", "date": "2026-08-18", "seat": "wiring-falsifier", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 10, "merged": 8, "sustained": 8, "status": "ran", "isolated": false}
+{"source": "pr66-postfix-2026-08-18", "date": "2026-08-18", "seat": "revision-diff", "model": "opus", "runtime": "claude-code", "lane": "routine", "raw": 18, "merged": 18, "sustained": 10, "status": "ran", "isolated": false}
+{"source": "pr66-postfix-2026-08-18", "date": "2026-08-18", "seat": "claims-vs-evidence", "model": "opus", "runtime": "claude-code", "lane": "routine", "raw": 10, "merged": 10, "sustained": 6, "status": "ran", "isolated": false}
