@@ -1,4 +1,4 @@
-"""Pins for the ADR-003 §25 version-bump guard.
+"""Pins for the version-bump guard.
 
 The predecessor of this guard was withdrawn because it failed open four ways
 while printing a clean-pass line, and because three mutations of its exit path
@@ -176,7 +176,7 @@ def test_main_returns_the_status_as_exit_code(repo, capsys, setup, expected):
         argv = ["--base", "no-such-ref"]
     assert cvb.main(argv) == expected
     out = capsys.readouterr().out
-    assert "version-bump (ADR-003)" in out
+    assert "version-bump:" in out
     if expected == UNDETERMINED:
         assert "UNDETERMINED is a failure" in out
 

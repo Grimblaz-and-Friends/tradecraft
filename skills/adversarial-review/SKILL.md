@@ -14,12 +14,12 @@ description: Adversarial review of an artifact against its stated purpose — a 
 Every review begins from the artifact's stated purpose, audience, and success criteria; for an implementation, the affirmed acceptance criteria on its issue. Where no statement exists, that absence is the review's first finding, and the review proceeds against the best statement the dispatching session can supply, recorded in the report.
 
 - **A finding names the success criterion it impairs, for the stated audience.** "A reader might misread this" is a finding only if the stated audience plausibly would — and the audience for governing prose in this practice is a strong senior engineer. A true observation that impairs no criterion is dismissed at the terminal stage without ceremony.
-- **Deletions have equal standing with additions.** Any seat may propose that text or code be removed, held to the same evidence standards; on governing prose, net growth is itself a finding, and the burden of argument sits on keeping the words.
+- **Deletions have equal standing with additions.** Any seat may propose that text or code be removed, held to the same evidence standards; on governing prose — prose a later session is expected to act on — net growth is itself a finding, and the burden of argument sits on keeping the words.
 - **The terminal ruling is about the artifact, not the finding count**: fit for purpose, fit once the named fixes land, or not fit. Fit-for-purpose can be the ruling while true findings stand unfixed.
 
 ## Choosing the shape
 
-- **Routine change**: one adversarial pass that reads the artifact **cold**, then defense — the terminal stage on this lane — then executable re-validation of fixes.
+- **Routine change**: one adversarial pass that reads the artifact **cold** (its index row books under `cold-read`), then defense — the terminal stage on this lane — then executable re-validation of fixes.
 - **Substantial artifact** (newly written foundational prose, new scripts, high blast radius — and when in doubt, this lane): the four-seat panel, then defense, then judge, then re-validation. Width beyond four is bought by declared risk.
 - **The report records which lane was chosen and why, in one line** — an unrecorded shape choice can never be audited later.
 
@@ -64,7 +64,7 @@ Every seat runs at the strongest model tier the runtime's budget bears. Where th
 
 ## Post-fix re-validation — mandatory, executable, fix-wide
 
-Fixes are a defect source comparable to fresh diffs, and the repair that reproduces the class it closes is what this look most often finds. Run everything that runs — suites, lint, and the findings' own probes re-derived against the fixed tree. Scope to everything the fix touched, the review's own bookkeeping included: the merged finding list, the report, the PR body. **Every fix batch gets at least one prosecution look, plus defense on anything it finds, and that floor is never priced away.** The cycle ends when a look's findings are all dismissed or all priced out — it turns on what findings are worth, not on a clean look, which the record shows is an asymptote.
+Fixes are a defect source comparable to fresh diffs, and the repair that reproduces the class it closes is what this look most often finds. Run everything that runs — suites, lint, and the findings' own probes re-derived against the fixed tree. Scope to everything the fix touched, the review's own bookkeeping included: the merged finding list, the report, the commit message, and the PR body. Post the report before writing the index row that cites it. **Every fix batch gets at least one prosecution look, plus defense on anything it finds — ruled by the review's terminal stage — and that floor is never priced away.** The cycle ends when a look's findings are all dismissed or all priced out — it turns on what findings are worth, not on a clean look, which the record shows is an asymptote.
 
 ## The external pass — reconciled every time
 
@@ -72,9 +72,9 @@ Automated reviewers configured on the repository post on a PR without being aske
 
 ## Ending the review
 
-The final report, posted to the PR or issue, carries: the lane and why; the purpose statement judged against; per-seat counts (raw / merged / sustained, highs broken out); every finding's disposition, with each drop's one-line reason and each priced-out ruling's price; the external pass's outcome; the terminal fitness ruling; and the **next-pass ruling** — run or stop. The default is stop once a pass has sustained no high it will fix; continuing argues the next pass is worth its cost, and stopping names the residual risk accepted and what is expected to catch it instead. A run ruling binds the session that wrote it: dispatch the pass before closing, or record why not.
+The final report, posted to the PR or issue, carries: the lane and why; the purpose statement judged against; per-seat counts (raw / merged / sustained, highs broken out), with each seat's model and runtime; every finding's disposition, with each drop's one-line reason and each priced-out ruling's price; the external pass's outcome; the terminal fitness ruling; and the **next-pass ruling** — run or stop. The default is stop once a pass has sustained no high it will fix; continuing argues the next pass is worth its cost, and stopping names the residual risk accepted and what is expected to catch it instead. A run ruling binds the session that wrote it: dispatch the pass before closing, or record why not.
 
-Where the repo keeps a review index, append one row per review — date, artifact, lane, per-seat counts, report URL — written once and never maintained. Where it keeps none, the report alone is the record.
+Where the repo keeps a review index, append one row per review — date, artifact, lane, per-seat counts, report URL — written once and never maintained. A seat that ran and found nothing appears with zeros; a seat that failed unreplaced is omitted, with the report recording the degraded width. Where the repo keeps no index, the report alone is the record.
 
 ## Closing a recurring class
 

@@ -127,6 +127,23 @@ def test_relative_reference_within_own_skill_is_clean(tmp_path):
     assert lint.run(tmp_path) == []
 
 
+def test_sideways_dep_ignores_web_urls_and_longer_paths(tmp_path):
+    # Both polarities of the M12 fix: the lawful external forms stay quiet...
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    (other / "SKILL.md").write_text(
+        "See https://github.com/anthropics/skills/tree/main/skills/pdf/SKILL.md\n"
+        "The upstream-skills/bar/ layout and their-repo/skills/baz/ are fine.\n",
+        encoding="utf-8",
+    )
+    assert lint.run(tmp_path) == []
+    # ...and a true sideways reference still fires.
+    (other / "SKILL.md").write_text("Load skills/example-skill/ first.\n", encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "sideways-dep" in findings[0]
+
+
 def test_lib_may_not_reference_a_skill(tmp_path):
     make_clean_tree(tmp_path)
     libdir = tmp_path / "lib"
@@ -270,6 +287,14 @@ def test_review_row_report_must_be_https(tmp_path):
     _write_index(tmp_path, _review_row(report="see the PR"))
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "must be an https URL" in findings[0]
+
+
+def test_review_row_report_rejects_empty_host(tmp_path):
+    make_clean_tree(tmp_path)
+    for hostless in ("https://", "https:///report"):
+        _write_index(tmp_path, _review_row(report=hostless))
+        findings = lint.run(tmp_path)
+        assert len(findings) == 1 and "must be an https URL" in findings[0]
 
 
 def test_review_row_seats_must_be_non_empty_mapping(tmp_path):

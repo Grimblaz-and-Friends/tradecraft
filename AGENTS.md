@@ -23,7 +23,7 @@ Branch first (`main` refuses direct pushes) → build → `python tools/lint.py`
 
 Every reviewable artifact states its purpose, audience, and success criteria — for an implementation, the issue artifact's acceptance criteria are the success definition. The review judges against that statement; the charter, roster, and evidence standards live in `skills/adversarial-review`. The review report states what it judged against, and every review appends one row to `docs/reviews.jsonl`.
 
-**Findings: fix now, or drop with a one-line reason in the review report.** Filing an issue instead requires that the remedy belongs neither in this change nor in a guard, and that it would genuinely get picked up. A decision only the owner can make is put to the owner argued — the live options, each with pros and cons, and a recommendation.
+**Findings: fix now, or drop with a one-line reason in the review report** — outside a review, the drop is recorded on the work's issue or PR; naming a finding in conversation is not a disposition. Filing an issue instead requires that the remedy belongs neither in this change nor in a guard, and that it would genuinely get picked up. A decision only the owner can make is put to the owner argued — the live options, each with pros and cons, and a recommendation.
 
 ## Content routing
 

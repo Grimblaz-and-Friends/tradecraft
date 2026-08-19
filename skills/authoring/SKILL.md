@@ -37,5 +37,5 @@ When one idea needs both a shipped standard and a local application, the skill c
 ## Revising governing prose
 
 - **Read the cited decision first.** Where a rule carries a decision citation, read that entry before changing the rule — then supersede it knowingly. The entry is input to your judgment, never a veto: if current behavior is wrong, the original reasoning probably was too.
-- **Name every meaning change where amendments are recorded** — the decision entry, or the PR body where no entry is warranted. A silent meaning change, including a sentence left verbatim while a term it turns on is redefined, is the defect the review's revision-diff seat exists to catch; do not make it find yours.
+- **Name every meaning change where amendments are recorded** — the decision entry, or the PR body where no entry is warranted. A silent meaning change, including a sentence left verbatim while a term it turns on is redefined, is the defect an amendment review exists to catch; do not make it find yours.
 - **Recheck the purpose header on the way out.** If the revision changed what the document is for or who reads it, the header moves in the same change — a stale success criterion misaims every future review of the document.

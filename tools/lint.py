@@ -33,6 +33,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -155,6 +156,17 @@ def check_sideways_deps(root: Path) -> list[str]:
             rel_file = path.relative_to(root).as_posix()
             for lineno, line in enumerate(text.splitlines(), 1):
                 for match in ROOTED_SKILL.finditer(line):
+                    # Same lawful-case guards as the zone wall's rooted branch:
+                    # web URLs resolve for consumers, relative forms belong to
+                    # the resolution check, and a longer path or hyphenated
+                    # token (their-skills/) is not this repo's skills/.
+                    before = _token_before(line, match.start())
+                    if "://" in before:
+                        continue
+                    if REL_PREFIX_TAIL.search(before):
+                        continue
+                    if before and re.search(r"[\w@\-/\\]$", before):
+                        continue
                     target = match.group(1)
                     if own is None or target.lower() != own.lower():
                         findings.append(
@@ -277,7 +289,9 @@ def _check_review_row(row, where: str, findings: list) -> None:
     ):
         findings.append(f"{where} lane '{row.get('lane')}' not in {sorted(REVIEW_LANES)}")
     if "report" in row and (
-        not isinstance(row["report"], str) or not row["report"].startswith("https://")
+        not isinstance(row["report"], str)
+        or not row["report"].startswith("https://")
+        or not urlsplit(row["report"]).netloc
     ):
         findings.append(
             f"{where} report '{row.get('report')}' must be an https URL to the "

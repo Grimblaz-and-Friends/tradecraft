@@ -1,3 +1,5 @@
+> **Part of the frozen archive per [D-74](decisions/D-74-2026-08-19-constitutional-reset.md) (2026-08-19).** The statute this file served is superseded, and item 2's return trigger names retired `owner-pending` machinery. Readable history, never binding.
+
 # Open rulings and open questions
 
 The named home for constitutional content that is **not a rule**. The statute holds nothing but section headings and rule units, so an open question — which binds nobody — has no rule to live in; and the frozen preamble cannot hold it either, since a live section inside a file headed *nothing here is in force* cannot be told from dead law. Statute §12 points here.
