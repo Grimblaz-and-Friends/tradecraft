@@ -69,3 +69,4 @@
 {"source": "pr69-panel-2026-08-18", "date": "2026-08-18", "seat": "claims-vs-evidence", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 18, "merged": 18, "sustained": 17, "status": "ran", "isolated": false}
 {"source": "pr69-panel-2026-08-18", "date": "2026-08-18", "seat": "revision-diff", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 13, "merged": 13, "sustained": 10, "status": "ran", "isolated": false}
 {"source": "pr69-panel-2026-08-18", "date": "2026-08-18", "seat": "defense", "model": "opus", "runtime": "claude-code", "lane": "panel", "raw": 2, "merged": 2, "sustained": 2, "status": "ran", "isolated": false}
+{"source": "pr69-postfix-2-2026-08-19", "date": "2026-08-19", "seat": "post-fix", "model": "opus", "runtime": "claude-code", "lane": "routine", "raw": 7, "merged": 7, "sustained": 7, "status": "ran", "isolated": true}

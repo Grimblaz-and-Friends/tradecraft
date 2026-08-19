@@ -24,7 +24,7 @@
 
 **Displaces:** [ADR-002:54], [ADR-002:56], [ADR-002:58], [ADR-002:60], [ADR-002:62], [ADR-002:70], [ADR-006:104]
 
-The four deltas are enumerated rather than blurred, per D-53's carve-out discipline and D-61's use of it. Two further edits are consequential repairs rather than decisions, and are listed after them.
+The four deltas are enumerated rather than blurred, per D-53's carve-out discipline and D-61's use of it. Three further edits are consequential repairs rather than decisions, and are listed after them; the `AGENTS.md` edit is not among them, being a summary brought into line rather than a rule repaired.
 
 ### Delta 1 — property 4's two halves separate (#67 E1)
 
@@ -60,14 +60,16 @@ An admission that fails on a property is evidence about that property. A road to
 - **It is a norm and not an operation**, marked as such in the rule the way property 3 is. A failed admission leaves no record unless someone writes one, and the rule names its home: the work's issue, where property 5 already puts the admission it failed. An earlier draft claimed this entry's `## Evidence` was the first such record ever written; that was false on its face, since #28's artifact and its held record both wrote one first, and the claim is withdrawn rather than reworded.
 - **Deleting the rule was the alternative and is worse.** The trigger was right to exist and wrong in its reach, and removing a re-read trigger on the evidence that it failed to fire moves in the wrong direction.
 
-### Two consequential repairs, forced rather than chosen
+### Three consequential repairs, forced rather than chosen
 
 Neither is an independent decision; each is a rule that becomes false the moment delta 2 lands.
 
 1. **Enumeration is scoped, at both sites that carried it.** *"[T]he live trials can be enumerated from the instrument itself"* stops being true once an instrument may not be the ledger. No new mechanism is needed: property 2's marker already enumerates instrument-independently, and `git grep -in trial` is the statute's own stated enumerator. So `SELECT DISTINCT trial` is scoped to ledger-instrument trials and the marker is named as the enumerator that reaches them all — one more thing property 2 is load-bearing for. **§8's own statement of the same claim is scoped in the same change**, and an earlier draft repaired only the §2 site: §8 is the token's definitional home, so a reader arriving there would have run the query on an unqualified promise. That is why `ADR-006:104` is displaced and ADR-006 takes a supersession pointer. **The marker's own precision is a known weakness and is not repaired here** — `git grep -in trial` returns far more prose than markers, and property 2 specifies no greppable form; the remedy is a machine-readable marker, which §2 makes day-one code with a validator, and it is priced out against zero live trials.
 2. **Running clean is scoped, not generalised into a falsehood.** *"The ledger alone cannot say a trial ran clean"* was written for a seat trial, and an earlier draft widened it to *no instrument alone can* — which §8 falsifies in the same statute, since the seat record's `status: clean` says exactly that a run happened and found nothing. The rule now turns on the property that actually matters: an instrument recording **only what a trial found** cannot distinguish *ran and found nothing* from *never ran*, and such a trial names a run record; where the instrument records the run as well, nothing is owed. The seat case is kept as the named example, the ledger being its instrument and the review report its run record.
 
-Leaving either was rejected: §8's recorded concern — stated there of its own retirement test, and general in its reasoning — is a governing sentence standing still while the term it selects on changes meaning, and here both would be outright false rather than merely stale.
+3. **Self-liquidation and the cut's reach follow the instrument.** *"Properties 3 and 6 … neither works alone"* asserts self-liquidation rests on both, and delta 3 makes property 6 exceptable — so the rule is false unless an exception's substitute carries the same obligation, which §2:40 now says. The same rule's cut clause reached "the mechanism's own text and every reference that accreted around it", exhaustive while the only record was ledger rows in a file that already existed; a named instrument a trial *builds* is neither text nor reference, so the cut reaches it too, or a cut trial leaves exactly the accretion property 3 exists to prevent. This is why `ADR-002:58` is displaced, and it is listed here rather than as a delta because it decides nothing new — it carries delta 3's consequence into the rule delta 3 falsified.
+
+Leaving any of the three was rejected: §8's recorded concern — stated there of its own retirement test, and general in its reasoning — is a governing sentence standing still while the term it selects on changes meaning, and here both would be outright false rather than merely stale.
 
 ## Rejected
 
