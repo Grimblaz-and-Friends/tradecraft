@@ -1,0 +1,66 @@
+# Review report — PR #69, panel lane, 2026-08-18
+
+**Lane: panel, width five.** Chosen because the artifact is a constitutional amendment — foundational governing prose, high blast radius — and it is **both shapes** under §6: it amends existing governing prose *and* adds substantially new prose (a new rule unit plus a ~95-line decision entry). §6's both-shapes clause puts `claims-vs-evidence` and `revision-diff` in at once, at width five.
+
+**Seats:** `cold-read` (fable), `wiring-falsifier`, `operational`, `claims-vs-evidence`, `revision-diff` (opus), then `defense` (opus), then `judge` (opus). No seat mutated the tree except `wiring-falsifier`, which ran its guard mutations and restored — `git status --porcelain` empty before and after, verified by two later stages. Diff base `3dba6e3`. **Opening ledger read: zero open `owner-pending` rows, so the seam put no question.**
+
+**Yield: 61 raw → 43 merged → defense 6 disproved / 37 conceded / 2 originated → judge 31 sustained-and-fixed, 6 sustained-and-priced-out, 8 dismissed.** Three highs sustained, all fixed.
+
+---
+
+## Sustained and fixed (31)
+
+**Highs**
+
+- **M1** *(cold-read; also operational, revision-diff, wiring-falsifier, claims-vs-evidence — all five seats)* — §8:247 keeps `**SELECT DISTINCT trial** enumerates the live trials` unqualified while the amended §2:42 says it does not enumerate them all. The statute contradicts itself at the token's definitional home. The same sentence is live at `ADR-006:104`, so the repair also owes `Displaces: ADR-006:104` and an ADR-006 status-line append.
+- **M2** *(cold-read; all five seats)* — `AGENTS.md` states the exception rule with no carve-outs, so the always-loaded root file grants a permission the statute refuses: excepting properties 1, 2, 3 or 5. Budget was not the cause — 6,226 of 8,000 chars.
+- **M7** *(cold-read; operational, revision-diff)* — §2:43 reads "the run record the trial names", but no property obliges a trial to name one. Judge took the cheap route and rejected the property-6 naming-obligation route as the largest complexity delta in the set.
+
+**Mediums**
+
+- **M5** *(revision-diff)* — the falsifier's ban narrowed from four named units to one; D-69's own rejection 4 refuses an option "because it drops the ban for the falsifier too."
+- **M6** *(revision-diff)* — "Properties 3 and 6 … neither works alone" untouched while property 6 became exceptable; `ADR-002:58` absent from `Displaces:`. Settled high→medium.
+- **M9** *(claims-vs-evidence)* — "No instrument alone can say a trial ran clean" is falsified by §8:250's seat-record `status: clean`. Judge overturned the defense's mitigation: §2:43's qualifying clause names "for a seat that files no rows" as a case where the silence obtains, and that is precisely the case §8:250 resolves — so the qualification is itself falsified, not only the lead-in. Settled high→medium.
+- **M10** *(claims-vs-evidence)* — the `evidence.md` row attributes a first-person verbatim quotation to a comment that paraphrases in the third person. §2:23's named failure: a citation that does not carry what it is attached to. Held at high against a move.
+- **M11** *(claims-vs-evidence)* — the trigger inversion is asserted as a consequence of old property 4; #28's D6 avoided it inside the unamended rule and disqualified its own option C for it. The rule's reason survives forward-looking; the historical claim does not.
+- **M13** *(claims-vs-evidence)* — "§12's recorded concern" is §8:262's, and is self-scoped to the `catchable` retirement test. It is the sole stated ground for both consequential repairs.
+- **M16** *(claims-vs-evidence)* — §2:48's "the first one written is [D-69]'s own" is false on its face; #28's artifact and its held record both predate the entry and both write the failed admission down.
+- **M18** *(cold-read)* — §2:48's "road running" event is still ledger-only, so the widened road's first actual traveller fires neither trigger.
+- **M20** *(operational)* — naming a new record format as an instrument silently owes that format's validator first (§2:27 day-one code; §8's waiver is scoped by name to two files). The stall outcome reproduces the never-start loop this decision exists to break.
+- **M21 + DF2** *(operational; defense)* — §2:41 requires a substitute be *named*, not that it *do* anything. Judge priced this differently from the defense: not a new adequacy bar, but a reword of the reason clause already being written. **This also closes DF2** — property 3's carve-out being defeated by property 4's exceptability — generically, and the judge rejected DF2's filed remedy (adding property 4 to the carve-outs would forbid legitimate non-repealing exceptions).
+
+**Lows** — M3 *(cold-read)*, M8 *(revision-diff)*, M12 *(claims-vs-evidence)*, M14 *(claims-vs-evidence)*, M15 *(claims-vs-evidence)*, M22 *(operational)*, M24 *(operational)*, M27 *(operational)*, M30 *(cold-read)*, M32 *(revision-diff)*, M35 *(revision-diff)*, M36 *(claims-vs-evidence)*, M37 *(claims-vs-evidence)*, M39 *(claims-vs-evidence)*, M40 *(claims-vs-evidence)*, M41 *(claims-vs-evidence)*, DF1 *(defense)*.
+
+## Sustained and priced out (6)
+
+Each is real; the remedy cost more than the defect. Ledger rows take `disposition: recorded` with the price as the reason.
+
+- **M17** *(wiring-falsifier)* — §2:42 promotes a prose marker with no machine-checkable form to sole complete enumerator. **Price:** the only remedy that changes anything is a machine-readable marker form, which §2:27 makes a boundary format — day-one code with an emitter and validator, plus widening §8's two-file waiver. Against 0 live trials and §2:19's earn-by-recurrence rule. The judge also refuted the stated harm: property 2's date discriminator narrows `git grep -in trial` from 88 to 30, and to **0** outside `docs/architecture` and `tools/`.
+- **M19** *(operational)* — "durable, countable and attributable" has no test or cited standard. **Price:** §8:215's durability test is written for `ref` URLs and would import a standard saying nothing about a repo-resident instrument, so the cheap cross-reference risks misleading; defining "countable" is standing prose earned by no incident.
+- **M23** *(operational)* — the marker carries no pointer to the admission. **Price:** same boundary-format cost as M17, plus a mechanism-surface change to §8's waiver; the gap is one discoverable hop, since property 5 homes the admission on the work's issue.
+- **M29** *(operational)* — excepting property 6 leaves property 4's falsifier without a referent. **Price:** with M21's fix landed, an adequate substitute must by construction give the falsifier something to count in; a separate clause adds standing prose for a dependency no trial has exercised.
+- **M42** *(wiring-falsifier)* — the decision-log index row is unguarded; deleting D-69's row leaves all guards at exit 0 (re-executed by defense and judge). **Price:** adds a mechanism — teaching the guards the row's unbracketed target form plus its standing maintenance — for a class pre-existing since D-53 and never once recorded as failing.
+- **M43** *(wiring-falsifier)* — the supersession cross-check verifies agreement, not displacement; a fictional `[ADR-002:1]` declared on both sides passes clean (re-executed both polarities). **Price:** a rule-shape parser over frozen ADR bodies, for a class §12 assigns to review by design — and review discharged it here, hand-checking all five `Displaces:` targets correct.
+
+## Dismissed (8)
+
+- **M4** *(operational)* — no lawful trigger counted in the trial's own output can be written: §2:37's copula defines the trigger as a claim about chance-to-fire, the same drafting form the old property 4 used for "The instrument is the ledger." The seat's counterexample also misdescribed #28's D6, whose trigger was built blind to the trial's success.
+- **M25** *(cold-read)* — property 4's opening clause, "each in a unit something actually counts," already makes an uncountable trigger unit inadmissible.
+- **M26** *(cold-read)* — dismissed on consistency with M4: the same copula read as binding there cannot be inert here, and thirty dormant days is not "chance to fire."
+- **M28** *(operational)* — "cut like any other" resolves uniquely; property 3 is §2's only cut discipline.
+- **M31** *(revision-diff)* — §12 caps the supersession append at one clause; faulting it for not describing the split faults a form for obeying its own rule. The real omission is M5, sustained there.
+- **M33** *(revision-diff)* — §2:36's verb is *observes triggers*, not *counts*; the article was already indefinite and unchanged.
+- **M34** *(revision-diff)* — §2:44 scopes the road's bindings to admitted trials; the road is not a trial.
+- **M38** *(claims-vs-evidence)* — "failed admission" is §2:48's own term for an admission that failed on a property, and the entry states #28's held status in terms at rejection 12. Precision with nothing depending on it.
+
+## Next-pass ruling
+
+**Run one more pass.** This pass sustained three highs it will fix, so the stop default does not trigger.
+
+- **Price of running:** one panel's dispatch and its seat records, plus further ledger rows appended to a corpus the entry states counts over — which M12's fix must absorb by time-indexing or stating the query rather than writing a new literal.
+- **Price of stopping:** the fix batch rewrites seven rule units across §2 and §8 and adds three `Displaces:` targets with two ADR appends — the largest statute surface this panel has seen — and every entry-text defect becomes unfixable at merge under §12:303. An unreviewed batch-1 edit is exactly the class M1, M6 and M9 already are: a rule left standing beside a rewritten neighbour.
+
+## Seat record
+
+Written to `docs/seat-record.jsonl` in the fix commit. Per-seat sustained tallies credit every finder on a merged finding, so sums exceed the 37 sustained by design: `claims-vs-evidence` 17, `operational` 13, `revision-diff` 10, `wiring-falsifier` 7, `cold-read` 6, `defense` 2 originated.
+
