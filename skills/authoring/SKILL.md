@@ -28,7 +28,7 @@ When one idea needs both a shipped standard and a local application, the skill c
 
 ## Writing standards
 
-- **Write for the actual reader: a strong senior engineer.** Before every instruction, ask whether that reader needs it, or just the goal and constraints. Most candidate instructions fail this test and should not be written.
+- **Write for the actual readers, and assume they are capable.** These documents are read mostly by model sessions and sometimes by people, and every one of them is treated as a strong senior engineer: before writing any instruction, ask whether a reader of that caliber needs it, or just the goal and constraints. Most candidate instructions fail this test and should not be written.
 - **State the rule with its reason; link the evidence.** The reason is one short clause that lets a reader apply the rule well and notice when it stops applying. The evidence — counts, incidents, history — goes behind a link. Prose that litigates its own justification taxes every future reader to persuade one who is not there.
 - **Do not armor against misreadings.** A clause defending against a reader who would not actually err is pure cost. If a competent reader genuinely could go wrong, restate the sentence more plainly rather than appending a qualifier to it.
 - **Deletion is a first-class edit.** Propose removals with the same energy as additions. Net growth of a governing document needs a justification the way a new rule does — the default direction of revision is shorter.

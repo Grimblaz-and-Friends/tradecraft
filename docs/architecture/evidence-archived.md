@@ -1,3 +1,5 @@
+> **Part of the frozen archive per [D-74](decisions/D-74-2026-08-19-constitutional-reset.md) (2026-08-19).** The statute whose claims this registry backed is superseded. Readable history, never binding, never maintained.
+
 # Evidence registry — provenance for transcribed claims
 
 ADR-009 §4 mandates citations over copies, and the 2026-08-15 review (finding M28) showed the constitution transcribing its strongest quantitative claims with no attached record. This registry is the repair: every transcribed claim an ADR leans on, with its provenance graded honestly. Grades:
