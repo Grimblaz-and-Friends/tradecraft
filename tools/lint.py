@@ -111,7 +111,8 @@ LEDGER_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 # The one form rule for every name-shaped field in both files: `found_by`, and
 # the seat record's `seat`, `model`, `runtime`, and the optional `trial`. A
 # lowercase token with no whitespace, so one name occupies exactly one bucket and
-# `SELECT DISTINCT` over any of them enumerates what is actually in use.
+# `SELECT DISTINCT` over any of them enumerates what is actually in use
+# — for `trial`, only among the trials whose instrument is the ledger (D-69).
 TOKEN = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 # found_by is half-open: seat names may be swapped in freely, while the
 # non-seat values are closed and grow only by amending the statute's §8. The lint

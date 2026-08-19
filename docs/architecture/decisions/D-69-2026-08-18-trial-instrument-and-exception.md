@@ -1,4 +1,4 @@
-# D-69: The trial road's falsifier and evidence stop being ledger-only, and a property may be excepted by naming what replaces it
+# D-69: The trial road's falsifier and evidence stop being ledger-only, and a property may be excepted only by a substitute that leaves the cut something to fire on
 
 **Status:** Accepted 2026-08-18 (PR #69)
 
@@ -20,9 +20,9 @@
 
 ## Decision
 
-**Statute delta:** Properties 4 and 6 are restated around what they were always claims about — a falsifier counted in the trial's instrument and a review trigger counted in opportunity, and the record the trial's own promotion would demand rather than ledger rows specifically; a new rule permits excepting only properties 4 and 6, and only by a substitute that leaves property 3 something to fire on; a mechanism the road could not admit joins the road's re-read trigger alongside a non-ledger instrument's first record; and, consequentially, self-liquidation and the cut's reach follow the instrument, the enumeration claim is scoped in both §2 and §8, and the *ran clean* rule is scoped to instruments that record only what a trial found. `AGENTS.md`'s summary of the road is brought into line in the same change.
+**Statute delta:** Properties 4 and 6 are restated around what they were always claims about — a falsifier counted in the trial's instrument and a review trigger counted in opportunity, and the record the trial's own promotion would demand rather than ledger rows specifically; a new rule permits excepting a property only by a substitute that leaves property 3 something to fire on, with properties 1, 2, 3 and 5 taking no exception; a mechanism the road could not admit joins the road's re-read trigger alongside a non-ledger instrument's first record; and, consequentially, self-liquidation and the cut's reach follow the instrument, the enumeration claim is scoped in both §2 and §8, the *ran clean* rule is scoped to instruments that record only what a trial found, and `AGENTS.md`'s summary of the road is brought into line in the same change.
 
-**Displaces:** [ADR-002:54], [ADR-002:56], [ADR-002:58], [ADR-002:60], [ADR-002:62], [ADR-002:66], [ADR-002:70], [ADR-006:104]
+**Displaces:** [ADR-002:54], [ADR-002:56], [ADR-002:58], [ADR-002:60], [ADR-002:62], [ADR-002:70], [ADR-006:104]
 
 The four deltas are enumerated rather than blurred, per D-53's carve-out discipline and D-61's use of it. Two further edits are consequential repairs rather than decisions, and are listed after them.
 
@@ -43,7 +43,7 @@ Property 6's reason was always the ratchet — "manufacturing exactly the record
 - **A named instrument is bound by three properties: durable, countable, attributable.** Those are what made the ledger fit, so they are what a substitute must show. The precedent for reaching outside the ledger is inside §2 already: property 3 reads the *review report* for whether a trial ran.
 - **The instrument is part of what the owner admits**, and a trial whose instrument turns out not to count is cut like any other. This is where the delta's cost sits and it is not hidden: nothing checks an instrument's quality, and a badly chosen one yields a trial that cannot be cut — the accretion property 3 exists to prevent, entering through the door this delta opens.
 
-### Delta 3 — a property may be excepted by naming what replaces it (#67 E3)
+### Delta 3 — a property may be excepted only by an adequate substitute (#67 E3)
 
 The owner's ruling of 2026-08-18 was that exceptions must at minimum be available.
 
