@@ -1,0 +1,4 @@
+# The doctrine and its pointer get the owner's specific review at merge time —
+# the platform mechanism behind the doctrine's release-gate callout (D-74).
+/AGENTS.md @Grimblaz
+/CLAUDE.md @Grimblaz

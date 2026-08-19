@@ -1,21 +1,50 @@
-# tradecraft — root instructions (canonical for all runtimes)
+# tradecraft — doctrine (canonical for all runtimes)
 
-This repo is governed by its constitution: the statute at [docs/architecture/constitution.md](docs/architecture/constitution.md), whose every rule cites the decision that last shaped it. Read it before structural work, and read the cited decision — a [log entry](docs/architecture/decisions/) or a frozen [ADR](docs/architecture/adr/README.md) line — before changing any rule. The statute overrides habit; this file stays within a lint-enforced size budget, so durable guidance belongs in the skill it governs, not here.
+Tradecraft is a house engineering practice for frontier models: the standards, judgment structure, and compounding memory that turn model capability into trustworthy engineering. The models write the code; this repo carries what a vendor never ships — what counts as evidence, what "done" must be true of, which decisions are the human's. Capability wrappers do not belong here.
 
-Always-on rules:
+**Purpose:** the binding rules every session must hold before acting, plus this repo's mechanics. **Audience:** every session, every runtime. **Success:** a competent session reading only this file behaves correctly at the gates and routes content to its right home.
 
-- **Skills are self-contained cells.** No skill requires another skill; shared code lives only in `lib/`. Depth goes in the skill's own `references/`, loaded on demand. (§3)
-- **Two zones.** Nothing in the shipped zone (`skills/`, `lib/`, `commands/`, `agents/`, `.claude-plugin/`) may reference `docs/`, `tools/`, or `.github/`. (§4)
-- **Rules are earned.** A *rule* — anything a competent session could do from the goal and constraints alone — starts as model judgment; prose is promoted by incident, code by recurrence + stability. A **mechanism** must be the *same thing* across sessions to work at all (a gate procedure, a skill, a script; the list is open), so it **may** take the other road: the owner admits its *procedural specification* as a trial — **marked wherever it is used**, stating up front **a falsifier counted in what its instrument holds** — the ledger by default, never elapsed time — and **a review trigger counted in opportunity** (units of work, pull requests or uses), **producing the record its own promotion would demand**, and **cut at that trigger** unless evidence for it arrived. A trial whose evidence is not a defect names its instrument in the admission; it must be durable, countable and attributable. A property may be excepted only by a substitute that leaves the cut something to fire on, and properties 1, 2, 3 and 5 take no exception. Advisory methodology inside a mechanism stays on the promotion road. Boundary formats (GitHub markers, ledger rows, version stamps) take neither road: day-one code, the one exception. Trials are open to any mechanism; none has run yet. (§2)
-- **Findings: fix now or drop with a one-line reason** — the drop being a `recorded` ledger row with its reason on the row's `ref` surface, not a sentence in the reply. **Naming a finding in conversation is not a disposition**: no stage takes the transcript as input, so a finding in a reply survives only if someone happens to ask — telling the maintainer transfers information, never the routing. Filing an issue requires rejecting both the fix-here home and the guard home, and passing the pickup test. (§7)
-- **Lessons land same-session** in their repo home (skill prose, a guard, a statute amendment with its decision entry, or a repo-only doc). Vendor memory is an inbox, never an archive. (§10)
-- **The predecessor** ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra)) **is reference material with no presumption of correctness.** Pull lessons, never artifacts. (§11)
-- **Substrate is Python**, stdlib-first, tested on Linux and Windows. (§9)
-- **The trivial floor** (scoped to the convergence gate; below it commitment's question is answered by §6's standing ruling — its check still runs — framing has no procedure, and release is never skipped). A change is **below** it when it makes no decision — states, alters or removes no rule, introduces no mechanism and changes no mechanism's surface, and leaves a reader nothing to affirm or reject. **A mechanism's surface is what another party relies on**: above the floor if a correct caller would now have to use it differently or get a different answer — a refusal it did not have, a step a consumer must run; below if nothing a caller relies on moves, including an internal rewrite. The unit is the PR against its merge base. **Never below:** anything creating, changing or retiring a rule; anything introducing a mechanism or changing its surface; anything changing what `lint.py`, `check_version_bump.py`, `check_constitution.py` or CI accepts or rejects, the ledger's **schema** included — a schema-conforming row append stays below, but one carrying a **`found_by`** value §8 has not admitted is an amendment and is above. **`AGENTS.md` and the constitution are presumed above**, rebutted only in the canonical form §6 states — silence does not rebut. **It fails closed.** Declare your reading in the PR body either way. (§6)
-- **Amending the statute:** every statute change carries a decision entry in `docs/architecture/decisions/`, named `D-<PR#>` after the pull request that lands it — so publish the branch and open the PR *before* the substantive commit, or the number does not exist yet. Only a cosmetic body change is exempt. Run the constitutional check with `--pr <N>`; without it one check is skipped and a clean local run is weaker than CI's. (§12)
-- **Before implementing** anything above the trivial floor: write the pre-implementation artifact as a comment on the work's issue — filing one if none exists — weighted to acceptance criteria and a boundary statement. Its review is the convergence gate and it asks. The owner affirms in conversation; you then record that on the issue, naming the artifact comment, **before the first commit**. (§6)
-- **Before committing:** branch first — `main` refuses direct pushes, so work lands on its own branch and reaches `main` through a PR whose CI checks must pass — then `python tools/lint.py`, `python tools/check_version_bump.py` and `python tools/check_constitution.py` — the second exists to answer before the commit, and had no caller telling anyone to run it. Merging is the human's release gate (§5), never the agent's.
-- **Then, without being asked: publish the branch, open the PR, run the review, reconcile the external comments** — in that order, so automated reviewers run concurrently with it. On a change that has a PR, running the review is a check, never a question; handing it back for the human to run invents a gate the charter does not have. Upstream artifacts (framing, design, plan) are different — their review *is* the convergence gate, and that one asks. (§6)
-- **The PR body says what it closes** — `Closes #N`, or one line saying it closes none and why; silence and a deliberate no are otherwise the same string. (§6)
+## Authority
 
-`CLAUDE.md` is a pointer to this file and must never fork from it.
+**The owner's decisions outrank this doctrine.** When you disagree, argue the merits with reasoning — that is wanted, and further argument with new reasons is welcome. Never refuse or stall an owner decision because a rule forbids it: a rule that conflicts with an owner decision is a rule that needs amending, and the move is to propose the amendment alongside the work, never to block on it.
+
+## The two ceremony moments
+
+Process weight concentrates at exactly two moments; everything between them is model judgment plus the standards carried in the skills.
+
+- **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets a pre-implementation artifact as a comment on its issue (file one if none exists): purpose, acceptance criteria, boundary statement. Its review is the convergence gate: the owner affirms, amends, or rejects in conversation, and the session records the affirmation on the issue, naming the artifact comment, before the first commit. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR; when in doubt, ask the cheap question.
+- **Release.** Merging is the owner's, never the agent's. `CODEOWNERS` flags any PR touching this file for the owner's specific review.
+
+## The flow
+
+Branch first (`main` refuses direct pushes) → build → `python tools/lint.py` and `python tools/check_version_bump.py` → commit → publish the branch, open the PR, run the review, reconcile external reviewer comments — in that order, without being asked; on a change that has a PR, running the review is a check, never a question. The PR body states `Closes #N`, or one line saying it closes none and why. A shipped-zone change bumps the plugin version (the unit is the PR against its merge base).
+
+## Review
+
+Every reviewable artifact states its purpose, audience, and success criteria — for an implementation, the issue artifact's acceptance criteria are the success definition. The review judges against that statement; the charter, roster, and evidence standards live in `skills/adversarial-review`. The review report states what it judged against, and every review appends one row to `docs/reviews.jsonl`.
+
+**Findings: fix now, or drop with a one-line reason in the review report** — outside a review, the drop is recorded on the work's issue or PR; naming a finding in conversation is not a disposition. Filing an issue instead requires that the remedy belongs neither in this change nor in a guard, and that it would genuinely get picked up. A decision only the owner can make is put to the owner argued — the live options, each with pros and cons, and a recommendation.
+
+## Content routing
+
+- **Methodology** — how any work is done → the skill that governs it. Skills are self-contained cells: no skill references another, shared code lives only in `lib/`, depth loads on demand from the skill's own `references/`.
+- **Binding always-on rule, or this repo's mechanics** → this file, within its budget.
+- **Rationale** — why a shape was chosen, what was rejected → a decision entry.
+- **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`.
+
+**Admitting a new requirement:** cheapest reliable material first — a platform or CI mechanism, then skill prose, then a doctrine line; this file is the last resort, for what must bind before any context loads. Owner-stated requirements are admitted, not argued (counter-argument welcome, per Authority above). Agent-proposed rules need an incident from real work — a review finding about governing prose is not an incident. At the budget, adding a line means routing something out.
+
+## Decisions
+
+`docs/architecture/decisions/D-<PR#>-YYYY-MM-DD-<slug>.md`, written in the PR that lands a choice a future session would otherwise re-derive or unknowingly undo; frozen on landing. **Decisions inform, never bind**: a prior decision is superseded by reading it, not obeyed — it is never a citation against change, because if current behavior is wrong, the original reasoning probably was too. A rule or skill line may cite its decision (`[D-N]`); follow the citation before changing what it governs, then supersede knowingly.
+
+## Records are exhaust
+
+Records are append-only and never maintained: no backfilling, no reconciling, no re-dispositioning, ever. A PR whose only content is record bookkeeping is the tripwire: delete the record it books. `docs/ledger.jsonl`, `docs/seat-record.jsonl`, and the pre-reset constitution under `docs/architecture/` (statute, ADRs, evidence registry) are a frozen archive — readable history, never binding. [D-74]
+
+## Structure and substrate
+
+- **Two zones.** Shipped (`skills/`, `lib/`, `commands/`, `agents/`, `.claude-plugin/`) never references repo-only (`docs/`, `tools/`, `.github/`) — not a path, not a doc link; the lint enforces the checkable subset. General standards ship in the skill that teaches them; repo-specific application lives here.
+- **Substrate is Python**, stdlib-first, tested on Linux and Windows in CI. PowerShell is rejected for new code. `AGENTS.md` is canonical because Codex reads it natively; `CLAUDE.md` is a pointer to it, never a fork.
+- **The predecessor** ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra)) is reference material with no presumption of correctness: pull lessons, never artifacts.
+- **Vendor memory is an inbox, never an archive.** A lesson lands same-session in its home from the routing table above.

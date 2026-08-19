@@ -1,14 +1,15 @@
 # The decision log
 
-One file per constitutional decision, named `D-<N>-YYYY-MM-DD-<slug>.md` where `<N>` is the pull request that landed it. An entry freezes what was known when the decision was made; the rules it put in force live in the [statute](../constitution.md), and each statute rule cites the entry or frozen ADR line that last shaped it.
+One file per decision, named `D-<N>-YYYY-MM-DD-<slug>.md` where `<N>` is the pull request that landed it. An entry is written in the PR that lands a choice a future session would otherwise re-derive or unknowingly undo, and is frozen on landing.
 
-An entry is accepted when it lands on `main`, and is then immutable except for status-line supersession pointers. Reversal is by superseding entry, never by revert. The procedure is the statute's §12.
+**Decisions inform, never bind.** An entry records what was known and rejected when the choice was made; it is superseded by being read, not obeyed, and is never a citation against change. A rule or skill line may cite its entry as `[D-N]`; follow the citation before changing what it governs, then supersede knowingly. Reversal is by a new entry, never by editing an old one.
 
-| Entry | Decision | Displaces | Superseded by |
-| --- | --- | --- | --- |
-| [D-53](D-53-2026-08-18-log-and-statute.md) | Split the constitution into a decision log and a statute; freeze the nine ADRs as a historical preamble | ADR-004:28, ADR-006:61, ADR-006:72, ADR-006:92, ADR-008:17 | — |
-| [D-59](D-59-2026-08-18-work-prose.md) | `artifact` gains `work-prose`: one value for every prose surface the statute mandates outside the tree | ADR-006:72 | — |
-| [D-61](D-61-2026-08-18-decision-surfacing-and-the-attended-seam.md) | A decision put to the owner carries argued options with pros and cons plus the recommendation; the opening seam's batched question is attended-only | ADR-005:23, ADR-006:56, ADR-006:61, ADR-006:63 | — |
-| [D-69](D-69-2026-08-18-trial-instrument-and-exception.md) | The trial road's falsifier and evidence stop being ledger-only; a property may be excepted only by a substitute that leaves the cut something to fire on; a failed admission, or a non-ledger instrument's first record, joins the road's re-read trigger | ADR-002:54, ADR-002:56, ADR-002:58, ADR-002:60, ADR-002:62, ADR-002:70, ADR-006:104 | — |
+Entries D-53 through D-69 were written under the pre-reset statute's fixed skeleton and are part of the frozen archive ([D-74](D-74-2026-08-19-constitutional-reset.md)); decisions before the log existed are in the [frozen ADRs](../adr/README.md).
 
-Decisions taken before the split are in the [frozen ADRs](../adr/README.md), which remain the record for every rule whose citation names them.
+| Entry | Decision |
+| --- | --- |
+| [D-53](D-53-2026-08-18-log-and-statute.md) | Split the constitution into a decision log and a statute; freeze the nine ADRs |
+| [D-59](D-59-2026-08-18-work-prose.md) | `artifact` gains `work-prose` in the ledger vocabulary |
+| [D-61](D-61-2026-08-18-decision-surfacing-and-the-attended-seam.md) | Decisions put to the owner carry argued options; the opening seam's question becomes attended-only |
+| [D-69](D-69-2026-08-18-trial-instrument-and-exception.md) | The trial road's falsifier and evidence stop being ledger-only |
+| [D-74](D-74-2026-08-19-constitutional-reset.md) | **The constitutional reset**: three content homes, purpose-anchored review, records as exhaust; the statute and its machinery become a frozen archive |

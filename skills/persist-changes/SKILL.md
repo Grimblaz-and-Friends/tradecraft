@@ -7,7 +7,9 @@ description: Land finished work on the current branch safely — stage exactly t
 
 Lands finished work on the current branch: deliberate staging, an honest commit message, a verified push to the right remote. The mechanical sequence is owned by a script; the judgment about *what* to land and *what to say* stays with you.
 
-**Pause discipline: typed-halt** — ADR-005's vocabulary, named so an audit conducted in the charter's own terms can find it. This skill never asks a question: every stop the script's own logic reaches is a typed one-line `not-persisted: <reason>`, so it is safe in unattended runs. The judgment section below is what you decide *before* invoking it and *after* it stops, never a question the skill puts to you mid-run.
+**Purpose:** land validated work with staging, message, and push held to this practice's standards. **Audience:** any session with a finished change ready to land on its current branch. **Success:** exactly the named files land with an honest message and a verified push — or the stop is a typed one-line reason.
+
+**Pause discipline: typed-halt.** This skill never asks a question: every stop the script's own logic reaches is a typed one-line `not-persisted: <reason>`, so it is safe in unattended runs. The judgment section below is what you decide *before* invoking it and *after* it stops, never a question the skill puts to you mid-run.
 
 ## When to use
 

@@ -2,9 +2,9 @@
 
 **Status:** Frozen 2026-08-18
 
-**Frozen 2026-08-18 by [D-53].** This index is part of the frozen preamble; open questions moved to `../open-questions.md` when the split landed, because a live section inside a frozen file cannot be told from dead law.
+**Frozen 2026-08-18 by [D-53].** This index is part of the frozen preamble; open questions moved to `../open-questions-archived.md` when the split landed, because a live section inside a frozen file cannot be told from dead law.
 
-**Frozen 2026-08-18 by [D-53](../decisions/D-53-2026-08-18-log-and-statute.md). Nothing here is in force.** The rules these nine documents once carried live in the [statute](../constitution.md); each statute rule cites the ADR line or [decision entry](../decisions/) that last shaped it. These files are the record of how those rules were decided, and they keep their exhibits — the evidence each was learned from — so a sweep can still tell load-bearing from vestigial.
+**Frozen 2026-08-18 by [D-53](../decisions/D-53-2026-08-18-log-and-statute.md). Nothing here is in force.** The rules these nine documents once carried live in the [statute](../constitution-archived.md); each statute rule cites the ADR line or [decision entry](../decisions/) that last shaped it. These files are the record of how those rules were decided, and they keep their exhibits — the evidence each was learned from — so a sweep can still tell load-bearing from vestigial.
 
 **The only lawful diff to a file here is a status-line supersession pointer** (statute §12). Every status-line entry, every `†` note, and every inline record remains readable at the path it has always had; the freeze moves where *new* history is born, never where old history lives.
 
