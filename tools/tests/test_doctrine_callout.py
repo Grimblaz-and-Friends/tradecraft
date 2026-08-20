@@ -1,10 +1,15 @@
 """Pins for the doctrine callout.
 
-The defect this script replaces was a mechanism that did nothing and looked
-like it worked, so the tests here are weighted toward the two ways that could
-recur: a run that should have called out and didn't, and a failure that exits
-0. Every `gh` call is stubbed — the `gh` layer is a thin shell around
-`subprocess`, and what is worth pinning is the decision above it.
+The defect this script replaces was a mechanism that did nothing and looked like
+it worked, so the tests are weighted toward the two ways that could recur: a run
+that should have called out and didn't, and a failure that exits 0. Its review
+found a third, and it is pinned hardest — a comment written by someone else,
+carrying the marker, must neither suppress the callout nor ever be edited.
+
+Most tests stub the `gh` layer, because what is worth pinning is the decision
+above it. `test_real_gh_raises_on_a_rejected_call` deliberately does not: every
+other test replaces `_gh` wholesale, so without it the non-zero-exit branch —
+the loudness guarantee itself — is never executed by anything.
 """
 from __future__ import annotations
 
@@ -16,6 +21,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import doctrine_callout as dc  # noqa: E402
+
+BOT = dc.EXPECTED_AUTHOR
 
 
 class Gh:
@@ -34,12 +41,18 @@ class Gh:
             return "".join(f"{f}\n" for f in self.files)
         if args[0] == "api" and args[-1] == "[.labels[].name]":
             return json.dumps(self.labels)
-        if args[0] == "api" and args[-1] == ".[] | {id, body}":
+        if args[0] == "api" and args[-1].startswith(".[] |"):
             return "".join(json.dumps(c) + "\n" for c in self.comments)
         return ""
 
     def did(self, *prefix: str) -> bool:
         return any(c[:len(prefix)] == prefix for c in self.calls)
+
+    def call_with(self, needle: str) -> tuple[str, ...]:
+        for call in self.calls:
+            if any(needle in a for a in call):
+                return call
+        raise AssertionError(f"no call contained {needle!r}")
 
     def posted_body(self) -> str:
         for call in self.calls:
@@ -47,25 +60,36 @@ class Gh:
                 return call[call.index("--body") + 1]
         raise AssertionError("no comment was posted")
 
-    def patched_body(self) -> str:
+    def patched(self) -> tuple[str, str]:
+        """(comment id, new body) of the single PATCH, or fail."""
         for call in self.calls:
             if call[0] == "api" and "PATCH" in call:
-                return call[-1].removeprefix("body=")
+                return call[3].rsplit("/", 1)[-1], call[-1].removeprefix("body=")
         raise AssertionError("no comment was edited")
+
+    def patch_calls(self) -> list[tuple[str, ...]]:
+        return [c for c in self.calls if c[0] == "api" and "PATCH" in c]
 
 
 @pytest.fixture
 def gh(monkeypatch):
-    def make(files, comments=(), labels=()):
+    def make(files=("AGENTS.md",), comments=(), labels=()):
         stub = Gh(list(files), [dict(c) for c in comments], list(labels))
         monkeypatch.setattr(dc, "_gh", stub)
         return stub
     return make
 
 
-CALLOUT_COMMENT = {"id": 7, "body": dc.CALLOUT.format(files="`AGENTS.md`")}
-WITHDRAWN_COMMENT = {"id": 7, "body": dc.WITHDRAWN}
-NOISE = {"id": 1, "body": "unrelated review chatter about AGENTS.md"}
+def _callout(files="`AGENTS.md`", author=BOT, cid=7):
+    return {"id": cid, "author": author, "body": dc.CALLOUT.format(files=files)}
+
+
+WITHDRAWN_COMMENT = {"id": 7, "author": BOT, "body": dc.WITHDRAWN}
+NOISE = {"id": 1, "author": "Grimblaz", "body": "unrelated chatter about AGENTS.md"}
+# The accidental case, and the reason ownership is checked: a review report on
+# this very mechanism quotes the marker.
+REPORT = {"id": 4242, "author": "Grimblaz",
+          "body": f"## review report\n\nIdempotence is by `{dc.MARKER}`, verified present once.\n"}
 
 
 # --- which paths count -------------------------------------------------------
@@ -97,6 +121,15 @@ def test_doctrine_pr_gets_label_and_comment(gh):
     assert any("touches AGENTS.md" in line for line in lines)
 
 
+def test_the_body_names_the_files_the_pr_actually_touched(gh):
+    """A CLAUDE.md-only PR must not be sent to read the AGENTS.md diff."""
+    stub = gh(["CLAUDE.md"])
+    dc.run("79", None)
+    body = stub.posted_body()
+    assert "Read the `CLAUDE.md` diff" in body
+    assert "AGENTS.md" not in body.split("<sub>")[0]
+
+
 def test_label_is_created_before_it_is_applied(gh):
     """The mechanism must not depend on a label a human can delete."""
     stub = gh(["AGENTS.md"])
@@ -104,6 +137,16 @@ def test_label_is_created_before_it_is_applied(gh):
     create = next(i for i, c in enumerate(stub.calls) if c[:2] == ("label", "create"))
     apply_ = next(i for i, c in enumerate(stub.calls) if c[:2] == ("pr", "edit"))
     assert create < apply_
+
+
+def test_label_create_forces_and_carries_its_appearance(gh):
+    """Without --force, `label create` errors on the second doctrine PR and
+    turns a lawful change red — a guard blocking lawful work."""
+    stub = gh(["AGENTS.md"])
+    dc.run("79", None)
+    call = stub.call_with("--force")
+    assert call[:3] == ("label", "create", dc.LABEL)
+    assert dc.LABEL_COLOR in call and dc.LABEL_DESC in call
 
 
 # --- the negative case -------------------------------------------------------
@@ -117,86 +160,188 @@ def test_non_doctrine_pr_gets_neither(gh):
     assert not stub.did("label", "create")
 
 
-# --- idempotence -------------------------------------------------------------
-
-def test_rerun_does_not_duplicate_the_comment(gh):
-    stub = gh(["AGENTS.md"], comments=[NOISE, CALLOUT_COMMENT], labels=[dc.LABEL])
-    status, lines = dc.run("79", None)
-    assert status == dc.OK
-    assert not stub.did("pr", "comment")
-    assert not stub.did("pr", "edit")          # label already applied
-    assert any("not duplicated" in line for line in lines)
-
-
-def test_a_lookalike_comment_is_not_the_callout(gh):
-    """Identity is the marker, not the prose — otherwise a human quoting the
-    callout in review would suppress the real one."""
-    stub = gh(["AGENTS.md"], comments=[NOISE])
-    dc.run("79", None)
-    assert dc.MARKER in stub.posted_body()
-
-
-# --- drop-back and reinstatement ---------------------------------------------
-
-def test_dropping_the_doctrine_change_withdraws_the_callout(gh):
-    stub = gh(["skills/authoring/SKILL.md"],
-              comments=[CALLOUT_COMMENT], labels=[dc.LABEL])
-    status, _ = dc.run("79", None)
-    assert status == dc.OK
-    assert stub.did("pr", "edit", "79", "--remove-label")
-    assert dc.WITHDRAWN_MARKER in stub.patched_body()
-
-
-def test_re_earning_the_change_reinstates_the_callout(gh):
-    stub = gh(["AGENTS.md"], comments=[WITHDRAWN_COMMENT])
-    status, _ = dc.run("79", None)
-    assert status == dc.OK
-    assert dc.WITHDRAWN_MARKER not in stub.patched_body()
-    assert "changes the doctrine" in stub.patched_body()
-    assert not stub.did("pr", "comment")       # edited, not a second comment
-
-
 def test_no_label_to_remove_is_not_a_removal(gh):
     stub = gh(["skills/authoring/SKILL.md"], labels=[])
     dc.run("61", None)
     assert not stub.did("pr", "edit")
 
 
+# --- ownership: the review's HIGH -------------------------------------------
+
+def test_a_foreign_comment_carrying_the_marker_does_not_suppress_the_callout(gh):
+    """The repo is public, so anyone can comment. Degrade toward speaking:
+    a duplicate callout is noise, a missing one is the bug this script fixes."""
+    stub = gh(["AGENTS.md"], comments=[REPORT])
+    status, lines = dc.run("79", None)
+    assert status == dc.OK
+    assert dc.MARKER in stub.posted_body()
+    assert any("ignoring a marker-bearing comment by Grimblaz" in line for line in lines)
+
+
+def test_a_foreign_comment_is_never_edited(gh):
+    """Editing one would destroy a third party's comment — in practice, the
+    review report that quoted the marker."""
+    for files, labels in ((["skills/x/SKILL.md"], [dc.LABEL]), (["AGENTS.md"], [])):
+        stub = gh(files, comments=[REPORT], labels=labels)
+        dc.run("79", None)
+        assert stub.patch_calls() == [], f"edited a foreign comment (files={files})"
+
+
+def test_a_lookalike_comment_is_not_the_callout(gh):
+    """Identity is the marker plus the author, not the prose."""
+    stub = gh(["AGENTS.md"], comments=[NOISE])
+    dc.run("79", None)
+    assert dc.MARKER in stub.posted_body()
+
+
+def test_our_own_callout_is_recognised(gh):
+    stub = gh(["AGENTS.md"], comments=[NOISE, _callout()], labels=[dc.LABEL])
+    status, lines = dc.run("79", None)
+    assert status == dc.OK
+    assert not stub.did("pr", "comment")
+    assert not stub.did("pr", "edit")          # label already applied
+    assert stub.patch_calls() == []            # body already correct
+    assert any("already says this" in line for line in lines)
+
+
+# --- one rule for the comment body ------------------------------------------
+
+def test_dropping_the_doctrine_change_withdraws_the_callout(gh):
+    stub = gh(["skills/authoring/SKILL.md"], comments=[_callout()], labels=[dc.LABEL])
+    status, _ = dc.run("79", None)
+    assert status == dc.OK
+    assert stub.did("pr", "edit", "79", "--remove-label")
+    assert stub.patched() == ("7", dc.WITHDRAWN)
+
+
+def test_re_earning_the_change_reinstates_the_callout(gh):
+    stub = gh(["AGENTS.md"], comments=[WITHDRAWN_COMMENT])
+    status, _ = dc.run("79", None)
+    assert status == dc.OK
+    _, body = stub.patched()
+    assert "Withdrawn" not in body and "changes the doctrine" in body
+    assert not stub.did("pr", "comment")       # edited, not a second comment
+
+
+def test_a_stale_touched_list_is_refreshed(gh):
+    """The withdrawn/reinstated transition and the files-changed transition are
+    the same operation; repairing only the first was the inconsistency."""
+    stub = gh(["AGENTS.md", "CLAUDE.md"], comments=[_callout()], labels=[dc.LABEL])
+    dc.run("79", None)
+    _, body = stub.patched()
+    assert "`AGENTS.md`, `CLAUDE.md`" in body
+
+
+def test_an_already_withdrawn_callout_is_left_alone(gh):
+    stub = gh(["skills/x/SKILL.md"], comments=[WITHDRAWN_COMMENT])
+    dc.run("79", None)
+    assert stub.patch_calls() == []
+
+
+# --- reading the thread ------------------------------------------------------
+
+def test_the_comment_read_walks_every_page(gh):
+    """Without --paginate the default page size is 30, and on a long thread the
+    callout falls off page 1 — the run then posts a second one."""
+    stub = gh(["AGENTS.md"])
+    dc.run("79", None)
+    call = stub.call_with("/comments")
+    assert "--paginate" in call
+    assert any("per_page=100" in a for a in call)
+    assert any("author: .user.login" in a for a in call)
+
+
 # --- dry run -----------------------------------------------------------------
 
-def test_dry_run_touches_nothing(gh):
-    stub = gh(["AGENTS.md"])
+@pytest.mark.parametrize("files, comments, labels, expect", [
+    (["AGENTS.md"], (), (), "posting the callout"),
+    (["skills/x/SKILL.md"], [_callout()], [dc.LABEL], "removing the doctrine label"),
+    (["skills/x/SKILL.md"], [_callout()], [dc.LABEL], "updating the callout"),
+    (["AGENTS.md"], [WITHDRAWN_COMMENT], (), "updating the callout"),
+    (["AGENTS.md", "CLAUDE.md"], [_callout()], [dc.LABEL], "updating the callout"),
+])
+def test_dry_run_reports_every_change_and_makes_none(gh, files, comments, labels, expect):
+    stub = gh(files, comments=comments, labels=labels)
     status, lines = dc.run("79", None, dry_run=True)
     assert status == dc.OK
-    assert any("touches AGENTS.md" in line for line in lines)
-    assert not stub.did("pr", "comment")
-    assert not stub.did("pr", "edit")
-    assert not stub.did("label", "create")
+    assert any(expect in line for line in lines)
+    for forbidden in (("pr", "comment"), ("pr", "edit"), ("label", "create")):
+        assert not stub.did(*forbidden), f"dry run called {forbidden}"
+    assert stub.patch_calls() == []
 
 
 # --- failure is loud ---------------------------------------------------------
 
-@pytest.mark.parametrize("fail_on", [
-    "pr diff",                  # the changed paths could not be established
-    "issues/79 --jq",           # the PR's labels could not be read
-    "issues/79/comments",       # the thread could not be read
-    "label create",             # the label could not be created
-    "pr edit",                  # the label could not be applied
-    "pr comment",               # the callout could not be posted
+@pytest.mark.parametrize("fail_on, files, comments, labels", [
+    ("pr diff", ["AGENTS.md"], (), ()),                       # paths unreadable
+    ("issues/79 --jq", ["AGENTS.md"], (), ()),                # labels unreadable
+    ("issues/79/comments", ["AGENTS.md"], (), ()),            # thread unreadable
+    ("label create", ["AGENTS.md"], (), ()),                  # label uncreatable
+    ("--add-label", ["AGENTS.md"], (), ()),                   # label unappliable
+    ("pr comment", ["AGENTS.md"], (), ()),                    # callout unpostable
+    ("--remove-label", ["skills/x/SKILL.md"], [_callout()], [dc.LABEL]),
+    ("PATCH", ["skills/x/SKILL.md"], [_callout()], [dc.LABEL]),
 ])
-def test_every_failure_exits_non_zero(gh, fail_on, capsys):
+def test_every_gh_call_site_exits_non_zero_when_rejected(gh, capsys, fail_on,
+                                                         files, comments, labels):
     """A callout that silently no-ops is the bug this script replaces, not a
-    milder form of it. Each site is enumerated so the claim cannot drift."""
-    stub = gh(["AGENTS.md"])
+    milder form of it. All eight sites are driven, including the two on the
+    edit path — the rarest one, and so the last to be noticed."""
+    stub = gh(files, comments=comments, labels=labels)
     stub.fail_on = fail_on
     assert dc.main(["--pr", "79"]) == dc.FAILED
-    assert "FAILED" in capsys.readouterr().err
+    out, err = capsys.readouterr()
+    assert "FAILED" in err
+    assert "::error title=doctrine-callout::" in out
 
 
-def test_unparseable_comment_payload_is_a_failure(gh, monkeypatch):
-    stub = gh(["AGENTS.md"])
-    monkeypatch.setattr(dc, "_gh", lambda *a: "not json" if a[0] == "api" else stub(*a))
+def test_an_empty_change_set_is_a_failure_not_a_quiet_pass(gh, capsys):
+    """Every PR changes something, so nothing is the one answer that cannot be
+    told apart from a failure to read the diff."""
+    stub = gh([])
     assert dc.main(["--pr", "79"]) == dc.FAILED
+    assert "returned no paths" in capsys.readouterr().err
+    assert not stub.did("pr", "comment")
+
+
+def test_real_gh_raises_on_a_rejected_call(monkeypatch, capsys):
+    """The only test that drives `_gh` itself. Without it the non-zero-exit
+    branch — the loudness guarantee — is never executed by anything, and a
+    mutation replacing the raise with `return ""` survives the whole suite."""
+    class Proc:
+        returncode, stdout, stderr = 1, "", "HTTP 403: Resource not accessible"
+
+    monkeypatch.setattr(dc.subprocess, "run", lambda *a, **k: Proc())
+    with pytest.raises(dc.CalloutError) as exc:
+        dc._gh("pr", "comment", "79", "--body", "x")
+    assert "403" in str(exc.value)
+
+
+def test_a_long_argument_does_not_bury_the_reason(monkeypatch):
+    """The comment body is an argument; unelided it pushes the HTTP status onto
+    the seventh line of the one message read under failure."""
+    class Proc:
+        returncode, stdout, stderr = 1, "", "HTTP 403"
+
+    monkeypatch.setattr(dc.subprocess, "run", lambda *a, **k: Proc())
+    with pytest.raises(dc.CalloutError) as exc:
+        dc._gh("pr", "comment", "79", "--body", dc.CALLOUT.format(files="`AGENTS.md`"))
+    message = str(exc.value)
+    assert "chars]" in message and message.count("\n") == 0
+    assert message.endswith("HTTP 403")
+
+
+def test_unparseable_comment_payload_is_a_failure(gh, monkeypatch, capsys):
+    stub = gh(["AGENTS.md"])
+
+    def only_comments_broken(*args):
+        if args[0] == "api" and args[-1].startswith(".[] |"):
+            return "not json"
+        return stub(*args)
+
+    monkeypatch.setattr(dc, "_gh", only_comments_broken)
+    assert dc.main(["--pr", "79"]) == dc.FAILED
+    assert "could not parse a PR comment" in capsys.readouterr().err
 
 
 def test_gh_absent_is_a_failure(monkeypatch, capsys):
@@ -213,6 +358,23 @@ def test_main_reports_the_clean_path(gh, capsys):
     gh(["AGENTS.md"])
     assert dc.main(["--pr", "79", "--repo", "o/n"]) == dc.OK
     assert "doctrine-callout:" in capsys.readouterr().out
+
+
+def test_progress_survives_a_failure(gh, capsys):
+    """`run()` raising discards what it accumulated, so the lines are printed as
+    they happen — otherwise the log is thinnest exactly when it is read."""
+    stub = gh(["AGENTS.md"])
+    stub.fail_on = "pr comment"
+    assert dc.main(["--pr", "79"]) == dc.FAILED
+    assert "touches AGENTS.md" in capsys.readouterr().out
+
+
+def test_pr_must_be_numeric(gh, capsys):
+    """The workflow supplies an integer, but nothing enforced it: a PR
+    reference from a less trusted caller reaches an API URL path."""
+    gh(["AGENTS.md"])
+    with pytest.raises(SystemExit):
+        dc.main(["--pr", "1/../../evil-owner/evil-repo/issues/1"])
 
 
 def test_repo_flag_reaches_every_call(gh):

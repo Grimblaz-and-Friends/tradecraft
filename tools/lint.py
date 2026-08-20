@@ -15,7 +15,10 @@ Checks:
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  4. review index: docs/reviews.jsonl, when present, parses and carries one
+  4. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+     declares the job that runs it. The callout cannot catch its own removal,
+     because a PR deleting the job touches no doctrine file [D-81].
+  5. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, report URL.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
@@ -356,11 +359,46 @@ def _check_seats(seats, where: str, findings: list) -> None:
             )
 
 
+def check_doctrine_callout(root: Path) -> list[str]:
+    """The callout must still be wired into CI.
+
+    Its own mechanism cannot catch its own removal: a PR that deletes the job
+    touches neither doctrine file, so no callout fires, nothing goes red, and
+    the mechanism disappears exactly as silently as the CODEOWNERS callout it
+    replaced. Loud-on-failure and pinned-when-present are different guarantees
+    and the script only carries the first. This is the second, and it lives in
+    the lint because the lint is a required status check.
+    """
+    findings = []
+    script = root / "tools" / "doctrine_callout.py"
+    workflow = root / ".github" / "workflows" / "ci.yml"
+    if not script.is_file():
+        findings.append(
+            "doctrine-callout: tools/doctrine_callout.py is missing — nothing "
+            "would flag a doctrine change for the owner's merge-time read [D-81]"
+        )
+    if not workflow.is_file():
+        findings.append("doctrine-callout: .github/workflows/ci.yml is missing")
+        return findings
+    text = workflow.read_text(encoding="utf-8", errors="replace")
+    for needle, why in (
+        ("doctrine-callout:", "the job is not declared"),
+        ("tools/doctrine_callout.py", "the job does not run the script"),
+    ):
+        if needle not in text:
+            findings.append(
+                f"doctrine-callout: {why} in .github/workflows/ci.yml — the "
+                "doctrine callout would stop firing with nothing going red [D-81]"
+            )
+    return findings
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
         + check_sideways_deps(root)
         + check_doctrine(root)
+        + check_doctrine_callout(root)
         + check_review_index(root)
     )
 

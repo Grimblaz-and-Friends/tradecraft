@@ -22,6 +22,21 @@ def make_clean_tree(root: Path) -> None:
         "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n",
         encoding="utf-8",
     )
+    _wire_callout(root)
+
+
+def _wire_callout(root: Path) -> None:
+    """The doctrine callout, wired the way the real repo wires it."""
+    tools = root / "tools"
+    tools.mkdir(exist_ok=True)
+    (tools / "doctrine_callout.py").write_text("# the callout\n", encoding="utf-8")
+    workflows = root / ".github" / "workflows"
+    workflows.mkdir(parents=True, exist_ok=True)
+    (workflows / "ci.yml").write_text(
+        "jobs:\n  doctrine-callout:\n"
+        "    steps:\n      - run: python tools/doctrine_callout.py --pr 1\n",
+        encoding="utf-8",
+    )
 
 
 def test_clean_tree_passes(tmp_path):
@@ -374,6 +389,51 @@ def test_review_row_seat_counts_wrong_shape_is_a_finding(tmp_path):
     _write_index(tmp_path, _review_row(seats={"cold-read": 7}))
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "must be a mapping" in findings[0]
+
+
+def test_doctrine_callout_wired_is_not_a_finding(tmp_path):
+    """The lawful polarity: a guard that blocks lawful work fails as hard as
+    one that passes unlawful work."""
+    make_clean_tree(tmp_path)
+    assert lint.run(tmp_path) == []
+
+
+def test_deleting_the_callout_job_is_a_finding(tmp_path):
+    """The callout cannot catch its own removal — a PR deleting the job touches
+    no doctrine file, so nothing fires and nothing goes red. This is what makes
+    such a PR fail a required check instead."""
+    make_clean_tree(tmp_path)
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
+        "jobs:\n  lint-and-test:\n    steps:\n      - run: python tools/lint.py\n",
+        encoding="utf-8",
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 2          # job not declared, script not run
+    assert all("doctrine-callout:" in f for f in findings)
+
+
+def test_keeping_the_job_but_dropping_the_script_call_is_a_finding(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
+        "jobs:\n  doctrine-callout:\n    steps:\n      - run: echo nothing\n",
+        encoding="utf-8",
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "does not run the script" in findings[0]
+
+
+def test_deleting_the_callout_script_is_a_finding(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / "tools" / "doctrine_callout.py").unlink()
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "doctrine_callout.py is missing" in findings[0]
+
+
+def test_a_missing_workflow_file_is_a_finding(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / ".github" / "workflows" / "ci.yml").unlink()
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "ci.yml is missing" in findings[0]
 
 
 def test_frozen_archive_files_are_not_validated(tmp_path):

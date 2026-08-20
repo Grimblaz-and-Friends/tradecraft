@@ -1,30 +1,41 @@
 #!/usr/bin/env python3
-"""The doctrine callout: label and speak on any PR that changes `AGENTS.md`.
+"""The doctrine callout: label and speak on any PR that changes the doctrine.
 
 The owner reads the doctrine diff himself before merging (doctrine, "The two
 ceremony moments"). The first mechanism for that was `.github/CODEOWNERS`,
 which fires by auto-requesting a review — and GitHub never requests a review
-from a PR's own author. Every PR in this repo is authored by the owner's
-account, so the callout structurally could not reach the one human who merges:
-#74, #77 and #78 all touched `AGENTS.md` and all returned `reviewRequests: []`.
-CODEOWNERS stays for the shield icon and for a future non-owner contributor;
-this is what actually reaches him, on the two surfaces he is looking at when he
-merges — the label in the PR header, and a comment that lands in notifications.
+from a pull request's own author (exactly so for an individual code-owner
+entry; a team entry containing the author is still requested). Sessions here
+run as the owner's account, so today every PR is authored by the one human who
+merges, and the callout structurally could not reach him: the issue timelines
+of #74, #77 and #78 carry no `review_requested` event at all. CODEOWNERS stays
+for the shield icon and for a future non-owner contributor; this is what
+actually reaches him, on the two surfaces he is looking at when he merges — the
+label in the PR header, and a comment that lands in notifications.
 
-Idempotent by marker, not by memory: the comment carries `MARKER`, and a re-run
-that finds it leaves the thread alone. A PR that stops touching doctrine has
-the label removed and the comment edited to say so, because a callout that
-outlives its reason is the same defect this script exists to fix.
+Idempotent by content, not by memory: the callout is found by `MARKER` and then
+rendered fresh each run, and the comment is edited only when what it says has
+stopped matching what the PR does. One rule covers withdrawal, reinstatement,
+and a `Touched:` list that a later push made stale — a callout that outlives its
+reason is the same defect as one that never fires.
 
-**Every failure is loud.** Unreadable paths, a rejected label call, a rejected
-comment call — each exits non-zero and turns the check red. The withdrawn
-version-bump predecessor failed open four ways while printing a clean pass, and
-a callout that silently no-ops is not a milder form of this bug: it *is* this
-bug. Nothing here degrades to "probably fine".
+**Ownership is checked, not assumed.** A comment carrying the marker but written
+by anyone else is not ours: we neither treat it as the callout nor ever edit it.
+The accidental case is the common one — this repo posts review reports as PR
+comments, and a report about this mechanism quotes the marker. Against such a
+comment the callout still fires, with the unexpected author named in the log.
+The degradation is deliberately toward speaking: this exists because a callout
+did not fire, so a duplicate is noise while a missing one is the bug.
+
+**Every failure is loud.** Unreadable paths, an empty change set, a rejected
+label call, a rejected comment call — each exits non-zero, turns the check red,
+and emits a workflow error annotation. The withdrawn version-bump predecessor
+failed open four ways while printing a clean pass, and a callout that silently
+no-ops is not a milder form of this bug: it *is* this bug.
 
 Usage:  python tools/doctrine_callout.py --pr N [--repo OWNER/NAME] [--dry-run]
-Requires the `gh` CLI, authenticated (CI: `GH_TOKEN: ${{ github.token }}` with
-`pull-requests: write` and `issues: write`).
+Requires the `gh` CLI, authenticated (CI: `GH_TOKEN` from the workflow token,
+with `pull-requests: write`, `issues: write` and `contents: read`).
 
     0  the PR's state matches its diff — labelled and commented, or neither
     1  something could not be established or could not be applied
@@ -42,27 +53,30 @@ DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md")
 
 LABEL = "doctrine"
 LABEL_COLOR = "5319e7"
-LABEL_DESC = "Changes AGENTS.md or CLAUDE.md — read the diff before merging"
+LABEL_DESC = "Changes AGENTS.md or CLAUDE.md - read the diff before merging"
 
-# The comment's identity lives in the body, not in a stored id: a marker
+# The one standing coupling to an identity. Its tripwire is the log line in
+# `run()`: under a future identity change (a PAT, a GitHub App) the callout
+# double-posts AND names the unexpected author, which is a loud wrong answer
+# rather than a silent one.
+EXPECTED_AUTHOR = "github-actions[bot]"
+
+# The callout's identity lives in its body, not in a stored id: a marker
 # survives a lost workflow run, a re-run, and a re-created check, none of which
 # a side-channel record would.
 MARKER = "<!-- tradecraft:doctrine-callout -->"
-# A second marker rather than a prose match: the withdrawn state has to be
-# machine-readable, and matching the visible sentence would break the moment
-# someone reworded it.
-WITHDRAWN_MARKER = "<!-- tradecraft:doctrine-callout:withdrawn -->"
 
 CALLOUT = f"""{MARKER}
-**This PR changes the doctrine.** Read the `AGENTS.md` diff before merging — \
-that reading is the release gate, and nothing else performs it.
+**This PR changes the doctrine.** Read the {{files}} diff before merging — \
+nothing else performs that read.
 
 Touched: {{files}}
 
 <sub>Posted by `tools/doctrine_callout.py`. `CODEOWNERS` cannot request a \
-review from a PR's own author, and every PR here is the owner's.</sub>"""
+review from a pull request's own author, and today every PR here is the \
+owner's.</sub>"""
 
-WITHDRAWN = f"""{MARKER}{WITHDRAWN_MARKER}
+WITHDRAWN = f"""{MARKER}
 ~~This PR changes the doctrine.~~ **Withdrawn:** the PR no longer touches \
 `AGENTS.md` or `CLAUDE.md`. Nothing here needs the owner's doctrine read.
 
@@ -70,17 +84,48 @@ WITHDRAWN = f"""{MARKER}{WITHDRAWN_MARKER}
 
 OK, FAILED = 0, 1
 
+# A rejected write puts the whole comment body in the argv, which would bury
+# the reason under six lines of markdown in the one log an operator reads only
+# when it has already gone red.
+ARG_ELIDE = 60
+
 
 class CalloutError(RuntimeError):
     """Something could not be established or applied. Never swallowed."""
+
+
+def _say(lines: list[str], message: str) -> None:
+    """Record a progress line and emit it now.
+
+    Printed as it happens rather than collected and returned: `run()` raising
+    loses everything it accumulated, so a red check would name the failing call
+    without showing which stage had been reached.
+    """
+    lines.append(message)
+    print(message, flush=True)
+
+
+def _shown(args: tuple[str, ...]) -> str:
+    """The argv, flattened to one line and long values elided.
+
+    Flattened first: truncating a markdown body at a character count still
+    leaves the newlines inside the surviving prefix, which is the burial this
+    exists to prevent — the reason has to be on the same line as the call.
+    """
+    out = []
+    for arg in args:
+        flat = " ".join(arg.split())
+        out.append(flat if len(flat) <= ARG_ELIDE
+                   else f"{flat[:ARG_ELIDE]}...[{len(arg)} chars]")
+    return " ".join(out)
 
 
 def _gh(*args: str) -> str:
     """Run `gh`, returning stdout; any non-zero exit raises `CalloutError`.
 
     stderr rides in the message because a failure that names the call but not
-    the reason leaves the operator with nothing to act on — and this script is
-    read only when it has gone red.
+    the reason leaves the operator with nothing to act on — and long arguments
+    are elided so the reason is not the seventh line of the message.
     """
     try:
         proc = subprocess.run(
@@ -88,10 +133,10 @@ def _gh(*args: str) -> str:
             encoding="utf-8", errors="replace",
         )
     except OSError as exc:                      # gh absent from the runner
-        raise CalloutError(f"could not run `gh {' '.join(args)}`: {exc}") from exc
+        raise CalloutError(f"could not run `gh {_shown(args)}`: {exc}") from exc
     if proc.returncode != 0:
         raise CalloutError(
-            f"`gh {' '.join(args)}` failed ({proc.returncode})"
+            f"`gh {_shown(args)}` failed ({proc.returncode})"
             + (f": {(proc.stderr or '').strip()}" if proc.stderr else "")
         )
     return proc.stdout or ""
@@ -102,7 +147,11 @@ def touched_doctrine(paths: list[str]) -> list[str]:
 
     Exact match on the repo-root path. A `docs/AGENTS.md` would not be the
     doctrine, and matching by basename would call out a PR that never touched
-    it — a false callout trains the owner to ignore the true one.
+    it — a false callout trains the owner to ignore the true one. A rename out
+    of `AGENTS.md` escapes this match (git reports only the new path, at
+    similarity as low as 83% on this repo's own #74), and is caught instead by
+    `tools/lint.py`, which fails a required check when a doctrine file goes
+    missing.
     """
     changed = set(paths)
     return [p for p in DOCTRINE_PATHS if p in changed]
@@ -113,51 +162,48 @@ def changed_paths(pr: str, repo: str | None) -> list[str]:
 
     Deliberately not a local merge-base diff: CI checks out a merge commit and
     the base ref must be fetched deep enough for a merge base to exist, so a
-    local reading has two ways to be quietly wrong about the very question
-    this script answers. GitHub already knows the answer; ask it.
+    local reading has two ways to be quietly wrong about the very question this
+    script answers. GitHub already knows the answer; ask it.
+
+    An empty result raises rather than reading as "no doctrine files". Every
+    pull request changes something, so nothing is the one answer that cannot be
+    told apart from a failure to determine — the shape this script refuses.
     """
-    args = ["pr", "diff", pr, "--name-only"]
+    args = ["pr", "diff", str(pr), "--name-only"]
     if repo:
         args += ["--repo", repo]
-    out = _gh(*args)
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    paths = [line.strip() for line in _gh(*args).splitlines() if line.strip()]
+    if not paths:
+        raise CalloutError(
+            f"`gh pr diff {pr} --name-only` returned no paths — a pull request "
+            "always changes something, so this cannot be told apart from a "
+            "failure to read the diff, and is refused rather than guessed"
+        )
+    return paths
 
 
-def find_callout(comments: list[dict]) -> dict | None:
-    """The existing callout comment, if the marker is on the thread."""
+def find_callout(comments: list[dict]) -> tuple[dict | None, list[str]]:
+    """Return (our callout, the authors of marker-bearing comments that are not).
+
+    Ownership is half the identity. Without it, anyone who can comment — the
+    repo is public, so anyone at all — suppresses the callout by quoting the
+    marker, and the edit path overwrites a comment we did not write.
+    """
+    ours, foreign = None, []
     for comment in comments:
-        if MARKER in (comment.get("body") or ""):
-            return comment
-    return None
+        if MARKER not in (comment.get("body") or ""):
+            continue
+        if comment.get("author") == EXPECTED_AUTHOR:
+            if ours is None:
+                ours = comment
+        else:
+            foreign.append(str(comment.get("author")))
+    return ours, foreign
 
 
 def _slug(repo: str | None) -> str:
     """`{owner}/{repo}` are gh's own placeholders, filled from the checkout."""
     return repo or "{owner}/{repo}"
-
-
-def _state(pr: str, repo: str | None) -> tuple[list[dict], set[str]]:
-    """The PR's comments and label names.
-
-    REST rather than `gh pr view --json comments`, because that view returns
-    each comment's GraphQL node id and the edit endpoint takes the numeric REST
-    id — a mismatch that would only surface on the withdrawal path, which is
-    the rarest one and therefore the last to be noticed. `--paginate` with a
-    `--jq` projection yields one JSON object per line across every page; a bare
-    `--paginate` concatenates page arrays into something `json.loads` refuses.
-    """
-    slug = _slug(repo)
-    labels = _json(_gh("api", f"repos/{slug}/issues/{pr}",
-                       "--jq", "[.labels[].name]"), "the PR's labels")
-    if not isinstance(labels, list):
-        raise CalloutError("the PR's labels came back as something other than a list")
-
-    comments = []
-    for line in _gh("api", "--paginate", f"repos/{slug}/issues/{pr}/comments?per_page=100",
-                    "--jq", ".[] | {id, body}").splitlines():
-        if line.strip():
-            comments.append(_json(line, "a PR comment"))
-    return comments, set(labels)
 
 
 def _json(raw: str, what: str):
@@ -167,8 +213,36 @@ def _json(raw: str, what: str):
         raise CalloutError(f"could not parse {what}: {exc}") from exc
 
 
+def _state(pr: str, repo: str | None) -> tuple[list[dict], set[str]]:
+    """The PR's comments (id, body, author) and label names.
+
+    REST rather than `gh pr view --json comments`, because that view returns
+    each comment's GraphQL node id and the edit endpoint takes the numeric REST
+    id — a mismatch that would surface only on the edit path, the rarest one and
+    therefore the last to be noticed. `--paginate` walks past the 30-per-page
+    default that would otherwise hide the callout behind a long thread, and the
+    `--jq` projection is what makes those pages parseable one object per line.
+    """
+    slug = _slug(repo)
+    labels = _json(_gh("api", f"repos/{slug}/issues/{pr}",
+                       "--jq", "[.labels[].name]"), "the PR's labels")
+    if not isinstance(labels, list):
+        raise CalloutError("the PR's labels came back as something other than a list")
+
+    comments = []
+    for line in _gh("api", "--paginate", f"repos/{slug}/issues/{pr}/comments?per_page=100",
+                    "--jq", ".[] | {id, body, author: .user.login}").splitlines():
+        if line.strip():
+            comments.append(_json(line, "a PR comment"))
+    return comments, set(labels)
+
+
 def _ensure_label(repo: str | None) -> None:
-    """Create the label if absent. `--force` makes an existing label a no-op.
+    """Create the label, or update it in place where the repo already has it.
+
+    `--force` is what makes the call idempotent: without it `label create`
+    errors on the second doctrine PR and turns a lawful change red. It also
+    means a human's edit to the label's color or description is reverted here.
 
     The mechanism must not depend on a label a human can delete from the repo's
     settings; that would be a second silent-failure road.
@@ -181,7 +255,7 @@ def _ensure_label(repo: str | None) -> None:
 
 
 def _edit_label(pr: str, repo: str | None, *, add: bool) -> None:
-    args = ["pr", "edit", pr, "--add-label" if add else "--remove-label", LABEL]
+    args = ["pr", "edit", str(pr), "--add-label" if add else "--remove-label", LABEL]
     if repo:
         args += ["--repo", repo]
     _gh(*args)
@@ -198,57 +272,63 @@ def _edit_comment(comment_id: object, repo: str | None, body: str) -> None:
         f"repos/{_slug(repo)}/issues/comments/{comment_id}", "-f", f"body={body}")
 
 
+def _post_comment(pr: str, repo: str | None, body: str) -> None:
+    args = ["pr", "comment", str(pr), "--body", body]
+    if repo:
+        args += ["--repo", repo]
+    _gh(*args)
+
+
 def run(pr: str, repo: str | None, *, dry_run: bool = False) -> tuple[int, list[str]]:
     """Bring the PR's label and comment into agreement with its diff."""
     lines: list[str] = []
     touched = touched_doctrine(changed_paths(pr, repo))
     comments, labels = _state(pr, repo)
-    existing = find_callout(comments)
+    ours, foreign = find_callout(comments)
 
-    if not touched:
-        lines.append(f"doctrine-callout: PR #{pr} touches no doctrine file")
-        if LABEL in labels:
-            lines.append(f"doctrine-callout: removing the {LABEL} label")
-            if not dry_run:
-                _edit_label(pr, repo, add=False)
-        if existing is None:
-            return OK, lines
-        # The PR dropped its doctrine change after the callout went out. Left
-        # standing, it would be exactly what this script exists to end: a
-        # notice describing something that is not so.
-        lines.append("doctrine-callout: withdrawing the callout that no longer applies")
-        if not dry_run:
-            _edit_comment(existing.get("id"), repo, WITHDRAWN)
-        return OK, lines
+    for author in foreign:
+        _say(lines, "doctrine-callout: ignoring a marker-bearing comment by "
+                    f"{author} (expected {EXPECTED_AUTHOR})")
 
-    lines.append(f"doctrine-callout: PR #{pr} touches {', '.join(touched)}")
-    if LABEL in labels:
-        lines.append(f"doctrine-callout: {LABEL} label already applied")
+    if touched:
+        _say(lines, f"doctrine-callout: PR #{pr} touches {', '.join(touched)}")
     else:
-        lines.append(f"doctrine-callout: applying the {LABEL} label")
+        _say(lines, f"doctrine-callout: PR #{pr} touches no doctrine file")
+
+    # The label tracks the diff in both directions.
+    if touched and LABEL not in labels:
+        _say(lines, f"doctrine-callout: applying the {LABEL} label")
         if not dry_run:
             _ensure_label(repo)
             _edit_label(pr, repo, add=True)
+    elif not touched and LABEL in labels:
+        _say(lines, f"doctrine-callout: removing the {LABEL} label")
+        if not dry_run:
+            _edit_label(pr, repo, add=False)
 
-    if existing is not None:
-        # A callout withdrawn earlier and then re-earned: restore it, or the
-        # marker's own idempotence would pin the thread to the withdrawn text.
-        if WITHDRAWN_MARKER in (existing.get("body") or ""):
-            lines.append("doctrine-callout: reinstating a callout withdrawn earlier")
-            if not dry_run:
-                _edit_comment(existing.get("id"), repo, _body(touched))
-        else:
-            lines.append("doctrine-callout: callout already on the thread, not duplicated")
+    # One rule for the comment: render what the PR deserves right now, and make
+    # the thread say that. Posting, withdrawing, reinstating and refreshing a
+    # stale `Touched:` list are the same operation seen at four moments.
+    if touched:
+        desired = _body(touched)
+    elif ours is not None:
+        desired = WITHDRAWN          # it says something that is no longer so
+    else:
+        desired = None               # nothing to say, and nothing said
+
+    if desired is None:
         return OK, lines
-
-    lines.append("doctrine-callout: posting the callout")
-    if not dry_run:
-        args = ["pr", "comment", pr, "--body", _body(touched)]
-        if repo:
-            args += ["--repo", repo]
-        _gh(*args)
+    if ours is None:
+        _say(lines, "doctrine-callout: posting the callout")
+        if not dry_run:
+            _post_comment(pr, repo, desired)
+    elif (ours.get("body") or "").strip() != desired.strip():
+        _say(lines, "doctrine-callout: updating the callout to match the PR")
+        if not dry_run:
+            _edit_comment(ours.get("id"), repo, desired)
+    else:
+        _say(lines, "doctrine-callout: callout already says this, not duplicated")
     return OK, lines
-
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -256,21 +336,24 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--pr", required=True, help="pull request number")
+    parser.add_argument("--pr", required=True, type=int, help="pull request number")
     parser.add_argument("--repo", default=None, help="OWNER/NAME (default: the checkout's)")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would change; touch nothing")
     args = parser.parse_args(argv)
     try:
-        status, lines = run(args.pr, args.repo, dry_run=args.dry_run)
+        status, _ = run(args.pr, args.repo, dry_run=args.dry_run)
     except CalloutError as exc:
-        print(f"doctrine-callout: {exc}", file=sys.stderr)
-        print("doctrine-callout: FAILED — the owner's doctrine callout did not "
-              "go out. This is not a warning; see tools/doctrine_callout.py",
+        reason = " ".join(str(exc).split())
+        # A workflow error annotation, so the reason reaches the checks panel
+        # and the run summary rather than only the expanded step log.
+        print(f"::error title=doctrine-callout::{reason}", flush=True)
+        print(f"doctrine-callout: {reason}", file=sys.stderr)
+        print("doctrine-callout: FAILED -- the owner's doctrine callout did not "
+              "go out. Re-running the job is safe and posts at most one comment; "
+              "if it fails again, check the job's permissions block.",
               file=sys.stderr)
         return FAILED
-    for line in lines:
-        print(line)
     return status
 
 
