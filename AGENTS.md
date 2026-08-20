@@ -44,7 +44,7 @@ Records are append-only and never maintained: no backfilling, no reconciling, no
 
 ## Structure and substrate
 
-- **Two zones.** Shipped (`skills/`, `lib/`, `commands/`, `agents/`, `.claude-plugin/`) never references repo-only (`docs/`, `tools/`, `.github/`) — not a path, not a doc link; the lint enforces the checkable subset. General standards ship in the skill that teaches them; repo-specific application lives here.
-- **Substrate is Python**, stdlib-first, tested on Linux and Windows in CI. PowerShell is rejected for new code. `AGENTS.md` is canonical because Codex reads it natively; `CLAUDE.md` is a pointer to it, never a fork.
+- **Two zones.** Shipped (`skills/`, `lib/`, `commands/`, `agents/`, `.claude-plugin/`) never references repo-only (`docs/`, `tools/`, `.github/`) — not a path, not a doc link; the lint enforces the checkable subset. Consumers must never *depend* on repo-only, which is not the same as never receiving it: the plugin's source is the repo root, so a git-source install clones everything and those files do reach a consumer's cache as inert content. General standards ship in the skill that teaches them; repo-specific application lives here.
+- **Substrate is Python**, stdlib-first, tested on Linux and Windows in CI — one substrate means one set of idioms to harden, one CI matrix, and one thing every new script can assume, which is what refuses a second language for a single helper. PowerShell is rejected for new code. `AGENTS.md` is canonical because Codex reads it natively; `CLAUDE.md` is a pointer to it, never a fork.
 - **The predecessor** ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra)) is reference material with no presumption of correctness: pull lessons, never artifacts.
 - **Vendor memory is an inbox, never an archive.** A lesson lands same-session in its home from the routing table above.

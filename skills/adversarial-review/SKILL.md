@@ -27,7 +27,7 @@ Why a panel and not one strong pass: seats find largely different defects. In th
 
 ## The roster — four slots, five names
 
-Three seats stand; the fourth is chosen by the artifact's shape. Seats differ or they are waste: a seat is added for a lens or vantage the panel lacks, never for a second pass at one it has.
+Three seats stand; the fourth is chosen by the artifact's shape. Seats differ or they are waste: a seat is added for a lens or vantage the panel lacks, never for a second pass at one it has. A **vantage** is where a seat reads from — cold, briefed, or as the consumer; a **lens** is what it is told to look for. The distinction decides what earns a seat: anything a dispatch prompt could have said is a lens, and lenses are added to briefs, not staffed.
 
 - **`cold-read`** — fresh vantage, no lens brief: forms its own view of the artifact before any prior findings exist for it. A brief aims attention, and aimed attention has a shadow; this seat is what falls in it.
 - **`wiring-falsifier`** — scripts and contracts: does the code enforce what the prose claims, does anything call it, can each guard actually fail? Probe by execution, not reading.
@@ -74,7 +74,7 @@ Automated reviewers configured on the repository post on a PR without being aske
 
 The final report, posted to the PR or issue, carries: the lane and why; the purpose statement judged against; per-seat counts (raw / merged / sustained, highs broken out), with each seat's model and runtime; every finding's disposition, with each drop's one-line reason and each priced-out ruling's price; the external pass's outcome; the terminal fitness ruling; and the **next-pass ruling** — run or stop. The default is stop once a pass has sustained no high it will fix; continuing argues the next pass is worth its cost, and stopping names the residual risk accepted and what is expected to catch it instead. A run ruling binds the session that wrote it: dispatch the pass before closing, or record why not.
 
-Where the repo keeps a review index, append one row per review — date, artifact, lane, per-seat counts, report URL — written once and never maintained. A seat that ran and found nothing appears with zeros; a seat that failed unreplaced is omitted, with the report recording the degraded width. Where the repo keeps no index, the report alone is the record.
+Where the repo keeps a review index, append one row per review — date, artifact, lane, per-seat counts, report URL — written once and never maintained. Before reading what such a record says, ask what it could have said: an evidence loop whose instrument cannot express the finding it tests for is not evidence, and a counts-only record is silent about everything its fields do not carry. A seat that ran and found nothing appears with zeros; a seat that failed unreplaced is omitted, with the report recording the degraded width. Where the repo keeps no index, the report alone is the record.
 
 ## Closing a recurring class
 
