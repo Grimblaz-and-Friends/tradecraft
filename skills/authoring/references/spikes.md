@@ -10,6 +10,8 @@ Both halves are drawn from one piece of work — the constitutional migration de
 
 Two of its discoveries were made only by going and looking. The third — a guard reporting success while seeing nothing — a review did catch, but at *implementation*, after the design had asserted the guard fires. That is the claim: **reading a design settles neither what is in the material nor whether a mechanism fires**, and a spike moves that check in front of the assertion rather than behind it.
 
+The condition is narrow on purpose: most artifacts assert neither, and a phase that always fires has stopped being a decision.
+
 **It is not for design questions.** Prose consistency, citation correctness and reasoning defects are what an adversarial review is for; building tells you nothing about them, and spiking to catch them pays a build to do a reader's job.
 
 ## Running one
@@ -24,13 +26,13 @@ The bound is the question's shape rather than a clock, because a figure for a bu
 
 ## A spike commits nothing
 
-A scratch tree outside the repository. **No tracked file, no branch, no pull request.** Work that wants to be committed has stopped being a spike and is ordinary work, taking the ordinary flow.
+**No tracked file, no branch, no pull request.** Work that wants to be committed has stopped being a spike and is ordinary work, taking the ordinary flow.
 
-This is what the spike *is*, not a rule about what to do with it afterwards — which is why there is nothing in the repository to dispose of and no gate to reach. Convergence fires on the artifact the spike feeds, after it; release has nothing to merge. What the spike found is reviewed at that gate as part of the artifact carrying it, so what a spike avoids is the review pipeline's cost and never its coverage.
+That is what a spike *is*, not a rule about disposing of one — which is why it reaches no gate: convergence fires on the artifact the spike feeds, after it, and release has nothing to merge. What the spike found is reviewed at that gate inside the artifact carrying it, so what a spike avoids is the review pipeline's cost and never its coverage.
 
-The obvious pressure is to copy working code out. **The rule cannot detect that** — a tree where a session spiked and copied is indistinguishable from one where it wrote the code fresh, and saying so is more useful than pretending otherwise. What bounds the damage is that code leaving a spike has to be written again through the ordinary flow, where it is reviewed like anything else: the cost of a leak is duplicated effort, never unreviewed code.
+The obvious pressure is to copy working code out, and **the rule cannot detect that** — a tree where a session spiked and copied is indistinguishable from one where it wrote the code fresh. What bounds the damage is that leaked code must be written again through the ordinary flow, where it is reviewed like anything else: a leak costs duplicated effort, never unreviewed code.
 
-Mutating a tracked file to see whether a guard fires is a spike, not an exception to this — do it in a scratch tree outside the repository, and delete it.
+Mutating a tracked file to see whether a guard fires is a spike, not an exception — and it needs the repository's files, so use a **detached** worktree (`git worktree add --detach`, which creates no branch where plain `add` does) or a throwaway clone, and delete it.
 
 ## Exploring without a premise
 

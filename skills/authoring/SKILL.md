@@ -17,7 +17,7 @@ Every governing document and skill opens by answering three questions, a sentenc
 
 A document that cannot state these three is not ready to be written; the missing statement is its first defect. For a skill, the frontmatter `description` carries the trigger (use when / not for) and the body's opening carries the header.
 
-**Where a pre-implementation artifact asserts something about material no enumeration you can consult covers, or about a mechanism nobody has executed, test that premise before you assert it** — a spike, which commits nothing. [`references/spikes.md`](references/spikes.md) has the exclusions, the bound, the abandonment route, the report, and the standing permission to explore without a premise.
+**Where a pre-implementation artifact asserts something about material no enumeration you can consult covers, or about a mechanism nobody has executed, test that premise before you assert it** — a spike, which commits nothing. Reading a design settles neither, and the condition is narrow: most artifacts assert neither. [`references/spikes.md`](references/spikes.md) has the exclusions, the bound, the abandonment route, the report, and the standing permission to explore without a premise.
 
 Where a repo's pre-implementation artifact also carries a **boundary statement** — the explicit list of what the work is *not* doing and why — it records the scope agreed, so a later scope question is answerable from the artifact rather than from memory. It does not forbid the work covering more; the diff is what records what was actually done.
 
