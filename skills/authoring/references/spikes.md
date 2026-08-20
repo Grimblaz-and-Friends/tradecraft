@@ -26,9 +26,9 @@ The bound is the question's shape rather than a clock, because a figure for a bu
 
 ## A spike commits nothing
 
-**No tracked file, no branch, no pull request.** Work that wants to be committed has stopped being a spike and is ordinary work, taking the ordinary flow.
+**Nothing committed, no branch, no pull request** — modify whatever you need to inside the throwaway; what is forbidden is leaving it. Work that wants to be committed has stopped being a spike and is ordinary work, taking the ordinary route.
 
-That is what a spike *is*, not a rule about disposing of one — which is why it reaches no gate: convergence fires on the artifact the spike feeds, after it, and release has nothing to merge. What the spike found is reviewed at that gate inside the artifact carrying it, so what a spike avoids is the review pipeline's cost and never its coverage.
+That is what a spike *is*, not a rule about disposing of one — and it is why a spike needs no process of its own. Whatever approvals your repo puts on an artifact or on a merge, a spike reaches none of them: it produces neither. What it found is reviewed with the artifact that carries it, so a spike skips the review's cost and never its coverage.
 
 The obvious pressure is to copy working code out, and **the rule cannot detect that** — a tree where a session spiked and copied is indistinguishable from one where it wrote the code fresh. What bounds the damage is that leaked code must be written again through the ordinary flow, where it is reviewed like anything else: a leak costs duplicated effort, never unreviewed code.
 
