@@ -15,7 +15,10 @@ Checks:
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  4. review index: docs/reviews.jsonl, when present, parses and carries one
+  4. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+     declares the job that runs it. The callout cannot catch its own removal,
+     because a PR deleting the job touches no doctrine file [D-81].
+  5. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, report URL.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
@@ -57,6 +60,21 @@ DATE_SHAPE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 # whitespace, so one name occupies exactly one bucket and a query over seat
 # names enumerates what is actually in use.
 TOKEN = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
+
+# The doctrine callout's wiring, matched by position rather than by substring:
+# a commented-out job still contains every substring it had when it was live.
+JOB_HEADER = "  doctrine-callout:"
+# All three lawful spellings of the trigger, and none of `pull_request_target`
+# (the `\b` cannot end before an underscore). A guard that fails a required
+# check on a lawful reformat blocks lawful work, which fails as hard as
+# passing unlawful work.
+PR_TRIGGER = re.compile(
+    r"^\s*pull_request:\s*$|^\s*-\s*pull_request\s*$|^on:.*\bpull_request\b"
+)
+RUNS_SCRIPT = re.compile(r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout\.py\b")
+# The event is named; the gate's exact wording is not, so a lawful rewrite
+# (adding `&& !draft`, or moving to ${{ }} form) does not fail a required check.
+GATED_ON_PR = re.compile(r"^\s+if:.*pull_request")
 
 REVIEW_FIELDS = {"date", "artifact", "lane", "seats", "report"}
 REVIEW_LANES = {"panel", "routine"}
@@ -356,11 +374,74 @@ def _check_seats(seats, where: str, findings: list) -> None:
             )
 
 
+def check_doctrine_callout(root: Path) -> list[str]:
+    """The callout must still be wired into CI.
+
+    Its own mechanism cannot catch its own removal: a PR that deletes the job
+    touches neither doctrine file, so no callout fires, nothing goes red, and
+    the mechanism disappears exactly as silently as the CODEOWNERS callout it
+    replaced. Loud-on-failure and pinned-when-present are different guarantees
+    and the script only carries the first. This is the second, and it lives in
+    the lint because the lint is a required status check.
+    """
+    findings = []
+    script = root / "tools" / "doctrine_callout.py"
+    workflow = root / ".github" / "workflows" / "ci.yml"
+    if not script.is_file():
+        findings.append(
+            "doctrine-callout: tools/doctrine_callout.py is missing — nothing "
+            "would flag a doctrine change for the owner's merge-time read [D-81]"
+        )
+    if not workflow.is_file():
+        findings.append("doctrine-callout: .github/workflows/ci.yml is missing")
+        return findings
+    lines = workflow.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    # Scoped to the job's own block, not searched over the whole file. A
+    # whole-file search for the gate matches the version-bump step's identical
+    # `if:` line and passes a workflow whose callout job is disabled; and a
+    # plain substring passes a job that has merely been commented out, which is
+    # the most ordinary CI edit in the set. Both were measured.
+    block = []
+    for i, line in enumerate(lines):
+        if line == JOB_HEADER:
+            for tail in lines[i + 1:]:
+                if tail.strip() and not tail.startswith("    "):
+                    break
+                block.append(tail)
+            break
+    else:
+        findings.append(
+            "doctrine-callout: no live `doctrine-callout:` job in "
+            ".github/workflows/ci.yml — the callout would stop firing with "
+            "nothing going red [D-81]"
+        )
+        return findings
+
+    for pattern, why in (
+        (RUNS_SCRIPT, "does not run tools/doctrine_callout.py"),
+        (GATED_ON_PR, "is not gated on a pull_request event"),
+    ):
+        if not any(pattern.match(line) for line in block):
+            findings.append(
+                f"doctrine-callout: the doctrine-callout job {why} [D-81]"
+            )
+    # The trigger is file-level, and switching it (to pull_request_target, say)
+    # would skip the job silently while both required checks still report.
+    if not any(PR_TRIGGER.match(line) for line in lines):
+        findings.append(
+            "doctrine-callout: .github/workflows/ci.yml has no `pull_request:` "
+            "trigger — the callout job would never run [D-81]"
+        )
+    return findings
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
         + check_sideways_deps(root)
         + check_doctrine(root)
+        + check_doctrine_callout(root)
         + check_review_index(root)
     )
 

@@ -13,7 +13,7 @@ Tradecraft is a house engineering practice for frontier models: the standards, j
 Process weight concentrates at exactly two moments; everything between them is model judgment plus the standards carried in the skills.
 
 - **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets a pre-implementation artifact as a comment on its issue (file one if none exists): purpose, acceptance criteria, boundary statement. Its review is the convergence gate: the owner affirms, amends, or rejects in conversation, and the session records the affirmation on the issue, naming the artifact comment, before the first commit. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR; when in doubt, ask the cheap question.
-- **Release.** Merging is the owner's, never the agent's. `CODEOWNERS` flags any PR touching this file for the owner's specific review.
+- **Release.** Merging is the owner's, never the agent's. `ci.yml` labels and comments on any PR touching this file or `CLAUDE.md`, flagging it for the owner's specific review — not `CODEOWNERS`, which cannot reach a PR's own author, today always him. [D-81]
 
 ## The flow
 
