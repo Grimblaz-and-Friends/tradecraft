@@ -16,3 +16,4 @@ Entries D-53 through D-69 were written under the pre-reset statute's fixed skele
 | [D-77](D-77-2026-08-19-owner-approval-admission-path.md) | The admission road gains a second path: an agent-proposed rule is admitted by an incident from real work, or by the owner's specific approval of that rule |
 | [D-78](D-78-2026-08-19-carry-the-reasons.md) | Four reasons restored to the rules they govern; migrations must carry reasons or name the drop; review dispatches carry the charter verbatim |
 | [D-80](D-80-2026-08-19-spikes.md) | Spikes: test a premise before you assert it — one named premise, a throwaway that commits nothing, reported whether it held, fell, or was abandoned |
+| [D-81](D-81-2026-08-19-doctrine-callout.md) | The doctrine callout is a CI label and comment, not `CODEOWNERS`, which cannot request a review from the PR's own author |

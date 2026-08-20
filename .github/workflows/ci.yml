@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Both jobs run test code taken from the pull request's own branch, so the
+# default token is scoped down here rather than left at the repository default
+# (which is write, including the ability to approve pull requests). A job that
+# needs more says so in its own block.
+permissions:
+  contents: read
+
 jobs:
   lint-and-test:
     strategy:
@@ -25,8 +32,55 @@ jobs:
         run: python tools/lint.py
       - name: Version bump
         if: github.event_name == 'pull_request'
-        run: python tools/check_version_bump.py --base "origin/${{ github.base_ref }}"
+        # Through the environment, not interpolated into the shell line: a
+        # branch name is a valid git ref while containing $(...) or backticks,
+        # and Actions substitutes into `run:` before the shell parses it.
+        #
+        # `shell: bash` is not decoration. The Windows runner defaults to pwsh,
+        # where `$BASE_REF` is not a variable at all — it expanded to nothing,
+        # the base became `origin/`, and the guard reported UNDETERMINED. One
+        # shell means this line reads the same on both legs of the matrix.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        shell: bash
+        run: python tools/check_version_bump.py --base "origin/$BASE_REF"
       - name: Tests
         run: |
           pip install pytest
           python -m pytest tools/tests skills -q
+
+  # The owner reads the AGENTS.md diff himself before merging. CODEOWNERS was
+  # the first mechanism for that and cannot be: it fires by requesting a review,
+  # and GitHub never requests one from a pull request's own author — which today
+  # every PR here has (#79). This is the callout that reaches him. One runner:
+  # it is an API call, not a portability question.
+  doctrine-callout:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # Serialized per PR: the script reads the thread and then posts, and two
+    # overlapping runs would both find no callout and both post one. Queued
+    # rather than cancelled, so the last push still gets its run.
+    concurrency:
+      group: doctrine-callout-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read         # check out the script this step runs
+      pull-requests: write   # apply the label, post the comment
+      issues: write          # create the label, and edit the callout comment
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Nothing here performs a git operation, so the token has no reason
+          # to persist into .git/config where later steps could read it.
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Doctrine callout
+        # The number is an integer in the event payload and carries no
+        # injection risk, but it goes through the environment anyway: one rule
+        # for every value in this file beats one rule and an exception.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python tools/doctrine_callout.py --pr "$PR_NUMBER"
