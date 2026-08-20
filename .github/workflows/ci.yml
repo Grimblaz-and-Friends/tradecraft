@@ -34,9 +34,15 @@ jobs:
         if: github.event_name == 'pull_request'
         # Through the environment, not interpolated into the shell line: a
         # branch name is a valid git ref while containing $(...) or backticks,
-        # and Actions substitutes into `run:` before bash parses it.
+        # and Actions substitutes into `run:` before the shell parses it.
+        #
+        # `shell: bash` is not decoration. The Windows runner defaults to pwsh,
+        # where `$BASE_REF` is not a variable at all — it expanded to nothing,
+        # the base became `origin/`, and the guard reported UNDETERMINED. One
+        # shell means this line reads the same on both legs of the matrix.
         env:
           BASE_REF: ${{ github.base_ref }}
+        shell: bash
         run: python tools/check_version_bump.py --base "origin/$BASE_REF"
       - name: Tests
         run: |
