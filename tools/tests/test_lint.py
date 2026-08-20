@@ -478,6 +478,10 @@ def test_a_dead_callout_job_is_a_finding(tmp_path, name, mutate, expected):
                         "    if: github.event_name == 'pull_request'"
                         " && !github.event.pull_request.draft\n    runs-on"),
     lambda t: t.replace("--pr 1", "--repo o/n --pr 1"),
+    lambda t: t.replace("  pull_request:\n", "  pull_request:  \n", 1),   # trailing space
+    lambda t: t.replace("on:\n  push:\n    branches: [main]\n  pull_request:\n",
+                        "on: [push, pull_request]\n", 1),                 # flow style
+    lambda t: t.replace("  pull_request:\n", "  - pull_request\n", 1),    # sequence form
 ])
 def test_lawful_rewordings_of_the_job_pass(tmp_path, rewrite):
     make_clean_tree(tmp_path)

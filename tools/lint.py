@@ -64,7 +64,13 @@ TOKEN = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 # The doctrine callout's wiring, matched by position rather than by substring:
 # a commented-out job still contains every substring it had when it was live.
 JOB_HEADER = "  doctrine-callout:"
-PR_TRIGGER = "  pull_request:"
+# All three lawful spellings of the trigger, and none of `pull_request_target`
+# (the `\b` cannot end before an underscore). A guard that fails a required
+# check on a lawful reformat blocks lawful work, which fails as hard as
+# passing unlawful work.
+PR_TRIGGER = re.compile(
+    r"^\s*pull_request:\s*$|^\s*-\s*pull_request\s*$|^on:.*\bpull_request\b"
+)
 RUNS_SCRIPT = re.compile(r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout\.py\b")
 # The event is named; the gate's exact wording is not, so a lawful rewrite
 # (adding `&& !draft`, or moving to ${{ }} form) does not fail a required check.
@@ -422,7 +428,7 @@ def check_doctrine_callout(root: Path) -> list[str]:
             )
     # The trigger is file-level, and switching it (to pull_request_target, say)
     # would skip the job silently while both required checks still report.
-    if not any(line == PR_TRIGGER for line in lines):
+    if not any(PR_TRIGGER.match(line) for line in lines):
         findings.append(
             "doctrine-callout: .github/workflows/ci.yml has no `pull_request:` "
             "trigger — the callout job would never run [D-81]"

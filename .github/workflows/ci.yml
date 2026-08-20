@@ -77,6 +77,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Doctrine callout
+        # The number is an integer in the event payload and carries no
+        # injection risk, but it goes through the environment anyway: one rule
+        # for every value in this file beats one rule and an exception.
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python tools/doctrine_callout.py --pr "${{ github.event.pull_request.number }}"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python tools/doctrine_callout.py --pr "$PR_NUMBER"
