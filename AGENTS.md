@@ -32,7 +32,7 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 - **Rationale** — why a shape was chosen, what was rejected → a decision entry.
 - **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`.
 
-**Admitting a new requirement:** cheapest reliable material first — a platform or CI mechanism, then skill prose, then a doctrine line; this file is the last resort, for what must bind before any context loads. Owner-stated requirements are admitted, not argued (counter-argument welcome, per Authority above). Agent-proposed rules need an incident from real work — a review finding about governing prose is not an incident. At the budget, adding a line means routing something out.
+**Admitting a new requirement:** cheapest reliable material first — a platform or CI mechanism, then skill prose, then a doctrine line; this file is the last resort, for what must bind before any context loads. Owner-stated requirements are admitted, not argued (counter-argument welcome, per Authority above). Agent-proposed rules need an incident from real work — a review finding about governing prose is not an incident — or the owner's specific approval of that rule, which is its own admission. At the budget, adding a line means routing something out.
 
 ## Decisions
 

@@ -15,7 +15,7 @@ Every governing document and skill opens by answering three questions, a sentenc
 - **Audience** — who reads it, and when.
 - **Success** — what must be true for it to be doing its job. This is what its review judges against.
 
-A document that cannot state these three is not ready to be written; the missing statement is its first defect. For a skill, the frontmatter `description` carries the trigger (use when / not for) and the body's opening carries the header.
+A document that cannot state these three is not ready to be written; the missing statement is its first defect. Where a repo's pre-implementation artifact also carries a **boundary statement** — the explicit list of what the work is *not* doing and why — it states scope so a later scope question is answerable from the artifact rather than from memory; it does not forbid the work covering more. For a skill, the frontmatter `description` carries the trigger (use when / not for) and the body's opening carries the header.
 
 ## Routing — where content lives
 

@@ -13,3 +13,4 @@ Entries D-53 through D-69 were written under the pre-reset statute's fixed skele
 | [D-61](D-61-2026-08-18-decision-surfacing-and-the-attended-seam.md) | Decisions put to the owner carry argued options; the opening seam's question becomes attended-only |
 | [D-69](D-69-2026-08-18-trial-instrument-and-exception.md) | The trial road's falsifier and evidence stop being ledger-only |
 | [D-74](D-74-2026-08-19-constitutional-reset.md) | **The constitutional reset**: three content homes, purpose-anchored review, records as exhaust; the statute and its machinery become a frozen archive |
+| [D-77](D-77-2026-08-19-owner-approval-admission-path.md) | The admission road gains a second path: an agent-proposed rule is admitted by an incident from real work, or by the owner's specific approval of that rule |
