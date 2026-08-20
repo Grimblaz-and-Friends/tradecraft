@@ -1,6 +1,6 @@
 ---
 name: authoring
-description: How to create and revise content in this practice — the purpose header every governing document carries, which home each kind of content belongs in, and the writing standards that keep prose lean enough to survive review. Use when writing or restructuring a skill or governing document, when deciding where a piece of content belongs, or when revising governing prose; not for reviewing finished content (that is adversarial review's job).
+description: How to create and revise content in this practice — the purpose header every governing document carries, which home each kind of content belongs in, and the writing standards that keep prose lean enough to survive review. Use when writing or restructuring a skill or governing document, when writing a pre-implementation artifact, when deciding where a piece of content belongs, or when revising governing prose; not for reviewing finished content (that is adversarial review's job).
 ---
 
 # authoring
@@ -15,7 +15,9 @@ Every governing document and skill opens by answering three questions, a sentenc
 - **Audience** — who reads it, and when.
 - **Success** — what must be true for it to be doing its job. This is what its review judges against.
 
-A document that cannot state these three is not ready to be written; the missing statement is its first defect. Where a repo's pre-implementation artifact also carries a **boundary statement** — the explicit list of what the work is *not* doing and why — it states scope so a later scope question is answerable from the artifact rather than from memory; it does not forbid the work covering more. For a skill, the frontmatter `description` carries the trigger (use when / not for) and the body's opening carries the header.
+A document that cannot state these three is not ready to be written; the missing statement is its first defect. For a skill, the frontmatter `description` carries the trigger (use when / not for) and the body's opening carries the header.
+
+Where a repo's pre-implementation artifact also carries a **boundary statement** — the explicit list of what the work is *not* doing and why — it records the scope agreed, so a later scope question is answerable from the artifact rather than from memory. It does not forbid the work covering more; the diff is what records what was actually done.
 
 ## Routing — where content lives
 
