@@ -1,6 +1,6 @@
 # Spikes — testing a premise before you assert it
 
-**Purpose:** give a session about to assert something it has not checked a named, cheap move that is bounded and cannot be mistaken for work that ships. **Audience:** any session writing a pre-implementation artifact. **Success:** a session can tell whether its artifact needs a spike, can run one and stop, and cannot mistake a spike for work that ships.
+**Purpose:** give a session about to assert something it has not checked a named, cheap move that is bounded and cannot be mistaken for work that ships. **Audience:** any session writing a pre-implementation artifact. **Success:** a session that has never seen this issue can tell, from the text alone, whether its artifact needs a spike; can run one and stop; and cannot mistake a spike for work that ships.
 
 ## When a spike fires
 
