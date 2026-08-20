@@ -1,6 +1,6 @@
 # Not the doctrine callout: CODEOWNERS requests a review, never from a PR's own
-# author — today every PR here [D-81]. The callout is tools/doctrine_callout.py,
-# run from .github/workflows/ci.yml. This stays for the Files-changed shield and
-# the first non-owner PR, whose request notifies but blocks nothing.
+# author — and today every PR here is his [D-81]. The callout is
+# tools/doctrine_callout.py, run from ci.yml. This stays for the Files-changed
+# shield and the first non-owner PR, whose request notifies but blocks nothing.
 /AGENTS.md @Grimblaz
 /CLAUDE.md @Grimblaz

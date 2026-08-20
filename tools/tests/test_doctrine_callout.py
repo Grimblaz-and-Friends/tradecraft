@@ -25,6 +25,21 @@ import doctrine_callout as dc  # noqa: E402
 BOT = dc.EXPECTED_AUTHOR
 
 
+def test_expected_author_matches_the_rest_api_not_the_graphql_view():
+    """Pinned to the literal, because every other test here reads the constant
+    and so follows it wherever it goes.
+
+    The two `gh` surfaces disagree and the misleading one is the friendlier
+    command: `gh pr view --json comments` reports `github-actions`, while the
+    REST endpoint `_state` actually reads reports `github-actions[bot]`. A
+    session cross-checking the constant with `gh pr view` would "correct" it,
+    after which the callout classifies its own comment as foreign and posts a
+    duplicate on every push — and the PR that lands that change shows no
+    symptom, because it touches no doctrine file.
+    """
+    assert dc.EXPECTED_AUTHOR == "github-actions[bot]"
+
+
 class Gh:
     """A stub `gh`: answers by argument prefix, records every call."""
 
@@ -300,7 +315,7 @@ def test_an_empty_change_set_is_a_failure_not_a_quiet_pass(gh, capsys):
     told apart from a failure to read the diff."""
     stub = gh([])
     assert dc.main(["--pr", "79"]) == dc.FAILED
-    assert "returned no paths" in capsys.readouterr().err
+    assert "changes no files at all" in capsys.readouterr().err
     assert not stub.did("pr", "comment")
 
 

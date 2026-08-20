@@ -53,7 +53,7 @@ DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md")
 
 LABEL = "doctrine"
 LABEL_COLOR = "5319e7"
-LABEL_DESC = "Changes AGENTS.md or CLAUDE.md - read the diff before merging"
+LABEL_DESC = "Changes AGENTS.md or CLAUDE.md — read the diff before merging"
 
 # The one standing coupling to an identity. Its tripwire is the log line in
 # `run()`: under a future identity change (a PAT, a GitHub App) the callout
@@ -165,9 +165,14 @@ def changed_paths(pr: str, repo: str | None) -> list[str]:
     local reading has two ways to be quietly wrong about the very question this
     script answers. GitHub already knows the answer; ask it.
 
-    An empty result raises rather than reading as "no doctrine files". Every
-    pull request changes something, so nothing is the one answer that cannot be
-    told apart from a failure to determine — the shape this script refuses.
+    An empty result raises rather than reading as "no doctrine files" — but not
+    because it is ambiguous. `gh pr diff` exits non-zero on every read failure
+    (a missing PR, a missing repo, no credentials), and `_gh` already raises on
+    that, so an empty list at exit 0 does mean a genuinely fileless diff. It
+    happens: a branch of only empty commits, or one whose changes are fully
+    reverted within it. Such a PR is refused because the alternative is to run
+    the withdrawal path on it, and a wrong withdrawal writes a false statement
+    onto the PR, while a red check on a job no ruleset requires is re-runnable.
     """
     args = ["pr", "diff", str(pr), "--name-only"]
     if repo:
@@ -175,9 +180,10 @@ def changed_paths(pr: str, repo: str | None) -> list[str]:
     paths = [line.strip() for line in _gh(*args).splitlines() if line.strip()]
     if not paths:
         raise CalloutError(
-            f"`gh pr diff {pr} --name-only` returned no paths — a pull request "
-            "always changes something, so this cannot be told apart from a "
-            "failure to read the diff, and is refused rather than guessed"
+            f"`gh pr diff {pr} --name-only` returned no paths, so this PR "
+            "changes no files at all. Refused rather than treated as a dropped "
+            "doctrine change, which would withdraw the callout and state "
+            "something false on the PR. Re-run once the PR has a diff"
         )
     return paths
 

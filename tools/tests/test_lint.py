@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import lint
@@ -32,11 +34,30 @@ def _wire_callout(root: Path) -> None:
     (tools / "doctrine_callout.py").write_text("# the callout\n", encoding="utf-8")
     workflows = root / ".github" / "workflows"
     workflows.mkdir(parents=True, exist_ok=True)
-    (workflows / "ci.yml").write_text(
-        "jobs:\n  doctrine-callout:\n"
-        "    steps:\n      - run: python tools/doctrine_callout.py --pr 1\n",
-        encoding="utf-8",
-    )
+    (workflows / "ci.yml").write_text(WIRED_CI, encoding="utf-8")
+
+
+WIRED_CI = (
+    "on:\n"
+    "  push:\n"
+    "    branches: [main]\n"
+    "  pull_request:\n"
+    "\n"
+    "jobs:\n"
+    "  lint-and-test:\n"
+    "    steps:\n"
+    "      - if: github.event_name == 'pull_request'\n"
+    "        run: python tools/check_version_bump.py\n"
+    "  doctrine-callout:\n"
+    "    if: github.event_name == 'pull_request'\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps:\n"
+    "      - run: python tools/doctrine_callout.py --pr 1\n"
+)
+
+
+def _ci(root: Path, text: str) -> None:
+    (root / ".github" / "workflows" / "ci.yml").write_text(text, encoding="utf-8")
 
 
 def test_clean_tree_passes(tmp_path):
@@ -403,23 +424,65 @@ def test_deleting_the_callout_job_is_a_finding(tmp_path):
     no doctrine file, so nothing fires and nothing goes red. This is what makes
     such a PR fail a required check instead."""
     make_clean_tree(tmp_path)
-    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
-        "jobs:\n  lint-and-test:\n    steps:\n      - run: python tools/lint.py\n",
-        encoding="utf-8",
-    )
+    _ci(tmp_path, "on:\n  pull_request:\n\njobs:\n  lint-and-test:\n"
+                  "    steps:\n      - run: python tools/lint.py\n")
     findings = lint.run(tmp_path)
-    assert len(findings) == 2          # job not declared, script not run
-    assert all("doctrine-callout:" in f for f in findings)
+    assert len(findings) == 1 and "no live `doctrine-callout:` job" in findings[0]
 
 
-def test_keeping_the_job_but_dropping_the_script_call_is_a_finding(tmp_path):
+# Every way the callout has been made dead without deleting anything. Each was
+# measured against a plain substring check first, and each passed it clean —
+# which is why the check reads the job's own block rather than the file.
+@pytest.mark.parametrize("name, mutate, expected", [
+    ("job commented out",
+     lambda t: "".join("#" + ln if ln.startswith("  doctrine-callout:")
+                       or ln.startswith("    ") and "doctrine_callout" in ln
+                       else ln for ln in t.splitlines(keepends=True)),
+     "no live `doctrine-callout:` job"),
+    ("gate falsified",
+     lambda t: t.replace("  doctrine-callout:\n    if: github.event_name == 'pull_request'",
+                         "  doctrine-callout:\n    if: false"),
+     "not gated on a pull_request event"),
+    ("gate deleted",
+     lambda t: t.replace("  doctrine-callout:\n    if: github.event_name == 'pull_request'\n",
+                         "  doctrine-callout:\n"),
+     "not gated on a pull_request event"),
+    ("script call neutered",
+     lambda t: t.replace("run: python tools/doctrine_callout.py",
+                         "run: echo python tools/doctrine_callout.py"),
+     "does not run tools/doctrine_callout.py"),
+    ("trigger removed",
+     lambda t: t.replace("  pull_request:\n", "", 1),
+     "no `pull_request:` trigger"),
+    # The escape the review found last: the job's gate no longer matches the
+    # event, so it skips in silence while both required checks report green —
+    # and checkout would default to the base branch, testing main rather than
+    # the PR. The likeliest motive is already on the record (fork coverage).
+    ("trigger switched to pull_request_target",
+     lambda t: t.replace("  pull_request:\n", "  pull_request_target:\n", 1),
+     "no `pull_request:` trigger"),
+])
+def test_a_dead_callout_job_is_a_finding(tmp_path, name, mutate, expected):
     make_clean_tree(tmp_path)
-    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
-        "jobs:\n  doctrine-callout:\n    steps:\n      - run: echo nothing\n",
-        encoding="utf-8",
-    )
+    _ci(tmp_path, mutate(WIRED_CI))
     findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "does not run the script" in findings[0]
+    assert any(expected in f for f in findings), f"{name}: {findings}"
+
+
+# The lawful polarity. A guard that blocks lawful work fails as hard as one
+# that passes unlawful work, so the gate's event is named and its wording is not.
+@pytest.mark.parametrize("rewrite", [
+    lambda t: t.replace("    if: github.event_name == 'pull_request'\n    runs-on",
+                        "    if: ${{ github.event_name == 'pull_request' }}\n    runs-on"),
+    lambda t: t.replace("    if: github.event_name == 'pull_request'\n    runs-on",
+                        "    if: github.event_name == 'pull_request'"
+                        " && !github.event.pull_request.draft\n    runs-on"),
+    lambda t: t.replace("--pr 1", "--repo o/n --pr 1"),
+])
+def test_lawful_rewordings_of_the_job_pass(tmp_path, rewrite):
+    make_clean_tree(tmp_path)
+    _ci(tmp_path, rewrite(WIRED_CI))
+    assert lint.run(tmp_path) == []
 
 
 def test_deleting_the_callout_script_is_a_finding(tmp_path):
