@@ -1,4 +1,7 @@
-# The doctrine and its pointer get the owner's specific review at merge time —
-# the platform mechanism behind the doctrine's release-gate callout (D-74).
+# Not the doctrine callout: CODEOWNERS fires by auto-requesting a review, and
+# GitHub never requests one from a PR's own author — which, while sessions run
+# as the owner, is every PR here (#79). The callout that reaches him is
+# tools/doctrine_callout.py, run from ci.yml. This file stays for the shield
+# icon in Files-changed, and for the day a non-owner contributor opens a PR.
 /AGENTS.md @Grimblaz
 /CLAUDE.md @Grimblaz

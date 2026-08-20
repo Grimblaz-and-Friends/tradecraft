@@ -30,3 +30,24 @@ jobs:
         run: |
           pip install pytest
           python -m pytest tools/tests skills -q
+
+  # The owner reads the AGENTS.md diff himself before merging. CODEOWNERS was
+  # the first mechanism for that and cannot be: it fires by requesting a review,
+  # and GitHub never requests one from a PR's own author — which every PR here
+  # has (#79). This is the callout that reaches him. One runner: it is an API
+  # call, not a portability question.
+  doctrine-callout:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write   # apply the label, post the comment
+      issues: write          # create the label if it is absent from the repo
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Doctrine callout
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/doctrine_callout.py --pr "${{ github.event.pull_request.number }}"
