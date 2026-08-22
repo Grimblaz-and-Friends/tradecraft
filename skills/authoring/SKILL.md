@@ -1,6 +1,6 @@
 ---
 name: authoring
-description: How to create and revise content in this practice — the purpose header every governing document carries, which home each kind of content belongs in, and the writing standards that keep prose lean enough to survive review. Use when writing or restructuring a skill or governing document, when deciding where a piece of content belongs, or when revising governing prose; not for reviewing finished content (that is adversarial review's job), and not for a pre-implementation artifact or any other surface the owner enters.
+description: How to create and revise content in this practice — the purpose header every governing document carries, which home each kind of content belongs in, and the writing standards that keep prose lean enough to survive review. Use when writing or restructuring a skill or governing document, when deciding where a piece of content belongs, or when revising governing prose; not for reviewing finished content (that is adversarial review's job), and not for a pre-implementation artifact.
 ---
 
 # authoring
@@ -19,7 +19,7 @@ A document that cannot state these three is not ready to be written; the missing
 
 ## Routing — where content lives
 
-- **Methodology** — how work is done, what to consider, in what order, to what standard → a skill. A piece is its own skill when it has an independent trigger: a situation where it should fire without the parent job underway — and where no existing cell fits, the answer is a new one, because the burden sits on cramming rather than on creating. Where the trigger is not independent, it is a `references/` file inside the skill it serves, loaded on demand.
+- **Methodology** — how work is done, what to consider, in what order, to what standard → a skill. A piece is its own skill when it has an independent trigger: a situation where it should fire without the parent job underway. Where the trigger is not independent and a cell already serves it, it is a `references/` file inside that skill, loaded on demand. Where no cell serves it at all, the answer is a new cell — the burden sits on cramming rather than on creating.
 - **Binding rules** — what must hold before any context loads → the repo's root doctrine. The doctrine is budgeted, so adding means displacing; treat it as the last resort, after a mechanical check and after skill prose.
 - **Rationale** — why this shape was chosen, what was rejected → the repo's decision log, one frozen entry per decision, written in the change that lands it. Rationale informs future judgment; it never binds it.
 - **Records** — what happened → append-only exhaust: a review report, an index row. Never create a record that must be maintained after its append.

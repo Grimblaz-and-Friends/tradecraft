@@ -1,11 +1,11 @@
 ---
 name: engagement
-description: How a session and the owner work together — the plain brief that opens every surface he enters, and the pre-implementation artifact that settles what a change is for before it is built. Use when writing a pre-implementation artifact, when putting a decision to the owner, when delivering a review's outcome to him, or when handing work back after he has been away; not for writing skills or governing documents, and not for running a review.
+description: How a session and the owner work together — the plain brief that opens every surface he enters, and the pre-implementation artifact that settles what a change is for before it is built. Use when writing a pre-implementation artifact, when putting a decision to the owner, when delivering a review's outcome to him, or when handing work back after he has been away; not for writing skills or governing documents, and not for how a review is run.
 ---
 
 # engagement
 
-**Purpose:** make every surface the owner enters cheap for him to act on. **Audience:** any session at a point where the owner's attention is required. **Success:** he can read the top of any such surface once and know what it is and what he is being asked, and the artifact a session leaves behind states what the work is for without him in the room.
+**Purpose:** make every surface the owner enters cheap for him to act on. **Audience:** any session at a point where the owner's attention is required. **Success:** he can read the top of any such surface once and know what it is, why it matters, and what he is being asked, and the artifact a session leaves behind states what the work is for without him in the room.
 
 ## The plain brief
 
@@ -21,7 +21,7 @@ Every surface the owner enters opens with one.
 
 **What it is not:** a summary of everything beneath it, a home for detail, or a thing owed on surfaces the owner never enters. The deep material follows underneath — the brief does not have to carry it, it has to make carrying it unnecessary for the decision at hand.
 
-Two surfaces are this skill's own: the pre-implementation artifact below, and any decision put to the owner. Where a surface is governed elsewhere — a review's final report, a message handing work back — the requirement is named there.
+Two surfaces are this skill's own: the pre-implementation artifact below, and any decision put to the owner. Two more are named in the repo's root doctrine, and no skill takes a reference to this one: a review's final report, where the brief opens the report as posted, and a message handing work back after time away. A handback carries what the work is, where it now stands, and what is being asked of him — on returning, the expensive part is not the decision but reconstructing where the work stands before the decision makes sense.
 
 ## The pre-implementation artifact
 
