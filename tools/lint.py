@@ -52,7 +52,11 @@ POINTER_BUDGET_CHARS = 500
 
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
 ROOTED_SKILL = re.compile(r"skills[\\/]([\w-]+)[\\/]", re.IGNORECASE)
-RELATIVE_REF = re.compile(r"(?:\.\.?[\\/])+[\w][\w.\\/\\-]*")
+# The first segment may itself be dot-leading (`.github`), so the class after
+# the prefix admits a dot. Requiring a word character there let every relative
+# form of `.github/` through while catching `docs/` and `tools/` -- the one
+# repo-only name starting with a dot was the one the docstring above lied about.
+RELATIVE_REF = re.compile(r"(?:\.\.?[\\/])+[\w.][\w.\\/\\-]*")
 REL_PREFIX_TAIL = re.compile(r"(?:\.\.?[\\/])+$")
 
 DATE_SHAPE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
