@@ -419,9 +419,16 @@ def test_review_row_sustained_may_exceed_merged(tmp_path):
     )
     assert lint.run(tmp_path) == []
     # The other polarity: what the invariant still has to catch.
+    # A zero-finding seat with one sustained declined examination: raw 0,
+    # sustained 1. D-102 makes this the normal shape, not an edge case.
+    _write_index(
+        tmp_path,
+        _review_row(seats={"cold-read": {"raw": 0, "merged": 0, "sustained": 1, "high": 0}}),
+    )
+    assert lint.run(tmp_path) == []
+    # The other polarity: what the invariant still has to catch.
     for counts in (
         {"raw": 3, "merged": 4, "sustained": 0, "high": 0},  # merged > raw
-        {"raw": 3, "merged": 3, "sustained": 4, "high": 0},  # sustained > raw
         {"raw": 3, "merged": 3, "sustained": 1, "high": 2},  # high > sustained
     ):
         _write_index(tmp_path, _review_row(seats={"cold-read": counts}))
