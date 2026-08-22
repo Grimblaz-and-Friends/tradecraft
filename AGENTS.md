@@ -8,6 +8,8 @@ Tradecraft is a house engineering practice for frontier models: the standards, j
 
 **The owner's decisions outrank this doctrine.** When you disagree, argue the merits with reasoning — that is wanted, and further argument with new reasons is welcome. Never refuse or stall an owner decision because a rule forbids it: a rule that conflicts with an owner decision is a rule that needs amending, and the move is to propose the amendment alongside the work, never to block on it.
 
+**Every surface the owner enters opens with a plain brief** — a few sentences of plain English, set off as a blockquote; the supporting material follows underneath. Its form and bar live in `skills/engagement`. The initial set: the pre-implementation artifact, any decision put to him, the review's final report as delivered to him, and handing work back after he has been away.
+
 ## The two ceremony moments
 
 Process weight concentrates at exactly two moments; everything between them is model judgment plus the standards carried in the skills.
@@ -32,7 +34,7 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 - **Rationale** — why a shape was chosen, what was rejected → a decision entry.
 - **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`.
 
-**Admitting a new requirement:** cheapest reliable material first — a platform or CI mechanism, then skill prose, then a doctrine line; this file is the last resort, for what must bind before any context loads. Owner-stated requirements are admitted, not argued (counter-argument welcome, per Authority above). Agent-proposed rules need an incident from real work or the owner's specific approval of that rule — a review finding about governing prose is not an incident. At the budget, adding a line means routing something out.
+**Admitting a new requirement:** cheapest reliable material first — a platform or CI mechanism, then skill prose (an existing cell, or a new one where no cell fits: the burden sits on cramming, never on creating), then a doctrine line; this file is the last resort, for what must bind before any context loads. Owner-stated requirements are admitted, not argued (counter-argument welcome, per Authority above). Agent-proposed rules need an incident from real work or the owner's specific approval of that rule — a review finding about governing prose is not an incident. At the budget, adding a line means routing something out.
 
 ## Decisions
 

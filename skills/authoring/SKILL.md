@@ -1,11 +1,11 @@
 ---
 name: authoring
-description: How to create and revise content in this practice — the purpose header every governing document carries, which home each kind of content belongs in, and the writing standards that keep prose lean enough to survive review. Use when writing or restructuring a skill or governing document, when writing a pre-implementation artifact, when deciding where a piece of content belongs, or when revising governing prose; not for reviewing finished content (that is adversarial review's job).
+description: How to create and revise content in this practice — the purpose header every governing document carries, which home each kind of content belongs in, and the writing standards that keep prose lean enough to survive review. Use when writing or restructuring a skill or governing document, when deciding where a piece of content belongs, or when revising governing prose; not for reviewing finished content (that is adversarial review's job), and not for a pre-implementation artifact.
 ---
 
 # authoring
 
-**Purpose:** make every document in the practice accountable to a stated job. **Audience:** any session creating or revising content, in this repo or a repo that adopts the practice. **Success:** every document it governs can say what it is for, who reads it, and what its review should judge it against — and contains nothing that fails that test.
+**Purpose:** make every governing document in the practice accountable to a stated job. **Audience:** any session creating or revising a skill or governing document, in this repo or a repo that adopts the practice. **Success:** every document it governs can say what it is for, who reads it, and what its review should judge it against — and contains nothing that fails that test.
 
 ## The purpose header
 
@@ -17,15 +17,9 @@ Every governing document and skill opens by answering three questions, a sentenc
 
 A document that cannot state these three is not ready to be written; the missing statement is its first defect. For a skill, the frontmatter `description` carries the trigger (use when / not for) and the body's opening carries the header.
 
-**Where a pre-implementation artifact asserts something about material no enumeration you can consult covers, or about a mechanism nobody has executed, test that premise before you assert it** — a spike, which commits nothing. Reading a design settles neither, and the condition is narrow: most artifacts assert neither. [`references/spikes.md`](references/spikes.md) has the exclusions, the bound, the abandonment route, the report, and the standing permission to explore without a premise.
-
-**Acceptance criteria state what must be true of the result, not what it may cost.** Record a cost estimate as a fact — in the PR body, the decision entry, or the report; written as a criterion it becomes what every stage of the review judges against.
-
-Where a repo's pre-implementation artifact also carries a **boundary statement** — the explicit list of what the work is *not* doing and why — it records the scope agreed, so a later scope question is answerable from the artifact rather than from memory. It does not forbid the work covering more; the diff is what records what was actually done.
-
 ## Routing — where content lives
 
-- **Methodology** — how work is done, what to consider, in what order, to what standard → a skill. A piece becomes its own skill only when it has an independent trigger: a situation where it should fire without the parent job underway. Otherwise it is a `references/` file inside the skill it serves, loaded on demand.
+- **Methodology** — how work is done, what to consider, in what order, to what standard → a skill. A piece is its own skill when it has an independent trigger: a situation where it should fire without the parent job underway. Where the trigger is not independent and a cell already serves it, it is a `references/` file inside that skill, loaded on demand. Where no cell serves it at all, the answer is a new cell — the burden sits on cramming rather than on creating.
 - **Binding rules** — what must hold before any context loads → the repo's root doctrine. The doctrine is budgeted, so adding means displacing; treat it as the last resort, after a mechanical check and after skill prose.
 - **Rationale** — why this shape was chosen, what was rejected → the repo's decision log, one frozen entry per decision, written in the change that lands it. Rationale informs future judgment; it never binds it.
 - **Records** — what happened → append-only exhaust: a review report, an index row. Never create a record that must be maintained after its append.
