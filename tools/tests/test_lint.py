@@ -543,3 +543,60 @@ def test_frozen_archive_files_are_not_validated(tmp_path):
     (docs / "ledger.jsonl").write_text("{not json\n", encoding="utf-8")
     (docs / "seat-record.jsonl").write_text("{not json\n", encoding="utf-8")
     assert lint.run(tmp_path) == []
+
+
+def test_zone_wall_fires_on_relative_dot_leading_repo_only_name(tmp_path):
+    # `.github` is the one repo-only name that starts with a dot. Every relative
+    # form of it slipped the wall until 2026-08-22: the class after the ../
+    # prefix required a word character, and a dot is not one.
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "[ci](../../.github/workflows/ci.yml)\n"
+        "See ../../.github/workflows/ci.yml too.\n"
+        "Or ..\\..\\.github\\workflows\\ci.yml.\n",
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "zone-wall" in f]
+    assert len(findings) == 3, findings
+
+
+def test_zone_wall_ignores_relative_dot_leading_path_that_is_not_repo_only(tmp_path):
+    # The lawful polarity of the same fix: a dot-leading first segment that is
+    # not a repo-only name must still pass, or the guard blocks lawful work.
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "See ../.config/settings.json and ./.cache/notes.md.\n", encoding="utf-8"
+    )
+    assert [f for f in lint.run(tmp_path) if "zone-wall" in f] == []
+
+
+def test_zone_wall_ignores_suffix_match_inside_a_longer_relative_token(tmp_path):
+    # `assets/../../docs/x.md` resolves to skills/example-skill/docs/x.md, which
+    # is the skill's own subdir and lawful. Matching only the `../../docs/x.md`
+    # tail resolved it from the wrong base and reported a repo-only hit, for all
+    # three repo-only names. Found by the external pass on 2026-08-22.
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "See assets/../../.github/workflows/ci.yml.\n"
+        "See assets/../../docs/architecture/README.md.\n"
+        "See assets/../../tools/lint.py.\n"
+        "See [x](assets/../../.github/workflows/ci.yml).\n"
+        "See assets\\..\\..\\.github\\ci.yml.\n"
+        "See a.b/../../docs/x.md.\n",
+        encoding="utf-8",
+    )
+    assert [f for f in lint.run(tmp_path) if "zone-wall" in f] == []
+
+
+def test_sideways_dep_ignores_suffix_match_inside_a_longer_relative_token(tmp_path):
+    # RELATIVE_REF is shared with check_sideways_deps, so the same suffix match
+    # reached both guards; the lawful polarity has to be pinned on both.
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "See assets/../beta-skill/SKILL.md.\n", encoding="utf-8"
+    )
+    assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == []
