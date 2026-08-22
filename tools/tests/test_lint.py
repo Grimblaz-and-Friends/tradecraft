@@ -405,6 +405,30 @@ def test_review_row_seat_counts_must_nest(tmp_path):
     assert len(findings) == 1 and "not nested" in findings[0]
 
 
+def test_review_row_sustained_may_exceed_merged(tmp_path):
+    """A seat entry the merge did not carry can still be sustained [D-102].
+
+    Red against the pre-fix revision, where `merged >= sustained` was enforced.
+    """
+    make_clean_tree(tmp_path)
+    # PR #90's own shape: revision-diff filed 7, the merge carried 6, and the
+    # seventh was sustained as an uncarried docket entry.
+    _write_index(
+        tmp_path,
+        _review_row(seats={"cold-read": {"raw": 7, "merged": 6, "sustained": 7, "high": 1}}),
+    )
+    assert lint.run(tmp_path) == []
+    # The other polarity: what the invariant still has to catch.
+    for counts in (
+        {"raw": 3, "merged": 4, "sustained": 0, "high": 0},  # merged > raw
+        {"raw": 3, "merged": 3, "sustained": 4, "high": 0},  # sustained > raw
+        {"raw": 3, "merged": 3, "sustained": 1, "high": 2},  # high > sustained
+    ):
+        _write_index(tmp_path, _review_row(seats={"cold-read": counts}))
+        findings = lint.run(tmp_path)
+        assert len(findings) == 1 and "not nested" in findings[0], counts
+
+
 def test_review_row_seat_counts_wrong_shape_is_a_finding(tmp_path):
     make_clean_tree(tmp_path)
     _write_index(tmp_path, _review_row(seats={"cold-read": 7}))
