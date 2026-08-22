@@ -376,10 +376,18 @@ def _check_seats(seats, where: str, findings: list) -> None:
         if bad_type or set(SEAT_COUNTS) - set(counts):
             continue
         raw, merged, sustained, high = (counts[f] for f in SEAT_COUNTS)
-        if not raw >= merged >= sustained >= high:
+        # Both `merged >= sustained` and `raw >= sustained` are deliberately
+        # absent [D-102]: the terminal stage's docket carries anything in a
+        # seat's report that no merged finding carries, and a declined
+        # examination is not a finding, so it is in neither count. A
+        # zero-finding seat with one sustained decline is raw 0, sustained 1.
+        # `sustained` therefore has no upper bound expressible in these four
+        # fields. Re-adding either conjunct looks right and is wrong.
+        if not (raw >= merged and sustained >= high):
             findings.append(
                 f"{where} seat '{name}' counts are not nested: raw {raw} >= "
-                f"merged {merged} >= sustained {sustained} >= high {high} must hold"
+                f"merged {merged} and sustained {sustained} >= high {high} "
+                f"must hold"
             )
 
 
