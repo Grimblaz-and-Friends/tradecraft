@@ -33,7 +33,7 @@ So reviews priced remedies by word count, and did it on the face of the record r
 
 **`postfix-8`'s reopen condition is discharged by this entry**, not by editing the frozen [cycle-1 ruling](https://github.com/Grimblaz-and-Friends/tradecraft/pull/102#issuecomment-5381165417). Nothing in PR #102's review is re-dispositioned; records are append-only, and this binds what comes next.
 
-**The cost is +39 standing words in `adversarial-review/SKILL.md`, 2782 → 2821**, and +47 in `authoring/SKILL.md` — derived from the finished tree rather than carried from the estimate. `:65` took +2 and `:67` +37 net of the −1. The affirmed artifact estimated +38 and ≈40; `:65` came in one over because replacing `price**:` with `price** —` adds a token the clause-body count did not carry. No offset is claimed, because none was made. **The figure is recorded here as a fact and not as a criterion**, which is this change's own new rule applied to itself.
+**The cost is +41 standing words in `adversarial-review/SKILL.md`, 2782 → 2823**, and +47 in `authoring/SKILL.md` — derived from the finished tree, re-run last because the `[D-107]` citations moved it. `:65` took +3 and `:67` +38 net of the −1. The affirmed artifact estimated +38 and ≈40 and carried no citations; +2 of the overshoot is those, and `:65` took one more than its clause-body count because replacing `price**:` with `price** —` adds a token that count did not carry. No offset is claimed, because none was made. **The figure is recorded here as a fact and not as a criterion**, which is this change's own new rule applied to itself.
 
 ## Rejected
 
