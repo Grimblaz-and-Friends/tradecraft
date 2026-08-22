@@ -19,6 +19,8 @@ A document that cannot state these three is not ready to be written; the missing
 
 **Where a pre-implementation artifact asserts something about material no enumeration you can consult covers, or about a mechanism nobody has executed, test that premise before you assert it** — a spike, which commits nothing. Reading a design settles neither, and the condition is narrow: most artifacts assert neither. [`references/spikes.md`](references/spikes.md) has the exclusions, the bound, the abandonment route, the report, and the standing permission to explore without a premise.
 
+**Acceptance criteria state what must be true of the result, not what it may cost.** Record a cost estimate as a fact — in the PR body, the decision entry, or the report; written as a criterion it becomes what every stage of the review judges against.
+
 Where a repo's pre-implementation artifact also carries a **boundary statement** — the explicit list of what the work is *not* doing and why — it records the scope agreed, so a later scope question is answerable from the artifact rather than from memory. It does not forbid the work covering more; the diff is what records what was actually done.
 
 ## Routing — where content lives
