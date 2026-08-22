@@ -539,3 +539,33 @@ def test_zone_wall_ignores_relative_dot_leading_path_that_is_not_repo_only(tmp_p
         "See ../.config/settings.json and ./.cache/notes.md.\n", encoding="utf-8"
     )
     assert [f for f in lint.run(tmp_path) if "zone-wall" in f] == []
+
+
+def test_zone_wall_ignores_suffix_match_inside_a_longer_relative_token(tmp_path):
+    # `assets/../../docs/x.md` resolves to skills/example-skill/docs/x.md, which
+    # is the skill's own subdir and lawful. Matching only the `../../docs/x.md`
+    # tail resolved it from the wrong base and reported a repo-only hit, for all
+    # three repo-only names. Found by the external pass on 2026-08-22.
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "See assets/../../.github/workflows/ci.yml.\n"
+        "See assets/../../docs/architecture/README.md.\n"
+        "See assets/../../tools/lint.py.\n"
+        "See [x](assets/../../.github/workflows/ci.yml).\n"
+        "See assets\\..\\..\\.github\\ci.yml.\n"
+        "See a.b/../../docs/x.md.\n",
+        encoding="utf-8",
+    )
+    assert [f for f in lint.run(tmp_path) if "zone-wall" in f] == []
+
+
+def test_sideways_dep_ignores_suffix_match_inside_a_longer_relative_token(tmp_path):
+    # RELATIVE_REF is shared with check_sideways_deps, so the same suffix match
+    # reached both guards; the lawful polarity has to be pinned on both.
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "See assets/../beta-skill/SKILL.md.\n", encoding="utf-8"
+    )
+    assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == []
