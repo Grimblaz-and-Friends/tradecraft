@@ -21,7 +21,7 @@ Every surface the owner enters opens with one.
 
 **What it is not:** a summary of everything beneath it, a home for detail, or a thing owed on surfaces the owner never enters. The deep material follows underneath — the brief does not have to carry it, it has to make carrying it unnecessary for the decision at hand.
 
-Two surfaces are this skill's own: the pre-implementation artifact below, and any decision put to the owner. Two more are named in the repo's root doctrine, and no skill takes a reference to this one: a review's final report, where the brief opens the report as posted, and a message handing work back after time away. A handback carries what the work is, where it now stands, and what is being asked of him — on returning, the expensive part is not the decision but reconstructing where the work stands before the decision makes sense.
+Two surfaces are this skill's own: the pre-implementation artifact below, and any decision put to the owner. Two more are named in the repo's root doctrine, and no skill takes a reference to this one: a review's final report, where the brief opens the report as posted, and a message handing work back after time away. A handback also carries where the work now stands — on returning, the expensive part is not the decision but reconstructing where the work stands before the decision makes sense.
 
 ## The pre-implementation artifact
 

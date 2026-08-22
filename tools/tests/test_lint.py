@@ -523,7 +523,7 @@ def test_zone_wall_fires_on_relative_dot_leading_repo_only_name(tmp_path):
     (skill / "SKILL.md").write_text(
         "[ci](../../.github/workflows/ci.yml)\n"
         "See ../../.github/workflows/ci.yml too.\n"
-        "Or ..\..\.github\workflows\ci.yml.\n",
+        "Or ..\\..\\.github\\workflows\\ci.yml.\n",
         encoding="utf-8",
     )
     findings = [f for f in lint.run(tmp_path) if "zone-wall" in f]
