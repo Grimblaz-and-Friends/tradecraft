@@ -27,7 +27,7 @@ Two surfaces are this skill's own: the pre-implementation artifact below, and an
 
 **A decision is his when it is a genuine fork**: what turns on the pick is something he would care about — what gets built, what it costs, what others see, what he lives with day to day — and undoing a wrong pick costs him something an edit does not undo: habit, muscle memory, what others already saw. Both halves are required — one live option can satisfy the first — and everything else is the session's to decide. Where root doctrine states this test, the two are one rule: a change to either is a change to both.
 
-**Asking where no fork exists is a defect rather than politeness.** The tell is that nothing turns on his answer — the session would proceed the same way whatever he said; that is a report, and putting it as a question spends his attention for nothing. One live option is not the tell: a real search that narrowed to one still turns on his answer.
+**Asking where no fork exists is a defect rather than politeness.** The tell is that nothing turns on his answer — the session would proceed the same way whatever he said; that is a report, and putting it as a question spends his attention for nothing. One live option is not by itself the tell: a real search that narrowed to one can still turn on his answer, and the fork test above decides it either way.
 
 - **His:** affirm, amend, or reject what a change is for before it is built; merging; anything outward-facing or destructive; a name, or anything else he lives with day to day; spending materially beyond what the task implied.
 - **The session's:** implementation approach, file layout, tool choice, and the order work is done in.
