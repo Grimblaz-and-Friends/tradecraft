@@ -466,9 +466,7 @@ def check_decision_index(root: Path) -> list[str]:
     index = directory / "README.md"
     if not index.is_file():
         return findings
-    entries = {
-        path.name for path in directory.glob("D-*.md") if path.name != "README.md"
-    }
+    entries = {path.name for path in directory.glob("D-*.md")}
     listed = set(re.findall(r"^\| \[D-[^\]]+\]\(([^)]+)\)", index.read_text(
         encoding="utf-8", errors="replace"
     ), re.MULTILINE))
