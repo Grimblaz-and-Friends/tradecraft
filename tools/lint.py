@@ -20,6 +20,12 @@ Checks:
      because a PR deleting the job touches no doctrine file [D-81].
   5. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, report URL.
+  6. decision index: every decision entry has a row in the log's index, and
+     every row a file.
+  7. entry references: every path reference and relative link a decision entry
+     or the log's index writes resolves, is pinned to the commit it shipped at,
+     or is recorded with a reason. Unlike check 1, this one reads shape rather
+     than any path form: `A/B` is prose, not a reference.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -84,6 +90,113 @@ RUNS_SCRIPT = re.compile(r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout
 # The event is named; the gate's exact wording is not, so a lawful rewrite
 # (adding `&& !draft`, or moving to ${{ }} form) does not fail a required check.
 GATED_ON_PR = re.compile(r"^\s+if:.*pull_request")
+
+# A decision entry's references. Markdown links claim to resolve outright;
+# backticked paths are the form entries actually use most, and are what PR #104
+# and PR #132 stranded. An optional title is admitted in the link form, and
+# either separator in the path form -- every other pattern in this file accepts
+# `[\/]`, and the one that did not was the newest.
+ENTRY_LINK = re.compile(r"""\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+["'(][^)]*)?\)""")
+ENTRY_PATH = re.compile(r"`([\w.-]+(?:[\\/][\w.-]+)+(?::\d+)?)`")
+
+# What makes a slash-joined token a path claim rather than ordinary prose. A
+# content filter cannot tell `A/B` -- this repo's own word for its spike
+# pattern -- from `docs/x.md`, so the test is shape: a known extension, or a
+# first segment that is a root this repo declares. Without it the guard fails
+# lawful work, which is as bad as passing unlawful work, and the only escape is
+# to write the reference less precisely.
+#
+# Declared, not merely present: `lib`, `commands` and `agents` are named in the
+# doctrine's shipped zone and hold no file yet. `.claude` is deliberately
+# absent though a directory of that name exists locally -- it is untracked and
+# ungitignored, so resolving against it gave `python tools/lint.py` two answers
+# for the same commit depending on whether a session had created
+# `.claude/agents`, and the local answer instructed a repair that reds CI.
+REPO_ROOTS = frozenset(SHIPPED_DIRS) | {
+    "tools", "docs", ".github", ".", "..",
+}
+REF_EXTENSIONS = frozenset({
+    ".md", ".py", ".yml", ".yaml", ".json", ".jsonl", ".txt", ".toml", ".cfg",
+    ".ini", ".sh", ".ps1",
+})
+
+# A pin names the commit a reference shipped at, so no later move can falsify
+# it. The backticks carry the whole discrimination: this repo cites GitHub
+# comment ids constantly and `at 5380976787` is the live example, which is
+# unbackticked. Requiring a hex letter as well would additionally refuse an
+# all-decimal short sha -- about one prefix in twenty-seven -- and the author
+# who wrote it would get a silently inert pin.
+PINNED_REF = re.compile(r"\bat\s+`[0-9a-fA-F]{7,40}`")
+
+# References dead when this guard landed, keyed by the line that carries them
+# because one entry can hold both a repairable and an unrepairable occurrence
+# of the same path -- D-119 did, at :19 and :66, and a key without the line
+# could not say so. Each row states why it is here.
+#
+# THIS SET MAY ONLY SHRINK, and the guard enforces that rather than asserting
+# it: a row whose reference has come back to life is reported as stale and must
+# be removed. It is a baseline, not an exemption list -- a reference added here
+# is a dead reference nobody had to repair, which is the failure this guard
+# exists to make impossible.
+BASELINE_UNRESOLVABLE = {
+    # Each states where the file WAS when its entry was written, so repointing
+    # falsifies the sentence rather than repairing it.
+    ("D-80-2026-08-19-spikes.md", 15, "skills/authoring/references/spikes.md"):
+        "states where D-80 itself placed the file",
+    ("D-102-2026-08-21-merged-list-is-an-index.md", 50,
+     "skills/authoring/references/spikes.md"):
+        "cites the path as evidence a references/ directory existed",
+    ("D-104-2026-08-22-engagement-cell.md", 36, "engagement/references/spikes.md"):
+        "states where PR #104 moved the file",
+    ("D-132-2026-08-23-spikes-graduate.md", 19, "engagement/references/spikes.md"):
+        "states where the file was before PR #132 moved it",
+    # D-119:19 quotes "a mechanism nobody has executed", a phrase PR #132
+    # deleted while moving the file, so repointing would leave the sentence
+    # quoting words its target does not contain. Line 66 of the same entry was
+    # a see-also whose characterization survives the move, and was repointed.
+    ("D-119-2026-08-23-cost-estimate-outside-the-artifact.md", 19,
+     "skills/engagement/references/spikes.md"):
+        "quotes a phrase PR #132 deleted while moving the target",
+    # Renamed by PR #74's reset, not deleted -- but D-53:15 calls the target
+    # the "always-current statute", which repointing to an -archived path
+    # would falsify.
+    ("D-53-2026-08-18-log-and-statute.md", 15, "docs/architecture/constitution.md"):
+        "calls the target the always-current statute; renamed to -archived",
+    ("D-53-2026-08-18-log-and-statute.md", 75, "docs/architecture/evidence.md"):
+        "a locator whose target PR #74 renamed; nothing sends a reader into the pre-reset archive to act",
+    # Deleted outright by the same reset. D-53 correctly records what it built.
+    ("D-53-2026-08-18-log-and-statute.md", 64, "tools/check_constitution.py"):
+        "target deleted by PR #74; the entry records what it built",
+    ("D-53-2026-08-18-log-and-statute.md", 64,
+     "tools/tests/test_check_constitution.py"):
+        "target deleted by PR #74; the entry records what it built",
+    # D-53 through D-69 are the pre-reset frozen archive, and nothing directs a
+    # reader into it to act -- the reason this pair was dropped from the carve
+    # the owner had approved.
+    ("D-69-2026-08-18-trial-instrument-and-exception.md", 19, "../evidence.md"):
+        "nothing sends a reader into the pre-reset archive to act; PR #74 renamed the target",
+    ("D-69-2026-08-18-trial-instrument-and-exception.md", 94, "../evidence.md"):
+        "nothing sends a reader into the pre-reset archive to act; PR #74 renamed the target",
+    # Never in this repository: a path on the owner's own machine. D-99:37's
+    # `.claude/agents` was a row here too and is deliberately gone: `.claude`
+    # left REPO_ROOTS, so the token no longer reads as a path claim at all --
+    # a recorded shrink, not a silent loss of coverage.
+    ("D-90-2026-08-20-dispatch-contract.md", 25,
+     "Documents/Design/review-dispatch-overhead-measurement.md"):
+        "never in this repository; the predecessor's local path",
+}
+
+# The fourth lawful disposition, and the one the rule was missing. A reference
+# can become unrepairable AFTER this guard landed: its target is retired rather
+# than moved, or a change moves the target and rewrites the text the entry
+# quotes. Neither has a repoint, and the entry is frozen, so without this a
+# required check reds with no compliant answer -- a guard blocking lawful work.
+#
+# Unlike the baseline above this may grow, because that is what makes the
+# deadlock lawful. It is not an open exemption list: every row states its own
+# reason, the reason is enforced non-empty, and a row is one visible line of
+# diff on the pull request that created the situation.
+UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {}
 
 REVIEW_FIELDS = {"date", "artifact", "lane", "seats", "report"}
 REVIEW_LANES = {"panel", "routine"}
@@ -484,6 +597,181 @@ def check_decision_index(root: Path) -> list[str]:
     return findings
 
 
+def check_entry_references(root: Path) -> list[str]:
+    """Every reference a decision entry makes resolves, is pinned, or is recorded.
+
+    An entry is frozen on landing but for a moved reference: the change that
+    moves a target repoints every entry reference to it, and that repair is
+    only lawful inside the moving change. This guard is what makes the
+    permission fire at that moment -- without it the mover has no signal, and
+    by the time anyone notices, no change is the mover any more. PR #104
+    stranded three references that way and PR #132 stranded three more the next
+    day, the second time reproducing a spike's rehearsal exactly.
+
+    A reference is lawful four ways. It resolves. It is pinned -- written with
+    the commit it shipped at, which no later move can break. It is in
+    BASELINE_UNRESOLVABLE, dead before this guard existed. Or it is in
+    UNREPAIRABLE_AFTER_LANDING, the disposition for a reference a later change
+    made unrepairable: a retired target, or a move that also rewrote the text
+    the entry quotes. Without that fourth form the guard reds with no compliant
+    answer, which blocks lawful work -- as bad as passing unlawful work.
+
+    Both recorded sets are checked for staleness: a row whose reference has
+    come back to life is reported, so the baseline can only shrink and the
+    record cannot rot into an exemption list nobody rereads.
+    """
+    findings: list[str] = []
+    directory = root / "docs" / "architecture" / "decisions"
+    if not directory.is_dir():
+        return findings
+    seen: set[tuple[str, int, str]] = set()
+    # The index is scanned with the entries: it carries references of its own,
+    # and unlike an entry it is editable, so its repair has an obvious home.
+    paths = sorted(directory.glob("D-*.md")) + [directory / "README.md"]
+    for path in paths:
+        # A directory named like an entry would raise here and take down every
+        # other check in the run; a traceback is a worse signal than a finding.
+        if not path.is_file():
+            continue
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+        ):
+            for ref, form, pinned in _entry_refs(line):
+                key = (path.name, lineno, ref)
+                seen.add(key)
+                if key in BASELINE_UNRESOLVABLE or key in UNREPAIRABLE_AFTER_LANDING:
+                    continue
+                if pinned or _entry_ref_resolves(root, directory, ref):
+                    continue
+                findings.append(
+                    f"entry-reference: docs/architecture/decisions/{path.name}:"
+                    f"{lineno} {form} '{ref}' resolves to nothing. If you moved "
+                    f"its target, repoint it here in the same change — unless "
+                    f"repointing would leave this sentence untrue of the "
+                    f"target at its new home, in which case record it in "
+                    f"UNREPAIRABLE_AFTER_LANDING with a reason. Do not add a "
+                    f"pin to a landed entry. The bound is in "
+                    f"docs/architecture/decisions/README.md"
+                )
+    findings.extend(_check_recorded_rows(root, directory, seen))
+    return findings
+
+
+def _check_recorded_rows(root: Path, directory: Path, seen) -> list[str]:
+    """A recorded row must still name a real, still-dead reference, and a row
+    in the growable set must say why. Otherwise the record rots: a stale row
+    silently exempts nothing, and an unexplained one is the exemption list the
+    baseline exists not to be."""
+    findings: list[str] = []
+    for label, rows in (
+        ("BASELINE_UNRESOLVABLE", BASELINE_UNRESOLVABLE),
+        ("UNREPAIRABLE_AFTER_LANDING", UNREPAIRABLE_AFTER_LANDING),
+    ):
+        for key, reason in sorted(rows.items()):
+            name, lineno, ref = key
+            if not str(reason).strip():
+                findings.append(
+                    f"entry-reference: {label} row {name}:{lineno} '{ref}' has "
+                    f"no reason — every recorded reference states why it stands"
+                )
+            # A row naming an entry this tree does not contain is not stale, it
+            # is inapplicable: the same module lints partial trees and fixtures.
+            if not (directory / name).is_file():
+                continue
+            if key not in seen:
+                findings.append(
+                    f"entry-reference: {label} row {name}:{lineno} '{ref}' "
+                    f"matches no reference in the tree — remove the stale row"
+                )
+            elif _entry_ref_resolves(root, directory, ref):
+                findings.append(
+                    f"entry-reference: {label} row {name}:{lineno} '{ref}' "
+                    f"resolves again — remove the row; this record only shrinks"
+                )
+    return findings
+
+
+def _entry_refs(line: str):
+    """Repo references a decision entry makes, each with whether it is pinned.
+
+    A bare filename is not a reference -- it names a thing in prose and claims
+    nothing about where it lives, so it has nothing to repoint. A slash-joined
+    token is a reference only if its shape says so (REPO_ROOTS / REF_EXTENSIONS):
+    `A/B` is this repo's own name for its spike pattern, and a guard that reds
+    it blocks lawful work while teaching authors to write references less
+    precisely.
+
+    The pin is scoped to the reference it follows, never to the line. Entries
+    are written one paragraph per line, so a line-wide pin exempted every
+    reference in a paragraph -- and one pin in the tree already sat on a line
+    carrying three.
+    """
+    found = []
+    for match in ENTRY_LINK.finditer(line):
+        target = match.group(1).split("#")[0].strip()
+        if target and not target.startswith(("http://", "https://", "mailto:")):
+            found.append((match.start(), match.end(), target, "link"))
+    for match in ENTRY_PATH.finditer(line):
+        # A `:N` line anchor is not part of the path it anchors into.
+        ref = match.group(1).split(":")[0]
+        if _is_reference_shaped(ref):
+            found.append((match.start(), match.end(), ref, "path"))
+    found.sort()
+    for index, (_, end, ref, form) in enumerate(found):
+        # A pin covers the reference it follows and stops where the next one
+        # begins, so ``a` at <sha>; also `b`` pins a and leaves b exposed. The
+        # next match's own start is what bounds it: reconstructing that start
+        # by subtracting the reference's length is exact only when the match
+        # text is the reference, and for `[display](target)` it is not -- the
+        # window then swallowed the following link's anchor text, so a sha
+        # quoted in that anchor pinned the reference before it.
+        limit = found[index + 1][0] if index + 1 < len(found) else len(line)
+        window = line[end:max(end, limit)]
+        yield ref, form, PINNED_REF.search(window) is not None
+
+
+def _is_reference_shaped(ref: str) -> bool:
+    """Shape, not content: a known extension, or a first segment that is a real
+    root of this repository."""
+    first = ref.replace("\\", "/").split("/")[0]
+    if first in REPO_ROOTS:
+        return True
+    return any(ref.endswith(ext) for ext in REF_EXTENSIONS)
+
+
+def _entry_ref_resolves(root: Path, directory: Path, ref: str) -> bool:
+    """Resolved from the repo root, from the entry's own directory, or under
+    `skills/` -- entries write the skills-relative shorthand routinely, and a
+    guard that failed it would be reporting a reference a reader follows fine.
+
+    A reference that escapes the repository never resolves, whatever sits
+    beside the checkout: a sibling worktree exists locally and not in CI, and a
+    guard whose answer depends on that is a guard with two answers.
+    """
+    ref = ref.replace("\\", "/")
+    if not ref or ref.startswith("/"):
+        return False
+    for base in (root, directory, root / "skills"):
+        candidate = base / ref
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if not _within(resolved, root):
+            continue
+        if candidate.exists():
+            return True
+    return False
+
+
+def _within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
@@ -492,6 +780,7 @@ def run(root: Path) -> list[str]:
         + check_doctrine_callout(root)
         + check_review_index(root)
         + check_decision_index(root)
+        + check_entry_references(root)
     )
 
 

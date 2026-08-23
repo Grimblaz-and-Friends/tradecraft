@@ -32,6 +32,8 @@ When one idea needs both a shipped standard and a local application, the skill c
 - **State the rule with its reason; link the evidence.** The reason is one short clause that lets a reader apply the rule well and notice when it stops applying. The evidence — counts, incidents, history — goes behind a link. Prose that litigates its own justification taxes every future reader to persuade one who is not there.
 - **Do not armor against misreadings.** A clause defending against a reader who would not actually err is pure cost. If a competent reader genuinely could go wrong, restate the sentence more plainly rather than appending a qualifier to it.
 - **Deletion is a first-class edit.** Propose removals with the same energy as additions. Net growth of a governing document needs a justification the way a new rule does — the default direction of revision is shorter.
+- **Pin a frozen document's evidence to the commit it shipped at.** A document that cannot be revised freezes while the tree keeps moving, so an unpinned quotation goes stale silently and a later reader cannot tell whether the citation was wrong or the file changed under it. Leave one unpinned only where your practice repairs references whose targets move; nothing repairs them by default.
+- **A frozen document carrying counts carries the query that produced them.** It freezes with its arithmetic inside, so the query is the difference between a figure a later session can check and one it can only inherit.
 - **Cells are self-contained.** A skill carries whatever mix of prose, scripts, and tests its job needs, depends on no other skill, and keeps its depth in its own `references/`. Anything else couples cells and breaks the one-loading story.
 
 ## Revising governing prose
