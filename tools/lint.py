@@ -220,10 +220,16 @@ STAFFING_FIELDS = ("model", "runtime")
 
 # Forward-only, enforced rather than stated: an optional field can never catch
 # its own omission, and a record that silently fails to carry what it promises
-# is the defect this closes. The cutoff is the day AFTER this landed, not the
-# day of -- seven rows already carry the landing date, and they are exhaust
-# that may not be edited to add fields retroactively.
-REVIEW_FIELDS_REQUIRED_FROM = "2026-08-24"
+# is the defect this closes.
+#
+# Grandfathered by POSITION, not by date. A date cutoff was written first and an
+# experience session found the hole in it within eight tool calls: the session's
+# hand reached for "today" before re-reading its brief, and a row dated one day
+# early takes both new fields as optional, passes lint in silence, and lands
+# pre-schema in a file nobody may edit. It got it right by copying its brief,
+# not by understanding. Position cannot be missed by a typo -- the rows that
+# existed when this landed are exempt, everything appended after is not.
+REVIEW_ROWS_GRANDFATHERED = 20
 
 
 def _read_text(path: Path) -> str | None:
@@ -425,6 +431,9 @@ def check_review_index(root: Path) -> list[str]:
     index = root / "docs" / "reviews.jsonl"
     if not index.is_file():
         return findings
+    # Rows are counted, not lines: a blank line would otherwise shift every
+    # row's position and with it which rows the schema obliges.
+    row_index = -1
     for lineno, line in enumerate(
         index.read_text(encoding="utf-8", errors="replace").splitlines(), 1
     ):
@@ -439,7 +448,8 @@ def check_review_index(root: Path) -> list[str]:
             findings.append(f"{where} is not valid JSON ({type(exc).__name__}: {exc})")
             continue
         try:
-            _check_review_row(row, where, findings)
+            row_index += 1
+            _check_review_row(row, where, findings, row_index)
         except Exception as exc:  # noqa: BLE001 - report, never crash the lint
             findings.append(
                 f"{where} could not be fully validated ({type(exc).__name__}: {exc})"
@@ -447,7 +457,7 @@ def check_review_index(root: Path) -> list[str]:
     return findings
 
 
-def _check_review_row(row, where: str, findings: list) -> None:
+def _check_review_row(row, where: str, findings: list, row_index: int = 0) -> None:
     if _not_a_mapping(row, where, findings):
         return
     missing = REVIEW_FIELDS - set(row)
@@ -474,10 +484,10 @@ def _check_review_row(row, where: str, findings: list) -> None:
         )
     if "seats" in row:
         _check_seats(row["seats"], where, findings)
-    _check_dispositions_and_staffing(row, where, findings)
+    _check_dispositions_and_staffing(row, row_index, where, findings)
 
 
-def _check_dispositions_and_staffing(row, where: str, findings: list) -> None:
+def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: list) -> None:
     """What came of the findings, and who produced them.
 
     Counts alone answer how many findings a review raised and nothing about
@@ -492,7 +502,7 @@ def _check_dispositions_and_staffing(row, where: str, findings: list) -> None:
     reached its vehicle, which needs the vehicle named, and it detects no
     recurring defect class.
     """
-    required = str(row.get("date", "")) >= REVIEW_FIELDS_REQUIRED_FROM
+    required = row_index >= REVIEW_ROWS_GRANDFATHERED
     for field, checker in (
         ("dispositions", _check_disposition_counts),
         ("staffing", _check_staffing),
@@ -500,8 +510,8 @@ def _check_dispositions_and_staffing(row, where: str, findings: list) -> None:
         if field not in row:
             if required:
                 findings.append(
-                    f"{where} missing field '{field}' — rows dated "
-                    f"{REVIEW_FIELDS_REQUIRED_FROM} or later carry it"
+                    f"{where} missing field '{field}' — every row appended "
+                    f"after the first {REVIEW_ROWS_GRANDFATHERED} carries it"
                 )
             continue
         checker(row[field], where, findings)

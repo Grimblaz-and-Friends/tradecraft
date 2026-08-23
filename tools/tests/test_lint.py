@@ -960,22 +960,55 @@ def test_row_carrying_dispositions_and_staffing_is_clean(tmp_path):
     assert lint.run(tmp_path) == []
 
 
-def test_row_on_or_after_the_cutoff_must_carry_both(tmp_path):
+def test_row_appended_after_the_grandfathered_ones_must_carry_both(tmp_path, monkeypatch):
     """An optional field can never catch its own omission, and a record that
     silently fails to carry what it promises is the defect this closes."""
     make_clean_tree(tmp_path)
-    _write_index(tmp_path, _review_row(date="2026-08-24"))
+    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 1)
+    _write_index(tmp_path, _review_row(), _review_row(artifact="pr-2"))
     findings = lint.run(tmp_path)
     assert len(findings) == 2
     assert any("dispositions" in f for f in findings)
     assert any("staffing" in f for f in findings)
 
 
-def test_row_before_the_cutoff_needs_neither(tmp_path):
+def test_grandfathered_rows_need_neither(tmp_path, monkeypatch):
     """Forward-only in fact, not merely in intent: rows already written stay
-    valid untouched, including the ones dated the day this landed."""
+    valid untouched, whatever date they carry."""
     make_clean_tree(tmp_path)
-    _write_index(tmp_path, _review_row(date="2026-08-23"))
+    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 1)
+    _write_index(tmp_path, _review_row())
+    assert lint.run(tmp_path) == []
+
+
+def test_the_obligation_cannot_be_dodged_by_the_date_written(tmp_path, monkeypatch):
+    """It was gated on the row's own date first. An experience session found
+    that hole by reaching for "today" before re-reading its brief: one day
+    early and both fields go optional, silently, in a file nobody may edit.
+    Position is not typo-able."""
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 1)
+    _write_index(
+        tmp_path, _review_row(), _review_row(artifact="pr-2", date="1999-01-01")
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 2
+    assert all("missing field" in f for f in findings)
+
+
+def test_blank_lines_do_not_shift_a_row_position(tmp_path, monkeypatch):
+    """Rows are counted, not lines — otherwise a stray newline moves which
+    rows the schema obliges."""
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 1)
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    blank = "\n\n\n"
+    (docs / "reviews.jsonl").write_text(
+        json.dumps(_review_row()) + blank
+        + json.dumps(_row_with_extras(artifact="pr-2")) + "\n",
+        encoding="utf-8",
+    )
     assert lint.run(tmp_path) == []
 
 

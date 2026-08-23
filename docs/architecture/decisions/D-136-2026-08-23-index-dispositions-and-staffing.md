@@ -18,9 +18,9 @@ The census, and how to re-derive it: `python -c "import json; rows=[json.loads(l
 
 **Staffing is per review, not per seat.** Every row to date ran one model on one runtime, so per-seat fields would be redundant at every row that exists; a review with genuinely mixed staffing records the mix in its report. Neither name is constrained to a vocabulary, because a fixed list would have to be amended before the first review staffed by a new runtime could be recorded at all.
 
-**Both are required from 2026-08-24 and validated whenever present.** Forward-only is enforced rather than stated: an optional field can never catch its own omission, and a record that silently fails to carry what it promises is the shape of the defect being closed.
+**Both are required of every row appended after the twenty that existed at landing, and validated whenever present.** Forward-only is enforced rather than stated: an optional field can never catch its own omission, and a record that silently fails to carry what it promises is the shape of the defect being closed.
 
-**The cutoff is the day after this landed, not the day of.** The affirmed artifact said "on or after this lands"; seven rows already carry the landing date, and the change's own boundary forbids editing a landed row to add fields. Requiring the fields from the landing day would have demanded exactly the edits the change refuses, so the cutoff moved by one day and the reason sits at the constant.
+**Grandfathered by position, not by date — and the first version got this wrong.** The affirmed artifact said "on or after this lands", which was built as a date cutoff of 2026-08-24, the day after landing, because seven rows already carried the landing date and the boundary forbids editing a landed row. An experience session then wrote this change's own first row and found the hole in eight tool calls: its hand reached for "today" before it re-read its brief, and a row dated one day early takes both fields as optional, passes lint in silence, and lands pre-schema in a file nobody may edit. Its own words — *"I got it right by copying the brief, not by understanding."* A schema obligation gated on a date the author types is one the author can opt out of with a typo. Position cannot be mistyped.
 
 ## What this does not close
 
@@ -31,13 +31,24 @@ The census, and how to re-derive it: `python -c "import json; rows=[json.loads(l
 - **Routing follow-through — not closed.** A row saying `routed: 2` does not verify either finding reached a vehicle. That needs the vehicle named, which is per-finding detail this deliberately excludes. **#126's own recommendation claims to close this question; it does not**, and that overclaim is corrected here rather than left standing in the issue that motivated the change.
 - **Recurrence — not closed, and nothing was built for it.** #126 concedes a detector is likely armor until an incident says otherwise, and this change agrees.
 
+## What the experience session changed
+
+The session note is on the pull request. Three of its findings landed in this change rather than being answered:
+
+- **The date cutoff became a position cutoff**, above.
+- **The disposition keys are spelled out in the skill.** The session was handed "declined on price", the skill's verb is *price out*, and the key is `priced_out` — underscored, while every seat name in the same row is hyphenated and has a regex behind it while the disposition keys have none. It guessed right and reported that it would have guessed `declined`.
+- **The skill now says the counts do not reconcile against the per-seat columns.** The session assumed `dispositions` partitions the merged findings, found the totals disagreed, went looking for a guard to tell it which side was wrong, and found instead the comment explaining why the seat-count invariants are deliberately absent. Its conclusion is the finding: *"the row is now permanent and I cannot tell you if it's arithmetically true."* No cross-check was added, because none is sound — the terminal docket carries entries no merged finding carries, and a dismissal was never sustained, so the two halves count different populations by construction. What was missing was saying so.
+
+A fourth is recorded and not fixed: **the row cannot express uneven staffing**, which `:49` actively recommends — concentrating the strongest tier where open-ended perception lives. Per-review staffing is what the owner affirmed, and every row to date is uniform, so the row now states the limitation rather than growing a per-seat shape the affirmed design excluded. If a mixed-tier panel ever writes a row, this is where it reopens.
+
 ## Rejected
 
 - **Leaving the index and putting the loop in the reports** (#126's option B). Reports already carry dispositions, so the loop would stay closed by human memory — which is the currently-failing instrument: the word-count habit took the owner personally spotting it across three changes.
 - **Periodic distillation** (#126's option C) — a session periodically reads the reports and appends a dated summary row. This is the closest shape on the board to the bookkeeping tripwire, and "periodic" work is the kind that silently stops.
 - **Per-seat staffing**, which the issue's own recommendation proposed. Redundant at every row that exists, and it multiplies the write cost of the field by the panel width for evidence no row yet carries.
 - **A vocabulary for model and runtime names.** It would make the first Codex-staffed review unrecordable until the list was amended — the record blocking the evidence it exists to collect.
-- **Editing landed rows to backfill either field.** Barred by the doctrine's records rule, and the reason the cutoff moved a day rather than the rows moving at all.
+- **Editing landed rows to backfill either field.** Barred by the doctrine's records rule, and the reason the obligation starts after the rows already written rather than reaching back over them.
+- **A cross-check that the dispositions reconcile with the seat counts.** It looks right and is wrong, the same way the seat counts' own absent invariants are: the terminal docket carries entries no merged finding carries, and a dismissal was never sustained. Two experience sessions each reached for that arithmetic and neither could complete it, which is why the skill now says the two halves count different populations rather than the lint pretending they do not.
 
 ## Evidence
 
