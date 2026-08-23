@@ -26,7 +26,7 @@ Two clauses in `skills/adversarial-review/SKILL.md`, in different paragraphs, sh
 
 **Two restatements, no new rule, no new mechanism, no new stage.**
 
-1. **`:65`'s sign becomes a component property again, by grammar.** *"the cost of implementing it, in two terms: what the fix touches (its regression surface), and what it obliges later sessions to do, **a term that goes negative** where the remedy removes a rule or guard."* One sentence instead of two; *in two terms* makes both components part of the price, weighed at `:67`(b) and never summed — `:65` ends *"Argued, never scored"*; the sign is an appositive on the second term.
+1. **`:65`'s sign becomes a component property again, by grammar.** *"the cost of implementing it, in two terms: what the fix touches (its regression surface), and what it obliges later sessions to do, **a term that goes negative** where the remedy removes a rule or guard."* One sentence instead of two; *in two terms* makes both components part of the price, weighed at `:67`(b) and never summed — `:65` says *"Argued, never scored"*; the sign is an appositive on the second term.
 2. **`:14` defines the term it has always used**, and names which field its implementation branch fills. *"Every review begins from the artifact's **purpose statement** — its stated purpose, audience, and success criteria; for an implementation, its success criteria are the affirmed acceptance criteria on its issue."* All three uses resolve from it.
 3. **Both lines cite this entry**; `:65` carries `[D-107] [D-113]`, on D-97's precedent that a lone citation routing to a frozen entry whose warnings concern deleted text strands the reader.
 
