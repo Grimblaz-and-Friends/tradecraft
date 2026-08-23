@@ -10,7 +10,7 @@ Tradecraft is a house engineering practice for frontier models: the standards, j
 
 **Every surface the owner enters opens with a plain brief** — a few sentences of plain English, set off as a blockquote; the supporting material follows underneath. Its form and bar live in `skills/engagement`. The initial set: the pre-implementation artifact, any decision put to him, the review's final report as delivered to him, and handing work back after he has been away.
 
-**A decision is the owner's when it is a genuine fork**: the live options differ in something he would care about and the wrong pick is not cheaply reversible. Everything else the session decides and reports afterward with its reason — asking where no fork exists is a fabricated gate, a defect rather than politeness. What is his arrives argued: the live options, each with pros and cons, and a recommendation. Calibration and the report's shape live in `skills/engagement`.
+**A decision is the owner's when it is a genuine fork** [D-127]: what turns on the pick is something he would care about, and undoing a wrong pick costs him — habit, what others already saw — not merely an edit. Everything else the session decides and reports afterward with its reason — asking where no fork exists is a fabricated gate, a defect rather than politeness. What is his arrives argued: the live options, each with pros and cons, and a recommendation. Calibration and the report's shape live in `skills/engagement`.
 
 ## The two ceremony moments
 

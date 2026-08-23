@@ -1,11 +1,11 @@
 ---
 name: engagement
-description: How a session and the owner work together — the plain brief that opens every surface he enters, and the pre-implementation artifact that settles what a change is for before it is built. Use when writing a pre-implementation artifact, when putting a decision to the owner, when delivering a review's outcome to him, or when handing work back after he has been away; not for writing skills or governing documents, and not for how a review is run.
+description: How a session and the owner work together — which decisions are his and which the session's, the plain brief that opens every surface he enters, and the pre-implementation artifact that settles what a change is for before it is built. Use when deciding whether a call is the owner's or your own, when putting a decision to him, when reporting a call you made, when writing a pre-implementation artifact, when delivering a review's outcome to him, or when handing work back after he has been away; not for writing skills or governing documents, and not for how a review is run.
 ---
 
 # engagement
 
-**Purpose:** keep the surfaces the owner enters to the decisions that are genuinely his, and make each one cheap for him to act on. **Audience:** any session at a point where the owner's attention is required. **Success:** the decisions that reach him are the ones only he can make; he can read the top of any such surface once and know what it is, why it matters, and what he is being asked; and the artifact a session leaves behind states what the work is for without him in the room.
+**Purpose:** keep the surfaces the owner enters to the decisions that are genuinely his, and make each one cheap for him to act on. **Audience:** any session at a point where the owner's attention is required. **Success:** the decisions that reach him are the ones genuinely his; he can read the top of any such surface once and know what it is, why it matters, and what he is being asked; and the artifact a session leaves behind states what the work is for without him in the room.
 
 ## The plain brief
 
@@ -25,16 +25,16 @@ Two surfaces are this skill's own: the pre-implementation artifact below, and an
 
 ## A decision put to the owner
 
-**A decision is his when it is a genuine fork**: the live options differ in something he would care about — what gets built, what it costs, what others see, what he lives with day to day — and the wrong pick is not cheaply reversible. Both halves are required, and everything else is the session's to decide.
+**A decision is his when it is a genuine fork**: what turns on the pick is something he would care about — what gets built, what it costs, what others see, what he lives with day to day — and undoing a wrong pick costs him something an edit does not undo: habit, muscle memory, what others already saw. Both halves are required — one live option can satisfy the first — and everything else is the session's to decide.
 
-**Asking where no fork exists is a defect rather than politeness.** The tell is that the session already holds a clear recommendation with no live alternative beside it; that is a report, and putting it as a question spends the attention affirmation bought.
+**Asking where no fork exists is a defect rather than politeness.** The tell is that nothing turns on his answer — the session would proceed the same way whatever he said; that is a report, and putting it as a question spends his attention for nothing. One live option is not the tell: a real search that narrowed to one still turns on his answer.
 
-- **His:** affirm, amend, or reject at convergence; merging; anything outward-facing or destructive; a name, or anything else he lives with day to day; spending materially beyond what the task implied.
+- **His:** affirm, amend, or reject what a change is for before it is built; merging; anything outward-facing or destructive; a name, or anything else he lives with day to day; spending materially beyond what the task implied.
 - **The session's:** implementation approach, file layout, tool choice, the order work is done in, and any reversible call inside an affirmed boundary.
 
 **What is his arrives argued, beneath the plain brief:** the live options, each with its pros and cons, then the recommendation among them. Where exactly one option is live, say so and say what was rejected and why — the reasoning is what makes that case informative, and a fabricated second option under-informs worse than none, because it presents a search that did not happen.
 
-**A call the session made is reported with its reason** where the work is already recorded — the PR body, the decision entry, or the review report — and never only in chat. The fork test is what licenses deciding; the report is what keeps deciding from becoming deciding silently.
+**A call the session made is reported with its reason** where the work is already recorded — the work's issue, the PR body, the decision entry, or the review report — and never only in chat. The fork test is what licenses deciding; the report is what keeps deciding from becoming deciding silently.
 
 ## The pre-implementation artifact
 
