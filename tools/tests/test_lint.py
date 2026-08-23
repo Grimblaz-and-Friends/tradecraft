@@ -941,3 +941,95 @@ def test_an_all_decimal_short_sha_is_a_pin(tmp_path):
     )
     assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
     assert lint.PINNED_REF.search("at 5380976787") is None
+
+
+# --- review row: dispositions and staffing ------------------------------
+
+
+def _row_with_extras(**overrides):
+    row = _review_row(date="2026-08-24")
+    row["dispositions"] = {"fixed": 3, "routed": 1, "priced_out": 2, "dismissed": 0}
+    row["staffing"] = {"model": "Opus 5", "runtime": "Claude Code (Windows)"}
+    row.update(overrides)
+    return row
+
+
+def test_row_carrying_dispositions_and_staffing_is_clean(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_extras())
+    assert lint.run(tmp_path) == []
+
+
+def test_row_on_or_after_the_cutoff_must_carry_both(tmp_path):
+    """An optional field can never catch its own omission, and a record that
+    silently fails to carry what it promises is the defect this closes."""
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _review_row(date="2026-08-24"))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 2
+    assert any("dispositions" in f for f in findings)
+    assert any("staffing" in f for f in findings)
+
+
+def test_row_before_the_cutoff_needs_neither(tmp_path):
+    """Forward-only in fact, not merely in intent: rows already written stay
+    valid untouched, including the ones dated the day this landed."""
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _review_row(date="2026-08-23"))
+    assert lint.run(tmp_path) == []
+
+
+def test_disposition_counts_reject_bools_and_negatives(tmp_path):
+    """The bar the seat counts already meet: bool subclasses int, so True
+    would otherwise pass as a count of one."""
+    make_clean_tree(tmp_path)
+    row = _row_with_extras()
+    row["dispositions"] = {**row["dispositions"], "fixed": True, "routed": -1}
+    _write_index(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 2 and all("non-negative integer" in f for f in findings)
+
+
+def test_dispositions_missing_a_key_is_a_finding(tmp_path):
+    make_clean_tree(tmp_path)
+    row = _row_with_extras()
+    del row["dispositions"]["dismissed"]
+    _write_index(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "dismissed" in findings[0]
+
+
+def test_dispositions_reject_a_vocabulary_outside_the_terminal_stage(tmp_path):
+    """The four are the terminal stage's own. A row inventing a fifth is
+    recording something the ruling never produced."""
+    make_clean_tree(tmp_path)
+    row = _row_with_extras()
+    row["dispositions"] = {**row["dispositions"], "dropped": 1}
+    _write_index(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "unknown key" in findings[0]
+
+
+def test_staffing_requires_both_names_and_constrains_neither(tmp_path):
+    """No vocabulary: a fixed list would need amending before the first review
+    staffed by a new runtime could be recorded at all."""
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_extras(
+        staffing={"model": "some-future-model", "runtime": "some-future-runtime"}
+    ))
+    assert lint.run(tmp_path) == []
+    _write_index(tmp_path, _row_with_extras(staffing={"model": "Opus 5", "runtime": "  "}))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "runtime" in findings[0]
+
+
+def test_every_row_already_in_the_repo_index_stays_valid(tmp_path):
+    """Acceptance criterion 2, checked against the real file rather than a
+    fixture: this change may not edit a single landed row."""
+    real = Path(__file__).resolve().parents[2] / "docs" / "reviews.jsonl"
+    rows = [json.loads(l) for l in real.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert rows, "the real index should not be empty"
+    findings = []
+    for row in rows:
+        lint._check_review_row(row, "row", findings)
+    assert findings == []

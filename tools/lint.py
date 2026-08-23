@@ -202,6 +202,29 @@ REVIEW_FIELDS = {"date", "artifact", "lane", "seats", "report"}
 REVIEW_LANES = {"panel", "routine"}
 SEAT_COUNTS = ("raw", "merged", "sustained", "high")
 
+# What became of the findings, in the terminal stage's own vocabulary: clause
+# (a) dismisses, clause (b) sustains and fixes, routes, or prices out. The row
+# copies counts the ruling already produced; it does not derive them.
+#
+# `dismissed` earns its place as the only field that measures noise. Measuring
+# value while never measuring noise is how the predecessor's pipeline could
+# only ratchet heavier, and it is near-derivable from merged minus sustained
+# but not reliably -- the terminal docket also carries uncarried seat entries,
+# which is why the seat counts deliberately do not enforce merged >= sustained.
+DISPOSITIONS = ("fixed", "routed", "priced_out", "dismissed")
+
+# Per review rather than per seat: every review so far ran one model on one
+# runtime, so per-seat fields would be redundant at every row that exists. A
+# review with genuinely mixed staffing records the mix in its report.
+STAFFING_FIELDS = ("model", "runtime")
+
+# Forward-only, enforced rather than stated: an optional field can never catch
+# its own omission, and a record that silently fails to carry what it promises
+# is the defect this closes. The cutoff is the day AFTER this landed, not the
+# day of -- seven rows already carry the landing date, and they are exhaust
+# that may not be edited to add fields retroactively.
+REVIEW_FIELDS_REQUIRED_FROM = "2026-08-24"
+
 
 def _read_text(path: Path) -> str | None:
     """Return decoded text, or None for binary content (NUL in first 1KB)."""
@@ -451,6 +474,86 @@ def _check_review_row(row, where: str, findings: list) -> None:
         )
     if "seats" in row:
         _check_seats(row["seats"], where, findings)
+    _check_dispositions_and_staffing(row, where, findings)
+
+
+def _check_dispositions_and_staffing(row, where: str, findings: list) -> None:
+    """What came of the findings, and who produced them.
+
+    Counts alone answer how many findings a review raised and nothing about
+    whether they mattered -- the question three decision entries circle. And
+    the skill requires every report to record model and runtime so per-runtime
+    evidence can accumulate, which it cannot do anywhere queryable while the
+    index drops both.
+
+    Required from REVIEW_FIELDS_REQUIRED_FROM onward and validated whenever
+    present, so rows already written stay valid untouched. This closes two of
+    the four questions #126 raised: it does not verify that a routed finding
+    reached its vehicle, which needs the vehicle named, and it detects no
+    recurring defect class.
+    """
+    required = str(row.get("date", "")) >= REVIEW_FIELDS_REQUIRED_FROM
+    for field, checker in (
+        ("dispositions", _check_disposition_counts),
+        ("staffing", _check_staffing),
+    ):
+        if field not in row:
+            if required:
+                findings.append(
+                    f"{where} missing field '{field}' — rows dated "
+                    f"{REVIEW_FIELDS_REQUIRED_FROM} or later carry it"
+                )
+            continue
+        checker(row[field], where, findings)
+
+
+def _check_disposition_counts(dispositions, where: str, findings: list) -> None:
+    if not isinstance(dispositions, dict):
+        findings.append(
+            f"{where} dispositions must be a mapping of "
+            f"{', '.join(DISPOSITIONS)} to counts"
+        )
+        return
+    missing = set(DISPOSITIONS) - set(dispositions)
+    if missing:
+        findings.append(
+            f"{where} dispositions missing {', '.join(sorted(missing))}"
+        )
+    for field in DISPOSITIONS:
+        if field not in dispositions:
+            continue
+        value = dispositions[field]
+        # bool is a subclass of int and is excluded explicitly, the same bar
+        # the seat counts meet: True would otherwise pass as a count of 1.
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            findings.append(
+                f"{where} dispositions {field} '{value}' must be a "
+                f"non-negative integer"
+            )
+    unknown = set(dispositions) - set(DISPOSITIONS)
+    if unknown:
+        findings.append(
+            f"{where} dispositions carries unknown key(s) "
+            f"{', '.join(sorted(unknown))} — the vocabulary is the terminal "
+            f"stage's own: {', '.join(DISPOSITIONS)}"
+        )
+
+
+def _check_staffing(staffing, where: str, findings: list) -> None:
+    if not isinstance(staffing, dict):
+        findings.append(
+            f"{where} staffing must be a mapping of "
+            f"{', '.join(STAFFING_FIELDS)} to names"
+        )
+        return
+    for field in STAFFING_FIELDS:
+        value = staffing.get(field)
+        if not isinstance(value, str) or not value.strip():
+            findings.append(
+                f"{where} staffing {field} must be a non-empty string"
+            )
+    # Deliberately no vocabulary: a fixed list would have to be amended before
+    # the first review staffed by a new runtime could be recorded at all.
 
 
 def _check_seats(seats, where: str, findings: list) -> None:
