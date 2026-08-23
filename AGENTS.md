@@ -10,6 +10,8 @@ Tradecraft is a house engineering practice for frontier models: the standards, j
 
 **Every surface the owner enters opens with a plain brief** — a few sentences of plain English, set off as a blockquote; the supporting material follows underneath. Its form and bar live in `skills/engagement`. The initial set: the pre-implementation artifact, any decision put to him, the review's final report as delivered to him, and handing work back after he has been away.
 
+**A decision is the owner's when it is a genuine fork**: the live options differ in something he would care about and the wrong pick is not cheaply reversible. Everything else the session decides and reports afterward with its reason — asking where no fork exists is a fabricated gate, a defect rather than politeness. What is his arrives argued: the live options, each with pros and cons, and a recommendation. Calibration and the report's shape live in `skills/engagement`.
+
 ## The two ceremony moments
 
 Process weight concentrates at exactly two moments; everything between them is model judgment plus the standards carried in the skills.
@@ -25,7 +27,7 @@ Branch first (`main` refuses direct pushes) → build → `python tools/lint.py`
 
 Every reviewable artifact states its purpose, audience, and success criteria — for an implementation, the issue artifact's acceptance criteria are the success definition. The review judges against that statement; the charter, roster, and evidence standards live in `skills/adversarial-review`. The review report states what it judged against, and every review appends one row to `docs/reviews.jsonl`.
 
-**Findings: fix now, or drop with a one-line reason in the review report** — outside a review, the drop is recorded on the work's issue or PR; naming a finding in conversation is not a disposition. Filing an issue instead requires that the remedy belongs neither in this change nor in a guard, and that it would genuinely get picked up. A decision only the owner can make is put to the owner argued — the live options, each with pros and cons, and a recommendation.
+**Findings: fix now, or drop with a one-line reason in the review report** — outside a review, the drop is recorded on the work's issue or PR; naming a finding in conversation is not a disposition. Filing an issue instead requires that the remedy belongs neither in this change nor in a guard, and that it would genuinely get picked up.
 
 ## Content routing
 
