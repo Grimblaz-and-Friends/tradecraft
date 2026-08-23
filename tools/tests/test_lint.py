@@ -653,3 +653,81 @@ def test_decision_index_absent_is_clean(tmp_path):
     """
     _decisions(tmp_path, ["D-1-2026-01-01-a.md"], None)
     assert lint.check_decision_index(tmp_path) == []
+
+
+# --- entry references ------------------------------------------------------
+
+def _write_entry(root: Path, name: str, body: str) -> None:
+    """A decision entry plus the index row check_decision_index requires, so
+    these tests exercise the reference guard rather than the index one."""
+    directory = root / "docs" / "architecture" / "decisions"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / name).write_text(body, encoding="utf-8")
+    index = directory / "README.md"
+    rows = index.read_text(encoding="utf-8") if index.is_file() else ""
+    index.write_text(f"{rows}| [D-1]({name}) | a decision |\n", encoding="utf-8")
+
+
+def test_entry_reference_that_resolves_is_clean(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md",
+        "It moved to `skills/example-skill/SKILL.md`.\n",
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_entry_reference_that_resolves_to_nothing_is_a_finding(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_entry(tmp_path, "D-1-2026-08-23-x.md", "See `skills/gone/SKILL.md` for it.\n")
+    findings = [f for f in lint.run(tmp_path) if "entry-reference" in f]
+    assert len(findings) == 1
+    assert "skills/gone/SKILL.md" in findings[0]
+    assert "D-1-2026-08-23-x.md:1" in findings[0]
+
+
+def test_entry_reference_pinned_to_a_commit_is_clean(tmp_path):
+    """A pin names the commit the reference shipped at, so no later move can
+    falsify it — the one lawful way to cite a file an entry quotes."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md",
+        "The rule as it shipped is `skills/gone/SKILL.md:30` at `65c4540`.\n",
+    )
+    assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
+
+
+def test_entry_dead_markdown_link_is_a_finding(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_entry(tmp_path, "D-1-2026-08-23-x.md", "See [evidence](../evidence.md).\n")
+    findings = [f for f in lint.run(tmp_path) if "entry-reference" in f]
+    assert len(findings) == 1 and "../evidence.md" in findings[0]
+
+
+def test_entry_reference_web_url_and_bare_filename_are_not_references(tmp_path):
+    """A bare filename names a thing in prose and claims nothing about where it
+    lives, so there is nothing to repoint; a web URL resolves for consumers."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md",
+        "`SKILL.md` retires, per [#70](https://github.com/x/y/issues/70).\n",
+    )
+    assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
+
+
+def test_entry_reference_resolves_under_skills_shorthand(tmp_path):
+    """Entries write the skills-relative shorthand routinely; a guard failing it
+    would report a reference a reader follows without trouble."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md",
+        "The table cites `example-skill/SKILL.md`.\n",
+    )
+    assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
+
+
+def test_baseline_of_unrepairable_references_may_only_shrink():
+    """A baseline entry is a dead reference nobody had to repair — the failure
+    this guard exists to prevent. Growing the set must not pass unnoticed, so
+    its size is pinned here and adding to it fails this test on purpose."""
+    assert len(lint.BASELINE_UNRESOLVABLE) == 12

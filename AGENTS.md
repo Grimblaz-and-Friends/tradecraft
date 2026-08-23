@@ -40,7 +40,7 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 
 ## Decisions
 
-`docs/architecture/decisions/D-<PR#>-YYYY-MM-DD-<slug>.md`, written in the PR that lands a choice a future session would otherwise re-derive or unknowingly undo; frozen on landing. **Decisions inform, never bind**: a prior decision is superseded by reading it, not obeyed — it is never a citation against change, because if current behavior is wrong, the original reasoning probably was too. A rule or skill line may cite its decision (`[D-N]`); follow the citation before changing what it governs, then supersede knowingly.
+`docs/architecture/decisions/D-<PR#>-YYYY-MM-DD-<slug>.md`, written in the PR that lands a choice a future session would otherwise re-derive or unknowingly undo; frozen on landing but for a moved reference. **Decisions inform, never bind**: a prior decision is superseded by reading it, not obeyed — it is never a citation against change, because if current behavior is wrong, the original reasoning probably was too. A rule or skill line may cite its decision (`[D-N]`); follow the citation before changing what it governs, then supersede knowingly.
 
 ## Records are exhaust
 
