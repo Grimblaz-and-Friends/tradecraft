@@ -1,11 +1,11 @@
 ---
 name: engagement
-description: How a session and the owner work together — the plain brief that opens every surface he enters, and the pre-implementation artifact that settles what a change is for before it is built. Use when writing a pre-implementation artifact, when putting a decision to the owner, when delivering a review's outcome to him, or when handing work back after he has been away; not for writing skills or governing documents, and not for how a review is run.
+description: How a session and the owner work together — which decisions are his and which the session's, the plain brief that opens every surface he enters, and the pre-implementation artifact that settles what a change is for before it is built. Use when deciding whether a call is the owner's or your own, when putting a decision to him, when reporting a call you made, when writing a pre-implementation artifact, when delivering a review's outcome to him, or when handing work back after he has been away; not for writing skills or governing documents, and not for how a review is run.
 ---
 
 # engagement
 
-**Purpose:** make every surface the owner enters cheap for him to act on. **Audience:** any session at a point where the owner's attention is required. **Success:** he can read the top of any such surface once and know what it is, why it matters, and what he is being asked, and the artifact a session leaves behind states what the work is for without him in the room.
+**Purpose:** keep the surfaces the owner enters to the decisions that are genuinely his, and make each one cheap for him to act on. **Audience:** any session at a point where the owner's attention is required. **Success:** the decisions that reach him are the ones genuinely his; he can read the top of any such surface once and know what it is, why it matters, and what he is being asked; and the artifact a session leaves behind states what the work is for without him in the room.
 
 ## The plain brief
 
@@ -23,6 +23,19 @@ Every surface the owner enters opens with one.
 
 Two surfaces are this skill's own: the pre-implementation artifact below, and any decision put to the owner. Two more are named in the repo's root doctrine, and no skill takes a reference to this one: a review's final report, where the brief opens the report as posted, and a message handing work back after time away. A handback also carries where the work now stands — on returning, the expensive part is not the decision but reconstructing where the work stands before the decision makes sense.
 
+## A decision put to the owner
+
+**A decision is his when it is a genuine fork**: what turns on the pick is something he would care about — what gets built, what it costs, what others see, what he lives with day to day — and undoing a wrong pick costs him something an edit does not undo: habit, muscle memory, what others already saw. Both halves are required — one live option can satisfy the first — and everything else is the session's to decide. Where root doctrine states this test, the two are one rule: a change to either is a change to both.
+
+**Asking where no fork exists is a defect rather than politeness.** The tell is that nothing turns on his answer — the session would proceed the same way whatever he said; that is a report, and putting it as a question spends his attention for nothing. One live option is not by itself the tell: a real search that narrowed to one can still turn on his answer, and the fork test above decides it either way.
+
+- **His:** affirm, amend, or reject what a change is for before it is built; merging; anything outward-facing or destructive; a name, or anything else he lives with day to day; spending materially beyond what the task implied.
+- **The session's:** implementation approach, file layout, tool choice, and the order work is done in.
+
+**What is his arrives argued, beneath the plain brief:** the live options, each with its pros and cons, then the recommendation among them. Where exactly one option is live, say so and say what was rejected and why — the reasoning is what makes that case informative, and a fabricated second option under-informs worse than none, because it presents a search that did not happen.
+
+**A call the session made is reported with its reason** where the work is already recorded — the work's issue, the PR body, the decision entry, or the review report — and never only in chat. The fork test is what licenses deciding; the report is what keeps deciding from becoming deciding silently.
+
 ## The pre-implementation artifact
 
 The artifact settles what is being built before it is built, and lands on the work's own issue. It opens with the plain brief; the rest is what a reader who was not in the conversation needs in order to build the agreed thing.
@@ -34,6 +47,6 @@ The artifact settles what is being built before it is built, and lands on the wo
 
 **Affirmed, the artifact is the handoff contract — which is also the test for whether it is finished.** From affirmation the work can leave the conversation entirely, to a fresh session or another runtime, so nothing load-bearing may be left in chat: an implementer who was not there builds the affirmed thing from the artifact alone. Handoff across runtimes rests on that property and nothing else.
 
-**What affirmation buys him is the stretch that follows.** He is next needed when the change is on a pull request whose review has run and closed, every finding dispositioned, external reviewer comments reconciled, and the report posted. Pinging before that spends the attention the handoff bought; anything that genuinely needs him before then is put to him argued, on the existing rule, rather than dripped as questions.
+**What affirmation buys him is the stretch that follows.** He is next needed when the change is on a pull request whose review has run and closed, every finding dispositioned, external reviewer comments reconciled, and the report posted. Pinging before that spends the attention the handoff bought; anything that genuinely needs him before then arrives as an argued decision in the form above, rather than dripped as questions.
 
 **Where the artifact asserts something about material no enumeration you can consult covers, or about a mechanism nobody has executed, test that premise before you assert it** — a spike, which commits nothing. Reading a design settles neither, and the condition is narrow: most artifacts assert neither. [`references/spikes.md`](references/spikes.md) has the exclusions, the bound, the abandonment route, the report, and the standing permission to explore without a premise.
