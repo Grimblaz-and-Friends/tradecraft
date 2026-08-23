@@ -726,8 +726,107 @@ def test_entry_reference_resolves_under_skills_shorthand(tmp_path):
     assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
 
 
+def test_entry_reference_below_the_first_line_is_found(tmp_path):
+    """Every reference this guard exists to catch lives deep in a long entry.
+    A scan that stopped after line 1 passed both the suite and CI, because the
+    fixtures were all one-liners and nothing runs the lint against a tree that
+    is supposed to produce findings."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md",
+        "First line, nothing here.\n\nStill nothing.\n\nSee `skills/gone/SKILL.md`.\n",
+    )
+    findings = [f for f in lint.run(tmp_path) if "entry-reference" in f]
+    assert len(findings) == 1
+    assert "D-1-2026-08-23-x.md:5" in findings[0]
+
+
+def test_entry_reference_recorded_as_unrepairable_is_silent(tmp_path, monkeypatch):
+    """The third and fourth lawful forms. Without a pin on this branch the
+    whole recorded-reference path was exercised only by the repo-level run."""
+    make_clean_tree(tmp_path)
+    _write_entry(tmp_path, "D-1-2026-08-23-x.md", "See `skills/gone/SKILL.md`.\n")
+    key = ("D-1-2026-08-23-x.md", 1, "skills/gone/SKILL.md")
+    monkeypatch.setattr(lint, "BASELINE_UNRESOLVABLE", {key: "target retired"})
+    assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
+
+
+def test_recorded_reference_without_a_reason_is_a_finding(tmp_path, monkeypatch):
+    """A row with no reason is the exemption list the baseline exists not to be."""
+    make_clean_tree(tmp_path)
+    _write_entry(tmp_path, "D-1-2026-08-23-x.md", "See `skills/gone/SKILL.md`.\n")
+    key = ("D-1-2026-08-23-x.md", 1, "skills/gone/SKILL.md")
+    monkeypatch.setattr(lint, "UNREPAIRABLE_AFTER_LANDING", {key: "  "})
+    findings = [f for f in lint.run(tmp_path) if "has no reason" in f]
+    assert len(findings) == 1
+
+
+def test_recorded_reference_that_resolves_again_is_a_finding(tmp_path, monkeypatch):
+    """This is what makes 'may only shrink' a mechanism rather than a comment:
+    a row whose reference came back to life is reported until it is removed."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md", "See `skills/example-skill/SKILL.md`.\n"
+    )
+    key = ("D-1-2026-08-23-x.md", 1, "skills/example-skill/SKILL.md")
+    monkeypatch.setattr(lint, "BASELINE_UNRESOLVABLE", {key: "was dead once"})
+    findings = [f for f in lint.run(tmp_path) if "resolves again" in f]
+    assert len(findings) == 1
+
+
+def test_entry_reference_pin_is_scoped_to_its_own_reference(tmp_path):
+    """A pin covers the reference it follows and no other. Computed per line, a
+    single pin exempted a whole paragraph — and one line in the real log
+    already carried a pin alongside three references."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md",
+        "Shipped as `skills/gone/SKILL.md` at `65c4540`; see `skills/other/SKILL.md`.\n",
+    )
+    findings = [f for f in lint.run(tmp_path) if "entry-reference" in f]
+    assert len(findings) == 1
+    assert "skills/other/SKILL.md" in findings[0]
+
+
+def test_entry_reference_ordinary_prose_is_not_a_path(tmp_path):
+    """`A/B` is this repo's own name for its spike pattern. A guard that reds it
+    blocks lawful work and teaches authors to write references less precisely,
+    which degrades the entries the guard exists to protect."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md",
+        "A cold-seat `A/B` run, `CI/CD` green, `2/3` seats agreed, `n/a`.\n",
+    )
+    assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
+
+
+def test_entry_reference_directory_named_like_an_entry_does_not_crash(tmp_path):
+    """A traceback is a worse signal than a finding, and it took the other six
+    checks down with it."""
+    make_clean_tree(tmp_path)
+    _write_entry(tmp_path, "D-1-2026-08-23-x.md", "Nothing here.\n")
+    (tmp_path / "docs" / "architecture" / "decisions" / "D-2-2026-08-23-y.md").mkdir()
+    lint.run(tmp_path)  # must not raise
+
+
 def test_baseline_of_unrepairable_references_may_only_shrink():
-    """A baseline entry is a dead reference nobody had to repair — the failure
-    this guard exists to prevent. Growing the set must not pass unnoticed, so
-    its size is pinned here and adding to it fails this test on purpose."""
-    assert len(lint.BASELINE_UNRESOLVABLE) == 12
+    """A baseline row is a dead reference nobody had to repair — the failure
+    this guard exists to make impossible. Membership is pinned, not size: a
+    same-size swap that retired one row and admitted a fresh dead reference
+    passed a length assertion silently."""
+    assert set(lint.BASELINE_UNRESOLVABLE) == {
+        ("D-102-2026-08-21-merged-list-is-an-index.md", 50, "skills/authoring/references/spikes.md"),
+        ("D-104-2026-08-22-engagement-cell.md", 36, "engagement/references/spikes.md"),
+        ("D-119-2026-08-23-cost-estimate-outside-the-artifact.md", 19, "skills/engagement/references/spikes.md"),
+        ("D-132-2026-08-23-spikes-graduate.md", 19, "engagement/references/spikes.md"),
+        ("D-53-2026-08-18-log-and-statute.md", 15, "docs/architecture/constitution.md"),
+        ("D-53-2026-08-18-log-and-statute.md", 64, "tools/check_constitution.py"),
+        ("D-53-2026-08-18-log-and-statute.md", 64, "tools/tests/test_check_constitution.py"),
+        ("D-53-2026-08-18-log-and-statute.md", 75, "docs/architecture/evidence.md"),
+        ("D-69-2026-08-18-trial-instrument-and-exception.md", 19, "../evidence.md"),
+        ("D-69-2026-08-18-trial-instrument-and-exception.md", 94, "../evidence.md"),
+        ("D-80-2026-08-19-spikes.md", 15, "skills/authoring/references/spikes.md"),
+        ("D-90-2026-08-20-dispatch-contract.md", 25, "Documents/Design/review-dispatch-overhead-measurement.md"),
+        ("D-99-2026-08-21-dispatch-prompt-caching.md", 37, ".claude/agents"),
+    }
+    assert all(str(r).strip() for r in lint.BASELINE_UNRESOLVABLE.values())
