@@ -453,6 +453,37 @@ def check_doctrine_callout(root: Path) -> list[str]:
     return findings
 
 
+def check_decision_index(root: Path) -> list[str]:
+    """Every decision entry has a row in the log's index, and every row a file.
+
+    The row is part of landing, written once in the PR that lands the entry and
+    never maintained after. Without it the entry is unreachable: the shipped
+    rule carries at most a bare `[D-N]` marker, so the index is the only route
+    a later session has from a decision's number to its reasoning.
+    """
+    findings: list[str] = []
+    directory = root / "docs" / "architecture" / "decisions"
+    index = directory / "README.md"
+    if not index.is_file():
+        return findings
+    entries = {path.name for path in directory.glob("D-*.md")}
+    listed = set(re.findall(r"^\| \[D-[^\]]+\]\(([^)]+)\)", index.read_text(
+        encoding="utf-8", errors="replace"
+    ), re.MULTILINE))
+    for name in sorted(entries - listed):
+        findings.append(
+            f"decision-index: {name} has no row in "
+            f"docs/architecture/decisions/README.md \u2014 the entry is unreachable "
+            f"from its number"
+        )
+    for name in sorted(listed - entries):
+        findings.append(
+            f"decision-index: docs/architecture/decisions/README.md links {name}, "
+            f"which does not exist"
+        )
+    return findings
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
@@ -460,6 +491,7 @@ def run(root: Path) -> list[str]:
         + check_doctrine(root)
         + check_doctrine_callout(root)
         + check_review_index(root)
+        + check_decision_index(root)
     )
 
 
