@@ -600,3 +600,56 @@ def test_sideways_dep_ignores_suffix_match_inside_a_longer_relative_token(tmp_pa
         "See assets/../beta-skill/SKILL.md.\n", encoding="utf-8"
     )
     assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == []
+
+
+def _decisions(tmp_path, entries, rows):
+    """Build a decision log with `entries` files and `rows` index rows."""
+    directory = tmp_path / "docs" / "architecture" / "decisions"
+    directory.mkdir(parents=True)
+    for name in entries:
+        (directory / name).write_text("# entry\n", encoding="utf-8")
+    if rows is not None:
+        body = "| Entry | Decision |\n| --- | --- |\n" + "".join(
+            f"| [{label}]({target}) | why |\n" for label, target in rows
+        )
+        (directory / "README.md").write_text(body, encoding="utf-8")
+    return directory
+
+
+def test_decision_index_clean_tree_is_silent(tmp_path):
+    _decisions(
+        tmp_path,
+        ["D-1-2026-01-01-a.md"],
+        [("D-1", "D-1-2026-01-01-a.md")],
+    )
+    assert lint.check_decision_index(tmp_path) == []
+
+
+def test_decision_index_flags_entry_with_no_row(tmp_path):
+    _decisions(tmp_path, ["D-1-2026-01-01-a.md", "D-2-2026-01-02-b.md"], [("D-1", "D-1-2026-01-01-a.md")])
+    findings = lint.check_decision_index(tmp_path)
+    assert len(findings) == 1
+    assert "D-2-2026-01-02-b.md" in findings[0]
+    assert "no row" in findings[0]
+
+
+def test_decision_index_flags_row_with_no_entry(tmp_path):
+    _decisions(
+        tmp_path,
+        ["D-1-2026-01-01-a.md"],
+        [("D-1", "D-1-2026-01-01-a.md"), ("D-9", "D-9-2026-01-09-ghost.md")],
+    )
+    findings = lint.check_decision_index(tmp_path)
+    assert len(findings) == 1
+    assert "D-9-2026-01-09-ghost.md" in findings[0]
+    assert "does not exist" in findings[0]
+
+
+def test_decision_index_absent_is_clean(tmp_path):
+    """No index is the same silence check_review_index keeps for its own record.
+
+    Recorded as intended rather than left to be rediscovered: the defect this
+    guard closes is a missing *row* written by a landing PR, not a deleted log.
+    """
+    _decisions(tmp_path, ["D-1-2026-01-01-a.md"], None)
+    assert lint.check_decision_index(tmp_path) == []
