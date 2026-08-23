@@ -25,15 +25,15 @@ Two surfaces are this skill's own: the pre-implementation artifact below, and an
 
 ## The pre-implementation artifact
 
-The artifact settles what is being built before it is built, on the work's own issue. It opens with the plain brief; the rest is what a reader who was not in the conversation needs in order to build the agreed thing.
+The artifact settles what is being built before it is built, and lands on the work's own issue. It opens with the plain brief; the rest is what a reader who was not in the conversation needs in order to build the agreed thing.
 
-**It is settled in conversation, then posted.** What gets built is the owner's call, so the artifact is drafted and revised with him in chat; the issue comment is the settled version — the record of what was agreed, never where he first reads it.
+**It is settled in conversation, then posted.** What gets built is the owner's call, so the artifact is drafted and revised with him in chat.
 
 - **Acceptance criteria** are the change's success definition, and its review judges against them. Write each one so a reader can tell from the diff whether it is met — a criterion nobody can check is a wish. They state what must be true of the result, not what it may cost: a cost estimate is a fact and belongs **outside** the numbered criteria — in the artifact's own prose, the PR body, the decision entry, or the report. Written into a criterion it becomes what every stage of the review judges against.
 - **A boundary statement** — the explicit list of what the work is *not* doing and why — records the scope agreed, so a later scope question is answerable from the artifact rather than from memory. It does not forbid the work covering more; the diff is what records what was actually done.
 
 **Affirmed, the artifact is the handoff contract — which is also the test for whether it is finished.** From affirmation the work can leave the conversation entirely, to a fresh session or another runtime, so nothing load-bearing may be left in chat: an implementer who was not there builds the affirmed thing from the artifact alone. Handoff across runtimes rests on that property and nothing else.
 
-**What affirmation buys him is the stretch that follows.** He is next needed when the change is on a pull request whose review has run and closed, every finding dispositioned and the report posted, and external reviewer comments reconciled. Pinging before that spends the attention the handoff bought; a decision that genuinely cannot wait is put to him argued, never dripped as a question.
+**What affirmation buys him is the stretch that follows.** He is next needed when the change is on a pull request whose review has run and closed, every finding dispositioned, external reviewer comments reconciled, and the report posted. Pinging before that spends the attention the handoff bought; anything that genuinely needs him before then is put to him argued, on the existing rule, rather than dripped as questions.
 
 **Where the artifact asserts something about material no enumeration you can consult covers, or about a mechanism nobody has executed, test that premise before you assert it** — a spike, which commits nothing. Reading a design settles neither, and the condition is narrow: most artifacts assert neither. [`references/spikes.md`](references/spikes.md) has the exclusions, the bound, the abandonment route, the report, and the standing permission to explore without a premise.
