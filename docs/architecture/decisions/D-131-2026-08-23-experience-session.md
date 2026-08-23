@@ -72,4 +72,4 @@ This change's own new clause applies to this change, so a session ran on the bui
 
 ## What this does not settle
 
-Whether real-use evidence outranks panel hypothesis inside a review, and how a note reaches the panel — [#125](https://github.com/Grimblaz-and-Friends/tradecraft/issues/125). Whether the spike trigger broadens — [#124](https://github.com/Grimblaz-and-Friends/tradecraft/issues/124), whose graduation condition D-104 already recorded.
+Whether real-use evidence outranks panel hypothesis inside a review, and how a note reaches the panel — [#125](https://github.com/Grimblaz-and-Friends/tradecraft/issues/125). Nothing about the spike's trigger: [#124](https://github.com/Grimblaz-and-Friends/tradecraft/issues/124) settled that in parallel and landed as [D-132](D-132-2026-08-23-spikes-graduate.md) while this change was under review, which is why this cell's not-for clause routes on any load-bearing premise rather than on a pre-decision one.
