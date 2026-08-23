@@ -21,4 +21,4 @@ Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19
 
 ## Status
 
-Reset complete (2026-08-19): the doctrine, four shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.
+Reset complete (2026-08-19): the doctrine, five shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.
