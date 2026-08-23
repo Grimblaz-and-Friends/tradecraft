@@ -11,7 +11,7 @@ description: Adversarial review of an artifact against its stated purpose — a 
 
 ## The charter — purpose first
 
-Every review begins from the artifact's **purpose statement** — its stated purpose, audience, and success criteria [D-113]; for an implementation, the affirmed acceptance criteria on its issue. Where no statement exists, that absence is the review's first finding, and the review proceeds against the best statement the dispatching session can supply, recorded in the report.
+Every review begins from the artifact's **purpose statement** — its stated purpose, audience, and success criteria [D-113]; for an implementation, its success criteria are the affirmed acceptance criteria on its issue. Where no statement exists, that absence is the review's first finding, and the review proceeds against the best statement the dispatching session can supply, recorded in the report.
 
 - **A finding names the success criterion it impairs, for the stated audience.** "A reader might misread this" is a finding only if the stated audience plausibly would — the audience the artifact's purpose statement names, judged by that audience's own failure modes. Governing prose — prose a later session is expected to act on — is mostly read by model sessions, sometimes by the owner, and the two do not stumble in the same places: a session over-obeys stale text and follows references literally where a person skims and asks. A true observation that impairs no criterion is dismissed at the terminal stage without ceremony.
 - **Deletions have equal standing with additions.** Any seat may propose that text or code be removed, held to the same evidence standards; on governing prose, net growth is itself a finding, and the burden of argument sits on keeping the words.
