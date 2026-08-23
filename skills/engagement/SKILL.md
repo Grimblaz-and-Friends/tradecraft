@@ -49,4 +49,4 @@ The artifact settles what is being built before it is built, and lands on the wo
 
 **What affirmation buys him is the stretch that follows.** He is next needed when the change is on a pull request whose review has run and closed, every finding dispositioned, external reviewer comments reconciled, and the report posted. Pinging before that spends the attention the handoff bought; anything that genuinely needs him before then arrives as an argued decision in the form above, rather than dripped as questions.
 
-**Do not assert in the artifact a premise you have not tested** — a spike tests one and commits nothing.
+**A premise the artifact rests on may need testing before you assert it** — that is a spike, which tests one and commits nothing.
