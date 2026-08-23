@@ -56,4 +56,4 @@ Mutating a tracked file to see whether a guard fires is a spike, not an exceptio
 
 Sometimes the useful move is to go build something with no question formed yet, because you do not know enough to ask. **That is yours to do, unprompted, and nothing here needs to authorise it** — the named-premise pattern above is the one worth writing down, not the only one permitted.
 
-It is left unproceduralised deliberately: its stopping condition is judgment rather than an answered question. Say what you learned where the work is recorded — including that you learned nothing, which is the case a silent session leaves indistinguishable from never having looked — and keep the disposal rule: exploration commits nothing either.
+It is left unproceduralised deliberately: its stopping condition is judgment rather than an answered question. Say what you learned on the work's issue — including that you learned nothing, which is the case a silent session leaves indistinguishable from never having looked — and keep the disposal rule: exploration commits nothing either.
