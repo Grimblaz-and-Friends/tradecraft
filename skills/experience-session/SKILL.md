@@ -10,7 +10,7 @@ description: A chartered, time-boxed use of a built result as its consumer would
 ## The instrument — three pieces, nothing more
 
 - **Charter.** One sentence naming the mission: *use X on a real job as its consumer would; where does it fight you.* Name the material and the job; do not name what to look for. A charter listing what it expects has become a lens brief, and the session will find those things and stop.
-- **Time-box.** Declared before starting. Expiry without an answer means stop and report what the box bought — never a silent extension.
+- **Time-box.** Declared before starting, in whatever unit fits the run — wall clock, dispatch rounds, turns — and recorded in the note. Expiry without an answer means stop and report what the box bought — never a silent extension.
 - **Session note.** What was lived, not what was inspected. The note is the deliverable; without it, *ran and found nothing* and *never ran* are the same silence.
 
 Nothing else is owed. A template, a field list, a severity scale, a required count — each is the failure this instrument is designed against, and admitting one is how it stops being cheap enough to run.
@@ -20,13 +20,16 @@ Nothing else is owed. A template, a field list, a severity scale, a required cou
 - **Discovery.** Scripted checks and reviews confirm what someone already suspected; only use finds what nobody knew to suspect. This is the duty a review structurally cannot discharge, and it is why the session runs at all.
 - **Arbitration.** Where a proposed rule or mechanism asserts something about future behaviour, name in the same breath the result that would falsify it, and schedule the next real occasion as its live test. **The result is recorded unsmoothed, the failing case above all** — a proposal whose live test fails has bought exactly what it was run for, and the rule that lands afterwards is the better one for it [D-96].
 
+Either duty alone is a lawful session, and most runs discharge only the first.
+
 ## What a note carries
 
-**Written in the first person and in order: what I set out to do, what I did, where I stalled, what I did instead.** The friction is the finding — a sentence that had to be read three times, a rule that seemed to forbid the obvious move, a step impossible to take in the order the text gives.
+**Written in the first person, as a narrative of the run rather than a list of observations.** The friction is the finding — a sentence that had to be read three times, a rule that seemed to forbid the obvious move, a step impossible to take in the order the text gives.
 
 - **Where the session was itself wrong belongs in the note.** A consumer who misread the material is precisely the evidence; correcting the record on the way out deletes the finding.
 - **What the material got right belongs in it too**, with the reason it worked. A note carrying only friction cannot be told apart from a note written by a session that only looked for friction.
 - **It is not a review.** A review reads an artifact and judges it against its purpose; this uses the artifact and reports the result. An observation available from reading alone belongs in a review, and putting it here launders a hypothesis as experience.
+- **Where the run could not get the authority its job needed, the note says which step went unperformed.** A truncated run is still a run; a truncation left unsaid reads as a complete one.
 - **A note reporting no friction is a result, and it is posted** — that is the case the record cannot otherwise tell apart from never having run.
 
 ## When one fires
@@ -39,8 +42,10 @@ Nothing else is owed. A template, a field list, a severity scale, a required cou
 
 **The consumer is manufactured, not borrowed.** Where the material's consumer is a session, a faithful production user is a cold dispatch: the shipped material and a realistic job, and nothing from the conversation that produced the change — no artifact, no findings, no rationale, and no statement that anything is under test. A session that helped build the thing cannot run its session; it already knows what the text meant to say.
 
-**Give the job, not the test.** The dispatch says what to accomplish. A seat told which sentence is doubted reports on that sentence.
+**The note is written by the session that chartered it, from the consumer's own account of the run.** A cold consumer cannot be asked for a session note without being told there is a session, which is the one thing it must not know — so ask it for an ordinary report of how the job went, and write the note around that. The seam belongs in the note.
+
+**Give the job, not the test.** Naming the material is required and naming what is doubted about it is forbidden — *use this cell to get these findings onto the board* is the job; *find out whether its search paragraph works* is the test, and a consumer told which sentence is doubted reports on that sentence.
 
 **Where the session mutates the tree, isolate it** — its own worktree or a throwaway clone — and it commits nothing. What the session produces is the note.
 
-**The note lands where the change is recorded, before its review closes**, so the review reads it as evidence of what use showed rather than as a late comment on a settled artifact.
+**The note lands where the change is recorded, before its review closes**, so the review reads it as evidence of what use showed rather than as a late comment on a settled artifact. A session that runs after that still lands its note there: late is lawful, silent is not.
