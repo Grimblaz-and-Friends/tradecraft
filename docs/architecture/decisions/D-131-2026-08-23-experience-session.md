@@ -16,7 +16,7 @@ The anchor design is [#122](https://github.com/Grimblaz-and-Friends/tradecraft/i
 
 ## Decision
 
-**A cell of its own, `skills/experience-session`**, defining the instrument in three pieces — a one-sentence charter naming the mission, a time-box declared before starting, a session note carrying what was lived — and requiring nothing further. Two duties: **discovery**, the unknown-unknowns a review structurally cannot reach, and **arbitration**, D-96's pattern generalised into a rule that a proposal asserting future behaviour names its falsifier and schedules the next real occasion as its live test.
+**A cell of its own, `skills/experience-session`**, defining the instrument in three pieces — a one-sentence charter naming the mission, a time-box declared before starting, a session note carrying what was lived — and requiring nothing further. One duty: **discovery**, the unknown-unknowns a review structurally cannot reach.
 
 **Trigger:** a change to how a later session must work — a skill's behaviour, or a mechanism's surface. Mechanical work is out. **Both edges were argued and are recorded here because the trigger's width is the dial the instrument's whole cost rides on:** narrower was rejected as excluding the class [#121](https://github.com/Grimblaz-and-Friends/tradecraft/issues/121) came from; every-non-mechanical-PR was rejected as the ratchet the anchor issue warns against. **Declining costs one line from birth**, recorded on the change's pull request or issue; no session blocks a pull request by existing or by being skipped.
 
@@ -59,6 +59,18 @@ This change's own new clause applies to this change, so a session ran on the bui
 **The meaning changes that fix batch made to shipped governing prose, named here because `authoring` requires every one of them to be named where amendments are recorded:** authorship of the note moved from the consumer to the chartering session; *"in order: what I set out to do, what I did, where I stalled, what I did instead"* was **deleted**, removing a required structure; *"late is lawful"* was added as a new permission; *"Either duty alone is a lawful session"* was added as another. Three further findings were dropped with their reasons, chief among them *who invents the job* — a definition of a real job is the schema pressure this design exists to refuse.
 
 **What the spike also produced, and where that went:** findings against `skills/filing` and `skills/engagement` that no review had filed — the discovery duty working on its first run. They are enumerated with their disposition in the spike report and routed to filings against the cells they name, because this change's boundary is the instrument.
+
+### Arbitration was a second duty, and the owner removed it
+
+The affirmed artifact gave the cell two duties. The second — **arbitration**, D-96's pattern generalised into naming a falsifier and scheduling the next real occasion as its live test — is deleted, on the owner's call during the review, and the cell ships single-duty.
+
+**The reason is design fit, not evidence.** [D-132](D-132-2026-08-23-spikes-graduate.md) landed the same day and broadened the spike's trigger to any load-bearing premise, naming *a candidate wording for a rule* outright and carrying the reframe that governing prose is a mechanism whose executor is a reader. It also already carries the route for a premise a run cannot settle: the premise enters what you were writing as a declared assumption with the falsifier that would settle it. Everything arbitration did, `skills/spikes` now does with a better trigger and an existing escape hatch — so the two cells described one job, and the weaker copy goes.
+
+**The seam that replaces it is cleaner than either duty was:** a premise is tested *before* it is asserted, by a spike; a session reports what using the built result was like *after*. One instrument each side of the assertion.
+
+**What is lost, stated rather than smuggled.** Arbitration tested a proposal against a *real* occasion with real stakes, and [#122](https://github.com/Grimblaz-and-Friends/tradecraft/issues/122) argues real-use evidence outranks manufactured evidence. A spike substitutes a manufactured occasion, which is weaker on exactly the claims where realism matters most. The owner's judgement is that a scheduled test on a real occasion is one that tends not to happen, so the practical choice is a manufactured test that runs against a real one that may not — and that judgement is his experience rather than this repo's record, which carries one scheduled live test ([#93](https://github.com/Grimblaz-and-Friends/tradecraft/issues/93)'s, recorded in D-96) and it ran. Recorded this way so a later session weighing a return to arbitration knows exactly what was traded and on what basis.
+
+**The affirmed artifact is not edited.** Its acceptance criterion 6 requires the cell to state the arbitration duty, and the cell no longer does, so criterion 6 ships unmet by the owner's own amendment — recorded on the issue rather than repaired by rewriting a handoff contract after affirmation, which is the [D-104](D-104-2026-08-22-engagement-cell.md) precedent.
 
 ## Rejected
 

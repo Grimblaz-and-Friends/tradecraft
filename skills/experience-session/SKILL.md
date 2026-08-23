@@ -1,11 +1,11 @@
 ---
 name: experience-session
-description: A chartered, time-boxed use of a built result as its consumer would use it, reported in a session note — the instrument that finds what only use finds. Use when a change to a skill's behaviour or a mechanism's surface has been built and you want to know what use will hit, or when a rule you are proposing asserts something about future behaviour and the next real occasion can test it. Not for judging an artifact's reasoning, prose, or evidence — that is a review; not for testing a load-bearing premise before you assert it — that is a spike; not for anything a reader could settle by reading.
+description: A chartered, time-boxed use of a built result as its consumer would use it, reported in a session note — the instrument that finds what only use finds. Use when a change to a skill's behaviour or a mechanism's surface has been built and you want to know what use will hit. Not for judging an artifact's reasoning, prose, or evidence — that is a review; not for testing a load-bearing premise before you assert it — that is a spike; not for anything a reader could settle by reading.
 ---
 
 # experience-session
 
-**Purpose:** find what only use finds, by using the material on a real job and reporting what was lived. **Audience:** any session that has just built or amended something a later session must work under, and any session proposing a rule that asserts how future work will go. **Success:** the material has been used on a real job by someone who was not in the conversation that produced it — the built result on a discovery run, and on an arbitration one the material as it stands at the scheduled occasion — and what use found, friction or its absence, is written on the change's pull request or issue.
+**Purpose:** find what only use finds, by using the built result on a real job and reporting what was lived. **Audience:** any session that has just built or amended something a later session must work under. **Success:** the built result has been used on a real job by someone who was not in the conversation that produced it, and what use found — friction or its absence — is written on the change's pull request or issue.
 
 ## The instrument — three pieces, nothing more
 
@@ -15,12 +15,13 @@ description: A chartered, time-boxed use of a built result as its consumer would
 
 Nothing else is owed. A template, a field list, a severity scale, a required count — each is the failure this instrument is designed against, and admitting one is how it stops being cheap enough to run.
 
-## Two duties
+## What it is for, and where it stops
 
-- **Discovery.** Scripted checks and reviews confirm what someone already suspected; only use finds what nobody knew to suspect. This is the duty a review structurally cannot discharge, and it is why the session runs at all.
-- **Arbitration.** Where a proposed rule or mechanism asserts something about future behaviour, name the result that would falsify it **before the rule lands** — a falsifier chosen once the outcome is visible is a rationalisation — and schedule the next real occasion as its live test, on the work's issue, which outlives the pull request. **The result is recorded unsmoothed, the failing case above all** — a proposal whose live test fails has bought exactly what it was run for, and the rule that lands afterwards is the better one for it [D-96].
+**Scripted checks and reviews confirm what someone already suspected; only use finds what nobody knew to suspect.** That is the whole of what a session is for, and it is why one runs at all — a review reads the artifact and cannot reach it, however many seats sit.
 
-Either duty alone is a lawful session, and most runs discharge only the first.
+**A session runs after the thing exists, and that is the seam.** A premise you are about to assert is tested before you assert it, by a spike; a session reports what using the built result was actually like. Neither does the other's job: a spike answers the one premise it was given and stops, and a session finds what nobody thought to ask.
+
+**The result is recorded unsmoothed, the unflattering case above all** — a note that cost the change a rewrite has bought exactly what the session was run for.
 
 ## What a note carries
 
