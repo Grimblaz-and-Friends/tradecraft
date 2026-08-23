@@ -102,22 +102,31 @@ ENTRY_PATH = re.compile(r"`([\w.-]+(?:[\\/][\w.-]+)+(?::\d+)?)`")
 # What makes a slash-joined token a path claim rather than ordinary prose. A
 # content filter cannot tell `A/B` -- this repo's own word for its spike
 # pattern -- from `docs/x.md`, so the test is shape: a known extension, or a
-# first segment that is a real root of this repository. Without it the guard
-# fails lawful work, which is as bad as passing unlawful work, and the only
-# escape is to write the reference less precisely.
-REPO_ROOTS = frozenset({
-    "skills", "tools", "docs", "lib", "commands", "agents",
-    ".github", ".claude", ".", "..",
-})
+# first segment that is a root this repo declares. Without it the guard fails
+# lawful work, which is as bad as passing unlawful work, and the only escape is
+# to write the reference less precisely.
+#
+# Declared, not merely present: `lib`, `commands` and `agents` are named in the
+# doctrine's shipped zone and hold no file yet. `.claude` is deliberately
+# absent though a directory of that name exists locally -- it is untracked and
+# ungitignored, so resolving against it gave `python tools/lint.py` two answers
+# for the same commit depending on whether a session had created
+# `.claude/agents`, and the local answer instructed a repair that reds CI.
+REPO_ROOTS = frozenset(SHIPPED_DIRS) | {
+    "tools", "docs", ".github", ".", "..",
+}
 REF_EXTENSIONS = frozenset({
     ".md", ".py", ".yml", ".yaml", ".json", ".jsonl", ".txt", ".toml", ".cfg",
     ".ini", ".sh", ".ps1",
 })
 
 # A pin names the commit a reference shipped at, so no later move can falsify
-# it. Backticks are required and a pure-decimal run is refused: this repo cites
-# GitHub comment ids constantly, and `at 5380976787` is not a commit.
-PINNED_REF = re.compile(r"\bat\s+`(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}`")
+# it. The backticks carry the whole discrimination: this repo cites GitHub
+# comment ids constantly and `at 5380976787` is the live example, which is
+# unbackticked. Requiring a hex letter as well would additionally refuse an
+# all-decimal short sha -- about one prefix in twenty-seven -- and the author
+# who wrote it would get a silently inert pin.
+PINNED_REF = re.compile(r"\bat\s+`[0-9a-fA-F]{7,40}`")
 
 # References dead when this guard landed, keyed by the line that carries them
 # because one entry can hold both a repairable and an unrepairable occurrence
@@ -154,7 +163,7 @@ BASELINE_UNRESOLVABLE = {
     ("D-53-2026-08-18-log-and-statute.md", 15, "docs/architecture/constitution.md"):
         "calls the target the always-current statute; renamed to -archived",
     ("D-53-2026-08-18-log-and-statute.md", 75, "docs/architecture/evidence.md"):
-        "pre-reset frozen archive; target renamed to -archived",
+        "a locator whose target PR #74 renamed; nothing sends a reader into the pre-reset archive to act",
     # Deleted outright by the same reset. D-53 correctly records what it built.
     ("D-53-2026-08-18-log-and-statute.md", 64, "tools/check_constitution.py"):
         "target deleted by PR #74; the entry records what it built",
@@ -165,16 +174,16 @@ BASELINE_UNRESOLVABLE = {
     # reader into it to act -- the reason this pair was dropped from the carve
     # the owner had approved.
     ("D-69-2026-08-18-trial-instrument-and-exception.md", 19, "../evidence.md"):
-        "pre-reset frozen archive; target renamed to -archived",
+        "nothing sends a reader into the pre-reset archive to act; PR #74 renamed the target",
     ("D-69-2026-08-18-trial-instrument-and-exception.md", 94, "../evidence.md"):
-        "pre-reset frozen archive; target renamed to -archived",
-    # Never in this repository: a path on the owner's own machine, and a
-    # directory a spike created and did not commit.
+        "nothing sends a reader into the pre-reset archive to act; PR #74 renamed the target",
+    # Never in this repository: a path on the owner's own machine. D-99:37's
+    # `.claude/agents` was a row here too and is deliberately gone: `.claude`
+    # left REPO_ROOTS, so the token no longer reads as a path claim at all --
+    # a recorded shrink, not a silent loss of coverage.
     ("D-90-2026-08-20-dispatch-contract.md", 25,
      "Documents/Design/review-dispatch-overhead-measurement.md"):
         "never in this repository; the predecessor's local path",
-    ("D-99-2026-08-21-dispatch-prompt-caching.md", 37, ".claude/agents"):
-        "names a directory a spike created and did not commit",
 }
 
 # The fourth lawful disposition, and the one the rule was missing. A reference
@@ -638,10 +647,11 @@ def check_entry_references(root: Path) -> list[str]:
                     f"entry-reference: docs/architecture/decisions/{path.name}:"
                     f"{lineno} {form} '{ref}' resolves to nothing. If you moved "
                     f"its target, repoint it here in the same change — unless "
-                    f"this sentence quotes or characterises the target, in "
-                    f"which case record it in UNREPAIRABLE_AFTER_LANDING with "
-                    f"a reason. Do not add a pin to a landed entry. The bound "
-                    f"is in docs/architecture/decisions/README.md"
+                    f"repointing would leave this sentence untrue of the "
+                    f"target at its new home, in which case record it in "
+                    f"UNREPAIRABLE_AFTER_LANDING with a reason. Do not add a "
+                    f"pin to a landed entry. The bound is in "
+                    f"docs/architecture/decisions/README.md"
                 )
     findings.extend(_check_recorded_rows(root, directory, seen))
     return findings
@@ -700,17 +710,22 @@ def _entry_refs(line: str):
     for match in ENTRY_LINK.finditer(line):
         target = match.group(1).split("#")[0].strip()
         if target and not target.startswith(("http://", "https://", "mailto:")):
-            found.append((match.end(), target, "link"))
+            found.append((match.start(), match.end(), target, "link"))
     for match in ENTRY_PATH.finditer(line):
         # A `:N` line anchor is not part of the path it anchors into.
         ref = match.group(1).split(":")[0]
         if _is_reference_shaped(ref):
-            found.append((match.end(), ref, "path"))
+            found.append((match.start(), match.end(), ref, "path"))
     found.sort()
-    for index, (end, ref, form) in enumerate(found):
-        # A pin covers the reference it follows and stops at the next one, so
-        # `a` at <sha>; also `b` pins a and leaves b exposed.
-        limit = found[index + 1][0] - len(str(found[index + 1][1])) if index + 1 < len(found) else len(line)
+    for index, (_, end, ref, form) in enumerate(found):
+        # A pin covers the reference it follows and stops where the next one
+        # begins, so ``a` at <sha>; also `b`` pins a and leaves b exposed. The
+        # next match's own start is what bounds it: reconstructing that start
+        # by subtracting the reference's length is exact only when the match
+        # text is the reference, and for `[display](target)` it is not -- the
+        # window then swallowed the following link's anchor text, so a sha
+        # quoted in that anchor pinned the reference before it.
+        limit = found[index + 1][0] if index + 1 < len(found) else len(line)
         window = line[end:max(end, limit)]
         yield ref, form, PINNED_REF.search(window) is not None
 

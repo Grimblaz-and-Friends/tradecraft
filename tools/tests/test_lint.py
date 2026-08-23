@@ -827,6 +827,117 @@ def test_baseline_of_unrepairable_references_may_only_shrink():
         ("D-69-2026-08-18-trial-instrument-and-exception.md", 94, "../evidence.md"),
         ("D-80-2026-08-19-spikes.md", 15, "skills/authoring/references/spikes.md"),
         ("D-90-2026-08-20-dispatch-contract.md", 25, "Documents/Design/review-dispatch-overhead-measurement.md"),
-        ("D-99-2026-08-21-dispatch-prompt-caching.md", 37, ".claude/agents"),
     }
     assert all(str(r).strip() for r in lint.BASELINE_UNRESOLVABLE.values())
+
+
+def test_declared_repo_roots_cover_every_shipped_dir():
+    """The shape filter's first-segment test is 'a root this repo declares'.
+    `.claude-plugin` was declared, real, and missing, so a reference rooted
+    there was invisible."""
+    assert set(lint.SHIPPED_DIRS) <= lint.REPO_ROOTS
+
+
+def test_untracked_directory_does_not_change_the_answer(tmp_path):
+    """`python tools/lint.py` is mandatory before every commit, so it may not
+    answer differently because a session happened to create an untracked
+    directory. `.claude` was in the root set while being untracked and
+    ungitignored, which gave the same commit two answers."""
+    assert ".claude" not in lint.REPO_ROOTS
+    assert not lint._is_reference_shaped(".claude/agents")
+
+
+def test_recorded_row_in_the_growable_set_is_silent(tmp_path, monkeypatch):
+    """The fourth lawful form, and this batch's headline mechanism. Deleting
+    its arm from the guard passed both gates while nothing asserted it."""
+    make_clean_tree(tmp_path)
+    _write_entry(tmp_path, "D-1-2026-08-23-x.md", "See `skills/gone/SKILL.md`.\n")
+    key = ("D-1-2026-08-23-x.md", 1, "skills/gone/SKILL.md")
+    monkeypatch.setattr(lint, "BASELINE_UNRESOLVABLE", {})
+    monkeypatch.setattr(
+        lint, "UNREPAIRABLE_AFTER_LANDING", {key: "target retired by this change"}
+    )
+    assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
+
+
+def test_reference_escaping_the_repository_does_not_resolve(tmp_path):
+    """A sibling worktree exists locally and not in CI, so a guard that
+    resolved through it would answer differently in the two places."""
+    make_clean_tree(tmp_path)
+    outside = tmp_path.parent / "outside-the-repo.md"
+    outside.write_text("x\n", encoding="utf-8")
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md", "See `../outside-the-repo.md`.\n"
+    )
+    findings = [f for f in lint.run(tmp_path) if "entry-reference" in f]
+    assert len(findings) == 1
+
+
+def test_backslashed_reference_is_seen(tmp_path):
+    """Every other pattern in the module accepts either separator; the newest
+    one did not, so a Windows-authored entry opted out of the guard."""
+    make_clean_tree(tmp_path)
+    _write_entry(tmp_path, "D-1-2026-08-23-x.md", "See `skills\\gone\\SKILL.md`.\n")
+    findings = [f for f in lint.run(tmp_path) if "entry-reference" in f]
+    assert len(findings) == 1
+
+
+def test_titled_markdown_link_is_seen(tmp_path):
+    """`[x](path "title")` is ordinary markdown and was invisible."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md", 'See [x](../gone.md "the registry").\n'
+    )
+    findings = [f for f in lint.run(tmp_path) if "entry-reference" in f]
+    assert len(findings) == 1
+
+
+def test_the_log_index_is_scanned_too(tmp_path):
+    """The index carries references of its own, and unlike an entry it is
+    editable, so its repair has an obvious home."""
+    make_clean_tree(tmp_path)
+    _write_entry(tmp_path, "D-1-2026-08-23-x.md", "Nothing here.\n")
+    index = tmp_path / "docs" / "architecture" / "decisions" / "README.md"
+    index.write_text(
+        index.read_text(encoding="utf-8") + "\nSee `skills/gone/SKILL.md`.\n",
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "entry-reference" in f]
+    assert len(findings) == 1 and "README.md" in findings[0]
+
+
+def test_a_pin_does_not_reach_past_the_next_reference(tmp_path):
+    """The window is bounded by the next match's own start. Reconstructing that
+    start by subtracting the reference's length is exact only when the match
+    text is the reference — for `[display](target)` it is not, and the window
+    swallowed the following link's anchor text."""
+    make_clean_tree(tmp_path)
+    line = "See `skills/gone/SKILL.md` and [the rule at `65c4540`](../also-gone.md).\n"
+    _write_entry(tmp_path, "D-1-2026-08-23-x.md", line)
+    findings = [f for f in lint.run(tmp_path) if "entry-reference" in f]
+    assert len(findings) == 2
+
+
+def test_a_pin_in_its_natural_position_still_holds(tmp_path):
+    """The counterpart to the test above: narrowing the window must not stop a
+    pin covering the reference it actually follows."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md",
+        "Shipped as `skills/gone/SKILL.md` at `65c4540`.\n",
+    )
+    assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
+
+
+def test_an_all_decimal_short_sha_is_a_pin(tmp_path):
+    """Refusing a hex run without a letter refused about one short sha in
+    twenty-seven, and the author who wrote one got a silently inert pin. The
+    backticks carry the discrimination: the live comment-id case is
+    unbackticked."""
+    make_clean_tree(tmp_path)
+    _write_entry(
+        tmp_path, "D-1-2026-08-23-x.md",
+        "Shipped as `skills/gone/SKILL.md` at `1234567`.\n",
+    )
+    assert [f for f in lint.run(tmp_path) if "entry-reference" in f] == []
+    assert lint.PINNED_REF.search("at 5380976787") is None

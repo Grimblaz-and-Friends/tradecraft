@@ -6,13 +6,13 @@ One file per decision, named `D-<N>-YYYY-MM-DD-<slug>.md` where `<N>` is the pul
 
 **Frozen, and the one edit that is not.** Reversal is by a new entry, never by editing an old one — the claim-changing edit stays barred. One edit that changes no claim is lawful [D-135]:
 
-- **Repoint a reference whose target moved**, to its current location; nothing else moves. Where the sentence quotes or characterises the target, repointing leaves it untrue, so it stays.
+- **Repoint a reference whose target moved**, to its current location; nothing else moves. A sentence that quotes or characterises its target is not a bare locator, so **where repointing would leave that sentence untrue of the target at its new home, the reference stays as it is** — and where the sentence survives the move, repoint it.
 - **The mover pays** — the repair rides with a change that moves the target, covering every reference to it whichever move stranded it, never as a change of its own. Moving a target and rewriting what an entry quotes is one change here: split, they leave a live path over a false quotation, worse than the dead path it replaces.
-- **Nothing to repoint** — target retired, or moved and rewritten — record it in `tools/lint.py` with its reason. The only one of these that may grow, and what keeps the check from reddening with no lawful answer.
+- **Nothing left to repoint** — the target retired, or the move would falsify the sentence — record the reference in `tools/lint.py` with its reason. The only one of these that may grow, and what keeps the check from reddening with no lawful answer.
 - **D-53–D-69 are inside this permission**: a frozen archive is non-binding, not unrepairable. Nothing sends a reader there to act, which is why their dead links were left, not why they had to be.
 - **Pin as `` `path` at `<sha>` ``**, at authoring time only — a pin added later adds text. Dropping the backticks to dodge the check is not an answer; it makes the entry vaguer about where things live, which is what the check protects.
 
-`tools/lint.py` carries the lawful forms and fires the permission while it is still lawful.
+`tools/lint.py` carries the lawful forms and fires the permission while it is still lawful. It reports a recorded reference that has come back to life, so the record cannot rot; that the record only ever *shrinks* is held by the suite, which pins its membership.
 
 Entries D-53 through D-69 were written under the pre-reset statute's fixed skeleton and are part of the frozen archive ([D-74](D-74-2026-08-19-constitutional-reset.md)); decisions before the log existed are in the [frozen ADRs](../adr/README.md).
 
