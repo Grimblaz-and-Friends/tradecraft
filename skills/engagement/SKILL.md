@@ -49,4 +49,4 @@ The artifact settles what is being built before it is built, and lands on the wo
 
 **What affirmation buys him is the stretch that follows.** He is next needed when the change is on a pull request whose review has run and closed, every finding dispositioned, external reviewer comments reconciled, and the report posted. Pinging before that spends the attention the handoff bought; anything that genuinely needs him before then arrives as an argued decision in the form above, rather than dripped as questions.
 
-**Where the artifact asserts something about material no enumeration you can consult covers, or about a mechanism nobody has executed, test that premise before you assert it** — a spike, which commits nothing. Reading a design settles neither, and the condition is narrow: most artifacts assert neither. [`references/spikes.md`](references/spikes.md) has the exclusions, the bound, the abandonment route, the report, and the standing permission to explore without a premise.
+**A premise the artifact rests on may need testing before you assert it** — that is a spike, which tests one and commits nothing.
