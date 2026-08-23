@@ -1,0 +1,46 @@
+---
+name: experience-session
+description: A chartered, time-boxed use of a built result as its consumer would use it, reported in a session note — the instrument that finds what only use finds. Use when a change to a skill's behaviour or a mechanism's surface has been built and you want to know what use will hit, or when a rule you are proposing asserts something about future behaviour and the next real occasion can test it. Not for judging an artifact's reasoning, prose, or evidence — that is a review; not for testing a premise before a decision is made — that is a pre-decision experiment; not for anything a reader could settle by reading.
+---
+
+# experience-session
+
+**Purpose:** find what only use finds, by using the built thing on a real job and reporting what was lived. **Audience:** any session that has just built or amended something a later session must work under, and any session proposing a rule that asserts how future work will go. **Success:** the built material has been used on a real job by someone who was not in the conversation that produced it, and the friction that use exposed is written where the change's review and its owner will read it.
+
+## The instrument — three pieces, nothing more
+
+- **Charter.** One sentence naming the mission: *use X on a real job as its consumer would; where does it fight you.* Name the material and the job; do not name what to look for. A charter listing what it expects has become a lens brief, and the session will find those things and stop.
+- **Time-box.** Declared before starting. Expiry without an answer means stop and report what the box bought — never a silent extension.
+- **Session note.** What was lived, not what was inspected. The note is the deliverable; without it, *ran and found nothing* and *never ran* are the same silence.
+
+Nothing else is owed. A template, a field list, a severity scale, a required count — each is the failure this instrument is designed against, and admitting one is how it stops being cheap enough to run.
+
+## Two duties
+
+- **Discovery.** Scripted checks and reviews confirm what someone already suspected; only use finds what nobody knew to suspect. This is the duty a review structurally cannot discharge, and it is why the session runs at all.
+- **Arbitration.** Where a proposed rule or mechanism asserts something about future behaviour, name in the same breath the result that would falsify it, and schedule the next real occasion as its live test. **The result is recorded unsmoothed, the failing case above all** — a proposal whose live test fails has bought exactly what it was run for, and the rule that lands afterwards is the better one for it [D-96].
+
+## What a note carries
+
+**Written in the first person and in order: what I set out to do, what I did, where I stalled, what I did instead.** The friction is the finding — a sentence that had to be read three times, a rule that seemed to forbid the obvious move, a step impossible to take in the order the text gives.
+
+- **Where the session was itself wrong belongs in the note.** A consumer who misread the material is precisely the evidence; correcting the record on the way out deletes the finding.
+- **What the material got right belongs in it too**, with the reason it worked. A note carrying only friction cannot be told apart from a note written by a session that only looked for friction.
+- **It is not a review.** A review reads an artifact and judges it against its purpose; this uses the artifact and reports the result. An observation available from reading alone belongs in a review, and putting it here launders a hypothesis as experience.
+- **A note reporting no friction is a result, and it is posted** — that is the case the record cannot otherwise tell apart from never having run.
+
+## When one fires
+
+**A change to how a later session must work buys a session on the built result** — a skill's behaviour, or a mechanism's surface. Mechanical work does not: a typo, a dependency bump, a record append.
+
+**Declining costs one line, and always will.** Say where the change is recorded that no session ran, and why. No session blocks a pull request by existing or by being skipped; this is not a gate and not a stage of a review.
+
+## Running one
+
+**The consumer is manufactured, not borrowed.** Where the material's consumer is a session, a faithful production user is a cold dispatch: the shipped material and a realistic job, and nothing from the conversation that produced the change — no artifact, no findings, no rationale, and no statement that anything is under test. A session that helped build the thing cannot run its session; it already knows what the text meant to say.
+
+**Give the job, not the test.** The dispatch says what to accomplish. A seat told which sentence is doubted reports on that sentence.
+
+**Where the session mutates the tree, isolate it** — its own worktree or a throwaway clone — and it commits nothing. What the session produces is the note.
+
+**The note lands where the change is recorded, before its review closes**, so the review reads it as evidence of what use showed rather than as a late comment on a settled artifact.
