@@ -11,7 +11,7 @@ description: How a piece of work gets onto the board — the search that runs be
 
 Before creating an issue, search the board.
 
-**The search is not done until it has been run against the subject's identifier, the mechanism's name, and the defect's own words, over issues in every state, across the whole board rather than a first page.** All three parts are load-bearing and each has been observed failing. One query is not a search: on this practice's own board, searching `check_version_bump` returns neither of the two open issues whose titles *begin* with `check_version_bump.py`, and only the query carrying the extension returns them. Most issue listings default to open-only and to a first page shorter than a working board, and both truncations are silent — so both are set deliberately, and a filing that skips either can report an empty board it never read. A closed issue is the record of what was already decided, already tried, or left behind when its parent closed.
+**The search is not done until it has been run against the subject's identifier, the mechanism's name, and the defect's own words, over issues in every state, across the whole board rather than a first page.** All three parts are load-bearing. One query is not a search: on this practice's own board, searching `check_version_bump` returns none of the issues whose titles *begin* with `check_version_bump.py`, and only the query carrying the extension returns them. Most issue listings default to open-only and to a first page shorter than a working board, and both truncations are silent — so both are set deliberately, and a filing that skips either can report an empty board it never read. A closed issue is the record of what was already decided, already tried, or left behind when its parent closed.
 
 Three outcomes, each lawful:
 
@@ -32,13 +32,13 @@ An extending comment carries the same list and meets the same floor as a filing;
 | **sequenced-after #N** / **blocks #N** | this cannot start until that lands / that cannot start until this does | order the pair, do not bundle it |
 | **supersedes #N** / **superseded-by #N** | this replaces that, or that replaces this, in whole or in part | close or rescope the replaced one |
 
-Both ordering relationships are written in both directions, because a filing that unblocks an existing issue would otherwise have to edit that issue to record the order.
+Both paired relationships are written in both directions; `blocks` exists because a filing that unblocks an existing issue would otherwise have to edit that issue to record the order.
 
-**The verb names and what they assert read the same whether the tied issue is open or closed; the ranking consequence does not.** Against a closed target it is that the issue is read, not that it is scheduled.
+**The same four relationships apply whether the tied issue is open or closed; there is no separate closed-issue vocabulary.** What shifts is the ranking consequence — against a closed target it is that the issue is read, not that anything is scheduled — and, on the ordering row, the assertion itself: `sequenced-after` is already satisfied and `blocks` does not hold.
 
 Write the ties as the **first element of the issue body, before any heading or prose**, one per line as `<verb> #N — <one clause of why>`. One pair may carry more than one verb, one per line; a relationship none of the four expresses is carried in the same block in prose and flagged as a candidate for the set. Consistent placement is what lets a session ranking the board find ties without reading every body — [#33](https://github.com/Grimblaz-and-Friends/tradecraft/issues/33) named [#20](https://github.com/Grimblaz-and-Friends/tradecraft/issues/20) and [#52](https://github.com/Grimblaz-and-Friends/tradecraft/issues/52) named #35, both truthfully, and both in a closing line nobody ranking the board would reach.
 
-Where the search turned up nothing that earns a tie, the block says so — *no siblings on the board* — because that is a fact a ranking uses. **Do not state that the search was performed.** The ties are its artifact: a filing naming them has demonstrably searched, and a compliance sentence nobody can check buys nothing.
+Where the search turned up nothing that earns a tie, the block says so **as a fact about the board** — *no siblings on the board* — because that is what a ranking uses. **Do not state that the search was performed.** The ties are its artifact: a filing naming them has demonstrably searched, and a compliance sentence nobody can check buys nothing.
 
 ## Creation carries the want; pickup does the work
 
