@@ -10,7 +10,7 @@ Four of the five defects [#152](https://github.com/Grimblaz-and-Friends/tradecra
 
 `skills/engagement/SKILL.md` at `3175369`: *"They state what must be true of the result, not what it may cost: a cost estimate belongs **outside the artifact** — in the PR body, the decision entry, or the review's report — because the whole artifact reaches every stage of the review, so every seat must verify any figure in the artifact."*
 
-[D-119](D-119-2026-08-23-cost-estimate-outside-the-artifact.md) landed that sentence six days ago, and it fired the same local day it was written — the owner struck a forecast from PR #113's artifact as the reflex it was.
+[D-119](D-119-2026-08-23-cost-estimate-outside-the-artifact.md) landed that sentence yesterday, on 2026-08-23. Its own motivating incident belongs to the rule it replaced: [D-107](D-107-2026-08-22-price-is-implementation-cost.md)'s narrower placement rule fired 5h 26m after it was written, when the owner struck a forecast from PR #113's artifact as the reflex it was. Nothing has yet been observed firing under D-119's own wording.
 
 ### What the reason clause actually reached
 
