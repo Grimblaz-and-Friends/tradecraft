@@ -20,11 +20,9 @@ That field run also named a failure the churn diagnosis in #122 does not cover. 
 
 **Consequence shape, defined by where the consequence lands** — on the artifact a consumer will use, or on the record of having reviewed it — read from the site the finding cites rather than from what the finding is about, with a finding citing both kinds counted artifact-facing. Three consumers under an undefined earlier wording invented three different taxonomies and two stages of one review produced incompatible splits, so the definition is keyed to the cited site rather than to judgement.
 
-**The report carries the split by consequence shape.** This is the instrument #122's failure mode 3 asks for and nothing could read: apparatus-facing versus product-facing, as a number, per pass.
+**The report carries the split by consequence shape.** This is the instrument #122's failure mode 3 asks for and nothing could read: apparatus-facing versus artifact-facing, as a number, per pass — the skill's own pair, which #122 words as apparatus-facing versus product-facing.
 
 **The post-fix look gets a bound and a second terminus.** It reads the fix diff, **whatever depends on it**, and each sustained high's territory, rather than the artifact over again — the middle element is the one a literal reading drops, and it carries a fix that moves a definition to every sentence turning on it. The next-pass ruling gains the **relevance terminus**: a pass continues only while the findings it expects are about the artifact, and a look returning only apparatus-facing material names that as the reason it stops. The count terminus is byte-unchanged; whichever fires first ends the cycle.
-
-**Severity is named as three levels**, because the stages now key on the boundary.
 
 ## What was built, measured, and cut
 
@@ -38,7 +36,7 @@ The change as affirmed also carried a batching mechanism: findings sharing a con
 
 **What the owner decided.** Restore the affirmed per-item wording rather than amend an acceptance criterion he had settled personally, and **delete the machinery rather than ship it dormant**, since a mechanism that cannot fire still costs three stages a read-and-apply step and the corpus roughly half this change's prose. The measured gain from keeping it was between zero and one ruling in twenty-six.
 
-**Consequences of the cut, stated:** [D-102]'s per-finding ruling unit is **not** superseded — the sentence is byte-identical to its pre-change form, and this entry supersedes nothing. The affirmed artifact's acceptance criteria 2, 3, 4, 5, 7 and 9 are withdrawn with the mechanism they describe; 1, 6, 8 and 10 stand. Governing-prose growth fell from +5,388 characters to **+2,730** (68,498 → 71,228), derived by `tools/figures.py` — `python tools/figures.py --base 3175369`, re-run against the tree this entry lands on, because the corpus the figure counts is the one the change writes into.
+**Consequences of the cut, stated:** [D-102]'s per-finding ruling unit is **not** superseded — the sentence is byte-identical to its pre-change form, and this entry supersedes nothing. The affirmed artifact's acceptance criteria 2, 3, 4, 5, 7 and 9 are withdrawn with the mechanism they describe; 1, 6, 8 and 10 stand. Governing-prose growth fell from +5,388 characters to **+2,885** (68,498 → 71,383), derived by `tools/figures.py` — `python tools/figures.py --base 3175369`, re-run against the tree this entry lands on, because the corpus the figure counts is the one the change writes into.
 
 ## What this does not settle, and what would reopen it
 
@@ -46,6 +44,6 @@ The change as affirmed also carried a batching mechanism: findings sharing a con
 
 **The reopen condition:** a docket on which a class of two or more forms and survives severance. None has been observed in five stages and one experience session.
 
-**Two clauses came from the experience session rather than from the design**, and are recorded because a later session tightening them would otherwise remove a cold consumer's finding without knowing it was one: that a review must say out loud when a step produced nothing, and that the unit of ruling is not the unit of work. The first survives in the report's own reporting duty; the second went with the machinery it qualified.
+**Two clauses came from the experience session rather than from the design, and neither survives the cut** — that a review must say out loud when a step produced nothing, and that the unit of ruling is not the unit of work. Both qualified the batching and went with it. They are recorded here because the finding underneath the first one is real and outlived its clause: a cold consumer, given a new reporting duty, had to derive unaided that producing nothing must be said out loud rather than left silent. The skill's older instances of that rule — a seat that found nothing appearing with zeros, an external pass recorded even when it produced nothing — predate the session and were never at risk; what the session showed is that the rule does not generalise to a *new* duty on its own, which is the thing a future session adding one should know.
 
 **Net growth is argued, not hidden.** Roughly a third of the +2,730 is the review's own repairs — the panel's remedies were definitions the first draft left implicit, and closing them cost more words than the mechanisms did.
