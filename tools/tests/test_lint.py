@@ -67,6 +67,55 @@ def test_clean_tree_passes(tmp_path):
 
 # --- zone wall -------------------------------------------------------------
 
+def test_harness_token_fires_on_a_shipped_calling_contract(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        'python "${CLAUDE_PLUGIN_ROOT}/skills/example-skill/scripts/run.py"\n',
+        encoding="utf-8",
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "harness-token" in findings[0]
+
+
+def test_harness_token_fires_on_the_bare_and_codex_forms(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "python $CLAUDE_PLUGIN_ROOT/scripts/run.py\n"
+        "python ${PLUGIN_ROOT}/scripts/run.py\n"
+        "python $CODEX_HOME/scripts/run.py\n",
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
+    assert len(findings) == 3
+
+
+def test_harness_token_exempts_hooks_where_the_token_actually_expands(tmp_path):
+    """`hooks/` is one of the three places the placeholder is really expanded."""
+    make_clean_tree(tmp_path)
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"matcher": "*", "hooks": [{"type": '
+        '"command", "command": "cat ${CLAUDE_PLUGIN_ROOT}/charter/CHARTER.md"'
+        "}]}]}}\n",
+        encoding="utf-8",
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_harness_token_stays_quiet_on_the_relative_contract(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "The script sits beside this file at scripts/run.py; invoke it by that\n"
+        "path resolved against the directory this file is in.\n",
+        encoding="utf-8",
+    )
+    assert lint.run(tmp_path) == []
+
+
 def test_zone_wall_fires_on_rooted_reference(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"

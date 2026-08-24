@@ -7,23 +7,27 @@ Checks:
      (docs/, tools/, .github/) by any path form — rooted, relative (../ or ./),
      backslashed, or case-shifted. Full web URLs are lawful: they resolve for
      consumers; repo paths do not.
-  2. sideways deps: no skill may reference another skill by path (rooted or
+  2. harness tokens: no shipped file outside hooks/ names a harness-specific
+     path token (${CLAUDE_PLUGIN_ROOT} and kin). Those expand only in hook,
+     monitor and MCP configuration -- in a session's shell they expand to
+     nothing, so the contract is dead on a consumer install.
+  3. sideways deps: no skill may reference another skill by path (rooted or
      relative), and lib/ may not reference any skill (deps point down).
      Name-form coupling ("load the beta skill") is not machine-checkable; it
      is reviewed, not linted.
-  3. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
+  4. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  4. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  5. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  5. review index: docs/reviews.jsonl, when present, parses and carries one
+  6. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, what came of
      the findings, the model and runtime that staffed it, report URL.
-  6. decision index: every decision entry has a row in the log's index, and
+  7. decision index: every decision entry has a row in the log's index, and
      every row a file.
-  7. entry references: every path reference and relative link a decision entry
+  8. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
@@ -47,8 +51,23 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 
-SHIPPED_DIRS = ("skills", "lib", "commands", "agents", ".claude-plugin")
+SHIPPED_DIRS = (
+    "skills", "lib", "commands", "agents", "charter", "hooks", ".claude-plugin",
+)
 REPO_ONLY_NAMES = {"docs", "tools", ".github"}
+
+# A shipped calling contract naming a harness token is dead on a consumer
+# install: `${CLAUDE_PLUGIN_ROOT}` is a placeholder substituted in hook, monitor
+# and MCP configuration, never a shell variable, so it expands to nothing in a
+# session's shell and the path resolves against the filesystem root. Both
+# shipped scripts carried this and neither could run once installed.
+HARNESS_TOKENS = re.compile(
+    r"\$\{?(CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|CLAUDE_PROJECT_DIR"
+    r"|PLUGIN_ROOT|PLUGIN_DATA|CODEX_HOME)\}?"
+)
+# `hooks/` is the exemption because it is hook configuration -- one of the three
+# places the token actually expands -- plus the prose explaining that.
+HARNESS_TOKEN_EXEMPT_DIRS = frozenset({"hooks"})
 
 # The predecessor's root file passed 30k chars in eight months because every
 # incident defaulted to a paragraph. The budget is the structural counterweight:
@@ -909,9 +928,34 @@ def _within(path: Path, root: Path) -> bool:
     return True
 
 
+def check_harness_tokens(root: Path) -> list[str]:
+    """No shipped file outside `hooks/` names a harness-specific path token."""
+    findings = []
+    for dirname in SHIPPED_DIRS:
+        if dirname in HARNESS_TOKEN_EXEMPT_DIRS:
+            continue
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in _iter_files(base):
+            text = _read_text(path)
+            if text is None:
+                continue
+            rel_file = path.relative_to(root).as_posix()
+            for lineno, line in enumerate(text.splitlines(), 1):
+                for match in HARNESS_TOKENS.finditer(line):
+                    findings.append(
+                        f"harness-token: {rel_file}:{lineno} names "
+                        f"'{match.group(0)}' -- a shipped calling contract "
+                        f"resolves against the directory of the file naming it"
+                    )
+    return findings
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
+        + check_harness_tokens(root)
         + check_sideways_deps(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)

@@ -48,12 +48,15 @@ import subprocess
 import sys
 
 # Matches `.github/CODEOWNERS`. Widening this to skills or decisions is a
-# different requirement and wants its own incident.
-DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md")
+# different requirement and wants its own incident. `charter/CHARTER.md` is
+# not a widening: it holds the half of the doctrine that moved out of
+# `AGENTS.md`, and it also ships to consumers, so omitting it would shrink
+# the owner's read at the moment the material became more consequential.
+DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md", "charter/CHARTER.md")
 
 LABEL = "doctrine"
 LABEL_COLOR = "5319e7"
-LABEL_DESC = "Changes AGENTS.md or CLAUDE.md — read the diff before merging"
+LABEL_DESC = "Changes the doctrine or the shipped charter — read the diff before merging"
 
 # The one standing coupling to an identity. Its tripwire is the log line in
 # `run()`: under a future identity change (a PAT, a GitHub App) the callout
@@ -78,7 +81,8 @@ owner's.</sub>"""
 
 WITHDRAWN = f"""{MARKER}
 ~~This PR changes the doctrine.~~ **Withdrawn:** the PR no longer touches \
-`AGENTS.md` or `CLAUDE.md`. Nothing here needs the owner's doctrine read.
+`AGENTS.md`, `CLAUDE.md` or `charter/CHARTER.md`. Nothing here needs the
+owner's doctrine read.
 
 <sub>Posted by `tools/doctrine_callout.py`.</sub>"""
 
