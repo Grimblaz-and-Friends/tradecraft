@@ -55,8 +55,11 @@ ships one `SessionStart` hook, which emits [the charter](charter/CHARTER.md) —
 roughly 1,100 tokens of binding rules — into each session, so the practice
 governs rather than merely being available. Both runtimes ask you to trust a
 plugin's hooks once before they run; decline and you still get the skills, but
-not the charter. Note that `claude plugin details` reports skill cost only, so
-its always-on figure will read lower than what you actually pay.
+not the charter. Note that `claude plugin details` gets this wrong in your favour: it reports
+the always-on figure as skills only, and annotates the hook
+`(harness-only — no model context cost)`. The hook does cost you context.
+Budget for the skill descriptions plus the charter, not for the number the
+CLI prints.
 
 **What does not reach you, by design.** Everything under `docs/`, `tools/`, and
 `.github/` is this repository's own machinery. A git-source install clones the
