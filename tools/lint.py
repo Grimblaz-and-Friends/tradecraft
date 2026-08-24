@@ -217,7 +217,9 @@ DISPOSITIONS = ("fixed", "routed", "priced_out", "dismissed")
 # Per review rather than per seat: per-seat fields multiply the write cost by
 # the panel width, and a mixed panel can record its split in the value -- which
 # two of the twenty grandfathered rows would have needed. The keys are closed
-# so that a per-seat shape cannot enter through a field nobody validates.
+# so a per-seat shape cannot enter through `staffing` itself -- not the whole
+# key space: a top-level row key and a seat's own counts mapping are
+# unvalidated, and closing them was priced out.
 STAFFING_FIELDS = ("model", "runtime")
 
 # Forward-only, enforced rather than stated: an optional field can never catch
