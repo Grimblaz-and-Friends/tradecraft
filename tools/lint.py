@@ -19,7 +19,8 @@ Checks:
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
   5. review index: docs/reviews.jsonl, when present, parses and carries one
-     valid row per review — date, artifact, lane, per-seat counts, report URL.
+     valid row per review — date, artifact, lane, per-seat counts, what came of
+     the findings, the model and runtime that staffed it, report URL.
   6. decision index: every decision entry has a row in the log's index, and
      every row a file.
   7. entry references: every path reference and relative link a decision entry
@@ -201,6 +202,38 @@ UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {}
 REVIEW_FIELDS = {"date", "artifact", "lane", "seats", "report"}
 REVIEW_LANES = {"panel", "routine"}
 SEAT_COUNTS = ("raw", "merged", "sustained", "high")
+
+# What became of the findings, in the terminal stage's own vocabulary: clause
+# (a) dismisses, clause (b) sustains and fixes, routes, or prices out. The row
+# copies counts the ruling already produced; it does not derive them.
+#
+# `dismissed` earns its place as the only field that measures noise. Measuring
+# value while never measuring noise is how the predecessor's pipeline could
+# only ratchet heavier, and it is near-derivable from merged minus sustained
+# but not reliably -- the terminal docket also carries uncarried seat entries,
+# which is why the seat counts deliberately do not enforce merged >= sustained.
+DISPOSITIONS = ("fixed", "routed", "priced_out", "dismissed")
+
+# Per review rather than per seat: per-seat fields multiply the write cost by
+# the panel width, and a mixed panel can record its split in the value -- which
+# two of the twenty grandfathered rows would have needed. The keys are closed
+# so a per-seat shape cannot enter through `staffing` itself -- not the whole
+# key space: a top-level row key and a seat's own counts mapping are
+# unvalidated, and closing them was priced out.
+STAFFING_FIELDS = ("model", "runtime")
+
+# Forward-only, enforced rather than stated: an optional field can never catch
+# its own omission, and a record that silently fails to carry what it promises
+# is the defect this closes.
+#
+# Grandfathered by POSITION, not by date. A date cutoff was written first and an
+# experience session found the hole in it within eight tool calls: the session's
+# hand reached for "today" before re-reading its brief, and a row dated one day
+# early takes both new fields as optional, passes lint in silence, and lands
+# pre-schema in a file nobody may edit. It got it right by copying its brief,
+# not by understanding. Position cannot be missed by a typo -- the rows that
+# existed when this landed are exempt, everything appended after is not.
+REVIEW_ROWS_GRANDFATHERED = 20
 
 
 def _read_text(path: Path) -> str | None:
@@ -392,7 +425,8 @@ def _not_a_mapping(row, where: str, findings: list) -> bool:
 
 
 def check_review_index(root: Path) -> list[str]:
-    """One row per review: date, artifact, lane, per-seat counts, report URL.
+    """One row per review: date, artifact, lane, per-seat counts, what came of
+    the findings, the staffing, and the report URL.
 
     The row is written once when the review ends and never maintained after —
     it exists so process-weight questions (which seats earn their keep, where
@@ -402,11 +436,19 @@ def check_review_index(root: Path) -> list[str]:
     index = root / "docs" / "reviews.jsonl"
     if not index.is_file():
         return findings
+    # Rows are counted, not lines: a blank line would otherwise shift every
+    # row's position and with it which rows the schema obliges.
+    row_index = -1
     for lineno, line in enumerate(
         index.read_text(encoding="utf-8", errors="replace").splitlines(), 1
     ):
         if not line.strip():
             continue
+        # Position is the non-blank line's ordinal, counted before the parse: a
+        # row that fails to decode would otherwise shift every later row toward
+        # exemption, so the finding disappears while it is still actionable and
+        # returns later against a row that has landed and cannot be edited.
+        row_index += 1
         where = f"review-index: docs/reviews.jsonl:{lineno}"
         # One malformed row must never silence the rest, so both the decode and
         # the per-field checks report rather than raise.
@@ -416,7 +458,7 @@ def check_review_index(root: Path) -> list[str]:
             findings.append(f"{where} is not valid JSON ({type(exc).__name__}: {exc})")
             continue
         try:
-            _check_review_row(row, where, findings)
+            _check_review_row(row, where, findings, row_index)
         except Exception as exc:  # noqa: BLE001 - report, never crash the lint
             findings.append(
                 f"{where} could not be fully validated ({type(exc).__name__}: {exc})"
@@ -424,7 +466,7 @@ def check_review_index(root: Path) -> list[str]:
     return findings
 
 
-def _check_review_row(row, where: str, findings: list) -> None:
+def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
     if _not_a_mapping(row, where, findings):
         return
     missing = REVIEW_FIELDS - set(row)
@@ -451,6 +493,101 @@ def _check_review_row(row, where: str, findings: list) -> None:
         )
     if "seats" in row:
         _check_seats(row["seats"], where, findings)
+    _check_dispositions_and_staffing(row, row_index, where, findings)
+
+
+def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: list) -> None:
+    """What came of the findings, and who produced them.
+
+    Counts alone answer how many findings a review raised and nothing about
+    whether they mattered -- the question three decision entries circle. And
+    the skill requires every report to record model and runtime so per-runtime
+    evidence can accumulate, which it cannot do anywhere queryable while the
+    index drops both.
+
+    Required of every row past the first REVIEW_ROWS_GRANDFATHERED, and
+    validated whenever present, so rows already written stay valid untouched. This closes two of
+    the four questions #126 raised: it does not verify that a routed finding
+    reached its vehicle, which needs the vehicle named, and it detects no
+    recurring defect class.
+    """
+    required = row_index >= REVIEW_ROWS_GRANDFATHERED
+    for field, checker in (
+        ("dispositions", _check_disposition_counts),
+        ("staffing", _check_staffing),
+    ):
+        if field not in row:
+            if required:
+                findings.append(
+                    f"{where} missing field '{field}' — rows past the first "
+                    f"{REVIEW_ROWS_GRANDFATHERED} carry it"
+                    + (
+                        f" ({', '.join(DISPOSITIONS)} counts)"
+                        if field == "dispositions"
+                        else f" ({', '.join(STAFFING_FIELDS)})"
+                    )
+                )
+            continue
+        checker(row[field], where, findings)
+
+
+def _check_disposition_counts(dispositions, where: str, findings: list) -> None:
+    if not isinstance(dispositions, dict):
+        findings.append(
+            f"{where} dispositions must be a mapping of "
+            f"{', '.join(DISPOSITIONS)} to counts"
+        )
+        return
+    missing = set(DISPOSITIONS) - set(dispositions)
+    if missing:
+        findings.append(
+            f"{where} dispositions missing {', '.join(sorted(missing))}"
+        )
+    for field in DISPOSITIONS:
+        if field not in dispositions:
+            continue
+        value = dispositions[field]
+        # bool is a subclass of int and is excluded explicitly, the same bar
+        # the seat counts meet: True would otherwise pass as a count of 1.
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            findings.append(
+                f"{where} dispositions {field} '{value}' must be a "
+                f"non-negative integer"
+            )
+    unknown = set(dispositions) - set(DISPOSITIONS)
+    if unknown:
+        findings.append(
+            f"{where} dispositions carries unknown key(s) "
+            f"{', '.join(sorted(unknown))} — the vocabulary is the terminal "
+            f"stage's own: {', '.join(DISPOSITIONS)}"
+        )
+
+
+def _check_staffing(staffing, where: str, findings: list) -> None:
+    if not isinstance(staffing, dict):
+        findings.append(
+            f"{where} staffing must be a mapping of "
+            f"{', '.join(STAFFING_FIELDS)} to names"
+        )
+        return
+    for field in STAFFING_FIELDS:
+        value = staffing.get(field)
+        if not isinstance(value, str) or not value.strip():
+            findings.append(
+                f"{where} staffing {field} must be a non-empty string"
+            )
+    # Deliberately no vocabulary for the *values*: a fixed list would have to be
+    # amended before the first review staffed by a new runtime could be recorded
+    # at all, and a mixed panel records its split in the value itself. The
+    # *keys* are closed, which is what keeps a per-seat shape -- the design this
+    # change excluded -- from entering silently through a field nobody validates.
+    unknown = set(staffing) - set(STAFFING_FIELDS)
+    if unknown:
+        findings.append(
+            f"{where} staffing carries unknown key(s) "
+            f"{', '.join(sorted(unknown))} — the row names one model and one "
+            f"runtime; an uneven panel says so in the value"
+        )
 
 
 def _check_seats(seats, where: str, findings: list) -> None:
