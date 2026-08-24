@@ -53,4 +53,4 @@ The artifact settles what is being built before it is built, and lands on the wo
 
 **A premise the artifact rests on may need testing before you assert it** — that is a spike, which tests one and commits nothing.
 
-**Where a check bears on the artifact, the artifact carries what came back rather than the fact that you looked.** It carries a spike's result; where you considered one and did not run it, it carries the material you consulted instead — the enumeration, the counts, the file you opened. Where the premise is still undischarged, it carries that, said plainly, with what would settle it. [D-155]
+**Where a check bears on the artifact, the artifact carries what came back rather than the fact that you looked.** It carries a spike's result, **including a spike that did not resolve**; where you considered one and did not run it, it carries the material you consulted instead — the enumeration, the counts, the file you opened. [D-155]
