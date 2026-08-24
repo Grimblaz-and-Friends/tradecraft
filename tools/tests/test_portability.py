@@ -88,6 +88,30 @@ def _clean_env() -> dict:
     return env
 
 
+def _hook_env(plugin_root: Path) -> dict:
+    """A runtime's hook environment, which is not a consumer's shell.
+
+    `_clean_env()` is right for a shipped script: it must not depend on the
+    harness, so the harness is taken away. It is backwards here. A hook command
+    runs *inside* the harness by definition, and both runtimes supply the plugin
+    root to it -- Claude Code by substituting the placeholder into the command
+    string, Codex by inserting `CLAUDE_PLUGIN_ROOT` into the hook's environment
+    (`codex-rs/hooks/src/engine/discovery.rs`, "For OOTB compat with existing
+    plugins that use this env var"). Stripping it failed an emitter that reads
+    the variable and delivers the charter byte-identically -- the shape Codex
+    is built to serve, and the shape this guard exists to permit.
+
+    This models the *union* of what the two runtimes supply, so a pass certifies
+    delivery in at least one runtime. It is not cross-runtime coverage: no
+    single command string serves both a textual placeholder and a `%VAR%`-style
+    variable, which is why Codex on Windows gets nothing and why that is
+    disclosed rather than guarded.
+    """
+    env = _clean_env()
+    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    return env
+
+
 @pytest.mark.parametrize("skill", _skills_with_scripts(), ids=lambda p: p.name)
 def test_skill_names_its_scripts_relative_to_itself(skill: Path, installed: Path):
     """*Every* mention of a script resolves against the skill's own directory.
@@ -197,7 +221,7 @@ def bracketed(tmp_path_factory) -> Path:
     return dest
 
 
-def test_the_declared_hook_command_delivers_the_charter(bracketed: Path):
+def test_the_declared_hook_command_delivers_the_charter(bracketed: Path, tmp_path: Path):
     """Run the command the plugin actually declares, and compare what it emits.
 
     This is the guard for the delivery path, and it is written as an execution
@@ -208,27 +232,42 @@ def test_the_declared_hook_command_delivers_the_charter(bracketed: Path):
     static rung fails one of those two ways. Running the command answers both
     questions at once: it catches a typo'd charter name, an emptied emitter, a
     syntax error, an emitter that exits 0 with nothing, and an emitter that
-    emits the wrong file, and it passes anything that actually delivers.
+    emits the wrong file.
+
+    What it certifies, stated as narrowly as it is true: run under the plugin
+    root the runtime supplies, from a working directory that is not the plugin
+    root, the declared command emits exactly the charter. It does not certify
+    that every conceivable delivering emitter passes -- an earlier draft of this
+    docstring said so and a probe falsified it in one cycle, because the fixture
+    was stripping the variable a lawful emitter reads.
 
     Identity, not non-emptiness. Non-emptiness passes an emitter that prints
-    the README.
+    the README. Line endings are normalized first, so a CRLF-only difference is
+    not a failure; nothing else is forgiven.
     """
     commands = _declared_hook_commands(bracketed)
     assert commands, "hooks/hooks.json declares no SessionStart command"
     charter = (bracketed / "charter" / "CHARTER.md").read_text(encoding="utf-8")
 
     for command in commands:
-        # The one substitution both runtimes perform on a hook command. Modelled
-        # here because the runtime is not available to the suite; it is the same
-        # assumption `check_delivery`'s PLUGIN_ROOT_REF already makes, so the two
+        # Claude Code's half of the contract: it substitutes the placeholder
+        # into the command string before any shell sees it. Codex performs no
+        # substitution at all -- it supplies the same value through the
+        # environment, which `_hook_env` sets. Modelling both is what lets a
+        # lawful emitter of either shape pass. `check_delivery`'s
+        # PLUGIN_ROOT_REF makes the same substitution assumption, so the two
         # guards drift together or not at all.
         expanded = command.replace("${CLAUDE_PLUGIN_ROOT}", bracketed.as_posix())
         result = subprocess.run(
             expanded,
             shell=True,
             capture_output=True,
-            env=_clean_env(),
-            cwd=str(bracketed),
+            env=_hook_env(bracketed),
+            # Never the plugin root: that is the one directory a runtime is
+            # guaranteed not to hand a SessionStart hook, and running there
+            # silently blesses a cwd-relative command that dies on every
+            # real install.
+            cwd=str(tmp_path),
         )
         assert result.returncode == 0, (
             f"the declared hook command exited {result.returncode}\n"

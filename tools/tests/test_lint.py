@@ -130,7 +130,7 @@ def test_delivery_fires_when_no_session_start_command_is_declared(tmp_path):
         '{"hooks": {"SessionStop": []}}\n', encoding="utf-8"
     )
     findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "no SessionStart command" in findings[0]
+    assert len(findings) == 1 and "no runnable SessionStart" in findings[0]
 
 
 def test_delivery_fires_when_the_hook_names_a_path_that_is_not_there(tmp_path):
@@ -242,7 +242,7 @@ def test_sideways_deps_reaches_the_charter_and_the_hooks(tmp_path):
     assert len(findings) == 1
 
 
-def test_the_two_shipped_zone_declarations_agree(tmp_path):
+def test_the_two_shipped_zone_declarations_agree():
     """`check_version_bump` keeps its own copy, deliberately -- but a copy that
     silently disagrees is how `charter/` and `hooks/` came to be in the zone
     everywhere except the guard that demands a version bump for them."""
@@ -255,6 +255,86 @@ def test_the_two_shipped_zone_declarations_agree(tmp_path):
         f"lint-only={sorted(lint_zone - bump_zone)}, "
         f"version-bump-only={sorted(bump_zone - lint_zone)}"
     )
+
+
+def test_doctrine_import_fires_on_a_fenced_mention(tmp_path):
+    """A fenced import is displayed, not performed -- the same premise the
+    backticked case rests on, and the guard once caught only one of them."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8").replace(
+            "@charter/CHARTER.md",
+            "```" + chr(10) + "@charter/CHARTER.md" + chr(10) + "```",
+        ),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "doctrine-import" in f]
+    assert len(findings) == 1
+
+
+def test_doctrine_import_allows_a_fenced_example_beside_the_real_line(tmp_path):
+    """The other polarity: showing the import in a fence is lawful so long as
+    the file also performs it. A guard that failed this would block the one
+    document most likely to want to explain itself."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8")
+        + chr(10)
+        + "For example:" + chr(10)
+        + "```" + chr(10) + "@charter/CHARTER.md" + chr(10) + "```" + chr(10),
+        encoding="utf-8",
+    )
+    assert [f for f in lint.run(tmp_path) if "doctrine-import" in f] == []
+
+
+def test_delivery_survives_a_non_string_hook_command(tmp_path):
+    """A null command once reached the regex and raised, taking down the whole
+    run and suppressing every other finding in it. Found by the external pass,
+    which is the only party that tried it."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", '
+        '"command": null}]}]}}' + chr(10),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "delivery" in f]
+    assert len(findings) == 1 and "no runnable SessionStart" in findings[0]
+
+
+def test_delivery_fires_when_the_command_key_is_absent(tmp_path):
+    """`.get("command", "")` made an absent key indistinguishable from a present
+    empty one, and the emptiness test looked at the list rather than its
+    contents -- so a config declaring no command at all passed green."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"hooks": [{"type": "command"}]}]}}' + chr(10),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "delivery" in f]
+    assert len(findings) == 1 and "no runnable SessionStart" in findings[0]
+
+
+def test_delivery_fires_when_the_named_path_is_a_directory(tmp_path):
+    """`exists()` was satisfied by a directory of the right name, which is not
+    runnable -- and the finding's own message would have been false about it."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "emit_charter.py").unlink()
+    (tmp_path / "hooks" / "emit_charter.py").mkdir()
+    findings = [f for f in lint.run(tmp_path) if "delivery" in f]
+    assert len(findings) == 1 and "not a file" in findings[0]
+
+
+def test_sideways_dep_names_the_directory_it_came_from(tmp_path):
+    """The scan list grew from `lib/` alone to three directories; the label did
+    not, so every charter and hooks finding claimed to come from `lib/`."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "charter" / "CHARTER.md").write_text(
+        "See skills/example-skill/SKILL.md." + chr(10), encoding="utf-8"
+    )
+    findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
+    assert len(findings) == 1 and "from charter/" in findings[0]
 
 
 def test_harness_token_fires_on_a_shipped_calling_contract(tmp_path):

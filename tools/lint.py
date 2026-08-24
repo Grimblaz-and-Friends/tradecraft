@@ -77,7 +77,10 @@ HARNESS_TOKENS = re.compile(
     rf"|(?i:%(?:{_HARNESS_NAMES})%)"
 )
 # `hooks/` is the exemption because it is hook configuration, which is where
-# the token expands in both runtimes -- plus the prose explaining that.
+# the token is the vendor's contract rather than a dead reference -- plus the
+# prose explaining that. Claude Code substitutes it there; Codex supplies the
+# same value through the hook's environment, which its POSIX shell expands and
+# `cmd.exe` does not. That last gap is disclosed in `hooks/README.md`.
 HARNESS_TOKEN_EXEMPT_DIRS = frozenset({"hooks"})
 
 # Inside `hooks/` the placeholder is real, so the guard resolves what it
@@ -352,6 +355,13 @@ def check_zone_wall(root: Path) -> list[str]:
     return findings
 
 
+def _origin(own: str | None, base: Path) -> str:
+    """Name where the reference came from. Computed, not hardcoded: the scan
+    list grew from `lib/` alone to `lib/`, `charter/` and `hooks/`, and a label
+    that names the wrong zone misdirects the one reader who is already lost."""
+    return f" from skill '{own}'" if own else f" from {base.name}/"
+
+
 def check_sideways_deps(root: Path) -> list[str]:
     findings = []
     skills = root / "skills"
@@ -388,7 +398,7 @@ def check_sideways_deps(root: Path) -> list[str]:
                     if own is None or target.lower() != own.lower():
                         findings.append(
                             f"sideways-dep: {rel_file}:{lineno} references "
-                            f"skill '{target}'" + (f" from skill '{own}'" if own else " from lib/")
+                            f"skill '{target}'" + _origin(own, base)
                         )
                 for raw, parts in _resolved_relative_targets(root, path, line):
                     if len(parts) >= 2 and parts[0] == "skills":
@@ -397,9 +407,27 @@ def check_sideways_deps(root: Path) -> list[str]:
                             findings.append(
                                 f"sideways-dep: {rel_file}:{lineno} relative "
                                 f"reference '{raw}' resolves into skill '{target}'"
-                                + (f" from skill '{own}'" if own else " from lib/")
+                                + _origin(own, base)
                             )
     return findings
+
+
+def _unfenced(text: str) -> list[str]:
+    """The document's lines with fenced blocks dropped, each stripped.
+
+    An import inside a fence is displayed, not performed, exactly as a
+    backticked one is. This file's own docstring reasons from that premise;
+    the guard below has to apply it to both spellings or to neither.
+    """
+    lines, fenced = [], False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+            continue
+        if not fenced:
+            lines.append(stripped)
+    return lines
 
 
 def check_doctrine(root: Path) -> list[str]:
@@ -426,8 +454,10 @@ def check_doctrine(root: Path) -> list[str]:
     # in THIS repository only through an import in a file that is itself
     # imported. Checked by shape rather than by position: unlike CLAUDE.md the
     # import does not lead the file, and a backticked mention imports nothing.
+    # Nor does a fenced one -- the same premise, and the guard rejected one
+    # spelling of not-bare while accepting the other.
     if agents.is_file():
-        lines = [ln.strip() for ln in agents.read_text(encoding="utf-8", errors="replace").splitlines()]
+        lines = _unfenced(agents.read_text(encoding="utf-8", errors="replace"))
         if CHARTER_IMPORT not in lines:
             findings.append(
                 "doctrine-import: AGENTS.md carries no bare "
@@ -1023,21 +1053,33 @@ def check_delivery(root: Path) -> list[str]:
 
     events = (parsed.get("hooks") or {}) if isinstance(parsed, dict) else {}
     entries = events.get("SessionStart") or []
+    # `.get("command")` rather than `.get("command", "")`: an absent key and a
+    # null value both have to reach the emptiness test below. The earlier shape
+    # returned "" for an absent key, so `commands` was truthy and a config
+    # declaring no command at all passed green; a null value reached the regex
+    # and raised TypeError, taking down the whole run and suppressing every
+    # other finding in it.
     commands = [
-        hook.get("command", "")
+        hook.get("command")
         for entry in entries if isinstance(entry, dict)
         for hook in (entry.get("hooks") or []) if isinstance(hook, dict)
+        if hook.get("type", "command") == "command"
     ]
-    if not commands:
+    runnable = [c for c in commands if isinstance(c, str) and c.strip()]
+    if not runnable:
         findings.append(
-            "delivery: hooks/hooks.json declares no SessionStart command"
+            "delivery: hooks/hooks.json declares no runnable SessionStart "
+            "command -- nothing delivers the charter to a consumer session"
         )
-    for command in commands:
+    for command in runnable:
         for ref in PLUGIN_ROOT_REF.findall(command):
-            if not (root / ref).exists():
+            # is_file, not exists: a directory of the right name satisfies the
+            # latter while being unrunnable, and the message below would then
+            # be false about a path that is right there.
+            if not (root / ref).is_file():
                 findings.append(
-                    f"delivery: hooks/hooks.json names '{ref}', which does "
-                    f"not exist in the shipped tree"
+                    f"delivery: hooks/hooks.json names '{ref}', which is not "
+                    f"a file in the shipped tree"
                 )
     return findings
 
