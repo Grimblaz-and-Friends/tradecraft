@@ -43,6 +43,10 @@ _SPEC.loader.exec_module(engine)
 
 SUITE_PATHS = ["tools/tests", "skills"]
 DOC = "AGENTS.md"
+# `charter` is deliberate and not dead: a delta measured against a base that
+# predates the charter becoming a cell has to see the old path on the base
+# side, or the move reads as a reduction. It matches nothing in a current
+# working tree, which is why it looks like a leftover.
 PROSE_PATHS = ["AGENTS.md", "CLAUDE.md", "charter", "skills"]
 PROSE_SUFFIXES = [".md"]
 
@@ -88,9 +92,10 @@ def figure_charter(root: Path) -> dict:
     file would disagree with the guard that judges it, which is the one thing
     D-141 exists to prevent -- so the measurement comes from the guard.
     """
-    text = lint._frontmatterless(
-        (root / lint.CHARTER).read_text(encoding="utf-8", errors="replace")
-    )
+    target = root / lint.CHARTER
+    if not target.is_file():
+        raise SystemExit(f"figures: {lint.CHARTER} is not a readable file under {root}")
+    text = lint._frontmatterless(target.read_text(encoding="utf-8", errors="replace"))
     chars, budget = len(text), lint.CHARTER_BUDGET_CHARS
     return {
         "name": f"doc `{lint.CHARTER}` (body)",
@@ -100,7 +105,10 @@ def figure_charter(root: Path) -> dict:
             "read (CRLF counts as one character), working tree; the same "
             "measurement tools/lint.py's budget applies"
         ),
-        "data": {"path": lint.CHARTER, "chars": chars, "budget": budget},
+        "data": {
+            "path": lint.CHARTER, "chars": chars, "budget": budget,
+            "headroom": budget - chars,
+        },
     }
 
 

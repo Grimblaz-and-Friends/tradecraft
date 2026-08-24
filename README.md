@@ -17,7 +17,7 @@ Anything that is a *capability* — orchestration, subagents, planning modes, me
 
 The unit of everything is the **skill**: a self-contained cell carrying whatever mix of prose (methodology), code (contracts), and tests its job requires. Skills never depend on each other sideways. The plugin is just the bundle they ship in.
 
-Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19-constitutional-reset.md)): the **doctrine** — the practice's binding half in [the charter](skills/charter/SKILL.md), a cell that ships, and this repository's own mechanics in [AGENTS.md](AGENTS.md), which does not — the **skills** (all methodology), and the **[decision log](docs/architecture/decisions/)** (frozen rationale that informs, never binds). Every governing document states its purpose, audience, and success criteria, and its review judges against that statement — the review practice itself is the `adversarial-review` skill. Each review appends one row to [docs/reviews.jsonl](docs/reviews.jsonl); records are append-only exhaust, never maintained.
+Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19-constitutional-reset.md)): the **doctrine** — the practice's binding half in [the charter](skills/charter/SKILL.md), a cell that ships, and this repository's own mechanics in [AGENTS.md](AGENTS.md), which does not — the **skills** (methodology, plus the charter itself, which is a cell so that a session can pull it deliberately), and the **[decision log](docs/architecture/decisions/)** (frozen rationale that informs, never binds). Every governing document states its purpose, audience, and success criteria, and its review judges against that statement — the review practice itself is the `adversarial-review` skill. Each review appends one row to [docs/reviews.jsonl](docs/reviews.jsonl); records are append-only exhaust, never maintained.
 
 ## Install it
 
@@ -60,9 +60,11 @@ marketplace sources, and this plugin's source is a relative path, so `sha` does
 not apply to it at all.
 
 **What lands in your session.** Every skill's name and description sit in every
-session's context; each skill's body loads only when it fires. On top of that,
+session's context; each skill's body loads only when it fires. One of those
+skills is the charter itself, so wherever the hook below does not reach you, you
+can still ask for the practice's rules by name. On top of that,
 the plugin ships one `SessionStart` hook, which emits [the charter](skills/charter/SKILL.md)
-— roughly 1,100 tokens of binding rules — so the practice governs rather than
+— about 1,000 tokens of binding rules — so the practice governs rather than
 merely being available. That matcher is match-all, so the charter is re-emitted
 on resume, clear, compact and fork as well as at startup: budget per
 `SessionStart` event, not per session, and expect a long compacting session to
@@ -76,7 +78,8 @@ model context cost)`. The hook does cost you context.
 that carries only `python3` it will exit without emitting, and a failed
 session-start hook reports to you, not to the model — so the session simply
 proceeds without the charter. If `python -V` does not work on your machine, this
-plugin gives you the skills and not the practice.
+plugin's hook gives you nothing — but the charter is itself one of the skills,
+so ask for it by name and you have the practice anyway.
 
 **On declining the hook.** Claude Code gates plugin hooks on workspace trust and
 the `disableAllHooks` setting; there is no supported way to take this plugin's
@@ -84,7 +87,8 @@ skills while declining its hook. Codex does have hook-level trust and will ask.
 One quadrant does not work at all: on **Windows under Codex**, hook commands run
 through `cmd.exe` with the plugin root supplied as an environment variable, which
 this hook's command cannot resolve — you get the skills, and should read the
-charter from the plugin cache yourself.
+charter by invoking the `charter` skill — it is the same file the hook reads out,
+which is why the plugin ships it as a cell.
 
 **What does not reach you, by design.** Everything under `docs/`, `tools/`, and
 `.github/` is this repository's own machinery. A git-source install clones the
@@ -93,4 +97,4 @@ shipped references them and nothing you use should.
 
 ## Status
 
-Installable in a consumer repository (2026-08-24): the install path, skill discovery and hook registration were exercised there, and `persist-changes` ran from the installed cache. Not yet run there: the current hook command against a real install, and whether the hook's output reaches a live session's context — the latter documented and third-party-reproduced, neither executed here. Before that, reset complete (2026-08-19): the doctrine, the shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.
+Installable in a consumer repository (2026-08-24): the install path, skill discovery and hook registration were exercised there, and `persist-changes` ran from the installed cache. The declared hook command was run from the real installed cache and emitted the charter byte-for-byte. Not yet run there: whether the hook's output reaches a live session's context — documented and third-party-reproduced, not executed here. Before that, reset complete (2026-08-19): the doctrine, the shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.

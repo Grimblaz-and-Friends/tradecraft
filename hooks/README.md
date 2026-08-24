@@ -6,7 +6,8 @@ plugin holds the practice's binding rules before it acts. The cell is the same
 file a session can invoke by name — one file, two doors — and the emitter
 strips its frontmatter, which is addressed to the runtime's skill index rather
 than to a reader. Without it a consumer receives the
-skills and no doctrine at all — a plugin's root `AGENTS.md` and `CLAUDE.md` land
+skills and no doctrine unless it asks for the charter cell by name — a plugin's
+root `AGENTS.md` and `CLAUDE.md` land
 in the install cache but are never loaded as context, which the vendor's own
 plugin validator says in as many words.
 
@@ -60,7 +61,8 @@ resolve. No single command string serves both a textual placeholder and a
 `%VAR%`-style environment variable, so this hook does not deliver the charter to
 a Windows Codex adopter. Claude Code on Windows is unaffected, because it
 substitutes before any shell runs. An adopter in that quadrant gets the skills
-and should read the charter directly from the plugin cache.
+and can invoke the charter cell by name, which is the same file this hook reads
+out and the reason the charter ships as a cell at all.
 
 **Trust.** Claude Code gates plugin hooks on workspace trust plus the
 `disableAllHooks` setting; there is no per-plugin, hooks-only decline, so an

@@ -15,6 +15,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import lint
 
 
+import importlib.util as _ilu
+
+NL = chr(10)
+_spec = _ilu.spec_from_file_location(
+    "emit_charter",
+    Path(__file__).resolve().parents[2] / "hooks" / "emit_charter.py",
+)
+emit_charter = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(emit_charter)
+
+
+def _write_cell(skill: Path, body: str) -> None:
+    """Write a cell body under valid frontmatter.
+
+    Every cell needs a parseable name and description now -- the runtime indexes
+    those and nothing else until the cell fires, and a cell without them loads
+    with empty metadata. The fixtures exercise body content, so the header is
+    boilerplate here; it is not boilerplate in the tree.
+    """
+    (skill / "SKILL.md").write_text(
+        "---" + NL + f"name: {skill.name}" + NL
+        + "description: A fixture cell." + NL + "---" + NL + NL + body,
+        encoding="utf-8",
+    )
+
+
 def make_clean_tree(root: Path) -> None:
     (root / "AGENTS.md").write_text(
         "# root" + chr(10) + "@skills/charter/SKILL.md" + chr(10)
@@ -24,10 +50,7 @@ def make_clean_tree(root: Path) -> None:
     (root / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
     skill = root / "skills" / "example-skill"
     (skill / "references").mkdir(parents=True)
-    (skill / "SKILL.md").write_text(
-        "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n",
-        encoding="utf-8",
-    )
+    _write_cell(skill, "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n")
     _wire_callout(root)
     _wire_delivery(root)
 
@@ -107,7 +130,9 @@ def test_delivery_fires_when_the_charter_is_empty(tmp_path):
     make_clean_tree(tmp_path)
     (tmp_path / "skills" / "charter" / "SKILL.md").write_text("\n\n", encoding="utf-8")
     findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "no body" in findings[0]
+    # Two guards, one cause: no body to deliver, and no header to index by.
+    assert any("delivery" in f and "no body" in f for f in findings)
+    assert any("cell-frontmatter" in f for f in findings)
 
 
 def test_delivery_fires_when_the_hook_config_is_missing(tmp_path):
@@ -161,12 +186,9 @@ def test_harness_token_fires_on_powershell_and_cmd_spellings_any_case(tmp_path):
     """
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "python $ENV:CLAUDE_PLUGIN_ROOT/scripts/run.py" + chr(10)
+    _write_cell(skill, "python $ENV:CLAUDE_PLUGIN_ROOT/scripts/run.py" + chr(10)
         + "python $eNv:CLAUDE_PLUGIN_ROOT/scripts/run.py" + chr(10)
-        + "python %claude_plugin_root%/scripts/run.py" + chr(10),
-        encoding="utf-8",
-    )
+        + "python %claude_plugin_root%/scripts/run.py" + chr(10))
     findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
     assert len(findings) == 3
 
@@ -176,10 +198,7 @@ def test_harness_token_case_insensitivity_does_not_reach_the_posix_form(tmp_path
     fire on a genuinely different lowercase name."""
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "python ${claude_plugin_root}/scripts/run.py" + chr(10),
-        encoding="utf-8",
-    )
+    _write_cell(skill, "python ${claude_plugin_root}/scripts/run.py" + chr(10))
     assert [f for f in lint.run(tmp_path) if "harness-token" in f] == []
 
 
@@ -188,11 +207,8 @@ def test_harness_token_covers_the_other_path_roots(tmp_path):
     entrypoint cannot make a calling contract non-portable."""
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "python ${CLAUDE_CONFIG_DIR}/scripts/run.py" + chr(10)
-        + "python $CLAUDE_WORKING_DIR/scripts/run.py" + chr(10),
-        encoding="utf-8",
-    )
+    _write_cell(skill, "python ${CLAUDE_CONFIG_DIR}/scripts/run.py" + chr(10)
+        + "python $CLAUDE_WORKING_DIR/scripts/run.py" + chr(10))
     findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
     assert len(findings) == 2
 
@@ -345,10 +361,7 @@ def test_sideways_dep_names_the_directory_it_came_from(tmp_path):
 def test_harness_token_fires_on_a_shipped_calling_contract(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        'python "${CLAUDE_PLUGIN_ROOT}/skills/example-skill/scripts/run.py"\n',
-        encoding="utf-8",
-    )
+    _write_cell(skill, 'python "${CLAUDE_PLUGIN_ROOT}/skills/example-skill/scripts/run.py"\n')
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "harness-token" in findings[0]
 
@@ -356,12 +369,9 @@ def test_harness_token_fires_on_a_shipped_calling_contract(tmp_path):
 def test_harness_token_fires_on_the_bare_and_codex_forms(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "python $CLAUDE_PLUGIN_ROOT/scripts/run.py\n"
+    _write_cell(skill, "python $CLAUDE_PLUGIN_ROOT/scripts/run.py\n"
         "python ${PLUGIN_ROOT}/scripts/run.py\n"
-        "python $CODEX_HOME/scripts/run.py\n",
-        encoding="utf-8",
-    )
+        "python $CODEX_HOME/scripts/run.py\n")
     findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
     assert len(findings) == 3
 
@@ -382,18 +392,15 @@ def test_harness_token_exempts_hooks_where_the_token_actually_expands(tmp_path):
 def test_harness_token_stays_quiet_on_the_relative_contract(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "The script sits beside this file at scripts/run.py; invoke it by that\n"
-        "path resolved against the directory this file is in.\n",
-        encoding="utf-8",
-    )
+    _write_cell(skill, "The script sits beside this file at scripts/run.py; invoke it by that\n"
+        "path resolved against the directory this file is in.\n")
     assert lint.run(tmp_path) == []
 
 
 def test_zone_wall_fires_on_rooted_reference(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text("See docs/architecture/adr/README.md for rules.\n", encoding="utf-8")
+    _write_cell(skill, "See docs/architecture/adr/README.md for rules.\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "zone-wall" in findings[0]
 
@@ -401,9 +408,7 @@ def test_zone_wall_fires_on_rooted_reference(tmp_path):
 def test_zone_wall_fires_on_relative_parent_reference(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "[the constitution](../../docs/architecture/adr/README.md)\n", encoding="utf-8"
-    )
+    _write_cell(skill, "[the constitution](../../docs/architecture/adr/README.md)\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "zone-wall" in findings[0]
 
@@ -411,12 +416,9 @@ def test_zone_wall_fires_on_relative_parent_reference(tmp_path):
 def test_zone_wall_fires_on_uppercase_and_backslash_but_not_own_subdir(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        # ./tools/ inside a skill resolves to the skill's OWN tools/ subdir —
+    _write_cell(skill, # ./tools/ inside a skill resolves to the skill's OWN tools/ subdir —
         # self-contained and lawful; the other two are repo-only references.
-        "Run ./tools/helper.py first.\nOr see Docs/architecture.\nOr docs\\architecture\\adr.\n",
-        encoding="utf-8",
-    )
+        "Run ./tools/helper.py first.\nOr see Docs/architecture.\nOr docs\\architecture\\adr.\n")
     findings = [f for f in lint.run(tmp_path) if "zone-wall" in f]
     assert len(findings) == 2
 
@@ -424,11 +426,8 @@ def test_zone_wall_fires_on_uppercase_and_backslash_but_not_own_subdir(tmp_path)
 def test_zone_wall_ignores_web_urls_and_longer_paths(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "See https://example.com/docs/guide and https://github.com/o/r/blob/main/docs/x.md\n"
-        "The upstream-docs/ convention and their-repo/docs/ layout are fine.\n",
-        encoding="utf-8",
-    )
+    _write_cell(skill, "See https://example.com/docs/guide and https://github.com/o/r/blob/main/docs/x.md\n"
+        "The upstream-docs/ convention and their-repo/docs/ layout are fine.\n")
     assert lint.run(tmp_path) == []
 
 
@@ -462,7 +461,7 @@ def test_sideways_dep_fires_and_self_reference_does_not(tmp_path):
     make_clean_tree(tmp_path)
     other = tmp_path / "skills" / "other-skill"
     other.mkdir(parents=True)
-    (other / "SKILL.md").write_text("Compose with skills/example-skill/ for setup.\n", encoding="utf-8")
+    _write_cell(other, "Compose with skills/example-skill/ for setup.\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1
     assert "sideways-dep" in findings[0] and "example-skill" in findings[0]
@@ -472,7 +471,7 @@ def test_sideways_dep_fires_on_relative_form(tmp_path):
     make_clean_tree(tmp_path)
     other = tmp_path / "skills" / "other-skill"
     other.mkdir(parents=True)
-    (other / "SKILL.md").write_text("Load ../example-skill/SKILL.md first.\n", encoding="utf-8")
+    _write_cell(other, "Load ../example-skill/SKILL.md first.\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "sideways-dep" in findings[0]
 
@@ -491,14 +490,11 @@ def test_sideways_dep_ignores_web_urls_and_longer_paths(tmp_path):
     make_clean_tree(tmp_path)
     other = tmp_path / "skills" / "other-skill"
     other.mkdir(parents=True)
-    (other / "SKILL.md").write_text(
-        "See https://github.com/anthropics/skills/tree/main/skills/pdf/SKILL.md\n"
-        "The upstream-skills/bar/ layout and their-repo/skills/baz/ are fine.\n",
-        encoding="utf-8",
-    )
+    _write_cell(other, "See https://github.com/anthropics/skills/tree/main/skills/pdf/SKILL.md\n"
+        "The upstream-skills/bar/ layout and their-repo/skills/baz/ are fine.\n")
     assert lint.run(tmp_path) == []
     # ...and a true sideways reference still fires.
-    (other / "SKILL.md").write_text("Load skills/example-skill/ first.\n", encoding="utf-8")
+    _write_cell(other, "Load skills/example-skill/ first.\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "sideways-dep" in findings[0]
 
@@ -877,12 +873,9 @@ def test_zone_wall_fires_on_relative_dot_leading_repo_only_name(tmp_path):
     # prefix required a word character, and a dot is not one.
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "[ci](../../.github/workflows/ci.yml)\n"
+    _write_cell(skill, "[ci](../../.github/workflows/ci.yml)\n"
         "See ../../.github/workflows/ci.yml too.\n"
-        "Or ..\\..\\.github\\workflows\\ci.yml.\n",
-        encoding="utf-8",
-    )
+        "Or ..\\..\\.github\\workflows\\ci.yml.\n")
     findings = [f for f in lint.run(tmp_path) if "zone-wall" in f]
     assert len(findings) == 3, findings
 
@@ -892,9 +885,7 @@ def test_zone_wall_ignores_relative_dot_leading_path_that_is_not_repo_only(tmp_p
     # not a repo-only name must still pass, or the guard blocks lawful work.
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "See ../.config/settings.json and ./.cache/notes.md.\n", encoding="utf-8"
-    )
+    _write_cell(skill, "See ../.config/settings.json and ./.cache/notes.md.\n")
     assert [f for f in lint.run(tmp_path) if "zone-wall" in f] == []
 
 
@@ -905,15 +896,12 @@ def test_zone_wall_ignores_suffix_match_inside_a_longer_relative_token(tmp_path)
     # three repo-only names. Found by the external pass on 2026-08-22.
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "See assets/../../.github/workflows/ci.yml.\n"
+    _write_cell(skill, "See assets/../../.github/workflows/ci.yml.\n"
         "See assets/../../docs/architecture/README.md.\n"
         "See assets/../../tools/lint.py.\n"
         "See [x](assets/../../.github/workflows/ci.yml).\n"
         "See assets\\..\\..\\.github\\ci.yml.\n"
-        "See a.b/../../docs/x.md.\n",
-        encoding="utf-8",
-    )
+        "See a.b/../../docs/x.md.\n")
     assert [f for f in lint.run(tmp_path) if "zone-wall" in f] == []
 
 
@@ -922,9 +910,7 @@ def test_sideways_dep_ignores_suffix_match_inside_a_longer_relative_token(tmp_pa
     # reached both guards; the lawful polarity has to be pinned on both.
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "See assets/../beta-skill/SKILL.md.\n", encoding="utf-8"
-    )
+    _write_cell(skill, "See assets/../beta-skill/SKILL.md.\n")
     assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == []
 
 
@@ -1470,3 +1456,85 @@ def test_non_mapping_dispositions_and_staffing_are_findings(tmp_path):
     _write_index(tmp_path, _row_with_extras(staffing="Opus 5"))
     b = [f for f in lint.run(tmp_path) if "must be a mapping" in f]
     assert len(a) == 1 and len(b) == 1
+
+
+FRONTMATTER_CASES = [
+    # (label, document, expected body)
+    (
+        "a normal cell",
+        "---" + NL + "name: x" + NL + "description: y" + NL + "---" + NL + NL + "# x" + NL + "Body." + NL,
+        "# x" + NL + "Body." + NL,
+    ),
+    (
+        "no frontmatter at all",
+        "# x" + NL + "Body." + NL,
+        "# x" + NL + "Body." + NL,
+    ),
+    (
+        "a horizontal rule inside the body",
+        "---" + NL + "name: x" + NL + "---" + NL + NL + "Above." + NL + "---" + NL + "Below." + NL,
+        "Above." + NL + "---" + NL + "Below." + NL,
+    ),
+    (
+        "an unterminated frontmatter block",
+        "---" + NL + "name: x" + NL + "still open" + NL,
+        "---" + NL + "name: x" + NL + "still open" + NL,
+    ),
+    (
+        "frontmatter and nothing else",
+        "---" + NL + "name: x" + NL + "---" + NL,
+        "",
+    ),
+    (
+        "blank lines between the block and the body",
+        "---" + NL + "name: x" + NL + "---" + NL + NL + NL + "Body." + NL,
+        "Body." + NL,
+    ),
+    (
+        "an empty document",
+        "",
+        "",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "document,expected",
+    [(d, e) for _, d, e in FRONTMATTER_CASES],
+    ids=[label for label, _, _ in FRONTMATTER_CASES],
+)
+def test_both_frontmatter_strippers_produce_the_expected_body(document, expected):
+    """Two implementations, one table of literal answers.
+
+    `hooks/emit_charter.py` and `tools/lint.py` each carry this parse, and the
+    zone wall forces that: `hooks/` is shipped, `tools/` is repo-only, and the
+    shared home that would fix it does not exist. What the duplication cost was
+    an oracle -- the portability suite checked the emitter's output against the
+    lint's function, so setting *both* to identity left every check green while
+    the hook emitted raw YAML into every consumer session. The expected values
+    below are literal, so neither implementation is the other's answer key.
+    """
+    assert emit_charter._body(document) == expected
+    assert lint._frontmatterless(document) == expected
+
+
+def test_the_budget_measures_the_body_and_not_the_file(tmp_path):
+    """A description edit must not eat the rules' headroom.
+
+    The rule is asserted in a decision entry that freezes on landing, and until
+    now nothing pinned it: reverting the budget to measure the whole file left
+    the suite green, because the existing budget test writes a cell with no
+    frontmatter and so never enters the stripping branch.
+    """
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter" / "SKILL.md"
+    body = "x" * (lint.CHARTER_BUDGET_CHARS - 10)
+    charter.write_text(
+        "---" + NL + "name: charter" + NL
+        + "description: " + "d" * 400 + NL + "---" + NL + NL + body + NL,
+        encoding="utf-8",
+    )
+    # The file is over budget; the body is under it. Only a guard measuring the
+    # body stays quiet here.
+    assert len(charter.read_text(encoding="utf-8")) > lint.CHARTER_BUDGET_CHARS
+    assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []

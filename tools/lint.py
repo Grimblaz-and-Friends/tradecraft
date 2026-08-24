@@ -87,6 +87,12 @@ HARNESS_TOKEN_EXEMPT_DIRS = frozenset({"hooks"})
 # points at rather than banning it.
 PLUGIN_ROOT_REF = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)")
 CHARTER = "skills/charter/SKILL.md"
+# The always-on surface of a cell, budgeted because every adopter pays for
+# it in every session whether or not the cell ever fires. Not #130's
+# description standard -- a ceiling is not a standard -- but the ceiling has
+# to exist, because moving the charter's budget to its body left the part
+# that is genuinely always-on bounded by nothing.
+CELL_FIELD_MAX_CHARS = {"name": 64, "description": 700}
 CHARTER_IMPORT = f"@{CHARTER}"
 
 # The predecessor's root file passed 30k chars in eight months because every
@@ -357,9 +363,12 @@ def check_zone_wall(root: Path) -> list[str]:
 
 
 def _origin(own: str | None, base: Path) -> str:
-    """Name where the reference came from. Computed, not hardcoded: the scan
-    list grew from `lib/` alone to `lib/`, `charter/` and `hooks/`, and a label
-    that names the wrong zone misdirects the one reader who is already lost."""
+    """Name where the reference came from, computed rather than hardcoded.
+
+    The scan list has changed twice already -- `lib/` alone, then three
+    directories, then two when the charter became a cell and got a skill's own
+    label. A hardcoded label survives none of those, and a label naming the
+    wrong zone misdirects the one reader who is already lost."""
     return f" from skill '{own}'" if own else f" from {base.name}/"
 
 
@@ -1023,6 +1032,105 @@ def _within(path: Path, root: Path) -> bool:
     return True
 
 
+def check_cell_frontmatter(root: Path) -> list[str]:
+    """Every skill declares a name and a description the runtime can parse.
+
+    A cell's frontmatter is the whole of its always-on surface: the runtime
+    indexes the name and description and nothing else until the cell fires. One
+    unquoted `: ` inside a description made the charter's frontmatter
+    unparseable, and the runtime's answer to unparseable is to load the cell
+    with empty metadata -- no name, no description, no trigger, silently. The
+    lint, the suite and `claude plugin validate .` were all green over it,
+    because the first two never looked and the third validates the marketplace
+    manifest and stops.
+
+    Hand-rolled rather than PyYAML, and not only for the stdlib rule: the
+    runtime parses YAML 1.2 in JavaScript, PyYAML is 1.1, and the two can
+    disagree on exactly the plain scalars at issue. A dependency that buys an
+    approximation of the real oracle is worse than a narrow check that states
+    what it covers. This covers the shapes that actually break a plain scalar;
+    a wholly quoted value is accepted without inspection, which is the escape
+    hatch for a description that genuinely needs a colon.
+    """
+    findings = []
+    skills = root / "skills"
+    if not skills.is_dir():
+        return findings
+    for skill_dir in sorted(p for p in skills.iterdir() if p.is_dir()):
+        cell = skill_dir / "SKILL.md"
+        if not cell.is_file():
+            continue
+        rel = cell.relative_to(root).as_posix()
+        fields = _frontmatter_fields(_read_text(cell) or "")
+        if fields is None:
+            findings.append(
+                f"cell-frontmatter: {rel} has no frontmatter block -- the "
+                f"runtime indexes it with no name and no description"
+            )
+            continue
+        for key in ("name", "description"):
+            value = fields.get(key, "")
+            if not value.strip():
+                findings.append(
+                    f"cell-frontmatter: {rel} declares no {key}"
+                    + (" -- a cell with no description has no trigger"
+                       if key == "description" else "")
+                )
+                continue
+            hazard = _plain_scalar_hazard(value)
+            if hazard:
+                findings.append(
+                    f"cell-frontmatter: {rel}'s {key} is not a parseable plain "
+                    f"scalar -- {hazard}. Quote the whole value, or avoid the "
+                    f"construct; unparseable frontmatter loads as empty metadata"
+                )
+            elif len(value) > CELL_FIELD_MAX_CHARS.get(key, 10**9):
+                findings.append(
+                    f"cell-frontmatter: {rel}'s {key} is {len(value)} chars, "
+                    f"budget is {CELL_FIELD_MAX_CHARS[key]} -- every adopter "
+                    f"pays for it in every session, invoked or not"
+                )
+        name = fields.get("name", "").strip().strip("'\"")
+        if name and name != skill_dir.name:
+            findings.append(
+                f"cell-frontmatter: {rel} declares name '{name}' but sits in "
+                f"'{skill_dir.name}/' -- the runtime addresses it by one of them"
+            )
+    return findings
+
+
+def _frontmatter_fields(text: str) -> dict[str, str] | None:
+    """Top-level `key: value` pairs of a leading frontmatter block, unparsed."""
+    if not text.startswith("---"):
+        return None
+    end = text.find(chr(10) + "---", 3)
+    if end == -1:
+        return None
+    fields: dict[str, str] = {}
+    for line in text[3:end].splitlines():
+        if not line.strip() or line[:1].isspace():
+            continue
+        key, sep, value = line.partition(":")
+        if sep and key.strip():
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def _plain_scalar_hazard(value: str) -> str | None:
+    """Why this value would not survive as an unquoted YAML plain scalar."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return None  # wholly quoted: the parser is not reading it as plain
+    if value[:1] in "-?:,[]{}#&*!|>'\"%@`":
+        return f"it opens with the YAML indicator '{value[0]}'"
+    if ": " in value:
+        return "it contains an unquoted ': ', which ends a plain scalar"
+    if value.endswith(":"):
+        return "it ends with ':', which reads as a mapping key"
+    if " #" in value:
+        return "it contains ' #', which starts a YAML comment"
+    return None
+
+
 def check_delivery(root: Path) -> list[str]:
     """The shipped charter exists, and the hook that delivers it still can.
 
@@ -1055,6 +1163,23 @@ def check_delivery(root: Path) -> list[str]:
             "charter to a consumer session"
         )
         return findings
+
+    stray = sorted(
+        p.relative_to(root).as_posix()
+        for p in (root / CHARTER).parent.rglob("*")
+        if p.is_file() and p.name != "SKILL.md"
+    ) if (root / CHARTER).parent.is_dir() else []
+    if stray:
+        # A binding rule routed into the charter's own references/ -- which
+        # `skills/authoring` tells a cell's author to do -- would escape the
+        # owner's doctrine read, the budget, and the hook that delivers it,
+        # becoming available rather than binding. That is the property this
+        # whole change refused. The charter routes content out, never down.
+        findings.append(
+            f"delivery: the charter cell carries {stray} -- only SKILL.md is "
+            f"delivered, budgeted, and read by the owner, so anything else "
+            f"there is binding prose nothing enforces"
+        )
 
     raw = _read_text(config) or ""
     try:
@@ -1128,6 +1253,7 @@ def run(root: Path) -> list[str]:
         check_zone_wall(root)
         + check_harness_tokens(root)
         + check_delivery(root)
+        + check_cell_frontmatter(root)
         + check_sideways_deps(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)

@@ -1,6 +1,6 @@
 ---
 name: charter
-description: The tradecraft practice's binding rules — who decides what, the two moments that take ceremony, what a review judges against, and where content goes. A session in a repository that has installed this practice normally receives these at session start; use this when you did not, or when you need them again after the context they arrived in is gone. Not a methodology cell: it decides nothing about how any particular kind of work is done, and every standard it names lives in the cell that owns it.
+description: The practice's binding rules, as a session receives them at the start of a session in a repository that has adopted this practice. Use this before your first substantial action if you cannot state this practice's two ceremony moments, or to re-read the rules after the context they arrived in is gone. Not for writing a review's charter or an experience session's charter, which are different things with the same name; not for deciding whether a call is the owner's, which is engagement's; not for where a piece of content belongs, which is authoring's.
 ---
 
 # The tradecraft charter — the practice's binding half
@@ -15,7 +15,7 @@ Throughout, **the owner** is the human whose repository this is.
 
 **The owner's decisions outrank this charter.** When you disagree, argue the merits with reasoning — that is wanted, and further argument with new reasons is welcome. Never refuse or stall an owner decision because a rule forbids it: a rule that conflicts with an owner decision is a rule that needs amending, and the move is to propose the amendment alongside the work, never to block on it.
 
-**Every surface the owner enters opens with a plain brief** — a few sentences of plain English, set off as a blockquote; the supporting material follows underneath. Its form and bar live in the `engagement` skill.
+**Every surface the owner enters opens with a plain brief** — a few sentences of plain English, set off as a blockquote; the supporting material follows underneath. Its form and bar are the practice's own, and a session writing one has a skill that states them.
 
 **A decision is the owner's when it is a genuine fork:** what turns on the pick is something they would care about, and undoing a wrong pick costs them something an edit does not undo — habit, what others already saw. Everything else the session decides and reports afterward with its reason — asking where no fork exists is a fabricated gate, a defect rather than politeness. What is theirs arrives argued: the live options, each with pros and cons, and a recommendation.
 
@@ -28,7 +28,7 @@ Process weight concentrates at exactly two moments; everything between them is m
 
 ## Review
 
-Every reviewable artifact states its purpose, audience, and success criteria — for an implementation, the affirmed acceptance criteria are the success definition. The review judges against that statement; its own charter, roster, and evidence standards live in the `adversarial-review` skill.
+Every reviewable artifact states its purpose, audience, and success criteria — for an implementation, the affirmed acceptance criteria are the success definition. The review judges against that statement; the review's own charter, roster, and evidence standards are stated where the review is.
 
 **Findings: fix now, or drop with a one-line reason in the review report** — outside a review, the drop is recorded on the work itself; naming a finding in conversation is not a disposition. Filing an issue instead requires that the remedy belongs neither in this change nor in a guard, and that it would genuinely get picked up.
 
