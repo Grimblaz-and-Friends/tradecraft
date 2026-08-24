@@ -8,9 +8,9 @@ Checks:
      backslashed, or case-shifted. Full web URLs are lawful: they resolve for
      consumers; repo paths do not.
   2. harness tokens: no shipped file outside hooks/ names a harness-specific
-     path token (${CLAUDE_PLUGIN_ROOT} and kin). Those expand only in hook,
-     monitor and MCP configuration -- in a session's shell they expand to
-     nothing, so the contract is dead on a consumer install.
+     path token (${CLAUDE_PLUGIN_ROOT} and kin). Not because they fail --
+     Claude Code substitutes them into a skill's body -- but because Codex does
+     not, so any such contract binds in one runtime and is dead in the other.
   3. sideways deps: no skill may reference another skill by path (rooted or
      relative), and lib/ may not reference any skill (deps point down).
      Name-form coupling ("load the beta skill") is not machine-checkable; it
@@ -56,23 +56,38 @@ SHIPPED_DIRS = (
 )
 REPO_ONLY_NAMES = {"docs", "tools", ".github"}
 
-# A shipped calling contract naming a harness token is dead on a consumer
-# install: `${CLAUDE_PLUGIN_ROOT}` is a placeholder substituted in hook, monitor
-# and MCP configuration, never a shell variable, so it expands to nothing in a
-# session's shell and the path resolves against the filesystem root. Both
-# shipped scripts carried this and neither could run once installed.
+# A shipped calling contract naming a harness token binds in one runtime only.
+# Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` -- and `${CLAUDE_SKILL_DIR}` --
+# into a skill's body before the model reads it; Codex substitutes neither,
+# setting the root as an environment variable for hook commands alone. Both
+# shipped scripts carried the token, so both were Claude-only until this guard.
+# `CLAUDE_SKILL_DIR` is the vendor's own skill-relative placeholder and it
+# does expand -- in Claude Code only. It is banned here on the same ground
+# the forced output style was rejected: a form that binds in one runtime and
+# not the other forks the practice. The `$env:` and `%...%` spellings are the
+# ones a Windows author reaches for, on the platform half of CI runs on.
+_HARNESS_NAMES = (
+    "CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|CLAUDE_PROJECT_DIR"
+    "|CLAUDE_SKILL_DIR|PLUGIN_ROOT|PLUGIN_DATA|CODEX_HOME"
+)
 HARNESS_TOKENS = re.compile(
-    r"\$\{?(CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|CLAUDE_PROJECT_DIR"
-    r"|PLUGIN_ROOT|PLUGIN_DATA|CODEX_HOME)\}?"
+    rf"\$\{{?(?:{_HARNESS_NAMES})\}}?"
+    rf"|\$[Ee]nv:(?:{_HARNESS_NAMES})"
+    rf"|%(?:{_HARNESS_NAMES})%"
 )
 # `hooks/` is the exemption because it is hook configuration -- one of the three
 # places the token actually expands -- plus the prose explaining that.
 HARNESS_TOKEN_EXEMPT_DIRS = frozenset({"hooks"})
 
+# Inside `hooks/` the placeholder is real, so the guard resolves what it
+# points at rather than banning it.
+PLUGIN_ROOT_REF = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)")
+
 # The predecessor's root file passed 30k chars in eight months because every
 # incident defaulted to a paragraph. The budget is the structural counterweight:
-# at the limit, adding a line means routing something out (doctrine, "Admitting
-# a new requirement").
+# at the limit, adding a line means routing something out (the charter,
+# "Admitting a new requirement"; this file states the budget that makes it
+# bite here).
 AGENTS_BUDGET_CHARS = 8_000
 POINTER_BUDGET_CHARS = 500
 
@@ -664,7 +679,7 @@ def check_doctrine_callout(root: Path) -> list[str]:
     """The callout must still be wired into CI.
 
     Its own mechanism cannot catch its own removal: a PR that deletes the job
-    touches neither doctrine file, so no callout fires, nothing goes red, and
+    touches no doctrine file, so no callout fires, nothing goes red, and
     the mechanism disappears exactly as silently as the CODEOWNERS callout it
     replaced. Loud-on-failure and pinned-when-present are different guarantees
     and the script only carries the first. This is the second, and it lives in
@@ -928,6 +943,69 @@ def _within(path: Path, root: Path) -> bool:
     return True
 
 
+def check_delivery(root: Path) -> list[str]:
+    """The shipped charter exists, and the hook that delivers it still can.
+
+    Nothing guarded either one when they landed: deleting `charter/CHARTER.md`,
+    deleting `hooks/hooks.json`, or typo-ing the path inside it all left every
+    required check green, while a consumer session silently received no
+    doctrine at all. On Windows the failure is silent at the adopter's end too
+    (the emitter exits non-zero, but a runtime keying on exit status is the
+    only thing that would notice), so CI is where it has to be caught.
+
+    Deliberately not checked: that the charter carries its eleven items. That
+    couples a machine check to editable governing prose and would go stale on
+    the first lawful edit -- priced out in review, and the price holds.
+    """
+    findings = []
+    charter = root / "charter" / "CHARTER.md"
+    if not charter.is_file():
+        findings.append(
+            "delivery: charter/CHARTER.md is missing -- the shipped half of "
+            "the doctrine, and what the SessionStart hook emits"
+        )
+    elif not (_read_text(charter) or "").strip():
+        findings.append("delivery: charter/CHARTER.md is empty")
+
+    config = root / "hooks" / "hooks.json"
+    if not config.is_file():
+        findings.append(
+            "delivery: hooks/hooks.json is missing -- nothing delivers the "
+            "charter to a consumer session"
+        )
+        return findings
+
+    raw = _read_text(config) or ""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        # The vendor's own validator on a malformed hooks.json: "At runtime
+        # this breaks the entire plugin load" -- the skills go too, not just
+        # the charter.
+        findings.append(f"delivery: hooks/hooks.json does not parse -- {exc}")
+        return findings
+
+    events = (parsed.get("hooks") or {}) if isinstance(parsed, dict) else {}
+    entries = events.get("SessionStart") or []
+    commands = [
+        hook.get("command", "")
+        for entry in entries if isinstance(entry, dict)
+        for hook in (entry.get("hooks") or []) if isinstance(hook, dict)
+    ]
+    if not commands:
+        findings.append(
+            "delivery: hooks/hooks.json declares no SessionStart command"
+        )
+    for command in commands:
+        for ref in PLUGIN_ROOT_REF.findall(command):
+            if not (root / ref).exists():
+                findings.append(
+                    f"delivery: hooks/hooks.json names '{ref}', which does "
+                    f"not exist in the shipped tree"
+                )
+    return findings
+
+
 def check_harness_tokens(root: Path) -> list[str]:
     """No shipped file outside `hooks/` names a harness-specific path token."""
     findings = []
@@ -956,6 +1034,7 @@ def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
         + check_harness_tokens(root)
+        + check_delivery(root)
         + check_sideways_deps(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)

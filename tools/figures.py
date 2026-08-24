@@ -43,7 +43,7 @@ _SPEC.loader.exec_module(engine)
 
 SUITE_PATHS = ["tools/tests", "skills"]
 DOC = "AGENTS.md"
-PROSE_PATHS = ["AGENTS.md", "CLAUDE.md", "skills"]
+PROSE_PATHS = ["AGENTS.md", "CLAUDE.md", "charter", "skills"]
 PROSE_SUFFIXES = [".md"]
 
 

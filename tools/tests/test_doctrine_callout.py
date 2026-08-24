@@ -112,7 +112,13 @@ REPORT = {"id": 4242, "author": "Grimblaz",
 @pytest.mark.parametrize("paths, expected", [
     (["AGENTS.md"], ["AGENTS.md"]),
     (["CLAUDE.md"], ["CLAUDE.md"]),
-    (["CLAUDE.md", "AGENTS.md"], ["AGENTS.md", "CLAUDE.md"]),   # DOCTRINE_PATHS order
+    (["CLAUDE.md", "AGENTS.md"], ["AGENTS.md", "CLAUDE.md"]),
+        # The charter carries the half of the doctrine that moved out of
+        # AGENTS.md and additionally ships, so it is the same read.
+        (["charter/CHARTER.md"], ["charter/CHARTER.md"]),
+        (["charter/CHARTER.md", "AGENTS.md"],
+         ["AGENTS.md", "charter/CHARTER.md"]),
+        (["docs/charter/CHARTER.md"], []),   # DOCTRINE_PATHS order
     (["skills/authoring/SKILL.md", "docs/reviews.jsonl"], []),
     # Basename matching would call out a PR that never touched the doctrine,
     # and a false callout trains the owner to ignore the true one.

@@ -25,6 +25,25 @@ def make_clean_tree(root: Path) -> None:
         encoding="utf-8",
     )
     _wire_callout(root)
+    _wire_delivery(root)
+
+
+def _wire_delivery(root: Path) -> None:
+    """The charter and the hook that emits it, wired the way the repo wires them."""
+    charter = root / "charter"
+    charter.mkdir(exist_ok=True)
+    (charter / "CHARTER.md").write_text(
+        "# charter\nThe binding half.\n", encoding="utf-8"
+    )
+    hooks = root / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "emit_charter.py").write_text("# the emitter\n", encoding="utf-8")
+    (hooks / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"matcher": "*", "hooks": [{"type": '
+        '"command", "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/emit_charter.py"'
+        '}]}]}}\n',
+        encoding="utf-8",
+    )
 
 
 def _wire_callout(root: Path) -> None:
@@ -67,6 +86,63 @@ def test_clean_tree_passes(tmp_path):
 
 # --- zone wall -------------------------------------------------------------
 
+def test_delivery_fires_when_the_charter_is_missing(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / "charter" / "CHARTER.md").unlink()
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "delivery" in findings[0]
+
+
+def test_delivery_fires_when_the_charter_is_empty(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / "charter" / "CHARTER.md").write_text("\n\n", encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "empty" in findings[0]
+
+
+def test_delivery_fires_when_the_hook_config_is_missing(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").unlink()
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "delivers the charter" in findings[0]
+
+
+def test_delivery_fires_when_the_hook_config_does_not_parse(tmp_path):
+    """A malformed hooks.json costs the adopter the skills too, not just the
+    charter -- the vendor's own validator calls it breaking the entire plugin
+    load -- and `claude plugin validate` cannot see it from a marketplace root."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text("{ nope", encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "does not parse" in findings[0]
+
+
+def test_delivery_fires_when_no_session_start_command_is_declared(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text(
+        '{"hooks": {"SessionStop": []}}\n', encoding="utf-8"
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "no SessionStart command" in findings[0]
+
+
+def test_delivery_fires_when_the_hook_names_a_path_that_is_not_there(tmp_path):
+    """The typo case: the file exists, the config parses, the path is wrong."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": '
+        '"python ${CLAUDE_PLUGIN_ROOT}/hooks/emit_chartr.py"}]}]}}\n',
+        encoding="utf-8",
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "emit_chartr.py" in findings[0]
+
+
+def test_delivery_stays_quiet_on_a_wired_tree(tmp_path):
+    make_clean_tree(tmp_path)
+    assert lint.run(tmp_path) == []
+
+
 def test_harness_token_fires_on_a_shipped_calling_contract(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
@@ -95,7 +171,6 @@ def test_harness_token_exempts_hooks_where_the_token_actually_expands(tmp_path):
     """`hooks/` is one of the three places the placeholder is really expanded."""
     make_clean_tree(tmp_path)
     hooks = tmp_path / "hooks"
-    hooks.mkdir()
     (hooks / "hooks.json").write_text(
         '{"hooks": {"SessionStart": [{"matcher": "*", "hooks": [{"type": '
         '"command", "command": "cat ${CLAUDE_PLUGIN_ROOT}/charter/CHARTER.md"'

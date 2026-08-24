@@ -41,7 +41,10 @@ MANIFEST = ".claude-plugin/plugin.json"
 # ADR-004's shipped zone. The manifest itself is excluded: bumping the version
 # is what this guard demands, so counting it as a shipped-zone change would make
 # every bump its own justification.
-SHIPPED = ("skills/", "lib/", "commands/", "agents/", ".claude-plugin/")
+SHIPPED = (
+    "skills/", "lib/", "commands/", "agents/", "charter/", "hooks/",
+    ".claude-plugin/",
+)
 
 PASS, FAIL, UNDETERMINED = 0, 1, 2
 NUL = chr(0)

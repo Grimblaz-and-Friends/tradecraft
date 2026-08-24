@@ -21,9 +21,9 @@ Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19
 
 ## Install it
 
-Tradecraft is a plugin. Installing it gives your repository the seven skills and
-the practice's binding rules; it is the same package in both runtimes, because
-Codex reads Claude's plugin manifests by name.
+Tradecraft is a plugin. Installing it gives your repository the skills and the
+practice's binding rules; it is the same package in both runtimes, because Codex
+reads Claude's plugin manifests by name.
 
 **Claude Code**
 
@@ -41,25 +41,44 @@ codex plugin add tradecraft@tradecraft
 
 `--scope project` writes `extraKnownMarketplaces` and `enabledPlugins` into your
 repository's `.claude/settings.json`, so the declaration is checked in and the
-content is not. Codex installs at user scope by design — a repository cannot
-auto-install a plugin by committing configuration.
+content is not. Omit it and the CLI defaults to `user` scope, which arms the
+plugin — and its session-start hook — in *every* repository on that machine.
+Codex installs at user scope by design, with the same consequence: a repository
+cannot auto-install a plugin by committing configuration.
 
-**Pinning.** The marketplace entry takes `ref` (a branch or tag) and `sha`; when
-both are set the `sha` wins. `version` in `plugin.json` pins the plugin itself,
-so an adopter receives an update only when it is bumped. Codex takes `--ref`.
-Pin if you want the practice to change on your schedule rather than ours.
+What a teammate gets from cloning a repository that carries only the checked-in
+declaration is not something we have measured; every CLI surface we tried
+refused to act on the declaration alone. Treat the two commands above as the
+supported path for each person, not as something one person does for a team.
 
-**What lands in your session.** Seven skill descriptions sit in every session's
-context; each skill's body loads only when it fires. On top of that, the plugin
-ships one `SessionStart` hook, which emits [the charter](charter/CHARTER.md) —
-roughly 1,100 tokens of binding rules — into each session, so the practice
-governs rather than merely being available. Both runtimes ask you to trust a
-plugin's hooks once before they run; decline and you still get the skills, but
-not the charter. Note that `claude plugin details` gets this wrong in your favour: it reports
-the always-on figure as skills only, and annotates the hook
-`(harness-only — no model context cost)`. The hook does cost you context.
-Budget for the skill descriptions plus the charter, not for the number the
-CLI prints.
+**Pinning.** `version` in `plugin.json` is the pin that works today: an adopter
+receives an update only when we bump it. Marketplace sources also accept a `ref`
+(a branch or tag), and Codex takes `--ref` on `marketplace add` — but Claude
+Code's `plugin marketplace add` exposes no flag for it, so setting one means
+editing the marketplace entry by hand. A commit `sha` pins *plugin* sources, not
+marketplace sources, and this plugin's source is a relative path, so `sha` does
+not apply to it at all.
+
+**What lands in your session.** Every skill's name and description sit in every
+session's context; each skill's body loads only when it fires. On top of that,
+the plugin ships one `SessionStart` hook, which emits [the charter](charter/CHARTER.md)
+— roughly 1,100 tokens of binding rules — so the practice governs rather than
+merely being available. That matcher is match-all, so the charter is re-emitted
+on resume, clear, compact and fork as well as at startup: budget per
+`SessionStart` event, not per session, and expect a long compacting session to
+pay it several times.
+
+Note that `claude plugin details` gets the cost wrong in your favour: it reports
+the always-on figure as skills only, and annotates the hook `(harness-only — no
+model context cost)`. The hook does cost you context.
+
+**On declining the hook.** Claude Code gates plugin hooks on workspace trust and
+the `disableAllHooks` setting; there is no supported way to take this plugin's
+skills while declining its hook. Codex does have hook-level trust and will ask.
+One quadrant does not work at all: on **Windows under Codex**, hook commands run
+through `cmd.exe` with the plugin root supplied as an environment variable, which
+this hook's command cannot resolve — you get the skills, and should read the
+charter from the plugin cache yourself.
 
 **What does not reach you, by design.** Everything under `docs/`, `tools/`, and
 `.github/` is this repository's own machinery. A git-source install clones the
@@ -68,4 +87,4 @@ shipped references them and nothing you use should.
 
 ## Status
 
-Installable and proven in a consumer repository (2026-08-24). Before that, reset complete (2026-08-19): the doctrine, seven shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.
+Installable in a consumer repository (2026-08-24): the install path, skill discovery, hook registration and the shipped scripts are all exercised there; that the hook's output reaches a live session's context is documented and third-party-reproduced but not yet run here. Before that, reset complete (2026-08-19): the doctrine, the shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.

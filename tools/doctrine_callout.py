@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The doctrine callout: label and speak on any PR that changes the doctrine.
 
-The owner reads the doctrine diff himself before merging (doctrine, "The two
-ceremony moments"). The first mechanism for that was `.github/CODEOWNERS`,
+The owner reads the doctrine diff himself before merging (doctrine, "The
+ceremony moments, here"; the charter states the rule it applies). The first mechanism for that was `.github/CODEOWNERS`,
 which fires by auto-requesting a review — and GitHub never requests a review
 from a pull request's own author (exactly so for an individual code-owner
 entry; a team entry containing the author is still requested). Sessions here
@@ -152,10 +152,12 @@ def touched_doctrine(paths: list[str]) -> list[str]:
     Exact match on the repo-root path. A `docs/AGENTS.md` would not be the
     doctrine, and matching by basename would call out a PR that never touched
     it — a false callout trains the owner to ignore the true one. A rename out
-    of `AGENTS.md` escapes this match (git reports only the new path, at
+    of any of them escapes this match (git reports only the new path, at
     similarity as low as 83% on this repo's own #74), and is caught instead by
-    `tools/lint.py`, which fails a required check when a doctrine file goes
-    missing.
+    `tools/lint.py`, which fails a required check when `AGENTS.md`, `CLAUDE.md`
+    or `charter/CHARTER.md` goes missing -- the last of those only since the
+    charter got a guard of its own; before that this sentence named a backstop
+    that did not exist for it.
     """
     changed = set(paths)
     return [p for p in DOCTRINE_PATHS if p in changed]

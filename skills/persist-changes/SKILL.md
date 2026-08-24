@@ -20,7 +20,7 @@ After a piece of work is validated and ready to land on the branch you are alrea
 The script sits beside this file at `scripts/persist.py`. Invoke it by that path resolved against the directory this file is in, which is what makes one contract hold both in an installed plugin and in this skill's own source repository:
 
 ```
-python "<this skill's directory>/scripts/persist.py" -m "<message>" <path> [<path> ...]
+python scripts/persist.py -m "<message>" <path> [<path> ...]
 ```
 
 It operates on **the repository containing your current directory**, and **paths are resolved from that repository's root** no matter where you invoke it from. It exits `0` only on a verified push; every other outcome is a loud one-line `not-persisted: <reason>`.

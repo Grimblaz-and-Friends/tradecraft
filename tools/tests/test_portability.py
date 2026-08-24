@@ -1,11 +1,11 @@
 """The shipped zone runs from wherever it is installed, not only from here.
 
 A consumer install puts the shipped zone under a plugin cache with no
-repository around it and no harness variable in the shell. Both shipped scripts
-were unreachable there: their skills named `${CLAUDE_PLUGIN_ROOT}/...`, which is
-a placeholder substituted in hook, monitor and MCP configuration and nothing
-else, so in a session's shell it expanded to nothing and the path resolved
-against the filesystem root.
+repository around it. Both shipped scripts named `${CLAUDE_PLUGIN_ROOT}/...`,
+which Claude Code substitutes into a skill's body but Codex does not -- Codex
+sets the root as an environment variable for hook commands and performs no
+textual substitution anywhere else. So the old contract held in one runtime and
+was dead in the other, which is the failure these tests exist to keep out.
 
 These tests relocate the shipped zone and exercise the property that failure
 violated: every script a skill names is reachable by resolving that name against
@@ -23,15 +23,25 @@ from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import lint  # noqa: E402  -- the shipped-zone declaration, read not duplicated
+
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / "skills"
 
-# The one lawful form: a bare `scripts/<name>.py`, relative to the skill's own
-# directory. The lookbehind rejects any prefixed form -- an absolute path, a
-# repo-rooted `skills/<name>/scripts/...`, or a `${...}/scripts/...` -- because
-# a prefix is exactly what makes a contract depend on where the skill sits, and
-# is what made both shipped invocations dead on a consumer install.
-SCRIPT_REF = re.compile(r"(?<![\w/\\.$}>-])scripts[/\\][\w.-]+\.py")
+# Every mention of one of a skill's scripts, however it is spelled, with
+# whatever precedes it captured. Written this way round on purpose: the first
+# shape of this guard looked for a lawful mention and passed as soon as it found
+# one, so a SKILL.md could name its script correctly in prose and incorrectly in
+# the line a session actually copies -- which is exactly what shipped.
+SCRIPT_MENTION = re.compile(r"(?P<prefix>[^\s`\"']*)scripts[/\\][\w.-]+\.py")
+
+# A prefix is what makes a contract depend on where the skill sits. Only two
+# spellings survive relocation: bare, and explicitly-relative. `../` is not
+# among them -- it reaches outside the cell, which is the thing self-containment
+# forbids -- and neither is a repo-rooted `skills/<name>/scripts/...`, which is
+# as dead on a consumer install as a harness token is.
+LAWFUL_PREFIXES = ("", "./", ".\\")
 
 # Present in the source tree, absent from a consumer install. A script reaching
 # for one of these would pass here and fail there, so the relocated root has
@@ -53,11 +63,14 @@ def _scripts_of(skill: Path):
 def installed(tmp_path_factory) -> Path:
     """The shipped zone alone, at a path unrelated to this repository."""
     dest = tmp_path_factory.mktemp("plugin-root")
-    shutil.copytree(SKILLS, dest / "skills")
-    for name in ("charter", "hooks"):
+    # Built from the declared zone, not a hand-list: a hand-list is how the
+    # version guard came to be blind to `charter/` and `hooks/` after they were
+    # added to the zone everywhere else.
+    for name in lint.SHIPPED_DIRS:
         source = ROOT / name
         if source.is_dir():
             shutil.copytree(source, dest / name)
+    assert (dest / "skills").is_dir(), "the relocated root carries no skills"
     for name in REPO_ONLY:
         assert not (dest / name).exists(), f"relocated root leaked {name}/"
     return dest
@@ -74,25 +87,39 @@ def _clean_env() -> dict:
 
 @pytest.mark.parametrize("skill", _skills_with_scripts(), ids=lambda p: p.name)
 def test_skill_names_its_scripts_relative_to_itself(skill: Path, installed: Path):
-    """Every script path a SKILL.md names resolves against the skill's own dir.
+    """*Every* mention of a script resolves against the skill's own directory.
 
-    This is the test that goes red against a revision naming
-    `${CLAUDE_PLUGIN_ROOT}/skills/<name>/scripts/<script>.py`: resolved against
-    the skill directory, that path does not exist.
+    Every, not some. Against the pre-change revision both shipped skills go red
+    here: `persist-changes` because its only mention was
+    `${CLAUDE_PLUGIN_ROOT}/skills/persist-changes/scripts/persist.py`, and
+    `authoring` because its unlawful invocation sat in the same sentence as a
+    lawful prose mention -- which the first version of this guard accepted, and
+    which is why it is written to check all mentions rather than to find one.
     """
     relocated = installed / "skills" / skill.name
     text = (relocated / "SKILL.md").read_text(encoding="utf-8")
-    named = set(SCRIPT_REF.findall(text))
-    assert named, f"{skill.name}/SKILL.md carries scripts but names none of them"
 
-    expected = {f"scripts/{s.name}" for s in _scripts_of(skill)}
-    for ref in named:
-        posix = ref.replace("\\", "/")
-        assert (relocated / posix).is_file(), (
+    mentions = list(SCRIPT_MENTION.finditer(text))
+    assert mentions, f"{skill.name}/SKILL.md carries scripts but names none"
+
+    named = set()
+    for match in mentions:
+        prefix, ref = match.group("prefix"), match.group(0)
+        assert prefix in LAWFUL_PREFIXES, (
+            f"{skill.name}/SKILL.md names '{ref}'. A script is named by a path "
+            f"relative to the skill's own directory -- 'scripts/{ref.rsplit('/', 1)[-1]}' "
+            f"-- so the one line works in the source repository and in an "
+            f"installed plugin alike. The prefix '{prefix}' ties it to a location."
+        )
+        tail = ref[len(prefix):].replace("\\", "/")
+        named.add(tail)
+        assert (relocated / tail).is_file(), (
             f"{skill.name}/SKILL.md names '{ref}', which does not resolve "
             f"against the skill's own directory once installed"
         )
-    assert expected <= {r.replace("\\", "/") for r in named}, (
+
+    expected = {f"scripts/{s.name}" for s in _scripts_of(skill)}
+    assert expected <= named, (
         f"{skill.name} carries {sorted(expected)} but its SKILL.md names "
         f"{sorted(named)}"
     )
@@ -123,7 +150,7 @@ def test_script_runs_from_the_relocated_root(script: Path, installed: Path):
 
 def test_no_shipped_skill_names_a_harness_token(installed: Path):
     """The contract that broke, stated where a reader of the tests will see it."""
-    token = re.compile(r"\$\{?(?:CLAUDE|CODEX)_\w+\}?|\$\{?PLUGIN_(?:ROOT|DATA)\}?")
+    token = lint.HARNESS_TOKENS
     offenders = []
     for path in sorted((installed / "skills").rglob("*")):
         if not path.is_file():

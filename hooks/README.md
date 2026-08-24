@@ -1,31 +1,54 @@
 # hooks
 
-One hook: `SessionStart` emits `charter/CHARTER.md` on stdout, so a session in a
-repository that has installed this plugin holds the practice's binding rules
-before it acts. Without it a consumer receives the skills and no doctrine at all
-— a plugin's root `AGENTS.md` and `CLAUDE.md` land in the install cache but are
-never loaded as context.
+One hook: `SessionStart` runs `emit_charter.py`, which prints `charter/CHARTER.md`
+on stdout, so a session in a repository that has installed this plugin holds the
+practice's binding rules before it acts. Without it a consumer receives the
+skills and no doctrine at all — a plugin's root `AGENTS.md` and `CLAUDE.md` land
+in the install cache but are never loaded as context, which the vendor's own
+plugin validator says in as many words.
 
-**Why `cat` rather than a script.** The substrate rule governs code this practice
-writes; the cheapest reliable material here is to write none. `cat` needs no
-interpreter on PATH — `python` is absent on many Linux installations that carry
-only `python3`, and a hook that names the wrong one fails silently in exactly the
-environments this change exists to serve. `cat` resolves on POSIX shells and is
-an alias for `Get-Content` in PowerShell, which is the shell Claude Code uses on
-Windows when Git Bash is absent.
+**Why a script rather than `cat`.** `cat` was the first shape and it failed three
+ways that only a Windows adopter would have seen. Under `powershell.exe` 5.1 —
+the interpreter Claude Code falls back to when Git Bash is absent, which is the
+default Windows state — `cat` is an alias for `Get-Content`, which reads a
+BOM-less UTF-8 file as ANSI: every em dash and curly quote in the charter arrived
+corrupted. `Get-Content`'s `-Path` is wildcard-interpreted, so a `[` anywhere in
+the plugin cache path made the read fail. And it failed at **exit 0 with empty
+stdout** — which, against the runtime contract "exit 0: stdout is shown to the
+model", is indistinguishable from a hook that deliberately emitted nothing. The
+script decodes explicitly, opens by literal path, and exits non-zero with a
+reason on stderr. Python is this practice's substrate and is tested on Linux and
+Windows in CI.
 
 **Why plain stdout rather than the JSON envelope.** Both runtimes accept either:
 Claude Code adds plain stdout as context for `SessionStart`, and so does Codex.
-Plain text has one fewer thing to get wrong, and a report of plugin-supplied
-`additionalContext` being dropped was closed as not planned, so the envelope is
-not the safer path. If a runtime later requires the envelope, the change is to
-this file's command, not to the charter.
+Plain text has one fewer thing to get wrong. Two upstream reports bear on the
+choice and are named so a later session can check them rather than trust this
+paragraph: [anthropics/claude-code#12151](https://github.com/anthropics/claude-code/issues/12151)
+(open) reports plugin-sourced `SessionStart` output not reaching context, with
+its most recent evidence specific to the `additionalContext` envelope; and
+[#53682](https://github.com/anthropics/claude-code/issues/53682) contains a
+reproduction in which a plugin hook emitting **plain stdout** did reach the
+agent's context, while a malformed bare-`{additionalContext}` hook did not. If a
+runtime later requires the envelope, that is a change to `hooks.json`, not to the
+charter.
 
 **Why `${CLAUDE_PLUGIN_ROOT}` is lawful here** when a shipped calling contract may
-not name it: this is hook configuration, which is one of the three places the
-token actually expands. Claude Code substitutes it as a path placeholder before
-the shell sees the command; Codex sets it as an environment variable, explicitly
-for compatibility with plugins written against it.
+not name it: this is hook configuration, which is one of the places the token
+actually expands in both runtimes. Claude Code substitutes it as a path
+placeholder before the shell sees the command; Codex sets it as an environment
+variable, explicitly for compatibility with plugins written against it.
 
-**Trust.** Both runtimes require a one-time approval before a plugin's hooks run.
-An adopter who declines still gets the skills; they do not get the charter.
+**Known gap: Codex on Windows.** Codex runs a plugin hook through `cmd.exe /C`
+and delivers the root as an environment variable rather than substituting it, so
+`${CLAUDE_PLUGIN_ROOT}` is passed through literally and the command cannot
+resolve. No single command string serves both a textual placeholder and a
+`%VAR%`-style environment variable, so this hook does not deliver the charter to
+a Windows Codex adopter. Claude Code on Windows is unaffected, because it
+substitutes before any shell runs. An adopter in that quadrant gets the skills
+and should read the charter directly from the plugin cache.
+
+**Trust.** Claude Code gates plugin hooks on workspace trust plus the
+`disableAllHooks` setting; there is no per-plugin, hooks-only decline, so an
+adopter who does not want this hook declines the plugin. Codex does have
+hook-level trust and reviews a plugin's hooks before arming them.
