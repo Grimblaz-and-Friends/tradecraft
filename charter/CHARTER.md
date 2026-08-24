@@ -23,7 +23,7 @@ Process weight concentrates at exactly two moments; everything between them is m
 
 ## Review
 
-Every reviewable artifact states its purpose, audience, and success criteria — for an implementation, the affirmed acceptance criteria are the success definition. The review judges against that statement; the charter, roster, and evidence standards live in `skills/adversarial-review`.
+Every reviewable artifact states its purpose, audience, and success criteria — for an implementation, the affirmed acceptance criteria are the success definition. The review judges against that statement; its own charter, roster, and evidence standards live in `skills/adversarial-review`.
 
 **Findings: fix now, or drop with a one-line reason in the review report** — outside a review, the drop is recorded on the work itself; naming a finding in conversation is not a disposition. Filing an issue instead requires that the remedy belongs neither in this change nor in a guard, and that it would genuinely get picked up.
 
