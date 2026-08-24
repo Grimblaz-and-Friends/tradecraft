@@ -947,7 +947,7 @@ def test_an_all_decimal_short_sha_is_a_pin(tmp_path):
 
 
 def _row_with_extras(**overrides):
-    row = _review_row(date="2026-08-24")
+    row = _review_row()
     row["dispositions"] = {"fixed": 3, "routed": 1, "priced_out": 2, "dismissed": 0}
     row["staffing"] = {"model": "Opus 5", "runtime": "Claude Code (Windows)"}
     row.update(overrides)
@@ -997,19 +997,21 @@ def test_the_obligation_cannot_be_dodged_by_the_date_written(tmp_path, monkeypat
 
 
 def test_blank_lines_do_not_shift_a_row_position(tmp_path, monkeypatch):
-    """Rows are counted, not lines — otherwise a stray newline moves which
-    rows the schema obliges."""
+    """Rows are counted, not lines. The shape matters: positions only ever
+    shift *upward*, so a row already past the boundary stays obliged either
+    way and proves nothing. The discriminating case is a row that must stay
+    **exempt** and that blank lines would push across."""
     make_clean_tree(tmp_path)
-    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 1)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 2)
     docs = tmp_path / "docs"
     docs.mkdir(exist_ok=True)
-    blank = "\n\n\n"
+    blanks = "\n" + "\n" + "\n"
     (docs / "reviews.jsonl").write_text(
-        json.dumps(_review_row()) + blank
-        + json.dumps(_row_with_extras(artifact="pr-2")) + "\n",
+        json.dumps(_row_with_extras()) + blanks
+        + json.dumps(_review_row(artifact="pr-2")) + "\n",
         encoding="utf-8",
     )
-    assert lint.run(tmp_path) == []
+    assert lint.check_review_index(tmp_path) == []
 
 
 def test_disposition_counts_reject_bools_and_negatives(tmp_path):
@@ -1056,13 +1058,89 @@ def test_staffing_requires_both_names_and_constrains_neither(tmp_path):
     assert len(findings) == 1 and "runtime" in findings[0]
 
 
-def test_every_row_already_in_the_repo_index_stays_valid(tmp_path):
-    """Acceptance criterion 2, checked against the real file rather than a
-    fixture: this change may not edit a single landed row."""
+def _real_index_rows() -> str:
     real = Path(__file__).resolve().parents[2] / "docs" / "reviews.jsonl"
-    rows = [json.loads(l) for l in real.read_text(encoding="utf-8").splitlines() if l.strip()]
-    assert rows, "the real index should not be empty"
-    findings = []
-    for row in rows:
-        lint._check_review_row(row, "row", findings)
-    assert findings == []
+    return real.read_text(encoding="utf-8")
+
+
+def _index_tree(tmp_path: Path, extra: str = "") -> Path:
+    """A clean tree carrying the repository's own review index, so the gate is
+    exercised through check_review_index's real position arithmetic."""
+    make_clean_tree(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "reviews.jsonl").write_text(_real_index_rows() + extra, encoding="utf-8")
+    return tmp_path
+
+
+def test_every_row_already_in_the_repo_index_stays_valid(tmp_path):
+    """Acceptance criterion 2, driven through the real position arithmetic
+    rather than the row checker directly — the earlier form called
+    `_check_review_row` without a position, so every row validated as
+    grandfathered and the assertion could not fail on the gate at all."""
+    root = _index_tree(tmp_path)
+    assert lint.check_review_index(root) == []
+
+
+def test_a_row_appended_past_the_grandfathered_ones_is_obliged(tmp_path):
+    """The behavioural pin on the constant. Deliberately *not* an assertion
+    that it equals the index's row count: that goes stale the moment the next
+    row lands, turning the guard into the bookkeeping the tripwire deletes.
+    Raising the constant silently exempts real rows, and only this catches it."""
+    bare = json.dumps(_review_row(artifact="pr-next")) + "\n"
+    root = _index_tree(tmp_path, extra=bare)
+    findings = lint.check_review_index(root)
+    assert len(findings) == 2
+    assert any("dispositions" in f for f in findings)
+    assert any("staffing" in f for f in findings)
+
+
+def test_a_row_that_fails_to_parse_does_not_shift_later_rows(tmp_path):
+    """Position is the non-blank line's ordinal, counted before the parse. When
+    it was counted after, a corrupt row upstream pushed the appended row back
+    under the boundary — so its findings vanished while they were actionable
+    and would return later, against a row by then landed and unfixable."""
+    rows = _real_index_rows().splitlines()
+    corrupted = "\n".join(rows[:3] + [rows[3][:40]] + rows[4:]) + "\n"
+    bare = json.dumps(_review_row(artifact="pr-next")) + "\n"
+    make_clean_tree(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "reviews.jsonl").write_text(corrupted + bare, encoding="utf-8")
+    findings = lint.check_review_index(tmp_path)
+    assert any("not valid JSON" in f for f in findings)
+    assert len([f for f in findings if "missing field" in f]) == 2
+
+
+def test_staffing_rejects_unknown_keys(tmp_path):
+    """The keys are closed even though the values are not. Per-seat staffing is
+    the design this change excluded, and an unvalidated field is how it would
+    have entered silently — into a record that may never be corrected."""
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_extras(
+        staffing={"model": "Opus 5", "runtime": "Claude Code", "cold-read": "fable"}
+    ))
+    findings = [f for f in lint.run(tmp_path) if "unknown key" in f]
+    assert len(findings) == 1 and "cold-read" in findings[0]
+
+
+def test_staffing_still_accepts_a_split_in_the_value(tmp_path):
+    """The counterpart: an uneven panel must be able to record its split, which
+    two rows in the landed record already needed. Rejecting unknown keys must
+    not close the path the row actually has."""
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_extras(
+        staffing={"model": "fable (cold-read), opus (rest)", "runtime": "Claude Code"}
+    ))
+    assert lint.run(tmp_path) == []
+
+
+def test_non_mapping_dispositions_and_staffing_are_findings(tmp_path):
+    """Both branches were correct and neither was pinned, so either could be
+    deleted with the suite green."""
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_extras(dispositions=["fixed"]))
+    a = [f for f in lint.run(tmp_path) if "must be a mapping" in f]
+    _write_index(tmp_path, _row_with_extras(staffing="Opus 5"))
+    b = [f for f in lint.run(tmp_path) if "must be a mapping" in f]
+    assert len(a) == 1 and len(b) == 1
