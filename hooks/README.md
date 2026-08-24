@@ -1,8 +1,11 @@
 # hooks
 
-One hook: `SessionStart` runs `emit_charter.py`, which prints `charter/CHARTER.md`
-on stdout, so a session in a repository that has installed this plugin holds the
-practice's binding rules before it acts. Without it a consumer receives the
+One hook: `SessionStart` runs `emit_charter.py`, which prints the body of the
+`charter` cell on stdout, so a session in a repository that has installed this
+plugin holds the practice's binding rules before it acts. The cell is the same
+file a session can invoke by name — one file, two doors — and the emitter
+strips its frontmatter, which is addressed to the runtime's skill index rather
+than to a reader. Without it a consumer receives the
 skills and no doctrine at all — a plugin's root `AGENTS.md` and `CLAUDE.md` land
 in the install cache but are never loaded as context, which the vendor's own
 plugin validator says in as many words.

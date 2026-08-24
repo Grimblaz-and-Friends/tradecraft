@@ -1,3 +1,8 @@
+---
+name: charter
+description: The tradecraft practice's binding rules — who decides what, the two moments that take ceremony, what a review judges against, and where content goes. A session in a repository that has installed this practice normally receives these at session start; use this when you did not, or when you need them again after the context they arrived in is gone. Not a methodology cell: it decides nothing about how any particular kind of work is done, and every standard it names lives in the cell that owns it.
+---
+
 # The tradecraft charter — the practice's binding half
 
 **Purpose:** the rules a session must hold before acting, in any repository that has adopted this practice. **Audience:** every session in an adopting repository, every runtime. **Success:** a session reading only this file behaves correctly at the gates and knows where its output belongs.

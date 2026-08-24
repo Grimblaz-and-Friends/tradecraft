@@ -43,7 +43,6 @@ _SPEC.loader.exec_module(engine)
 
 SUITE_PATHS = ["tools/tests", "skills"]
 DOC = "AGENTS.md"
-CHARTER_DOC = "charter/CHARTER.md"
 PROSE_PATHS = ["AGENTS.md", "CLAUDE.md", "charter", "skills"]
 PROSE_SUFFIXES = [".md"]
 
@@ -79,11 +78,37 @@ def figure_census(root: Path) -> dict:
     }
 
 
+def figure_charter(root: Path) -> dict:
+    """The charter's budgeted size, measured the way its guard measures it.
+
+    The engine's `figure_doc` measures a whole file, which is right for a plain
+    document and wrong for a cell: the charter carries frontmatter addressed to
+    the runtime's skill index, and `tools/lint.py` budgets the body beneath it
+    so a description edit cannot eat the rules' headroom. A figure measuring the
+    file would disagree with the guard that judges it, which is the one thing
+    D-141 exists to prevent -- so the measurement comes from the guard.
+    """
+    text = lint._frontmatterless(
+        (root / lint.CHARTER).read_text(encoding="utf-8", errors="replace")
+    )
+    chars, budget = len(text), lint.CHARTER_BUDGET_CHARS
+    return {
+        "name": f"doc `{lint.CHARTER}` (body)",
+        "value": f"{chars:,} of {budget:,} chars, headroom {budget - chars:,}",
+        "basis": (
+            "decoded UTF-8 characters below the frontmatter, universal-newline "
+            "read (CRLF counts as one character), working tree; the same "
+            "measurement tools/lint.py's budget applies"
+        ),
+        "data": {"path": lint.CHARTER, "chars": chars, "budget": budget},
+    }
+
+
 def build_figures(root: Path, base: str | None) -> list[dict]:
     figures = [
         engine.figure_tests(root, SUITE_PATHS),
         engine.figure_doc(root, DOC, lint.AGENTS_BUDGET_CHARS),
-        engine.figure_doc(root, CHARTER_DOC, lint.CHARTER_BUDGET_CHARS),
+        figure_charter(root),
         figure_census(root),
     ]
     if base:

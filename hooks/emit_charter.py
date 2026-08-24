@@ -22,12 +22,30 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-CHARTER = Path(__file__).resolve().parent.parent / "charter" / "CHARTER.md"
+CHARTER = Path(__file__).resolve().parent.parent / "skills" / "charter" / "SKILL.md"
+
+
+def _body(text: str) -> str:
+    """The charter without its frontmatter.
+
+    The charter is a skill cell, so it carries a name and description for the
+    runtime's skill index. Those are addressed to the index, not to a session
+    reading the rules, so the hook emits what follows them. One file, one owner,
+    two doors: the runtime loads the cell when a session asks for it by name,
+    and this hook reads out its body at session start for sessions that never
+    think to ask.
+    """
+    if not text.startswith("---"):
+        return text
+    end = text.find(chr(10) + "---", 3)
+    if end == -1:
+        return text
+    return text[end + 4:].lstrip(chr(10))
 
 
 def main() -> int:
     try:
-        text = CHARTER.read_text(encoding="utf-8")
+        text = _body(CHARTER.read_text(encoding="utf-8"))
     except FileNotFoundError:
         print(f"charter-not-emitted: no file at {CHARTER}", file=sys.stderr)
         return 1

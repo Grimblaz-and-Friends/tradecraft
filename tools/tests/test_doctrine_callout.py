@@ -116,9 +116,9 @@ REPORT = {"id": 4242, "author": "Grimblaz",
         (["CLAUDE.md", "AGENTS.md"], ["AGENTS.md", "CLAUDE.md"]),
         # The charter carries the half of the doctrine that moved out of
         # AGENTS.md and additionally ships, so it is the same read.
-        (["charter/CHARTER.md"], ["charter/CHARTER.md"]),
+        (["skills/charter/SKILL.md"], ["skills/charter/SKILL.md"]),
         # ...and it sorts by DOCTRINE_PATHS order too.
-        (["charter/CHARTER.md", "AGENTS.md"], ["AGENTS.md", "charter/CHARTER.md"]),
+        (["skills/charter/SKILL.md", "AGENTS.md"], ["AGENTS.md", "skills/charter/SKILL.md"]),
         # A path merely ending in the doctrine name is not the doctrine.
         (["docs/charter/CHARTER.md"], []),
     (["skills/authoring/SKILL.md", "docs/reviews.jsonl"], []),

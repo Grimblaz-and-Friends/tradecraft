@@ -48,11 +48,11 @@ import subprocess
 import sys
 
 # Matches `.github/CODEOWNERS`. Widening this to skills or decisions is a
-# different requirement and wants its own incident. `charter/CHARTER.md` is
+# different requirement and wants its own incident. The charter cell is
 # not a widening: it holds the half of the doctrine that moved out of
 # `AGENTS.md`, and it also ships to consumers, so omitting it would shrink
 # the owner's read at the moment the material became more consequential.
-DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md", "charter/CHARTER.md")
+DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md", "skills/charter/SKILL.md")
 
 LABEL = "doctrine"
 LABEL_COLOR = "5319e7"
@@ -81,7 +81,7 @@ owner's.</sub>"""
 
 WITHDRAWN = f"""{MARKER}
 ~~This PR changes the doctrine.~~ **Withdrawn:** the PR no longer touches \
-`AGENTS.md`, `CLAUDE.md` or `charter/CHARTER.md`. Nothing here needs the
+`AGENTS.md`, `CLAUDE.md` or the charter cell. Nothing here needs the
 owner's doctrine read.
 
 <sub>Posted by `tools/doctrine_callout.py`.</sub>"""
@@ -155,7 +155,7 @@ def touched_doctrine(paths: list[str]) -> list[str]:
     of any of them escapes this match (git reports only the new path, at
     similarity as low as 83% on this repo's own #74), and is caught instead by
     `tools/lint.py`, which fails a required check when `AGENTS.md`, `CLAUDE.md`
-    or `charter/CHARTER.md` goes missing -- the last of those only since the
+    or the charter cell goes missing -- the last of those only since the
     charter got a guard of its own; before that this sentence named a backstop
     that did not exist for it.
     """

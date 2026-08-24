@@ -2,14 +2,14 @@
 
 **Purpose:** this repository's own mechanics, on top of the practice's binding rules. **Audience:** every session in this repository, every runtime. **Success:** a competent session reading this file and the charter it names behaves correctly at the gates and routes content to its right home.
 
-@charter/CHARTER.md
+@skills/charter/SKILL.md
 
-**Read `charter/CHARTER.md` now, before acting** — the line above imports it where the runtime supports imports, and Codex has none, so the instruction is what carries it there. It carries the binding half of this practice — authority and which decisions are the owner's, the two ceremony moments, review, and where content goes — and it is what this repository ships to anyone who adopts the practice. This file adds only what is specific to here. Where the two touch, the charter states the rule and this file states how it is done in this repository.
+**Read `skills/charter/SKILL.md` now, before acting** — the line above imports it where the runtime supports imports, and Codex has none, so the instruction is what carries it there. It carries the binding half of this practice — authority and which decisions are the owner's, the two ceremony moments, review, and where content goes — and it is what this repository ships to anyone who adopts the practice. This file adds only what is specific to here. Where the two touch, the charter states the rule and this file states how it is done in this repository.
 
 ## The ceremony moments, here
 
 - **Convergence.** The settled pre-implementation artifact is posted as a comment on its issue (file one if none exists). The session records the affirmation on the issue, naming that comment, before the first commit; from there the owner is next needed at PR review. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR; when in doubt, ask the cheap question.
-- **Release.** `ci.yml` labels and comments on any PR touching this file, `CLAUDE.md`, or `charter/CHARTER.md`, flagging it for the owner's specific review — not `CODEOWNERS`, which cannot reach a PR's own author, today always him. [D-81]
+- **Release.** `ci.yml` labels and comments on any PR touching this file, `CLAUDE.md`, or the `charter` cell, flagging it for the owner's specific review — not `CODEOWNERS`, which cannot reach a PR's own author, today always him. [D-81]
 
 ## The flow
 
@@ -24,7 +24,7 @@ The review report states what it judged against, and every review appends one ro
 The charter carries the routing map. Specific to here:
 
 - **Skills are self-contained cells:** no skill references another, shared code lives only in `lib/`, depth loads on demand from the skill's own `references/`.
-- **A binding rule the practice exports** → `charter/CHARTER.md`, within its own job. **A rule or mechanic only this repository needs** → this file, within its budget.
+- **A binding rule the practice exports** → the `charter` cell, within its own job. **A rule or mechanic only this repository needs** → this file, within its budget.
 - **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`; a decision entry lives at the path under Decisions below.
 
 The charter states the admission order; this file's budget is what makes it bite here. At the budget, adding a line means routing something out.
@@ -39,7 +39,7 @@ Records are append-only and never maintained: no backfilling, no reconciling, no
 
 ## Structure and substrate
 
-- **Two zones.** Shipped (`skills/`, `lib/`, `commands/`, `agents/`, `charter/`, `hooks/`, `.claude-plugin/`) never references repo-only (`docs/`, `tools/`, `.github/`) — not a path, not a doc link; the lint enforces the checkable subset. Consumers must never *depend* on repo-only, which is not the same as never receiving it: the plugin's source is the repo root, so a git-source install clones everything and those files do reach a consumer's cache as inert content. General standards ship in the skill that teaches them, or in `charter/CHARTER.md` where they must bind before any skill fires; repo-specific application lives here. **Capability wrappers do not belong in any of them.**
+- **Two zones.** Shipped (`skills/`, `lib/`, `commands/`, `agents/`, `hooks/`, `.claude-plugin/`) never references repo-only (`docs/`, `tools/`, `.github/`) — not a path, not a doc link; the lint enforces the checkable subset. Consumers must never *depend* on repo-only, which is not the same as never receiving it: the plugin's source is the repo root, so a git-source install clones everything and those files do reach a consumer's cache as inert content. General standards ship in the skill that teaches them, or in the `charter` cell where they must bind before any skill fires; repo-specific application lives here. **Capability wrappers do not belong in any of them.**
 - **A shipped calling contract names no harness token.** A script is invoked by a path resolved against the directory of the file that names it, so the same line works in the source repository and in an installed plugin. The reason is cross-runtime, not that the token fails: Claude Code *does* substitute `${CLAUDE_PLUGIN_ROOT}`, and `${CLAUDE_SKILL_DIR}`, into a skill's body before the model reads it — Codex does neither, delivering the root as an environment variable to hook commands only. A form that binds in one runtime and not the other forks the practice, which is the same ground on which the forced output style was refused. Two mechanisms enforce it: the lint bans the tokens, and `tools/tests/test_portability.py` checks that what remains resolves against the naming file's directory.
 - **Substrate is Python**, stdlib-first, tested on Linux and Windows in CI — one substrate means one set of idioms to harden, one CI matrix, and one thing every new script can assume, which is what refuses a second language for a single helper. PowerShell is rejected for new code. `AGENTS.md` is canonical because Codex reads it natively; `CLAUDE.md` is a pointer to it, never a fork.
 - **The predecessor** ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra)) is reference material with no presumption of correctness: pull lessons, never artifacts.

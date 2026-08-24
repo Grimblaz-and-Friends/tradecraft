@@ -52,7 +52,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 
 SHIPPED_DIRS = (
-    "skills", "lib", "commands", "agents", "charter", "hooks", ".claude-plugin",
+    "skills", "lib", "commands", "agents", "hooks", ".claude-plugin",
 )
 REPO_ONLY_NAMES = {"docs", "tools", ".github"}
 
@@ -86,7 +86,8 @@ HARNESS_TOKEN_EXEMPT_DIRS = frozenset({"hooks"})
 # Inside `hooks/` the placeholder is real, so the guard resolves what it
 # points at rather than banning it.
 PLUGIN_ROOT_REF = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)")
-CHARTER_IMPORT = "@charter/CHARTER.md"
+CHARTER = "skills/charter/SKILL.md"
+CHARTER_IMPORT = f"@{CHARTER}"
 
 # The predecessor's root file passed 30k chars in eight months because every
 # incident defaulted to a paragraph. The budget is the structural counterweight:
@@ -369,7 +370,7 @@ def check_sideways_deps(root: Path) -> list[str]:
     if skills.is_dir():
         for skill_dir in sorted(p for p in skills.iterdir() if p.is_dir()):
             scan.append((skill_dir, skill_dir.name))
-    for name in ("lib", "charter", "hooks"):
+    for name in ("lib", "hooks"):
         base = root / name
         if base.is_dir():
             # None: none of these is a skill, so any skill path is sideways.
@@ -412,6 +413,14 @@ def check_sideways_deps(root: Path) -> list[str]:
     return findings
 
 
+def _frontmatterless(text: str) -> str:
+    """Text with a leading YAML frontmatter block removed, if there is one."""
+    if not text.startswith("---"):
+        return text
+    end = text.find(chr(10) + "---", 3)
+    return text if end == -1 else text[end + 4:].lstrip(chr(10))
+
+
 def _unfenced(text: str) -> list[str]:
     """The document's lines with fenced blocks dropped, each stripped.
 
@@ -442,13 +451,18 @@ def check_doctrine(root: Path) -> list[str]:
                 f"doctrine-budget: AGENTS.md is {size} chars, "
                 f"budget is {AGENTS_BUDGET_CHARS} — route content out (skill, decision entry, mechanism)"
             )
-    charter = root / "charter" / "CHARTER.md"
+    charter = root / CHARTER
     if charter.is_file():
-        size = len(charter.read_text(encoding="utf-8", errors="replace"))
+        # The body, not the file: the charter is a cell now, so it carries
+        # frontmatter addressed to the runtime's skill index rather than to a
+        # session reading the rules. Budgeting the whole file would let a
+        # description edit eat the rules' headroom, which is the wrong coupling
+        # -- the description has its own always-on cost and its own standard.
+        size = len(_frontmatterless(charter.read_text(encoding="utf-8", errors="replace")))
         if size > CHARTER_BUDGET_CHARS:
             findings.append(
-                f"doctrine-budget: charter/CHARTER.md is {size} chars, budget "
-                f"is {CHARTER_BUDGET_CHARS} — route content out"
+                f"doctrine-budget: {CHARTER}'s body is {size} chars, budget "
+                f"is {CHARTER_BUDGET_CHARS} -- route content out"
             )
     # The charter reaches a consumer through the hook, but it reaches a session
     # in THIS repository only through an import in a file that is itself
@@ -1012,7 +1026,7 @@ def _within(path: Path, root: Path) -> bool:
 def check_delivery(root: Path) -> list[str]:
     """The shipped charter exists, and the hook that delivers it still can.
 
-    Nothing guarded either one when they landed: deleting `charter/CHARTER.md`,
+    Nothing guarded either one when they landed: deleting the charter,
     deleting `hooks/hooks.json`, or typo-ing the path inside it all left every
     required check green, while a consumer session silently received no
     doctrine at all. On Windows the failure is silent at the adopter's end too
@@ -1024,14 +1038,15 @@ def check_delivery(root: Path) -> list[str]:
     the first lawful edit -- priced out in review, and the price holds.
     """
     findings = []
-    charter = root / "charter" / "CHARTER.md"
+    charter = root / CHARTER
     if not charter.is_file():
         findings.append(
-            "delivery: charter/CHARTER.md is missing -- the shipped half of "
-            "the doctrine, and what the SessionStart hook emits"
+            f"delivery: {CHARTER} is missing -- the shipped half of the "
+            "doctrine, the cell a session can pull it from, and what the "
+            "SessionStart hook emits"
         )
-    elif not (_read_text(charter) or "").strip():
-        findings.append("delivery: charter/CHARTER.md is empty")
+    elif not _frontmatterless(_read_text(charter) or "").strip():
+        findings.append(f"delivery: {CHARTER} has no body below its frontmatter")
 
     config = root / "hooks" / "hooks.json"
     if not config.is_file():

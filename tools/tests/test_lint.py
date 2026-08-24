@@ -17,7 +17,7 @@ import lint
 
 def make_clean_tree(root: Path) -> None:
     (root / "AGENTS.md").write_text(
-        "# root" + chr(10) + "@charter/CHARTER.md" + chr(10)
+        "# root" + chr(10) + "@skills/charter/SKILL.md" + chr(10)
         + "Doctrine pointer lives beside this file." + chr(10),
         encoding="utf-8",
     )
@@ -34,10 +34,13 @@ def make_clean_tree(root: Path) -> None:
 
 def _wire_delivery(root: Path) -> None:
     """The charter and the hook that emits it, wired the way the repo wires them."""
-    charter = root / "charter"
-    charter.mkdir(exist_ok=True)
-    (charter / "CHARTER.md").write_text(
-        "# charter\nThe binding half.\n", encoding="utf-8"
+    charter = root / "skills" / "charter"
+    charter.mkdir(parents=True, exist_ok=True)
+    (charter / "SKILL.md").write_text(
+        "---" + chr(10) + "name: charter" + chr(10)
+        + "description: The binding rules." + chr(10) + "---" + chr(10) + chr(10)
+        + "# charter" + chr(10) + "The binding half." + chr(10),
+        encoding="utf-8",
     )
     hooks = root / "hooks"
     hooks.mkdir(exist_ok=True)
@@ -92,7 +95,7 @@ def test_clean_tree_passes(tmp_path):
 
 def test_delivery_fires_when_the_charter_is_missing(tmp_path):
     make_clean_tree(tmp_path)
-    (tmp_path / "charter" / "CHARTER.md").unlink()
+    (tmp_path / "skills" / "charter" / "SKILL.md").unlink()
     findings = lint.run(tmp_path)
     assert any("delivery" in f and "missing" in f for f in findings)
     # The import guard fires too, and should: AGENTS.md now names a file
@@ -102,9 +105,9 @@ def test_delivery_fires_when_the_charter_is_missing(tmp_path):
 
 def test_delivery_fires_when_the_charter_is_empty(tmp_path):
     make_clean_tree(tmp_path)
-    (tmp_path / "charter" / "CHARTER.md").write_text("\n\n", encoding="utf-8")
+    (tmp_path / "skills" / "charter" / "SKILL.md").write_text("\n\n", encoding="utf-8")
     findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "empty" in findings[0]
+    assert len(findings) == 1 and "no body" in findings[0]
 
 
 def test_delivery_fires_when_the_hook_config_is_missing(tmp_path):
@@ -198,7 +201,7 @@ def test_doctrine_import_fires_when_agents_md_stops_importing_the_charter(tmp_pa
     make_clean_tree(tmp_path)
     agents = tmp_path / "AGENTS.md"
     agents.write_text(
-        agents.read_text(encoding="utf-8").replace("@charter/CHARTER.md" + chr(10), ""),
+        agents.read_text(encoding="utf-8").replace("@skills/charter/SKILL.md" + chr(10), ""),
         encoding="utf-8",
     )
     findings = [f for f in lint.run(tmp_path) if "doctrine-import" in f]
@@ -212,7 +215,7 @@ def test_doctrine_import_fires_on_a_backticked_mention(tmp_path):
     agents = tmp_path / "AGENTS.md"
     agents.write_text(
         agents.read_text(encoding="utf-8").replace(
-            "@charter/CHARTER.md", "`@charter/CHARTER.md`"
+            "@skills/charter/SKILL.md", "`@skills/charter/SKILL.md`"
         ),
         encoding="utf-8",
     )
@@ -224,7 +227,7 @@ def test_doctrine_budget_fires_when_the_charter_bloats(tmp_path):
     """The charter needs the displacement pressure more than AGENTS.md does:
     an adopter pays for it on every SessionStart event, resume included."""
     make_clean_tree(tmp_path)
-    (tmp_path / "charter" / "CHARTER.md").write_text(
+    (tmp_path / "skills" / "charter" / "SKILL.md").write_text(
         "x" * (lint.CHARTER_BUDGET_CHARS + 1), encoding="utf-8"
     )
     findings = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
@@ -235,7 +238,7 @@ def test_sideways_deps_reaches_the_charter_and_the_hooks(tmp_path):
     """A skill named by path from `charter/` does not resolve once installed --
     the skills live in a plugin cache, not at `skills/` beside the reader."""
     make_clean_tree(tmp_path)
-    (tmp_path / "charter" / "CHARTER.md").write_text(
+    (tmp_path / "skills" / "charter" / "SKILL.md").write_text(
         "The bar lives in skills/example-skill/SKILL.md." + chr(10), encoding="utf-8"
     )
     findings = [f for f in lint.run(tmp_path) if "sideways" in f]
@@ -264,8 +267,8 @@ def test_doctrine_import_fires_on_a_fenced_mention(tmp_path):
     agents = tmp_path / "AGENTS.md"
     agents.write_text(
         agents.read_text(encoding="utf-8").replace(
-            "@charter/CHARTER.md",
-            "```" + chr(10) + "@charter/CHARTER.md" + chr(10) + "```",
+            "@skills/charter/SKILL.md",
+            "```" + chr(10) + "@skills/charter/SKILL.md" + chr(10) + "```",
         ),
         encoding="utf-8",
     )
@@ -283,7 +286,7 @@ def test_doctrine_import_allows_a_fenced_example_beside_the_real_line(tmp_path):
         agents.read_text(encoding="utf-8")
         + chr(10)
         + "For example:" + chr(10)
-        + "```" + chr(10) + "@charter/CHARTER.md" + chr(10) + "```" + chr(10),
+        + "```" + chr(10) + "@skills/charter/SKILL.md" + chr(10) + "```" + chr(10),
         encoding="utf-8",
     )
     assert [f for f in lint.run(tmp_path) if "doctrine-import" in f] == []
@@ -327,14 +330,16 @@ def test_delivery_fires_when_the_named_path_is_a_directory(tmp_path):
 
 
 def test_sideways_dep_names_the_directory_it_came_from(tmp_path):
-    """The scan list grew from `lib/` alone to three directories; the label did
-    not, so every charter and hooks finding claimed to come from `lib/`."""
+    """The scan list grew past `lib/`, and the label did not, so every finding
+    outside it claimed to come from `lib/`. The charter was the first subject;
+    it is a cell now and gets a skill's own label, so `hooks/` is what still
+    exercises the non-skill branch."""
     make_clean_tree(tmp_path)
-    (tmp_path / "charter" / "CHARTER.md").write_text(
+    (tmp_path / "hooks" / "README.md").write_text(
         "See skills/example-skill/SKILL.md." + chr(10), encoding="utf-8"
     )
     findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
-    assert len(findings) == 1 and "from charter/" in findings[0]
+    assert len(findings) == 1 and "from hooks/" in findings[0]
 
 
 def test_harness_token_fires_on_a_shipped_calling_contract(tmp_path):
@@ -367,7 +372,7 @@ def test_harness_token_exempts_hooks_where_the_token_actually_expands(tmp_path):
     hooks = tmp_path / "hooks"
     (hooks / "hooks.json").write_text(
         '{"hooks": {"SessionStart": [{"matcher": "*", "hooks": [{"type": '
-        '"command", "command": "cat ${CLAUDE_PLUGIN_ROOT}/charter/CHARTER.md"'
+        '"command", "command": "cat ${CLAUDE_PLUGIN_ROOT}/skills/charter/SKILL.md"'
         "}]}]}}\n",
         encoding="utf-8",
     )
@@ -512,7 +517,7 @@ def test_lib_may_not_reference_a_skill(tmp_path):
 def test_doctrine_budget_fires_when_agents_md_bloats(tmp_path):
     make_clean_tree(tmp_path)
     (tmp_path / "AGENTS.md").write_text(
-        "@charter/CHARTER.md" + chr(10) + "x" * (lint.AGENTS_BUDGET_CHARS + 1),
+        "@skills/charter/SKILL.md" + chr(10) + "x" * (lint.AGENTS_BUDGET_CHARS + 1),
         encoding="utf-8",
     )
     findings = lint.run(tmp_path)

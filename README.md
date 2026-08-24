@@ -17,7 +17,7 @@ Anything that is a *capability* — orchestration, subagents, planning modes, me
 
 The unit of everything is the **skill**: a self-contained cell carrying whatever mix of prose (methodology), code (contracts), and tests its job requires. Skills never depend on each other sideways. The plugin is just the bundle they ship in.
 
-Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19-constitutional-reset.md)): the **doctrine** — the practice's binding half in [the charter](charter/CHARTER.md), which ships, and this repository's own mechanics in [AGENTS.md](AGENTS.md), which does not — the **skills** (all methodology), and the **[decision log](docs/architecture/decisions/)** (frozen rationale that informs, never binds). Every governing document states its purpose, audience, and success criteria, and its review judges against that statement — the review practice itself is the `adversarial-review` skill. Each review appends one row to [docs/reviews.jsonl](docs/reviews.jsonl); records are append-only exhaust, never maintained.
+Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19-constitutional-reset.md)): the **doctrine** — the practice's binding half in [the charter](skills/charter/SKILL.md), a cell that ships, and this repository's own mechanics in [AGENTS.md](AGENTS.md), which does not — the **skills** (all methodology), and the **[decision log](docs/architecture/decisions/)** (frozen rationale that informs, never binds). Every governing document states its purpose, audience, and success criteria, and its review judges against that statement — the review practice itself is the `adversarial-review` skill. Each review appends one row to [docs/reviews.jsonl](docs/reviews.jsonl); records are append-only exhaust, never maintained.
 
 ## Install it
 
@@ -61,7 +61,7 @@ not apply to it at all.
 
 **What lands in your session.** Every skill's name and description sit in every
 session's context; each skill's body loads only when it fires. On top of that,
-the plugin ships one `SessionStart` hook, which emits [the charter](charter/CHARTER.md)
+the plugin ships one `SessionStart` hook, which emits [the charter](skills/charter/SKILL.md)
 — roughly 1,100 tokens of binding rules — so the practice governs rather than
 merely being available. That matcher is match-all, so the charter is re-emitted
 on resume, clear, compact and fork as well as at startup: budget per

@@ -247,7 +247,11 @@ def test_the_declared_hook_command_delivers_the_charter(bracketed: Path, tmp_pat
     """
     commands = _declared_hook_commands(bracketed)
     assert commands, "hooks/hooks.json declares no SessionStart command"
-    charter = (bracketed / "charter" / "CHARTER.md").read_text(encoding="utf-8")
+    # The body, not the file: the hook strips the cell's frontmatter, which
+    # is addressed to the runtime's skill index rather than to a reader.
+    charter = lint._frontmatterless(
+        (bracketed / lint.CHARTER).read_text(encoding="utf-8")
+    )
 
     for command in commands:
         # Claude Code's half of the contract: it substitutes the placeholder
