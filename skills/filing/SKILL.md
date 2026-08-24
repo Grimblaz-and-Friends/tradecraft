@@ -11,30 +11,32 @@ description: How a piece of work gets onto the board — the search that runs be
 
 Before creating an issue, search the board.
 
-**The search is not done until it has been run against the subject's identifier, every name the mechanism goes by, and the defect in the words the board would already have used — over issues in every state, across the whole board rather than a first page.** All three parts are load-bearing, and each of them fails silently when it is run wrong.
+**The search is not done until it has been run against the subject's identifier, every name the mechanism goes by, and the defect in the board's own words — over issues in every state, across the whole board rather than a first page.** All three parts are load-bearing.
 
-**Run it as commands.** Either surface serves; the two settings that matter are spelled differently on each, and a wrong spelling is a hard error on one and a quiet half-search on the other.
+**Run it as commands.** The two surfaces differ on all-states and on multi-word queries, so pick one deliberately:
 
 ```
-gh search issues "<one term>" --repo <owner>/<repo> --limit 100
-gh issue list --repo <owner>/<repo> --state all --limit 100 --search "<one term>"
+gh search issues "post-fix" --repo OWNER/REPO --limit 1000
+gh issue list --repo OWNER/REPO --state all --limit 1000 --search "post-fix"
 ```
 
-`--state all` is valid on `gh issue list` and rejected outright by `gh search issues`, where every state is the **absence** of the flag. Left alone, both surfaces default to open-only or to a first page shorter than a working board, and both truncations are silent — so a filing that takes the defaults can report an empty board it never read. A closed issue is the record of what was already decided, already tried, or left behind when its parent closed.
+`--state all` is valid on `gh issue list` and rejected outright by `gh search issues`, where every state is the **absence** of the flag. Left at its default of thirty, either surface returns a first page with no warning there was more. A closed issue records what was already decided, already tried, or left behind when its parent closed.
 
-**One term per query, because the failure runs in both directions.** Too broad misses the exact string: on this practice's own board, `check_version_bump` returns none of the issues whose titles *begin* with `check_version_bump.py`, and only the query carrying the extension returns them. Too narrow returns a truthful zero: terms are ANDed, so `post-fix seat` returns a fraction of what `post-fix` alone does. Neither result says which of the two happened to it.
+**A quoted argument is one term, and the surfaces read it differently:** `gh search issues` sends it as a phrase, `gh issue list --search` ANDs its words. A name containing a space is a term; a lifted sentence is not — take its distinctive word. `gh search issues "manifest exemption wider"` returns nothing where the other surface returns the open issue titled that.
 
-**A mechanism usually answers to three names** — its key, the term the prose uses for it, the file that records it — and they return near-disjoint sets. `post-fix`, `prosecution look` and `reviews.jsonl` all name one mechanism and share almost nothing; only the last of them surfaced the issue that decided the filing that found this. Running one of the three looks exactly like running the search.
+**One term per query, because the failure runs both ways.** A near-miss on the string returns nothing: on this practice's own board, `check_version_bump` returns none of the issues whose titles *begin* with `check_version_bump.py`; only the query carrying the extension returns them. Adding a word narrows hard: `post-fix seat` returns four where `post-fix` returns fifty-one. Neither result says which happened to it.
 
-**The defect's own words are the board's, not yours.** The other two parts are printed on the artifact in front of you; this one is a guess at what somebody else called the same thing. Lift the phrase from the material — the sentence of the rule being breached, the term a decision entry already used — rather than coining it, because a coined phrase is queried against a board that could never have contained it.
+**A mechanism usually answers to three names** — its key, the term the prose uses for it, the file that records it — and one can be the only one that reaches what you need. On this practice's own board `post-fix`, `prosecution look` and `reviews.jsonl` name one mechanism; only `reviews.jsonl` returns [#126](https://github.com/Grimblaz-and-Friends/tradecraft/issues/126), the issue that decided the filing that found this. Running one of the three looks exactly like running the search.
+
+**The defect's own words are the board's, not yours.** The other two are printed on the artifact in front of you; this one guesses what somebody else called the same thing. Lift it from the material — the rule being breached, the term a decision entry used — rather than coining it, because a coined phrase is queried against a board that could never have contained it.
 
 Three outcomes, each lawful:
 
-- **Extend** an **open** issue — a comment, not a new number. A closed match is a tie, never a home. **Read the host to its end first: extend only where a ruling that closes it would dispose of your defect too.** An issue whose own closure would leave your defect unremedied is a tie, and extending buries it under a disposal that never reaches it.
+- **Extend** an **open** issue — a comment, not a new number. A closed match is a tie, never a home. **Extend only where a ruling that closes the host would dispose of your defect too** — read its comments as well as its body, since an issue is re-scoped where it is discussed. Otherwise it is a tie, and extending buries your defect under a disposal that never reaches it.
 - **File new with named ties** — the relationship goes on the record at birth instead of being reconstructed at ranking time: [#94](https://github.com/Grimblaz-and-Friends/tradecraft/issues/94) and [#95](https://github.com/Grimblaz-and-Friends/tradecraft/issues/95) were two lawful filings against one sentence whose pairing had to be reconstructed when they were merged into a single PR later, because neither of them named the other.
-- **File standalone** — the search turned up nothing that earns a tie.
+- **File standalone** — nothing turned up that earns a tie.
 
-An extending comment carries the same list and meets the same floor as a filing; its tie is the issue it lands on.
+An extending comment carries the same list and meets the same floor; its tie is the issue it lands on.
 
 ### Naming a tie
 
@@ -49,7 +51,7 @@ An extending comment carries the same list and meets the same floor as a filing;
 
 Both paired relationships are written in both directions; `blocks` exists because a filing that unblocks an existing issue would otherwise have to edit that issue to record the order.
 
-**A pass that creates more than one issue is not done until each of them names the others.** The numbers do not exist until creation, so the first filing's tie block is completed inside the same pass — which is not the edit `blocks` exists to avoid, because that one mutates an issue a ranking may already have read and this one closes a filing nobody has seen yet.
+**A pass that creates more than one issue is not done until each of them names the others.** The numbers do not exist until creation, so the first filing's tie block is completed inside the same pass, by editing its body (`gh issue edit`) — a tie in a comment lands where nobody ranking the board will reach it. That is not the edit `blocks` avoids: that one mutates an issue a ranking may already have read; this one closes a filing nobody has seen yet.
 
 **The same four relationships apply whether the tied issue is open or closed; there is no separate closed-issue vocabulary.** What shifts is the ranking consequence — against a closed target it is that the issue is read, not that anything is scheduled — and, on the ordering row, the assertion itself: `sequenced-after` is already satisfied and `blocks` does not hold.
 
@@ -59,14 +61,14 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 
 ## Creation carries the want; pickup does the work
 
-**Carried at creation:** the want or defect in plain terms; the incident or evidence that makes it real; why it will actually get picked up; the ties above; and what discovery must settle, named as deliberately deferred.
+**Carried at creation:** the want or defect in plain terms; the evidence that makes it real; why it will get picked up; the ties above; and what discovery must settle, named as deliberately deferred.
 
 **Left for pickup:** the framing, the options and their argument, the remedy design, the pre-implementation artifact. Filing is not convergence.
 
 **Record what happened; do not decide what to do.** The line is not how much a filing carries but which kind of thing it carries. Evidence — a file and line, a quoted sentence, a count, an incident that occurred — survives however far the vocabulary moves, *provided it is written as an observation anyone can re-run rather than as a citation into vocabulary that can retire*. Design — options, remedy shapes, names for structures — is written in today's vocabulary and decays with it. [#38](https://github.com/Grimblaz-and-Friends/tradecraft/issues/38) is the exhibit for both halves and for the proviso: its frame was dead vocabulary before anyone opened it, and the observation underneath survived only because its successor could restate it against an authority that still existed.
 
-**Where the evidence is itself a rule, the rule's own sentence is the observation.** Quote it, with its location — the quote survives the file moving and the location alone is the citation the proviso warns about. Saying which rule is breached is evidence; saying what should replace it is design, and stays out.
+**Where the evidence is itself a rule, the rule's own sentence is the observation.** Quote it with its location: the quote survives the file moving, where the location alone is the citation the proviso warns about. Which rule is breached is evidence; what replaces it is design, and stays out.
 
 **The floor:** carry enough evidence that a session picking the work up can confirm the problem is real without redoing the discovery that found it.
 
-**A filing does not announce that it is minimal.** Provenance is a different thing and belongs: who directed the work, or which review sustained it, is a fact the picker-up uses.
+**A filing does not announce that it is minimal.** Provenance is different and belongs: who directed the work, or which review sustained it, is a fact the picker-up uses.
