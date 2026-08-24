@@ -5,9 +5,13 @@ repositories built per test, on both OSes in CI."""
 
 import importlib.util
 import json
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "figures.py"
 
@@ -59,6 +63,13 @@ def test_doc_headroom_goes_negative_over_budget(tmp_path):
     assert "-2" in fig["value"]
 
 
+def test_doc_missing_file_is_a_designed_refusal_not_a_traceback(tmp_path):
+    result = cli(tmp_path, "--doc", "NO_SUCH.md", "--budget", "100")
+    assert result.returncode != 0
+    assert "not a readable file" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 # --- delta figure: raw blobs, CRLF normalized, explicit base ----------------
 
 def test_delta_normalizes_crlf_on_both_sides(tmp_path):
@@ -105,6 +116,54 @@ def test_delta_refuses_an_unknown_base_loudly(tmp_path):
     result = cli(repo, "--base", "no-such-ref", "--delta", "a.md")
     assert result.returncode != 0
     assert "no-such-ref" in result.stderr
+
+
+def test_delta_refuses_when_no_file_matches_on_either_side(tmp_path):
+    # A typo'd path (or suffix) must never paste as a confident +0.
+    repo = make_repo(tmp_path)
+    (repo / "notes.md").write_bytes(b"x")
+    commit_all(repo, "base")
+    result = cli(repo, "--base", "HEAD", "--delta", "notse")
+    assert result.returncode != 0
+    assert "matched no files on either side" in result.stderr
+    # ...while one empty side stays lawful: a directory the change adds.
+    (repo / "new").mkdir()
+    (repo / "new" / "b.md").write_bytes(b"12")
+    fig = figures.figure_delta(repo, "HEAD", ["new"])
+    assert fig["data"] == {
+        "base": "HEAD", "paths": ["new"], "suffixes": [],
+        "base_chars": 0, "current_chars": 2, "delta": 2,
+    }
+
+
+def test_delta_counts_non_ascii_filenames_despite_quotepath(tmp_path):
+    # git's default core.quotePath C-escapes non-ASCII names in newline
+    # output; the NUL-delimited enumeration must keep them in both totals.
+    repo = make_repo(tmp_path)
+    run(["git", "config", "core.quotePath", "true"], cwd=repo)
+    (repo / "résumé.md").write_bytes("héllo".encode("utf-8"))
+    commit_all(repo, "base")
+    (repo / "résumé.md").write_bytes("héllo!!".encode("utf-8"))
+    fig = figures.figure_delta(repo, "HEAD", ["."], [".md"])
+    assert fig["data"]["base_chars"] == 5
+    assert fig["data"]["current_chars"] == 7
+    assert fig["data"]["delta"] == 2
+
+
+def test_delta_from_a_subdirectory_resolves_the_repo_root(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "notes.md").write_bytes(b"abc")
+    sub = repo / "sub"
+    sub.mkdir()
+    (sub / "inner.md").write_bytes(b"12")
+    commit_all(repo, "base")
+    (repo / "notes.md").write_bytes(b"abcd")
+    result = cli(sub, "--base", "HEAD", "--delta", ".", "--json")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    # Enumerated and read from the repository root, not the subdirectory.
+    assert payload["figures"][0]["data"]["delta"] == 1
+    assert payload["figures"][0]["data"]["base_chars"] == 5
 
 
 # --- refusals: incomplete inputs never guess --------------------------------
@@ -170,6 +229,23 @@ def test_summary_parser_drops_duration_only():
     assert figures.parse_pytest_summary("== 5 passed in 0.1s ==") == "5 passed"
     assert figures.parse_pytest_summary("something odd\n") == "something odd"
     assert figures.parse_pytest_summary("") == "no output"
+    # The fallback drops the duration too — no block's value may differ
+    # across re-derivations, the parser's own stated reason.
+    assert figures.parse_pytest_summary("no tests ran in 0.00s") == "no tests ran"
+
+
+def test_suite_figure_refuses_a_mistyped_test_path(tmp_path):
+    # pytest exit 4 (usage error): nothing was measured, so a pasteable
+    # block would be a guess-shaped output from an input error.
+    with pytest.raises(SystemExit, match="measured nothing"):
+        figures.figure_tests(tmp_path, ["no_such_dir"])
+
+
+def test_suite_figure_refuses_an_empty_collection(tmp_path):
+    # pytest exit 5 (no tests collected) is the same class.
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(SystemExit, match="measured nothing"):
+        figures.figure_tests(tmp_path, ["empty"])
 
 
 # --- renderings: the block carries tree, invocation, and basis --------------
@@ -184,9 +260,35 @@ def test_markdown_carries_tree_command_and_basis(tmp_path):
     out = result.stdout
     head = run(["git", "rev-parse", "--short", "HEAD"], cwd=repo).stdout.strip()
     assert f"tree `{head}` (dirty)" in out
-    assert "derived by `python figures.py --doc NOTES.md --budget 50`" in out
+    assert "derived by `python " in out
     assert "**5 of 50 chars, headroom 45**" in out
     assert "universal-newline" in out
+
+
+def test_stamped_command_reproduces_verbatim(tmp_path):
+    # The block's whole warrant: re-running the stamped line re-derives the
+    # figures. Extract the stamp and run it, from the tree the block stamps.
+    repo = make_repo(tmp_path)
+    (repo / "NOTES.md").write_bytes(b"hello")
+    commit_all(repo, "base")
+    first = cli(repo, "--doc", "NOTES.md", "--budget", "50")
+    assert first.returncode == 0, first.stderr
+    stamped = re.search(r"derived by `python ([^`]+)`", first.stdout).group(1)
+    second = run([sys.executable, *shlex.split(stamped)], cwd=repo)
+    assert second.returncode == 0, second.stderr
+    assert second.stdout == first.stdout
+
+
+def test_stamp_quotes_arguments_with_spaces(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "my notes.md").write_bytes(b"hi")
+    commit_all(repo, "base")
+    first = cli(repo, "--doc", "my notes.md", "--budget", "50")
+    assert first.returncode == 0, first.stderr
+    stamped = re.search(r"derived by `python ([^`]+)`", first.stdout).group(1)
+    assert "'my notes.md'" in stamped
+    second = run([sys.executable, *shlex.split(stamped)], cwd=repo)
+    assert second.stdout == first.stdout
 
 
 def test_json_mode_round_trips(tmp_path):

@@ -14,7 +14,7 @@
 
 **No basis is ever chosen silently.** The bases are fixed in code and printed with every figure — the doc measure is a universal-newline read because that is what a text-mode budget guard measures; the delta is raw base blobs vs working-tree bytes, decoded UTF-8, CRLF normalized to LF. The one basis that is a caller decision, the delta's base ref, is a required argument, and incomplete inputs are a loud refusal. Silent basis-picking produced three of the wrong numbers in the evidence.
 
-**Discovery rides the skill's trigger, not the doctrine.** `skills/authoring`'s description now fires when a write-up states derived figures, and its carries-the-query rule names the mechanism. `AGENTS.md` is untouched: a shipped trigger reaches every consumer and costs none of the doctrine's remaining budget.
+**Discovery rides the skill's trigger, not the doctrine.** `skills/authoring`'s description now fires when a write-up states derived figures, and its carries-the-query rule names the mechanism. `AGENTS.md` is untouched: a shipped trigger reaches every consumer and costs none of the doctrine's remaining budget. The cell's purpose header widens in the same change — purpose, audience, and success now admit the figure job, per the cell's own header-moves-with-the-scope rule; the review found the first draft left the header verbatim (M5). The same paragraph directs an in-repo session to prefer the repository's wrapper over the bare engine (M6), a clause kept path-free because the zone wall forbids shipped prose naming a repo-only file.
 
 ## Rejected
 

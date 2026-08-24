@@ -39,16 +39,22 @@ A figure whose inputs are incomplete is a loud refusal (non-zero exit), never
 a guess: --doc without --budget, --delta without --base (or the reverse), or no
 figure requested at all.
 
-Usage, from the repository the figures describe (or with --repo):
+Usage, from anywhere inside the repository the figures describe (or with
+--repo; either way paths resolve from the repository's root):
 
-    python figures.py --tests tests --doc NOTES.md --budget 8000
-    python figures.py --base origin/main --delta NOTES.md src --delta-suffix .md
+    python path/to/figures.py --tests tests --doc NOTES.md --budget 8000
+    python path/to/figures.py --base origin/main --delta NOTES.md src --delta-suffix .md
+
+The emitted block stamps the invocation that actually ran — the script's real
+path, arguments shell-quoted — so re-running the stamped line re-derives the
+figures.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -92,14 +98,17 @@ def tree_stamp(repo: Path) -> dict:
 
 def parse_pytest_summary(output: str) -> str:
     """The last summary-shaped line of `pytest -q` output, duration dropped.
-    If no line parses, the tail line verbatim — a strange suite reports
-    strangely rather than silently."""
+    If no line parses, the tail line — duration still dropped, so no block's
+    value differs across re-derivations — a strange suite reports strangely
+    rather than silently."""
     lines = [ln.strip().strip("=").strip() for ln in output.splitlines() if ln.strip()]
     for line in reversed(lines):
         match = PYTEST_SUMMARY.match(line)
         if match:
             return match.group("counts")
-    return lines[-1] if lines else "no output"
+    if not lines:
+        return "no output"
+    return re.sub(r"\s+in\s+[\d.]+m?s\b.*$", "", lines[-1])
 
 
 def figure_tests(repo: Path, paths: list[str]) -> dict:
@@ -109,6 +118,15 @@ def figure_tests(repo: Path, paths: list[str]) -> dict:
         cwd=str(repo), capture_output=True, check=False,
     )
     summary = parse_pytest_summary(_decoded(proc.stdout))
+    # A red suite is reported verbatim — hiding it would be worse than the
+    # failure — but a run that measured nothing is an input error, not a
+    # figure: pytest exits 4 (usage error, e.g. a mistyped path) and 5 (no
+    # tests collected) are refusals, or a typo pastes as a derived figure.
+    if proc.returncode in (4, 5):
+        raise SystemExit(
+            f"figures: pytest measured nothing over '{' '.join(paths)}' "
+            f"(exit {proc.returncode}: {summary}) — check the test paths"
+        )
     return {
         "name": "suite",
         "value": summary,
@@ -119,6 +137,10 @@ def figure_tests(repo: Path, paths: list[str]) -> dict:
 
 def figure_doc(repo: Path, path: str, budget: int) -> dict:
     target = repo / path
+    if not target.is_file():
+        raise SystemExit(
+            f"figures: --doc '{path}' is not a readable file under {repo}"
+        )
     # Universal-newline text read: the measure a text-mode budget guard
     # applies. Not the byte count, and not the LF-normalized count above —
     # naming which of the three this is, is the figure's whole job.
@@ -136,27 +158,31 @@ def figure_doc(repo: Path, path: str, budget: int) -> dict:
 
 
 def _base_files(repo: Path, base: str, paths: list[str]) -> list[str]:
-    proc = _git(repo, "ls-tree", "-r", "--name-only", base, "--", *paths)
+    # NUL-delimited: with git's default core.quotePath, a non-ASCII filename
+    # comes back C-escaped in newline output, silently missing every suffix
+    # filter — an undercounted delta that reproduces on re-run.
+    proc = _git(repo, "ls-tree", "-r", "--name-only", "-z", base, "--", *paths)
     if proc.returncode != 0:
         raise SystemExit(
             f"figures: cannot enumerate '{base}' — {_decoded(proc.stderr).strip()}"
         )
-    return [ln for ln in _decoded(proc.stdout).splitlines() if ln]
+    return [name for name in _decoded(proc.stdout).split("\0") if name]
 
 
 def _worktree_files(repo: Path, paths: list[str]) -> list[str]:
     # Tracked plus untracked-unignored, so a file the change adds counts
     # before it is committed; a path listed but deleted from the tree is
-    # skipped when read.
+    # skipped when read. NUL-delimited for the same reason as the base side.
     proc = _git(
-        repo, "ls-files", "--cached", "--others", "--exclude-standard", "--", *paths
+        repo, "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+        "--", *paths
     )
     if proc.returncode != 0:
         raise SystemExit(
             f"figures: cannot enumerate the working tree — "
             f"{_decoded(proc.stderr).strip()}"
         )
-    return [ln for ln in _decoded(proc.stdout).splitlines() if ln]
+    return [name for name in _decoded(proc.stdout).split("\0") if name]
 
 
 def figure_delta(
@@ -165,10 +191,21 @@ def figure_delta(
     def kept(name: str) -> bool:
         return not suffixes or any(name.endswith(sfx) for sfx in suffixes)
 
+    base_names = [n for n in _base_files(repo, base, paths) if kept(n)]
+    current_names = [
+        n for n in _worktree_files(repo, paths) if kept(n) and (repo / n).is_file()
+    ]
+    # Empty on ONE side is a lawful figure (a directory the change adds or
+    # deletes); empty on both is a typo'd path or suffix, and a confident
+    # +0 from it would be a wrong figure that reproduces on re-run.
+    if not base_names and not current_names:
+        raise SystemExit(
+            f"figures: --delta {' '.join(paths)} matched no files on either "
+            f"side — check the paths and suffixes"
+        )
+
     base_total = 0
-    for name in _base_files(repo, base, paths):
-        if not kept(name):
-            continue
+    for name in base_names:
         blob = _git(repo, "cat-file", "blob", f"{base}:{name}")
         if blob.returncode != 0:
             raise SystemExit(
@@ -177,11 +214,9 @@ def figure_delta(
             )
         base_total += _normalized_chars(blob.stdout)
 
-    current_total = 0
-    for name in _worktree_files(repo, paths):
-        target = repo / name
-        if kept(name) and target.is_file():
-            current_total += _normalized_chars(target.read_bytes())
+    current_total = sum(
+        _normalized_chars((repo / name).read_bytes()) for name in current_names
+    )
 
     delta = current_total - base_total
     suffix_note = f", {'/'.join(suffixes)} files only" if suffixes else ""
@@ -263,23 +298,47 @@ def figures_from_args(repo: Path, args: argparse.Namespace) -> list[dict]:
     return figures
 
 
-def utf8_stdout() -> None:
-    """The rendered block is UTF-8; a cp1252 console must not crash the
-    derivation it exists to make cheap."""
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+def utf8_stdio() -> None:
+    """Figures and refusals are UTF-8 on both streams; a cp1252 console (or a
+    UTF-8-assuming harness capturing either stream) must not garble the
+    derivation this exists to make cheap."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def repo_root(path: Path) -> Path:
+    """The repository root containing `path`. Every path this script takes or
+    emits is root-relative; resolving the root once is what keeps a run from a
+    subdirectory from enumerating one set of names and reading another."""
+    proc = _git(path, "rev-parse", "--show-toplevel")
+    if proc.returncode == 0:
+        return Path(_decoded(proc.stdout).strip())
+    return path
+
+
+def stamped_command(repo: Path, argv: list[str]) -> str:
+    """The invocation that actually ran, re-runnable verbatim: the script's
+    real path (repo-root-relative where it lives inside the repo), arguments
+    shell-quoted. A stamp needing path reconstruction or re-quoting is a query
+    the block does not actually carry."""
+    script = Path(__file__).resolve()
+    try:
+        shown = script.relative_to(repo).as_posix()
+    except ValueError:
+        shown = script.as_posix()
+    return "python " + shlex.join([shown, *argv])
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(argv)
-    utf8_stdout()
-    repo = Path(args.repo).resolve()
+    utf8_stdio()
+    repo = repo_root(Path(args.repo).resolve())
     figures = figures_from_args(repo, args)
     stamp = tree_stamp(repo)
-    command = "python figures.py " + " ".join(argv)
     render = render_json if args.json else render_markdown
-    print(render(stamp, command, figures))
+    print(render(stamp, stamped_command(repo, argv), figures))
     return 0
 
 

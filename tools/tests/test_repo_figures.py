@@ -36,25 +36,31 @@ def make_doctrine_root(tmp_path, agents_bytes):
     return tmp_path
 
 
+# Fixture sizes derive from the guard's own constant, so a lawful budget
+# change moves the fixtures with it and the pins stay a pure equality check.
+# Each b"x\r\n" line is 3 bytes and 2 characters under the guard's
+# universal-newline read — CRLF is what keeps bytes and characters apart.
+BUDGET = lint.AGENTS_BUDGET_CHARS
+OVER_LINES = BUDGET // 2 + 4      # 2 * OVER_LINES chars: over budget
+UNDER_LINES = BUDGET // 2 - 1     # 2 * UNDER_LINES chars: under in chars...
+assert 3 * UNDER_LINES > BUDGET   # ...while over in bytes, for any real budget
+
+
 def test_over_budget_chars_equal_the_guards_reported_size(tmp_path):
-    # CRLF line endings make bytes and characters disagree; both readings must
-    # land on the guard's number, not the byte count.
-    content = (b"x\r\n" * 4004)  # 12,012 bytes, 8,008 characters
-    root = make_doctrine_root(tmp_path, content)
+    root = make_doctrine_root(tmp_path, b"x\r\n" * OVER_LINES)
     findings = [f for f in lint.check_doctrine(root) if "doctrine-budget" in f]
     assert len(findings) == 1
     guard_size = int(re.search(r"is (\d+) chars", findings[0]).group(1))
-    fig = repo_figures.engine.figure_doc(root, "AGENTS.md", lint.AGENTS_BUDGET_CHARS)
-    assert fig["data"]["chars"] == guard_size == 8008
-    assert fig["data"]["headroom"] == lint.AGENTS_BUDGET_CHARS - guard_size
+    fig = repo_figures.engine.figure_doc(root, "AGENTS.md", BUDGET)
+    assert fig["data"]["chars"] == guard_size == 2 * OVER_LINES
+    assert fig["data"]["headroom"] == BUDGET - guard_size
 
 
 def test_under_budget_in_chars_over_in_bytes_agrees_with_the_guard(tmp_path):
-    content = (b"x\r\n" * 3999)  # 11,997 bytes, 7,998 characters: guard passes
-    root = make_doctrine_root(tmp_path, content)
+    root = make_doctrine_root(tmp_path, b"x\r\n" * UNDER_LINES)
     assert not [f for f in lint.check_doctrine(root) if "doctrine-budget" in f]
-    fig = repo_figures.engine.figure_doc(root, "AGENTS.md", lint.AGENTS_BUDGET_CHARS)
-    assert fig["data"]["headroom"] == 2
+    fig = repo_figures.engine.figure_doc(root, "AGENTS.md", BUDGET)
+    assert fig["data"]["headroom"] == BUDGET - 2 * UNDER_LINES > 0
 
 
 # --- the census is check_entry_references' resolution, sets emptied ---------

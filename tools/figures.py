@@ -11,8 +11,9 @@ that must agree with a guard come from the guard:
     never drift from what check_doctrine enforces;
   - the decision-log census reuses check_entry_references' own reference
     extraction and resolution, with both recorded sets ignored — the derivation
-    D-135 prescribes ("empty both recorded sets and count"), pinned references
-    excluded because a pin is a lawful form, not a recorded exemption.
+    D-135 prescribes: "Empty both recorded sets in `tools/lint.py` and count
+    what `check_entry_references` reports" — pinned references excluded
+    because a pin is a lawful form, not a recorded exemption.
 
 Usage:  python tools/figures.py [--base REF] [--json]
 
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import shlex
 import sys
 from pathlib import Path
 
@@ -98,10 +100,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true",
                         help="emit JSON instead of markdown")
     args = parser.parse_args(argv)
-    engine.utf8_stdout()
+    engine.utf8_stdio()
     figures = build_figures(ROOT, args.base)
     stamp = engine.tree_stamp(ROOT)
-    command = ("python tools/figures.py " + " ".join(argv)).rstrip()
+    command = ("python tools/figures.py " + shlex.join(argv)).rstrip()
     render = engine.render_json if args.json else engine.render_markdown
     print(render(stamp, command, figures))
     return 0
