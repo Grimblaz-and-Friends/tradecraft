@@ -14,6 +14,7 @@ repo-only directory in reach.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -37,11 +38,13 @@ SKILLS = ROOT / "skills"
 SCRIPT_MENTION = re.compile(r"(?P<prefix>[^\s`\"']*)scripts[/\\][\w.-]+\.py")
 
 # A prefix is what makes a contract depend on where the skill sits. Only two
-# spellings survive relocation: bare, and explicitly-relative. `../` is not
-# among them -- it reaches outside the cell, which is the thing self-containment
-# forbids -- and neither is a repo-rooted `skills/<name>/scripts/...`, which is
-# as dead on a consumer install as a harness token is.
-LAWFUL_PREFIXES = ("", "./", ".\\")
+# spellings survive relocation: bare, and explicitly-relative with a forward
+# slash. `../` is not among them -- it reaches outside the cell, which is the
+# thing self-containment forbids -- nor is a repo-rooted
+# `skills/<name>/scripts/...`, which is as dead on a consumer install as a
+# harness token is, nor `.\` , which is dead on POSIX in a guard whose whole
+# subject is running the same line in both places.
+LAWFUL_PREFIXES = ("", "./")
 
 # Present in the source tree, absent from a consumer install. A script reaching
 # for one of these would pass here and fail there, so the relocated root has
@@ -164,3 +167,75 @@ def test_no_shipped_skill_names_a_harness_token(installed: Path):
                 rel = path.relative_to(installed).as_posix()
                 offenders.append(f"{rel}:{lineno}")
     assert not offenders, f"harness token in shipped skills: {offenders}"
+
+
+def _declared_hook_commands(root: Path) -> list[str]:
+    """The SessionStart commands `hooks/hooks.json` actually declares."""
+    config = json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    return [
+        hook["command"]
+        for entry in config["hooks"]["SessionStart"]
+        for hook in entry["hooks"]
+        if hook.get("type") == "command" and hook.get("command")
+    ]
+
+
+@pytest.fixture(scope="module")
+def bracketed(tmp_path_factory) -> Path:
+    """An installed root whose path contains `[`.
+
+    Not decoration: the first shape of this hook used `cat`, whose PowerShell
+    alias resolves `-Path` as a wildcard, so a bracket anywhere in the plugin
+    cache path made the read fail -- at exit 0 with empty stdout, which the
+    runtime contract renders indistinguishable from a deliberate silence.
+    """
+    dest = tmp_path_factory.mktemp("cache") / "tradecraft[0.34.0]"
+    for name in lint.SHIPPED_DIRS:
+        source = ROOT / name
+        if source.is_dir():
+            shutil.copytree(source, dest / name)
+    return dest
+
+
+def test_the_declared_hook_command_delivers_the_charter(bracketed: Path):
+    """Run the command the plugin actually declares, and compare what it emits.
+
+    This is the guard for the delivery path, and it is written as an execution
+    check rather than as a static one on purpose. `hooks.json` names the
+    emitter, the emitter names the charter, and a guard that resolved that
+    second reference would still have to resolve a third if the emitter ever
+    computed its path -- while failing an emitter that legitimately does. Every
+    static rung fails one of those two ways. Running the command answers both
+    questions at once: it catches a typo'd charter name, an emptied emitter, a
+    syntax error, an emitter that exits 0 with nothing, and an emitter that
+    emits the wrong file, and it passes anything that actually delivers.
+
+    Identity, not non-emptiness. Non-emptiness passes an emitter that prints
+    the README.
+    """
+    commands = _declared_hook_commands(bracketed)
+    assert commands, "hooks/hooks.json declares no SessionStart command"
+    charter = (bracketed / "charter" / "CHARTER.md").read_text(encoding="utf-8")
+
+    for command in commands:
+        # The one substitution both runtimes perform on a hook command. Modelled
+        # here because the runtime is not available to the suite; it is the same
+        # assumption `check_delivery`'s PLUGIN_ROOT_REF already makes, so the two
+        # guards drift together or not at all.
+        expanded = command.replace("${CLAUDE_PLUGIN_ROOT}", bracketed.as_posix())
+        result = subprocess.run(
+            expanded,
+            shell=True,
+            capture_output=True,
+            env=_clean_env(),
+            cwd=str(bracketed),
+        )
+        assert result.returncode == 0, (
+            f"the declared hook command exited {result.returncode}\n"
+            f"command: {expanded}\nstderr: {result.stderr.decode(errors='replace')}"
+        )
+        emitted = result.stdout.decode("utf-8").replace("\r\n", "\n")
+        assert emitted == charter, (
+            "the declared hook command did not emit the charter: got "
+            f"{len(emitted)} chars, expected {len(charter)}"
+        )

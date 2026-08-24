@@ -24,7 +24,7 @@ A document that cannot state these three is not ready to be written; the missing
 - **Rationale** — why this shape was chosen, what was rejected → the repo's decision log, one frozen entry per decision, written in the change that lands it. Rationale informs future judgment; it never binds it.
 - **Records** — what happened → append-only exhaust: a review report, an index row. Never create a record that must be maintained after its append.
 
-When one idea needs both a shipped standard and a local application, the skill carries the standard and the repo's own files carry the application — never the reverse, and never duplicated prose that can drift.
+When one idea needs both a shipped standard and a local application, the standard ships — in the skill that teaches it, or in the practice's own always-on surface where it must bind before any skill fires — and the repo's own files carry the application, never the reverse, and never duplicated prose that can drift.
 
 ## Writing standards
 

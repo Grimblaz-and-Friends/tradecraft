@@ -1,0 +1,38 @@
+# D-156: The practice ships as an installable plugin — a charter that binds through a session-start hook, and calling contracts that name no harness token
+
+**Status:** Accepted 2026-08-24 (PR #156)
+
+## Context
+
+The repository was versioned like a product and had never been installed as one. A survey run by performing the install rather than reading the manifest found three things. The install path already worked and github-source is canonical. Both shipped scripts named `${CLAUDE_PLUGIN_ROOT}/...` in their calling contracts. And no doctrine reached a consumer at all: a plugin's root `AGENTS.md` and `CLAUDE.md` land in the install cache and are never loaded as context — verified with a live control, and stated by Claude Code's own plugin validator, which says so in as many words.
+
+The survey also found that Codex reads this repository's Claude manifests by name — `DISCOVERABLE_PLUGIN_MANIFEST_PATHS` lists `.claude-plugin/plugin.json` and `MARKETPLACE_MANIFEST_RELATIVE_PATHS` lists `.claude-plugin/marketplace.json`, both read directly from `openai/codex@main`. The Codex arm was therefore nearly free, which is why it is in this change rather than behind #24.
+
+## Decision
+
+**The binding half of the doctrine ships, and a `SessionStart` hook delivers it.** `charter/CHARTER.md` carries eleven items — authority and the fork test, the two ceremony moments, review and findings disposition, the routing map, the admission order, and "decisions inform, never bind" — and `AGENTS.md` keeps only this repository's mechanics. `hooks/` runs a script that prints the charter on stdout, which both runtimes accept as session context. `charter/` and `hooks/` join the shipped zone in `tools/lint.py`, `tools/check_version_bump.py`, and the doctrine's own zone list.
+
+**A shipped calling contract names no harness token, and the reason is cross-runtime rather than that the token fails.** This is the counter-intuitive half. Claude Code *does* substitute `${CLAUDE_PLUGIN_ROOT}` — and `${CLAUDE_SKILL_DIR}`, its own skill-relative placeholder — into a skill's body before the model reads it. The original premise of this change, that the old contract was simply broken, was false for Claude Code and was corrected under review. Codex substitutes neither, delivering the root as an environment variable to hook commands alone; it instead ships, as system prompt, the resolution rule the new contract relies on — that a relative path written in a `SKILL.md` resolves against the directory containing that file, with a script under the skill's own scripts directory given as the worked example (`codex-rs/ext/skills/src/catalog_prompt.rs`, `SKILLS_HOW_TO_USE_WITH_HOST_ALIASES`). So a token-bearing contract binds in one runtime and is dead in the other, and `${CLAUDE_SKILL_DIR}` is banned by name for exactly the reason the forced output style was refused: a form that works on one runtime forks the practice.
+
+**Precedence between the two always-on surfaces.** In a repository that installed the plugin the charter arrives read-only from the plugin cache, so on a conflict that repository's own doctrine wins — its owner can amend it, and a routing rule that sent a new rule to an unwritable surface would route it nowhere. The charter is budgeted at 6,000 characters, because an adopter pays for it on every `SessionStart` event, resume and compact included, so it needs displacement pressure more than this repository's own file does rather than less.
+
+**Delivery is guarded by execution, not by resolving references.** `hooks.json` names the emitter and the emitter names the charter, so a static guard would have to resolve each rung — and would still fail an emitter that legitimately computes its path. The portability suite instead runs the command the plugin actually declares, from a relocated shipped-zone copy whose path contains a `[`, and compares stdout to the charter byte for byte. It catches a typo'd charter name, an emptied emitter, a syntax error, an emitter that exits 0 with nothing, and an emitter that emits the wrong file; it passes anything that delivers.
+
+## Rejected
+
+- **A forced output style** (`force-for-plugin: true`), which appends to the main-thread system prompt and outranks the consumer's own style. Stronger than a hook — system prompt rather than injected context — and verified working. Refused because it is Claude-only, and a doctrine channel that binds harder on one runtime contradicts the practice's central claim to sit above both. Also `@internal` in the vendor's own schema, silently displacing an adopter's chosen style, and invisible to `claude plugin details`.
+- **`cat` as the hook command**, which was the first shape. It needed no interpreter on PATH, which is a real advantage now lost. Refused after measurement: under Windows PowerShell 5.1 — the shell Claude Code falls back to without Git Bash — it read the BOM-less charter as ANSI and corrupted every em dash, its wildcard `-Path` failed on a bracket in the cache path, and it failed at exit 0 with empty stdout, which the runtime contract renders indistinguishable from a deliberate silence.
+- **A `CLAUDE.md` `@import` into the plugin cache.** The install path is version-stamped and there is no stable alias, so an import pinned to one version stops resolving at the next.
+- **`@`-importing the charter for this repository instead of also instructing it.** Codex has no import syntax, so the prose instruction carries it there; the import line carries it in Claude Code. Both are present because neither alone covers both runtimes.
+
+## Left open
+
+**Whether the charter should ship as a skill instead of, or alongside, the hook.** The vendor's validator prescribes exactly this — *"To ship context with your plugin, use a skill (`skills/<name>/SKILL.md`) instead"* — and a charter skill would be immune at once to the Codex-on-Windows gap, the per-event cost, the PowerShell decode, and the whole class of hook-output-injection reports. It is not adopted here because a skill's body loads only when it fires, and always-on is the property this change exists to buy. Put to the owner as an argued decision rather than settled: it was never surfaced at the convergence gate, so it is his to affirm or reject.
+
+**Codex on Windows receives nothing.** Codex runs a plugin hook through `cmd.exe /C` and delivers the root as an environment variable rather than substituting it, and no single command string serves both a textual placeholder and a `%VAR%`-style variable. Disclosed in `README.md` and `hooks/README.md` rather than silently carried.
+
+**`python` on PATH.** The emitter needs an interpreter that `cat` did not. On a Linux host carrying only `python3` the hook emits nothing, and a failed session-start hook reports to the user and never to the model. CI cannot see this — `actions/setup-python` puts `python` on both runners — so it is disclosed rather than guarded.
+
+## Evidence
+
+The affirmed artifact and its affirmation are on [#139](https://github.com/Grimblaz-and-Friends/tradecraft/issues/139#issuecomment-5394833860). The review ran a five-seat panel, defense and judge, then two post-fix cycles; its reports are on [PR #156](https://github.com/Grimblaz-and-Friends/tradecraft/pull/156). Two of that review's findings bear directly on this entry: the substitution claim above was falsified against the Claude Code binary after being asserted in four places, and the Codex resolution rule was found by the defense and is the warrant this change actually rests on.

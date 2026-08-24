@@ -16,7 +16,11 @@ import lint
 
 
 def make_clean_tree(root: Path) -> None:
-    (root / "AGENTS.md").write_text("# root\nDoctrine pointer lives beside this file.\n", encoding="utf-8")
+    (root / "AGENTS.md").write_text(
+        "# root" + chr(10) + "@charter/CHARTER.md" + chr(10)
+        + "Doctrine pointer lives beside this file." + chr(10),
+        encoding="utf-8",
+    )
     (root / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
     skill = root / "skills" / "example-skill"
     (skill / "references").mkdir(parents=True)
@@ -90,7 +94,10 @@ def test_delivery_fires_when_the_charter_is_missing(tmp_path):
     make_clean_tree(tmp_path)
     (tmp_path / "charter" / "CHARTER.md").unlink()
     findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "delivery" in findings[0]
+    assert any("delivery" in f and "missing" in f for f in findings)
+    # The import guard fires too, and should: AGENTS.md now names a file
+    # that is not there. Two guards, one cause, both worth hearing.
+    assert any("doctrine-import" in f for f in findings)
 
 
 def test_delivery_fires_when_the_charter_is_empty(tmp_path):
@@ -143,6 +150,113 @@ def test_delivery_stays_quiet_on_a_wired_tree(tmp_path):
     assert lint.run(tmp_path) == []
 
 
+def test_harness_token_fires_on_powershell_and_cmd_spellings_any_case(tmp_path):
+    """`$env:` and `%VAR%` are case-insensitive in the shells that read them.
+
+    The first widening matched `$[Ee]nv:` only, so `$ENV:` -- an ordinary
+    spelling on the platform half of CI runs on -- slipped both guards.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "python $ENV:CLAUDE_PLUGIN_ROOT/scripts/run.py" + chr(10)
+        + "python $eNv:CLAUDE_PLUGIN_ROOT/scripts/run.py" + chr(10)
+        + "python %claude_plugin_root%/scripts/run.py" + chr(10),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
+    assert len(findings) == 3
+
+
+def test_harness_token_case_insensitivity_does_not_reach_the_posix_form(tmp_path):
+    """`${VAR}` is case-sensitive in POSIX shells, so a blanket flag would
+    fire on a genuinely different lowercase name."""
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "python ${claude_plugin_root}/scripts/run.py" + chr(10),
+        encoding="utf-8",
+    )
+    assert [f for f in lint.run(tmp_path) if "harness-token" in f] == []
+
+
+def test_harness_token_covers_the_other_path_roots(tmp_path):
+    """Only path roots belong here: a variable that names a port or an
+    entrypoint cannot make a calling contract non-portable."""
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    (skill / "SKILL.md").write_text(
+        "python ${CLAUDE_CONFIG_DIR}/scripts/run.py" + chr(10)
+        + "python $CLAUDE_WORKING_DIR/scripts/run.py" + chr(10),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
+    assert len(findings) == 2
+
+
+def test_doctrine_import_fires_when_agents_md_stops_importing_the_charter(tmp_path):
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8").replace("@charter/CHARTER.md" + chr(10), ""),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "doctrine-import" in f]
+    assert len(findings) == 1
+
+
+def test_doctrine_import_fires_on_a_backticked_mention(tmp_path):
+    """A backticked path is prose. It imports nothing, which is the whole
+    reason CLAUDE.md's own guard checks by position."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8").replace(
+            "@charter/CHARTER.md", "`@charter/CHARTER.md`"
+        ),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "doctrine-import" in f]
+    assert len(findings) == 1
+
+
+def test_doctrine_budget_fires_when_the_charter_bloats(tmp_path):
+    """The charter needs the displacement pressure more than AGENTS.md does:
+    an adopter pays for it on every SessionStart event, resume included."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "charter" / "CHARTER.md").write_text(
+        "x" * (lint.CHARTER_BUDGET_CHARS + 1), encoding="utf-8"
+    )
+    findings = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
+    assert len(findings) == 1 and "charter" in findings[0]
+
+
+def test_sideways_deps_reaches_the_charter_and_the_hooks(tmp_path):
+    """A skill named by path from `charter/` does not resolve once installed --
+    the skills live in a plugin cache, not at `skills/` beside the reader."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "charter" / "CHARTER.md").write_text(
+        "The bar lives in skills/example-skill/SKILL.md." + chr(10), encoding="utf-8"
+    )
+    findings = [f for f in lint.run(tmp_path) if "sideways" in f]
+    assert len(findings) == 1
+
+
+def test_the_two_shipped_zone_declarations_agree(tmp_path):
+    """`check_version_bump` keeps its own copy, deliberately -- but a copy that
+    silently disagrees is how `charter/` and `hooks/` came to be in the zone
+    everywhere except the guard that demands a version bump for them."""
+    import check_version_bump
+
+    lint_zone = {name.rstrip("/") for name in lint.SHIPPED_DIRS}
+    bump_zone = {name.rstrip("/") for name in check_version_bump.SHIPPED}
+    assert lint_zone == bump_zone, (
+        "the shipped zone is declared twice and the two disagree: "
+        f"lint-only={sorted(lint_zone - bump_zone)}, "
+        f"version-bump-only={sorted(bump_zone - lint_zone)}"
+    )
+
+
 def test_harness_token_fires_on_a_shipped_calling_contract(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
@@ -168,7 +282,7 @@ def test_harness_token_fires_on_the_bare_and_codex_forms(tmp_path):
 
 
 def test_harness_token_exempts_hooks_where_the_token_actually_expands(tmp_path):
-    """`hooks/` is one of the three places the placeholder is really expanded."""
+    """`hooks/` is hook configuration, where the placeholder really expands."""
     make_clean_tree(tmp_path)
     hooks = tmp_path / "hooks"
     (hooks / "hooks.json").write_text(
@@ -317,7 +431,10 @@ def test_lib_may_not_reference_a_skill(tmp_path):
 
 def test_doctrine_budget_fires_when_agents_md_bloats(tmp_path):
     make_clean_tree(tmp_path)
-    (tmp_path / "AGENTS.md").write_text("x" * (lint.AGENTS_BUDGET_CHARS + 1), encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(
+        "@charter/CHARTER.md" + chr(10) + "x" * (lint.AGENTS_BUDGET_CHARS + 1),
+        encoding="utf-8",
+    )
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "doctrine-budget" in findings[0]
 

@@ -17,8 +17,18 @@ the plugin cache path made the read fail. And it failed at **exit 0 with empty
 stdout** — which, against the runtime contract "exit 0: stdout is shown to the
 model", is indistinguishable from a hook that deliberately emitted nothing. The
 script decodes explicitly, opens by literal path, and exits non-zero with a
-reason on stderr. Python is this practice's substrate and is tested on Linux and
-Windows in CI.
+reason on stderr.
+
+**What that trade cost, stated rather than dropped.** `cat` needed no interpreter
+on PATH. `python` does, and it is absent on Linux installations that carry only
+`python3` — there the hook exits 1 having emitted nothing, and because a
+non-zero `SessionStart` hook shows stderr to the user and never to the model, the
+session proceeds with no doctrine and no signal that any was expected. CI does
+not close this: `actions/setup-python` puts `python` on both runners' PATH, so
+the matrix cannot see the case. What the source repository does check is that
+the declared command runs at all: its portability suite executes this command
+and compares the output to the charter byte for byte, so the hook cannot rot
+silently in the environments that suite does cover.
 
 **Why plain stdout rather than the JSON envelope.** Both runtimes accept either:
 Claude Code adds plain stdout as context for `SessionStart`, and so does Codex.
@@ -34,10 +44,11 @@ runtime later requires the envelope, that is a change to `hooks.json`, not to th
 charter.
 
 **Why `${CLAUDE_PLUGIN_ROOT}` is lawful here** when a shipped calling contract may
-not name it: this is hook configuration, which is one of the places the token
-actually expands in both runtimes. Claude Code substitutes it as a path
-placeholder before the shell sees the command; Codex sets it as an environment
-variable, explicitly for compatibility with plugins written against it.
+not name it: this is hook configuration, which is where the token actually
+expands. Claude Code substitutes it as a path placeholder before any shell sees
+the command, on every platform; Codex sets it as an environment variable,
+explicitly for compatibility with plugins written against it, which works
+wherever its hook shell expands one — and not on Windows (below).
 
 **Known gap: Codex on Windows.** Codex runs a plugin hook through `cmd.exe /C`
 and delivers the root as an environment variable rather than substituting it, so

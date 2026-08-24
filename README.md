@@ -72,6 +72,12 @@ Note that `claude plugin details` gets the cost wrong in your favour: it reports
 the always-on figure as skills only, and annotates the hook `(harness-only — no
 model context cost)`. The hook does cost you context.
 
+**One more thing that can go wrong.** The hook runs `python`. On a Linux host
+that carries only `python3` it will exit without emitting, and a failed
+session-start hook reports to you, not to the model — so the session simply
+proceeds without the charter. If `python -V` does not work on your machine, this
+plugin gives you the skills and not the practice.
+
 **On declining the hook.** Claude Code gates plugin hooks on workspace trust and
 the `disableAllHooks` setting; there is no supported way to take this plugin's
 skills while declining its hook. Codex does have hook-level trust and will ask.
@@ -87,4 +93,4 @@ shipped references them and nothing you use should.
 
 ## Status
 
-Installable in a consumer repository (2026-08-24): the install path, skill discovery, hook registration and the shipped scripts are all exercised there; that the hook's output reaches a live session's context is documented and third-party-reproduced but not yet run here. Before that, reset complete (2026-08-19): the doctrine, the shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.
+Installable in a consumer repository (2026-08-24): the install path, skill discovery and hook registration were exercised there, and `persist-changes` ran from the installed cache. Not yet run there: the current hook command against a real install, and whether the hook's output reaches a live session's context — the latter documented and third-party-reproduced, neither executed here. Before that, reset complete (2026-08-19): the doctrine, the shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.

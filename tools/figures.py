@@ -43,6 +43,7 @@ _SPEC.loader.exec_module(engine)
 
 SUITE_PATHS = ["tools/tests", "skills"]
 DOC = "AGENTS.md"
+CHARTER_DOC = "charter/CHARTER.md"
 PROSE_PATHS = ["AGENTS.md", "CLAUDE.md", "charter", "skills"]
 PROSE_SUFFIXES = [".md"]
 
@@ -82,6 +83,7 @@ def build_figures(root: Path, base: str | None) -> list[dict]:
     figures = [
         engine.figure_tests(root, SUITE_PATHS),
         engine.figure_doc(root, DOC, lint.AGENTS_BUDGET_CHARS),
+        engine.figure_doc(root, CHARTER_DOC, lint.CHARTER_BUDGET_CHARS),
         figure_census(root),
     ]
     if base:

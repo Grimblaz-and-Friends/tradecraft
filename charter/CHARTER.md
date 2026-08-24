@@ -30,7 +30,7 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 ## Where content goes
 
 - **Methodology** — how any work is done → the skill that governs it.
-- **A binding always-on rule** → the adopting repository's own doctrine, which is the surface it can edit and version. This charter is the practice's own always-on surface: it arrives from the installed plugin, so it is not yours to edit, and where the two conflict your doctrine wins — a rule you cannot amend cannot be a rule you are bound by.
+- **A binding always-on rule** → the adopting repository's own doctrine, which is the surface it can edit and version. This charter is the practice's own always-on surface; in a repository that installed it as a plugin the charter arrives read-only from the plugin cache, and there, on a conflict between the two, that repository's own doctrine wins — its owner can amend it, and a routing rule that sent a new rule to the unwritable surface would route it nowhere.
 - **Rationale** — why a shape was chosen, what was rejected → a decision entry.
 - **Review evidence** → the review report.
 

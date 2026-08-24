@@ -31,6 +31,9 @@ def main() -> int:
     except FileNotFoundError:
         print(f"charter-not-emitted: no file at {CHARTER}", file=sys.stderr)
         return 1
+    except UnicodeDecodeError as exc:
+        print(f"charter-not-emitted: {CHARTER} is not valid UTF-8: {exc}", file=sys.stderr)
+        return 1
     except OSError as exc:
         print(f"charter-not-emitted: {CHARTER}: {exc}", file=sys.stderr)
         return 1

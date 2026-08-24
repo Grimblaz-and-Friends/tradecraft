@@ -68,20 +68,22 @@ REPO_ONLY_NAMES = {"docs", "tools", ".github"}
 # ones a Windows author reaches for, on the platform half of CI runs on.
 _HARNESS_NAMES = (
     "CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|CLAUDE_PROJECT_DIR"
-    "|CLAUDE_SKILL_DIR|PLUGIN_ROOT|PLUGIN_DATA|CODEX_HOME"
+    "|CLAUDE_SKILL_DIR|CLAUDE_CONFIG_DIR|CLAUDE_WORKING_DIR"
+    "|PLUGIN_ROOT|PLUGIN_DATA|CODEX_HOME"
 )
 HARNESS_TOKENS = re.compile(
     rf"\$\{{?(?:{_HARNESS_NAMES})\}}?"
-    rf"|\$[Ee]nv:(?:{_HARNESS_NAMES})"
-    rf"|%(?:{_HARNESS_NAMES})%"
+    rf"|(?i:\$env:(?:{_HARNESS_NAMES}))"
+    rf"|(?i:%(?:{_HARNESS_NAMES})%)"
 )
-# `hooks/` is the exemption because it is hook configuration -- one of the three
-# places the token actually expands -- plus the prose explaining that.
+# `hooks/` is the exemption because it is hook configuration, which is where
+# the token expands in both runtimes -- plus the prose explaining that.
 HARNESS_TOKEN_EXEMPT_DIRS = frozenset({"hooks"})
 
 # Inside `hooks/` the placeholder is real, so the guard resolves what it
 # points at rather than banning it.
 PLUGIN_ROOT_REF = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)")
+CHARTER_IMPORT = "@charter/CHARTER.md"
 
 # The predecessor's root file passed 30k chars in eight months because every
 # incident defaulted to a paragraph. The budget is the structural counterweight:
@@ -89,6 +91,12 @@ PLUGIN_ROOT_REF = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)")
 # "Admitting a new requirement"; this file states the budget that makes it
 # bite here).
 AGENTS_BUDGET_CHARS = 8_000
+# The charter is the half that ships, and an adopter pays for it on every
+# SessionStart event -- resume and compact included -- so it needs the
+# displacement pressure more than this repo's own file does, not less.
+# 6,000 leaves real headroom over today's size and stays well under the
+# 2,500-token ceiling Codex applies to a hook's additional context.
+CHARTER_BUDGET_CHARS = 6_000
 POINTER_BUDGET_CHARS = 500
 
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
@@ -351,9 +359,11 @@ def check_sideways_deps(root: Path) -> list[str]:
     if skills.is_dir():
         for skill_dir in sorted(p for p in skills.iterdir() if p.is_dir()):
             scan.append((skill_dir, skill_dir.name))
-    lib = root / "lib"
-    if lib.is_dir():
-        scan.append((lib, None))  # lib may reference no skill at all
+    for name in ("lib", "charter", "hooks"):
+        base = root / name
+        if base.is_dir():
+            # None: none of these is a skill, so any skill path is sideways.
+            scan.append((base, None))
 
     for base, own in scan:
         for path in _iter_files(base):
@@ -404,6 +414,32 @@ def check_doctrine(root: Path) -> list[str]:
                 f"doctrine-budget: AGENTS.md is {size} chars, "
                 f"budget is {AGENTS_BUDGET_CHARS} — route content out (skill, decision entry, mechanism)"
             )
+    charter = root / "charter" / "CHARTER.md"
+    if charter.is_file():
+        size = len(charter.read_text(encoding="utf-8", errors="replace"))
+        if size > CHARTER_BUDGET_CHARS:
+            findings.append(
+                f"doctrine-budget: charter/CHARTER.md is {size} chars, budget "
+                f"is {CHARTER_BUDGET_CHARS} — route content out"
+            )
+    # The charter reaches a consumer through the hook, but it reaches a session
+    # in THIS repository only through an import in a file that is itself
+    # imported. Checked by shape rather than by position: unlike CLAUDE.md the
+    # import does not lead the file, and a backticked mention imports nothing.
+    if agents.is_file():
+        lines = [ln.strip() for ln in agents.read_text(encoding="utf-8", errors="replace").splitlines()]
+        if CHARTER_IMPORT not in lines:
+            findings.append(
+                "doctrine-import: AGENTS.md carries no bare "
+                f"'{CHARTER_IMPORT}' line — without it the binding half "
+                "reaches no session in this repository, which installs no plugin"
+            )
+        elif not charter.is_file():
+            findings.append(
+                f"doctrine-import: AGENTS.md imports '{CHARTER_IMPORT}', "
+                "which does not exist"
+            )
+
     pointer = root / "CLAUDE.md"
     if not pointer.is_file():
         findings.append(
