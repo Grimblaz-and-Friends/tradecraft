@@ -63,7 +63,7 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 
 **Carried at creation:** the want or defect in plain terms; the evidence that makes it real; why it will get picked up; the ties above; and what discovery must settle, named as deliberately deferred.
 
-**Left for pickup:** the framing, the options and their argument, the remedy design, the artifact. Filing is not convergence.
+**Left for pickup:** the framing, the options and their argument, the remedy design, the pre-implementation artifact. Filing is not convergence.
 
 **Record what happened; do not decide what to do.** The line is not how much a filing carries but which kind of thing it carries. Evidence — a file and line, a quoted sentence, a count, an incident that occurred — survives however far the vocabulary moves, *provided it is written as an observation anyone can re-run rather than as a citation into vocabulary that can retire*. Design — options, remedy shapes, names for structures — is written in today's vocabulary and decays with it. [#38](https://github.com/Grimblaz-and-Friends/tradecraft/issues/38) is the exhibit for both halves and for the proviso: its frame was dead vocabulary before anyone opened it, and the observation underneath survived only because its successor could restate it against an authority that still existed.
 
