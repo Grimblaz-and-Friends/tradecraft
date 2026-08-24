@@ -1,0 +1,51 @@
+# D-155: The figure rule narrows to the forecast it was written against, and the artifact carries an open fork instead of closing it
+
+**Status:** Accepted 2026-08-24 (PR #155)
+
+## Context
+
+Four of the five defects [#152](https://github.com/Grimblaz-and-Friends/tradecraft/issues/152) carries were found by cold seats using `skills/engagement` on real jobs during the coverage design's first cycle — one of them by a seat writing the pre-implementation artifact for [#108](https://github.com/Grimblaz-and-Friends/tradecraft/issues/108), reported in the [spike report](https://github.com/Grimblaz-and-Friends/tradecraft/issues/123#issuecomment-5387217403). Three of the four are the cell saying plainly what it already meant. The fourth changes a rule the owner affirmed and personally enforced, and that is what this entry is for.
+
+### The rule as it stood
+
+`skills/engagement/SKILL.md` at `3175369`: *"They state what must be true of the result, not what it may cost: a cost estimate belongs **outside the artifact** — in the PR body, the decision entry, or the review's report — because the whole artifact reaches every stage of the review, so every seat must verify any figure in the artifact."*
+
+[D-119](D-119-2026-08-23-cost-estimate-outside-the-artifact.md) landed that sentence six days ago, and it fired the same local day it was written — the owner struck a forecast from PR #113's artifact as the reflex it was.
+
+### What the reason clause actually reached
+
+*Every seat must verify any figure in the artifact* is a claim about **every** figure, and the sentence's subject is a cost estimate. The mismatch is invisible until a job needs a figure that is not a cost. One did: the cell's own spike clause sends a session to go and check a premise it cannot assert, the seat applied that condition honestly and it did not fire — the decision entries and the lint are an enumeration it could consult, so it consulted them — and it then held twenty-two entries' worth of counts that the fork on #108 is not arguable without. The seat's own account: the cell *"pushes me to go check, then makes carrying what I checked expensive, and offers evidence figures none of the alternative homes it gives cost figures."* It left the counts in and said so, because the alternative was an artifact nobody could argue with.
+
+**D-119 already contains the discriminator it did not write down.** Arguing why no separate forecast bar was needed, it says every surviving home *"is written against a tree that exists, so a count over a tree that does not yet exist has nowhere lawful to live."* That is a statement about the *tree*, not about the *figure* — and the artifact is written before the tree exists, which is precisely why a forecast in it is unverifiable and why a measurement of the tree that already exists is not.
+
+## Decision
+
+**1. The figure rule narrows from `any figure` to `a forecast`, and admits the measured figure explicitly.** A forecast — any figure about a tree that does not exist yet — still belongs outside the artifact, in the PR body, the decision entry, or the review's report, each written against a tree that does. A figure measured on a tree that exists is lawful in the artifact and often load-bearing, and it travels with the query or derivation that produced it, so a seat reaching it verifies rather than inherits. The closing clause inverts: the artifact reaching every stage is *a reason to make a figure checkable, never to exile one*.
+
+**This is a meaning change and it supersedes D-119's scope, knowingly.** What D-119 fixed stays fixed: the forecast the owner struck remains struck, and nothing here reaches the typographic partition D-119 correctly rejected. What changes is that the rule stops catching evidence. The mechanism the amended rule leans on already ships — [D-141](D-141-2026-08-23-figures-are-derived.md) landed `skills/authoring`'s figures engine yesterday, so *travels with its derivation* is an instruction with a tool behind it rather than a hope; D-119 had no such thing available when it wrote `any figure`.
+
+**What it costs.** An evidence count in an artifact still reaches every seat, and a wrong one is now a claim under scrutiny at every stage rather than one that never got in. That is accepted because the derivation requirement makes the wrong count findable, and because the alternative priced at convergence — carrying evidence figures by link — buys the same protection at the cost of a hop and still delivers the figure to any seat that follows the link.
+
+**2. The artifact carries an open fork rather than closing it, and the silent close is named.** Where the issue's own question is still open, the criteria are the ones that hold whichever way the owner rules; the fork goes to him in the argued form; a criterion depending on his answer is written against the recommendation and marked as replaced. **An artifact whose criteria presuppose an answer the issue leaves open has closed a fork silently** — stated as the mirror of the cell's existing tripwire against asking where no fork exists, because the cell had a rule for one direction and none for the other. The seat that hit this invented the split unprompted and recorded that *"nothing in it would have caught me doing the cheap thing instead."* The split is promoted rather than re-derived.
+
+**3. The draft is named and given its bar** — labelled as a draft, complete enough to argue with rather than complete, carrying every open question open. It is the object a session holds for nearly all of the work, and every line in the section was about the settled version.
+
+**4. Report-versus-perform is answered by scoping, not by restating a neighbour.** A seat holding both `filing`'s ban on a sentence stating that a search happened and `spikes`' duty to report a check could not tell which governed its artifact, and guessed. The cell now says what *the artifact* carries — a check's result, never the act — because the artifact is this cell's surface and the neighbouring rules govern neighbouring objects. This is the shape [#130](https://github.com/Grimblaz-and-Friends/tradecraft/issues/130) §4 asks for: one standard, one owner, and no cell carrying a sentence another cell also owns.
+
+## Rejected
+
+- **Leaving D-119 as written and carrying evidence figures by link.** Honours the prior entry exactly and costs a hop. Put to the owner at convergence with the narrowing and declined: the linked figure still reaches any seat that follows it, so it buys verification discipline the derivation requirement already buys, while making the fork harder to read at the moment it is being argued.
+- **Declining item 4 and routing it to its own issue against D-119.** Also put to the owner and declined. It would leave the cell pulling against itself for however long the issue sat, on the exact surface the other three fixes open.
+- **A tripwire for the silent close stated as a check on the criteria.** The cell's existing tripwire for the opposite error is a tell keyed to what turns on the answer, and the mirror is stated the same way. A second, procedural form would be two rules about one error.
+- **Restating `filing`'s or `spikes`' rules inside this cell to resolve item 5.** Half-ownership of one sentence by two cells is the drift class #130 §4 exists to close, and the seat's confusion came from applying two neighbours' rules to a third surface, not from either rule being wrong.
+- **Touching `skills/engagement/SKILL.md:45`'s diff-checkability sentence.** [#144](https://github.com/Grimblaz-and-Friends/tradecraft/issues/144) owns it. A cold seat independently reproduced #144's thesis from the author's side — it first wrote *"the doctrine states a rule distinguishing correction from amendment"*, checkable from the diff and worthless since it passes on any wording — and that reproduction is recorded on #152 as evidence for #144 rather than acted on here. The sentence is byte-identical to `main`.
+
+## Deferred, with the evidence that would reopen them
+
+- **Nothing distinguishes a measured figure from a forecast at review time except the artifact's own word for it.** A session can call a forecast a measurement and no guard sees it; what catches it is a seat asking for the derivation and finding none. **Reopen on:** an artifact carrying a figure whose stated derivation does not reproduce.
+- **The four fixes are wordings, and this change asserts what a cold session does under them without having run one.** The check is the experience session the issue's boundary buys, which runs on the built result — the same instrument that found these defects. **Reopen on:** that session finding a seat still closing a fork silently, or still reading the figure rule as forbidding evidence.
+- **D-119's own deferred item is still open and this entry does not close it.** Its falsification never reached pre-implementation artifacts, and this change edits the rule that governs them without testing a seat under the new wording either. **Reopen on:** the same evidence D-119 named — an artifact carrying a count after this lands — which now falsifies a different sentence than it would have.
+
+## Evidence
+
+[#152](https://github.com/Grimblaz-and-Friends/tradecraft/issues/152) and its [artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/152#issuecomment-5390811885) and [affirmation](https://github.com/Grimblaz-and-Friends/tradecraft/issues/152#issuecomment-5390813507). The [spike report](https://github.com/Grimblaz-and-Friends/tradecraft/issues/123#issuecomment-5387217403), whose Note B carries the seat's account of all four defects in its own words, and the [routing list](https://github.com/Grimblaz-and-Friends/tradecraft/issues/122#issuecomment-5388686795) items 7, 8, 10 and 11 where the owner affirmed their routing. [D-119](D-119-2026-08-23-cost-estimate-outside-the-artifact.md) for the rule superseded, its delivery-not-position reasoning, and the tree-that-exists argument this entry turns on; [D-141](D-141-2026-08-23-figures-are-derived.md) for the derivation mechanism; [D-127](D-127-2026-08-23-fork-test-and-argued-ask.md) for the fork test the new tripwire mirrors, whose wording this change does not touch. `skills/engagement/SKILL.md` at `3175369` for the rule as it stood.
