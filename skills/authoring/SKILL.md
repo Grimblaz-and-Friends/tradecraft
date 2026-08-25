@@ -1,6 +1,6 @@
 ---
 name: authoring
-description: How to create and revise content in this practice — the purpose header every governing document carries, which home each kind of content belongs in, what a skill owes the roster it joins, and the writing standards that keep prose lean enough to survive review. Use when writing or restructuring a skill or governing document, when writing or revising a skill's description, when deciding whether a skill's prose should move behind a pointer, when deciding where a piece of content belongs, when revising governing prose, or when a write-up states derived figures (test counts, sizes, deltas); not for reviewing finished content (adversarial review's job), and not for a pre-implementation artifact.
+description: How to create and revise content in this practice — the purpose header every governing document carries, which home each kind of content belongs in, what a skill owes the roster it joins, and the writing standards that keep prose lean enough to survive review. Use when writing or restructuring a skill or governing document, when writing or revising a skill's description, when deciding whether a skill's prose should move behind a pointer, when deciding where content belongs or editing an always-on surface, when revising governing prose, or when a write-up states derived figures; not for reviewing finished content (adversarial review's job), and not for a pre-implementation artifact.
 ---
 
 # authoring

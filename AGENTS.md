@@ -27,7 +27,7 @@ The charter carries the routing map. Specific to here:
 - **A binding rule the practice exports** → the `charter` cell, within its own job. **A rule or mechanic only this repository needs** → this file, within its budget.
 - **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`; a decision entry lives at the path under Decisions below.
 
-The charter states the admission order; this file's budget is what makes it bite here. At the budget, adding a line means routing something out.
+The charter states the admission order; this file's budget is what makes it bite here. **Every edit of an always-on surface owes an outflow**, at the budget or nowhere near it — the `authoring` cell carries the three moves and what they may not do. [D-184]
 
 ## Decisions
 
