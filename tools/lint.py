@@ -132,9 +132,12 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # bite here).
 # Ratcheted from 8,000 once the file measured 5,511: headroom that survives
 # a restructure is headroom that refills, and this file has been rewritten
-# twice and grown through both. ~490 is one substantial rule, so a change
-# adding more than that has to route something out in the same breath --
-# which is the whole point -- while an ordinary correction still lands.
+# twice and grown through both. The ceiling is set so that roughly one
+# substantial rule fits before something has to leave -- not so that the
+# margin stays comfortable, which is the failure mode. It is expected to be
+# tight, and it already is: a change merged while this one was open spent
+# more than half of it, and the right response to that is an outflow rather
+# than a larger number.
 AGENTS_BUDGET_CHARS = 6_000
 # The charter is the half that ships, and an adopter pays for it on every
 # SessionStart event -- resume and compact included -- so it needs the
