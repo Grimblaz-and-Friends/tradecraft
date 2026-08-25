@@ -41,7 +41,7 @@ Nothing else is owed. A template, a field list, a severity scale, a required cou
 
 ## Running one
 
-**The consumer is manufactured, not borrowed.** Where the material's consumer is a session, a faithful production user is a cold dispatch: **the material as this change leaves it** and a realistic job, and nothing from the conversation that produced the change — no artifact, no findings, no rationale, and no statement that anything is under test. A session that helped build the thing cannot run its session; it already knows what the text meant to say.
+**The consumer is manufactured, not borrowed.** Where the material's consumer is a session, a faithful production user is a cold dispatch: **the material as this change leaves it** and a realistic job, and nothing from the conversation that produced the change — no artifact, no findings, no rationale, and no statement that anything is under test. A session that helped build the thing cannot run its session; it already knows what the text meant to say. **The dispatcher checks that the tree the consumer gets carries that material, before dispatching.** An isolation created from the default branch, or a job stated as of a date the change postdates, hands over the text this change replaced — and a note reporting friction the change already fixed reads exactly like one reporting friction that is live.
 
 **The note is written by the session that chartered it, from the consumer's own account of the run.** A cold consumer cannot be asked for a session note without being told there is a session, which is the one thing it must not know — so ask it for an ordinary report of how the job went, and write the note around that. The seam belongs in the note.
 
