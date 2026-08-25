@@ -43,9 +43,13 @@ with `pull-requests: write`, `issues: write` and `contents: read`).
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
 
 # Matches `.github/CODEOWNERS`. Widening this to skills or decisions is a
 # different requirement and wants its own incident. The charter cell is
@@ -74,6 +78,8 @@ CALLOUT = f"""{MARKER}
 nothing else performs that read.
 
 Touched: {{files}}
+
+{{always_on}}
 
 <sub>Posted by `tools/doctrine_callout.py`. `CODEOWNERS` cannot request a \
 review from a pull request's own author, and today every PR here is the \
@@ -273,8 +279,46 @@ def _edit_label(pr: str, repo: str | None, *, add: bool) -> None:
     _gh(*args)
 
 
+def _always_on_line(root: Path = ROOT) -> str:
+    """The size of what every session reads, where the owner is when he merges.
+
+    A budget only bites where somebody sees it, and this one has always been
+    read after the fact -- in a write-up, by a session that had already decided
+    what to add. The merge surface is the one moment the number can still
+    change an outcome. A failure to derive it is stated rather than dropped: a
+    callout that quietly loses its figure is one nobody can trust the rest of.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "repo_figures", root / "tools" / "figures.py"
+        )
+        figures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(figures)
+        data = figures.figure_always_on(root)["data"]
+        budget = figures.lint.AGENTS_BUDGET_CHARS
+    except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
+        return f"_Always-on surface: not derived ({type(exc).__name__})._"
+    return (
+        f"Always-on surface: **{data['repo_total']:,}** chars here, "
+        f"**{data['adopter_total']:,}** for an adopter — doctrine "
+        f"{data['doctrine']:,} of {budget:,}, charter body {data['charter']:,}, "
+        f"{data['cells']} descriptions {data['roster']:,}."
+    )
+
+
+def _body_from(files: str) -> str:
+    """The rendered callout for an already-joined file list.
+
+    Split out so a test can build the exact body the callout posts without
+    re-deriving the join -- the previous shape let a test format the template
+    directly, which meant a new field could be added to the body and the test
+    would keep asserting the old one.
+    """
+    return CALLOUT.format(files=files, always_on=_always_on_line())
+
+
 def _body(touched: list[str]) -> str:
-    return CALLOUT.format(files=", ".join(f"`{f}`" for f in touched))
+    return _body_from(", ".join(f"`{f}`" for f in touched))
 
 
 def _edit_comment(comment_id: object, repo: str | None, body: str) -> None:

@@ -128,14 +128,33 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # at the limit, adding a line means routing something out (the charter,
 # "Admitting a new requirement"; this file states the budget that makes it
 # bite here).
-AGENTS_BUDGET_CHARS = 8_000
+# Ratcheted from 8,000 once the file measured 5,511: headroom that survives
+# a restructure is headroom that refills, and this file has been rewritten
+# twice and grown through both. ~490 is one substantial rule, so a change
+# adding more than that has to route something out in the same breath --
+# which is the whole point -- while an ordinary correction still lands.
+AGENTS_BUDGET_CHARS = 6_000
 # The charter is the half that ships, and an adopter pays for it on every
 # SessionStart event -- resume and compact included -- so it needs the
 # displacement pressure more than this repo's own file does, not less.
 # 6,000 leaves real headroom over today's size and stays well under the
 # 2,500-token ceiling Codex applies to a hook's additional context.
-CHARTER_BUDGET_CHARS = 6_000
+# Ratcheted from 6,000 against a measured 5,353. The margin is smaller than
+# the doctrine's because the charter is not audited here -- its prose was
+# left untouched deliberately, so the ceiling is the only pressure it gets.
+CHARTER_BUDGET_CHARS = 5_600
 POINTER_BUDGET_CHARS = 500
+# A cell body whose budget is enforced rather than remembered. `authoring`'s
+# cap was stated in #169 as that change's own evidence that depth-shedding is
+# applicable rather than aspirational -- and enforced by nothing: it lived in a
+# command string inside a decision entry that has since frozen. A budget a
+# guard does not hold is a budget the next edit does not have. The value is
+# what #169's tree measured, not a new judgement; raising it is a decision to
+# be made and recorded, which is what a constant makes visible and a sentence
+# in a frozen entry does not. Cells absent from this map are unbudgeted on
+# purpose: a number chosen for a cell nobody has argued about would be a
+# ruling on its size arriving as a constant.
+CELL_BODY_BUDGET_CHARS = {"skills/authoring/SKILL.md": 7_359}
 
 # The one cell any other cell may reference, and the one cell that may
 # reference the others. Self-containment exists to stop loading cost and
@@ -719,6 +738,21 @@ def check_doctrine(root: Path) -> list[str]:
             findings.append(
                 f"doctrine-budget: {CHARTER}'s body is {size} chars, budget "
                 f"is {CHARTER_BUDGET_CHARS} -- route content out"
+            )
+    # An absent cell is not a budget violation -- a tree without it simply has
+    # no such cell, and every minimal fixture is one. What an absent cell WOULD
+    # do is silently drop the budget on a rename, so that the map still names a
+    # real cell is pinned against this repository's own tree in the suite,
+    # where the question has an answer, rather than guessed at here.
+    for rel, budget in sorted(CELL_BODY_BUDGET_CHARS.items()):
+        cell = root / rel
+        if not cell.is_file():
+            continue
+        size = len(_frontmatterless(cell.read_text(encoding="utf-8", errors="replace")))
+        if size > budget:
+            findings.append(
+                f"doctrine-budget: {rel}'s body is {size} chars, budget is "
+                f"{budget} -- shed depth to references/ or route content out"
             )
     # The charter reaches a consumer through the hook, but it reaches a session
     # in THIS repository only through an import in a file that is itself

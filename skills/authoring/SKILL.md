@@ -19,7 +19,7 @@ A document that cannot state these three is not ready to be written; the missing
 
 ## Routing — where content lives
 
-Every piece of content has one home: methodology in a skill, a binding rule in the practice's always-on surface, rationale in a decision entry, what happened in append-only exhaust. Which one a given piece takes, and what a shipped standard owes its local application, are in `references/routing.md` — load it when the home is the question.
+Every piece of content has one home: methodology in a skill, a binding rule in the practice's always-on surface, rationale in a decision entry, what happened in append-only exhaust. Which one a given piece takes, and what a shipped standard owes its local application, are in `references/routing.md` — load it when the home is the question, or when editing an always-on surface, which is when outflow is owed.
 
 ## Writing standards
 

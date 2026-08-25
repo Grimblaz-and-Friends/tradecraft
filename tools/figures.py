@@ -118,6 +118,53 @@ def figure_cell_description(root: Path, rel_path: str) -> dict:
     }
 
 
+def figure_always_on(root: Path) -> dict:
+    """Everything a session reads before it does anything, for both audiences.
+
+    Three surfaces, and no invocation reported their sum -- so every write-up
+    about growth measured one file and read as a reduction while the total
+    rose. It rose through two restructures that were each meant to shrink it.
+
+    The two audiences are not the same set, and conflating them is the error
+    this figure exists to stop: a plugin's root AGENTS.md and CLAUDE.md land
+    in a consumer's cache as inert files and are never loaded, so an adopter
+    reads the charter and the roster's descriptions and nothing else, while
+    this repository reads its own doctrine on top.
+    """
+    cells = sorted((root / "skills").glob("*/SKILL.md")) if (root / "skills").is_dir() else []
+    roster = 0
+    for cell in cells:
+        fields = lint._frontmatter_fields(cell.read_text(encoding="utf-8", errors="replace")) or {}
+        roster += len(fields.get("name", "")) + len(fields.get("description", ""))
+    agents = root / "AGENTS.md"
+    doctrine = len(agents.read_text(encoding="utf-8", errors="replace")) if agents.is_file() else 0
+    charter_path = root / lint.CHARTER
+    charter = len(lint._frontmatterless(
+        charter_path.read_text(encoding="utf-8", errors="replace")
+    )) if charter_path.is_file() else 0
+    adopter = charter + roster
+    return {
+        "name": "always-on surface",
+        "value": (
+            f"{doctrine + adopter:,} chars here, {adopter:,} for an adopter "
+            f"— doctrine {doctrine:,} + charter body {charter:,} + "
+            f"{len(cells)} cell name/description {roster:,}"
+        ),
+        "basis": (
+            "decoded UTF-8 characters; AGENTS.md whole, the charter below its "
+            "frontmatter, and each cell's name plus description as "
+            "check_cell_frontmatter reads them; an adopter's total omits "
+            "AGENTS.md, which reaches a plugin cache as an inert file and is "
+            "never loaded; working tree"
+        ),
+        "data": {
+            "doctrine": doctrine, "charter": charter, "roster": roster,
+            "cells": len(cells), "repo_total": doctrine + adopter,
+            "adopter_total": adopter,
+        },
+    }
+
+
 def figure_charter(root: Path) -> dict:
     """The charter's body against the one cell budget a guard here enforces.
 
@@ -140,6 +187,7 @@ def build_figures(root: Path, base: str | None,
         engine.figure_tests(root, SUITE_PATHS),
         engine.figure_doc(root, DOC, lint.AGENTS_BUDGET_CHARS),
         figure_charter(root),
+        figure_always_on(root),
         figure_census(root),
     ]
     if base:

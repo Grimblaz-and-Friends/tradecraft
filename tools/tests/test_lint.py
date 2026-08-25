@@ -1965,11 +1965,67 @@ def test_the_declared_description_ceiling_is_the_one_these_tests_pin(tmp_path):
     assert lint.CELL_FIELD_MAX_CHARS == {"name": 64, "description": 700}
 
 
+def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
+    """#164, discharged: the two constants the earlier fix left deriving
+    their bounds from themselves.
+
+    Both were mutable with the suite green -- every test that touched them
+    built its input out of the constant it was testing, so the bound moved
+    with the value it was meant to hold. Literals here, and the behavioural
+    arms below, so a change to either is a deliberate act with a red suite
+    behind it.
+    """
+    assert lint.AGENTS_BUDGET_CHARS == 6_000
+    assert lint.POINTER_BUDGET_CHARS == 500
+
+
+def test_a_cell_body_budget_is_enforced_in_both_polarities(tmp_path):
+    """The cap #169 stated and nothing held.
+
+    It lived in a command string inside a decision entry that has frozen, so
+    the only thing standing between the body and unbounded growth was that
+    somebody remembered. The lawful arm is half the pin: a cell at its budget
+    must pass, or the guard is a ratchet nobody can land a change through.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    budget = 200
+    monkey = dict(lint.CELL_BODY_BUDGET_CHARS)
+    monkey["skills/example-skill/SKILL.md"] = budget
+    original = lint.CELL_BODY_BUDGET_CHARS
+    try:
+        lint.CELL_BODY_BUDGET_CHARS = monkey
+        _write_cell(skill, "x" * budget + NL)
+        over = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
+        assert len(over) == 1 and "example-skill" in over[0], over
+        _write_cell(skill, "x" * (budget - 10))
+        assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []
+    finally:
+        lint.CELL_BODY_BUDGET_CHARS = original
+
+
+def test_every_budgeted_cell_exists_in_this_repository():
+    """A rename would drop the budget in silence.
+
+    The guard skips a cell it cannot find, because a tree without that cell is
+    an ordinary tree and every fixture is one. That makes absence invisible
+    exactly where it matters -- here, against the real tree, where the map's
+    keys have an answer.
+    """
+    root = Path(__file__).resolve().parents[2]
+    for rel in lint.CELL_BODY_BUDGET_CHARS:
+        assert (root / rel).is_file(), f"{rel} carries a body budget and does not exist"
+
+
+def test_the_declared_cell_body_budgets_are_the_ones_these_tests_pin():
+    assert lint.CELL_BODY_BUDGET_CHARS == {"skills/authoring/SKILL.md": 7_359}
+
+
 def test_the_declared_charter_budget_is_the_one_these_tests_pin():
     """The rule stated just above, applied to the constant the fix that
     stated it left deriving its bound from itself.
     """
-    assert lint.CHARTER_BUDGET_CHARS == 6_000
+    assert lint.CHARTER_BUDGET_CHARS == 5_600
 
 
 def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):

@@ -96,7 +96,7 @@ def gh(monkeypatch):
 
 
 def _callout(files="`AGENTS.md`", author=BOT, cid=7):
-    return {"id": cid, "author": author, "body": dc.CALLOUT.format(files=files)}
+    return {"id": cid, "author": author, "body": dc._body_from(files)}
 
 
 WITHDRAWN_COMMENT = {"id": 7, "author": BOT, "body": dc.WITHDRAWN}
@@ -348,7 +348,7 @@ def test_a_long_argument_does_not_bury_the_reason(monkeypatch):
 
     monkeypatch.setattr(dc.subprocess, "run", lambda *a, **k: Proc())
     with pytest.raises(dc.CalloutError) as exc:
-        dc._gh("pr", "comment", "79", "--body", dc.CALLOUT.format(files="`AGENTS.md`"))
+        dc._gh("pr", "comment", "79", "--body", dc._body_from("`AGENTS.md`"))
     message = str(exc.value)
     assert "chars]" in message and message.count("\n") == 0
     assert message.endswith("HTTP 403")
@@ -408,3 +408,19 @@ def test_repo_flag_reaches_every_call(gh):
             assert "--repo" in call and "o/n" in call
         if call[0] == "api":
             assert any("repos/o/n/" in a for a in call)
+
+
+def test_the_callout_carries_the_always_on_size(tmp_path, monkeypatch):
+    """The budget the owner is deciding against, on the surface he decides on.
+
+    Both arms: the figure is there when it derives, and its failure is a
+    stated absence rather than a silent omission -- a callout that quietly
+    drops a number is one nobody can trust the rest of.
+    """
+    body = dc._body(["AGENTS.md"])
+    assert "Always-on surface:" in body
+    assert "for an adopter" in body
+
+    monkeypatch.setattr(dc, "ROOT", tmp_path)
+    degraded = dc._always_on_line(tmp_path)
+    assert degraded.startswith("_Always-on surface: not derived")
