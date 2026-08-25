@@ -49,7 +49,7 @@ def _body(text: str) -> str:
 
 
 def main() -> int:
-    utf8_stdio(newline="\n")
+    utf8_stdio()
     try:
         text = _body(CHARTER.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -65,11 +65,11 @@ def main() -> int:
         print(f"charter-not-emitted: {CHARTER} is empty", file=sys.stderr)
         return 1
 
-    # The runtime reads this stream and compares it byte for byte, not a
-    # console -- so this is the one caller that pins the newline rather
-    # than leaving the platform translation alone. utf8_stdio ran first,
-    # at the top of main(); this branch is only about a stream that had
-    # no reconfigure for it to use.
+    # The runtime reads this stream and compares it byte for byte, so it
+    # depends on the LF that utf8_stdio pins -- which it does for every
+    # caller, not specially for this one. utf8_stdio ran first, at the
+    # top of main(); this branch is only about a stream that had no
+    # reconfigure for it to use, where the bytes are written directly.
     out = sys.stdout
     if hasattr(out, "reconfigure"):
         out.write(text)

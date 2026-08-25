@@ -1838,20 +1838,33 @@ def check_emitted_ascii(root: Path) -> list[str]:
 
 
 def check_docstring_not_piped(root: Path) -> list[str]:
-    """No script hands its module docstring to argparse as the help description.
+    """No script hands its module docstring to argparse as help text.
 
-    `ArgumentParser(description=__doc__)` writes the module docstring to stdout
-    on `--help`, and `--help` exits inside `parse_args` before any stream setup
-    a later line would have done. So a docstring -- which check 12 exempts on
-    the grounds that prose is free where it is read as prose -- becomes output,
-    encoded to the locale codepage, and this repository shipped three scripts
-    doing exactly that, each emitting the cp1252 em dash byte 0x97.
+    **The warrant is check 12's exemption, not the encoding.** Check 12 lets a
+    docstring carry any character the house prose style likes, and the reason it
+    can is that a docstring is read as prose and never written to a stream.
+    `ArgumentParser(description=__doc__)` falsifies that premise: it makes the
+    docstring output. The ban is what keeps check 12's exemption true.
+
+    An earlier version of this docstring gave the reason as "--help exits inside
+    parse_args before any stream setup runs" -- which was accurate when it was
+    written and was falsified by check 14 in the same change, since the stream
+    is now set up before parse_args is reached. Left standing, a session that
+    checked the stated reason would find it false and reason correctly to
+    deleting the check. The reason above is the one that survives check 14.
+
+    Two narrower warrants also survive: a module that parses arguments at import
+    with no `main()` at all, which check 14 does not reach, and a run where
+    `utf8_stdio` hit its swallowed except and set nothing up.
+
+    `epilog` is banned on the same terms. argparse writes it to stdout on --help
+    exactly as it writes the description, and it is the conventional home for
+    the long-form prose a module docstring holds -- so it is the compliant-
+    looking route to the same defect, which is the worst kind to leave open.
 
     This is a call-site ban rather than a reachability analysis, which is what
     makes it exact: the pattern is one keyword argument whose value is the name
-    `__doc__`, and matching it needs no guess about what reaches where. A
-    docstring that should be help text is help text -- write it as an ASCII
-    `description=` and keep the module docstring for readers of the source.
+    `__doc__`, and matching it needs no guess about what reaches where.
     """
     findings = []
     for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
@@ -1871,21 +1884,21 @@ def check_docstring_not_piped(root: Path) -> list[str]:
                 if not isinstance(node, ast.Call):
                     continue
                 for keyword in node.keywords:
-                    if keyword.arg != "description":
+                    if keyword.arg not in ("description", "epilog"):
                         continue
                     if isinstance(keyword.value, ast.Name) and keyword.value.id == "__doc__":
                         findings.append(
                             f"docstring-piped: {rel_file}:{node.lineno} passes "
-                            f"__doc__ as an argparse description -- --help writes "
-                            f"it to stdout before any stream setup runs, so the "
-                            f"module docstring becomes locale-encoded output. "
-                            f"Write an ASCII description instead"
+                            f"__doc__ as an argparse {keyword.arg} -- --help writes "
+                            f"it to stdout, so a docstring becomes output and the "
+                            f"exemption that lets it carry any character stops being "
+                            f"true. Write the help text as its own ASCII string"
                         )
     return findings
 
 
 def check_stdio_wired(root: Path) -> list[str]:
-    """Every script with a `main()` calls `utf8_stdio()` as its first statement.
+    """Every script with a `main()` imports `utf8_stdio` and calls it first.
 
     The emitted-ASCII check protects what this repository writes; it reads
     literals and cannot reach what the repository is handed -- a path from git,
@@ -1894,52 +1907,73 @@ def check_stdio_wired(root: Path) -> list[str]:
     `lib/winio.py` closes that half, and this closes the gap between having a
     helper and having called it.
 
-    The objection this answers is a real one and was the reason a helper was
-    once rejected outright: "the helper was called on this entry path" sounds
-    like a reachability question, and reachability is not decidable from an
-    AST. It is not that question. **The first statement of `main()` is a
-    position, and a position is exact.** Ordering is the whole point -- a call
-    after `parse_args` is a call that `--help` has already outrun.
+    The objection this answers was the reason a helper was once rejected
+    outright: "the helper was called on this entry path" sounds like a
+    reachability question, and reachability is not decidable from an AST. It is
+    not that question. **The first statement of `main()` is a position, and a
+    position is exact.** Ordering is the whole point -- a call after
+    `parse_args` is a call that `--help` has already outrun.
 
-    A module without a `main()` is not a script and is not asked.
+    Position alone proved insufficient, though, and the claim of exactness is
+    what made that worth closing: a module defining its own no-op `utf8_stdio`
+    satisfied the call site while setting nothing up, so the guard reported
+    green on precisely the tree it exists to catch. The import binding is
+    checked too, which is what makes "it was called" mean "the helper was
+    called".
+
+    Scoped to the whole tree, minus what git is told to ignore, for the same
+    reason check 12 is: a zone list silently exempts the next directory someone
+    adds, and `scripts/` or `.claude/` is exactly where a session drops a
+    helper. A module without a `main()` is not a script and is not asked.
     """
     findings = []
-    for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
-        base = root / dirname
-        if not base.is_dir():
+    candidates = [path for path in _python_files(root)
+                  if ".git" not in path.parts and "tests" not in path.parts]
+    ignored = _git_ignored(root, candidates)
+    for path in candidates:
+        if path in ignored:
             continue
-        for path in _python_files(base):
-            if "tests" in path.parts:
-                continue
-            text = _read_text(path)
-            if text is None:
-                continue
-            try:
-                tree = ast.parse(text)
-            except SyntaxError:
-                continue
-            main = next((n for n in tree.body
-                         if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
-            if main is None:
-                continue
-            rel_file = path.relative_to(root).as_posix()
-            body = list(main.body)
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-                body = body[1:]  # its docstring
-            first = body[0] if body else None
-            called = (
-                isinstance(first, ast.Expr)
-                and isinstance(first.value, ast.Call)
-                and isinstance(first.value.func, ast.Name)
-                and first.value.func.id == "utf8_stdio"
+        text = _read_text(path)
+        if text is None:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        main = next((n for n in tree.body
+                     if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+        if main is None:
+            continue
+        rel_file = path.relative_to(root).as_posix()
+        body = list(main.body)
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            body = body[1:]  # its docstring
+        first = body[0] if body else None
+        called = (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Call)
+            and isinstance(first.value.func, ast.Name)
+            and first.value.func.id == "utf8_stdio"
+        )
+        imported = any(
+            isinstance(node, ast.ImportFrom)
+            and any(alias.asname == "utf8_stdio"
+                    or (alias.asname is None and alias.name == "utf8_stdio")
+                    for alias in node.names)
+            for node in ast.walk(tree)
+        )
+        if not called or not imported:
+            missing = "does not call it first" if imported else (
+                "calls it first but never imports it" if called else
+                "neither imports nor calls it first")
+            findings.append(
+                f"stdio-unwired: {rel_file}:{main.lineno} defines main() and "
+                f"{missing} -- runtime data this repository did not write "
+                f"reaches the stream unprotected, and a call placed later is "
+                f"one that --help has outrun. Import utf8_stdio from lib/winio.py, "
+                f"resolving lib/ against this file's own directory rather than "
+                f"the working directory, and call it as the first statement"
             )
-            if not called:
-                findings.append(
-                    f"stdio-unwired: {rel_file}:{main.lineno} defines main() "
-                    f"without calling utf8_stdio() first -- runtime data this "
-                    f"repository did not write reaches the stream unprotected, "
-                    f"and a call placed later is one that --help has outrun"
-                )
     return findings
 
 

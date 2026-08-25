@@ -2379,7 +2379,8 @@ def test_stdio_wired_late_is_still_unwired(tmp_path):
 def test_stdio_wired_first_is_left_alone(tmp_path):
     """The lawful form, including past a docstring."""
     _zoned(tmp_path, "tools/script.py",
-           "def main():" + chr(10)
+           "from winio import utf8_stdio" + chr(10)
+           + "def main():" + chr(10)
            + '    """What it does."""' + chr(10)
            + "    utf8_stdio()" + chr(10)
            + "    print('x')" + chr(10))
@@ -2472,3 +2473,37 @@ def test_emitted_ascii_reports_a_file_that_is_not_utf8(tmp_path):
     findings = lint.check_emitted_ascii(tmp_path)
     assert len(findings) == 1, findings
     assert "not valid UTF-8" in findings[0] and "FFFD" not in findings[0]
+
+def test_a_local_utf8_stdio_does_not_satisfy_the_wiring_check(tmp_path):
+    """Position was exact; identity was not, and the prose claimed both.
+
+    A module defining its own no-op utf8_stdio satisfied the call site while
+    setting nothing up -- so the guard reported green on precisely the tree it
+    exists to catch, and the likeliest route to writing that stub is a reader
+    who could not work out the import from the finding message.
+    """
+    _zoned(tmp_path, "tools/impostor.py",
+           "def utf8_stdio():" + chr(10)
+           + "    pass" + chr(10)
+           + "def main():" + chr(10)
+           + "    utf8_stdio()" + chr(10))
+    findings = lint.check_stdio_wired(tmp_path)
+    assert len(findings) == 1, findings
+    assert "never imports it" in findings[0], findings[0]
+
+
+def test_epilog_piped_to_argparse_is_caught(tmp_path):
+    """argparse writes epilog to stdout exactly as it writes description.
+
+    It is also the conventional home for the long-form prose a module
+    docstring holds, so it is the compliant-looking route to the same defect.
+    """
+    _zoned(tmp_path, "tools/script.py",
+           '"""Module prose."""' + chr(10)
+           + "import argparse" + chr(10)
+           + "def main():" + chr(10)
+           + "    utf8_stdio()" + chr(10)
+           + "    argparse.ArgumentParser(epilog=__doc__)" + chr(10))
+    findings = lint.check_docstring_not_piped(tmp_path)
+    assert len(findings) == 1, findings
+    assert "epilog" in findings[0], findings[0]
