@@ -139,9 +139,11 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # and each change reported the file it emptied. That is why the figure to watch
 # is the total rather than this one. Set so roughly one substantial rule fits
 # before something has to leave, not so the margin stays comfortable, which is
-# the failure mode. It is expected to be tight and already is: of the 289
-# characters spent since it was set, 112 were the change that set it and 177 a
-# merge that landed while it was open. The answer to either is an outflow.
+# the failure mode. It is expected to be tight and already is: it was
+# 5,511 when this ceiling was chosen and is 5,747 now, so 236 characters have
+# gone -- 112 from the change that set it, 177 from a merge that landed while
+# it was open, less 53 a review remedy took back out. Headroom is 253. The
+# answer to a change that wants more is an outflow.
 AGENTS_BUDGET_CHARS = 6_000
 # The charter is the half that ships, and an adopter pays for it on every
 # SessionStart event -- resume and compact included -- so it needs the
@@ -158,8 +160,10 @@ POINTER_BUDGET_CHARS = 500
 # applicable rather than aspirational -- and enforced by nothing: it lived in a
 # command string inside a decision entry that has since frozen. A budget a
 # guard does not hold is a budget the next edit does not have. The value is
-# the cap #169 declared and held itself under, not a fresh judgement -- that
-# tree's body measured 7,285, and 7,359 is the size it started from. Raising
+# the bound #169 declared and held itself under, not a fresh judgement: that
+# entry's own derivation command reads `--budget 7359`, one above the 7,358
+# the body measured before that change, so the cap says "no larger than you
+# started". #169's tree came in at 7,285 and this one is at 7,354. Raising
 # it is a decision to be made and recorded, which is what a constant makes visible and a sentence
 # in a frozen entry does not. Cells absent from this map are unbudgeted on
 # purpose: a number chosen for a cell nobody has argued about would be a
