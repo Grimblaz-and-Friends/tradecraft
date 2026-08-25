@@ -35,7 +35,7 @@ Checks:
 
   Checks 5 and 6 split on form, not on check. The *name* form is read
   outside fenced blocks only: a name inside a fence is a spelling being
-  shown, as check 7 already reasons about an import. Every *path* form is
+  shown, as check 8 already reasons about an import. Every *path* form is
   read everywhere, fences included -- check 5's rooted and relative skill
   paths and check 6's references/ pointers alike -- because a path that does
   not resolve is broken whatever encloses it, this repository's fenced blocks
