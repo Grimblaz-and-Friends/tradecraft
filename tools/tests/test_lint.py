@@ -1732,9 +1732,10 @@ def test_a_row_appended_past_the_grandfathered_ones_is_obliged(tmp_path):
     bare = json.dumps(_review_row(artifact="pr-next")) + "\n"
     root = _index_tree(tmp_path, extra=bare)
     findings = lint.check_review_index(root)
-    assert len(findings) == 2
+    assert len(findings) == 3
     assert any("dispositions" in f for f in findings)
     assert any("staffing" in f for f in findings)
+    assert any("facing" in f for f in findings)
 
 
 def test_a_row_that_fails_to_parse_does_not_shift_later_rows(tmp_path):
@@ -1751,7 +1752,7 @@ def test_a_row_that_fails_to_parse_does_not_shift_later_rows(tmp_path):
     (docs / "reviews.jsonl").write_text(corrupted + bare, encoding="utf-8")
     findings = lint.check_review_index(tmp_path)
     assert any("not valid JSON" in f for f in findings)
-    assert len([f for f in findings if "missing field" in f]) == 2
+    assert len([f for f in findings if "missing field" in f]) == 3
 
 
 def test_staffing_rejects_unknown_keys(tmp_path):
@@ -1786,6 +1787,154 @@ def test_non_mapping_dispositions_and_staffing_are_findings(tmp_path):
     _write_index(tmp_path, _row_with_extras(staffing="Opus 5"))
     b = [f for f in lint.run(tmp_path) if "must be a mapping" in f]
     assert len(a) == 1 and len(b) == 1
+
+
+# --- review row: the split by consequence shape --------------------------
+
+
+def _row_with_facing(**overrides):
+    """`_row_with_extras` disposes of six rulings, so a lawful split sums to six."""
+    row = _row_with_extras()
+    row["facing"] = {"artifact": 4, "apparatus": 2}
+    row.update(overrides)
+    return row
+
+
+def test_row_carrying_a_reconciling_facing_is_clean(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_facing())
+    assert lint.run(tmp_path) == []
+
+
+def test_row_appended_past_the_facing_boundary_must_carry_it(tmp_path, monkeypatch):
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 1)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_FACING_GRANDFATHERED", 1)
+    _write_index(tmp_path, _review_row(), _row_with_extras(artifact="pr-2"))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "facing" in findings[0]
+
+
+def test_rows_grandfathered_for_facing_need_none(tmp_path, monkeypatch):
+    """Forward-only in fact: a row written before the field existed stays valid
+    untouched, in a file the doctrine forbids editing."""
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 1)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_FACING_GRANDFATHERED", 2)
+    _write_index(tmp_path, _review_row(), _row_with_extras(artifact="pr-2"))
+    assert lint.run(tmp_path) == []
+
+
+def test_the_two_boundaries_are_independent(tmp_path, monkeypatch):
+    """The pin on there being two constants rather than one that moves. A row
+    between them owes `dispositions` and `staffing` and does not owe `facing`;
+    collapsing the pair would silently un-oblige every row in that band."""
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 1)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_FACING_GRANDFATHERED", 3)
+    _write_index(
+        tmp_path,
+        _review_row(),
+        _review_row(artifact="pr-2"),
+        _row_with_extras(artifact="pr-3"),
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 2
+    assert any("dispositions" in f for f in findings)
+    assert any("staffing" in f for f in findings)
+    assert not any("facing" in f for f in findings)
+
+
+def test_facing_must_reconcile_with_the_dispositions_total(tmp_path):
+    """The only cross-total this row carries, and the reason it is sound where
+    the seat-count one is not: both halves count one entry per terminal ruling.
+    Probed in both polarities -- the row that does not add up is caught, and the
+    row that does is left alone by the same check."""
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_facing(facing={"artifact": 4, "apparatus": 1}))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "facing sums to 5 and dispositions to 6" in findings[0]
+
+    _write_index(tmp_path, _row_with_facing(facing={"artifact": 0, "apparatus": 6}))
+    assert lint.run(tmp_path) == []
+
+    # Both arithmetic directions, not just lawful-versus-unlawful: narrowing the
+    # comparison to `<` passed the whole suite until this case existed, and the
+    # row it then admitted double-counts a ruling -- the error a split derived
+    # from report prose is likeliest to make.
+    _write_index(tmp_path, _row_with_facing(facing={"artifact": 5, "apparatus": 2}))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "facing sums to 7 and dispositions to 6" in findings[0]
+
+
+def test_facing_reconciliation_is_silent_on_a_row_it_cannot_compute(tmp_path):
+    """A malformed `dispositions` already has its own finding; adding an
+    arithmetic one derived from it would report the same defect twice and name
+    a total nobody wrote."""
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_facing(dispositions={"fixed": 1}))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "dispositions missing" in findings[0]
+
+
+def test_facing_rejects_bools_and_negatives(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_facing(facing={"artifact": True, "apparatus": -1}))
+    findings = [f for f in lint.run(tmp_path) if "non-negative integer" in f]
+    assert len(findings) == 2
+
+
+def test_facing_missing_a_shape_is_a_finding(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_facing(facing={"artifact": 6}))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "facing missing apparatus" in findings[0]
+
+
+def test_facing_rejects_unknown_shapes(tmp_path):
+    """Two shapes, closed. Three consumers under an undefined earlier wording
+    invented three different taxonomies, which is why the axis is keyed to the
+    cited site and why a third key is a finding rather than a refinement."""
+    make_clean_tree(tmp_path)
+    _write_index(
+        tmp_path,
+        _row_with_facing(facing={"artifact": 3, "apparatus": 2, "both": 1}),
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "unknown key" in findings[0] and "both" in findings[0]
+
+    # The same silence the malformed-`dispositions` path already keeps, and for
+    # the same reason: the third key holds part of the population, so neither
+    # total is the writer's arithmetic. Both mappings, because either can carry
+    # a ruling out of the counted set.
+    # The known keys must sum away from the facing total, or the reconciliation
+    # is silent whether the gate fires or not and the assertion cannot see the
+    # mutation -- which is how the first version of this pin passed for the
+    # wrong reason. Known sum 4 against a facing of 6: without the gate a second
+    # finding appears naming a total nobody wrote.
+    _write_index(tmp_path, _row_with_facing(
+        dispositions={"fixed": 3, "routed": 1, "priced_out": 0, "dismissed": 0, "withdrawn": 2},
+    ))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "unknown key" in findings[0]
+
+
+def test_non_mapping_facing_is_a_finding_not_a_crash(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_index(tmp_path, _row_with_facing(facing=[4, 2]))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "facing must be a mapping" in findings[0]
+
+
+def test_a_real_row_appended_without_facing_is_caught(tmp_path):
+    """Driven through the repository's own index, so the boundary constant is
+    exercised by real position arithmetic rather than a monkeypatched one."""
+    row = json.dumps(_row_with_extras(artifact="pr-next")) + "\n"
+    root = _index_tree(tmp_path, extra=row)
+    findings = lint.check_review_index(root)
+    assert len(findings) == 1 and "facing" in findings[0]
 
 
 FRONTMATTER_CASES = [
