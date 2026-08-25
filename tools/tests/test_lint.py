@@ -5,6 +5,7 @@ showed the original regexes missed every relative, uppercase, and
 backslash form (findings M1/M2/M4/M5/M6 in docs/ledger.jsonl)."""
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -50,6 +51,10 @@ def make_clean_tree(root: Path) -> None:
     (root / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
     skill = root / "skills" / "example-skill"
     (skill / "references").mkdir(parents=True)
+    # The pointer's target exists, because a pointer at nothing is now a
+    # finding -- the fixture has to model a conforming cell, not merely a
+    # cell whose prose mentions a path.
+    (skill / "references" / "detail.md").write_text("Depth.\n", encoding="utf-8")
     _write_cell(skill, "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n")
     _wire_callout(root)
     _wire_delivery(root)
@@ -506,6 +511,331 @@ def test_lib_may_not_reference_a_skill(tmp_path):
     (libdir / "core.py").write_text("# see skills/example-skill/SKILL.md\n", encoding="utf-8")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "sideways-dep" in findings[0] and "from lib/" in findings[0]
+
+
+# --- the charter's exemption ------------------------------------------------
+
+def test_the_charter_may_reference_any_cell(tmp_path):
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter"
+    (charter / "SKILL.md").write_text(
+        "---" + NL + "name: charter" + NL + "description: The binding rules." + NL
+        + "---" + NL + NL
+        + "The depth behind this rule lives in the `example-skill` cell." + NL,
+        encoding="utf-8",
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_any_cell_may_reference_the_charter(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "The rule itself is stated by the `charter` cell.\n")
+    assert lint.run(tmp_path) == []
+
+
+def test_the_exemption_is_the_name_form_and_not_a_path(tmp_path):
+    """The charter may name a cell; it may not point at one's files.
+
+    A rooted skills/ path does not resolve once installed, so exempting it
+    would buy the charter a reference that is dead for every consumer.
+    """
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter"
+    (charter / "SKILL.md").write_text(
+        "---" + NL + "name: charter" + NL + "description: The binding rules." + NL
+        + "---" + NL + NL + "The bar lives at skills/example-skill/SKILL.md." + NL,
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
+    assert len(findings) == 1 and "example-skill" in findings[0]
+
+
+def test_exempting_the_charter_does_not_exempt_cell_to_cell(tmp_path):
+    """The exemption's whole risk: buying it by weakening the guard for all.
+
+    Both reference forms are checked, because the name form is what the
+    charter's own restored references use -- an exemption that let it through
+    for everyone would be indistinguishable from this test's absence.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    _write_cell(other, "Depth lives in the `example-skill` cell.\n")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "sideways-dep" in findings[0] and "example-skill" in findings[0]
+
+
+def test_hooks_reach_the_charter_and_no_other_cell(tmp_path):
+    """check_delivery mandates the hook depend on the charter, so the
+    sideways rule must not forbid what its sibling requires -- and must still
+    forbid every other skill, which is what 'deps point down' was for."""
+    make_clean_tree(tmp_path)
+    readme = tmp_path / "hooks" / "README.md"
+    readme.write_text("Emits the `charter` cell on stdout.\n", encoding="utf-8")
+    assert lint.run(tmp_path) == []
+    readme.write_text("Emits the `example-skill` cell on stdout.\n", encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "sideways-dep" in findings[0] and "from hooks/" in findings[0]
+
+
+def test_a_cell_reference_must_name_a_cell_that_exists(tmp_path):
+    """A rename leaves the sentence reading correctly and pointing nowhere."""
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter"
+    body = ("---" + NL + "name: charter" + NL + "description: The binding rules."
+            + NL + "---" + NL + NL + "Depth lives in the `{}` cell." + NL)
+    (charter / "SKILL.md").write_text(body.format("example-skill"), encoding="utf-8")
+    assert lint.run(tmp_path) == []
+    (charter / "SKILL.md").write_text(body.format("renamed-away"), encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "cell-reference" in findings[0] and "renamed-away" in findings[0]
+
+
+def test_a_reference_inside_a_fence_is_displayed_not_made(tmp_path):
+    """Both polarities of the fence rule: fenced is inert, bare still fires.
+
+    A cell quoting the reference form in an example is showing it, not making
+    it -- the same premise check_doctrine already reasons from about imports.
+    Without the lawful arm a later widening of the fence handling would land
+    unnoticed.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    _write_cell(other, "Write it like this:" + NL + NL
+                + "```" + NL + "the `example-skill` cell" + NL + "```" + NL)
+    assert lint.run(tmp_path) == []
+    _write_cell(other, "Depth lives in the `example-skill` cell." + NL)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "sideways-dep" in findings[0]
+
+
+def test_a_reference_wrapped_across_a_line_break_is_still_a_reference(tmp_path):
+    """A reflow is a formatting edit nobody inspects.
+
+    Found under review by reflowing one charter reference and watching the
+    rename probe drop from three findings to two -- the reference had left
+    both checks without a character of prose changing.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    _write_cell(other, "Depth lives in the `example-skill`" + NL + "cell." + NL)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "across a line break" in findings[0]
+    # Lawful arm: the charter may be named the same way, wrapped or not...
+    _write_cell(other, "The rule is the `charter`" + NL + "cell's." + NL)
+    assert lint.run(tmp_path) == []
+    # ...and a paragraph break is not a wrap.
+    _write_cell(other, "Ends with `example-skill`" + NL + NL + "cell." + NL)
+    assert lint.run(tmp_path) == []
+
+
+def test_a_wrapped_reference_must_also_name_a_cell_that_exists(tmp_path):
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter"
+    (charter / "SKILL.md").write_text(
+        "---" + NL + "name: charter" + NL + "description: The binding rules." + NL
+        + "---" + NL + NL + "Depth lives in the `renamed-away`" + NL + "cell." + NL,
+        encoding="utf-8",
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "cell-reference" in findings[0] and "renamed-away" in findings[0]
+
+
+def test_a_references_pointer_must_resolve_against_its_own_file(tmp_path):
+    """The cell-reference failure one level down.
+
+    Depth-shedding makes `references/` the roster-wide standard, so a pointer
+    at a file that moved strands a session exactly as a renamed cell does --
+    and the body deliberately no longer carries what the pointer promises.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    assert lint.run(tmp_path) == []
+    (skill / "references" / "detail.md").rename(skill / "references" / "moved.md")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "reference-pointer" in findings[0] and "references/detail.md" in findings[0]
+
+
+# Every check `run` calls, in call order. Literal on purpose: deriving this
+# from `run` would make the test agree with itself, which is what let the list
+# say eight while `run` called ten, silently, from #156 until #169 found it.
+LINT_CHECKS_IN_ORDER = (
+    "check_zone_wall", "check_harness_tokens", "check_delivery",
+    "check_cell_frontmatter", "check_sideways_deps", "check_cell_references",
+    "check_doctrine", "check_doctrine_callout", "check_review_index",
+    "check_decision_index", "check_entry_references",
+)
+
+
+def test_the_module_docstring_enumerates_every_check_run_calls():
+    """The check list is the module's contract; nothing pinned it.
+
+    Count and order only, deliberately -- pinning the prose would go red on
+    every rewording and be deleted within a release. It does not catch a wrong
+    *description* inside an item; that is a separate class, and this change
+    carries an instance of it (check 5 said hooks/ may reference no skill at
+    all while the code exempts the charter from anywhere).
+    """
+    import inspect
+
+    called = re.findall(r"check_[a-z_]+", inspect.getsource(lint.run))
+    assert tuple(called) == LINT_CHECKS_IN_ORDER, (
+        "run() calls checks this list does not name, or in another order"
+    )
+    numbered = re.findall(r"^\s*(\d+)\.\s", lint.__doc__, re.M)
+    assert [int(n) for n in numbered] == list(
+        range(1, len(LINT_CHECKS_IN_ORDER) + 1)
+    ), "the docstring's numbered checks do not match what run() calls"
+
+
+def test_a_fence_closes_only_on_its_own_marker(tmp_path):
+    """CommonMark's rule, and the renderer every reader is looking at.
+
+    A naive toggle fails both ways, and both are what a cell teaching
+    markdown writes rather than what an adversary supplies: a ``` line quoted
+    inside a ```` block ends the fence early, so displayed prose reads as
+    live; a ~~~ line inside a ``` block never ends it, so live prose goes
+    unread to the end of the file.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    quoted = ("````" + NL + "A fence opens with:" + NL + "```" + NL + "````" + NL
+              + NL + "Depth lives in the `example-skill` cell." + NL)
+    _write_cell(other, quoted)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "sideways-dep" in findings[0], (
+        "a ``` quoted inside a ```` block must not end the fence"
+    )
+    mismatched = ("```" + NL + "shown, not made" + NL + "~~~" + NL
+                  + NL + "Depth lives in the `example-skill` cell." + NL)
+    _write_cell(other, mismatched)
+    assert lint.run(tmp_path) == [], (
+        "a ~~~ line must not close a ``` fence, so what follows stays fenced"
+    )
+
+
+def test_a_path_inside_a_fence_is_still_a_path(tmp_path):
+    """The fence exemption is the name form's alone.
+
+    This repository's fenced blocks are calling contracts and command lines,
+    not examples; `check_zone_wall` and `check_harness_tokens` already fire
+    inside them, and the portability guard reads a cell's script contract
+    through one and requires it to resolve. Exempting paths here would put
+    two guards in one tree disagreeing about what a fence means.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    for body, expected in (
+        ("```" + NL + "See skills/example-skill/SKILL.md" + NL + "```" + NL, 1),
+        ("```" + NL + "python ../example-skill/scripts/x.py" + NL + "```" + NL, 1),
+        ("```" + NL + "the `example-skill` cell" + NL + "```" + NL, 0),
+    ):
+        _write_cell(other, body)
+        findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
+        assert len(findings) == expected, f"{body!r} -> {findings}"
+
+
+def test_a_references_pointer_guard_leaves_lawful_prose_alone(tmp_path):
+    """The lawful cases the rooted-skill branch already names.
+
+    A guard blocking lawful work fails as hard as one passing unlawful work,
+    and nothing in shipped prose reserves `references/*.md` the way the cell
+    name form is reserved -- so an author citing an upstream URL has no
+    warning and no escape.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    for body in (
+        "See https://github.com/x/y/blob/main/references/guide.md for the note.\n",
+        "Upstream vendors it at vendor/pkg/references/notes.md today.\n",
+    ):
+        _write_cell(skill, body)
+        assert [f for f in lint.run(tmp_path) if "reference-pointer" in f] == [], body
+    _write_cell(skill, "Depth lives in references/detail.md.\n")
+    assert lint.run(tmp_path) == []
+    _write_cell(skill, "Depth lives in references/gone.md.\n")
+    findings = [f for f in lint.run(tmp_path) if "reference-pointer" in f]
+    assert len(findings) == 1 and "references/gone.md" in findings[0]
+
+
+def test_a_pointer_inside_a_fence_is_still_a_pointer(tmp_path):
+    """A pointer is a path form; only the name form is fence-exempt.
+
+    Both arms are the pin: before this, the fenced-pointer behaviour was
+    asserted in neither direction, so either reading could have been changed
+    without a test noticing. A path that does not resolve is broken wherever
+    it is written; a name inside a fence is a spelling being shown.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "```" + NL + "See references/gone.md" + NL + "```" + NL)
+    findings = [f for f in lint.run(tmp_path) if "reference-pointer" in f]
+    assert len(findings) == 1 and "references/gone.md" in findings[0]
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    _write_cell(other, "```" + NL + "the `example-skill` cell" + NL + "```" + NL)
+    assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == []
+
+
+def test_a_code_span_is_not_a_fence_and_a_closing_fence_carries_no_info(tmp_path):
+    """CommonMark's two clauses a marker-only match misses.
+
+    A line-initial code span showing a literal fence is a paragraph, and a
+    marker with an info string cannot close one. Missing either lets a cell
+    documenting markdown silently switch off every reference check for the
+    rest of its own file -- or end a fence early and read displayed prose as
+    live. The lawful arms are the point: four spellings of a real fence must
+    still hide what they enclose.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    for body in (
+        "````" + NL + "```" + NL + "````" + NL + NL + "the `example-skill` cell" + NL,
+        "```" + NL + "shown" + NL + "```python" + NL + "y" + NL + "```" + NL
+        + "the `example-skill` cell" + NL,
+    ):
+        _write_cell(other, body)
+        assert len([f for f in lint.run(tmp_path) if "sideways-dep" in f]) == 1, body
+    for fence in ("```", "```text", "~~~", "````"):
+        closer = "~~~" if fence == "~~~" else fence.rstrip("text") or "```"
+        _write_cell(other, fence + NL + "the `example-skill` cell" + NL + closer + NL)
+        assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == [], fence
+
+
+def test_a_cell_named_at_the_front_door_must_resolve(tmp_path):
+    """The README is the surface an adopter reads before installing.
+
+    It is not a cell and the sideways rule does not reach it, so it may name
+    any cell -- but a rename leaves its sentence reading correctly and
+    pointing nowhere, which is the failure this check exists for. Its own
+    reserved-form references were unguarded until this pin.
+    """
+    make_clean_tree(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text("The `example-skill` cell carries it." + NL, encoding="utf-8")
+    assert lint.run(tmp_path) == []
+    readme.write_text("The `renamed-away` cell carries it." + NL, encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "cell-reference" in findings[0] and "README.md" in findings[0]
+
+
+def test_the_exempt_cell_name_is_the_one_these_tests_pin():
+    """A test deriving its bound from the constant it tests cannot catch a
+    change to that constant [#164]. The exemption is a rule about one named
+    cell, so the name is pinned literally here."""
+    assert lint.CHARTER_CELL == "charter"
 
 
 # --- doctrine --------------------------------------------------------------

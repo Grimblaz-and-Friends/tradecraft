@@ -1,0 +1,7 @@
+# What a frozen document owes its reader
+
+**Loaded when** you are writing a document that freezes on landing — a decision entry, a report — or stating a derived figure anywhere. Nothing else needs it.
+
+**A frozen document carrying counts carries the query that produced them.** It freezes with its arithmetic inside, so the query is the difference between a figure a later session can check and one it can only inherit. This cell ships the mechanism: `../scripts/figures.py` derives the recurring figures — suite count, a document's size against its budget, prose delta against a named base — each printed with its basis and the tree it was measured on, so a write-up pastes the block instead of improvising the arithmetic. Derive figures there rather than by hand; and where the repository wraps this engine with its own parameters and repo-bound figures, prefer that wrapper — it is what keeps a figure agreeing with the guard that judges it. A figure needing a caller decision (the delta's base) must be given explicitly; the script refuses to pick a basis silently, because a silently chosen basis is how stated numbers diverge from checkable ones.
+
+**Pin a frozen document's evidence to the commit it shipped at.** A document that cannot be revised freezes while the tree keeps moving, so an unpinned quotation goes stale silently and a later reader cannot tell whether the citation was wrong or the file changed under it. Leave one unpinned only where your practice repairs references whose targets move; nothing repairs them by default.

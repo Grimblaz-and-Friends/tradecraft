@@ -11,23 +11,51 @@ Checks:
      path token (${CLAUDE_PLUGIN_ROOT} and kin). Not because they fail --
      Claude Code substitutes them into a skill's body -- but because Codex does
      not, so any such contract binds in one runtime and is dead in the other.
-  3. sideways deps: no skill may reference another skill by path (rooted or
-     relative), and lib/ may not reference any skill (deps point down).
-     Name-form coupling ("load the beta skill") is not machine-checkable; it
-     is reviewed, not linted.
-  4. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
+  3. delivery: the shipped charter exists and the hook that delivers it still
+     can, so a session in either runtime receives it at session start.
+  4. cell frontmatter: every skill declares a name and a description the
+     runtime can parse, each within its field budget. A cell whose description
+     is absent or malformed silently never fires.
+  5. sideways deps: no skill may reference another skill — by path (rooted or
+     relative) or by the name form `<name>` cell — and lib/ and hooks/ may
+     reference no skill but the charter (deps point down otherwise). The
+     charter is exempt in the name form only and as a target from anywhere,
+     because it is already always-on in every session, so the citation costs
+     no loading and cannot drift the way a second copy can; the hook that
+     emits it must name it, and check 3 requires that dependency to exist.
+     Paths between cells stay findings even from the charter, for a reason
+     self-containment never covered — a rooted skills/ path does not resolve
+     once installed, while the name survives relocation.
+  6. cell references: every `<name>` cell reference names a skill that
+     exists, and every references/ pointer resolves against the directory of
+     the file naming it, so renaming or deleting either cannot silently
+     strand the prose that points at it. Scanned over the shipped zone and
+     over the doctrine files, which are not cells and may name any -- but a
+     name they write strands exactly as a cell's does.
+
+  Checks 5 and 6 split on form, not on check. The *name* form is read
+  outside fenced blocks only: a name inside a fence is a spelling being
+  shown, as check 7 already reasons about an import. Every *path* form is
+  read everywhere, fences included -- check 5's rooted and relative skill
+  paths and check 6's references/ pointers alike -- because a path that does
+  not resolve is broken whatever encloses it, this repository's fenced blocks
+  are calling contracts rather than examples, and checks 1 and 2 already fire
+  inside them. Both checks also read one wrap — a line ending in `<name>` whose successor
+  begins "cell" — because a reflow is a formatting edit no reviewer inspects
+  and it would otherwise silently remove a reference from both checks.
+  7. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  5. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  8. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  6. review index: docs/reviews.jsonl, when present, parses and carries one
+  9. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, what came of
      the findings, the model and runtime that staffed it, report URL.
-  7. decision index: every decision entry has a row in the log's index, and
+ 10. decision index: every decision entry has a row in the log's index, and
      every row a file.
-  8. entry references: every path reference and relative link a decision entry
+ 11. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
@@ -109,8 +137,35 @@ AGENTS_BUDGET_CHARS = 8_000
 CHARTER_BUDGET_CHARS = 6_000
 POINTER_BUDGET_CHARS = 500
 
+# The one cell any other cell may reference, and the one cell that may
+# reference the others. Self-containment exists to stop loading cost and
+# multi-site drift; neither applies here. The charter is always-on in every
+# session by construction -- imported by AGENTS.md, instructed, and emitted by
+# the SessionStart hook -- so a cell citing it points at prose the reader has
+# already loaded, and a citation cannot fall out of agreement the way a second
+# copy can. The exemption is one target at depth one: cells may cite the
+# charter and it may cite them, no cell may cite any other, so the shape
+# cannot grow into the mesh of mutual references the predecessor accumulated.
+CHARTER_CELL = "charter"
+
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
 ROOTED_SKILL = re.compile(r"skills[\\/]([\w-]+)[\\/]", re.IGNORECASE)
+# The name form of a cell reference: `engagement` cell. A skill is reached by
+# invoking it by name, not by opening a file, so this -- not a path -- is the
+# form the prose uses; defining it is also what makes name-form coupling
+# checkable, which it was not while any phrasing counted.
+CELL_REF = re.compile(r"`([a-z][a-z0-9-]*)`\s+[Cc]ells?\b")
+# The same reference with a line break where its space was. A reflow is a
+# formatting edit nobody inspects, and without this it silently removes a
+# reference from both the coupling check and the existence check -- observed
+# under review, by reflowing one charter reference and watching the rename
+# probe drop from three findings to two. Catching it enlarges nothing: it is
+# the prescribed spelling, wrapped.
+CELL_REF_TAIL = re.compile(r"`([a-z][a-z0-9-]*)`\Z")
+CELL_REF_HEAD = re.compile(r"\A[Cc]ells?\b")
+# A pointer from a cell into its own depth. Resolved against the directory of
+# the file naming it, the same rule a script's calling contract follows.
+REFERENCES_REF = re.compile(r"(references/[\w.-]+\.md)")
 # The first segment may itself be dot-leading (`.github`), so the class after
 # the prefix admits a dot. Requiring a word character there let every relative
 # form of `.github/` through while catching `docs/` and `tools/` -- the one
@@ -372,6 +427,36 @@ def _origin(own: str | None, base: Path) -> str:
     return f" from skill '{own}'" if own else f" from {base.name}/"
 
 
+def _name_form_is_sideways(own: str | None, target: str) -> bool:
+    """Whether naming skill `target` from `own` couples two cells unlawfully.
+
+    The charter's exemption lives here and only here -- in naming a cell, not
+    in reaching into one. A path form stays a finding from the charter too,
+    for a reason self-containment never covered: a rooted `skills/...` path
+    does not resolve once installed, because the cells sit in a plugin cache
+    rather than beside the reader. The name survives relocation, which the
+    path does not -- note that a runtime may qualify it (Claude Code addresses
+    an installed plugin's skills as `<plugin>:<skill>`), so the name is the
+    part a reader can still follow, not a string that resolves bare.
+
+    The charter is exempt as a target from anywhere, not only from another
+    cell: the SessionStart hook's whole job is to emit it, and check_delivery
+    requires that dependency to exist. A rule forbidding what a sibling guard
+    mandates would be two answers to one question.
+
+    `own is None` is lib/ or hooks/, neither of which is a cell. Their deps
+    still point down for every other skill -- naming `engagement` from a hook
+    is the coupling that rule exists for.
+    """
+    if target.lower() == CHARTER_CELL:
+        return False
+    if own is None:
+        return True
+    if target.lower() == own.lower():
+        return False
+    return own.lower() != CHARTER_CELL
+
+
 def check_sideways_deps(root: Path) -> list[str]:
     findings = []
     skills = root / "skills"
@@ -391,6 +476,39 @@ def check_sideways_deps(root: Path) -> list[str]:
             if text is None:
                 continue
             rel_file = path.relative_to(root).as_posix()
+            # The fence exemption is the *name form's* alone. A path inside a
+            # fence is not display: this repo's fenced blocks are calling
+            # contracts and command lines, check_zone_wall and
+            # check_harness_tokens both fire inside them, and
+            # test_portability.py reads a cell's script contract through one
+            # and requires it to resolve. Exempting paths here would put two
+            # guards in one tree disagreeing about what a fence means. What
+            # licenses the name form's exemption is different in kind -- an
+            # unlawful *name* inside a fence is a spelling being shown, while
+            # a path is dead once installed whatever encloses it.
+            unfenced = _unfenced_numbered(text)
+            for lineno, target in _wrapped_cell_refs(unfenced):
+                if not (root / "skills" / target).is_dir():
+                    continue
+                if _name_form_is_sideways(own, target):
+                    findings.append(
+                        f"sideways-dep: {rel_file}:{lineno} names skill "
+                        f"'{target}' across a line break" + _origin(own, base)
+                    )
+            for lineno, line in unfenced:
+                for match in CELL_REF.finditer(line):
+                    target = match.group(1)
+                    # Only a name that is actually a cell couples anything; a
+                    # backticked word before "cell" that names no skill is
+                    # ordinary prose here, and check_cell_references is what
+                    # rules on whether it should have resolved.
+                    if not (root / "skills" / target).is_dir():
+                        continue
+                    if _name_form_is_sideways(own, target):
+                        findings.append(
+                            f"sideways-dep: {rel_file}:{lineno} names "
+                            f"skill '{target}'" + _origin(own, base)
+                        )
             for lineno, line in enumerate(text.splitlines(), 1):
                 for match in ROOTED_SKILL.finditer(line):
                     # Same lawful-case guards as the zone wall's rooted branch:
@@ -422,12 +540,148 @@ def check_sideways_deps(root: Path) -> list[str]:
     return findings
 
 
+def check_cell_references(root: Path) -> list[str]:
+    """Every `<name>` cell reference names a real skill, and every pointer resolves.
+
+    The charter's whole value is that a session reading it can reach the cell
+    owning the depth behind each rule it states. That value is what a rename
+    silently destroys: the sentence still reads correctly and points nowhere,
+    and prose cannot be resolved by the runtime the way a path can be. So the
+    reference form is machine-checked at the only moment anyone will look.
+
+    A backticked word before "cell" that names no skill is the finding, not an
+    exemption -- there is no way to tell a typo'd cell name from a word that
+    was never meant as one, and the reference form exists precisely so the
+    question does not have to be judged case by case.
+    """
+    findings = []
+    known = {p.name for p in (root / "skills").iterdir() if p.is_dir()} \
+        if (root / "skills").is_dir() else set()
+    # The doctrine files and the README are not cells and the sideways rule
+    # does not reach them -- they may name any cell. But a name they write
+    # strands exactly as a cell's does, and all three now point at the cell
+    # owning a standard they apply, so the existence half has to see them.
+    # The README is here because it is the front door: a rename leaving it
+    # reading correctly and pointing nowhere is the failure this check is for,
+    # and widening the scan is not the widening D-169 priced out -- that was
+    # the matcher, whose cost was more prose over-firing, which this adds none of.
+    scan = [root / name for name in SHIPPED_DIRS] + [
+        root / "AGENTS.md", root / "CLAUDE.md", root / "README.md",
+    ]
+    for base in scan:
+        if base.is_file():
+            paths = [base]
+        elif base.is_dir():
+            paths = _iter_files(base)
+        else:
+            continue
+        for path in paths:
+            text = _read_text(path)
+            if text is None:
+                continue
+            rel_file = path.relative_to(root).as_posix()
+            lines = _unfenced_numbered(text)
+            named = [(n, m.group(1)) for n, line in lines
+                     for m in CELL_REF.finditer(line)]
+            named += list(_wrapped_cell_refs(lines))
+            for lineno, target in sorted(named):
+                if target not in known:
+                    findings.append(
+                        f"cell-reference: {rel_file}:{lineno} names cell "
+                        f"'{target}', which is not a skill in skills/"
+                    )
+            # A pointer is a path form, so it reads every line, fenced or
+            # not -- the same rule check 5's paths follow, and for the same
+            # reason: a path that does not resolve is broken wherever it is
+            # written. Only the name form above is exempt inside a fence.
+            for lineno, line in enumerate(text.splitlines(), 1):
+                for match in REFERENCES_REF.finditer(line):
+                    # The same lawful cases the rooted-skill branch names: a
+                    # web URL resolves for a consumer, and a longer path that
+                    # merely ends in `references/x.md` is somebody else's
+                    # tree, not this cell's depth. Copied rather than shared
+                    # because the two matchers differ; the reasoning does not.
+                    before = _token_before(line, match.start())
+                    if "://" in before:
+                        continue
+                    if before and re.search(r"[\w@\-/\\]$", before):
+                        continue
+                    pointer = match.group(1)
+                    if not (path.parent / pointer).is_file():
+                        findings.append(
+                            f"reference-pointer: {rel_file}:{lineno} points at "
+                            f"'{pointer}', which does not resolve against this "
+                            f"file's own directory"
+                        )
+    return findings
+
+
 def _frontmatterless(text: str) -> str:
     """Text with a leading YAML frontmatter block removed, if there is one."""
     if not text.startswith("---"):
         return text
     end = text.find(chr(10) + "---", 3)
     return text if end == -1 else text[end + 4:].lstrip(chr(10))
+
+
+# The marker run and whatever follows it on the line. CommonMark closes a
+# fence only on the same character at least as long as the opener, and adds
+# two clauses a marker-only match misses: a backtick opener's info string may
+# not contain a backtick -- so a line-initial code span showing a literal
+# ``` is a paragraph, not a fence -- and a closing fence carries no info
+# string at all. Both are what a cell documenting markdown writes, and
+# without them one such line silently swallows every reference check to the
+# end of the file, or ends a fence early and reads displayed prose as live.
+FENCE_MARKER = re.compile(r"\A(`{3,}|~{3,})(.*)\Z")
+
+
+def _unfenced_numbered(text: str) -> list[tuple[int, str]]:
+    """Non-fenced lines as (line number, stripped text), numbering preserved.
+
+    A fence closes only on the same character at least as long as the one
+    that opened it -- CommonMark's rule, and the renderer every reader of
+    these files is looking at. A naive toggle gets this wrong in both
+    directions: a ``` line quoted inside a ```` block ends the fence early,
+    so displayed prose is read as live; and a ~~~ line inside a ``` block
+    fails to end it, so live prose goes unread to the end of the file. Both
+    are what a cell teaching markdown writes, not an adversary's input.
+
+    This is the one implementation. `_unfenced` below delegates rather than
+    repeating it, because two copies of a rule kept in agreement by hand is
+    the defect this repository's own authoring standard forbids -- and the
+    duplicate was found under review, having already drifted in behaviour
+    from nothing but being written twice.
+    """
+    out, opener = [], None
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        stripped = raw.strip()
+        marker = FENCE_MARKER.match(stripped)
+        if marker:
+            run, info = marker.group(1), marker.group(2)
+            if opener is None:
+                if not (run[0] == "`" and "`" in info):
+                    opener = run
+                    continue
+            elif run[0] == opener[0] and len(run) >= len(opener) and not info.strip():
+                opener = None
+                continue
+        if opener is None:
+            out.append((lineno, stripped))
+    return out
+
+
+def _wrapped_cell_refs(lines: list[tuple[int, str]]):
+    """Cell references split across a line break, reported at the first line.
+
+    Adjacency in the original file is required: a blank line or a dropped
+    fence between the halves is a paragraph break, not a wrap.
+    """
+    for (lineno, line), (next_lineno, next_line) in zip(lines, lines[1:]):
+        if next_lineno != lineno + 1 or not next_line:
+            continue
+        tail = CELL_REF_TAIL.search(line)
+        if tail and CELL_REF_HEAD.match(next_line):
+            yield lineno, tail.group(1)
 
 
 def _unfenced(text: str) -> list[str]:
@@ -437,15 +691,7 @@ def _unfenced(text: str) -> list[str]:
     backticked one is. This file's own docstring reasons from that premise;
     the guard below has to apply it to both spellings or to neither.
     """
-    lines, fenced = [], False
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            fenced = not fenced
-            continue
-        if not fenced:
-            lines.append(stripped)
-    return lines
+    return [line for _lineno, line in _unfenced_numbered(text)]
 
 
 def check_doctrine(root: Path) -> list[str]:
@@ -1300,6 +1546,7 @@ def run(root: Path) -> list[str]:
         + check_delivery(root)
         + check_cell_frontmatter(root)
         + check_sideways_deps(root)
+        + check_cell_references(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)
         + check_review_index(root)
