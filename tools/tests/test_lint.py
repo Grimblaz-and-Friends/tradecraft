@@ -707,7 +707,7 @@ def make_entry(root: Path, number: int) -> None:
     directory = root / "docs" / "architecture" / "decisions"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / ("D-%d-2026-01-01-slug.md" % number)).write_text(
-        "# D-%d" + NL, encoding="utf-8")
+        ("# D-%d" % number) + NL, encoding="utf-8")
 
 
 def test_a_doctrine_citation_that_resolves_is_not_a_finding(tmp_path):
@@ -784,6 +784,29 @@ def test_lawful_renderings_of_full_history_are_not_findings(tmp_path, rendering)
     """
     make_clean_tree(tmp_path)
     _ci(tmp_path, WIRED_CI.replace("fetch-depth: 0", rendering))
+    assert lint.run(tmp_path) == []
+
+
+def test_the_lint_reports_the_always_on_total(capsys):
+    """The number reaches the session doing the editing, not only the owner
+    at the merge button.
+
+    An experience session found the derivation reachable only through frozen
+    decision entries, and said the number changed what it did once it had it.
+    """
+    lint.main()
+    out = capsys.readouterr().out
+    assert "always-on surface:" in out
+    assert "for an adopter" in out and "not derived" not in out
+
+
+def test_an_underivable_figure_does_not_fail_the_lint(tmp_path, monkeypatch):
+    """The other polarity, and the one that matters: this is a required check.
+    A tree with no figures module is not a lint finding, and a number that
+    cannot be derived must never turn a clean tree red."""
+    make_clean_tree(tmp_path)
+    note = lint.always_on_note(tmp_path)
+    assert note.startswith("always-on surface: not derived")
     assert lint.run(tmp_path) == []
 
 

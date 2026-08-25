@@ -77,6 +77,7 @@ Exit 0 when clean, 1 with findings listed one per line.
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import json
 import re
 import sys
@@ -161,9 +162,13 @@ POINTER_BUDGET_CHARS = 500
 # command string inside a decision entry that has since frozen. A budget a
 # guard does not hold is a budget the next edit does not have. The value is
 # the bound #169 declared and held itself under, not a fresh judgement: that
-# entry's own derivation command reads `--budget 7359`, one above the 7,358
-# the body measured before that change, so the cap says "no larger than you
-# started". #169's tree came in at 7,285 and this one is at 7,354. Raising
+# entry's own derivation command reads `--budget 7359`, against a body that
+# measured 7,358 before that change. The comparison below is `>`, so 7,359
+# itself passes -- the cap admits one character more than the size it was
+# derived from, and is not the tighter "no larger than you started" it reads
+# like. #169's tree came in at 7,285 and this one is at 7,354, so nothing
+# turns on the character today; it is stated because a session raising this
+# constant reads here first. Raising
 # it is a decision to be made and recorded, which is what a constant makes visible and a sentence
 # in a frozen entry does not. Cells absent from this map are unbudgeted on
 # purpose: a number chosen for a cell nobody has argued about would be a
@@ -624,10 +629,19 @@ def check_doctrine_citations(root: Path) -> list[str]:
     resolves. A reason compressed into a marker nobody checks is a reason
     deleted on the next renumbering, on the surface every session reads first.
 
-    Scoped to the doctrine files deliberately. A shipped cell may not name a
-    repo-only path, so a marker there would oblige an adopter to resolve
-    something they never receive -- which is why the shipped prose cites its
-    reasons by name rather than by number.
+    Scoped to the doctrine files by decision, not by the shipped cells being
+    clean: they carry eighteen `[D-N]` markers, and D-173 priced exactly that
+    cost rather than arguing it away, on the ground that the party who would
+    unknowingly undo the ruling is looking at the cell and not at the log. An
+    adopter cannot resolve any of them -- they receive the cells and not the
+    decision log -- so widening this guard would either mean stripping reasons
+    the practice deliberately kept, or a permanent exemption list. That is the
+    owner's call to reopen, not a repair a guard should make on its own; until
+    he does, the eighteen are lawful and out of reach here.
+
+    (The zone wall is not what puts them out of reach, whatever the shape of
+    the argument suggests: a `[D-N]` marker is not a path and violates no
+    zone rule. The reason is the resolution cost above.)
     """
     findings = []
     directory = root / "docs" / "architecture" / "decisions"
@@ -1771,10 +1785,44 @@ def run(root: Path) -> list[str]:
     )
 
 
+def always_on_note(root: Path) -> str:
+    """The always-on total, where a session sees it before it writes.
+
+    A cold consumer adding a binding rule found this number only because it
+    thought to go looking: `tools/figures.py` is named in no always-on surface
+    and in no skill prose, only inside frozen decision entries. It said the
+    number changed what it did -- it measured its rule and its outflow before
+    writing either, against 253 characters of headroom -- which is the whole
+    argument for putting it where the flow already goes.
+
+    The callout is a merge-surface instrument by design and gated to
+    `pull_request`, so it cannot reach the session doing the editing. This is
+    that session's answer, and it costs no always-on characters, owes no
+    outflow, and adds no sentence anybody has to read.
+
+    Never fatal. A figure that will not derive is stated and moves on; a clean
+    tree does not go red because a number was unavailable.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "repo_figures", root / "tools" / "figures.py"
+        )
+        figures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(figures)
+        data = figures.figure_always_on(root)["data"]
+    except Exception as exc:  # noqa: BLE001 -- reported, never fatal
+        return f"always-on surface: not derived ({type(exc).__name__}: {exc})"
+    return (
+        f"always-on surface: {data['repo_total']:,} chars here, "
+        f"{data['adopter_total']:,} from this practice for an adopter"
+    )
+
+
 def main() -> int:
     findings = run(ROOT)
     for finding in findings:
         print(finding)
+    print(always_on_note(ROOT))
     print(f"lint: {len(findings)} finding(s)")
     return 1 if findings else 0
 

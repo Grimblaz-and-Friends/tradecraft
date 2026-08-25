@@ -76,9 +76,15 @@ jobs:
           # the read fails, the delta drops out, and the comment states a total
           # with no direction -- the exact defect the delta was added to end.
           fetch-depth: 0
-          # This job runs git read-only against objects checkout already
-          # fetched and never reaches the network itself, so the token has no
-          # reason to persist into .git/config where later steps could read it.
+          # No later step in this job reads git credentials from
+          # .git/config -- the API calls carry GH_TOKEN from the environment --
+          # so the token has no reason to be persisted there.
+          #
+          # Scoped to that claim on purpose. Two previous wordings justified
+          # this flag by asserting something global about the job ("nothing
+          # here performs a git operation", "never reaches the network"), and
+          # both became false as the job grew. The flag is right; only its
+          # stated reason kept dying.
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
