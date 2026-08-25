@@ -307,3 +307,67 @@ def test_no_git_tree_is_said_not_faked(tmp_path):
     result = cli(tmp_path, "--doc", "NOTES.md", "--budget", "10")
     assert result.returncode == 0, result.stderr
     assert "no git tree identified" in result.stdout
+
+
+# --- the cell figure: a body measured apart from its always-on frontmatter ---
+#
+# These ride here rather than beside the guard because what proves shipped code
+# has to travel with it to every consumer. The one test that cannot live here is
+# the strip-agreement pin, which compares this engine to a repo-only guard: a
+# shipped file may not reach the repo-only zone, so its residence is forced.
+
+CELL = (
+    "---\n"
+    "name: example\n"
+    "description: A cell.\n"
+    "---\n"
+    "\n"
+    "Body line one.\n"
+)
+
+
+def test_cell_measures_the_body_and_not_the_frontmatter(tmp_path):
+    (tmp_path / "SKILL.md").write_text(CELL, encoding="utf-8")
+    body = len("Body line one.\n")
+    result = cli(tmp_path, "--cell", "SKILL.md", "--budget", str(body + 10))
+    assert result.returncode == 0, result.stderr
+    assert f"{body:,} of {body + 10:,} chars, headroom 10" in result.stdout
+    assert "(body)" in result.stdout
+    # The whole file is larger; --doc is the figure that says so.
+    whole = cli(tmp_path, "--doc", "SKILL.md", "--budget", str(body + 10))
+    assert f"{len(CELL):,} of" in whole.stdout
+
+
+def test_cell_reports_a_negative_headroom_rather_than_refusing(tmp_path):
+    """Over budget is a figure, not an error -- the caller is writing it up."""
+    (tmp_path / "SKILL.md").write_text(CELL, encoding="utf-8")
+    result = cli(tmp_path, "--cell", "SKILL.md", "--budget", "1")
+    assert result.returncode == 0, result.stderr
+    assert "headroom -14" in result.stdout
+
+
+def test_frontmatterless_leaves_a_file_without_frontmatter_alone(tmp_path):
+    """A plain document measured as a cell is the document, not an error."""
+    (tmp_path / "NOTES.md").write_text("Just prose.\n", encoding="utf-8")
+    result = cli(tmp_path, "--cell", "NOTES.md", "--budget", "100")
+    assert result.returncode == 0, result.stderr
+    assert "12 of 100 chars" in result.stdout
+
+
+def test_cell_refuses_without_a_budget_a_missing_file_and_a_doubled_measure(tmp_path):
+    """The three refusals the cell figure added, each in both polarities.
+
+    A budget picked silently is how a stated figure leaves behind the guard
+    that judges it, so the script refuses rather than defaulting -- the same
+    ground on which it refuses to invent a delta base.
+    """
+    (tmp_path / "SKILL.md").write_text(CELL, encoding="utf-8")
+    no_budget = cli(tmp_path, "--cell", "SKILL.md")
+    assert no_budget.returncode != 0 and "--budget" in no_budget.stderr
+    missing = cli(tmp_path, "--cell", "nosuch.md", "--budget", "10")
+    assert missing.returncode != 0 and "not a readable file" in missing.stderr
+    doubled = cli(tmp_path, "--doc", "SKILL.md", "--cell", "SKILL.md", "--budget", "10")
+    assert doubled.returncode != 0 and "pick one" in doubled.stderr
+    # ...and the lawful spelling of each still works.
+    assert cli(tmp_path, "--cell", "SKILL.md", "--budget", "10").returncode == 0
+    assert cli(tmp_path, "--doc", "SKILL.md", "--budget", "10").returncode == 0

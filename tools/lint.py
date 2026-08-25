@@ -33,12 +33,14 @@ Checks:
      over the doctrine files, which are not cells and may name any -- but a
      name they write strands exactly as a cell's does.
 
-  Checks 5 and 6 read the *name* form outside fenced blocks only: a name
-  inside a fence is a spelling being shown, as check 7 already reasons about
-  an import. Path forms are read everywhere, fences included -- a path is
-  dead once installed whatever encloses it, this repository's fenced blocks
+  Checks 5 and 6 split on form, not on check. The *name* form is read
+  outside fenced blocks only: a name inside a fence is a spelling being
+  shown, as check 7 already reasons about an import. Every *path* form is
+  read everywhere, fences included -- check 5's rooted and relative skill
+  paths and check 6's references/ pointers alike -- because a path that does
+  not resolve is broken whatever encloses it, this repository's fenced blocks
   are calling contracts rather than examples, and checks 1 and 2 already fire
-  inside them. Both also read one wrap — a line ending in `<name>` whose successor
+  inside them. Both checks also read one wrap — a line ending in `<name>` whose successor
   begins "cell" — because a reflow is a formatting edit no reviewer inspects
   and it would otherwise silently remove a reference from both checks.
   7. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
@@ -539,7 +541,7 @@ def check_sideways_deps(root: Path) -> list[str]:
 
 
 def check_cell_references(root: Path) -> list[str]:
-    """Every `<name>` cell reference in the shipped zone names a real skill.
+    """Every `<name>` cell reference names a real skill, and every pointer resolves.
 
     The charter's whole value is that a session reading it can reach the cell
     owning the depth behind each rule it states. That value is what a rename
@@ -555,12 +557,16 @@ def check_cell_references(root: Path) -> list[str]:
     findings = []
     known = {p.name for p in (root / "skills").iterdir() if p.is_dir()} \
         if (root / "skills").is_dir() else set()
-    # The doctrine files are not cells and the sideways rule does not reach
-    # them -- they may name any cell. But a name they write strands exactly as
-    # a cell's does, and this repo's doctrine now points at the cell owning
-    # each standard it applies, so the existence half has to see them.
+    # The doctrine files and the README are not cells and the sideways rule
+    # does not reach them -- they may name any cell. But a name they write
+    # strands exactly as a cell's does, and all three now point at the cell
+    # owning a standard they apply, so the existence half has to see them.
+    # The README is here because it is the front door: a rename leaving it
+    # reading correctly and pointing nowhere is the failure this check is for,
+    # and widening the scan is not the widening D-169 priced out -- that was
+    # the matcher, whose cost was more prose over-firing, which this adds none of.
     scan = [root / name for name in SHIPPED_DIRS] + [
-        root / "AGENTS.md", root / "CLAUDE.md",
+        root / "AGENTS.md", root / "CLAUDE.md", root / "README.md",
     ]
     for base in scan:
         if base.is_file():
@@ -584,7 +590,11 @@ def check_cell_references(root: Path) -> list[str]:
                         f"cell-reference: {rel_file}:{lineno} names cell "
                         f"'{target}', which is not a skill in skills/"
                     )
-            for lineno, line in lines:
+            # A pointer is a path form, so it reads every line, fenced or
+            # not -- the same rule check 5's paths follow, and for the same
+            # reason: a path that does not resolve is broken wherever it is
+            # written. Only the name form above is exempt inside a fence.
+            for lineno, line in enumerate(text.splitlines(), 1):
                 for match in REFERENCES_REF.finditer(line):
                     # The same lawful cases the rooted-skill branch names: a
                     # web URL resolves for a consumer, and a longer path that
@@ -614,7 +624,15 @@ def _frontmatterless(text: str) -> str:
     return text if end == -1 else text[end + 4:].lstrip(chr(10))
 
 
-FENCE_MARKER = re.compile(r"\A(`{3,}|~{3,})")
+# The marker run and whatever follows it on the line. CommonMark closes a
+# fence only on the same character at least as long as the opener, and adds
+# two clauses a marker-only match misses: a backtick opener's info string may
+# not contain a backtick -- so a line-initial code span showing a literal
+# ``` is a paragraph, not a fence -- and a closing fence carries no info
+# string at all. Both are what a cell documenting markdown writes, and
+# without them one such line silently swallows every reference check to the
+# end of the file, or ends a fence early and reads displayed prose as live.
+FENCE_MARKER = re.compile(r"\A(`{3,}|~{3,})(.*)\Z")
 
 
 def _unfenced_numbered(text: str) -> list[tuple[int, str]]:
@@ -639,11 +657,12 @@ def _unfenced_numbered(text: str) -> list[tuple[int, str]]:
         stripped = raw.strip()
         marker = FENCE_MARKER.match(stripped)
         if marker:
-            run = marker.group(1)
+            run, info = marker.group(1), marker.group(2)
             if opener is None:
-                opener = run
-                continue
-            if run[0] == opener[0] and len(run) >= len(opener):
+                if not (run[0] == "`" and "`" in info):
+                    opener = run
+                    continue
+            elif run[0] == opener[0] and len(run) >= len(opener) and not info.strip():
                 opener = None
                 continue
         if opener is None:

@@ -15,7 +15,7 @@ Anything that is a *capability* — orchestration, subagents, planning modes, me
 
 ## How it's built
 
-The unit of everything is the **skill**: a self-contained cell carrying whatever mix of prose (methodology), code (contracts), and tests its job requires. Skills never depend on each other sideways, with one exception the `authoring` skill states in full: any cell may name the charter, and it may name any cell, because it is already loaded before any of them fire. The plugin is just the bundle they ship in.
+The unit of everything is the **skill**: a self-contained cell carrying whatever mix of prose (methodology), code (contracts), and tests its job requires. Skills never depend on each other sideways, with one exception the `authoring` cell states in full: any cell may name the charter, and it may name any cell, because it is already loaded before any of them fire. The plugin is just the bundle they ship in.
 
 Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19-constitutional-reset.md)): the **doctrine** — the practice's binding half in [the charter](skills/charter/SKILL.md), a cell that ships, and this repository's own mechanics in [AGENTS.md](AGENTS.md), which does not — the **skills** (methodology, plus the charter itself, which is a cell so that a session can pull it deliberately), and the **[decision log](docs/architecture/decisions/)** (frozen rationale that informs, never binds). Every governing document states its purpose, audience, and success criteria, and its review judges against that statement — the review practice itself is the `adversarial-review` skill. Each review appends one row to [docs/reviews.jsonl](docs/reviews.jsonl); records are append-only exhaust, never maintained.
 

@@ -768,6 +768,69 @@ def test_a_references_pointer_guard_leaves_lawful_prose_alone(tmp_path):
     assert len(findings) == 1 and "references/gone.md" in findings[0]
 
 
+def test_a_pointer_inside_a_fence_is_still_a_pointer(tmp_path):
+    """A pointer is a path form; only the name form is fence-exempt.
+
+    Both arms are the pin: before this, the fenced-pointer behaviour was
+    asserted in neither direction, so either reading could have been changed
+    without a test noticing. A path that does not resolve is broken wherever
+    it is written; a name inside a fence is a spelling being shown.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "```" + NL + "See references/gone.md" + NL + "```" + NL)
+    findings = [f for f in lint.run(tmp_path) if "reference-pointer" in f]
+    assert len(findings) == 1 and "references/gone.md" in findings[0]
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    _write_cell(other, "```" + NL + "the `example-skill` cell" + NL + "```" + NL)
+    assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == []
+
+
+def test_a_code_span_is_not_a_fence_and_a_closing_fence_carries_no_info(tmp_path):
+    """CommonMark's two clauses a marker-only match misses.
+
+    A line-initial code span showing a literal fence is a paragraph, and a
+    marker with an info string cannot close one. Missing either lets a cell
+    documenting markdown silently switch off every reference check for the
+    rest of its own file -- or end a fence early and read displayed prose as
+    live. The lawful arms are the point: four spellings of a real fence must
+    still hide what they enclose.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    for body in (
+        "````" + NL + "```" + NL + "````" + NL + NL + "the `example-skill` cell" + NL,
+        "```" + NL + "shown" + NL + "```python" + NL + "y" + NL + "```" + NL
+        + "the `example-skill` cell" + NL,
+    ):
+        _write_cell(other, body)
+        assert len([f for f in lint.run(tmp_path) if "sideways-dep" in f]) == 1, body
+    for fence in ("```", "```text", "~~~", "````"):
+        closer = "~~~" if fence == "~~~" else fence.rstrip("text") or "```"
+        _write_cell(other, fence + NL + "the `example-skill` cell" + NL + closer + NL)
+        assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == [], fence
+
+
+def test_a_cell_named_at_the_front_door_must_resolve(tmp_path):
+    """The README is the surface an adopter reads before installing.
+
+    It is not a cell and the sideways rule does not reach it, so it may name
+    any cell -- but a rename leaves its sentence reading correctly and
+    pointing nowhere, which is the failure this check exists for. Its own
+    reserved-form references were unguarded until this pin.
+    """
+    make_clean_tree(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text("The `example-skill` cell carries it." + NL, encoding="utf-8")
+    assert lint.run(tmp_path) == []
+    readme.write_text("The `renamed-away` cell carries it." + NL, encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "cell-reference" in findings[0] and "README.md" in findings[0]
+
+
 def test_the_exempt_cell_name_is_the_one_these_tests_pin():
     """A test deriving its bound from the constant it tests cannot catch a
     change to that constant [#164]. The exemption is a rule about one named

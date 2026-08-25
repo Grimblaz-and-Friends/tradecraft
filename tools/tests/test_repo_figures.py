@@ -1,12 +1,12 @@
 """Pins for tools/figures.py, the repo-specific application of the shipped
-figure engine. Every coupling to a repo-only guard is held here, and the
-count is derived from the wrapper rather than asserted: the headroom figure
-agrees with check_doctrine's own measure (never a parallel arithmetic that can
-drift); the census agrees with check_entry_references' resolution when both
-recorded sets are emptied — the derivation D-135 prescribes; the description
-ceiling agrees with check_cell_frontmatter's; and the body measurement is the
-engine's own, pinned equal to the guard's strip so shipping it did not fork
-what "body" means. The suite figure is stubbed in CLI tests because the wrapper's
+figure engine. Each figure's number comes from the guard that judges it, never
+from a parallel arithmetic, and each of those couplings is pinned below by
+moving the guard's own constant and watching the figure follow: the AGENTS.md
+headroom and the charter's budget against check_doctrine, the description
+ceiling against check_cell_frontmatter, and the census against
+check_entry_references' resolution with both recorded sets emptied — the
+derivation D-135 prescribes. The body measurement is the engine's own, pinned
+equal to the guard's strip so shipping it did not fork what "body" means. The suite figure is stubbed in CLI tests because the wrapper's
 real suite invocation is the suite these tests run inside."""
 
 import importlib.util
@@ -193,3 +193,15 @@ def test_a_cell_figure_is_never_invented_and_never_defaults_its_budget(tmp_path,
         assert "caller decision" in str(exit_)
     else:
         raise AssertionError("--cell without a budget must refuse, not default")
+
+
+def test_the_charter_budget_comes_from_the_guard(monkeypatch):
+    """The one coupling the batch that rewrote this docstring left unpinned.
+
+    It is the figure with the highest certification load -- emitted into every
+    write-up, and the only one asserting a budget a guard actually enforces --
+    so a literal here would be the exact drift D-141 exists to prevent, and it
+    survived mutation with the whole suite green.
+    """
+    monkeypatch.setattr(lint, "CHARTER_BUDGET_CHARS", 4321)
+    assert repo_figures.figure_charter(ROOT)["data"]["budget"] == 4321
