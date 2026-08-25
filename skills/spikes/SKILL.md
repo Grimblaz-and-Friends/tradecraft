@@ -37,7 +37,7 @@ Where the executor is a reader, the run you need is a fresh session. Four proper
 
 - **Fresh dispatches.** A seat that has read the argument is not a cold reader, and the session that proposed the wording is the last party whose read of it is worth anything.
 - **No repo history** — no issues, no decision log, no git; only the shipped material a real consumer would arrive with.
-- **A realistic docket**, written out: the situations the wording has to sort. A seat asked to discuss a sentence discusses it; a seat asked to work a docket executes it.
+- **A realistic docket**, written out: the situations the wording has to sort. A seat asked to discuss a sentence discusses it; a seat asked to work a docket executes it. **Where the rule under test opens only for a particular actor, the docket has to put a seat in that position**: a docket no seat can enter through the rule's own door tests the rule's absence, and both arms then agree for the reason that the rule never fired.
 - **Arms differing in exactly the sentence under test.** Anything else that moves between arms is a second variable, and the result stops being attributable to the wording.
 
 **Ask what the seat would do before asking what the rule says.** The label a seat puts on a situation is the cheap measurement; what it reaches for unprompted is the one that transfers — and where the two disagree, the second is the finding. [The worked exemplar](https://github.com/Grimblaz-and-Friends/tradecraft/issues/115#issuecomment-5384143581) carries the docket, the arms, and what came back from each.
