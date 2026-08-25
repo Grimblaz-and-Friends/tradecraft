@@ -15,16 +15,65 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import lint
 
 
+import importlib.util as _ilu
+
+NL = chr(10)
+_spec = _ilu.spec_from_file_location(
+    "emit_charter",
+    Path(__file__).resolve().parents[2] / "hooks" / "emit_charter.py",
+)
+emit_charter = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(emit_charter)
+
+
+def _write_cell(skill: Path, body: str) -> None:
+    """Write a cell body under valid frontmatter.
+
+    Every cell needs a parseable name and description now -- the runtime indexes
+    those and nothing else until the cell fires, and a cell without them loads
+    with empty metadata. The fixtures exercise body content, so the header is
+    boilerplate here; it is not boilerplate in the tree.
+    """
+    (skill / "SKILL.md").write_text(
+        "---" + NL + f"name: {skill.name}" + NL
+        + "description: A fixture cell." + NL + "---" + NL + NL + body,
+        encoding="utf-8",
+    )
+
+
 def make_clean_tree(root: Path) -> None:
-    (root / "AGENTS.md").write_text("# root\nDoctrine pointer lives beside this file.\n", encoding="utf-8")
+    (root / "AGENTS.md").write_text(
+        "# root" + chr(10) + "@skills/charter/SKILL.md" + chr(10)
+        + "Doctrine pointer lives beside this file." + chr(10),
+        encoding="utf-8",
+    )
     (root / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
     skill = root / "skills" / "example-skill"
     (skill / "references").mkdir(parents=True)
-    (skill / "SKILL.md").write_text(
-        "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n",
+    _write_cell(skill, "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n")
+    _wire_callout(root)
+    _wire_delivery(root)
+
+
+def _wire_delivery(root: Path) -> None:
+    """The charter and the hook that emits it, wired the way the repo wires them."""
+    charter = root / "skills" / "charter"
+    charter.mkdir(parents=True, exist_ok=True)
+    (charter / "SKILL.md").write_text(
+        "---" + chr(10) + "name: charter" + chr(10)
+        + "description: The binding rules." + chr(10) + "---" + chr(10) + chr(10)
+        + "# charter" + chr(10) + "The binding half." + chr(10),
         encoding="utf-8",
     )
-    _wire_callout(root)
+    hooks = root / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "emit_charter.py").write_text("# the emitter\n", encoding="utf-8")
+    (hooks / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"matcher": "*", "hooks": [{"type": '
+        '"command", "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/emit_charter.py"'
+        '}]}]}}\n',
+        encoding="utf-8",
+    )
 
 
 def _wire_callout(root: Path) -> None:
@@ -67,10 +116,291 @@ def test_clean_tree_passes(tmp_path):
 
 # --- zone wall -------------------------------------------------------------
 
+def test_delivery_fires_when_the_charter_is_missing(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / "skills" / "charter" / "SKILL.md").unlink()
+    findings = lint.run(tmp_path)
+    assert any("delivery" in f and "missing" in f for f in findings)
+    # The import guard fires too, and should: AGENTS.md now names a file
+    # that is not there. Two guards, one cause, both worth hearing.
+    assert any("doctrine-import" in f for f in findings)
+
+
+def test_delivery_fires_when_the_charter_is_empty(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / "skills" / "charter" / "SKILL.md").write_text("\n\n", encoding="utf-8")
+    findings = lint.run(tmp_path)
+    # Two guards, one cause: no body to deliver, and no header to index by.
+    assert any("delivery" in f and "no body" in f for f in findings)
+    assert any("cell-frontmatter" in f for f in findings)
+
+
+def test_delivery_fires_when_the_hook_config_is_missing(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").unlink()
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "delivers the charter" in findings[0]
+
+
+def test_delivery_fires_when_the_hook_config_does_not_parse(tmp_path):
+    """A malformed hooks.json costs the adopter the skills too, not just the
+    charter -- the vendor's own validator calls it breaking the entire plugin
+    load -- and `claude plugin validate` cannot see it from a marketplace root."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text("{ nope", encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "does not parse" in findings[0]
+
+
+def test_delivery_fires_when_no_session_start_command_is_declared(tmp_path):
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text(
+        '{"hooks": {"SessionStop": []}}\n', encoding="utf-8"
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "no runnable SessionStart" in findings[0]
+
+
+def test_delivery_fires_when_the_hook_names_a_path_that_is_not_there(tmp_path):
+    """The typo case: the file exists, the config parses, the path is wrong."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": '
+        '"python ${CLAUDE_PLUGIN_ROOT}/hooks/emit_chartr.py"}]}]}}\n',
+        encoding="utf-8",
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "emit_chartr.py" in findings[0]
+
+
+def test_delivery_stays_quiet_on_a_wired_tree(tmp_path):
+    make_clean_tree(tmp_path)
+    assert lint.run(tmp_path) == []
+
+
+def test_harness_token_fires_on_powershell_and_cmd_spellings_any_case(tmp_path):
+    """`$env:` and `%VAR%` are case-insensitive in the shells that read them.
+
+    The first widening matched `$[Ee]nv:` only, so `$ENV:` -- an ordinary
+    spelling on the platform half of CI runs on -- slipped both guards.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "python $ENV:CLAUDE_PLUGIN_ROOT/scripts/run.py" + chr(10)
+        + "python $eNv:CLAUDE_PLUGIN_ROOT/scripts/run.py" + chr(10)
+        + "python %claude_plugin_root%/scripts/run.py" + chr(10))
+    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
+    assert len(findings) == 3
+
+
+def test_harness_token_case_insensitivity_does_not_reach_the_posix_form(tmp_path):
+    """`${VAR}` is case-sensitive in POSIX shells, so a blanket flag would
+    fire on a genuinely different lowercase name."""
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "python ${claude_plugin_root}/scripts/run.py" + chr(10))
+    assert [f for f in lint.run(tmp_path) if "harness-token" in f] == []
+
+
+def test_harness_token_covers_the_other_path_roots(tmp_path):
+    """Only path roots belong here: a variable that names a port or an
+    entrypoint cannot make a calling contract non-portable."""
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "python ${CLAUDE_CONFIG_DIR}/scripts/run.py" + chr(10)
+        + "python $CLAUDE_WORKING_DIR/scripts/run.py" + chr(10))
+    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
+    assert len(findings) == 2
+
+
+def test_doctrine_import_fires_when_agents_md_stops_importing_the_charter(tmp_path):
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8").replace("@skills/charter/SKILL.md" + chr(10), ""),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "doctrine-import" in f]
+    assert len(findings) == 1
+
+
+def test_doctrine_import_fires_on_a_backticked_mention(tmp_path):
+    """A backticked path is prose. It imports nothing, which is the whole
+    reason CLAUDE.md's own guard checks by position."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8").replace(
+            "@skills/charter/SKILL.md", "`@skills/charter/SKILL.md`"
+        ),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "doctrine-import" in f]
+    assert len(findings) == 1
+
+
+def test_doctrine_budget_fires_when_the_charter_bloats(tmp_path):
+    """The charter needs the displacement pressure more than AGENTS.md does:
+    an adopter pays for it on every SessionStart event, resume included."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "skills" / "charter" / "SKILL.md").write_text(
+        "x" * (lint.CHARTER_BUDGET_CHARS + 1), encoding="utf-8"
+    )
+    findings = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
+    assert len(findings) == 1 and "charter" in findings[0]
+
+
+def test_sideways_deps_reaches_the_charter_and_the_hooks(tmp_path):
+    """A skill named by path from `charter/` does not resolve once installed --
+    the skills live in a plugin cache, not at `skills/` beside the reader."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "skills" / "charter" / "SKILL.md").write_text(
+        "The bar lives in skills/example-skill/SKILL.md." + chr(10), encoding="utf-8"
+    )
+    findings = [f for f in lint.run(tmp_path) if "sideways" in f]
+    assert len(findings) == 1
+
+
+def test_the_two_shipped_zone_declarations_agree():
+    """`check_version_bump` keeps its own copy, deliberately -- but a copy that
+    silently disagrees is how `charter/` and `hooks/` came to be in the zone
+    everywhere except the guard that demands a version bump for them."""
+    import check_version_bump
+
+    lint_zone = {name.rstrip("/") for name in lint.SHIPPED_DIRS}
+    bump_zone = {name.rstrip("/") for name in check_version_bump.SHIPPED}
+    assert lint_zone == bump_zone, (
+        "the shipped zone is declared twice and the two disagree: "
+        f"lint-only={sorted(lint_zone - bump_zone)}, "
+        f"version-bump-only={sorted(bump_zone - lint_zone)}"
+    )
+
+
+def test_doctrine_import_fires_on_a_fenced_mention(tmp_path):
+    """A fenced import is displayed, not performed -- the same premise the
+    backticked case rests on, and the guard once caught only one of them."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8").replace(
+            "@skills/charter/SKILL.md",
+            "```" + chr(10) + "@skills/charter/SKILL.md" + chr(10) + "```",
+        ),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "doctrine-import" in f]
+    assert len(findings) == 1
+
+
+def test_doctrine_import_allows_a_fenced_example_beside_the_real_line(tmp_path):
+    """The other polarity: showing the import in a fence is lawful so long as
+    the file also performs it. A guard that failed this would block the one
+    document most likely to want to explain itself."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8")
+        + chr(10)
+        + "For example:" + chr(10)
+        + "```" + chr(10) + "@skills/charter/SKILL.md" + chr(10) + "```" + chr(10),
+        encoding="utf-8",
+    )
+    assert [f for f in lint.run(tmp_path) if "doctrine-import" in f] == []
+
+
+def test_delivery_survives_a_non_string_hook_command(tmp_path):
+    """A null command once reached the regex and raised, taking down the whole
+    run and suppressing every other finding in it. Found by the external pass,
+    which is the only party that tried it."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", '
+        '"command": null}]}]}}' + chr(10),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "delivery" in f]
+    assert len(findings) == 1 and "no runnable SessionStart" in findings[0]
+
+
+def test_delivery_fires_when_the_command_key_is_absent(tmp_path):
+    """`.get("command", "")` made an absent key indistinguishable from a present
+    empty one, and the emptiness test looked at the list rather than its
+    contents -- so a config declaring no command at all passed green."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"hooks": [{"type": "command"}]}]}}' + chr(10),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "delivery" in f]
+    assert len(findings) == 1 and "no runnable SessionStart" in findings[0]
+
+
+def test_delivery_fires_when_the_named_path_is_a_directory(tmp_path):
+    """`exists()` was satisfied by a directory of the right name, which is not
+    runnable -- and the finding's own message would have been false about it."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "emit_charter.py").unlink()
+    (tmp_path / "hooks" / "emit_charter.py").mkdir()
+    findings = [f for f in lint.run(tmp_path) if "delivery" in f]
+    assert len(findings) == 1 and "not a file" in findings[0]
+
+
+def test_sideways_dep_names_the_directory_it_came_from(tmp_path):
+    """The scan list grew past `lib/`, and the label did not, so every finding
+    outside it claimed to come from `lib/`. The charter was the first subject;
+    it is a cell now and gets a skill's own label, so `hooks/` is what still
+    exercises the non-skill branch."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "README.md").write_text(
+        "See skills/example-skill/SKILL.md." + chr(10), encoding="utf-8"
+    )
+    findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
+    assert len(findings) == 1 and "from hooks/" in findings[0]
+
+
+def test_harness_token_fires_on_a_shipped_calling_contract(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, 'python "${CLAUDE_PLUGIN_ROOT}/skills/example-skill/scripts/run.py"\n')
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "harness-token" in findings[0]
+
+
+def test_harness_token_fires_on_the_bare_and_codex_forms(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "python $CLAUDE_PLUGIN_ROOT/scripts/run.py\n"
+        "python ${PLUGIN_ROOT}/scripts/run.py\n"
+        "python $CODEX_HOME/scripts/run.py\n")
+    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
+    assert len(findings) == 3
+
+
+def test_harness_token_exempts_hooks_where_the_token_actually_expands(tmp_path):
+    """`hooks/` is hook configuration, where the placeholder really expands."""
+    make_clean_tree(tmp_path)
+    hooks = tmp_path / "hooks"
+    (hooks / "hooks.json").write_text(
+        '{"hooks": {"SessionStart": [{"matcher": "*", "hooks": [{"type": '
+        '"command", "command": "cat ${CLAUDE_PLUGIN_ROOT}/skills/charter/SKILL.md"'
+        "}]}]}}\n",
+        encoding="utf-8",
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_harness_token_stays_quiet_on_the_relative_contract(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "The script sits beside this file at scripts/run.py; invoke it by that\n"
+        "path resolved against the directory this file is in.\n")
+    assert lint.run(tmp_path) == []
+
+
 def test_zone_wall_fires_on_rooted_reference(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text("See docs/architecture/adr/README.md for rules.\n", encoding="utf-8")
+    _write_cell(skill, "See docs/architecture/adr/README.md for rules.\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "zone-wall" in findings[0]
 
@@ -78,9 +408,7 @@ def test_zone_wall_fires_on_rooted_reference(tmp_path):
 def test_zone_wall_fires_on_relative_parent_reference(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "[the constitution](../../docs/architecture/adr/README.md)\n", encoding="utf-8"
-    )
+    _write_cell(skill, "[the constitution](../../docs/architecture/adr/README.md)\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "zone-wall" in findings[0]
 
@@ -88,12 +416,9 @@ def test_zone_wall_fires_on_relative_parent_reference(tmp_path):
 def test_zone_wall_fires_on_uppercase_and_backslash_but_not_own_subdir(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        # ./tools/ inside a skill resolves to the skill's OWN tools/ subdir —
+    _write_cell(skill, # ./tools/ inside a skill resolves to the skill's OWN tools/ subdir —
         # self-contained and lawful; the other two are repo-only references.
-        "Run ./tools/helper.py first.\nOr see Docs/architecture.\nOr docs\\architecture\\adr.\n",
-        encoding="utf-8",
-    )
+        "Run ./tools/helper.py first.\nOr see Docs/architecture.\nOr docs\\architecture\\adr.\n")
     findings = [f for f in lint.run(tmp_path) if "zone-wall" in f]
     assert len(findings) == 2
 
@@ -101,11 +426,8 @@ def test_zone_wall_fires_on_uppercase_and_backslash_but_not_own_subdir(tmp_path)
 def test_zone_wall_ignores_web_urls_and_longer_paths(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "See https://example.com/docs/guide and https://github.com/o/r/blob/main/docs/x.md\n"
-        "The upstream-docs/ convention and their-repo/docs/ layout are fine.\n",
-        encoding="utf-8",
-    )
+    _write_cell(skill, "See https://example.com/docs/guide and https://github.com/o/r/blob/main/docs/x.md\n"
+        "The upstream-docs/ convention and their-repo/docs/ layout are fine.\n")
     assert lint.run(tmp_path) == []
 
 
@@ -139,7 +461,7 @@ def test_sideways_dep_fires_and_self_reference_does_not(tmp_path):
     make_clean_tree(tmp_path)
     other = tmp_path / "skills" / "other-skill"
     other.mkdir(parents=True)
-    (other / "SKILL.md").write_text("Compose with skills/example-skill/ for setup.\n", encoding="utf-8")
+    _write_cell(other, "Compose with skills/example-skill/ for setup.\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1
     assert "sideways-dep" in findings[0] and "example-skill" in findings[0]
@@ -149,7 +471,7 @@ def test_sideways_dep_fires_on_relative_form(tmp_path):
     make_clean_tree(tmp_path)
     other = tmp_path / "skills" / "other-skill"
     other.mkdir(parents=True)
-    (other / "SKILL.md").write_text("Load ../example-skill/SKILL.md first.\n", encoding="utf-8")
+    _write_cell(other, "Load ../example-skill/SKILL.md first.\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "sideways-dep" in findings[0]
 
@@ -168,14 +490,11 @@ def test_sideways_dep_ignores_web_urls_and_longer_paths(tmp_path):
     make_clean_tree(tmp_path)
     other = tmp_path / "skills" / "other-skill"
     other.mkdir(parents=True)
-    (other / "SKILL.md").write_text(
-        "See https://github.com/anthropics/skills/tree/main/skills/pdf/SKILL.md\n"
-        "The upstream-skills/bar/ layout and their-repo/skills/baz/ are fine.\n",
-        encoding="utf-8",
-    )
+    _write_cell(other, "See https://github.com/anthropics/skills/tree/main/skills/pdf/SKILL.md\n"
+        "The upstream-skills/bar/ layout and their-repo/skills/baz/ are fine.\n")
     assert lint.run(tmp_path) == []
     # ...and a true sideways reference still fires.
-    (other / "SKILL.md").write_text("Load skills/example-skill/ first.\n", encoding="utf-8")
+    _write_cell(other, "Load skills/example-skill/ first.\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "sideways-dep" in findings[0]
 
@@ -193,7 +512,10 @@ def test_lib_may_not_reference_a_skill(tmp_path):
 
 def test_doctrine_budget_fires_when_agents_md_bloats(tmp_path):
     make_clean_tree(tmp_path)
-    (tmp_path / "AGENTS.md").write_text("x" * (lint.AGENTS_BUDGET_CHARS + 1), encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(
+        "@skills/charter/SKILL.md" + chr(10) + "x" * (lint.AGENTS_BUDGET_CHARS + 1),
+        encoding="utf-8",
+    )
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "doctrine-budget" in findings[0]
 
@@ -551,12 +873,9 @@ def test_zone_wall_fires_on_relative_dot_leading_repo_only_name(tmp_path):
     # prefix required a word character, and a dot is not one.
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "[ci](../../.github/workflows/ci.yml)\n"
+    _write_cell(skill, "[ci](../../.github/workflows/ci.yml)\n"
         "See ../../.github/workflows/ci.yml too.\n"
-        "Or ..\\..\\.github\\workflows\\ci.yml.\n",
-        encoding="utf-8",
-    )
+        "Or ..\\..\\.github\\workflows\\ci.yml.\n")
     findings = [f for f in lint.run(tmp_path) if "zone-wall" in f]
     assert len(findings) == 3, findings
 
@@ -566,9 +885,7 @@ def test_zone_wall_ignores_relative_dot_leading_path_that_is_not_repo_only(tmp_p
     # not a repo-only name must still pass, or the guard blocks lawful work.
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "See ../.config/settings.json and ./.cache/notes.md.\n", encoding="utf-8"
-    )
+    _write_cell(skill, "See ../.config/settings.json and ./.cache/notes.md.\n")
     assert [f for f in lint.run(tmp_path) if "zone-wall" in f] == []
 
 
@@ -579,15 +896,12 @@ def test_zone_wall_ignores_suffix_match_inside_a_longer_relative_token(tmp_path)
     # three repo-only names. Found by the external pass on 2026-08-22.
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "See assets/../../.github/workflows/ci.yml.\n"
+    _write_cell(skill, "See assets/../../.github/workflows/ci.yml.\n"
         "See assets/../../docs/architecture/README.md.\n"
         "See assets/../../tools/lint.py.\n"
         "See [x](assets/../../.github/workflows/ci.yml).\n"
         "See assets\\..\\..\\.github\\ci.yml.\n"
-        "See a.b/../../docs/x.md.\n",
-        encoding="utf-8",
-    )
+        "See a.b/../../docs/x.md.\n")
     assert [f for f in lint.run(tmp_path) if "zone-wall" in f] == []
 
 
@@ -596,9 +910,7 @@ def test_sideways_dep_ignores_suffix_match_inside_a_longer_relative_token(tmp_pa
     # reached both guards; the lawful polarity has to be pinned on both.
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    (skill / "SKILL.md").write_text(
-        "See assets/../beta-skill/SKILL.md.\n", encoding="utf-8"
-    )
+    _write_cell(skill, "See assets/../beta-skill/SKILL.md.\n")
     assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == []
 
 
@@ -1144,3 +1456,313 @@ def test_non_mapping_dispositions_and_staffing_are_findings(tmp_path):
     _write_index(tmp_path, _row_with_extras(staffing="Opus 5"))
     b = [f for f in lint.run(tmp_path) if "must be a mapping" in f]
     assert len(a) == 1 and len(b) == 1
+
+
+FRONTMATTER_CASES = [
+    # (label, document, expected body)
+    (
+        "a normal cell",
+        "---" + NL + "name: x" + NL + "description: y" + NL + "---" + NL + NL + "# x" + NL + "Body." + NL,
+        "# x" + NL + "Body." + NL,
+    ),
+    (
+        "no frontmatter at all",
+        "# x" + NL + "Body." + NL,
+        "# x" + NL + "Body." + NL,
+    ),
+    (
+        "a horizontal rule inside the body",
+        "---" + NL + "name: x" + NL + "---" + NL + NL + "Above." + NL + "---" + NL + "Below." + NL,
+        "Above." + NL + "---" + NL + "Below." + NL,
+    ),
+    (
+        "an unterminated frontmatter block",
+        "---" + NL + "name: x" + NL + "still open" + NL,
+        "---" + NL + "name: x" + NL + "still open" + NL,
+    ),
+    (
+        "frontmatter and nothing else",
+        "---" + NL + "name: x" + NL + "---" + NL,
+        "",
+    ),
+    (
+        "blank lines between the block and the body",
+        "---" + NL + "name: x" + NL + "---" + NL + NL + NL + "Body." + NL,
+        "Body." + NL,
+    ),
+    (
+        "an empty document",
+        "",
+        "",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "document,expected",
+    [(d, e) for _, d, e in FRONTMATTER_CASES],
+    ids=[label for label, _, _ in FRONTMATTER_CASES],
+)
+def test_both_frontmatter_strippers_produce_the_expected_body(document, expected):
+    """Two implementations, one table of literal answers.
+
+    `hooks/emit_charter.py` and `tools/lint.py` each carry this parse, and the
+    zone wall forces that: `hooks/` is shipped, `tools/` is repo-only, and the
+    shared home that would fix it does not exist. What the duplication cost was
+    an oracle -- the portability suite checked the emitter's output against the
+    lint's function, so setting *both* to identity left every check green while
+    the hook emitted raw YAML into every consumer session. The expected values
+    below are literal, so neither implementation is the other's answer key.
+    """
+    assert emit_charter._body(document) == expected
+    assert lint._frontmatterless(document) == expected
+
+
+def test_the_budget_measures_the_body_and_not_the_file(tmp_path):
+    """A description edit must not eat the rules' headroom.
+
+    The rule is asserted in a decision entry that freezes on landing, and until
+    now nothing pinned it: reverting the budget to measure the whole file left
+    the suite green, because the existing budget test writes a cell with no
+    frontmatter and so never enters the stripping branch.
+    """
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter" / "SKILL.md"
+    body = "x" * (lint.CHARTER_BUDGET_CHARS - 10)
+    charter.write_text(
+        "---" + NL + "name: charter" + NL
+        + "description: " + "d" * 400 + NL + "---" + NL + NL + body + NL,
+        encoding="utf-8",
+    )
+    # The file is over budget; the body is under it. Only a guard measuring the
+    # body stays quiet here.
+    assert len(charter.read_text(encoding="utf-8")) > lint.CHARTER_BUDGET_CHARS
+    assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []
+
+
+def _set_description(root: Path, value: str) -> None:
+    """Rewrite the charter cell's description, leaving everything else alone."""
+    cell = root / "skills" / "charter" / "SKILL.md"
+    lines = cell.read_text(encoding="utf-8").splitlines()
+    close = lines.index("---", 1)
+    kept = [ln for ln in lines[1:close] if not ln.startswith("description:")]
+    rebuilt = ["---"] + kept + ["description: " + value] + lines[close:]
+    cell.write_text(NL.join(rebuilt) + NL, encoding="utf-8")
+
+
+HAZARD_CASES = [
+    # (label, description value, must the guard fire?)
+    ("a plain description", "A perfectly ordinary description.", False),
+    ("an unquoted colon-space", "Not a cell: it decides nothing.", True),
+    ("a trailing colon", "What this cell is for:", True),
+    ("an inline comment", "A description with a # comment in it.", True),
+    ("a leading indicator", "- a description that opens as a list item", True),
+    # The hole that shipped: a value opening and closing with a quote is not
+    # thereby quoted. This is the guard's own printed remedy applied to a
+    # description carrying an apostrophe, which most of them do.
+    ("a quote-wrapped value with a bare interior quote", "'The owner's rules.'", True),
+    ("a correctly closed single-quoted value", "'The owner''s rules.'", False),
+    ("a closed double-quoted value", '"The owner rules."', False),
+    # A permissive escape rule would accept this; YAML 1.2 does not.
+    ("a double-quoted value with an unknown escape", '"a \\x b"', True),
+    # The same hole as the single-quoted case above, on the other arm:
+    # without this row `_DQ_CLOSED` relaxes to `".*"` with the suite green.
+    ("a double-quoted value with a bare interior quote", '"say "hi" now"', True),
+    # ns-plain-first: lawful openers. All three load byte-identical under
+    # PyYAML and pass the vendor under both line endings. A guard that
+    # blocks lawful work fails as hard as one that passes unlawful work.
+    ("a dash opening a lawful plain scalar", "-portable and fast", False),
+    ("a question mark opening a lawful plain scalar", "?query the index", False),
+    ("a colon opening a lawful plain scalar", ":vector math for the win", False),
+    ("a question mark followed by a space", "? a description", True),
+    ("a bare indicator", "-", True),
+    # Not covered by "an inline comment", which pins the ` #` check. A
+    # leading `#` loads as null with the vendor silent under both endings,
+    # so this guard is the only thing catching it -- and the two-set split
+    # is what makes this branch one a mutation can move.
+    ("a leading hash", "#leading hash", True),
+]
+
+
+@pytest.mark.parametrize(
+    "value,fires",
+    [(v, f) for _, v, f in HAZARD_CASES],
+    ids=[label for label, _, _ in HAZARD_CASES],
+)
+def test_cell_frontmatter_hazards(tmp_path, value, fires):
+    """Each branch of the scalar check, in both polarities.
+
+    The guard shipped once with only the happy path exercised, which is how a
+    false negative survives: a clean tree proves a guard stays quiet and can
+    never prove it speaks.
+    """
+    make_clean_tree(tmp_path)
+    _set_description(tmp_path, value)
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert bool(findings) is fires, findings
+
+
+def test_cell_frontmatter_fires_when_the_description_is_missing(tmp_path):
+    make_clean_tree(tmp_path)
+    cell = tmp_path / "skills" / "charter" / "SKILL.md"
+    cell.write_text(
+        cell.read_text(encoding="utf-8").replace(
+            "description: The binding rules." + NL, ""),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert len(findings) == 1 and "no description" in findings[0]
+
+
+def test_cell_frontmatter_fires_when_the_name_disagrees_with_the_directory(tmp_path):
+    make_clean_tree(tmp_path)
+    cell = tmp_path / "skills" / "charter" / "SKILL.md"
+    cell.write_text(
+        cell.read_text(encoding="utf-8").replace("name: charter", "name: chartr"),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert len(findings) == 1 and "sits in" in findings[0]
+
+
+def test_the_declared_description_ceiling_is_the_one_these_tests_pin(tmp_path):
+    """Stated as a literal so raising the constant is a deliberate act.
+
+    A test that derives its bound from the constant it is testing cannot catch
+    a change to that constant -- and, at a large enough mutation, spends a
+    minute writing the file it is about to measure.
+    """
+    assert lint.CELL_FIELD_MAX_CHARS == {"name": 64, "description": 700}
+
+
+def test_the_declared_charter_budget_is_the_one_these_tests_pin():
+    """The rule stated just above, applied to the constant the fix that
+    stated it left deriving its bound from itself.
+    """
+    assert lint.CHARTER_BUDGET_CHARS == 6_000
+
+
+def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):
+    make_clean_tree(tmp_path)
+    _set_description(tmp_path, "x" * 701)
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert len(findings) == 1 and "budget" in findings[0]
+
+
+def test_cell_frontmatter_allows_a_description_at_the_ceiling(tmp_path):
+    make_clean_tree(tmp_path)
+    _set_description(tmp_path, "x" * 700)
+    assert [f for f in lint.run(tmp_path) if "cell-frontmatter" in f] == []
+
+
+def test_the_charter_cell_may_hold_nothing_but_its_skill_file(tmp_path):
+    """`skills/authoring` sends a cell's depth to `references/`; for this cell
+    that instruction is a trap, because only SKILL.md is delivered, budgeted and
+    read by the owner."""
+    make_clean_tree(tmp_path)
+    depth = tmp_path / "skills" / "charter" / "references"
+    depth.mkdir(parents=True)
+    (depth / "detail.md").write_text("A binding rule." + NL, encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "the charter cell carries" in f]
+    assert len(findings) == 1
+
+
+def test_the_stray_check_compares_paths_rather_than_basenames(tmp_path):
+    """`references/SKILL.md` shares the name and is exactly what an author
+    following the depth instruction would create."""
+    make_clean_tree(tmp_path)
+    depth = tmp_path / "skills" / "charter" / "references"
+    depth.mkdir(parents=True)
+    (depth / "SKILL.md").write_text("A binding rule." + NL, encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "the charter cell carries" in f]
+    assert len(findings) == 1
+
+
+def test_a_missing_hook_config_does_not_suppress_the_stray_check(tmp_path):
+    """Two unrelated defects must both be reported; the hook config's absence
+    once returned early and swallowed the other."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").unlink()
+    depth = tmp_path / "skills" / "charter" / "references"
+    depth.mkdir(parents=True)
+    (depth / "detail.md").write_text("A binding rule." + NL, encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert any("the charter cell carries" in f for f in findings)
+    assert any("nothing delivers the charter" in f for f in findings)
+
+
+def test_the_charter_cell_may_hold_only_its_skill_file_and_stays_quiet(tmp_path):
+    make_clean_tree(tmp_path)
+    assert [f for f in lint.run(tmp_path) if "the charter cell carries" in f] == []
+
+
+def test_every_unconditional_yaml_indicator_is_a_hazard(tmp_path):
+    """The set is a transcription of an external spec, so its failure mode is a
+    silent omission -- a member never written has no per-member row to catch
+    it. One loop over the unit catches every single-character drop. Transcribed
+    independently on purpose: asserting equality against the production
+    constant would share a source of truth with the thing it pins.
+    """
+    make_clean_tree(tmp_path)
+    for c in ",[]{}#&*!|>%@`":
+        _set_description(tmp_path, c + "leading value")
+        findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+        assert findings, f"{c!r} cannot open a plain scalar and must fire"
+
+
+def test_the_conditional_indicators_fire_only_when_nothing_follows(tmp_path):
+    """`-`, `?` and `:` are the ns-plain-first exceptions. Both polarities per
+    character, which is what separates the two sets from each other."""
+    make_clean_tree(tmp_path)
+    for c in "-?:":
+        # Both whitespace forms. A space is not enough on its own: for `:` the
+        # later unquoted-`: ` check masks the drop, so a space-only row leaves
+        # `:` unpinned in this set. A tab is caught by no later check.
+        for gap in (" ", chr(9)):
+            _set_description(tmp_path, c + gap + "a description")
+            assert [f for f in lint.run(tmp_path) if "cell-frontmatter" in f], (c, gap)
+        _set_description(tmp_path, c + "portable value")
+        assert [f for f in lint.run(tmp_path) if "cell-frontmatter" in f] == [], c
+
+
+def test_cell_frontmatter_checks_the_name_field_and_its_ceiling(tmp_path):
+    """The field loop covers name and description; dropping `name` from it left
+    the suite green, as did raising the name ceiling tenfold. The directory is
+    named to match, so the name/directory check cannot be what fires.
+    """
+    make_clean_tree(tmp_path)
+    over = "x" * 65
+    skill = tmp_path / "skills" / over
+    skill.mkdir(parents=True)
+    _write_cell(skill, "# cell" + NL)
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert findings and not any("sits in" in f for f in findings), findings
+
+
+def test_a_quoted_name_matching_its_directory_is_lawful(tmp_path):
+    """`name: 'charter'` is lawful YAML and is where the guard's own printed
+    remedy sends an author. Dropping the quote-strip flips it to firing."""
+    make_clean_tree(tmp_path)
+    cell = tmp_path / "skills" / "charter" / "SKILL.md"
+    cell.write_text(
+        cell.read_text(encoding="utf-8").replace(
+            "name: charter", "name: 'charter'"),
+        encoding="utf-8",
+    )
+    assert [f for f in lint.run(tmp_path) if "cell-frontmatter" in f] == []
+
+
+def test_cell_frontmatter_checks_cells_other_than_the_charter(tmp_path):
+    """The docstring's first line is a universal -- *every* skill. Narrowing the
+    iteration to the charter cell left the suite green and would silently void
+    the guard for every other shipped cell."""
+    make_clean_tree(tmp_path)
+    cell = tmp_path / "skills" / "example-skill" / "SKILL.md"
+    cell.write_text(
+        cell.read_text(encoding="utf-8").replace(
+            "description: A fixture cell.",
+            "description: Not a cell: it decides nothing."),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert len(findings) == 1 and "example-skill" in findings[0], findings

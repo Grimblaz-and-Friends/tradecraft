@@ -7,23 +7,27 @@ Checks:
      (docs/, tools/, .github/) by any path form — rooted, relative (../ or ./),
      backslashed, or case-shifted. Full web URLs are lawful: they resolve for
      consumers; repo paths do not.
-  2. sideways deps: no skill may reference another skill by path (rooted or
+  2. harness tokens: no shipped file outside hooks/ names a harness-specific
+     path token (${CLAUDE_PLUGIN_ROOT} and kin). Not because they fail --
+     Claude Code substitutes them into a skill's body -- but because Codex does
+     not, so any such contract binds in one runtime and is dead in the other.
+  3. sideways deps: no skill may reference another skill by path (rooted or
      relative), and lib/ may not reference any skill (deps point down).
      Name-form coupling ("load the beta skill") is not machine-checkable; it
      is reviewed, not linted.
-  3. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
+  4. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  4. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  5. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  5. review index: docs/reviews.jsonl, when present, parses and carries one
+  6. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, what came of
      the findings, the model and runtime that staffed it, report URL.
-  6. decision index: every decision entry has a row in the log's index, and
+  7. decision index: every decision entry has a row in the log's index, and
      every row a file.
-  7. entry references: every path reference and relative link a decision entry
+  8. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
@@ -47,14 +51,62 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 
-SHIPPED_DIRS = ("skills", "lib", "commands", "agents", ".claude-plugin")
+SHIPPED_DIRS = (
+    "skills", "lib", "commands", "agents", "hooks", ".claude-plugin",
+)
 REPO_ONLY_NAMES = {"docs", "tools", ".github"}
+
+# A shipped calling contract naming a harness token binds in one runtime only.
+# Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` -- and `${CLAUDE_SKILL_DIR}` --
+# into a skill's body before the model reads it; Codex substitutes neither,
+# setting the root as an environment variable for hook commands alone. Both
+# shipped scripts carried the token, so both were Claude-only until this guard.
+# `CLAUDE_SKILL_DIR` is the vendor's own skill-relative placeholder and it
+# does expand -- in Claude Code only. It is banned here on the same ground
+# the forced output style was rejected: a form that binds in one runtime and
+# not the other forks the practice. The `$env:` and `%...%` spellings are the
+# ones a Windows author reaches for, on the platform half of CI runs on.
+_HARNESS_NAMES = (
+    "CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|CLAUDE_PROJECT_DIR"
+    "|CLAUDE_SKILL_DIR|CLAUDE_CONFIG_DIR|CLAUDE_WORKING_DIR"
+    "|PLUGIN_ROOT|PLUGIN_DATA|CODEX_HOME"
+)
+HARNESS_TOKENS = re.compile(
+    rf"\$\{{?(?:{_HARNESS_NAMES})\}}?"
+    rf"|(?i:\$env:(?:{_HARNESS_NAMES}))"
+    rf"|(?i:%(?:{_HARNESS_NAMES})%)"
+)
+# `hooks/` is the exemption because it is hook configuration, which is where
+# the token is the vendor's contract rather than a dead reference -- plus the
+# prose explaining that. Claude Code substitutes it there; Codex supplies the
+# same value through the hook's environment, which its POSIX shell expands and
+# `cmd.exe` does not. That last gap is disclosed in `hooks/README.md`.
+HARNESS_TOKEN_EXEMPT_DIRS = frozenset({"hooks"})
+
+# Inside `hooks/` the placeholder is real, so the guard resolves what it
+# points at rather than banning it.
+PLUGIN_ROOT_REF = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)")
+CHARTER = "skills/charter/SKILL.md"
+# The always-on surface of a cell, budgeted because every adopter pays for
+# it in every session whether or not the cell ever fires. Not #130's
+# description standard -- a ceiling is not a standard -- but the ceiling has
+# to exist, because moving the charter's budget to its body left the part
+# that is genuinely always-on bounded by nothing.
+CELL_FIELD_MAX_CHARS = {"name": 64, "description": 700}
+CHARTER_IMPORT = f"@{CHARTER}"
 
 # The predecessor's root file passed 30k chars in eight months because every
 # incident defaulted to a paragraph. The budget is the structural counterweight:
-# at the limit, adding a line means routing something out (doctrine, "Admitting
-# a new requirement").
+# at the limit, adding a line means routing something out (the charter,
+# "Admitting a new requirement"; this file states the budget that makes it
+# bite here).
 AGENTS_BUDGET_CHARS = 8_000
+# The charter is the half that ships, and an adopter pays for it on every
+# SessionStart event -- resume and compact included -- so it needs the
+# displacement pressure more than this repo's own file does, not less.
+# 6,000 leaves real headroom over today's size and stays well under the
+# 2,500-token ceiling Codex applies to a hook's additional context.
+CHARTER_BUDGET_CHARS = 6_000
 POINTER_BUDGET_CHARS = 500
 
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
@@ -310,6 +362,16 @@ def check_zone_wall(root: Path) -> list[str]:
     return findings
 
 
+def _origin(own: str | None, base: Path) -> str:
+    """Name where the reference came from, computed rather than hardcoded.
+
+    The scan list has changed twice already -- `lib/` alone, then three
+    directories, then two when the charter became a cell and got a skill's own
+    label. A hardcoded label survives none of those, and a label naming the
+    wrong zone misdirects the one reader who is already lost."""
+    return f" from skill '{own}'" if own else f" from {base.name}/"
+
+
 def check_sideways_deps(root: Path) -> list[str]:
     findings = []
     skills = root / "skills"
@@ -317,9 +379,11 @@ def check_sideways_deps(root: Path) -> list[str]:
     if skills.is_dir():
         for skill_dir in sorted(p for p in skills.iterdir() if p.is_dir()):
             scan.append((skill_dir, skill_dir.name))
-    lib = root / "lib"
-    if lib.is_dir():
-        scan.append((lib, None))  # lib may reference no skill at all
+    for name in ("lib", "hooks"):
+        base = root / name
+        if base.is_dir():
+            # None: none of these is a skill, so any skill path is sideways.
+            scan.append((base, None))
 
     for base, own in scan:
         for path in _iter_files(base):
@@ -344,7 +408,7 @@ def check_sideways_deps(root: Path) -> list[str]:
                     if own is None or target.lower() != own.lower():
                         findings.append(
                             f"sideways-dep: {rel_file}:{lineno} references "
-                            f"skill '{target}'" + (f" from skill '{own}'" if own else " from lib/")
+                            f"skill '{target}'" + _origin(own, base)
                         )
                 for raw, parts in _resolved_relative_targets(root, path, line):
                     if len(parts) >= 2 and parts[0] == "skills":
@@ -353,9 +417,35 @@ def check_sideways_deps(root: Path) -> list[str]:
                             findings.append(
                                 f"sideways-dep: {rel_file}:{lineno} relative "
                                 f"reference '{raw}' resolves into skill '{target}'"
-                                + (f" from skill '{own}'" if own else " from lib/")
+                                + _origin(own, base)
                             )
     return findings
+
+
+def _frontmatterless(text: str) -> str:
+    """Text with a leading YAML frontmatter block removed, if there is one."""
+    if not text.startswith("---"):
+        return text
+    end = text.find(chr(10) + "---", 3)
+    return text if end == -1 else text[end + 4:].lstrip(chr(10))
+
+
+def _unfenced(text: str) -> list[str]:
+    """The document's lines with fenced blocks dropped, each stripped.
+
+    An import inside a fence is displayed, not performed, exactly as a
+    backticked one is. This file's own docstring reasons from that premise;
+    the guard below has to apply it to both spellings or to neither.
+    """
+    lines, fenced = [], False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+            continue
+        if not fenced:
+            lines.append(stripped)
+    return lines
 
 
 def check_doctrine(root: Path) -> list[str]:
@@ -370,6 +460,40 @@ def check_doctrine(root: Path) -> list[str]:
                 f"doctrine-budget: AGENTS.md is {size} chars, "
                 f"budget is {AGENTS_BUDGET_CHARS} — route content out (skill, decision entry, mechanism)"
             )
+    charter = root / CHARTER
+    if charter.is_file():
+        # The body, not the file: the charter is a cell now, so it carries
+        # frontmatter addressed to the runtime's skill index rather than to a
+        # session reading the rules. Budgeting the whole file would let a
+        # description edit eat the rules' headroom, which is the wrong coupling
+        # -- the description has its own always-on cost and its own ceiling
+        # above. A standard for what it should say is #130's, and unwritten.
+        size = len(_frontmatterless(charter.read_text(encoding="utf-8", errors="replace")))
+        if size > CHARTER_BUDGET_CHARS:
+            findings.append(
+                f"doctrine-budget: {CHARTER}'s body is {size} chars, budget "
+                f"is {CHARTER_BUDGET_CHARS} -- route content out"
+            )
+    # The charter reaches a consumer through the hook, but it reaches a session
+    # in THIS repository only through an import in a file that is itself
+    # imported. Checked by shape rather than by position: unlike CLAUDE.md the
+    # import does not lead the file, and a backticked mention imports nothing.
+    # Nor does a fenced one -- the same premise, and the guard rejected one
+    # spelling of not-bare while accepting the other.
+    if agents.is_file():
+        lines = _unfenced(agents.read_text(encoding="utf-8", errors="replace"))
+        if CHARTER_IMPORT not in lines:
+            findings.append(
+                "doctrine-import: AGENTS.md carries no bare "
+                f"'{CHARTER_IMPORT}' line — without it the binding half "
+                "reaches no session in this repository, which installs no plugin"
+            )
+        elif not charter.is_file():
+            findings.append(
+                f"doctrine-import: AGENTS.md imports '{CHARTER_IMPORT}', "
+                "which does not exist"
+            )
+
     pointer = root / "CLAUDE.md"
     if not pointer.is_file():
         findings.append(
@@ -645,7 +769,7 @@ def check_doctrine_callout(root: Path) -> list[str]:
     """The callout must still be wired into CI.
 
     Its own mechanism cannot catch its own removal: a PR that deletes the job
-    touches neither doctrine file, so no callout fires, nothing goes red, and
+    touches no doctrine file, so no callout fires, nothing goes red, and
     the mechanism disappears exactly as silently as the CODEOWNERS callout it
     replaced. Loud-on-failure and pinned-when-present are different guarantees
     and the script only carries the first. This is the second, and it lives in
@@ -909,9 +1033,272 @@ def _within(path: Path, root: Path) -> bool:
     return True
 
 
+def check_cell_frontmatter(root: Path) -> list[str]:
+    """Every skill declares a name and a description the runtime can parse.
+
+    A cell's frontmatter is the whole of its always-on surface: the runtime
+    indexes the name and description and nothing else until the cell fires. One
+    unquoted `: ` inside a description made the charter's frontmatter
+    unparseable, and the runtime's answer to unparseable is to load the cell
+    with empty metadata -- no name, no description, no trigger, silently. The
+    lint, the suite and `claude plugin validate .` were all green over it,
+    because the first two never looked and the third validates the marketplace
+    manifest and stops.
+
+    Hand-rolled rather than PyYAML, and not only for the stdlib rule: the
+    runtime parses YAML 1.2 in JavaScript, PyYAML is 1.1, and the two can
+    disagree on exactly the plain scalars at issue. A dependency that buys an
+    approximation of the real oracle is worse than a narrow check that states
+    what it covers. This covers the shapes that actually break a plain scalar;
+    a wholly quoted value is accepted without inspection, which is the escape
+    hatch for a description that genuinely needs a colon.
+    """
+    findings = []
+    skills = root / "skills"
+    if not skills.is_dir():
+        return findings
+    for skill_dir in sorted(p for p in skills.iterdir() if p.is_dir()):
+        cell = skill_dir / "SKILL.md"
+        if not cell.is_file():
+            continue
+        rel = cell.relative_to(root).as_posix()
+        fields = _frontmatter_fields(_read_text(cell) or "")
+        if fields is None:
+            findings.append(
+                f"cell-frontmatter: {rel} has no frontmatter block -- the "
+                f"runtime indexes it with no name and no description"
+            )
+            continue
+        for key in ("name", "description"):
+            value = fields.get(key, "")
+            if not value.strip():
+                findings.append(
+                    f"cell-frontmatter: {rel} declares no {key}"
+                    + (" -- a cell with no description has no trigger"
+                       if key == "description" else "")
+                )
+                continue
+            hazard = _plain_scalar_hazard(value)
+            if hazard:
+                findings.append(
+                    f"cell-frontmatter: {rel}'s {key} will not parse -- {hazard}. "
+                    f"Reword to avoid the construct, which is what every other "
+                    f"cell does. Quoting also works but is the harder path: a "
+                    f"single-quoted value must double every interior ', and "
+                    f"most descriptions here carry one. Unparseable "
+                    f"frontmatter loads as empty metadata -- no name, no "
+                    f"description, no trigger, silently"
+                )
+            elif len(value) > CELL_FIELD_MAX_CHARS.get(key, 10**9):
+                findings.append(
+                    f"cell-frontmatter: {rel}'s {key} is {len(value)} chars, "
+                    f"budget is {CELL_FIELD_MAX_CHARS[key]} -- every adopter "
+                    f"pays for it in every session, invoked or not"
+                )
+        name = fields.get("name", "").strip().strip("'\"")
+        if name and name != skill_dir.name:
+            findings.append(
+                f"cell-frontmatter: {rel} declares name '{name}' but sits in "
+                f"'{skill_dir.name}/' -- the runtime addresses it by one of them"
+            )
+    return findings
+
+
+def _frontmatter_fields(text: str) -> dict[str, str] | None:
+    """Top-level `key: value` pairs of a leading frontmatter block, unparsed."""
+    if not text.startswith("---"):
+        return None
+    end = text.find(chr(10) + "---", 3)
+    if end == -1:
+        return None
+    fields: dict[str, str] = {}
+    for line in text[3:end].splitlines():
+        if not line.strip() or line[:1].isspace():
+            continue
+        key, sep, value = line.partition(":")
+        if sep and key.strip():
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+# Closure, not endpoints. `value[0] == value[-1]` admitted every wrapper that
+# was not actually closed: `'it's'` opens and closes with a quote and is three
+# scalars to a parser. That hole was reachable by following this guard's own
+# advice, on any description carrying an apostrophe -- which is most of them.
+# YAML 1.2 ns-plain-first: `-`, `?` and `:` may open a plain scalar when a
+# non-space follows -- `-portable` is lawful, `- portable` is a sequence
+# entry. The other fourteen may not open one in any position. The split is
+# justified by what the value LOADS as, never by the vendor validator,
+# which returns 0 for all fourteen under LF: `#x` and `&x` load as null
+# there, silently, which is the metadata loss this guard exists to catch.
+_PLAIN_FIRST_ALWAYS = ",[]{}#&*!|>%@`"
+_PLAIN_FIRST_IF_SPACED = "-?:"
+
+_SQ_CLOSED = re.compile(r"'(?:[^']|'')*'")
+_DQ_CLOSED = re.compile(r'"[^"\\]*"')
+
+
+def _plain_scalar_hazard(value: str) -> str | None:
+    """Why this value would not survive as an unquoted YAML plain scalar."""
+    if value[:1] == "'":
+        if _SQ_CLOSED.fullmatch(value):
+            return None  # closed, interior quotes doubled: not read as plain
+        return ("it opens with a quote but is not a closed single-quoted "
+                "scalar -- an interior ' must be doubled ('')")
+    if value[:1] == '"':
+        # A backslash is refused rather than parsed: YAML 1.2 admits a fixed
+        # escape set, so `\x` is invalid where a permissive `\\.` would accept
+        # it. No shipped description opens with a quote, so the strictness is
+        # free today and errs toward the side that fails loudly.
+        if "\\" in value:
+            return ("escape sequences in a double-quoted value are not checked "
+                    "here -- reword, or single-quote it with interior ' doubled")
+        if _DQ_CLOSED.fullmatch(value):
+            return None
+        return "it opens with a quote but is not a closed double-quoted scalar"
+    first = value[:1]
+    if first in _PLAIN_FIRST_ALWAYS:
+        return f"it opens with the YAML indicator '{first}'"
+    if first in _PLAIN_FIRST_IF_SPACED and (len(value) == 1
+                                            or value[1] in " \t"):
+        return (f"it opens with the YAML indicator '{first}' with nothing "
+                f"non-space after it")
+    if ": " in value:
+        return "it contains an unquoted ': ', which ends a plain scalar"
+    if value.endswith(":"):
+        return "it ends with ':', which reads as a mapping key"
+    if " #" in value:
+        return "it contains ' #', which starts a YAML comment"
+    return None
+
+
+def check_delivery(root: Path) -> list[str]:
+    """The shipped charter exists, and the hook that delivers it still can.
+
+    Nothing guarded either one when they landed: deleting the charter,
+    deleting `hooks/hooks.json`, or typo-ing the path inside it all left every
+    required check green, while a consumer session silently received no
+    doctrine at all. On Windows the failure is silent at the adopter's end too
+    (the emitter exits non-zero, but a runtime keying on exit status is the
+    only thing that would notice), so CI is where it has to be caught.
+
+    Deliberately not checked: that the charter carries its eleven items. That
+    couples a machine check to editable governing prose and would go stale on
+    the first lawful edit -- priced out in review, and the price holds.
+    """
+    findings = []
+    charter = root / CHARTER
+    if not charter.is_file():
+        findings.append(
+            f"delivery: {CHARTER} is missing -- the shipped half of the "
+            "doctrine, the cell a session can pull it from, and what the "
+            "SessionStart hook emits"
+        )
+    elif not _frontmatterless(_read_text(charter) or "").strip():
+        findings.append(f"delivery: {CHARTER} has no body below its frontmatter")
+
+    # Compared by path, not basename: `references/SKILL.md` shares the name
+    # and is exactly what an author following `skills/authoring`'s depth
+    # instruction would create.
+    charter_file = root / CHARTER
+    stray = sorted(
+        q.relative_to(root).as_posix()
+        for q in charter_file.parent.rglob("*")
+        if q.is_file() and q != charter_file
+    ) if charter_file.parent.is_dir() else []
+    if stray:
+        # A binding rule routed into the charter's own references/ -- which
+        # `skills/authoring` tells a cell's author to do -- would escape the
+        # owner's doctrine read, the budget, and the hook that delivers it,
+        # becoming available rather than binding. That is the property this
+        # whole change refused. The charter routes content out, never down.
+        findings.append(
+            f"delivery: the charter cell carries {stray} -- only SKILL.md is "
+            f"delivered, budgeted, and read by the owner, so anything else "
+            f"there is binding prose nothing enforces"
+        )
+
+    config = root / "hooks" / "hooks.json"
+    if not config.is_file():
+        findings.append(
+            "delivery: hooks/hooks.json is missing -- nothing delivers the "
+            "charter to a consumer session"
+        )
+        return findings
+
+    raw = _read_text(config) or ""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        # The vendor's own validator on a malformed hooks.json: "At runtime
+        # this breaks the entire plugin load" -- the skills go too, not just
+        # the charter.
+        findings.append(f"delivery: hooks/hooks.json does not parse -- {exc}")
+        return findings
+
+    events = (parsed.get("hooks") or {}) if isinstance(parsed, dict) else {}
+    entries = events.get("SessionStart") or []
+    # `.get("command")` rather than `.get("command", "")`: an absent key and a
+    # null value both have to reach the emptiness test below. The earlier shape
+    # returned "" for an absent key, so `commands` was truthy and a config
+    # declaring no command at all passed green; a null value reached the regex
+    # and raised TypeError, taking down the whole run and suppressing every
+    # other finding in it.
+    commands = [
+        hook.get("command")
+        for entry in entries if isinstance(entry, dict)
+        for hook in (entry.get("hooks") or []) if isinstance(hook, dict)
+        if hook.get("type", "command") == "command"
+    ]
+    runnable = [c for c in commands if isinstance(c, str) and c.strip()]
+    if not runnable:
+        findings.append(
+            "delivery: hooks/hooks.json declares no runnable SessionStart "
+            "command -- nothing delivers the charter to a consumer session"
+        )
+    for command in runnable:
+        for ref in PLUGIN_ROOT_REF.findall(command):
+            # is_file, not exists: a directory of the right name satisfies the
+            # latter while being unrunnable, and the message below would then
+            # be false about a path that is right there.
+            if not (root / ref).is_file():
+                findings.append(
+                    f"delivery: hooks/hooks.json names '{ref}', which is not "
+                    f"a file in the shipped tree"
+                )
+    return findings
+
+
+def check_harness_tokens(root: Path) -> list[str]:
+    """No shipped file outside `hooks/` names a harness-specific path token."""
+    findings = []
+    for dirname in SHIPPED_DIRS:
+        if dirname in HARNESS_TOKEN_EXEMPT_DIRS:
+            continue
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in _iter_files(base):
+            text = _read_text(path)
+            if text is None:
+                continue
+            rel_file = path.relative_to(root).as_posix()
+            for lineno, line in enumerate(text.splitlines(), 1):
+                for match in HARNESS_TOKENS.finditer(line):
+                    findings.append(
+                        f"harness-token: {rel_file}:{lineno} names "
+                        f"'{match.group(0)}' -- a shipped calling contract "
+                        f"resolves against the directory of the file naming it"
+                    )
+    return findings
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
+        + check_harness_tokens(root)
+        + check_delivery(root)
+        + check_cell_frontmatter(root)
         + check_sideways_deps(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)

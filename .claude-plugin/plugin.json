@@ -1,5 +1,9 @@
 {
   "name": "tradecraft",
-  "version": "0.36.0",
-  "description": "A house engineering practice for frontier models: standards, memory, and judgment structure that turn raw capability into work you can trust."
+  "version": "0.37.0",
+  "description": "A house engineering practice for frontier models: standards, memory, and judgment structure that turn raw capability into work you can trust.",
+  "author": {
+    "name": "Grimblaz-and-Friends"
+  },
+  "homepage": "https://github.com/Grimblaz-and-Friends/tradecraft"
 }

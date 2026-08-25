@@ -17,13 +17,13 @@ After a piece of work is validated and ready to land on the branch you are alrea
 
 ## The mechanical part — the script owns it
 
-Installed as a plugin:
+The script sits beside this file at `scripts/persist.py`. Invoke it by that path resolved against the directory this file is in, which is what makes one contract hold both in an installed plugin and in this skill's own source repository:
 
 ```
-python "${CLAUDE_PLUGIN_ROOT}/skills/persist-changes/scripts/persist.py" -m "<message>" <path> [<path> ...]
+python scripts/persist.py -m "<message>" <path> [<path> ...]
 ```
 
-Working inside this skill's own source repository, the script is at `skills/persist-changes/scripts/persist.py`. Either way it operates on **the repository containing your current directory**, and **paths are resolved from that repository's root** no matter where you invoke it from. It exits `0` only on a verified push; every other outcome is a loud one-line `not-persisted: <reason>`.
+It operates on **the repository containing your current directory**, and **paths are resolved from that repository's root** no matter where you invoke it from. It exits `0` only on a verified push; every other outcome is a loud one-line `not-persisted: <reason>`.
 
 Its guards. Two carry recorded incidents; the other four are service rationale carried from the predecessor project — promoted with the skill and awaiting their first recorded incident here, which should be added to this list when it happens:
 

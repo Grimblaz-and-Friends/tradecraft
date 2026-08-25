@@ -17,8 +17,87 @@ Anything that is a *capability* — orchestration, subagents, planning modes, me
 
 The unit of everything is the **skill**: a self-contained cell carrying whatever mix of prose (methodology), code (contracts), and tests its job requires. Skills never depend on each other sideways. The plugin is just the bundle they ship in.
 
-Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19-constitutional-reset.md)): the **doctrine** ([AGENTS.md](AGENTS.md), one budgeted page of binding rules), the **skills** (all methodology), and the **[decision log](docs/architecture/decisions/)** (frozen rationale that informs, never binds). Every governing document states its purpose, audience, and success criteria, and its review judges against that statement — the review practice itself is the `adversarial-review` skill. Each review appends one row to [docs/reviews.jsonl](docs/reviews.jsonl); records are append-only exhaust, never maintained.
+Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19-constitutional-reset.md)): the **doctrine** — the practice's binding half in [the charter](skills/charter/SKILL.md), a cell that ships, and this repository's own mechanics in [AGENTS.md](AGENTS.md), which does not — the **skills** (methodology, plus the charter itself, which is a cell so that a session can pull it deliberately), and the **[decision log](docs/architecture/decisions/)** (frozen rationale that informs, never binds). Every governing document states its purpose, audience, and success criteria, and its review judges against that statement — the review practice itself is the `adversarial-review` skill. Each review appends one row to [docs/reviews.jsonl](docs/reviews.jsonl); records are append-only exhaust, never maintained.
+
+## Install it
+
+Tradecraft is a plugin. Installing it gives your repository the skills and the
+practice's binding rules; it is the same package in both runtimes, because Codex
+reads Claude's plugin manifests by name.
+
+**Claude Code**
+
+```
+claude plugin marketplace add Grimblaz-and-Friends/tradecraft --scope project
+claude plugin install tradecraft@tradecraft --scope project
+```
+
+**Codex**
+
+```
+codex plugin marketplace add Grimblaz-and-Friends/tradecraft
+codex plugin add tradecraft@tradecraft
+```
+
+`--scope project` writes `extraKnownMarketplaces` and `enabledPlugins` into your
+repository's `.claude/settings.json`, so the declaration is checked in and the
+content is not. Omit it and the CLI defaults to `user` scope, which arms the
+plugin — and its session-start hook — in *every* repository on that machine.
+Codex installs at user scope by design, with the same consequence: a repository
+cannot auto-install a plugin by committing configuration.
+
+What a teammate gets from cloning a repository that carries only the checked-in
+declaration is not something we have measured; every CLI surface we tried
+refused to act on the declaration alone. Treat the two commands above as the
+supported path for each person, not as something one person does for a team.
+
+**Pinning.** `version` in `plugin.json` is the pin that works today: an adopter
+receives an update only when we bump it. Marketplace sources also accept a `ref`
+(a branch or tag), and Codex takes `--ref` on `marketplace add` — but Claude
+Code's `plugin marketplace add` exposes no flag for it, so setting one means
+editing the marketplace entry by hand. A commit `sha` pins *plugin* sources, not
+marketplace sources, and this plugin's source is a relative path, so `sha` does
+not apply to it at all.
+
+**What lands in your session.** Every skill's name and description sit in every
+session's context — about 940 tokens for the seven methodology cells, plus about
+140 for the charter — and each skill's body loads only when it fires. One of
+those skills is the charter itself, so wherever the hook below does not reach
+you, a session can still be asked for the practice's rules by name. On top of that,
+the plugin ships one `SessionStart` hook, which emits [the charter](skills/charter/SKILL.md)
+— about 1,000 tokens of binding rules — so the practice governs rather than
+merely being available. That matcher is match-all, so the charter is re-emitted
+on resume, clear, compact and fork as well as at startup: budget per
+`SessionStart` event, not per session, and expect a long compacting session to
+pay it several times.
+
+Note that `claude plugin details` gets the cost wrong in your favour: it reports
+the always-on figure as skills only, and annotates the hook `(harness-only — no
+model context cost)`. The hook does cost you context.
+
+**One more thing that can go wrong.** The hook runs `python`. On a Linux host
+that carries only `python3` it will exit without emitting, and a failed
+session-start hook reports to you, not to the model — so the session simply
+proceeds without the charter. If `python -V` does not work on your machine, this
+plugin's hook gives you nothing. The charter is itself one of the skills, so a
+session can still be asked for it by name — but that is availability, not
+governance: nothing announces the absence to the model, so someone has to know
+to ask.
+
+**On declining the hook.** Claude Code gates plugin hooks on workspace trust and
+the `disableAllHooks` setting; there is no supported way to take this plugin's
+skills while declining its hook. Codex does have hook-level trust and will ask.
+One quadrant does not work at all: on **Windows under Codex**, hook commands run
+through `cmd.exe` with the plugin root supplied as an environment variable, which
+this hook's command cannot resolve — you get the skills, and should read the
+charter by invoking the `charter` skill — it is the same file the hook reads out,
+which is why the plugin ships it as a cell.
+
+**What does not reach you, by design.** Everything under `docs/`, `tools/`, and
+`.github/` is this repository's own machinery. A git-source install clones the
+whole repository, so those files do arrive in your plugin cache, but nothing
+shipped references them and nothing you use should.
 
 ## Status
 
-Reset complete (2026-08-19): the doctrine, seven shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.
+Installable and proven in a consumer repository (2026-08-24), by running it: the install path, skill discovery and hook registration; both shipped scripts from the installed cache; the declared hook command emitting the charter byte-for-byte; and — in an attended session in that repository — the charter arriving in the session's context from the hook, and the `charter` cell invocable by name. Before that, reset complete (2026-08-19): the doctrine, the shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.
