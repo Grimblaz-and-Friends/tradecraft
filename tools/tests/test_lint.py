@@ -1859,6 +1859,15 @@ def test_facing_must_reconcile_with_the_dispositions_total(tmp_path):
     _write_index(tmp_path, _row_with_facing(facing={"artifact": 0, "apparatus": 6}))
     assert lint.run(tmp_path) == []
 
+    # Both arithmetic directions, not just lawful-versus-unlawful: narrowing the
+    # comparison to `<` passed the whole suite until this case existed, and the
+    # row it then admitted double-counts a ruling -- the error a split derived
+    # from report prose is likeliest to make.
+    _write_index(tmp_path, _row_with_facing(facing={"artifact": 5, "apparatus": 2}))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "facing sums to 7 and dispositions to 6" in findings[0]
+
 
 def test_facing_reconciliation_is_silent_on_a_row_it_cannot_compute(tmp_path):
     """A malformed `dispositions` already has its own finding; adding an
@@ -1893,8 +1902,18 @@ def test_facing_rejects_unknown_shapes(tmp_path):
         tmp_path,
         _row_with_facing(facing={"artifact": 3, "apparatus": 2, "both": 1}),
     )
-    findings = [f for f in lint.run(tmp_path) if "unknown key" in f]
-    assert len(findings) == 1 and "both" in findings[0]
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "unknown key" in findings[0] and "both" in findings[0]
+
+    # The same silence the malformed-`dispositions` path already keeps, and for
+    # the same reason: the third key holds part of the population, so neither
+    # total is the writer's arithmetic. Both mappings, because either can carry
+    # a ruling out of the counted set.
+    _write_index(tmp_path, _row_with_facing(
+        dispositions={"fixed": 3, "routed": 1, "priced_out": 2, "dismissed": 0, "withdrawn": 2},
+    ))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "unknown key" in findings[0]
 
 
 def test_non_mapping_facing_is_a_finding_not_a_crash(tmp_path):

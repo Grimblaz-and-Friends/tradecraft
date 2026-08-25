@@ -335,9 +335,10 @@ STAFFING_FIELDS = ("model", "runtime")
 # the record of having reviewed it. The population is the one `dispositions`
 # counts -- one entry per terminal ruling -- so the two reconcile, which is the
 # whole reason the field can be checked at all. The three reports that stated a
-# split before this landed each counted a different population (45 rulings, 20
-# round-one sustained, and one per pass), so the trend the record exists to show
-# could not be read even by opening all of them.
+# split before this landed each counted a different population -- 26 panel-merged
+# findings, 45 rulings, and a 14-to-6 labelled as round one's 20 sustained where
+# that report's own table gives round one 17 -- so the trend the record exists to
+# show could not be read even by opening all of them.
 FACING_FIELDS = ("artifact", "apparatus")
 
 # Forward-only, enforced rather than stated: an optional field can never catch
@@ -1020,6 +1021,13 @@ def _check_facing_reconciles(row, facing, where: str, findings: list) -> None:
         return
     if not all(_is_count(facing.get(f)) for f in FACING_FIELDS):
         return
+    # An unknown key in either mapping carries part of the population into a
+    # bucket neither total counts, so the sum is not the writer's arithmetic --
+    # and the obvious repair, absorbing the difference, lands a permanently
+    # double-counted row. The vocabulary finding already fired; this one would
+    # name a total nobody wrote.
+    if set(facing) - set(FACING_FIELDS) or set(dispositions) - set(DISPOSITIONS):
+        return
     split = sum(facing[f] for f in FACING_FIELDS)
     total = sum(dispositions[f] for f in DISPOSITIONS)
     if split != total:
@@ -1080,11 +1088,7 @@ def _check_seats(seats, where: str, findings: list) -> None:
         bad_type = False
         for field in SEAT_COUNTS:
             value = counts.get(field)
-            # bool is a subclass of int and is excluded explicitly: True would
-            # otherwise pass as a count of 1.
-            if field in counts and (
-                isinstance(value, bool) or not isinstance(value, int) or value < 0
-            ):
+            if field in counts and not _is_count(value):
                 findings.append(
                     f"{where} seat '{name}' {field} '{value}' must be a "
                     f"non-negative integer"
