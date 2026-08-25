@@ -70,9 +70,9 @@ A zero in the second column is the case to look at: it means neither a note nor 
 
 ## Cost
 
-Governing prose grows **+908 characters** (89,683 → 90,591), derived by `python tools/figures.py --base 4d3860e` and re-run against the tree this entry lands on. The record paragraph goes from 221 words to 376 across two paragraphs, quoted pre-change at `skills/adversarial-review/SKILL.md:86` at `4d3860e`.
+Governing prose grows **+957 characters** (89,683 → 90,640), derived by `python tools/figures.py --base 4d3860e` and re-run against the tree this entry lands on. The record paragraph goes from 221 words to 384 across two paragraphs, quoted pre-change at `skills/adversarial-review/SKILL.md:86` at `4d3860e`.
 
-**The growth is argued rather than hidden**, because net growth on governing prose is a finding on its own terms. The alternative to these 155 words is not silence: it is the 1,012 words of `notes` the last five rows spent deriving the same conventions independently — 98, 212, 171, 234 and 297, by the query above — none of which the sixth row inherits — and rows are permanent, so a row written under an unstated convention is wrong for good.
+**The growth is argued rather than hidden**, because net growth on governing prose is a finding on its own terms. The alternative to these 163 words is not silence: it is the 1,012 words of `notes` the last five rows spent deriving the same conventions independently — 98, 212, 171, 234 and 297, by the query above — none of which the sixth row inherits — and rows are permanent, so a row written under an unstated convention is wrong for good.
 
 ## Evidence
 
