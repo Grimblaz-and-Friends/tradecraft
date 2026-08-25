@@ -1909,8 +1909,13 @@ def test_facing_rejects_unknown_shapes(tmp_path):
     # the same reason: the third key holds part of the population, so neither
     # total is the writer's arithmetic. Both mappings, because either can carry
     # a ruling out of the counted set.
+    # The known keys must sum away from the facing total, or the reconciliation
+    # is silent whether the gate fires or not and the assertion cannot see the
+    # mutation -- which is how the first version of this pin passed for the
+    # wrong reason. Known sum 4 against a facing of 6: without the gate a second
+    # finding appears naming a total nobody wrote.
     _write_index(tmp_path, _row_with_facing(
-        dispositions={"fixed": 3, "routed": 1, "priced_out": 2, "dismissed": 0, "withdrawn": 2},
+        dispositions={"fixed": 3, "routed": 1, "priced_out": 0, "dismissed": 0, "withdrawn": 2},
     ))
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "unknown key" in findings[0]
