@@ -17,7 +17,7 @@ Branch first (`main` refuses direct pushes) → build → `python tools/lint.py`
 
 ## Review, here
 
-The review report states what it judged against, and every review appends one row to `docs/reviews.jsonl`.
+Every review appends one row to `docs/reviews.jsonl`.
 
 ## Content routing, here
 

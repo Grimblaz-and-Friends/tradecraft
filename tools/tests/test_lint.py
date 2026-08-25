@@ -670,6 +670,7 @@ def test_a_references_pointer_must_resolve_against_its_own_file(tmp_path):
 LINT_CHECKS_IN_ORDER = (
     "check_zone_wall", "check_harness_tokens", "check_delivery",
     "check_cell_frontmatter", "check_sideways_deps", "check_cell_references",
+    "check_doctrine_citations",
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
 )
@@ -2147,7 +2148,10 @@ def test_a_cell_body_budget_is_enforced_in_both_polarities(tmp_path):
         _write_cell(skill, "x" * budget + NL)
         over = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
         assert len(over) == 1 and "example-skill" in over[0], over
-        _write_cell(skill, "x" * (budget - 10))
+        # Exactly at the budget, not under it: this is the arm that catches a
+        # guard drifting to >=, and a cell sitting five chars from its cap
+        # makes landing on the boundary an ordinary next edit.
+        _write_cell(skill, "x" * budget)
         assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []
     finally:
         lint.CELL_BODY_BUDGET_CHARS = original

@@ -279,15 +279,28 @@ def _edit_label(pr: str, repo: str | None, *, add: bool) -> None:
     _gh(*args)
 
 
-def _always_on_line(root: Path = ROOT) -> str:
+def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
     """The size of what every session reads, where the owner is when he merges.
 
     A budget only bites where somebody sees it, and this one has always been
     read after the fact -- in a write-up, by a session that had already decided
     what to add. The merge surface is the one moment the number can still
-    change an outcome. A failure to derive it is stated rather than dropped: a
-    callout that quietly loses its figure is one nobody can trust the rest of.
+    change an outcome.
+
+    The delta is the half that answers his actual question. An absolute total
+    cannot tell him whether this PR grew the surface or shrank it, and growth
+    is the thing the ceiling exists to resist -- a number with no direction
+    reproduces the defect it was added to end.
+
+    `root` resolves at call time rather than as a default, because a default
+    binds at definition and a test patching the module attribute would silently
+    measure the real repository instead.
+
+    A failure to derive is stated rather than dropped, with the exception's own
+    message: a callout that quietly loses its figure is one nobody can trust
+    the rest of, and one that loses the reason cannot be acted on either.
     """
+    root = ROOT if root is None else root
     try:
         spec = importlib.util.spec_from_file_location(
             "repo_figures", root / "tools" / "figures.py"
@@ -295,18 +308,38 @@ def _always_on_line(root: Path = ROOT) -> str:
         figures = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(figures)
         data = figures.figure_always_on(root)["data"]
-        budget = figures.lint.AGENTS_BUDGET_CHARS
+        agents_budget = figures.lint.AGENTS_BUDGET_CHARS
+        charter_budget = figures.lint.CHARTER_BUDGET_CHARS
+        movement = _always_on_delta(figures, root, base)
     except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
-        return f"_Always-on surface: not derived ({type(exc).__name__})._"
+        return f"_Always-on surface: not derived ({type(exc).__name__}: {exc})._"
     return (
-        f"Always-on surface: **{data['repo_total']:,}** chars here, "
-        f"**{data['adopter_total']:,}** for an adopter — doctrine "
-        f"{data['doctrine']:,} of {budget:,}, charter body {data['charter']:,}, "
-        f"{data['cells']} descriptions {data['roster']:,}."
+        f"Always-on surface: **{data['repo_total']:,}** chars here{movement}, "
+        f"**{data['adopter_total']:,}** from this practice for an adopter — "
+        f"doctrine {data['doctrine']:,} of {agents_budget:,}, charter body "
+        f"{data['charter']:,} of {charter_budget:,}, {data['cells']} cell "
+        f"name/description {data['roster']:,}."
     )
 
 
-def _body_from(files: str) -> str:
+def _always_on_delta(figures, root: Path, base: str | None) -> str:
+    """This PR's own movement, or nothing when there is no base to measure from.
+
+    Stated as an absence rather than guessed at: a PR with no resolvable base
+    gets a total and no delta, which is honest, where a delta against a guessed
+    base would be worse than none.
+    """
+    if not base:
+        return ""
+    try:
+        before = figures.always_on_at(root, base)
+    except Exception:  # noqa: BLE001 -- a missing base is not a callout failure
+        return ""
+    change = figures.figure_always_on(root)["data"]["repo_total"] - before
+    return f" ({change:+,} this PR)"
+
+
+def _body_from(files: str, base: str | None = None) -> str:
     """The rendered callout for an already-joined file list.
 
     Split out so a test can build the exact body the callout posts without
@@ -314,11 +347,11 @@ def _body_from(files: str) -> str:
     directly, which meant a new field could be added to the body and the test
     would keep asserting the old one.
     """
-    return CALLOUT.format(files=files, always_on=_always_on_line())
+    return CALLOUT.format(files=files, always_on=_always_on_line(base=base))
 
 
-def _body(touched: list[str]) -> str:
-    return _body_from(", ".join(f"`{f}`" for f in touched))
+def _body(touched: list[str], base: str | None = None) -> str:
+    return _body_from(", ".join(f"`{f}`" for f in touched), base=base)
 
 
 def _edit_comment(comment_id: object, repo: str | None, body: str) -> None:
@@ -335,7 +368,8 @@ def _post_comment(pr: str, repo: str | None, body: str) -> None:
     _gh(*args)
 
 
-def run(pr: str, repo: str | None, *, dry_run: bool = False) -> tuple[int, list[str]]:
+def run(pr: str, repo: str | None, *, dry_run: bool = False,
+        base: str | None = None) -> tuple[int, list[str]]:
     """Bring the PR's label and comment into agreement with its diff."""
     lines: list[str] = []
     touched = touched_doctrine(changed_paths(pr, repo))
@@ -366,7 +400,7 @@ def run(pr: str, repo: str | None, *, dry_run: bool = False) -> tuple[int, list[
     # the thread say that. Posting, withdrawing, reinstating and refreshing a
     # stale `Touched:` list are the same operation seen at four moments.
     if touched:
-        desired = _body(touched)
+        desired = _body(touched, base=base)
     elif ours is not None:
         desired = WITHDRAWN          # it says something that is no longer so
     else:
@@ -394,11 +428,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--pr", required=True, type=int, help="pull request number")
     parser.add_argument("--repo", default=None, help="OWNER/NAME (default: the checkout's)")
+    parser.add_argument("--base", default=None,
+                        help="revision to measure the always-on delta against; "
+                             "omitted, the callout states the total and no delta")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would change; touch nothing")
     args = parser.parse_args(argv)
     try:
-        status, _ = run(args.pr, args.repo, dry_run=args.dry_run)
+        status, _ = run(args.pr, args.repo, dry_run=args.dry_run, base=args.base)
     except CalloutError as exc:
         reason = " ".join(str(exc).split())
         # A workflow error annotation, so the reason reaches the checks panel

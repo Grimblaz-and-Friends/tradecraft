@@ -30,6 +30,7 @@ def load(name, path):
 
 repo_figures = load("repo_figures", ROOT / "tools" / "figures.py")
 engine = repo_figures.engine
+NL = chr(10)
 
 
 # --- the headroom figure is check_doctrine's measure, not a lookalike -------
@@ -205,3 +206,74 @@ def test_the_charter_budget_comes_from_the_guard(monkeypatch):
     """
     monkeypatch.setattr(lint, "CHARTER_BUDGET_CHARS", 4321)
     assert repo_figures.figure_charter(ROOT)["data"]["budget"] == 4321
+
+
+# --- the always-on figure, the one number the merge comment carries -----------
+
+def test_the_always_on_figure_is_emitted_at_all(tmp_path, monkeypatch):
+    """Deleting the call from build_figures left the suite green.
+
+    The cheapest way for this figure to stop being true is for it to stop
+    being produced, and nothing noticed. Pinned first because the other
+    assertions here all presuppose it.
+    """
+    monkeypatch.setattr(repo_figures.engine, "figure_tests",
+                        lambda *a, **k: {"name": "suite", "value": "stub",
+                                         "basis": "stub", "data": {}})
+    names = [f["name"] for f in repo_figures.build_figures(ROOT, None)]
+    assert "always-on surface" in names
+
+
+def test_the_two_audiences_are_not_the_same_set():
+    """The error the figure exists to stop, pinned.
+
+    `adopter = charter + doctrine` renders a visibly wrong number and passed
+    every test in the suite. An adopter's total omits both doctrine files,
+    which reach a plugin cache inert; the repo's total counts them.
+    """
+    data = repo_figures.figure_always_on(ROOT)["data"]
+    assert data["adopter_total"] == data["charter"] + data["roster"]
+    assert data["repo_total"] == data["doctrine"] + data["adopter_total"]
+    assert data["doctrine"] > 0, "the doctrine files are part of the repo total"
+    assert data["adopter_total"] < data["repo_total"]
+
+
+def test_the_repo_total_counts_both_doctrine_files(tmp_path):
+    """CLAUDE.md is always-on here and has its own budget because it is.
+
+    Omitting it meant a rule could move from AGENTS.md into it and the total
+    would report a reduction while nothing left the surface -- the failure
+    routing.md's closing paragraph names, reachable in 489 characters.
+    """
+    (tmp_path / "AGENTS.md").write_text("a" * 100, encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("b" * 40, encoding="utf-8")
+    (tmp_path / "skills").mkdir()
+    assert repo_figures.figure_always_on(tmp_path)["data"]["doctrine"] == 140
+
+
+def test_the_roster_counts_names_as_well_as_descriptions(tmp_path):
+    """Descriptions alone read 89 low across eight cells.
+
+    D-169 named this successor error in advance; the callout committed it and
+    an external reviewer found it independently. The figure counts both, and
+    what it counts is what its label says.
+    """
+    cell = tmp_path / "skills" / "example"
+    cell.mkdir(parents=True)
+    (cell / "SKILL.md").write_text(
+        "---" + NL + "name: example" + NL + "description: Four." + NL + "---" + NL
+        + NL + "Body." + NL, encoding="utf-8")
+    assert repo_figures.figure_always_on(tmp_path)["data"]["roster"] == len("example") + len("Four.")
+
+
+def test_the_charter_is_counted_below_its_frontmatter():
+    """The body, not the file -- the same unit the SessionStart hook emits.
+
+    Counting the whole file would double-count the description, which the
+    roster already carries, and would price the charter against a unit no
+    session receives.
+    """
+    charter = (ROOT / lint.CHARTER).read_text(encoding="utf-8")
+    assert repo_figures.figure_always_on(ROOT)["data"]["charter"] == len(
+        lint._frontmatterless(charter))
+    assert len(lint._frontmatterless(charter)) < len(charter)

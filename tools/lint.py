@@ -43,21 +43,25 @@ Checks:
   inside them. Both checks also read one wrap — a line ending in `<name>` whose successor
   begins "cell" — because a reflow is a formatting edit no reviewer inspects
   and it would otherwise silently remove a reference from both checks.
-  7. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
+  7. doctrine citations: every [D-N] the doctrine writes names an entry that
+     exists. The log's own references are check 12's; a marker in the always-on
+     surface was checked by nothing, which the outflow rule makes load-bearing
+     by instructing a session to compress prose into one.
+  8. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  8. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  9. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  9. review index: docs/reviews.jsonl, when present, parses and carries one
+  10. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, what came of
      the findings, the split by consequence shape, the model and runtime that
      staffed it, report URL. The split reconciles against the disposition
      counts; nothing else on the row reconciles against anything.
- 10. decision index: every decision entry has a row in the log's index, and
+ 11. decision index: every decision entry has a row in the log's index, and
      every row a file.
- 11. entry references: every path reference and relative link a decision entry
+ 12. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
@@ -126,24 +130,24 @@ CELL_FIELD_MAX_CHARS = {"name": 64, "description": 700}
 CHARTER_IMPORT = f"@{CHARTER}"
 
 # The predecessor's root file passed 30k chars in eight months because every
-# incident defaulted to a paragraph. The budget is the structural counterweight:
-# at the limit, adding a line means routing something out (the charter,
-# "Admitting a new requirement"; this file states the budget that makes it
-# bite here).
-# Ratcheted from 8,000 once the file measured 5,511: headroom that survives
-# a restructure is headroom that refills, and this file has been rewritten
-# twice and grown through both. The ceiling is set so that roughly one
-# substantial rule fits before something has to leave -- not so that the
-# margin stays comfortable, which is the failure mode. It is expected to be
-# tight, and it already is: a change merged while this one was open spent
-# more than half of it, and the right response to that is an outflow rather
-# than a larger number.
+# incident defaulted to a paragraph. The budget is the structural counterweight;
+# the outflow every edit owes is the rule, and this ceiling is only what makes
+# an unpaid one visible. [D-184]
+# Ratcheted from 8,000 once the file measured 5,511. This file shrank through
+# both of its rewrites -- 7,980 to 5,958 to 5,659; what grew through both is
+# the always-on surface it belongs to, because prose moved between artifacts
+# and each change reported the file it emptied. That is why the figure to watch
+# is the total rather than this one. Set so roughly one substantial rule fits
+# before something has to leave, not so the margin stays comfortable, which is
+# the failure mode. It is expected to be tight and already is: of the 289
+# characters spent since it was set, 112 were the change that set it and 177 a
+# merge that landed while it was open. The answer to either is an outflow.
 AGENTS_BUDGET_CHARS = 6_000
 # The charter is the half that ships, and an adopter pays for it on every
 # SessionStart event -- resume and compact included -- so it needs the
 # displacement pressure more than this repo's own file does, not less.
-# 6,000 leaves real headroom over today's size and stays well under the
-# 2,500-token ceiling Codex applies to a hook's additional context.
+# The ceiling leaves real headroom over today's size and stays well under
+# the 2,500-token limit Codex applies to a hook's additional context.
 # Ratcheted from 6,000 against a measured 5,353. The margin is smaller than
 # the doctrine's because the charter is not audited here -- its prose was
 # left untouched deliberately, so the ceiling is the only pressure it gets.
@@ -154,8 +158,9 @@ POINTER_BUDGET_CHARS = 500
 # applicable rather than aspirational -- and enforced by nothing: it lived in a
 # command string inside a decision entry that has since frozen. A budget a
 # guard does not hold is a budget the next edit does not have. The value is
-# what #169's tree measured, not a new judgement; raising it is a decision to
-# be made and recorded, which is what a constant makes visible and a sentence
+# the cap #169 declared and held itself under, not a fresh judgement -- that
+# tree's body measured 7,285, and 7,359 is the size it started from. Raising
+# it is a decision to be made and recorded, which is what a constant makes visible and a sentence
 # in a frozen entry does not. Cells absent from this map are unbudgeted on
 # purpose: a number chosen for a cell nobody has argued about would be a
 # ruling on its size arriving as a constant.
@@ -578,6 +583,45 @@ def check_sideways_deps(root: Path) -> list[str]:
                                 f"reference '{raw}' resolves into skill '{target}'"
                                 + _origin(own, base)
                             )
+    return findings
+
+
+DOCTRINE_CITATION = re.compile(r"\[D-(\d+)\]")
+
+
+def check_doctrine_citations(root: Path) -> list[str]:
+    """Every [D-N] the doctrine writes names a decision entry that exists.
+
+    check_entry_references resolves what the decision log itself writes, and
+    stops there -- so a marker in the always-on surface resolved to nothing and
+    lint stayed green, verified for all four of them. That mattered little
+    while the doctrine merely cited; it matters now that the outflow rule
+    instructs a session to replace prose with a citation and requires one that
+    resolves. A reason compressed into a marker nobody checks is a reason
+    deleted on the next renumbering, on the surface every session reads first.
+
+    Scoped to the doctrine files deliberately. A shipped cell may not name a
+    repo-only path, so a marker there would oblige an adopter to resolve
+    something they never receive -- which is why the shipped prose cites its
+    reasons by name rather than by number.
+    """
+    findings = []
+    directory = root / "docs" / "architecture" / "decisions"
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = root / name
+        if not path.is_file():
+            continue  # its absence is check 8's finding, not this one's
+        text = _read_text(path)
+        if text is None:
+            continue
+        for lineno, line in _unfenced_numbered(text):
+            for match in DOCTRINE_CITATION.finditer(line):
+                number = match.group(1)
+                if not any(directory.glob(f"D-{number}-*.md")):
+                    findings.append(
+                        f"doctrine-citation: {name}:{lineno} cites "
+                        f"[D-{number}], which is not an entry in the log"
+                    )
     return findings
 
 
@@ -1685,6 +1729,7 @@ def run(root: Path) -> list[str]:
         + check_cell_frontmatter(root)
         + check_sideways_deps(root)
         + check_cell_references(root)
+        + check_doctrine_citations(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)
         + check_review_index(root)

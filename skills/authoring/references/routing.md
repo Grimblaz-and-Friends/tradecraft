@@ -11,13 +11,15 @@ When one idea needs both a shipped standard and a local application, the standar
 
 ## Outflow: the admission order, read backwards
 
-Admission climbs from the cheapest material that can hold a rule to the most expensive, and the always-on surface is the last resort. **Read the other way, that same order is the outflow map, and it is owed whenever an always-on surface is edited** — not once a budget is reached. A surface that only ever empties under pressure empties once and refills, which is what happened to this practice's own doctrine: it was rewritten twice and grew through both.
+Admission climbs from the cheapest material that can hold a rule to the most expensive, and the always-on surface is the last resort. **Read the other way, that same order is the outflow map, and it is owed whenever an always-on surface is edited** — not once a budget is reached. A surface that only ever empties under pressure empties once and refills. This practice's own doctrine was rewritten twice and shrank both times, and the always-on surface it belongs to grew through both anyway — prose moved between artifacts, and each change reported the file it emptied.
 
 Three moves, cheapest first. Each is a rule leaving for a home that already holds it:
 
 - **A rule a guard now holds by construction becomes the rule plus the guard's name.** The prose that survives is what a reader needs in order to know the rule exists; the enforcement is the guard's, and restating its reasoning in an always-on surface is paying twice for one answer.
 - **A rule that binds only inside one activity moves to that activity's cell.** The test is whether a session not doing that activity can act wrongly for want of it. Where it cannot, the rule was never always-on; it was merely written there first.
 - **A reason a decision entry already carries compresses to its citation.** The rule stays; the argument for it goes to the entry, which is where rationale lives and where a later reader is already told to look before changing what it governs.
+
+**The obligation is discharged by a move or by a refusal, and a refusal is written down.** Where nothing has a cheaper home, say so and say why — that is the outflow applied, not the outflow skipped, and it is what stops the rule being dischargeable by silently asserting you looked. Mechanical work owes nothing at all: a typo, a dependency bump, an append to a record has no rule to move and is not asked to pretend otherwise.
 
 **What the outflow may never do is drop a rule.** Every line stays, moves with its reason, or compresses to a citation that resolves — and a rule that moves without its reason strands the clause a later reader needs in order to know when it stops applying, which is the failure this cell's revising standards exist to catch. Naming the drop is lawful; silence is not.
 

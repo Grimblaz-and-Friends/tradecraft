@@ -21,8 +21,8 @@ Usage:  python tools/figures.py [--base REF] [--cell PATH --cell-budget N]
                                 [--json]
 
 Always emitted: the suite figure (pytest over tools/tests and skills), the
-AGENTS.md size/headroom figure, the charter's body against its budget, and
-the census. With --base, the governing-prose delta (AGENTS.md, CLAUDE.md,
+AGENTS.md size/headroom figure, the charter's body against its budget, the
+always-on surface total for both audiences, and the census. With --base, the governing-prose delta (AGENTS.md, CLAUDE.md,
 and the .md files under skills/) against that ref. With --cell, that cell's
 body and description figures. Both the delta's base and a cell's budget are
 caller decisions neither script will default.
@@ -138,6 +138,14 @@ def figure_always_on(root: Path) -> dict:
         roster += len(fields.get("name", "")) + len(fields.get("description", ""))
     agents = root / "AGENTS.md"
     doctrine = len(agents.read_text(encoding="utf-8", errors="replace")) if agents.is_file() else 0
+    # CLAUDE.md counts here for the same reason it has its own budget: this
+    # runtime loads it, and leaving it out meant a rule could move from
+    # AGENTS.md into it and the total would report a reduction while nothing
+    # left the surface -- the failure routing.md's closing paragraph names.
+    # It is not in the adopter's total, which omits it on the same ground as
+    # AGENTS.md: a plugin root's copy reaches the cache inert.
+    pointer = root / "CLAUDE.md"
+    doctrine += len(pointer.read_text(encoding="utf-8", errors="replace")) if pointer.is_file() else 0
     charter_path = root / lint.CHARTER
     charter = len(lint._frontmatterless(
         charter_path.read_text(encoding="utf-8", errors="replace")
@@ -146,16 +154,18 @@ def figure_always_on(root: Path) -> dict:
     return {
         "name": "always-on surface",
         "value": (
-            f"{doctrine + adopter:,} chars here, {adopter:,} for an adopter "
+            f"{doctrine + adopter:,} chars here, {adopter:,} from this practice "
+            f"for an adopter "
             f"— doctrine {doctrine:,} + charter body {charter:,} + "
             f"{len(cells)} cell name/description {roster:,}"
         ),
         "basis": (
-            "decoded UTF-8 characters; AGENTS.md whole, the charter below its "
-            "frontmatter, and each cell's name plus description as "
-            "check_cell_frontmatter reads them; an adopter's total omits "
-            "AGENTS.md, which reaches a plugin cache as an inert file and is "
-            "never loaded; working tree"
+            "decoded UTF-8 characters; AGENTS.md and CLAUDE.md whole, the "
+            "charter below its frontmatter, and each cell's name plus "
+            "description as check_cell_frontmatter reads them; an adopter's "
+            "total omits both doctrine files, which reach a plugin cache as "
+            "inert files and are never loaded, and counts only what this "
+            "practice contributes to their always-on surface; working tree"
         ),
         "data": {
             "doctrine": doctrine, "charter": charter, "roster": roster,
@@ -163,6 +173,44 @@ def figure_always_on(root: Path) -> dict:
             "adopter_total": adopter,
         },
     }
+
+
+def always_on_at(root: Path, ref: str) -> int:
+    """The repo-side always-on total at another revision, for a delta.
+
+    Reads blobs rather than checking anything out, so it is safe to call from
+    a working tree somebody is using. Raises rather than guessing when the ref
+    or a path is unreadable -- a delta against a base that could not be read is
+    worse than no delta, and the caller states the absence.
+    """
+    import subprocess
+
+    def show(path: str) -> str:
+        out = subprocess.run(
+            ["git", "-C", str(root), "show", f"{ref}:{path}"],
+            capture_output=True, check=True,
+        )
+        return out.stdout.decode("utf-8", errors="replace")
+
+    listing = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", ref, "skills/"],
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+    total = 0
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        try:
+            total += len(show(name))
+        except subprocess.CalledProcessError:
+            pass
+    for path in listing:
+        if not path.endswith("/SKILL.md"):
+            continue
+        text = show(path)
+        fields = lint._frontmatter_fields(text) or {}
+        total += len(fields.get("name", "")) + len(fields.get("description", ""))
+        if path == lint.CHARTER:
+            total += len(lint._frontmatterless(text))
+    return total
 
 
 def figure_charter(root: Path) -> dict:

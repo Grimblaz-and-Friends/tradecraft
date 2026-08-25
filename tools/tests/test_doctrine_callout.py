@@ -421,6 +421,10 @@ def test_the_callout_carries_the_always_on_size(tmp_path, monkeypatch):
     assert "Always-on surface:" in body
     assert "for an adopter" in body
 
+    # Patching the module attribute now reaches the function, because root
+    # resolves at call time rather than binding as a default -- the earlier
+    # shape made this line inert and would have let a later test measure
+    # the real repository while appearing to isolate it.
     monkeypatch.setattr(dc, "ROOT", tmp_path)
-    degraded = dc._always_on_line(tmp_path)
+    degraded = dc._always_on_line()
     assert degraded.startswith("_Always-on surface: not derived")

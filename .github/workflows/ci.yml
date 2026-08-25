@@ -84,4 +84,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: python tools/doctrine_callout.py --pr "$PR_NUMBER"
+          # The merge base, so the callout can state this PR's own movement.
+          # Absent, it states the total and says nothing about direction.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python tools/doctrine_callout.py --pr "$PR_NUMBER" --base "$BASE_SHA"
