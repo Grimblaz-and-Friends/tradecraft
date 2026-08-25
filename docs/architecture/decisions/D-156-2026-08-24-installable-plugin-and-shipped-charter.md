@@ -44,6 +44,8 @@ The survey also found that Codex reads this repository's Claude manifests by nam
 
 **`python` on PATH.** The emitter needs an interpreter that `cat` did not. On a Linux host carrying only `python3` the hook emits nothing, and a failed session-start hook reports to the user and never to the model. CI cannot see this — `actions/setup-python` puts `python` on both runners — so it is disclosed rather than guarded.
 
+**Delivery was proven by running it, not by reading.** Both halves of the two-door shape were exercised in an attended session in a clean consumer repository at `0.37.0`: the hook's output reached the session's context, and the cell was invocable by name. That closes the one hop this change could not reach unattended — headless authentication is unavailable in this environment and a subagent shares its parent's process, so no unattended lane gets a fresh `SessionStart`. Both shipped scripts were separately run from the installed cache with the harness variable stripped.
+
 ## Evidence
 
 The affirmed artifact and its affirmation are on [#139](https://github.com/Grimblaz-and-Friends/tradecraft/issues/139#issuecomment-5394833860). The review ran a five-seat panel, defense and judge, then two post-fix cycles; its reports are on [PR #156](https://github.com/Grimblaz-and-Friends/tradecraft/pull/156). Two of that review's findings bear directly on this entry: the substitution claim above was falsified against the Claude Code binary after being asserted in four places, and the Codex resolution rule was found by the defense and is the warrant this change actually rests on.
