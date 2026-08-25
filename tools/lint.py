@@ -52,7 +52,9 @@ Checks:
      because a PR deleting the job touches no doctrine file [D-81].
   9. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, what came of
-     the findings, the model and runtime that staffed it, report URL.
+     the findings, the split by consequence shape, the model and runtime that
+     staffed it, report URL. The split reconciles against the disposition
+     counts; nothing else on the row reconciles against anything.
  10. decision index: every decision entry has a row in the log's index, and
      every row a file.
  11. entry references: every path reference and relative link a decision entry
@@ -329,6 +331,15 @@ DISPOSITIONS = ("fixed", "routed", "priced_out", "dismissed")
 # unvalidated, and closing them was priced out.
 STAFFING_FIELDS = ("model", "runtime")
 
+# Where a review's findings landed: on the artifact a consumer will use, or on
+# the record of having reviewed it. The population is the one `dispositions`
+# counts -- one entry per terminal ruling -- so the two reconcile, which is the
+# whole reason the field can be checked at all. The three reports that stated a
+# split before this landed each counted a different population (45 rulings, 20
+# round-one sustained, and one per pass), so the trend the record exists to show
+# could not be read even by opening all of them.
+FACING_FIELDS = ("artifact", "apparatus")
+
 # Forward-only, enforced rather than stated: an optional field can never catch
 # its own omission, and a record that silently fails to carry what it promises
 # is the defect this closes.
@@ -341,6 +352,13 @@ STAFFING_FIELDS = ("model", "runtime")
 # not by understanding. Position cannot be missed by a typo -- the rows that
 # existed when this landed are exempt, everything appended after is not.
 REVIEW_ROWS_GRANDFATHERED = 20
+
+# `facing` arrives later than `dispositions` and grandfathers at its own
+# position, for the same reason and by the same mechanism: the rows extant when
+# it landed are exempt, everything appended after is not. Two constants rather
+# than one moving constant -- raising a single one would silently un-oblige
+# every row between the two boundaries, in a file nobody may edit.
+REVIEW_ROWS_FACING_GRANDFATHERED = 31
 
 
 def _read_text(path: Path) -> str | None:
@@ -864,6 +882,7 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
     if "seats" in row:
         _check_seats(row["seats"], where, findings)
     _check_dispositions_and_staffing(row, row_index, where, findings)
+    _check_facing(row, row_index, where, findings)
 
 
 def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: list) -> None:
@@ -917,9 +936,7 @@ def _check_disposition_counts(dispositions, where: str, findings: list) -> None:
         if field not in dispositions:
             continue
         value = dispositions[field]
-        # bool is a subclass of int and is excluded explicitly, the same bar
-        # the seat counts meet: True would otherwise pass as a count of 1.
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        if not _is_count(value):
             findings.append(
                 f"{where} dispositions {field} '{value}' must be a "
                 f"non-negative integer"
@@ -930,6 +947,86 @@ def _check_disposition_counts(dispositions, where: str, findings: list) -> None:
             f"{where} dispositions carries unknown key(s) "
             f"{', '.join(sorted(unknown))} — the vocabulary is the terminal "
             f"stage's own: {', '.join(DISPOSITIONS)}"
+        )
+
+
+def _is_count(value) -> bool:
+    """A count, at the bar the seat counts already meet: bool subclasses int,
+    so True would otherwise pass as a count of one."""
+    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def _check_facing(row, row_index: int, where: str, findings: list) -> None:
+    """The split by consequence shape -- what the review's rulings were about.
+
+    #122 says to watch whether apparatus-facing findings trend down relative to
+    findings about the work. The watch item fired on the first full run and
+    nothing could measure it, because the split lived only in report prose --
+    and two of the five reports that owed it under D-153 did not carry it.
+
+    Required of every row past REVIEW_ROWS_FACING_GRANDFATHERED and validated
+    whenever present, so rows already written stay valid untouched.
+    """
+    if "facing" not in row:
+        if row_index >= REVIEW_ROWS_FACING_GRANDFATHERED:
+            findings.append(
+                f"{where} missing field 'facing' — rows past the first "
+                f"{REVIEW_ROWS_FACING_GRANDFATHERED} carry it "
+                f"({', '.join(FACING_FIELDS)} counts, summing to the "
+                f"dispositions total)"
+            )
+        return
+    facing = row["facing"]
+    if not isinstance(facing, dict):
+        findings.append(
+            f"{where} facing must be a mapping of "
+            f"{', '.join(FACING_FIELDS)} to counts"
+        )
+        return
+    missing = set(FACING_FIELDS) - set(facing)
+    if missing:
+        findings.append(f"{where} facing missing {', '.join(sorted(missing))}")
+    for field in FACING_FIELDS:
+        if field in facing and not _is_count(facing[field]):
+            findings.append(
+                f"{where} facing {field} '{facing[field]}' must be a "
+                f"non-negative integer"
+            )
+    unknown = set(facing) - set(FACING_FIELDS)
+    if unknown:
+        findings.append(
+            f"{where} facing carries unknown key(s) "
+            f"{', '.join(sorted(unknown))} — a consequence lands on the "
+            f"artifact or on the record of having reviewed it, and a finding "
+            f"citing both is artifact-facing"
+        )
+    _check_facing_reconciles(row, facing, where, findings)
+
+
+def _check_facing_reconciles(row, facing, where: str, findings: list) -> None:
+    """The one cross-total on this row that is sound.
+
+    The seat counts deliberately carry no invariants against `dispositions`,
+    because the two count different populations -- the terminal docket also
+    carries uncarried seat entries, and a dismissal was never sustained. This
+    one is different by construction: `facing` splits the same rulings
+    `dispositions` counts, so a disagreement is an arithmetic error in a row
+    about to become permanent, not two populations talking past each other.
+    """
+    dispositions = row.get("dispositions")
+    if not isinstance(dispositions, dict):
+        return
+    if not all(_is_count(dispositions.get(f)) for f in DISPOSITIONS):
+        return
+    if not all(_is_count(facing.get(f)) for f in FACING_FIELDS):
+        return
+    split = sum(facing[f] for f in FACING_FIELDS)
+    total = sum(dispositions[f] for f in DISPOSITIONS)
+    if split != total:
+        findings.append(
+            f"{where} facing sums to {split} and dispositions to {total} — "
+            f"both count one entry per terminal ruling, so they reconcile; "
+            f"the per-seat columns do not and are not meant to"
         )
 
 
