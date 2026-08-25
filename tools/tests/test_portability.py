@@ -37,14 +37,17 @@ SKILLS = ROOT / "skills"
 # the line a session actually copies -- which is exactly what shipped.
 SCRIPT_MENTION = re.compile(r"(?P<prefix>[^\s`\"']*)scripts[/\\][\w.-]+\.py")
 
-# A prefix is what makes a contract depend on where the skill sits. Only two
-# spellings survive relocation: bare, and explicitly-relative with a forward
-# slash. `../` is not among them -- it reaches outside the cell, which is the
-# thing self-containment forbids -- nor is a repo-rooted
-# `skills/<name>/scripts/...`, which is as dead on a consumer install as a
-# harness token is, nor `.\` , which is dead on POSIX in a guard whose whole
-# subject is running the same line in both places.
-LAWFUL_PREFIXES = ("", "./")
+# What makes a contract survive relocation is that it resolves against the
+# directory of the file that names it and lands inside the cell -- the rule
+# #156 landed. That is checked by resolving, not by listing lawful prefixes:
+# an enumerated list is only correct at one depth, and the first `references/`
+# file shipped a bare `scripts/figures.py` -- lawful from the cell root, one
+# directory too high from `references/` -- while this guard read SKILL.md
+# alone and stayed green. A repo-rooted `skills/<name>/scripts/...` and a
+# harness token both fail by not resolving. A backslash is rejected outright
+# rather than by resolution, because it resolves on Windows and is dead on
+# POSIX, in a guard whose whole subject is one line working in both places.
+BACKSLASH_IS_DEAD_ON_POSIX = "\\"
 
 # Present in the source tree, absent from a consumer install. A script reaching
 # for one of these would pass here and fail there, so the relocated root has
@@ -113,41 +116,48 @@ def _hook_env(plugin_root: Path) -> dict:
 
 
 @pytest.mark.parametrize("skill", _skills_with_scripts(), ids=lambda p: p.name)
-def test_skill_names_its_scripts_relative_to_itself(skill: Path, installed: Path):
-    """*Every* mention of a script resolves against the skill's own directory.
+def test_skill_names_its_scripts_relative_to_the_naming_file(skill: Path, installed: Path):
+    """*Every* mention of a script, in *every* file of the cell, resolves.
 
-    Every, not some. Against the pre-change revision both shipped skills go red
-    here: `persist-changes` because its only mention was
+    Every mention, not some: against the revision that introduced this guard
+    both shipped skills go red, `persist-changes` because its only mention was
     `${CLAUDE_PLUGIN_ROOT}/skills/persist-changes/scripts/persist.py`, and
     `authoring` because its unlawful invocation sat in the same sentence as a
     lawful prose mention -- which the first version of this guard accepted, and
-    which is why it is written to check all mentions rather than to find one.
+    which is why it checks all mentions rather than finding one.
+
+    Every file, not SKILL.md alone: depth-shedding into `references/` means a
+    contract can be written from a file one directory down, where the spelling
+    lawful at the cell root resolves one directory too high. The first
+    `references/` file shipped exactly that, and this guard was blind to it
+    because it read SKILL.md and stopped.
     """
-    relocated = installed / "skills" / skill.name
-    text = (relocated / "SKILL.md").read_text(encoding="utf-8")
+    relocated = (installed / "skills" / skill.name).resolve()
 
-    mentions = list(SCRIPT_MENTION.finditer(text))
-    assert mentions, f"{skill.name}/SKILL.md carries scripts but names none"
+    named, mentions_found = set(), False
+    for doc in sorted(relocated.rglob("*.md")):
+        where = f"{skill.name}/{doc.relative_to(relocated).as_posix()}"
+        for match in SCRIPT_MENTION.finditer(doc.read_text(encoding="utf-8")):
+            mentions_found = True
+            ref = match.group(0)
+            assert BACKSLASH_IS_DEAD_ON_POSIX not in ref, (
+                f"{where} names '{ref}' with a backslash, which resolves on "
+                f"Windows and is dead on POSIX"
+            )
+            target = (doc.parent / ref).resolve()
+            assert target.is_file() and relocated in target.parents, (
+                f"{where} names '{ref}', which does not resolve to a file "
+                f"inside the cell once installed. A script is named by a path "
+                f"relative to the directory of the file naming it, so the one "
+                f"line works in the source repository and in an installed "
+                f"plugin alike."
+            )
+            named.add(target.relative_to(relocated).as_posix())
 
-    named = set()
-    for match in mentions:
-        prefix, ref = match.group("prefix"), match.group(0)
-        assert prefix in LAWFUL_PREFIXES, (
-            f"{skill.name}/SKILL.md names '{ref}'. A script is named by a path "
-            f"relative to the skill's own directory -- 'scripts/{ref.rsplit('/', 1)[-1]}' "
-            f"-- so the one line works in the source repository and in an "
-            f"installed plugin alike. The prefix '{prefix}' ties it to a location."
-        )
-        tail = ref[len(prefix):].replace("\\", "/")
-        named.add(tail)
-        assert (relocated / tail).is_file(), (
-            f"{skill.name}/SKILL.md names '{ref}', which does not resolve "
-            f"against the skill's own directory once installed"
-        )
-
+    assert mentions_found, f"{skill.name} carries scripts but names none"
     expected = {f"scripts/{s.name}" for s in _scripts_of(skill)}
     assert expected <= named, (
-        f"{skill.name} carries {sorted(expected)} but its SKILL.md names "
+        f"{skill.name} carries {sorted(expected)} but its prose names "
         f"{sorted(named)}"
     )
 
