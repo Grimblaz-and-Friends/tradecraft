@@ -61,6 +61,11 @@ Checks:
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
+12. emitted ASCII: no Python file states a non-ASCII character in a
+    string that can reach a stream. Windows encodes stdout and stderr to
+    the locale codepage, pipes included, so a captured em dash garbles in
+    the one message a guard exists to deliver. Docstrings and comments are
+    exempt; neither reaches a stream.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -72,10 +77,12 @@ Exit 0 when clean, 1 with findings listed one per line.
 """
 from __future__ import annotations
 
+import ast
 import datetime
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -723,7 +730,7 @@ def check_doctrine(root: Path) -> list[str]:
         if size > AGENTS_BUDGET_CHARS:
             findings.append(
                 f"doctrine-budget: AGENTS.md is {size} chars, "
-                f"budget is {AGENTS_BUDGET_CHARS} — route content out (skill, decision entry, mechanism)"
+                f"budget is {AGENTS_BUDGET_CHARS} -- route content out (skill, decision entry, mechanism)"
             )
     charter = root / CHARTER
     if charter.is_file():
@@ -750,7 +757,7 @@ def check_doctrine(root: Path) -> list[str]:
         if CHARTER_IMPORT not in lines:
             findings.append(
                 "doctrine-import: AGENTS.md carries no bare "
-                f"'{CHARTER_IMPORT}' line — without it the binding half "
+                f"'{CHARTER_IMPORT}' line -- without it the binding half "
                 "reaches no session in this repository, which installs no plugin"
             )
         elif not charter.is_file():
@@ -762,7 +769,7 @@ def check_doctrine(root: Path) -> list[str]:
     pointer = root / "CLAUDE.md"
     if not pointer.is_file():
         findings.append(
-            "doctrine-pointer: CLAUDE.md is missing — Claude Code loads "
+            "doctrine-pointer: CLAUDE.md is missing -- Claude Code loads "
             "no root doctrine without it; it must be a live @AGENTS.md import"
         )
         return findings
@@ -771,7 +778,7 @@ def check_doctrine(root: Path) -> list[str]:
     if first_line != "@AGENTS.md" or len(text) > POINTER_BUDGET_CHARS:
         findings.append(
             "doctrine-pointer: CLAUDE.md must begin with a bare "
-            "'@AGENTS.md' import line and stay a short pointer — a backticked or "
+            "'@AGENTS.md' import line and stay a short pointer -- a backticked or "
             "buried mention does not import, and any fork diverges the runtimes"
         )
     return findings
@@ -806,7 +813,7 @@ def _not_a_mapping(row, where: str, findings: list) -> bool:
     """A JSON array or scalar row must be rejected before any field is read."""
     if not isinstance(row, dict):
         findings.append(
-            f"{where} is not a JSON object (got {type(row).__name__}) — a row "
+            f"{where} is not a JSON object (got {type(row).__name__}) -- a row "
             f"must be a mapping of fields"
         )
         return True
@@ -878,7 +885,7 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
     if "report" in row and not _is_https_url(row["report"]):
         findings.append(
             f"{where} report '{row.get('report')}' must be an https URL to the "
-            f"review's report — the row holds counts, the report holds the findings"
+            f"review's report -- the row holds counts, the report holds the findings"
         )
     if "seats" in row:
         _check_seats(row["seats"], where, findings)
@@ -909,7 +916,7 @@ def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: 
         if field not in row:
             if required:
                 findings.append(
-                    f"{where} missing field '{field}' — rows past the first "
+                    f"{where} missing field '{field}' -- rows past the first "
                     f"{REVIEW_ROWS_GRANDFATHERED} carry it"
                     + (
                         f" ({', '.join(DISPOSITIONS)} counts)"
@@ -946,7 +953,7 @@ def _check_disposition_counts(dispositions, where: str, findings: list) -> None:
     if unknown:
         findings.append(
             f"{where} dispositions carries unknown key(s) "
-            f"{', '.join(sorted(unknown))} — the vocabulary is the terminal "
+            f"{', '.join(sorted(unknown))} -- the vocabulary is the terminal "
             f"stage's own: {', '.join(DISPOSITIONS)}"
         )
 
@@ -971,7 +978,7 @@ def _check_facing(row, row_index: int, where: str, findings: list) -> None:
     if "facing" not in row:
         if row_index >= REVIEW_ROWS_FACING_GRANDFATHERED:
             findings.append(
-                f"{where} missing field 'facing' — rows past the first "
+                f"{where} missing field 'facing' -- rows past the first "
                 f"{REVIEW_ROWS_FACING_GRANDFATHERED} carry it "
                 f"({', '.join(FACING_FIELDS)} counts, summing to the "
                 f"dispositions total)"
@@ -997,7 +1004,7 @@ def _check_facing(row, row_index: int, where: str, findings: list) -> None:
     if unknown:
         findings.append(
             f"{where} facing carries unknown key(s) "
-            f"{', '.join(sorted(unknown))} — a consequence lands on the "
+            f"{', '.join(sorted(unknown))} -- a consequence lands on the "
             f"artifact or on the record of having reviewed it, and a finding "
             f"citing both is artifact-facing"
         )
@@ -1032,7 +1039,7 @@ def _check_facing_reconciles(row, facing, where: str, findings: list) -> None:
     total = sum(dispositions[f] for f in DISPOSITIONS)
     if split != total:
         findings.append(
-            f"{where} facing sums to {split} and dispositions to {total} — "
+            f"{where} facing sums to {split} and dispositions to {total} -- "
             f"both count one entry per terminal ruling, so they reconcile; "
             f"the per-seat columns do not and are not meant to"
         )
@@ -1060,7 +1067,7 @@ def _check_staffing(staffing, where: str, findings: list) -> None:
     if unknown:
         findings.append(
             f"{where} staffing carries unknown key(s) "
-            f"{', '.join(sorted(unknown))} — the row names one model and one "
+            f"{', '.join(sorted(unknown))} -- the row names one model and one "
             f"runtime; an uneven panel says so in the value"
         )
 
@@ -1075,7 +1082,7 @@ def _check_seats(seats, where: str, findings: list) -> None:
         if not isinstance(name, str) or not TOKEN.match(name):
             findings.append(
                 f"{where} seat name '{name}' must be a lowercase token of "
-                f"letters, digits and hyphens — one seat, one bucket"
+                f"letters, digits and hyphens -- one seat, one bucket"
             )
         if not isinstance(counts, dict):
             findings.append(f"{where} seat '{name}' counts must be a mapping")
@@ -1127,7 +1134,7 @@ def check_doctrine_callout(root: Path) -> list[str]:
     workflow = root / ".github" / "workflows" / "ci.yml"
     if not script.is_file():
         findings.append(
-            "doctrine-callout: tools/doctrine_callout.py is missing — nothing "
+            "doctrine-callout: tools/doctrine_callout.py is missing -- nothing "
             "would flag a doctrine change for the owner's merge-time read [D-81]"
         )
     if not workflow.is_file():
@@ -1151,7 +1158,7 @@ def check_doctrine_callout(root: Path) -> list[str]:
     else:
         findings.append(
             "doctrine-callout: no live `doctrine-callout:` job in "
-            ".github/workflows/ci.yml — the callout would stop firing with "
+            ".github/workflows/ci.yml -- the callout would stop firing with "
             "nothing going red [D-81]"
         )
         return findings
@@ -1169,7 +1176,7 @@ def check_doctrine_callout(root: Path) -> list[str]:
     if not any(PR_TRIGGER.match(line) for line in lines):
         findings.append(
             "doctrine-callout: .github/workflows/ci.yml has no `pull_request:` "
-            "trigger — the callout job would never run [D-81]"
+            "trigger -- the callout job would never run [D-81]"
         )
     return findings
 
@@ -1194,7 +1201,7 @@ def check_decision_index(root: Path) -> list[str]:
     for name in sorted(entries - listed):
         findings.append(
             f"decision-index: {name} has no row in "
-            f"docs/architecture/decisions/README.md \u2014 the entry is unreachable "
+            f"docs/architecture/decisions/README.md -- the entry is unreachable "
             f"from its number"
         )
     for name in sorted(listed - entries):
@@ -1254,7 +1261,7 @@ def check_entry_references(root: Path) -> list[str]:
                 findings.append(
                     f"entry-reference: docs/architecture/decisions/{path.name}:"
                     f"{lineno} {form} '{ref}' resolves to nothing. If you moved "
-                    f"its target, repoint it here in the same change — unless "
+                    f"its target, repoint it here in the same change -- unless "
                     f"repointing would leave this sentence untrue of the "
                     f"target at its new home, in which case record it in "
                     f"UNREPAIRABLE_AFTER_LANDING with a reason. Do not add a "
@@ -1280,7 +1287,7 @@ def _check_recorded_rows(root: Path, directory: Path, seen) -> list[str]:
             if not str(reason).strip():
                 findings.append(
                     f"entry-reference: {label} row {name}:{lineno} '{ref}' has "
-                    f"no reason — every recorded reference states why it stands"
+                    f"no reason -- every recorded reference states why it stands"
                 )
             # A row naming an entry this tree does not contain is not stale, it
             # is inapplicable: the same module lints partial trees and fixtures.
@@ -1289,12 +1296,12 @@ def _check_recorded_rows(root: Path, directory: Path, seen) -> list[str]:
             if key not in seen:
                 findings.append(
                     f"entry-reference: {label} row {name}:{lineno} '{ref}' "
-                    f"matches no reference in the tree — remove the stale row"
+                    f"matches no reference in the tree -- remove the stale row"
                 )
             elif _entry_ref_resolves(root, directory, ref):
                 findings.append(
                     f"entry-reference: {label} row {name}:{lineno} '{ref}' "
-                    f"resolves again — remove the row; this record only shrinks"
+                    f"resolves again -- remove the row; this record only shrinks"
                 )
     return findings
 
@@ -1640,6 +1647,84 @@ def check_harness_tokens(root: Path) -> list[str]:
     return findings
 
 
+def _docstring_constants(tree: ast.AST) -> set[int]:
+    """Identities of the string constants that are docstrings, not output.
+
+    A docstring is the first statement of a module, class or function and is
+    never written to a stream, so the house style's punctuation is free there.
+    Identity rather than position because two docstrings can share a line
+    number after a reflow, and `is` is what distinguishes the node.
+    """
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.body:
+            continue
+        first = node.body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+            if isinstance(first.value.value, str):
+                found.add(id(first.value))
+    return found
+
+
+def check_emitted_ascii(root: Path) -> list[str]:
+    """No Python file states a non-ASCII character in a string that can reach a stream.
+
+    Python's text mode encodes stdout and stderr to the platform's locale
+    codepage -- cp1252 on Windows, including when the destination is a pipe,
+    which is what a CI log, an agent harness and a captured command all are.
+    An em dash leaves as one byte that a UTF-8 reader renders as a replacement
+    character, and a guard speaks exactly when something is already wrong, so
+    the one moment its message matters is the moment it is least readable.
+
+    The rule is about characters rather than plumbing deliberately. Reconfiguring
+    the streams also works, but "the helper was called on this entry path" can
+    only be checked approximately -- one script here had its stdout fixed and
+    its stderr found unreconfigured afterwards -- while "these bytes are ASCII"
+    is exact. A class that has been patched a site at a time is closed by the
+    guard that sees the next site, not by a fourth patch.
+
+    Docstrings and comments are exempt: neither reaches a stream. Runtime data
+    is out of reach by construction -- a path this repository did not write can
+    carry anything, and the check reads literals only.
+
+    A file that does not parse is skipped rather than reported. This is not a
+    syntax checker, and the suite already fails on a module it cannot import.
+    """
+    findings = []
+    for path in sorted(root.rglob("*.py")):
+        if ".git" in path.parts or not path.is_file():
+            continue
+        text = _read_text(path)
+        if text is None:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        docstrings = _docstring_constants(tree)
+        rel_file = path.relative_to(root).as_posix()
+        seen = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if id(node) in docstrings:
+                continue
+            for char in node.value:
+                if ord(char) < 128 or (node.lineno, ord(char)) in seen:
+                    continue
+                seen.add((node.lineno, ord(char)))
+                findings.append(
+                    f"emitted-ascii: {rel_file}:{node.lineno} states "
+                    f"U+{ord(char):04X} ({unicodedata.name(char, 'unnamed')}) "
+                    f"in a string that can reach a stream -- machine-read "
+                    f"output stays ASCII, because Windows encodes it to the "
+                    f"locale codepage and a captured non-ASCII byte garbles"
+                )
+    return findings
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
@@ -1653,6 +1738,7 @@ def run(root: Path) -> list[str]:
         + check_review_index(root)
         + check_decision_index(root)
         + check_entry_references(root)
+        + check_emitted_ascii(root)
     )
 
 

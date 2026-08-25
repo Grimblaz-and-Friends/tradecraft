@@ -56,7 +56,7 @@ DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md", "skills/charter/SKILL.md")
 
 LABEL = "doctrine"
 LABEL_COLOR = "5319e7"
-LABEL_DESC = "Changes the doctrine or the shipped charter — read the diff before merging"
+LABEL_DESC = "Changes the doctrine or the shipped charter -- read the diff before merging"
 
 # The one standing coupling to an identity. Its tripwire is the log line in
 # `run()`: under a future identity change (a PAT, a GitHub App) the callout
@@ -70,7 +70,7 @@ EXPECTED_AUTHOR = "github-actions[bot]"
 MARKER = "<!-- tradecraft:doctrine-callout -->"
 
 CALLOUT = f"""{MARKER}
-**This PR changes the doctrine.** Read the {{files}} diff before merging — \
+**This PR changes the doctrine.** Read the {{files}} diff before merging -- \
 nothing else performs that read.
 
 Touched: {{files}}
@@ -279,7 +279,7 @@ def _body(touched: list[str]) -> str:
 
 def _edit_comment(comment_id: object, repo: str | None, body: str) -> None:
     if comment_id is None:
-        raise CalloutError("the callout comment came back without an id — cannot edit it")
+        raise CalloutError("the callout comment came back without an id -- cannot edit it")
     _gh("api", "--method", "PATCH",
         f"repos/{_slug(repo)}/issues/comments/{comment_id}", "-f", f"body={body}")
 

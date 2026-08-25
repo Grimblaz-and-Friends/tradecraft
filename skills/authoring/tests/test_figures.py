@@ -141,9 +141,15 @@ def test_delta_counts_non_ascii_filenames_despite_quotepath(tmp_path):
     # output; the NUL-delimited enumeration must keep them in both totals.
     repo = make_repo(tmp_path)
     run(["git", "config", "core.quotePath", "true"], cwd=repo)
-    (repo / "résumé.md").write_bytes("héllo".encode("utf-8"))
+    # The character is the subject under test, so it is built rather than
+    # written: emitted strings stay ASCII, and the one fixture that must
+    # carry a non-ASCII character says so instead of needing an exemption.
+    e_acute = chr(0xE9)
+    name = f"r{e_acute}sum{e_acute}.md"
+    body = f"h{e_acute}llo"
+    (repo / name).write_bytes(body.encode("utf-8"))
     commit_all(repo, "base")
-    (repo / "résumé.md").write_bytes("héllo!!".encode("utf-8"))
+    (repo / name).write_bytes((body + "!!").encode("utf-8"))
     fig = figures.figure_delta(repo, "HEAD", ["."], [".md"])
     assert fig["data"]["base_chars"] == 5
     assert fig["data"]["current_chars"] == 7

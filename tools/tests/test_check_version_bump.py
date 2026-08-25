@@ -284,7 +284,9 @@ def test_non_ascii_shipped_path_is_seen(repo):
     """Git quotes non-ASCII paths by default, so `startswith` missed them — a
     false pass, and the other half of the autopsy sentence that gave us the
     untracked-files fix."""
-    (repo / "skills" / "café.md").write_text("new\n", encoding="utf-8")
+    # Built rather than written: the character is the subject under test, and
+    # emitted strings stay ASCII.
+    (repo / "skills" / f"caf{{chr(0xE9)}}.md").write_text("new\n", encoding="utf-8")
     status, lines = cvb.check("main")
     assert status == FAIL, lines
     _commit(repo, "add non-ascii skill")
@@ -363,3 +365,28 @@ def test_a_path_git_must_quote_is_still_seen(repo):
         "skills/a.md", "skills/we ird.md"]
     # a trailing space in the final name survives: no .strip() on stdout
     assert cvb._paths("skills/trailing .md\0") == ["skills/trailing .md"]
+
+
+def test_the_failing_message_survives_being_captured(repo, capsysbinary):
+    """#147's exact path: the message a Windows harness reads when a PR is unlawful.
+
+    Not a restatement of the lint's emitted-ASCII check, which reads literals.
+    This runs the real failing path, so what is asserted is the composed
+    message -- literals plus whatever git handed back -- rather than the source.
+
+    What it proves is that no non-ASCII character reaches the stream, which is
+    the property that matters: which *byte* such a character becomes depends on
+    the capture, and that dependence is the defect. Under pytest's capture it
+    encodes UTF-8 (0xE2...); through a real pipe on Windows the same character
+    left as the cp1252 byte 0x97, which is what #147 recorded and what a UTF-8
+    reader renders as a replacement character. Probed red by restoring the em
+    dash to the message: this fails with a UnicodeDecodeError.
+    """
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _commit(repo, "skill edit")
+    status, lines = cvb.check("main")
+    assert status == FAIL
+    for line in lines:
+        print(line)
+    out = capsysbinary.readouterr().out
+    assert out.decode("ascii"), "the captured bytes must decode as ASCII"

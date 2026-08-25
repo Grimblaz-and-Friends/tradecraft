@@ -672,6 +672,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_cell_frontmatter", "check_sideways_deps", "check_cell_references",
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
+    "check_emitted_ascii",
 )
 
 
@@ -2245,3 +2246,68 @@ def test_cell_frontmatter_checks_cells_other_than_the_charter(tmp_path):
     )
     findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
     assert len(findings) == 1 and "example-skill" in findings[0], findings
+
+
+# --- check_emitted_ascii ---------------------------------------------------
+#
+# Both polarities, because a guard that blocks lawful work fails as hard as one
+# that passes unlawful work -- and here the lawful case is the interesting one:
+# this repository's prose style is full of em dashes, and only the ones that
+# can reach a stream are the rule's business.
+#
+# The fixtures build their non-ASCII character with chr() rather than writing
+# it, so this file stays lawful under the check it is testing.
+
+EM_DASH = chr(0x2014)
+
+
+def _py(root: Path, name: str, body: str) -> None:
+    (root / name).write_text(body, encoding="utf-8")
+
+
+def test_emitted_ascii_catches_a_message_that_cannot_survive_capture(tmp_path):
+    """The failing case from #147: a guard's own message, garbled when piped."""
+    _py(tmp_path, "guard.py",
+        "def fail():" + chr(10)
+        + "    print('version-bump: 1 file changed " + EM_DASH + " bump the version')" + chr(10))
+    findings = [f for f in lint.check_emitted_ascii(tmp_path) if "emitted-ascii" in f]
+    assert len(findings) == 1, findings
+    assert "guard.py:2" in findings[0]
+    assert "U+2014" in findings[0] and "EM DASH" in findings[0]
+    assert findings[0].isascii(), "the finding cannot itself carry what it forbids"
+
+
+def test_emitted_ascii_leaves_docstrings_and_comments_alone(tmp_path):
+    """Neither reaches a stream, so the house style is free in both."""
+    _py(tmp_path, "prose.py",
+        '"""A module docstring ' + EM_DASH + ' with an em dash."""' + chr(10)
+        + "# A comment " + EM_DASH + " also with one." + chr(10)
+        + "def f():" + chr(10)
+        + '    """A function docstring ' + EM_DASH + ' and another."""' + chr(10)
+        + "    return 1" + chr(10))
+    assert lint.check_emitted_ascii(tmp_path) == []
+
+
+def test_emitted_ascii_catches_the_escaped_form(tmp_path):
+    """The check reads decoded values, so writing the escape does not evade it.
+
+    This is not hypothetical: one of the messages this change rewrote was
+    written as the six-character escape and was invisible to a search for the
+    character, while reaching the stream as the character all the same.
+    """
+    _py(tmp_path, "escaped.py",
+        "print('decision-index: no row " + chr(92) + "u2014 unreachable')" + chr(10))
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1, findings
+    assert "U+2014" in findings[0]
+
+
+def test_emitted_ascii_ignores_a_directory_named_like_a_module(tmp_path):
+    """`rglob('*.py')` matches directories too, and reading one raises.
+
+    Found by an unrelated delivery test that creates exactly this shape. A
+    guard that crashes on a tree is worse than one that misses a finding: it
+    takes every other check down with it.
+    """
+    (tmp_path / "notamodule.py").mkdir()
+    assert lint.check_emitted_ascii(tmp_path) == []

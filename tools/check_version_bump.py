@@ -133,7 +133,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     lines: list[str] = []
     base, why = _resolve_base(base_ref)
     if base is None:
-        return UNDETERMINED, [f"version-bump: cannot determine a base — {why}"]
+        return UNDETERMINED, [f"version-bump: cannot determine a base -- {why}"]
 
     # Two independent mechanisms give the moved-base answer, and either alone
     # suffices: `base` is resolved to a merge base above, AND `...` re-derives
@@ -152,7 +152,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     if code != 0:
         return UNDETERMINED, [
             f"version-bump: could not diff against {base[:7]}"
-            + (f" — {err}" if err else "")
+            + (f" -- {err}" if err else "")
         ]
     changed = _paths(out)
 
@@ -172,7 +172,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         if code != 0:
             return UNDETERMINED, [
                 "version-bump: could not read the working tree "
-                f"({' '.join(args)} failed{': ' + err if err else ''}) — "
+                f"({' '.join(args)} failed{': ' + err if err else ''}) -- "
                 "refusing to answer from committed history alone"
             ]
         changed.extend(_paths(out))
@@ -186,9 +186,9 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     old, old_err = _version_at(base)
     new, new_err = _version_at(None)
     if old is None:
-        return UNDETERMINED, [f"version-bump: base version unreadable — {old_err}"]
+        return UNDETERMINED, [f"version-bump: base version unreadable -- {old_err}"]
     if new is None:
-        return UNDETERMINED, [f"version-bump: current version unreadable — {new_err}"]
+        return UNDETERMINED, [f"version-bump: current version unreadable -- {new_err}"]
 
     shown = ".".join(map(str, old)), ".".join(map(str, new))
     if new > old:
@@ -201,7 +201,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
               else f"went BACKWARDS, {shown[0]} -> {shown[1]}")
     lines.append(
         f"version-bump: {len(touched)} shipped-zone file(s) changed but "
-        f"the plugin version {detail} — a consumer cannot tell installed from "
+        f"the plugin version {detail} -- a consumer cannot tell installed from "
         f"current. Raise \"version\" in {MANIFEST} (see AGENTS.md, 'The flow')"
     )
     lines.extend(f"    {f}" for f in touched)
@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     for line in lines:
         print(line)
     if status == UNDETERMINED:
-        print("version-bump: UNDETERMINED is a failure, not a pass — see AGENTS.md, 'The flow'")
+        print("version-bump: UNDETERMINED is a failure, not a pass -- see AGENTS.md, 'The flow'")
     return status
 
 
