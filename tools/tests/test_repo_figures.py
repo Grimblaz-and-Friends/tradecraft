@@ -1,9 +1,12 @@
 """Pins for tools/figures.py, the repo-specific application of the shipped
-figure engine. The two couplings the artifact promises are held here: the
-headroom figure agrees with check_doctrine's own measure (never a parallel
-arithmetic that can drift), and the census agrees with check_entry_references'
-resolution when both recorded sets are emptied — the derivation D-135
-prescribes. The suite figure is stubbed in CLI tests because the wrapper's
+figure engine. Every coupling to a repo-only guard is held here, and the
+count is derived from the wrapper rather than asserted: the headroom figure
+agrees with check_doctrine's own measure (never a parallel arithmetic that can
+drift); the census agrees with check_entry_references' resolution when both
+recorded sets are emptied — the derivation D-135 prescribes; the description
+ceiling agrees with check_cell_frontmatter's; and the body measurement is the
+engine's own, pinned equal to the guard's strip so shipping it did not fork
+what "body" means. The suite figure is stubbed in CLI tests because the wrapper's
 real suite invocation is the suite these tests run inside."""
 
 import importlib.util
@@ -26,6 +29,7 @@ def load(name, path):
 
 
 repo_figures = load("repo_figures", ROOT / "tools" / "figures.py")
+engine = repo_figures.engine
 
 
 # --- the headroom figure is check_doctrine's measure, not a lookalike -------
@@ -145,3 +149,47 @@ def test_wrapper_delta_requires_and_uses_the_given_base(tmp_path, monkeypatch, c
     assert delta[0]["data"]["base"] == "HEAD"
     assert delta[0]["data"]["suffixes"] == [".md"]
     assert payload["command"] == "python tools/figures.py --base HEAD --json"
+
+
+def test_the_body_strip_the_engine_ships_is_the_one_the_guard_applies():
+    """Shipping the cell-body measurement must not fork what "body" means.
+
+    The engine cannot import the lint -- repo-only code is not shipped -- so
+    the two strips are separate implementations of one rule. That is exactly
+    the shape the authoring cell forbids for prose, and the reason the charter
+    figure and check_doctrine agree today. Pinned over the real cells rather
+    than a fixture, because the drift that matters is on the files the budgets
+    actually judge.
+    """
+    cells = sorted((ROOT / "skills").glob("*/SKILL.md"))
+    assert cells, "no cells to compare"
+    for cell in cells:
+        text = cell.read_text(encoding="utf-8")
+        assert engine.frontmatterless(text) == lint._frontmatterless(text), cell.name
+
+
+def test_the_description_ceiling_comes_from_the_guard(tmp_path, monkeypatch):
+    """The figure reads check_cell_frontmatter's constant, not a copy of it."""
+    monkeypatch.setitem(lint.CELL_FIELD_MAX_CHARS, "description", 1234)
+    cell = ROOT / "skills" / "charter" / "SKILL.md"
+    figure = repo_figures.figure_cell_description(ROOT, str(cell.relative_to(ROOT)))
+    assert figure["data"]["budget"] == 1234
+
+
+def test_a_cell_figure_is_never_invented_and_never_defaults_its_budget(tmp_path, monkeypatch):
+    """A budget picked silently is how a stated figure leaves the guard behind.
+
+    Mirrors the delta's base, which the engine also refuses to default.
+    """
+    monkeypatch.setattr(repo_figures.engine, "figure_tests",
+                        lambda *a, **k: {"name": "suite", "value": "stub",
+                                         "basis": "stub", "data": {}})
+    names = [f["name"] for f in repo_figures.build_figures(ROOT, None)]
+    assert not any("(body)" in n and "charter" not in n for n in names)
+    assert not any("(description)" in n for n in names)
+    try:
+        repo_figures.build_figures(ROOT, None, "skills/charter/SKILL.md", None)
+    except SystemExit as exit_:
+        assert "caller decision" in str(exit_)
+    else:
+        raise AssertionError("--cell without a budget must refuse, not default")

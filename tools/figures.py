@@ -3,7 +3,9 @@
 
 The general engine ships in the authoring skill; this wrapper is the
 repo-specific application: it feeds the engine this repository's parameters
-and adds the one figure inseparable from a repo-only guard. Dependencies point
+and adds the figures that reach a repo-only guard: the census, which reuses
+check_entry_references' own resolution, and the description ceiling, which is
+check_cell_frontmatter's. The budgets are the guards' own constants. Dependencies point
 the lawful direction — repo-only code importing shipped code — and the numbers
 that must agree with a guard come from the guard:
 
@@ -15,12 +17,15 @@ that must agree with a guard come from the guard:
     what `check_entry_references` reports" — pinned references excluded
     because a pin is a lawful form, not a recorded exemption.
 
-Usage:  python tools/figures.py [--base REF] [--json]
+Usage:  python tools/figures.py [--base REF] [--cell PATH --cell-budget N]
+                                [--json]
 
 Always emitted: the suite figure (pytest over tools/tests and skills), the
-AGENTS.md size/headroom figure, and the census. With --base, the governing-
-prose delta (AGENTS.md, CLAUDE.md, and the .md files under skills/) against
-that ref — the base is a caller decision the engine refuses to default.
+AGENTS.md size/headroom figure, the charter's body against its budget, and
+the census. With --base, the governing-prose delta (AGENTS.md, CLAUDE.md,
+and the .md files under skills/) against that ref. With --cell, that cell's
+body and description figures. Both the delta's base and a cell's budget are
+caller decisions neither script will default.
 """
 from __future__ import annotations
 
@@ -82,42 +87,6 @@ def figure_census(root: Path) -> dict:
     }
 
 
-def figure_cell_body(root: Path, rel_path: str, budget: int) -> dict:
-    """A cell's budgeted body, measured the way its guard measures it.
-
-    The engine's `figure_doc` measures a whole file, which is right for a plain
-    document and wrong for a cell: a cell carries frontmatter addressed to the
-    runtime's skill index, and `tools/lint.py` budgets the body beneath it so a
-    description edit cannot eat the rules' headroom. A figure measuring the file
-    would disagree with the guard that judges it, which is the one thing D-141
-    exists to prevent -- so the measurement comes from the guard.
-
-    Written against any cell rather than the charter alone because the charter
-    was not the only cell with a budgeted body: #169's criterion named a body
-    figure for `skills/authoring/SKILL.md` and no invocation could produce one,
-    so the number it stated was hand-derived in the change that ships "derive
-    figures there rather than by hand".
-    """
-    target = root / rel_path
-    if not target.is_file():
-        raise SystemExit(f"figures: {rel_path} is not a readable file under {root}")
-    text = lint._frontmatterless(target.read_text(encoding="utf-8", errors="replace"))
-    chars = len(text)
-    return {
-        "name": f"doc `{rel_path}` (body)",
-        "value": f"{chars:,} of {budget:,} chars, headroom {budget - chars:,}",
-        "basis": (
-            "decoded UTF-8 characters below the frontmatter, universal-newline "
-            "read (CRLF counts as one character), working tree; the same "
-            "measurement tools/lint.py's budget applies"
-        ),
-        "data": {
-            "path": rel_path, "chars": chars, "budget": budget,
-            "headroom": budget - chars,
-        },
-    }
-
-
 def figure_cell_description(root: Path, rel_path: str) -> dict:
     """A cell's always-on surface: the frontmatter field every session loads.
 
@@ -150,7 +119,19 @@ def figure_cell_description(root: Path, rel_path: str) -> dict:
 
 
 def figure_charter(root: Path) -> dict:
-    return figure_cell_body(root, lint.CHARTER, lint.CHARTER_BUDGET_CHARS)
+    """The charter's body against the one cell budget a guard here enforces.
+
+    The measurement is the engine's -- a cell body is a general shape, not a
+    repo-bound one, and reimplementing it here is how a figure drifts from the
+    guard judging it. What is repo-bound is the budget and the fact that
+    something enforces it, which is what this adds.
+    """
+    figure = engine.figure_cell(root, lint.CHARTER, lint.CHARTER_BUDGET_CHARS)
+    figure["basis"] += (
+        " -- here tools/lint.py's own constant, so the figure cannot drift "
+        "from what check_doctrine enforces"
+    )
+    return figure
 
 
 def build_figures(root: Path, base: str | None,
@@ -170,7 +151,7 @@ def build_figures(root: Path, base: str | None,
                 "caller decision and picking one silently is how a stated "
                 "figure diverges from the guard that judges it"
             )
-        figures.append(figure_cell_body(root, cell, budget))
+        figures.append(engine.figure_cell(root, cell, budget))
         figures.append(figure_cell_description(root, cell))
     return figures
 
