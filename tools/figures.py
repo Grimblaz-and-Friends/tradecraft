@@ -20,12 +20,18 @@ that must agree with a guard come from the guard:
 Usage:  python tools/figures.py [--base REF] [--cell PATH --cell-budget N]
                                 [--json]
 
-Always emitted: the suite figure (pytest over tools/tests and skills), the
-AGENTS.md size/headroom figure, the charter's body against its budget, the
-always-on surface total for both audiences, and the census. With --base, the governing-prose delta (AGENTS.md, CLAUDE.md,
-and the .md files under skills/) against that ref. With --cell, that cell's
-body and description figures. Both the delta's base and a cell's budget are
-caller decisions neither script will default.
+Always emitted, in this order:
+
+  1. figure_tests -- the suite, over tools/tests and skills
+  2. figure_doc -- AGENTS.md against its ceiling
+  3. figure_charter -- the charter's body against its ceiling
+  4. figure_always_on -- the always-on total, for both audiences
+  5. figure_census -- the decision log
+
+With --base, figure_delta adds the governing-prose delta (AGENTS.md, CLAUDE.md,
+and the .md files under skills/) against that ref. With --cell, figure_cell and
+figure_cell_description add that cell's two figures. Both the delta's base and
+a cell's budget are caller decisions neither script will default.
 """
 from __future__ import annotations
 

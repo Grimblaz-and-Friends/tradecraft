@@ -700,6 +700,72 @@ def test_the_module_docstring_enumerates_every_check_run_calls():
     ), "the docstring's numbered checks do not match what run() calls"
 
 
+def make_entry(root: Path, number: int) -> None:
+    """One decision entry, named the way check_doctrine_citations globs it."""
+    directory = root / "docs" / "architecture" / "decisions"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / ("D-%d-2026-01-01-slug.md" % number)).write_text(
+        "# D-%d" + NL, encoding="utf-8")
+
+
+def test_a_doctrine_citation_that_resolves_is_not_a_finding(tmp_path):
+    """The lawful polarity, and the one that matters most here: the outflow
+    rule tells a session to replace prose with a citation, so a guard that
+    goes red on a citation that resolves would block the rule it exists to
+    serve."""
+    make_clean_tree(tmp_path)
+    make_entry(tmp_path, 81)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + "The callout is the owner's read. [D-81]" + NL,
+                      encoding="utf-8")
+    assert lint.run(tmp_path) == []
+
+
+def test_a_doctrine_citation_that_resolves_to_nothing_is_a_finding(tmp_path):
+    """A reason compressed into a marker nobody checks is a reason deleted on
+    the next renumbering, on the surface every session reads first. All four
+    markers in the doctrine resolved to nothing while lint stayed green."""
+    make_clean_tree(tmp_path)
+    make_entry(tmp_path, 81)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + "Compressed to its reason. [D-9999]" + NL,
+                      encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "doctrine-citation" in findings[0] and "[D-9999]" in findings[0]
+
+
+def test_the_citation_guard_reads_the_pointer_too(tmp_path):
+    """Both doctrine files, because both are always-on here and a rule can
+    move between them."""
+    make_clean_tree(tmp_path)
+    pointer = tmp_path / "CLAUDE.md"
+    pointer.write_text(pointer.read_text(encoding="utf-8") + "[D-9999]" + NL,
+                       encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "doctrine-citation" in f]
+    assert len(findings) == 1 and "CLAUDE.md" in findings[0]
+
+
+def test_the_citation_guard_leaves_the_placeholder_and_fenced_prose_alone(tmp_path):
+    """Two lawful forms a naive scan turns red.
+
+    `[D-N]` is how the doctrine names the *form* of a citation, and N is not a
+    number; a fenced block is displayed prose, not a live rule. A guard that
+    fails a required check on either blocks lawful work, which fails as hard
+    as passing unlawful work.
+    """
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8")
+        + "A rule may cite its decision (`[D-N]`)." + NL
+        + "```" + NL + "See [D-9999] for the shape." + NL + "```" + NL,
+        encoding="utf-8")
+    assert lint.run(tmp_path) == []
+
+
 def test_a_fence_closes_only_on_its_own_marker(tmp_path):
     """CommonMark's rule, and the renderer every reader is looking at.
 

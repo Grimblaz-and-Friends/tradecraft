@@ -423,3 +423,53 @@ def test_a_nested_skill_file_is_not_a_cell(tmp_path):
     assert data["cells"] == 1
     assert data["roster"] == len("charter") + len("Desc.")
     assert repo_figures.always_on_at(tmp_path, head) == data["repo_total"]
+
+
+# Every figure `build_figures` emits unconditionally, in call order. Literal
+# for the same reason the lint's check list is: derived from the source, the
+# test would agree with itself. The lint's equivalent caught a docstring
+# claiming eight checks while run() called ten; this file's docstring is the
+# contract for what a write-up gets by default and nothing held it to that.
+FIGURES_ALWAYS_EMITTED = (
+    "figure_tests", "figure_doc", "figure_charter",
+    "figure_always_on", "figure_census",
+)
+FIGURES_ON_DEMAND = ("figure_delta", "figure_cell", "figure_cell_description")
+
+
+def test_the_module_docstring_enumerates_every_figure_always_emitted():
+    """Count and order only -- pinning the prose would go red on every
+    rewording and be deleted within a release. It does not catch a wrong
+    description inside an item; that is a separate class."""
+    import inspect
+
+    called = re.findall(r"\bfigure_[a-z_]+",
+                        inspect.getsource(repo_figures.build_figures))
+    assert tuple(called) == FIGURES_ALWAYS_EMITTED + FIGURES_ON_DEMAND, (
+        "build_figures emits figures this list does not name, or in another order"
+    )
+    numbered = re.findall(r"^\s*\d+\.\s+(figure_[a-z_]+)",
+                          repo_figures.__doc__, re.M)
+    assert tuple(numbered) == FIGURES_ALWAYS_EMITTED, (
+        "the docstring's numbered figures do not match what build_figures emits"
+    )
+    for name in FIGURES_ON_DEMAND:
+        assert name in repo_figures.__doc__, name
+
+
+def test_the_always_emitted_figures_are_what_a_default_run_produces(tmp_path,
+                                                                    monkeypatch):
+    """The list above names call sites; this one measures the output, so a
+    figure that is called and then dropped is still caught."""
+    monkeypatch.setattr(repo_figures.engine, "figure_tests",
+                        lambda root, paths: {"name": "suite", "value": "stub",
+                                             "basis": "stub", "data": {}})
+    make_doctrine_root(tmp_path, b"x" * 10)
+    surface(tmp_path)
+    (tmp_path / "docs" / "architecture" / "decisions").mkdir(parents=True)
+    figures = repo_figures.build_figures(tmp_path, None)
+    assert len(figures) == len(FIGURES_ALWAYS_EMITTED)
+    assert [f["name"] for f in figures] == [
+        "suite", "doc `AGENTS.md`", "doc `skills/charter/SKILL.md` (body)",
+        "always-on surface", "decision-log census",
+    ]
