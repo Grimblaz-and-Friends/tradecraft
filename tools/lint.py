@@ -466,7 +466,8 @@ def check_doctrine(root: Path) -> list[str]:
         # frontmatter addressed to the runtime's skill index rather than to a
         # session reading the rules. Budgeting the whole file would let a
         # description edit eat the rules' headroom, which is the wrong coupling
-        # -- the description has its own always-on cost and its own standard.
+        # -- the description has its own always-on cost and its own ceiling
+        # above. A standard for what it should say is #130's, and unwritten.
         size = len(_frontmatterless(charter.read_text(encoding="utf-8", errors="replace")))
         if size > CHARTER_BUDGET_CHARS:
             findings.append(
@@ -1080,9 +1081,13 @@ def check_cell_frontmatter(root: Path) -> list[str]:
             hazard = _plain_scalar_hazard(value)
             if hazard:
                 findings.append(
-                    f"cell-frontmatter: {rel}'s {key} is not a parseable plain "
-                    f"scalar -- {hazard}. Quote the whole value, or avoid the "
-                    f"construct; unparseable frontmatter loads as empty metadata"
+                    f"cell-frontmatter: {rel}'s {key} will not parse -- {hazard}. "
+                    f"Reword to avoid the construct, which is what every other "
+                    f"cell does. Quoting also works but is the harder path: a "
+                    f"single-quoted value must double every interior ', and "
+                    f"most descriptions here carry one. Unparseable "
+                    f"frontmatter loads as empty metadata -- no name, no "
+                    f"description, no trigger, silently"
                 )
             elif len(value) > CELL_FIELD_MAX_CHARS.get(key, 10**9):
                 findings.append(
@@ -1116,11 +1121,33 @@ def _frontmatter_fields(text: str) -> dict[str, str] | None:
     return fields
 
 
+# Closure, not endpoints. `value[0] == value[-1]` admitted every wrapper that
+# was not actually closed: `'it's'` opens and closes with a quote and is three
+# scalars to a parser. That hole was reachable by following this guard's own
+# advice, on any description carrying an apostrophe -- which is most of them.
+_SQ_CLOSED = re.compile(r"'(?:[^']|'')*'")
+_DQ_CLOSED = re.compile(r'"[^"\\]*"')
+
+
 def _plain_scalar_hazard(value: str) -> str | None:
     """Why this value would not survive as an unquoted YAML plain scalar."""
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-        return None  # wholly quoted: the parser is not reading it as plain
-    if value[:1] in "-?:,[]{}#&*!|>'\"%@`":
+    if value[:1] == "'":
+        if _SQ_CLOSED.fullmatch(value):
+            return None  # closed, interior quotes doubled: not read as plain
+        return ("it opens with a quote but is not a closed single-quoted "
+                "scalar -- an interior ' must be doubled ('')")
+    if value[:1] == '"':
+        # A backslash is refused rather than parsed: YAML 1.2 admits a fixed
+        # escape set, so `\x` is invalid where a permissive `\\.` would accept
+        # it. No shipped description opens with a quote, so the strictness is
+        # free today and errs toward the side that fails loudly.
+        if "\\" in value:
+            return ("escape sequences in a double-quoted value are not checked "
+                    "here -- reword, or single-quote it with interior ' doubled")
+        if _DQ_CLOSED.fullmatch(value):
+            return None
+        return "it opens with a quote but is not a closed double-quoted scalar"
+    if value[:1] in "-?:,[]{}#&*!|>%@`":
         return f"it opens with the YAML indicator '{value[0]}'"
     if ": " in value:
         return "it contains an unquoted ': ', which ends a plain scalar"
@@ -1156,19 +1183,15 @@ def check_delivery(root: Path) -> list[str]:
     elif not _frontmatterless(_read_text(charter) or "").strip():
         findings.append(f"delivery: {CHARTER} has no body below its frontmatter")
 
-    config = root / "hooks" / "hooks.json"
-    if not config.is_file():
-        findings.append(
-            "delivery: hooks/hooks.json is missing -- nothing delivers the "
-            "charter to a consumer session"
-        )
-        return findings
-
+    # Compared by path, not basename: `references/SKILL.md` shares the name
+    # and is exactly what an author following `skills/authoring`'s depth
+    # instruction would create.
+    charter_file = root / CHARTER
     stray = sorted(
-        p.relative_to(root).as_posix()
-        for p in (root / CHARTER).parent.rglob("*")
-        if p.is_file() and p.name != "SKILL.md"
-    ) if (root / CHARTER).parent.is_dir() else []
+        q.relative_to(root).as_posix()
+        for q in charter_file.parent.rglob("*")
+        if q.is_file() and q != charter_file
+    ) if charter_file.parent.is_dir() else []
     if stray:
         # A binding rule routed into the charter's own references/ -- which
         # `skills/authoring` tells a cell's author to do -- would escape the
@@ -1180,6 +1203,14 @@ def check_delivery(root: Path) -> list[str]:
             f"delivered, budgeted, and read by the owner, so anything else "
             f"there is binding prose nothing enforces"
         )
+
+    config = root / "hooks" / "hooks.json"
+    if not config.is_file():
+        findings.append(
+            "delivery: hooks/hooks.json is missing -- nothing delivers the "
+            "charter to a consumer session"
+        )
+        return findings
 
     raw = _read_text(config) or ""
     try:

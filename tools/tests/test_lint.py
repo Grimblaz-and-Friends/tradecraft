@@ -1538,3 +1538,136 @@ def test_the_budget_measures_the_body_and_not_the_file(tmp_path):
     # body stays quiet here.
     assert len(charter.read_text(encoding="utf-8")) > lint.CHARTER_BUDGET_CHARS
     assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []
+
+
+def _set_description(root: Path, value: str) -> None:
+    """Rewrite the charter cell's description, leaving everything else alone."""
+    cell = root / "skills" / "charter" / "SKILL.md"
+    lines = cell.read_text(encoding="utf-8").splitlines()
+    close = lines.index("---", 1)
+    kept = [ln for ln in lines[1:close] if not ln.startswith("description:")]
+    rebuilt = ["---"] + kept + ["description: " + value] + lines[close:]
+    cell.write_text(NL.join(rebuilt) + NL, encoding="utf-8")
+
+
+HAZARD_CASES = [
+    # (label, description value, must the guard fire?)
+    ("a plain description", "A perfectly ordinary description.", False),
+    ("an unquoted colon-space", "Not a cell: it decides nothing.", True),
+    ("a trailing colon", "What this cell is for:", True),
+    ("an inline comment", "A description with a # comment in it.", True),
+    ("a leading indicator", "- a description that opens as a list item", True),
+    # The hole that shipped: a value opening and closing with a quote is not
+    # thereby quoted. This is the guard's own printed remedy applied to a
+    # description carrying an apostrophe, which most of them do.
+    ("a quote-wrapped value with a bare interior quote", "'The owner's rules.'", True),
+    ("a correctly closed single-quoted value", "'The owner''s rules.'", False),
+    ("a closed double-quoted value", '"The owner rules."', False),
+    # A permissive escape rule would accept this; YAML 1.2 does not.
+    ("a double-quoted value with an unknown escape", '"a \\x b"', True),
+]
+
+
+@pytest.mark.parametrize(
+    "value,fires",
+    [(v, f) for _, v, f in HAZARD_CASES],
+    ids=[label for label, _, _ in HAZARD_CASES],
+)
+def test_cell_frontmatter_hazards(tmp_path, value, fires):
+    """Each branch of the scalar check, in both polarities.
+
+    The guard shipped once with only the happy path exercised, which is how a
+    false negative survives: a clean tree proves a guard stays quiet and can
+    never prove it speaks.
+    """
+    make_clean_tree(tmp_path)
+    _set_description(tmp_path, value)
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert bool(findings) is fires, findings
+
+
+def test_cell_frontmatter_fires_when_the_description_is_missing(tmp_path):
+    make_clean_tree(tmp_path)
+    cell = tmp_path / "skills" / "charter" / "SKILL.md"
+    cell.write_text(
+        cell.read_text(encoding="utf-8").replace(
+            "description: The binding rules." + NL, ""),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert len(findings) == 1 and "no description" in findings[0]
+
+
+def test_cell_frontmatter_fires_when_the_name_disagrees_with_the_directory(tmp_path):
+    make_clean_tree(tmp_path)
+    cell = tmp_path / "skills" / "charter" / "SKILL.md"
+    cell.write_text(
+        cell.read_text(encoding="utf-8").replace("name: charter", "name: chartr"),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert len(findings) == 1 and "sits in" in findings[0]
+
+
+def test_the_declared_description_ceiling_is_the_one_these_tests_pin(tmp_path):
+    """Stated as a literal so raising the constant is a deliberate act.
+
+    A test that derives its bound from the constant it is testing cannot catch
+    a change to that constant -- and, at a large enough mutation, spends a
+    minute writing the file it is about to measure.
+    """
+    assert lint.CELL_FIELD_MAX_CHARS["description"] == 700
+
+
+def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):
+    make_clean_tree(tmp_path)
+    _set_description(tmp_path, "x" * 701)
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert len(findings) == 1 and "budget" in findings[0]
+
+
+def test_cell_frontmatter_allows_a_description_at_the_ceiling(tmp_path):
+    make_clean_tree(tmp_path)
+    _set_description(tmp_path, "x" * 700)
+    assert [f for f in lint.run(tmp_path) if "cell-frontmatter" in f] == []
+
+
+def test_the_charter_cell_may_hold_nothing_but_its_skill_file(tmp_path):
+    """`skills/authoring` sends a cell's depth to `references/`; for this cell
+    that instruction is a trap, because only SKILL.md is delivered, budgeted and
+    read by the owner."""
+    make_clean_tree(tmp_path)
+    depth = tmp_path / "skills" / "charter" / "references"
+    depth.mkdir(parents=True)
+    (depth / "detail.md").write_text("A binding rule." + NL, encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "the charter cell carries" in f]
+    assert len(findings) == 1
+
+
+def test_the_stray_check_compares_paths_rather_than_basenames(tmp_path):
+    """`references/SKILL.md` shares the name and is exactly what an author
+    following the depth instruction would create."""
+    make_clean_tree(tmp_path)
+    depth = tmp_path / "skills" / "charter" / "references"
+    depth.mkdir(parents=True)
+    (depth / "SKILL.md").write_text("A binding rule." + NL, encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "the charter cell carries" in f]
+    assert len(findings) == 1
+
+
+def test_a_missing_hook_config_does_not_suppress_the_stray_check(tmp_path):
+    """Two unrelated defects must both be reported; the hook config's absence
+    once returned early and swallowed the other."""
+    make_clean_tree(tmp_path)
+    (tmp_path / "hooks" / "hooks.json").unlink()
+    depth = tmp_path / "skills" / "charter" / "references"
+    depth.mkdir(parents=True)
+    (depth / "detail.md").write_text("A binding rule." + NL, encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert any("the charter cell carries" in f for f in findings)
+    assert any("nothing delivers the charter" in f for f in findings)
+
+
+def test_the_charter_cell_may_hold_only_its_skill_file_and_stays_quiet(tmp_path):
+    make_clean_tree(tmp_path)
+    assert [f for f in lint.run(tmp_path) if "the charter cell carries" in f] == []

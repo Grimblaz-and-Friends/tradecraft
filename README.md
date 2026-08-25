@@ -60,9 +60,10 @@ marketplace sources, and this plugin's source is a relative path, so `sha` does
 not apply to it at all.
 
 **What lands in your session.** Every skill's name and description sit in every
-session's context; each skill's body loads only when it fires. One of those
-skills is the charter itself, so wherever the hook below does not reach you, you
-can still ask for the practice's rules by name. On top of that,
+session's context — about 940 tokens for the seven methodology cells, plus about
+140 for the charter — and each skill's body loads only when it fires. One of
+those skills is the charter itself, so wherever the hook below does not reach
+you, a session can still be asked for the practice's rules by name. On top of that,
 the plugin ships one `SessionStart` hook, which emits [the charter](skills/charter/SKILL.md)
 — about 1,000 tokens of binding rules — so the practice governs rather than
 merely being available. That matcher is match-all, so the charter is re-emitted
@@ -78,8 +79,10 @@ model context cost)`. The hook does cost you context.
 that carries only `python3` it will exit without emitting, and a failed
 session-start hook reports to you, not to the model — so the session simply
 proceeds without the charter. If `python -V` does not work on your machine, this
-plugin's hook gives you nothing — but the charter is itself one of the skills,
-so ask for it by name and you have the practice anyway.
+plugin's hook gives you nothing. The charter is itself one of the skills, so a
+session can still be asked for it by name — but that is availability, not
+governance: nothing announces the absence to the model, so someone has to know
+to ask.
 
 **On declining the hook.** Claude Code gates plugin hooks on workspace trust and
 the `disableAllHooks` setting; there is no supported way to take this plugin's
