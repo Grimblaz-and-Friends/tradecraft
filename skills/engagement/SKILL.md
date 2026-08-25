@@ -25,7 +25,7 @@ Two surfaces are this skill's own: the pre-implementation artifact below, and an
 
 ## A decision put to the owner
 
-**A decision is the owner's when it is a genuine fork**: what turns on the pick is something they would care about — what gets built, what it costs, what others see, what they live with day to day — and undoing a wrong pick costs them something an edit does not undo: habit, muscle memory, what others already saw. Both halves are required — one live option can satisfy the first — and everything else is the session's to decide. Where the practice's always-on surface states this test — the shipped charter, or an adopting repository's own doctrine — the two are one rule: a change to either is a change to both.
+**A decision is the owner's when it is a genuine fork**: what turns on the pick is something they would care about — what gets built, what it costs, what others see, what they live with day to day — and undoing a wrong pick costs them something an edit does not undo: habit, muscle memory, what others already saw. Both halves are required — one live option can satisfy the first — and everything else is the session's to decide. The statement of the test is the `charter` cell's — or an adopting repository's own doctrine, where that is where it lives; the calibration below is this cell's.
 
 **Asking where no fork exists is a defect rather than politeness.** The tell is that nothing turns on their answer — the session would proceed the same way whatever they said; that is a report, and putting it as a question spends their attention for nothing. One live option is not by itself the tell: a real search that narrowed to one can still turn on their answer, and the fork test above decides it either way.
 

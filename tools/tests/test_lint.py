@@ -508,6 +508,95 @@ def test_lib_may_not_reference_a_skill(tmp_path):
     assert len(findings) == 1 and "sideways-dep" in findings[0] and "from lib/" in findings[0]
 
 
+# --- the charter's exemption ------------------------------------------------
+
+def test_the_charter_may_reference_any_cell(tmp_path):
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter"
+    (charter / "SKILL.md").write_text(
+        "---" + NL + "name: charter" + NL + "description: The binding rules." + NL
+        + "---" + NL + NL
+        + "The depth behind this rule lives in the `example-skill` cell." + NL,
+        encoding="utf-8",
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_any_cell_may_reference_the_charter(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "The rule itself is stated by the `charter` cell.\n")
+    assert lint.run(tmp_path) == []
+
+
+def test_the_exemption_is_the_name_form_and_not_a_path(tmp_path):
+    """The charter may name a cell; it may not point at one's files.
+
+    A rooted skills/ path does not resolve once installed, so exempting it
+    would buy the charter a reference that is dead for every consumer.
+    """
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter"
+    (charter / "SKILL.md").write_text(
+        "---" + NL + "name: charter" + NL + "description: The binding rules." + NL
+        + "---" + NL + NL + "The bar lives at skills/example-skill/SKILL.md." + NL,
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
+    assert len(findings) == 1 and "example-skill" in findings[0]
+
+
+def test_exempting_the_charter_does_not_exempt_cell_to_cell(tmp_path):
+    """The exemption's whole risk: buying it by weakening the guard for all.
+
+    Both reference forms are checked, because the name form is what the
+    charter's own restored references use -- an exemption that let it through
+    for everyone would be indistinguishable from this test's absence.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    _write_cell(other, "Depth lives in the `example-skill` cell.\n")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "sideways-dep" in findings[0] and "example-skill" in findings[0]
+
+
+def test_hooks_reach_the_charter_and_no_other_cell(tmp_path):
+    """check_delivery mandates the hook depend on the charter, so the
+    sideways rule must not forbid what its sibling requires -- and must still
+    forbid every other skill, which is what 'deps point down' was for."""
+    make_clean_tree(tmp_path)
+    readme = tmp_path / "hooks" / "README.md"
+    readme.write_text("Emits the `charter` cell on stdout.\n", encoding="utf-8")
+    assert lint.run(tmp_path) == []
+    readme.write_text("Emits the `example-skill` cell on stdout.\n", encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "sideways-dep" in findings[0] and "from hooks/" in findings[0]
+
+
+def test_a_cell_reference_must_name_a_cell_that_exists(tmp_path):
+    """A rename leaves the sentence reading correctly and pointing nowhere."""
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter"
+    body = ("---" + NL + "name: charter" + NL + "description: The binding rules."
+            + NL + "---" + NL + NL + "Depth lives in the `{}` cell." + NL)
+    (charter / "SKILL.md").write_text(body.format("example-skill"), encoding="utf-8")
+    assert lint.run(tmp_path) == []
+    (charter / "SKILL.md").write_text(body.format("renamed-away"), encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "cell-reference" in findings[0] and "renamed-away" in findings[0]
+
+
+def test_the_exempt_cell_name_is_the_one_these_tests_pin():
+    """A test deriving its bound from the constant it tests cannot catch a
+    change to that constant [#164]. The exemption is a rule about one named
+    cell, so the name is pinned literally here."""
+    assert lint.CHARTER_CELL == "charter"
+
+
 # --- doctrine --------------------------------------------------------------
 
 def test_doctrine_budget_fires_when_agents_md_bloats(tmp_path):

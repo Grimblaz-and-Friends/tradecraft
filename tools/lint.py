@@ -11,23 +11,36 @@ Checks:
      path token (${CLAUDE_PLUGIN_ROOT} and kin). Not because they fail --
      Claude Code substitutes them into a skill's body -- but because Codex does
      not, so any such contract binds in one runtime and is dead in the other.
-  3. sideways deps: no skill may reference another skill by path (rooted or
-     relative), and lib/ may not reference any skill (deps point down).
-     Name-form coupling ("load the beta skill") is not machine-checkable; it
-     is reviewed, not linted.
-  4. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
+  3. delivery: the shipped charter exists and the hook that delivers it still
+     can, so a session in either runtime receives it at session start.
+  4. cell frontmatter: every skill declares a name and a description the
+     runtime can parse, each within its field budget. A cell whose description
+     is absent or malformed silently never fires.
+  5. sideways deps: no skill may reference another skill — by path (rooted or
+     relative) or by the name form `<name>` cell — and lib/ and hooks/ may
+     reference no skill at all (deps point down). The charter is exempt in
+     the name form only, in both directions: any cell may name it and it may
+     name any cell, because it is already always-on in every session, so the
+     citation costs no loading and cannot drift the way a second copy can.
+     Paths between cells stay findings even from the charter, for a reason
+     self-containment never covered — a rooted skills/ path does not resolve
+     once installed, so the name is the only form that survives the trip.
+  6. cell references: every `<name>` cell reference in the shipped zone names
+     a skill that exists, so renaming or deleting a cell cannot silently
+     strand the prose that points at it.
+  7. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  5. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  8. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  6. review index: docs/reviews.jsonl, when present, parses and carries one
+  9. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, what came of
      the findings, the model and runtime that staffed it, report URL.
-  7. decision index: every decision entry has a row in the log's index, and
+ 10. decision index: every decision entry has a row in the log's index, and
      every row a file.
-  8. entry references: every path reference and relative link a decision entry
+ 11. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
@@ -109,8 +122,24 @@ AGENTS_BUDGET_CHARS = 8_000
 CHARTER_BUDGET_CHARS = 6_000
 POINTER_BUDGET_CHARS = 500
 
+# The one cell any other cell may reference, and the one cell that may
+# reference the others. Self-containment exists to stop loading cost and
+# multi-site drift; neither applies here. The charter is always-on in every
+# session by construction -- imported by AGENTS.md, instructed, and emitted by
+# the SessionStart hook -- so a cell citing it points at prose the reader has
+# already loaded, and a citation cannot fall out of agreement the way a second
+# copy can. The exemption is one target at depth one: cells may cite the
+# charter and it may cite them, no cell may cite any other, so the shape
+# cannot grow into the predecessor's 276-reference mesh.
+CHARTER_CELL = "charter"
+
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
 ROOTED_SKILL = re.compile(r"skills[\\/]([\w-]+)[\\/]", re.IGNORECASE)
+# The name form of a cell reference: `engagement` cell. A skill is reached by
+# invoking it by name, not by opening a file, so this -- not a path -- is the
+# form the prose uses; defining it is also what makes name-form coupling
+# checkable, which it was not while any phrasing counted.
+CELL_REF = re.compile(r"`([a-z][a-z0-9-]*)`\s+[Cc]ells?\b")
 # The first segment may itself be dot-leading (`.github`), so the class after
 # the prefix admits a dot. Requiring a word character there let every relative
 # form of `.github/` through while catching `docs/` and `tools/` -- the one
@@ -372,6 +401,34 @@ def _origin(own: str | None, base: Path) -> str:
     return f" from skill '{own}'" if own else f" from {base.name}/"
 
 
+def _name_form_is_sideways(own: str | None, target: str) -> bool:
+    """Whether naming skill `target` from `own` couples two cells unlawfully.
+
+    The charter's exemption lives here and only here -- in naming a cell, not
+    in reaching into one. A path form stays a finding from the charter too,
+    for a reason self-containment never covered: a rooted `skills/...` path
+    does not resolve once installed, because the cells sit in a plugin cache
+    rather than beside the reader. The name is the one form that survives the
+    trip, since the runtime indexes cells by name.
+
+    The charter is exempt as a target from anywhere, not only from another
+    cell: the SessionStart hook's whole job is to emit it, and check_delivery
+    requires that dependency to exist. A rule forbidding what a sibling guard
+    mandates would be two answers to one question.
+
+    `own is None` is lib/ or hooks/, neither of which is a cell. Their deps
+    still point down for every other skill -- naming `engagement` from a hook
+    is the coupling that rule exists for.
+    """
+    if target.lower() == CHARTER_CELL:
+        return False
+    if own is None:
+        return True
+    if target.lower() == own.lower():
+        return False
+    return own.lower() != CHARTER_CELL
+
+
 def check_sideways_deps(root: Path) -> list[str]:
     findings = []
     skills = root / "skills"
@@ -419,6 +476,56 @@ def check_sideways_deps(root: Path) -> list[str]:
                                 f"reference '{raw}' resolves into skill '{target}'"
                                 + _origin(own, base)
                             )
+                for match in CELL_REF.finditer(line):
+                    target = match.group(1)
+                    # Only a name that is actually a cell couples anything; a
+                    # backticked word before "cell" that names no skill is
+                    # ordinary prose here, and check_cell_references is what
+                    # rules on whether it should have resolved.
+                    if not (root / "skills" / target).is_dir():
+                        continue
+                    if _name_form_is_sideways(own, target):
+                        findings.append(
+                            f"sideways-dep: {rel_file}:{lineno} names "
+                            f"skill '{target}'" + _origin(own, base)
+                        )
+    return findings
+
+
+def check_cell_references(root: Path) -> list[str]:
+    """Every `<name>` cell reference in the shipped zone names a real skill.
+
+    The charter's whole value is that a session reading it can reach the cell
+    owning the depth behind each rule it states. That value is what a rename
+    silently destroys: the sentence still reads correctly and points nowhere,
+    and prose cannot be resolved by the runtime the way a path can be. So the
+    reference form is machine-checked at the only moment anyone will look.
+
+    A backticked word before "cell" that names no skill is the finding, not an
+    exemption -- there is no way to tell a typo'd cell name from a word that
+    was never meant as one, and the reference form exists precisely so the
+    question does not have to be judged case by case.
+    """
+    findings = []
+    known = {p.name for p in (root / "skills").iterdir() if p.is_dir()} \
+        if (root / "skills").is_dir() else set()
+    for name in SHIPPED_DIRS:
+        base = root / name
+        if not base.is_dir():
+            continue
+        for path in _iter_files(base):
+            text = _read_text(path)
+            if text is None:
+                continue
+            rel_file = path.relative_to(root).as_posix()
+            for lineno, line in enumerate(text.splitlines(), 1):
+                for match in CELL_REF.finditer(line):
+                    target = match.group(1)
+                    if target not in known:
+                        findings.append(
+                            f"cell-reference: {rel_file}:{lineno} names cell "
+                            f"'{target}', which is not a skill in skills/"
+                        )
     return findings
 
 
@@ -1300,6 +1407,7 @@ def run(root: Path) -> list[str]:
         + check_delivery(root)
         + check_cell_frontmatter(root)
         + check_sideways_deps(root)
+        + check_cell_references(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)
         + check_review_index(root)
