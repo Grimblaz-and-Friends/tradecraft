@@ -82,23 +82,29 @@ def figure_census(root: Path) -> dict:
     }
 
 
-def figure_charter(root: Path) -> dict:
-    """The charter's budgeted size, measured the way its guard measures it.
+def figure_cell_body(root: Path, rel_path: str, budget: int) -> dict:
+    """A cell's budgeted body, measured the way its guard measures it.
 
     The engine's `figure_doc` measures a whole file, which is right for a plain
-    document and wrong for a cell: the charter carries frontmatter addressed to
-    the runtime's skill index, and `tools/lint.py` budgets the body beneath it
-    so a description edit cannot eat the rules' headroom. A figure measuring the
-    file would disagree with the guard that judges it, which is the one thing
-    D-141 exists to prevent -- so the measurement comes from the guard.
+    document and wrong for a cell: a cell carries frontmatter addressed to the
+    runtime's skill index, and `tools/lint.py` budgets the body beneath it so a
+    description edit cannot eat the rules' headroom. A figure measuring the file
+    would disagree with the guard that judges it, which is the one thing D-141
+    exists to prevent -- so the measurement comes from the guard.
+
+    Written against any cell rather than the charter alone because the charter
+    was not the only cell with a budgeted body: #169's criterion named a body
+    figure for `skills/authoring/SKILL.md` and no invocation could produce one,
+    so the number it stated was hand-derived in the change that ships "derive
+    figures there rather than by hand".
     """
-    target = root / lint.CHARTER
+    target = root / rel_path
     if not target.is_file():
-        raise SystemExit(f"figures: {lint.CHARTER} is not a readable file under {root}")
+        raise SystemExit(f"figures: {rel_path} is not a readable file under {root}")
     text = lint._frontmatterless(target.read_text(encoding="utf-8", errors="replace"))
-    chars, budget = len(text), lint.CHARTER_BUDGET_CHARS
+    chars = len(text)
     return {
-        "name": f"doc `{lint.CHARTER}` (body)",
+        "name": f"doc `{rel_path}` (body)",
         "value": f"{chars:,} of {budget:,} chars, headroom {budget - chars:,}",
         "basis": (
             "decoded UTF-8 characters below the frontmatter, universal-newline "
@@ -106,13 +112,49 @@ def figure_charter(root: Path) -> dict:
             "measurement tools/lint.py's budget applies"
         ),
         "data": {
-            "path": lint.CHARTER, "chars": chars, "budget": budget,
+            "path": rel_path, "chars": chars, "budget": budget,
             "headroom": budget - chars,
         },
     }
 
 
-def build_figures(root: Path, base: str | None) -> list[dict]:
+def figure_cell_description(root: Path, rel_path: str) -> dict:
+    """A cell's always-on surface: the frontmatter field every session loads.
+
+    Separate from the body figure because they are paid at different times and
+    move independently -- #169 shed 25 chars of body and added 147 of
+    description, and a body-only figure certified that as "no more to load".
+    """
+    target = root / rel_path
+    if not target.is_file():
+        raise SystemExit(f"figures: {rel_path} is not a readable file under {root}")
+    fields = lint._frontmatter_fields(
+        target.read_text(encoding="utf-8", errors="replace")
+    )
+    if fields is None or "description" not in fields:
+        raise SystemExit(f"figures: {rel_path} has no parseable description")
+    chars = len(fields["description"])
+    budget = lint.CELL_FIELD_MAX_CHARS["description"]
+    return {
+        "name": f"cell `{rel_path}` (description)",
+        "value": f"{chars:,} of {budget:,} chars, headroom {budget - chars:,}",
+        "basis": (
+            "decoded UTF-8 characters of the frontmatter description as "
+            "check_cell_frontmatter reads it, working tree"
+        ),
+        "data": {
+            "path": rel_path, "chars": chars, "budget": budget,
+            "headroom": budget - chars,
+        },
+    }
+
+
+def figure_charter(root: Path) -> dict:
+    return figure_cell_body(root, lint.CHARTER, lint.CHARTER_BUDGET_CHARS)
+
+
+def build_figures(root: Path, base: str | None,
+                  cell: str | None = None, budget: int | None = None) -> list[dict]:
     figures = [
         engine.figure_tests(root, SUITE_PATHS),
         engine.figure_doc(root, DOC, lint.AGENTS_BUDGET_CHARS),
@@ -121,6 +163,15 @@ def build_figures(root: Path, base: str | None) -> list[dict]:
     ]
     if base:
         figures.append(engine.figure_delta(root, base, PROSE_PATHS, PROSE_SUFFIXES))
+    if cell:
+        if budget is None:
+            raise SystemExit(
+                "figures: --cell needs --cell-budget; a cell's budget is a "
+                "caller decision and picking one silently is how a stated "
+                "figure diverges from the guard that judges it"
+            )
+        figures.append(figure_cell_body(root, cell, budget))
+        figures.append(figure_cell_description(root, cell))
     return figures
 
 
@@ -132,11 +183,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--base", metavar="REF",
                         help="also emit the governing-prose delta against REF")
+    parser.add_argument("--cell", metavar="PATH",
+                        help="also emit a cell's body and description figures")
+    parser.add_argument("--cell-budget", metavar="N", type=int,
+                        help="the body budget --cell is measured against")
     parser.add_argument("--json", action="store_true",
                         help="emit JSON instead of markdown")
     args = parser.parse_args(argv)
     engine.utf8_stdio()
-    figures = build_figures(ROOT, args.base)
+    figures = build_figures(ROOT, args.base, args.cell, args.cell_budget)
     stamp = engine.tree_stamp(ROOT)
     command = ("python tools/figures.py " + shlex.join(argv)).rstrip()
     render = engine.render_json if args.json else engine.render_markdown

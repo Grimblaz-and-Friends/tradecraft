@@ -18,16 +18,24 @@ Checks:
      is absent or malformed silently never fires.
   5. sideways deps: no skill may reference another skill — by path (rooted or
      relative) or by the name form `<name>` cell — and lib/ and hooks/ may
-     reference no skill at all (deps point down). The charter is exempt in
-     the name form only, in both directions: any cell may name it and it may
-     name any cell, because it is already always-on in every session, so the
-     citation costs no loading and cannot drift the way a second copy can.
+     reference no skill but the charter (deps point down otherwise). The
+     charter is exempt in the name form only and as a target from anywhere,
+     because it is already always-on in every session, so the citation costs
+     no loading and cannot drift the way a second copy can; the hook that
+     emits it must name it, and check 3 requires that dependency to exist.
      Paths between cells stay findings even from the charter, for a reason
      self-containment never covered — a rooted skills/ path does not resolve
-     once installed, so the name is the only form that survives the trip.
+     once installed, while the name survives relocation.
   6. cell references: every `<name>` cell reference in the shipped zone names
-     a skill that exists, so renaming or deleting a cell cannot silently
-     strand the prose that points at it.
+     a skill that exists, and every references/ pointer resolves against the
+     directory of the file naming it, so renaming or deleting either cannot
+     silently strand the prose that points at it.
+
+  Checks 5 and 6 read prose outside fenced blocks only: a reference inside a
+  fence is displayed, not made, exactly as check 7 already reasons about an
+  import. Both also read one wrap — a line ending in `<name>` whose successor
+  begins "cell" — because a reflow is a formatting edit no reviewer inspects
+  and it would otherwise silently remove a reference from both checks.
   7. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
@@ -130,7 +138,7 @@ POINTER_BUDGET_CHARS = 500
 # already loaded, and a citation cannot fall out of agreement the way a second
 # copy can. The exemption is one target at depth one: cells may cite the
 # charter and it may cite them, no cell may cite any other, so the shape
-# cannot grow into the predecessor's 276-reference mesh.
+# cannot grow into the mesh of mutual references the predecessor accumulated.
 CHARTER_CELL = "charter"
 
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
@@ -140,6 +148,17 @@ ROOTED_SKILL = re.compile(r"skills[\\/]([\w-]+)[\\/]", re.IGNORECASE)
 # form the prose uses; defining it is also what makes name-form coupling
 # checkable, which it was not while any phrasing counted.
 CELL_REF = re.compile(r"`([a-z][a-z0-9-]*)`\s+[Cc]ells?\b")
+# The same reference with a line break where its space was. A reflow is a
+# formatting edit nobody inspects, and without this it silently removes a
+# reference from both the coupling check and the existence check -- observed
+# under review, by reflowing one charter reference and watching the rename
+# probe drop from three findings to two. Catching it enlarges nothing: it is
+# the prescribed spelling, wrapped.
+CELL_REF_TAIL = re.compile(r"`([a-z][a-z0-9-]*)`\Z")
+CELL_REF_HEAD = re.compile(r"\A[Cc]ells?\b")
+# A pointer from a cell into its own depth. Resolved against the directory of
+# the file naming it, the same rule a script's calling contract follows.
+REFERENCES_REF = re.compile(r"(references/[\w.-]+\.md)")
 # The first segment may itself be dot-leading (`.github`), so the class after
 # the prefix admits a dot. Requiring a word character there let every relative
 # form of `.github/` through while catching `docs/` and `tools/` -- the one
@@ -408,8 +427,10 @@ def _name_form_is_sideways(own: str | None, target: str) -> bool:
     in reaching into one. A path form stays a finding from the charter too,
     for a reason self-containment never covered: a rooted `skills/...` path
     does not resolve once installed, because the cells sit in a plugin cache
-    rather than beside the reader. The name is the one form that survives the
-    trip, since the runtime indexes cells by name.
+    rather than beside the reader. The name survives relocation, which the
+    path does not -- note that a runtime may qualify it (Claude Code addresses
+    an installed plugin's skills as `<plugin>:<skill>`), so the name is the
+    part a reader can still follow, not a string that resolves bare.
 
     The charter is exempt as a target from anywhere, not only from another
     cell: the SessionStart hook's whole job is to emit it, and check_delivery
@@ -448,7 +469,16 @@ def check_sideways_deps(root: Path) -> list[str]:
             if text is None:
                 continue
             rel_file = path.relative_to(root).as_posix()
-            for lineno, line in enumerate(text.splitlines(), 1):
+            lines = _unfenced_numbered(text)
+            for lineno, target in _wrapped_cell_refs(lines):
+                if not (root / "skills" / target).is_dir():
+                    continue
+                if _name_form_is_sideways(own, target):
+                    findings.append(
+                        f"sideways-dep: {rel_file}:{lineno} names skill "
+                        f"'{target}' across a line break" + _origin(own, base)
+                    )
+            for lineno, line in lines:
                 for match in ROOTED_SKILL.finditer(line):
                     # Same lawful-case guards as the zone wall's rooted branch:
                     # web URLs resolve for consumers, relative forms belong to
@@ -509,22 +539,43 @@ def check_cell_references(root: Path) -> list[str]:
     findings = []
     known = {p.name for p in (root / "skills").iterdir() if p.is_dir()} \
         if (root / "skills").is_dir() else set()
-    for name in SHIPPED_DIRS:
-        base = root / name
-        if not base.is_dir():
+    # The doctrine files are not cells and the sideways rule does not reach
+    # them -- they may name any cell. But a name they write strands exactly as
+    # a cell's does, and this repo's doctrine now points at the cell owning
+    # each standard it applies, so the existence half has to see them.
+    scan = [root / name for name in SHIPPED_DIRS] + [
+        root / "AGENTS.md", root / "CLAUDE.md",
+    ]
+    for base in scan:
+        if base.is_file():
+            paths = [base]
+        elif base.is_dir():
+            paths = _iter_files(base)
+        else:
             continue
-        for path in _iter_files(base):
+        for path in paths:
             text = _read_text(path)
             if text is None:
                 continue
             rel_file = path.relative_to(root).as_posix()
-            for lineno, line in enumerate(text.splitlines(), 1):
-                for match in CELL_REF.finditer(line):
-                    target = match.group(1)
-                    if target not in known:
+            lines = _unfenced_numbered(text)
+            named = [(n, m.group(1)) for n, line in lines
+                     for m in CELL_REF.finditer(line)]
+            named += list(_wrapped_cell_refs(lines))
+            for lineno, target in sorted(named):
+                if target not in known:
+                    findings.append(
+                        f"cell-reference: {rel_file}:{lineno} names cell "
+                        f"'{target}', which is not a skill in skills/"
+                    )
+            for lineno, line in lines:
+                for match in REFERENCES_REF.finditer(line):
+                    pointer = match.group(1)
+                    if not (path.parent / pointer).is_file():
                         findings.append(
-                            f"cell-reference: {rel_file}:{lineno} names cell "
-                            f"'{target}', which is not a skill in skills/"
+                            f"reference-pointer: {rel_file}:{lineno} points at "
+                            f"'{pointer}', which does not resolve against this "
+                            f"file's own directory"
                         )
     return findings
 
@@ -535,6 +586,39 @@ def _frontmatterless(text: str) -> str:
         return text
     end = text.find(chr(10) + "---", 3)
     return text if end == -1 else text[end + 4:].lstrip(chr(10))
+
+
+def _unfenced_numbered(text: str) -> list[tuple[int, str]]:
+    """Non-fenced lines as (line number, stripped text), numbering preserved.
+
+    `_unfenced` below drops the numbers, which check_doctrine does not need
+    and the reference checks do -- a finding that cannot say where it is
+    cannot be acted on. Same fence rule, so the two cannot disagree about
+    what is displayed rather than performed.
+    """
+    out, fenced = [], False
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        stripped = raw.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+            continue
+        if not fenced:
+            out.append((lineno, stripped))
+    return out
+
+
+def _wrapped_cell_refs(lines: list[tuple[int, str]]):
+    """Cell references split across a line break, reported at the first line.
+
+    Adjacency in the original file is required: a blank line or a dropped
+    fence between the halves is a paragraph break, not a wrap.
+    """
+    for (lineno, line), (next_lineno, next_line) in zip(lines, lines[1:]):
+        if next_lineno != lineno + 1 or not next_line:
+            continue
+        tail = CELL_REF_TAIL.search(line)
+        if tail and CELL_REF_HEAD.match(next_line):
+            yield lineno, tail.group(1)
 
 
 def _unfenced(text: str) -> list[str]:
