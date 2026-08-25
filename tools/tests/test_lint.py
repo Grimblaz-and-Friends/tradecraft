@@ -672,7 +672,8 @@ LINT_CHECKS_IN_ORDER = (
     "check_cell_frontmatter", "check_sideways_deps", "check_cell_references",
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
-    "check_emitted_ascii",
+    "check_emitted_ascii", "check_docstring_not_piped",
+    "check_stdio_wired",
 )
 
 
@@ -2311,3 +2312,163 @@ def test_emitted_ascii_ignores_a_directory_named_like_a_module(tmp_path):
     """
     (tmp_path / "notamodule.py").mkdir()
     assert lint.check_emitted_ascii(tmp_path) == []
+
+
+# --- check_docstring_not_piped, check_stdio_wired ---------------------------
+#
+# Both polarities again, and for check 12 the lawful polarity that was missing
+# the first time: a non-docstring string that is data rather than output. Its
+# absence is not a hypothetical gap -- it is why a fixture got rewritten wrong
+# and a regression test went inert while the suite stayed green.
+
+
+def _zoned(root: Path, rel: str, body: str) -> None:
+    """Write a module inside a zone the zone-scoped checks actually walk."""
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+def test_docstring_piped_to_argparse_is_caught(tmp_path):
+    """--help writes __doc__ to stdout before any stream setup can run."""
+    _zoned(tmp_path, "tools/script.py",
+           '"""Module prose."""' + chr(10)
+           + "import argparse" + chr(10)
+           + "def main():" + chr(10)
+           + "    utf8_stdio()" + chr(10)
+           + "    argparse.ArgumentParser(description=__doc__)" + chr(10))
+    findings = lint.check_docstring_not_piped(tmp_path)
+    assert len(findings) == 1, findings
+    assert "tools/script.py" in findings[0] and "docstring-piped" in findings[0]
+
+
+def test_an_explicit_description_is_left_alone(tmp_path):
+    """The lawful form: help text written as help text."""
+    _zoned(tmp_path, "tools/script.py",
+           '"""Module prose."""' + chr(10)
+           + "import argparse" + chr(10)
+           + "def main():" + chr(10)
+           + "    utf8_stdio()" + chr(10)
+           + '    argparse.ArgumentParser(description="What it does.")' + chr(10))
+    assert lint.check_docstring_not_piped(tmp_path) == []
+
+
+def test_stdio_unwired_main_is_caught(tmp_path):
+    """A script whose entry point never sets its streams up."""
+    _zoned(tmp_path, "tools/script.py",
+           "def main():" + chr(10) + "    print('x')" + chr(10))
+    findings = lint.check_stdio_wired(tmp_path)
+    assert len(findings) == 1, findings
+    assert "stdio-unwired" in findings[0]
+
+
+def test_stdio_wired_late_is_still_unwired(tmp_path):
+    """Ordering is the point: --help exits inside parse_args.
+
+    A call placed after argument parsing is a call the help path never reaches,
+    which is exactly how one script here kept a helper and leaked anyway.
+    """
+    _zoned(tmp_path, "tools/script.py",
+           "def main():" + chr(10)
+           + "    args = parse()" + chr(10)
+           + "    utf8_stdio()" + chr(10))
+    findings = lint.check_stdio_wired(tmp_path)
+    assert len(findings) == 1, findings
+
+
+def test_stdio_wired_first_is_left_alone(tmp_path):
+    """The lawful form, including past a docstring."""
+    _zoned(tmp_path, "tools/script.py",
+           "def main():" + chr(10)
+           + '    """What it does."""' + chr(10)
+           + "    utf8_stdio()" + chr(10)
+           + "    print('x')" + chr(10))
+    assert lint.check_stdio_wired(tmp_path) == []
+
+
+def test_a_module_without_main_is_not_asked(tmp_path):
+    """Not every module is a script, and a library owes no stream setup."""
+    _zoned(tmp_path, "tools/helper.py", "def helper():" + chr(10) + "    return 1" + chr(10))
+    assert lint.check_stdio_wired(tmp_path) == []
+
+
+def test_emitted_ascii_reports_the_line_carrying_the_character(tmp_path):
+    """Not the line the constant opens on.
+
+    CPython folds implicit concatenation into one node, which is the shape of
+    nearly every message here. Reporting the opening line sent a reader to a
+    line with nothing wrong on it -- 12 of the 44 findings on the tree that
+    motivated this check.
+    """
+    _py(tmp_path, "wrapped.py",
+        "MSG = (" + chr(10)
+        + '    "first line is clean "' + chr(10)
+        + '    "second line has ' + EM_DASH + ' one"' + chr(10)
+        + ")" + chr(10))
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1, findings
+    assert "wrapped.py:3" in findings[0], findings[0]
+
+
+def test_emitted_ascii_reports_in_line_order(tmp_path):
+    """`ast.walk` is breadth-first, so depth beat line and output was unsorted."""
+    _py(tmp_path, "many.py",
+        "A = " + repr("one " + EM_DASH) + chr(10)
+        + "B = [" + repr("two " + EM_DASH) + "]" + chr(10)
+        + "C = {'k': [" + repr("three " + EM_DASH) + "]}" + chr(10))
+    # Not f.split(":")[1] -- that yields the filename, and on Windows an
+    # absolute path would yield the drive letter. The cold consumer who
+    # first used this check made exactly that mistake reading its output.
+    findings = lint.check_emitted_ascii(tmp_path)
+    lines = [int(re.search(r"many\.py:(\d+) ", f).group(1)) for f in findings]
+    assert lines == sorted(lines), lines
+
+
+def test_emitted_ascii_leaves_a_non_emitting_data_string_flagged_but_says_so(tmp_path):
+    """The lawful-polarity case the first version of this check never probed.
+
+    A filename fixture cannot reach a stream, and the check flags it anyway --
+    it reads literals, not reachability. That is allowed to be true; what is
+    not allowed is the message claiming otherwise, because a session that
+    believes it reasons about the wrong thing and rewrites the wrong code.
+    """
+    _py(tmp_path, "data.py", "NAME = " + repr("caf" + chr(0xE9) + ".md") + chr(10))
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1, findings
+    assert "non-docstring string constant" in findings[0]
+    assert "reach a stream" not in findings[0], (
+        "the message must not claim a reachability property the check never computes"
+    )
+
+
+def test_emitted_ascii_reports_a_file_it_cannot_parse(tmp_path):
+    """A silent skip is indistinguishable from a clean tree."""
+    _py(tmp_path, "broken.py", "def (:" + chr(10))
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1 and "does not parse" in findings[0], findings
+
+
+def test_emitted_ascii_sees_through_a_utf8_bom(tmp_path):
+    """A BOM made `ast.parse` raise, and the file was skipped in silence.
+
+    The compensating control claimed at the time -- that the suite fails on a
+    module it cannot import -- was false: CPython strips the BOM when reading
+    from disk, so the module ran and emitted the byte.
+    """
+    (tmp_path / "bommed.py").write_bytes(
+        chr(0xFEFF).encode("utf-8") + ("X = " + repr("a " + EM_DASH) + chr(10)).encode("utf-8"))
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1 and "U+2014" in findings[0], findings
+
+
+def test_emitted_ascii_reports_a_file_that_is_not_utf8(tmp_path):
+    """Reported as undecodable, not as stating U+FFFD.
+
+    `errors="replace"` made the check name a character that appears nowhere in
+    the file, so the reader had nothing to search for.
+    """
+    (tmp_path / "latin.py").write_bytes(
+        b"# -*- coding: latin-1 -*-" + chr(10).encode() + b"X = 'caf\xe9'" + chr(10).encode())
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1, findings
+    assert "not valid UTF-8" in findings[0] and "FFFD" not in findings[0]

@@ -62,10 +62,18 @@ Checks:
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
 12. emitted ASCII: no Python file states a non-ASCII character in a
-    string that can reach a stream. Windows encodes stdout and stderr to
-    the locale codepage, pipes included, so a captured em dash garbles in
-    the one message a guard exists to deliver. Docstrings and comments are
-    exempt; neither reaches a stream.
+    non-docstring string constant. Windows encodes stdout and stderr to the
+    locale codepage, pipes included, so a captured em dash garbles in the one
+    message a guard exists to deliver. It reads literals, not reachability:
+    a filename and a regex source are flagged too, and a character built at
+    runtime is out of reach. Docstrings and comments are exempt.
+13. docstring not piped: no script passes __doc__ as an argparse
+    description. --help writes it to stdout before any stream setup runs,
+    which turns the docstring check 12 exempts into locale-encoded output.
+14. stdio wired: every script with a main() calls utf8_stdio() as its first
+    statement, so runtime data this repository did not write reaches the
+    stream protected. The first statement is a position, and a position is
+    exact -- a call after parse_args is one that --help has outrun.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -81,12 +89,19 @@ import ast
 import datetime
 import json
 import re
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Shared with the shipped zone, which is the lawful direction: repo-only
+# code may import shipped code. Resolved from this file rather than the
+# working directory, so the script runs from any cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from winio import utf8_stdio  # noqa: E402
 
 SHIPPED_DIRS = (
     "skills", "lib", "commands", "agents", "hooks", ".claude-plugin",
@@ -1647,6 +1662,20 @@ def check_harness_tokens(root: Path) -> list[str]:
     return findings
 
 
+def _python_files(base: Path):
+    """Every `.py` *file* under `base`, sorted, directories excluded.
+
+    `rglob("*.py")` matches a directory named like a module, and reading one
+    raises. A delivery test creates exactly that shape deliberately, so this is
+    not hypothetical: it took a check down mid-run twice while this change was
+    being written. The third walk got this helper rather than the same patch a
+    third time.
+    """
+    for path in sorted(base.rglob("*.py")):
+        if path.is_file():
+            yield path
+
+
 def _docstring_constants(tree: ast.AST) -> set[int]:
     """Identities of the string constants that are docstrings, not output.
 
@@ -1668,8 +1697,61 @@ def _docstring_constants(tree: ast.AST) -> set[int]:
     return found
 
 
+def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
+    """Which of `paths` git is told to ignore, or an empty set if it cannot say.
+
+    The alternative -- a hardcoded skip list -- makes every future top-level
+    directory silently escape this check until someone remembers to add it.
+    Asking git costs one subprocess and stays correct as the repository grows.
+
+    `git ls-files` was the other candidate and is wrong here: it lists *tracked*
+    files, so a script a session has written but not yet added would go
+    unchecked, and catching a new script before it merges is the whole point.
+
+    An empty set on any failure is deliberate. A tree with no git (this check's
+    own tests build one) is scanned whole, which is the safe direction: the
+    filter may only ever remove noise, never hide a finding.
+    """
+    if not paths:
+        return set()
+    try:
+        proc = subprocess.run(
+            ["git", "check-ignore", "--stdin", "-z"],
+            input="\0".join(str(path) for path in paths),
+            capture_output=True, text=True, cwd=root, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode not in (0, 1):  # 1 is "nothing ignored", not an error
+        return set()
+    return {Path(name) for name in proc.stdout.split("\0") if name}
+
+
+def _true_lineno(text: str, node: ast.Constant, char: str) -> int:
+    """The physical line carrying `char`, not the line the constant opens on.
+
+    `node.lineno` is where the literal starts, and CPython folds implicit
+    concatenation into one node -- the shape of nearly every message in this
+    repository. Reporting the opening line sent a reader to a line with nothing
+    wrong on it, measured at 12 of the 44 findings on the tree that motivated
+    this check.
+
+    A character written as an escape (`\u2014`) appears nowhere in the source,
+    so there is no true line to find and the opening line is the best available
+    answer. Returning it is not a defeat: the escape form is caught, which is
+    the property that matters, and no line would have been searchable anyway.
+    """
+    lines = text.splitlines()
+    first = node.lineno - 1
+    last = min(node.end_lineno or node.lineno, len(lines))
+    for offset in range(first, last):
+        if char in lines[offset]:
+            return offset + 1
+    return node.lineno
+
+
 def check_emitted_ascii(root: Path) -> list[str]:
-    """No Python file states a non-ASCII character in a string that can reach a stream.
+    """No Python file states a non-ASCII character outside a docstring.
 
     Python's text mode encodes stdout and stderr to the platform's locale
     codepage -- cp1252 on Windows, including when the destination is a pipe,
@@ -1678,49 +1760,185 @@ def check_emitted_ascii(root: Path) -> list[str]:
     character, and a guard speaks exactly when something is already wrong, so
     the one moment its message matters is the moment it is least readable.
 
-    The rule is about characters rather than plumbing deliberately. Reconfiguring
-    the streams also works, but "the helper was called on this entry path" can
-    only be checked approximately -- one script here had its stdout fixed and
-    its stderr found unreconfigured afterwards -- while "these bytes are ASCII"
-    is exact. A class that has been patched a site at a time is closed by the
-    guard that sees the next site, not by a fourth patch.
+    **What this checks is a proxy, and the proxy is stated rather than implied.**
+    It reads string *literals*; it does not compute whether one reaches a
+    stream, which is not decidable from an AST. So it flags a filename, a regex
+    source and a dict key alongside a message, and it cannot see a character
+    that is constructed at runtime -- `chr()`, `str.format`, `%`, a `__str__`.
+    Saying "reaches a stream" cost this repository a disarmed regression test:
+    a session met a lawful fixture, was told a false thing about it, and
+    reasoned correctly from the falsehood. The message now says what is true.
 
-    Docstrings and comments are exempt: neither reaches a stream. Runtime data
-    is out of reach by construction -- a path this repository did not write can
-    carry anything, and the check reads literals only.
+    Runtime data is out of reach by construction -- a path this repository did
+    not write can carry anything -- and `lib/winio.py` is what protects that
+    half. The two are complementary, not alternatives, and check 14 is what
+    keeps the second one wired.
 
-    A file that does not parse is skipped rather than reported. This is not a
-    syntax checker, and the suite already fails on a module it cannot import.
+    Docstrings are exempt because the house prose style is free where it is
+    read as prose. Note the exemption is about docstrings, not about reaching a
+    stream: `argparse(description=__doc__)` pipes a module docstring to stdout,
+    which is why check 13 bans that construction outright.
     """
     findings = []
-    for path in sorted(root.rglob("*.py")):
-        if ".git" in path.parts or not path.is_file():
+    candidates = [
+        path for path in _python_files(root)
+        if ".git" not in path.parts
+    ]
+    ignored = _git_ignored(root, candidates)
+    for path in candidates:
+        if path in ignored:
             continue
-        text = _read_text(path)
-        if text is None:
+        rel_file = path.relative_to(root).as_posix()
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            findings.append(
+                f"emitted-ascii: {rel_file} is not valid UTF-8 ({exc.reason} at "
+                f"byte {exc.start}) -- the substrate reads UTF-8, and a file it "
+                f"cannot decode cannot be checked for what it states"
+            )
             continue
         try:
             tree = ast.parse(text)
-        except SyntaxError:
+        except SyntaxError as exc:
+            findings.append(
+                f"emitted-ascii: {rel_file}:{exc.lineno} does not parse ({exc.msg}) "
+                f"-- an unparseable file is not checked, and a check that skips in "
+                f"silence cannot be told apart from a clean tree"
+            )
             continue
         docstrings = _docstring_constants(tree)
-        rel_file = path.relative_to(root).as_posix()
         seen = set()
+        per_file = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
                 continue
             if id(node) in docstrings:
                 continue
             for char in node.value:
-                if ord(char) < 128 or (node.lineno, ord(char)) in seen:
+                if ord(char) < 128:
                     continue
-                seen.add((node.lineno, ord(char)))
+                lineno = _true_lineno(text, node, char)
+                if (lineno, ord(char)) in seen:
+                    continue
+                seen.add((lineno, ord(char)))
+                per_file.append((lineno, ord(char), char))
+        for lineno, _codepoint, char in sorted(per_file):
+            findings.append(
+                f"emitted-ascii: {rel_file}:{lineno} states "
+                f"U+{ord(char):04X} ({unicodedata.name(char, 'unnamed')}) "
+                f"in a non-docstring string constant -- machine-read output "
+                f"stays ASCII, because Windows encodes it to the locale "
+                f"codepage and a captured non-ASCII byte garbles. If this "
+                f"string is data rather than output, it still stays ASCII "
+                f"here: build the character with chr() as the fixtures do"
+            )
+    return findings
+
+
+def check_docstring_not_piped(root: Path) -> list[str]:
+    """No script hands its module docstring to argparse as the help description.
+
+    `ArgumentParser(description=__doc__)` writes the module docstring to stdout
+    on `--help`, and `--help` exits inside `parse_args` before any stream setup
+    a later line would have done. So a docstring -- which check 12 exempts on
+    the grounds that prose is free where it is read as prose -- becomes output,
+    encoded to the locale codepage, and this repository shipped three scripts
+    doing exactly that, each emitting the cp1252 em dash byte 0x97.
+
+    This is a call-site ban rather than a reachability analysis, which is what
+    makes it exact: the pattern is one keyword argument whose value is the name
+    `__doc__`, and matching it needs no guess about what reaches where. A
+    docstring that should be help text is help text -- write it as an ASCII
+    `description=` and keep the module docstring for readers of the source.
+    """
+    findings = []
+    for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in _python_files(base):
+            text = _read_text(path)
+            if text is None:
+                continue
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                continue
+            rel_file = path.relative_to(root).as_posix()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for keyword in node.keywords:
+                    if keyword.arg != "description":
+                        continue
+                    if isinstance(keyword.value, ast.Name) and keyword.value.id == "__doc__":
+                        findings.append(
+                            f"docstring-piped: {rel_file}:{node.lineno} passes "
+                            f"__doc__ as an argparse description -- --help writes "
+                            f"it to stdout before any stream setup runs, so the "
+                            f"module docstring becomes locale-encoded output. "
+                            f"Write an ASCII description instead"
+                        )
+    return findings
+
+
+def check_stdio_wired(root: Path) -> list[str]:
+    """Every script with a `main()` calls `utf8_stdio()` as its first statement.
+
+    The emitted-ASCII check protects what this repository writes; it reads
+    literals and cannot reach what the repository is handed -- a path from git,
+    a filename a consumer chose. On Windows that garbles, and for anything
+    outside cp1252 it raises mid-report so the offending path never prints.
+    `lib/winio.py` closes that half, and this closes the gap between having a
+    helper and having called it.
+
+    The objection this answers is a real one and was the reason a helper was
+    once rejected outright: "the helper was called on this entry path" sounds
+    like a reachability question, and reachability is not decidable from an
+    AST. It is not that question. **The first statement of `main()` is a
+    position, and a position is exact.** Ordering is the whole point -- a call
+    after `parse_args` is a call that `--help` has already outrun.
+
+    A module without a `main()` is not a script and is not asked.
+    """
+    findings = []
+    for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in _python_files(base):
+            if "tests" in path.parts:
+                continue
+            text = _read_text(path)
+            if text is None:
+                continue
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                continue
+            main = next((n for n in tree.body
+                         if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+            if main is None:
+                continue
+            rel_file = path.relative_to(root).as_posix()
+            body = list(main.body)
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                body = body[1:]  # its docstring
+            first = body[0] if body else None
+            called = (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Call)
+                and isinstance(first.value.func, ast.Name)
+                and first.value.func.id == "utf8_stdio"
+            )
+            if not called:
                 findings.append(
-                    f"emitted-ascii: {rel_file}:{node.lineno} states "
-                    f"U+{ord(char):04X} ({unicodedata.name(char, 'unnamed')}) "
-                    f"in a string that can reach a stream -- machine-read "
-                    f"output stays ASCII, because Windows encodes it to the "
-                    f"locale codepage and a captured non-ASCII byte garbles"
+                    f"stdio-unwired: {rel_file}:{main.lineno} defines main() "
+                    f"without calling utf8_stdio() first -- runtime data this "
+                    f"repository did not write reaches the stream unprotected, "
+                    f"and a call placed later is one that --help has outrun"
                 )
     return findings
 
@@ -1739,10 +1957,13 @@ def run(root: Path) -> list[str]:
         + check_decision_index(root)
         + check_entry_references(root)
         + check_emitted_ascii(root)
+        + check_docstring_not_piped(root)
+        + check_stdio_wired(root)
     )
 
 
 def main() -> int:
+    utf8_stdio()
     findings = run(ROOT)
     for finding in findings:
         print(finding)

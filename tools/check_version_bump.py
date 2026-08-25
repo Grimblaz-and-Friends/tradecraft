@@ -37,6 +37,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Shared with the shipped zone, which is the lawful direction: repo-only
+# code may import shipped code. Resolved from this file rather than the
+# working directory, so the script runs from any cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from winio import utf8_stdio  # noqa: E402
 MANIFEST = ".claude-plugin/plugin.json"
 # ADR-004's shipped zone. The manifest itself is excluded: bumping the version
 # is what this guard demands, so counting it as a shipped-zone change would make
@@ -209,8 +215,10 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
     parser = argparse.ArgumentParser(
-        description=__doc__,
+        description=
+        "Refuse a pull request whose shipped-zone files changed without a plugin version bump. Three outcomes: PASS, FAIL, and UNDETERMINED when the base cannot be resolved -- UNDETERMINED is a failure, not a pass.",
         # The outcome table is the point of --help; the default formatter
         # collapses it into one run-on line.
         formatter_class=argparse.RawDescriptionHelpFormatter,

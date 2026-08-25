@@ -59,6 +59,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Shared code lives in lib/, which ships beside this cell, so the import
+# resolves in a source checkout and an installed plugin alike -- against
+# this file's own directory, never the working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "lib"))
+from winio import utf8_stdio  # noqa: E402
+
 # The pytest -q summary line: counts and outcomes, with the trailing duration
 # ("in 1.23s") dropped — a duration is not a figure a write-up states, and
 # keeping it would make every derived block differ from every re-derivation.
@@ -353,15 +359,6 @@ def figures_from_args(repo: Path, args: argparse.Namespace) -> list[dict]:
     return figures
 
 
-def utf8_stdio() -> None:
-    """Figures and refusals are UTF-8 on both streams; a cp1252 console (or a
-    UTF-8-assuming harness capturing either stream) must not garble the
-    derivation this exists to make cheap."""
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
-
-
 def repo_root(path: Path) -> Path:
     """The repository root containing `path`. Every path this script takes or
     emits is root-relative; resolving the root once is what keeps a run from a
@@ -386,9 +383,9 @@ def stamped_command(repo: Path, argv: list[str]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
     argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(argv)
-    utf8_stdio()
     repo = repo_root(Path(args.repo).resolve())
     figures = figures_from_args(repo, args)
     stamp = tree_stamp(repo)

@@ -38,6 +38,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Shared with the shipped zone, which is the lawful direction: repo-only
+# code may import shipped code. Resolved from this file rather than the
+# working directory, so the script runs from any cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from winio import utf8_stdio  # noqa: E402
 import lint  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -157,6 +163,7 @@ def build_figures(root: Path, base: str | None,
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
     argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(
         prog="figures.py",
@@ -171,7 +178,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true",
                         help="emit JSON instead of markdown")
     args = parser.parse_args(argv)
-    engine.utf8_stdio()
     figures = build_figures(ROOT, args.base, args.cell, args.cell_budget)
     stamp = engine.tree_stamp(ROOT)
     command = ("python tools/figures.py " + shlex.join(argv)).rstrip()

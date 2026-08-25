@@ -22,6 +22,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# lib/ ships beside this hook, so the import resolves in a source checkout
+# and an installed plugin alike -- against this file's own directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from winio import utf8_stdio  # noqa: E402
+
 CHARTER = Path(__file__).resolve().parent.parent / "skills" / "charter" / "SKILL.md"
 
 
@@ -44,6 +49,7 @@ def _body(text: str) -> str:
 
 
 def main() -> int:
+    utf8_stdio(newline="\n")
     try:
         text = _body(CHARTER.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -59,11 +65,13 @@ def main() -> int:
         print(f"charter-not-emitted: {CHARTER} is empty", file=sys.stderr)
         return 1
 
-    # The runtime reads this stream, not a console, so the console code page is
-    # not the encoding that matters -- name it rather than inherit it.
+    # The runtime reads this stream and compares it byte for byte, not a
+    # console -- so this is the one caller that pins the newline rather
+    # than leaving the platform translation alone. utf8_stdio ran first,
+    # at the top of main(); this branch is only about a stream that had
+    # no reconfigure for it to use.
     out = sys.stdout
     if hasattr(out, "reconfigure"):
-        out.reconfigure(encoding="utf-8", newline="\n")
         out.write(text)
     else:
         sys.stdout.buffer.write(text.encode("utf-8"))

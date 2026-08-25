@@ -47,6 +47,14 @@ import json
 import subprocess
 import sys
 
+from pathlib import Path
+
+# Shared with the shipped zone, which is the lawful direction: repo-only
+# code may import shipped code. Resolved from this file rather than the
+# working directory, so the script runs from any cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from winio import utf8_stdio  # noqa: E402
+
 # Matches `.github/CODEOWNERS`. Widening this to skills or decisions is a
 # different requirement and wants its own incident. The charter cell is
 # not a widening: it holds the half of the doctrine that moved out of
@@ -344,8 +352,10 @@ def run(pr: str, repo: str | None, *, dry_run: bool = False) -> tuple[int, list[
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
     parser = argparse.ArgumentParser(
-        description=__doc__,
+        description=
+        "Label and comment on a pull request that changes the doctrine or the shipped charter, so the owner reads the diff before merging. Exit 0 when the PR state matches its diff; non-zero turns the check red.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--pr", required=True, type=int, help="pull request number")

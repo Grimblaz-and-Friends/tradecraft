@@ -14,6 +14,7 @@ collapsed two sites into one, and a number here would have gone stale again.
 """
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
@@ -285,8 +286,12 @@ def test_non_ascii_shipped_path_is_seen(repo):
     false pass, and the other half of the autopsy sentence that gave us the
     untracked-files fix."""
     # Built rather than written: the character is the subject under test, and
-    # emitted strings stay ASCII.
-    (repo / "skills" / f"caf{{chr(0xE9)}}.md").write_text("new\n", encoding="utf-8")
+    # a non-docstring string constant stays ASCII. The first attempt wrote
+    # f"caf{{chr(0xE9)}}.md" -- doubled braces are an f-string escape, so it
+    # produced the ASCII name caf{chr(0xE9)}.md, git never quoted it, and this
+    # test passed while pinning nothing at all.
+    e_acute = chr(0xE9)
+    (repo / "skills" / f"caf{e_acute}.md").write_text("new\n", encoding="utf-8")
     status, lines = cvb.check("main")
     assert status == FAIL, lines
     _commit(repo, "add non-ascii skill")
@@ -390,3 +395,43 @@ def test_the_failing_message_survives_being_captured(repo, capsysbinary):
         print(line)
     out = capsysbinary.readouterr().out
     assert out.decode("ascii"), "the captured bytes must decode as ASCII"
+
+def test_a_runtime_path_the_repo_did_not_write_survives_capture(repo, monkeypatch):
+    """The half no literal check can reach, on both streams.
+
+    The emitted-ASCII rule protects what this repository writes. This is what
+    it is handed: a shipped path someone else chose.
+
+    The streams are stood up as real cp1252 wrappers rather than left to
+    pytest's capture, and that is the whole reason this test discriminates.
+    `capsysbinary` alone does not: pytest's replacement stream is not encoded
+    to the platform code page, so removing the fix leaves it green and the
+    test pins nothing. Verified by removing utf8_stdio() from main(): with
+    these wrappers stdout comes back carrying 0xe9 and the second name raises
+    UnicodeEncodeError, killing the report before the offending path prints,
+    so the message naming the problem is the message that goes missing.
+    """
+    streams = {}
+    for name in ("stdout", "stderr"):
+        buffer = io.BytesIO()
+        streams[name] = (buffer, io.TextIOWrapper(buffer, encoding="cp1252", newline=""))
+        monkeypatch.setattr(sys, name, streams[name][1])
+    e_acute, cjk = chr(0xE9), chr(0x4E2D)
+    for name in (f"caf{e_acute}.md", f"{cjk}.md"):
+        (repo / "skills" / name).write_text("new" + chr(10), encoding="utf-8")
+    status = cvb.main(["--base", "main"])
+    for _name, wrapper in streams.values():
+        wrapper.flush()
+    assert status == 1
+    for stream_name, (buffer, _wrapper) in streams.items():
+        raw = buffer.getvalue()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AssertionError(
+                f"{stream_name} carried a non-UTF-8 byte at {exc.start}: {raw!r}"
+            ) from None
+        assert "UnicodeEncodeError" not in text
+    out = streams["stdout"][0].getvalue().decode("utf-8")
+    for name in (e_acute, cjk):
+        assert name in out, f"the report never printed the path carrying {name!r}"
