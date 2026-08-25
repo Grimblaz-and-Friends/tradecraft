@@ -109,7 +109,9 @@ WIRED_CI = (
     "      - uses: actions/checkout@v5\n"
     "        with:\n"
     "          fetch-depth: 0\n"
-    "      - run: python tools/doctrine_callout.py --pr 1\n"
+    "      - env:\n"
+    "          BASE_SHA: xyz\n"
+    "        run: python tools/doctrine_callout.py --pr 1 --base $BASE_SHA\n"
 )
 
 
@@ -766,6 +768,25 @@ def test_the_citation_guard_leaves_the_placeholder_and_fenced_prose_alone(tmp_pa
     assert lint.run(tmp_path) == []
 
 
+@pytest.mark.parametrize("rendering", [
+    "fetch-depth: 0",
+    "fetch-depth: 0  # full history, for the delta's base",
+    "fetch-depth: '0'",
+    'fetch-depth: "0"',
+])
+def test_lawful_renderings_of_full_history_are_not_findings(tmp_path, rendering):
+    """A guard that fails a required check on a lawful reformat blocks lawful
+    work, which fails as hard as passing unlawful work.
+
+    The first anchor written for this ended at `$` with neither quoting nor a
+    comment admitted, so three of these four went red -- on the one key whose
+    whole purpose is that a later session not delete it.
+    """
+    make_clean_tree(tmp_path)
+    _ci(tmp_path, WIRED_CI.replace("fetch-depth: 0", rendering))
+    assert lint.run(tmp_path) == []
+
+
 def test_a_fence_closes_only_on_its_own_marker(tmp_path):
     """CommonMark's rule, and the renderer every reader is looking at.
 
@@ -1228,6 +1249,15 @@ def test_deleting_the_callout_job_is_a_finding(tmp_path):
     ("depth bounded instead of full",
      lambda t: t.replace("fetch-depth: 0", "fetch-depth: 50"),
      "does not check out full history"),
+    # The delta's request, at both seams. Deleting either leaves the other
+    # standing and the command still reading correctly, which is why one
+    # pattern on the run line cannot hold this.
+    ("the --base flag deleted",
+     lambda t: t.replace(" --base $BASE_SHA", ""),
+     "does not pass `--base`"),
+    ("the BASE_SHA environment line deleted",
+     lambda t: t.replace("          BASE_SHA: xyz\n", ""),
+     "does not put the base revision in the environment"),
 ])
 def test_a_dead_callout_job_is_a_finding(tmp_path, name, mutate, expected):
     make_clean_tree(tmp_path)

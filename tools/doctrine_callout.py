@@ -279,6 +279,20 @@ def _edit_label(pr: str, repo: str | None, *, add: bool) -> None:
     _gh(*args)
 
 
+# What the callout prices, and against what. Each row is a size and the
+# ceiling that governs *exactly* that size -- the doctrine's two-file sum was
+# once rendered against AGENTS.md's budget alone, asserting a ceiling that did
+# not exist. Module level so a test can name the binding rather than infer it
+# from a rendered string: the label carries the ceiling, so reordering rows is
+# harmless and substituting one size for another is not.
+PRICED = (
+    # label,          lint constant,            figure_always_on data key
+    ("AGENTS.md",     "AGENTS_BUDGET_CHARS",    "agents"),
+    ("CLAUDE.md",     "POINTER_BUDGET_CHARS",   "pointer"),
+    ("charter body",  "CHARTER_BUDGET_CHARS",   "charter"),
+)
+
+
 def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
     """The size of what every session reads, where the owner is when he merges.
 
@@ -308,31 +322,18 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         figures = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(figures)
         data = figures.figure_always_on(root)["data"]
-        # One pair per ceiling, and each pair is the size that ceiling actually
-        # governs. This rendered the doctrine's two-file sum against
-        # AGENTS.md's budget alone -- a ceiling of 6,000 on a quantity whose
-        # lawful ceiling is 6,500, so no reading of it was right, and its
-        # neighbours (which are exact) taught the owner to read it as one.
-        budgets = {
-            "AGENTS.md": figures.lint.AGENTS_BUDGET_CHARS,
-            "CLAUDE.md": figures.lint.POINTER_BUDGET_CHARS,
-            "charter body": figures.lint.CHARTER_BUDGET_CHARS,
-        }
+        priced = [
+            (label, data[key], getattr(figures.lint, const))
+            for label, const, key in PRICED
+        ]
         movement = _always_on_delta(figures, root, base)
     except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
         return f"_Always-on surface: not derived ({type(exc).__name__}: {exc})._"
-    priced = ", ".join(
-        f"{name} {size:,} of {budgets[name]:,}"
-        for name, size in (
-            ("AGENTS.md", data["agents"]),
-            ("CLAUDE.md", data["pointer"]),
-            ("charter body", data["charter"]),
-        )
-    )
     return (
         f"Always-on surface: **{data['repo_total']:,}** chars here{movement}, "
         f"**{data['adopter_total']:,}** from this practice for an adopter — "
-        f"{priced}, {data['cells']} cell name/description {data['roster']:,}."
+        + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
+        + f", {data['cells']} cell name/description {data['roster']:,}."
     )
 
 

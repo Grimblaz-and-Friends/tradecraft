@@ -237,7 +237,20 @@ GATED_ON_PR = re.compile(r"^\s+if:.*pull_request")
 # for its own missing figure, so the pin is here. `0` and not a positive depth
 # -- a bounded depth is still a shallow clone, and the base sits any distance
 # back.
-FULL_HISTORY = re.compile(r"^\s+fetch-depth:\s*0\s*$")
+FULL_HISTORY = re.compile(
+    r"^\s+fetch-depth:\s*['\"]?0['\"]?\s*(?:#.*)?$"
+)
+# The delta's *request*, where the pin above is only its precondition. Both
+# seams, because neither regex can see the other's: deleting `--base` leaves
+# the env line standing, and deleting the env line leaves the run line
+# standing while `--base "$BASE_SHA"` expands to `--base ""` -- falsy, so the
+# delta drops out with the command still reading correctly. Four one-token
+# deletions across these two lines each rendered the callout the review had
+# already ruled an unmet criterion, with the whole suite green.
+BASE_FLAG = re.compile(
+    r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout\.py\b.*--base\b"
+)
+BASE_ENV = re.compile(r"^\s+BASE_SHA:\s*\S")
 
 # A decision entry's references. Markdown links claim to resolve outright;
 # backticked paths are the form entries actually use most, and are what PR #104
@@ -1254,6 +1267,12 @@ def check_doctrine_callout(root: Path) -> list[str]:
         (FULL_HISTORY, "does not check out full history (`fetch-depth: 0`), "
                        "so the base revision is unreadable and the callout "
                        "loses this PR's own movement"),
+        (BASE_FLAG, "does not pass `--base` to tools/doctrine_callout.py, so "
+                    "the callout states a total and says nothing about "
+                    "direction"),
+        (BASE_ENV, "does not put the base revision in the environment as "
+                   "`BASE_SHA`, so `--base` expands to nothing and the delta "
+                   "is dropped with the command still reading correctly"),
     ):
         if not any(pattern.match(line) for line in block):
             findings.append(

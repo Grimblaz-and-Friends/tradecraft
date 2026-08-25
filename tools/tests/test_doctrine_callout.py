@@ -443,6 +443,38 @@ def test_the_callout_carries_the_always_on_size(tmp_path, monkeypatch):
     assert degraded.startswith("_Always-on surface: not derived")
 
 
+def test_the_delta_survives_the_path_ci_actually_takes(gh):
+    """The seam, not the function.
+
+    Every pin written for the delta called the arithmetic directly, and no
+    test in the suite passed a base through `run()` or `main()` at all. So
+    `run()` dropping `base=base`, and `main()` dropping `base=args.base`,
+    each posted a callout with no delta and left the whole suite green --
+    reproducing byte-for-byte the artifact this review ruled an unmet
+    acceptance criterion. The workflow's two halves of the same seam are
+    pinned in the lint; these are the two inside the script.
+    """
+    stub = gh(["AGENTS.md"])
+    dc.run("79", None, base="HEAD~1")
+    assert re.search(r"chars here \([-+][\d,]+ this PR\)", stub.posted_body())
+
+
+def test_main_threads_its_base_argument_through(gh):
+    """The outermost seam: CI invokes `main`, not `run`."""
+    stub = gh(["AGENTS.md"])
+    dc.main(["--pr", "79", "--base", "HEAD~1"])
+    assert re.search(r"chars here \([-+][\d,]+ this PR\)", stub.posted_body())
+
+
+def test_no_base_still_posts_a_callout_without_a_delta(gh):
+    """The lawful polarity of both: a PR whose base cannot be resolved is not
+    a failure, and must still get its total."""
+    stub = gh(["AGENTS.md"])
+    dc.run("79", None)
+    body = stub.posted_body()
+    assert "Always-on surface:" in body and "this PR)" not in body
+
+
 def test_the_delta_renders_its_sign_and_states_a_base_it_cannot_read():
     """Three renderings that must differ, because two of them did not.
 

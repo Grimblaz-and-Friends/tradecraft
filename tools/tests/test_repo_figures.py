@@ -473,3 +473,80 @@ def test_the_always_emitted_figures_are_what_a_default_run_produces(tmp_path,
         "suite", "doc `AGENTS.md`", "doc `skills/charter/SKILL.md` (body)",
         "always-on surface", "decision-log census",
     ]
+
+
+# --- the callout prices each surface against the ceiling that governs it ----
+#
+# Cycle two found the doctrine's two-file sum rendered against AGENTS.md's
+# budget alone, asserting a ceiling that does not exist -- AGENTS.md is capped
+# at 6,000 and CLAUDE.md at 500, so no reading of `doctrine 5,758 of 6,000`
+# was right. The remedy landed with no pin of any kind, and substituting one
+# size for another rebuilt it with the whole suite green, rendering
+# `AGENTS.md 5,758 of 6,000` -- worse than the original, because the callout
+# no longer shows a doctrine figure, so the 11-character cross-check that
+# caught the class once is not available on the surface the owner reads.
+#
+# Literal on purpose, like the lint's check list: derived from `dc.PRICED`,
+# the test would agree with itself.
+PRICED_PAIRS = (
+    ("AGENTS.md", "AGENTS_BUDGET_CHARS", "agents"),
+    ("CLAUDE.md", "POINTER_BUDGET_CHARS", "pointer"),
+    ("charter body", "CHARTER_BUDGET_CHARS", "charter"),
+)
+
+
+def test_each_priced_pair_names_the_ceiling_that_governs_it():
+    """The binding, not the rendering: which size is priced against which
+    constant. Substituting a size, swapping two ceilings, or dropping a row
+    each change this set.
+
+    Compared as a set and not as a sequence, deliberately. Each row carries
+    its own label, so the order rows are rendered in changes nothing a reader
+    can be wrong about -- and a pin that reddened on a reorder would block a
+    lawful edit, which fails as hard as passing an unlawful one. The length is
+    asserted separately so a duplicated row cannot hide inside the set.
+    """
+    import doctrine_callout as dc
+
+    assert set(dc.PRICED) == set(PRICED_PAIRS)
+    assert len(dc.PRICED) == len(PRICED_PAIRS)
+    assert len({label for label, _, _ in dc.PRICED}) == len(dc.PRICED)
+
+
+def test_every_priced_pair_reaches_the_rendered_callout():
+    """And the rendering follows the binding, so a row that is declared and
+    then not rendered -- or rendered against a different number than it
+    declares -- is caught too.
+
+    Values come from the modules rather than from literals: asserting
+    `AGENTS.md 5,747 of 6,000` would go red on every lawful edit to the
+    doctrine, which is a guard blocking lawful work on the very surface this
+    change exists to make editable.
+    """
+    import doctrine_callout as dc
+
+    data = repo_figures.figure_always_on(ROOT)["data"]
+    body = dc._body(["AGENTS.md"])
+    for label, const, key in PRICED_PAIRS:
+        expected = f"{label} {data[key]:,} of {getattr(lint, const):,}"
+        assert expected in body, (expected, body)
+
+
+def test_the_ceilings_are_read_from_the_guards_constants(monkeypatch):
+    """The other polarity, and the one that keeps these pins honest.
+
+    The sizes move whenever the doctrine is edited, so a pin asserting
+    `AGENTS.md 5,747 of 6,000` would go red on every lawful edit -- a guard
+    blocking lawful work on the very surface this change exists to make
+    editable. Moving the guard's own constant and watching the rendered
+    ceiling follow proves the render reads the guard rather than a literal,
+    without pinning either number.
+    """
+    import doctrine_callout as dc
+
+    monkeypatch.setattr(lint, "AGENTS_BUDGET_CHARS", 4_242)
+    data = repo_figures.figure_always_on(ROOT)["data"]
+    body = dc._body(["AGENTS.md"])
+    assert f"AGENTS.md {data['agents']:,} of 4,242" in body
+    # and only that one moved
+    assert f"CLAUDE.md {data['pointer']:,} of {lint.POINTER_BUDGET_CHARS:,}" in body
