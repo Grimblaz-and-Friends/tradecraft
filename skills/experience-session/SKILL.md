@@ -1,6 +1,6 @@
 ---
 name: experience-session
-description: A chartered, time-boxed use of a built result as its consumer would use it, reported in a session note — the instrument that finds what only use finds. Use when a change to a skill's behaviour or a mechanism's surface has been built and you want to know what use will hit. Not for judging an artifact's reasoning, prose, or evidence — that is a review; not for testing a load-bearing premise before you assert it — that is a spike; not for anything a reader could settle by reading.
+description: A chartered, time-boxed use of a built result as its consumer would use it, reported in a session note — the instrument that finds what only use finds. Use when a change to a skill's behaviour or a mechanism's surface has been built and you want to know what use will hit, and again once a review's fix batch has rewritten what that material instructs, before the change merges. Not for judging an artifact's reasoning, prose, or evidence — that is a review; not for testing a load-bearing premise before you assert it — that is a spike; not for anything a reader could settle by reading.
 ---
 
 # experience-session
@@ -37,6 +37,8 @@ Nothing else is owed. A template, a field list, a severity scale, a required cou
 
 **A change to how a later session must work buys a session on the built result** — a skill's behaviour, or a mechanism's surface. Mechanical work — a typo, a dependency bump, a record append — does not, and owes nothing at all: not a session, and not a line saying none ran.
 
+**A review's fix batch buys a second one where it rewrote what the material instructs.** The first run is spent on the tree the fixes then replace, so what merges has been read again and never used — and a fix batch is itself a change to how a later session must work. It fires once, on the tree the terminating batch produced, before the review closes. A batch that changed only the record of the change — a decision entry, an index row, a pull request body — is the mechanical case above and owes nothing at all.
+
 **Declining costs one line, and always will.** Where a change bought a session and none ran, say so and why, on the change's pull request or issue. No session blocks a pull request by existing or by being skipped; this is not a gate and not a stage of a review.
 
 ## Running one
@@ -45,8 +47,15 @@ Nothing else is owed. A template, a field list, a severity scale, a required cou
 
 **The note is written by the session that chartered it, from the consumer's own account of the run.** A cold consumer cannot be asked for a session note without being told there is a session, which is the one thing it must not know — so ask it for an ordinary report of how the job went, and write the note around that. The seam belongs in the note.
 
-**Give the job, not the test.** Naming the material is required and naming what is doubted about it is forbidden — *use this cell to get these findings onto the board* is the job; *find out whether its search paragraph works* is the test, and a consumer told which sentence is doubted reports on that sentence.
+**Give the job, not the test.** Naming the material is required and naming what is doubted about it is forbidden — *use this cell to get these findings onto the board* is the job; *find out whether its search paragraph works* is the test, and a consumer told which sentence is doubted reports on that sentence. **Picking a job because it traverses what the fixes rewrote is lawful, and is how a second run reaches them; putting that in the dispatch is not.** The steer is the chartering session's, and it goes in the note, where a reader can see what the run was aimed at; the consumer gets a job.
 
-**Isolate the run** — its own worktree or a throwaway clone. Inside it the consumer does whatever the job needs, committing included, because a job whose success *is* a commit cannot be used faithfully otherwise. **What is forbidden is anything that leaves the isolation**: pushing to the change's own remote, and any act against the live board — an issue, a comment, a pull request. A throwaway remote and a scratch board are inside it, which is what keeps a job whose success *is* a push runnable. Where the run needs a repository tree, hand it one that withholds what this section's first paragraph withholds; a full checkout of the branch hands over the rationale in the change's own decision entry.
+**Isolate the run** — a throwaway tree of its own, sharing nothing with yours. Inside it the consumer does whatever the job needs, committing included, because a job whose success *is* a commit cannot be used faithfully otherwise. **What is forbidden is anything that leaves the isolation**: pushing to the change's own remote, and any act against the live board — an issue, a comment, a pull request. A throwaway remote and a scratch board are inside it, which is what keeps a job whose success *is* a push runnable. Where the run needs a repository tree, **build it from the change's content without its history**, carrying only the paths the job needs:
+
+```
+git archive -o tree.tar <the change's commit> <the paths the job needs>
+mkdir consumer && tar -x -f tree.tar -C consumer
+```
+
+Keep those paths relative — `tar` reads a leading drive letter as a remote host — and run `git init` inside the tree where the job needs to commit. A checkout, a clone, or a worktree hands the consumer the branch name and the commit subjects, which routinely say outright what the change was trying to fix, on top of the rationale in the change's own decision entry.
 
 **The note lands on the change's pull request or issue, before its review closes** — it is written for that review, as evidence of what use showed rather than a late comment on a settled artifact. A session that runs after that still lands its note there: late is lawful, silent is not.
