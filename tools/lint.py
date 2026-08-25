@@ -1125,6 +1125,15 @@ def _frontmatter_fields(text: str) -> dict[str, str] | None:
 # was not actually closed: `'it's'` opens and closes with a quote and is three
 # scalars to a parser. That hole was reachable by following this guard's own
 # advice, on any description carrying an apostrophe -- which is most of them.
+# YAML 1.2 ns-plain-first: `-`, `?` and `:` may open a plain scalar when a
+# non-space follows -- `-portable` is lawful, `- portable` is a sequence
+# entry. The other fourteen may not open one in any position. The split is
+# justified by what the value LOADS as, never by the vendor validator,
+# which returns 0 for all fourteen under LF: `#x` and `&x` load as null
+# there, silently, which is the metadata loss this guard exists to catch.
+_PLAIN_FIRST_ALWAYS = ",[]{}#&*!|>%@`"
+_PLAIN_FIRST_IF_SPACED = "-?:"
+
 _SQ_CLOSED = re.compile(r"'(?:[^']|'')*'")
 _DQ_CLOSED = re.compile(r'"[^"\\]*"')
 
@@ -1147,8 +1156,13 @@ def _plain_scalar_hazard(value: str) -> str | None:
         if _DQ_CLOSED.fullmatch(value):
             return None
         return "it opens with a quote but is not a closed double-quoted scalar"
-    if value[:1] in "-?:,[]{}#&*!|>%@`":
-        return f"it opens with the YAML indicator '{value[0]}'"
+    first = value[:1]
+    if first in _PLAIN_FIRST_ALWAYS:
+        return f"it opens with the YAML indicator '{first}'"
+    if first in _PLAIN_FIRST_IF_SPACED and (len(value) == 1
+                                            or value[1] in " \t"):
+        return (f"it opens with the YAML indicator '{first}' with nothing "
+                f"non-space after it")
     if ": " in value:
         return "it contains an unquoted ': ', which ends a plain scalar"
     if value.endswith(":"):

@@ -1565,6 +1565,22 @@ HAZARD_CASES = [
     ("a closed double-quoted value", '"The owner rules."', False),
     # A permissive escape rule would accept this; YAML 1.2 does not.
     ("a double-quoted value with an unknown escape", '"a \\x b"', True),
+    # The same hole as the single-quoted case above, on the other arm:
+    # without this row `_DQ_CLOSED` relaxes to `".*"` with the suite green.
+    ("a double-quoted value with a bare interior quote", '"say "hi" now"', True),
+    # ns-plain-first: lawful openers. All three load byte-identical under
+    # PyYAML and pass the vendor under both line endings. A guard that
+    # blocks lawful work fails as hard as one that passes unlawful work.
+    ("a dash opening a lawful plain scalar", "-portable and fast", False),
+    ("a question mark opening a lawful plain scalar", "?query the index", False),
+    ("a colon opening a lawful plain scalar", ":vector math for the win", False),
+    ("a question mark followed by a space", "? a description", True),
+    ("a bare indicator", "-", True),
+    # Not covered by "an inline comment", which pins the ` #` check. A
+    # leading `#` loads as null with the vendor silent under both endings,
+    # so this guard is the only thing catching it -- and the two-set split
+    # is what makes this branch one a mutation can move.
+    ("a leading hash", "#leading hash", True),
 ]
 
 
@@ -1616,7 +1632,14 @@ def test_the_declared_description_ceiling_is_the_one_these_tests_pin(tmp_path):
     a change to that constant -- and, at a large enough mutation, spends a
     minute writing the file it is about to measure.
     """
-    assert lint.CELL_FIELD_MAX_CHARS["description"] == 700
+    assert lint.CELL_FIELD_MAX_CHARS == {"name": 64, "description": 700}
+
+
+def test_the_declared_charter_budget_is_the_one_these_tests_pin():
+    """The rule stated just above, applied to the constant the fix that
+    stated it left deriving its bound from itself.
+    """
+    assert lint.CHARTER_BUDGET_CHARS == 6_000
 
 
 def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):
@@ -1671,3 +1694,75 @@ def test_a_missing_hook_config_does_not_suppress_the_stray_check(tmp_path):
 def test_the_charter_cell_may_hold_only_its_skill_file_and_stays_quiet(tmp_path):
     make_clean_tree(tmp_path)
     assert [f for f in lint.run(tmp_path) if "the charter cell carries" in f] == []
+
+
+def test_every_unconditional_yaml_indicator_is_a_hazard(tmp_path):
+    """The set is a transcription of an external spec, so its failure mode is a
+    silent omission -- a member never written has no per-member row to catch
+    it. One loop over the unit catches every single-character drop. Transcribed
+    independently on purpose: asserting equality against the production
+    constant would share a source of truth with the thing it pins.
+    """
+    make_clean_tree(tmp_path)
+    for c in ",[]{}#&*!|>%@`":
+        _set_description(tmp_path, c + "leading value")
+        findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+        assert findings, f"{c!r} cannot open a plain scalar and must fire"
+
+
+def test_the_conditional_indicators_fire_only_when_nothing_follows(tmp_path):
+    """`-`, `?` and `:` are the ns-plain-first exceptions. Both polarities per
+    character, which is what separates the two sets from each other."""
+    make_clean_tree(tmp_path)
+    for c in "-?:":
+        # Both whitespace forms. A space is not enough on its own: for `:` the
+        # later unquoted-`: ` check masks the drop, so a space-only row leaves
+        # `:` unpinned in this set. A tab is caught by no later check.
+        for gap in (" ", chr(9)):
+            _set_description(tmp_path, c + gap + "a description")
+            assert [f for f in lint.run(tmp_path) if "cell-frontmatter" in f], (c, gap)
+        _set_description(tmp_path, c + "portable value")
+        assert [f for f in lint.run(tmp_path) if "cell-frontmatter" in f] == [], c
+
+
+def test_cell_frontmatter_checks_the_name_field_and_its_ceiling(tmp_path):
+    """The field loop covers name and description; dropping `name` from it left
+    the suite green, as did raising the name ceiling tenfold. The directory is
+    named to match, so the name/directory check cannot be what fires.
+    """
+    make_clean_tree(tmp_path)
+    over = "x" * 65
+    skill = tmp_path / "skills" / over
+    skill.mkdir(parents=True)
+    _write_cell(skill, "# cell" + NL)
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert findings and not any("sits in" in f for f in findings), findings
+
+
+def test_a_quoted_name_matching_its_directory_is_lawful(tmp_path):
+    """`name: 'charter'` is lawful YAML and is where the guard's own printed
+    remedy sends an author. Dropping the quote-strip flips it to firing."""
+    make_clean_tree(tmp_path)
+    cell = tmp_path / "skills" / "charter" / "SKILL.md"
+    cell.write_text(
+        cell.read_text(encoding="utf-8").replace(
+            "name: charter", "name: 'charter'"),
+        encoding="utf-8",
+    )
+    assert [f for f in lint.run(tmp_path) if "cell-frontmatter" in f] == []
+
+
+def test_cell_frontmatter_checks_cells_other_than_the_charter(tmp_path):
+    """The docstring's first line is a universal -- *every* skill. Narrowing the
+    iteration to the charter cell left the suite green and would silently void
+    the guard for every other shipped cell."""
+    make_clean_tree(tmp_path)
+    cell = tmp_path / "skills" / "example-skill" / "SKILL.md"
+    cell.write_text(
+        cell.read_text(encoding="utf-8").replace(
+            "description: A fixture cell.",
+            "description: Not a cell: it decides nothing."),
+        encoding="utf-8",
+    )
+    findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
+    assert len(findings) == 1 and "example-skill" in findings[0], findings

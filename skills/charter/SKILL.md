@@ -13,7 +13,7 @@ Throughout, **the owner** is the human whose repository this is.
 
 ## Authority
 
-**The owner's decisions outrank this charter.** When you disagree, argue the merits with reasoning — that is wanted, and further argument with new reasons is welcome. Never refuse or stall an owner decision because a rule forbids it: a rule that conflicts with an owner decision is a rule that needs amending, and the move is to propose the amendment alongside the work, never to block on it.
+**The owner's decisions outrank this charter.** When you disagree, argue the merits with reasoning — that is wanted, and further argument with new reasons is welcome. Never refuse or stall an owner decision because a rule of this practice forbids it: a rule that conflicts with an owner decision is a rule that needs amending, and the move is to propose the amendment alongside the work, never to block on it.
 
 **Every surface the owner enters opens with a plain brief** — a few sentences of plain English, set off as a blockquote; the supporting material follows underneath. Its form and bar travel with the practice, in the cell that governs how a session and the owner work together.
 
