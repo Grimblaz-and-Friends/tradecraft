@@ -227,6 +227,13 @@ RUNS_SCRIPT = re.compile(r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout
 # The event is named; the gate's exact wording is not, so a lawful rewrite
 # (adding `&& !draft`, or moving to ${{ }} form) does not fail a required check.
 GATED_ON_PR = re.compile(r"^\s+if:.*pull_request")
+# The delta's base side reads blobs at another revision, which a shallow clone
+# does not have: the read fails, the delta drops out, and the callout states a
+# total with no direction while every check stays green. The job cannot go red
+# for its own missing figure, so the pin is here. `0` and not a positive depth
+# -- a bounded depth is still a shallow clone, and the base sits any distance
+# back.
+FULL_HISTORY = re.compile(r"^\s+fetch-depth:\s*0\s*$")
 
 # A decision entry's references. Markdown links claim to resolve outright;
 # backticked paths are the form entries actually use most, and are what PR #104
@@ -1240,6 +1247,9 @@ def check_doctrine_callout(root: Path) -> list[str]:
     for pattern, why in (
         (RUNS_SCRIPT, "does not run tools/doctrine_callout.py"),
         (GATED_ON_PR, "is not gated on a pull_request event"),
+        (FULL_HISTORY, "does not check out full history (`fetch-depth: 0`), "
+                       "so the base revision is unreadable and the callout "
+                       "loses this PR's own movement"),
     ):
         if not any(pattern.match(line) for line in block):
             findings.append(

@@ -71,8 +71,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Nothing here performs a git operation, so the token has no reason
-          # to persist into .git/config where later steps could read it.
+          # The callout derives the base side of its delta by reading blobs at
+          # another revision, and a shallow clone does not have that object:
+          # the read fails, the delta drops out, and the comment states a total
+          # with no direction -- the exact defect the delta was added to end.
+          fetch-depth: 0
+          # This job runs git read-only against objects checkout already
+          # fetched and never reaches the network itself, so the token has no
+          # reason to persist into .git/config where later steps could read it.
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -84,7 +90,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          # The merge base, so the callout can state this PR's own movement.
-          # Absent, it states the total and says nothing about direction.
+          # The base branch's head at event time. Not the merge base -- and
+          # the right base side anyway, because of what is checked out above:
+          # Actions checks out the *merge* commit, so whatever main gained
+          # while this PR was open sits on both sides of the pair and cancels.
+          # Pairing that merge commit with a computed merge base instead would
+          # put main's own growth on the head side and bill it to this PR.
+          # The correct base depends on what is checked out, so a local run --
+          # which has the PR head, not the merge commit -- wants
+          # `--base $(git merge-base HEAD origin/main)`, not `--base origin/main`.
+          # Absent, the callout states the total and says nothing about direction.
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python tools/doctrine_callout.py --pr "$PR_NUMBER" --base "$BASE_SHA"

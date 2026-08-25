@@ -145,12 +145,24 @@ def test_doctrine_pr_gets_label_and_comment(gh):
 
 
 def test_the_body_names_the_files_the_pr_actually_touched(gh):
-    """A CLAUDE.md-only PR must not be sent to read the AGENTS.md diff."""
+    """A CLAUDE.md-only PR must not be sent to read the AGENTS.md diff.
+
+    Scoped to the two lines that carry the file list, where it used to search
+    the whole body above the footer. The always-on figure now names AGENTS.md
+    in every callout because that is the file its ceiling governs, and a
+    whole-body search cannot tell a priced figure from an instruction -- it
+    would fail this lawful rendering, and a guard that blocks lawful work
+    fails as hard as one that passes unlawful work.
+    """
     stub = gh(["CLAUDE.md"])
     dc.run("79", None)
     body = stub.posted_body()
     assert "Read the `CLAUDE.md` diff" in body
-    assert "AGENTS.md" not in body.split("<sub>")[0]
+    instructions = [line for line in body.splitlines()
+                    if line.startswith("**This PR changes the doctrine.**")
+                    or line.startswith("Touched:")]
+    assert len(instructions) == 2, instructions
+    assert not any("AGENTS.md" in line for line in instructions), instructions
 
 
 def test_label_is_created_before_it_is_applied(gh):

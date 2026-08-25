@@ -137,7 +137,7 @@ def figure_always_on(root: Path) -> dict:
         fields = lint._frontmatter_fields(cell.read_text(encoding="utf-8", errors="replace")) or {}
         roster += len(fields.get("name", "")) + len(fields.get("description", ""))
     agents = root / "AGENTS.md"
-    doctrine = len(agents.read_text(encoding="utf-8", errors="replace")) if agents.is_file() else 0
+    agents_chars = len(agents.read_text(encoding="utf-8", errors="replace")) if agents.is_file() else 0
     # CLAUDE.md counts here for the same reason it has its own budget: this
     # runtime loads it, and leaving it out meant a rule could move from
     # AGENTS.md into it and the total would report a reduction while nothing
@@ -145,7 +145,8 @@ def figure_always_on(root: Path) -> dict:
     # It is not in the adopter's total, which omits it on the same ground as
     # AGENTS.md: a plugin root's copy reaches the cache inert.
     pointer = root / "CLAUDE.md"
-    doctrine += len(pointer.read_text(encoding="utf-8", errors="replace")) if pointer.is_file() else 0
+    pointer_chars = len(pointer.read_text(encoding="utf-8", errors="replace")) if pointer.is_file() else 0
+    doctrine = agents_chars + pointer_chars
     charter_path = root / lint.CHARTER
     charter = len(lint._frontmatterless(
         charter_path.read_text(encoding="utf-8", errors="replace")
@@ -168,7 +169,13 @@ def figure_always_on(root: Path) -> dict:
             "practice contributes to their always-on surface; working tree"
         ),
         "data": {
-            "doctrine": doctrine, "charter": charter, "roster": roster,
+            # `doctrine` is the sum the total is built from; `agents` and
+            # `pointer` are the two files it is made of, kept apart because
+            # they are governed by two different ceilings and a consumer that
+            # prices the sum against either one states a ceiling that does not
+            # exist.
+            "doctrine": doctrine, "agents": agents_chars, "pointer": pointer_chars,
+            "charter": charter, "roster": roster,
             "cells": len(cells), "repo_total": doctrine + adopter,
             "adopter_total": adopter,
         },

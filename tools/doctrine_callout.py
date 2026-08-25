@@ -308,33 +308,56 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         figures = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(figures)
         data = figures.figure_always_on(root)["data"]
-        agents_budget = figures.lint.AGENTS_BUDGET_CHARS
-        charter_budget = figures.lint.CHARTER_BUDGET_CHARS
+        # One pair per ceiling, and each pair is the size that ceiling actually
+        # governs. This rendered the doctrine's two-file sum against
+        # AGENTS.md's budget alone -- a ceiling of 6,000 on a quantity whose
+        # lawful ceiling is 6,500, so no reading of it was right, and its
+        # neighbours (which are exact) taught the owner to read it as one.
+        budgets = {
+            "AGENTS.md": figures.lint.AGENTS_BUDGET_CHARS,
+            "CLAUDE.md": figures.lint.POINTER_BUDGET_CHARS,
+            "charter body": figures.lint.CHARTER_BUDGET_CHARS,
+        }
         movement = _always_on_delta(figures, root, base)
     except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
         return f"_Always-on surface: not derived ({type(exc).__name__}: {exc})._"
+    priced = ", ".join(
+        f"{name} {size:,} of {budgets[name]:,}"
+        for name, size in (
+            ("AGENTS.md", data["agents"]),
+            ("CLAUDE.md", data["pointer"]),
+            ("charter body", data["charter"]),
+        )
+    )
     return (
         f"Always-on surface: **{data['repo_total']:,}** chars here{movement}, "
         f"**{data['adopter_total']:,}** from this practice for an adopter — "
-        f"doctrine {data['doctrine']:,} of {agents_budget:,}, charter body "
-        f"{data['charter']:,} of {charter_budget:,}, {data['cells']} cell "
-        f"name/description {data['roster']:,}."
+        f"{priced}, {data['cells']} cell name/description {data['roster']:,}."
     )
 
 
 def _always_on_delta(figures, root: Path, base: str | None) -> str:
-    """This PR's own movement, or nothing when there is no base to measure from.
+    """This PR's own movement, or why it could not be measured.
 
-    Stated as an absence rather than guessed at: a PR with no resolvable base
-    gets a total and no delta, which is honest, where a delta against a guessed
-    base would be worse than none.
+    A delta against a guessed base would be worse than none, so an unreadable
+    base still yields no number. What it no longer yields is silence. This
+    returned an empty string on any failure, which renders byte-identically to
+    a run that was given no base at all -- so a base that could not be read
+    looked exactly like a caller that never asked, and the callout shipped for
+    a full cycle without its delta in the one environment that runs it. Nobody
+    could have seen it from the comment. Its sibling `_always_on_line` names
+    its own failures for this reason; one function answering the same question
+    two opposite ways is how the gap survived.
+
+    The base is named because it is the actionable half: the failure is
+    essentially always that the object is not in this clone.
     """
     if not base:
         return ""
     try:
         before = figures.always_on_at(root, base)
-    except Exception:  # noqa: BLE001 -- a missing base is not a callout failure
-        return ""
+    except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
+        return f" (movement not derived: {type(exc).__name__} reading {base})"
     change = figures.figure_always_on(root)["data"]["repo_total"] - before
     return f" ({change:+,} this PR)"
 

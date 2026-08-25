@@ -106,6 +106,9 @@ WIRED_CI = (
     "    if: github.event_name == 'pull_request'\n"
     "    runs-on: ubuntu-latest\n"
     "    steps:\n"
+    "      - uses: actions/checkout@v5\n"
+    "        with:\n"
+    "          fetch-depth: 0\n"
     "      - run: python tools/doctrine_callout.py --pr 1\n"
 )
 
@@ -1145,6 +1148,20 @@ def test_deleting_the_callout_job_is_a_finding(tmp_path):
     ("trigger switched to pull_request_target",
      lambda t: t.replace("  pull_request:\n", "  pull_request_target:\n", 1),
      "no `pull_request:` trigger"),
+    # Not a dead job but a blind one, and this is the shape that shipped:
+    # the delta's base side reads blobs at another revision, a shallow
+    # clone has none, and the read failing costs the callout its figure
+    # while every check still reports green. Omitting the key is what
+    # produces depth 1, so the default is the trap.
+    ("full history dropped",
+     lambda t: t.replace("          fetch-depth: 0\n", ""),
+     "does not check out full history"),
+    # A bounded depth is still a shallow clone and the base sits any
+    # distance back, so the pin is `0` rather than evidence that somebody
+    # thought about depth at all.
+    ("depth bounded instead of full",
+     lambda t: t.replace("fetch-depth: 0", "fetch-depth: 50"),
+     "does not check out full history"),
 ])
 def test_a_dead_callout_job_is_a_finding(tmp_path, name, mutate, expected):
     make_clean_tree(tmp_path)
