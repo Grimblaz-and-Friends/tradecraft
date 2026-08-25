@@ -3,7 +3,9 @@
 
 The general engine ships in the authoring skill; this wrapper is the
 repo-specific application: it feeds the engine this repository's parameters
-and adds the one figure inseparable from a repo-only guard. Dependencies point
+and adds the figures that reach a repo-only guard: the census, which reuses
+check_entry_references' own resolution, and the description ceiling, which is
+check_cell_frontmatter's. The budgets are the guards' own constants. Dependencies point
 the lawful direction — repo-only code importing shipped code — and the numbers
 that must agree with a guard come from the guard:
 
@@ -15,12 +17,15 @@ that must agree with a guard come from the guard:
     what `check_entry_references` reports" — pinned references excluded
     because a pin is a lawful form, not a recorded exemption.
 
-Usage:  python tools/figures.py [--base REF] [--json]
+Usage:  python tools/figures.py [--base REF] [--cell PATH --cell-budget N]
+                                [--json]
 
 Always emitted: the suite figure (pytest over tools/tests and skills), the
-AGENTS.md size/headroom figure, and the census. With --base, the governing-
-prose delta (AGENTS.md, CLAUDE.md, and the .md files under skills/) against
-that ref — the base is a caller decision the engine refuses to default.
+AGENTS.md size/headroom figure, the charter's body against its budget, and
+the census. With --base, the governing-prose delta (AGENTS.md, CLAUDE.md,
+and the .md files under skills/) against that ref. With --cell, that cell's
+body and description figures. Both the delta's base and a cell's budget are
+caller decisions neither script will default.
 """
 from __future__ import annotations
 
@@ -82,37 +87,55 @@ def figure_census(root: Path) -> dict:
     }
 
 
-def figure_charter(root: Path) -> dict:
-    """The charter's budgeted size, measured the way its guard measures it.
+def figure_cell_description(root: Path, rel_path: str) -> dict:
+    """A cell's always-on surface: the frontmatter field every session loads.
 
-    The engine's `figure_doc` measures a whole file, which is right for a plain
-    document and wrong for a cell: the charter carries frontmatter addressed to
-    the runtime's skill index, and `tools/lint.py` budgets the body beneath it
-    so a description edit cannot eat the rules' headroom. A figure measuring the
-    file would disagree with the guard that judges it, which is the one thing
-    D-141 exists to prevent -- so the measurement comes from the guard.
+    Separate from the body figure because they are paid at different times and
+    move independently -- #169 shed 25 chars of body and added 147 of
+    description, and a body-only figure certified that as "no more to load".
     """
-    target = root / lint.CHARTER
+    target = root / rel_path
     if not target.is_file():
-        raise SystemExit(f"figures: {lint.CHARTER} is not a readable file under {root}")
-    text = lint._frontmatterless(target.read_text(encoding="utf-8", errors="replace"))
-    chars, budget = len(text), lint.CHARTER_BUDGET_CHARS
+        raise SystemExit(f"figures: {rel_path} is not a readable file under {root}")
+    fields = lint._frontmatter_fields(
+        target.read_text(encoding="utf-8", errors="replace")
+    )
+    if fields is None or "description" not in fields:
+        raise SystemExit(f"figures: {rel_path} has no parseable description")
+    chars = len(fields["description"])
+    budget = lint.CELL_FIELD_MAX_CHARS["description"]
     return {
-        "name": f"doc `{lint.CHARTER}` (body)",
+        "name": f"cell `{rel_path}` (description)",
         "value": f"{chars:,} of {budget:,} chars, headroom {budget - chars:,}",
         "basis": (
-            "decoded UTF-8 characters below the frontmatter, universal-newline "
-            "read (CRLF counts as one character), working tree; the same "
-            "measurement tools/lint.py's budget applies"
+            "decoded UTF-8 characters of the frontmatter description as "
+            "check_cell_frontmatter reads it, working tree"
         ),
         "data": {
-            "path": lint.CHARTER, "chars": chars, "budget": budget,
+            "path": rel_path, "chars": chars, "budget": budget,
             "headroom": budget - chars,
         },
     }
 
 
-def build_figures(root: Path, base: str | None) -> list[dict]:
+def figure_charter(root: Path) -> dict:
+    """The charter's body against the one cell budget a guard here enforces.
+
+    The measurement is the engine's -- a cell body is a general shape, not a
+    repo-bound one, and reimplementing it here is how a figure drifts from the
+    guard judging it. What is repo-bound is the budget and the fact that
+    something enforces it, which is what this adds.
+    """
+    figure = engine.figure_cell(root, lint.CHARTER, lint.CHARTER_BUDGET_CHARS)
+    figure["basis"] += (
+        " -- here tools/lint.py's own constant, so the figure cannot drift "
+        "from what check_doctrine enforces"
+    )
+    return figure
+
+
+def build_figures(root: Path, base: str | None,
+                  cell: str | None = None, budget: int | None = None) -> list[dict]:
     figures = [
         engine.figure_tests(root, SUITE_PATHS),
         engine.figure_doc(root, DOC, lint.AGENTS_BUDGET_CHARS),
@@ -121,6 +144,15 @@ def build_figures(root: Path, base: str | None) -> list[dict]:
     ]
     if base:
         figures.append(engine.figure_delta(root, base, PROSE_PATHS, PROSE_SUFFIXES))
+    if cell:
+        if budget is None:
+            raise SystemExit(
+                "figures: --cell needs --cell-budget; a cell's budget is a "
+                "caller decision and picking one silently is how a stated "
+                "figure diverges from the guard that judges it"
+            )
+        figures.append(engine.figure_cell(root, cell, budget))
+        figures.append(figure_cell_description(root, cell))
     return figures
 
 
@@ -132,11 +164,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--base", metavar="REF",
                         help="also emit the governing-prose delta against REF")
+    parser.add_argument("--cell", metavar="PATH",
+                        help="also emit a cell's body and description figures")
+    parser.add_argument("--cell-budget", metavar="N", type=int,
+                        help="the body budget --cell is measured against")
     parser.add_argument("--json", action="store_true",
                         help="emit JSON instead of markdown")
     args = parser.parse_args(argv)
     engine.utf8_stdio()
-    figures = build_figures(ROOT, args.base)
+    figures = build_figures(ROOT, args.base, args.cell, args.cell_budget)
     stamp = engine.tree_stamp(ROOT)
     command = ("python tools/figures.py " + shlex.join(argv)).rstrip()
     render = engine.render_json if args.json else engine.render_markdown

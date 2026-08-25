@@ -157,6 +157,51 @@ def figure_doc(repo: Path, path: str, budget: int) -> dict:
     }
 
 
+def frontmatterless(text: str) -> str:
+    """Text with a leading YAML frontmatter block removed, if there is one.
+
+    A cell's frontmatter is addressed to the runtime's skill index, not to a
+    reader, and a budget on a cell's rules should not be spent by an edit to
+    its description -- so the two are measured apart. Public because a guard
+    enforcing that budget has to measure the same thing this figure reports;
+    a figure that disagrees with the guard judging it is what this whole
+    script exists to prevent.
+    """
+    if not text.startswith("---"):
+        return text
+    end = text.find(chr(10) + "---", 3)
+    return text if end == -1 else text[end + 4:].lstrip(chr(10))
+
+
+def figure_cell(repo: Path, path: str, budget: int) -> dict:
+    """A cell's body against its budget -- the file without its frontmatter.
+
+    `figure_doc` measures a whole file, which is right for a plain document
+    and wrong for a cell. Written because a change shedding a cell's depth
+    stated a body figure no invocation of this script could produce, so the
+    number was derived by hand in the change that ships "derive figures here
+    rather than by hand". The budget is the caller's: this script knows of no
+    ceiling, and inventing one would be the silent basis it refuses.
+    """
+    target = repo / path
+    if not target.is_file():
+        raise SystemExit(
+            f"figures: --cell '{path}' is not a readable file under {repo}"
+        )
+    chars = len(frontmatterless(target.read_text(encoding="utf-8", errors="replace")))
+    headroom = budget - chars
+    return {
+        "name": f"doc `{path}` (body)",
+        "value": f"{chars:,} of {budget:,} chars, headroom {headroom:,}",
+        "basis": (
+            "decoded UTF-8 characters below the frontmatter, universal-newline "
+            "read (CRLF counts as one character), working tree; the budget is "
+            "the caller's"
+        ),
+        "data": {"path": path, "chars": chars, "budget": budget, "headroom": headroom},
+    }
+
+
 def _base_files(repo: Path, base: str, paths: list[str]) -> list[str]:
     # NUL-delimited: with git's default core.quotePath, a non-ASCII filename
     # comes back C-escaped in newline output, silently missing every suffix
@@ -261,6 +306,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="test paths for the suite figure")
     parser.add_argument("--doc", metavar="PATH",
                         help="document for the size/headroom figure")
+    parser.add_argument("--cell", metavar="PATH",
+                        help="a cell whose body is measured against --budget")
     parser.add_argument("--budget", type=int, metavar="N",
                         help="character budget for --doc (required with it)")
     parser.add_argument("--base", metavar="REF",
@@ -274,8 +321,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def figures_from_args(repo: Path, args: argparse.Namespace) -> list[dict]:
-    if (args.doc is None) != (args.budget is None):
-        raise SystemExit("figures: --doc and --budget travel together; supply both")
+    if args.doc and args.cell:
+        raise SystemExit(
+            "figures: --doc and --cell measure the same file two ways; pick one"
+        )
+    if ((args.doc is None and args.cell is None) != (args.budget is None)):
+        raise SystemExit(
+            "figures: --doc or --cell travels with --budget; supply both"
+        )
     if (args.delta is None) != (args.base is None):
         raise SystemExit(
             "figures: --delta needs --base and --base needs --delta — "
@@ -288,12 +341,14 @@ def figures_from_args(repo: Path, args: argparse.Namespace) -> list[dict]:
         figures.append(figure_tests(repo, args.tests))
     if args.doc:
         figures.append(figure_doc(repo, args.doc, args.budget))
+    if args.cell:
+        figures.append(figure_cell(repo, args.cell, args.budget))
     if args.delta:
         figures.append(figure_delta(repo, args.base, args.delta, args.delta_suffix))
     if not figures:
         raise SystemExit(
             "figures: no figure requested — give --tests, --doc/--budget, "
-            "or --base/--delta"
+            "--cell/--budget, or --base/--delta"
         )
     return figures
 
