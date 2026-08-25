@@ -696,6 +696,78 @@ def test_the_module_docstring_enumerates_every_check_run_calls():
     ), "the docstring's numbered checks do not match what run() calls"
 
 
+def test_a_fence_closes_only_on_its_own_marker(tmp_path):
+    """CommonMark's rule, and the renderer every reader is looking at.
+
+    A naive toggle fails both ways, and both are what a cell teaching
+    markdown writes rather than what an adversary supplies: a ``` line quoted
+    inside a ```` block ends the fence early, so displayed prose reads as
+    live; a ~~~ line inside a ``` block never ends it, so live prose goes
+    unread to the end of the file.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    quoted = ("````" + NL + "A fence opens with:" + NL + "```" + NL + "````" + NL
+              + NL + "Depth lives in the `example-skill` cell." + NL)
+    _write_cell(other, quoted)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "sideways-dep" in findings[0], (
+        "a ``` quoted inside a ```` block must not end the fence"
+    )
+    mismatched = ("```" + NL + "shown, not made" + NL + "~~~" + NL
+                  + NL + "Depth lives in the `example-skill` cell." + NL)
+    _write_cell(other, mismatched)
+    assert lint.run(tmp_path) == [], (
+        "a ~~~ line must not close a ``` fence, so what follows stays fenced"
+    )
+
+
+def test_a_path_inside_a_fence_is_still_a_path(tmp_path):
+    """The fence exemption is the name form's alone.
+
+    This repository's fenced blocks are calling contracts and command lines,
+    not examples; `check_zone_wall` and `check_harness_tokens` already fire
+    inside them, and the portability guard reads a cell's script contract
+    through one and requires it to resolve. Exempting paths here would put
+    two guards in one tree disagreeing about what a fence means.
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    for body, expected in (
+        ("```" + NL + "See skills/example-skill/SKILL.md" + NL + "```" + NL, 1),
+        ("```" + NL + "python ../example-skill/scripts/x.py" + NL + "```" + NL, 1),
+        ("```" + NL + "the `example-skill` cell" + NL + "```" + NL, 0),
+    ):
+        _write_cell(other, body)
+        findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
+        assert len(findings) == expected, f"{body!r} -> {findings}"
+
+
+def test_a_references_pointer_guard_leaves_lawful_prose_alone(tmp_path):
+    """The lawful cases the rooted-skill branch already names.
+
+    A guard blocking lawful work fails as hard as one passing unlawful work,
+    and nothing in shipped prose reserves `references/*.md` the way the cell
+    name form is reserved -- so an author citing an upstream URL has no
+    warning and no escape.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    for body in (
+        "See https://github.com/x/y/blob/main/references/guide.md for the note.\n",
+        "Upstream vendors it at vendor/pkg/references/notes.md today.\n",
+    ):
+        _write_cell(skill, body)
+        assert [f for f in lint.run(tmp_path) if "reference-pointer" in f] == [], body
+    _write_cell(skill, "Depth lives in references/detail.md.\n")
+    assert lint.run(tmp_path) == []
+    _write_cell(skill, "Depth lives in references/gone.md.\n")
+    findings = [f for f in lint.run(tmp_path) if "reference-pointer" in f]
+    assert len(findings) == 1 and "references/gone.md" in findings[0]
+
+
 def test_the_exempt_cell_name_is_the_one_these_tests_pin():
     """A test deriving its bound from the constant it tests cannot catch a
     change to that constant [#164]. The exemption is a rule about one named

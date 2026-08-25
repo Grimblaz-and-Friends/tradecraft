@@ -26,14 +26,19 @@ Checks:
      Paths between cells stay findings even from the charter, for a reason
      self-containment never covered — a rooted skills/ path does not resolve
      once installed, while the name survives relocation.
-  6. cell references: every `<name>` cell reference in the shipped zone names
-     a skill that exists, and every references/ pointer resolves against the
-     directory of the file naming it, so renaming or deleting either cannot
-     silently strand the prose that points at it.
+  6. cell references: every `<name>` cell reference names a skill that
+     exists, and every references/ pointer resolves against the directory of
+     the file naming it, so renaming or deleting either cannot silently
+     strand the prose that points at it. Scanned over the shipped zone and
+     over the doctrine files, which are not cells and may name any -- but a
+     name they write strands exactly as a cell's does.
 
-  Checks 5 and 6 read prose outside fenced blocks only: a reference inside a
-  fence is displayed, not made, exactly as check 7 already reasons about an
-  import. Both also read one wrap — a line ending in `<name>` whose successor
+  Checks 5 and 6 read the *name* form outside fenced blocks only: a name
+  inside a fence is a spelling being shown, as check 7 already reasons about
+  an import. Path forms are read everywhere, fences included -- a path is
+  dead once installed whatever encloses it, this repository's fenced blocks
+  are calling contracts rather than examples, and checks 1 and 2 already fire
+  inside them. Both also read one wrap — a line ending in `<name>` whose successor
   begins "cell" — because a reflow is a formatting edit no reviewer inspects
   and it would otherwise silently remove a reference from both checks.
   7. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
@@ -469,8 +474,18 @@ def check_sideways_deps(root: Path) -> list[str]:
             if text is None:
                 continue
             rel_file = path.relative_to(root).as_posix()
-            lines = _unfenced_numbered(text)
-            for lineno, target in _wrapped_cell_refs(lines):
+            # The fence exemption is the *name form's* alone. A path inside a
+            # fence is not display: this repo's fenced blocks are calling
+            # contracts and command lines, check_zone_wall and
+            # check_harness_tokens both fire inside them, and
+            # test_portability.py reads a cell's script contract through one
+            # and requires it to resolve. Exempting paths here would put two
+            # guards in one tree disagreeing about what a fence means. What
+            # licenses the name form's exemption is different in kind -- an
+            # unlawful *name* inside a fence is a spelling being shown, while
+            # a path is dead once installed whatever encloses it.
+            unfenced = _unfenced_numbered(text)
+            for lineno, target in _wrapped_cell_refs(unfenced):
                 if not (root / "skills" / target).is_dir():
                     continue
                 if _name_form_is_sideways(own, target):
@@ -478,7 +493,21 @@ def check_sideways_deps(root: Path) -> list[str]:
                         f"sideways-dep: {rel_file}:{lineno} names skill "
                         f"'{target}' across a line break" + _origin(own, base)
                     )
-            for lineno, line in lines:
+            for lineno, line in unfenced:
+                for match in CELL_REF.finditer(line):
+                    target = match.group(1)
+                    # Only a name that is actually a cell couples anything; a
+                    # backticked word before "cell" that names no skill is
+                    # ordinary prose here, and check_cell_references is what
+                    # rules on whether it should have resolved.
+                    if not (root / "skills" / target).is_dir():
+                        continue
+                    if _name_form_is_sideways(own, target):
+                        findings.append(
+                            f"sideways-dep: {rel_file}:{lineno} names "
+                            f"skill '{target}'" + _origin(own, base)
+                        )
+            for lineno, line in enumerate(text.splitlines(), 1):
                 for match in ROOTED_SKILL.finditer(line):
                     # Same lawful-case guards as the zone wall's rooted branch:
                     # web URLs resolve for consumers, relative forms belong to
@@ -506,19 +535,6 @@ def check_sideways_deps(root: Path) -> list[str]:
                                 f"reference '{raw}' resolves into skill '{target}'"
                                 + _origin(own, base)
                             )
-                for match in CELL_REF.finditer(line):
-                    target = match.group(1)
-                    # Only a name that is actually a cell couples anything; a
-                    # backticked word before "cell" that names no skill is
-                    # ordinary prose here, and check_cell_references is what
-                    # rules on whether it should have resolved.
-                    if not (root / "skills" / target).is_dir():
-                        continue
-                    if _name_form_is_sideways(own, target):
-                        findings.append(
-                            f"sideways-dep: {rel_file}:{lineno} names "
-                            f"skill '{target}'" + _origin(own, base)
-                        )
     return findings
 
 
@@ -570,6 +586,16 @@ def check_cell_references(root: Path) -> list[str]:
                     )
             for lineno, line in lines:
                 for match in REFERENCES_REF.finditer(line):
+                    # The same lawful cases the rooted-skill branch names: a
+                    # web URL resolves for a consumer, and a longer path that
+                    # merely ends in `references/x.md` is somebody else's
+                    # tree, not this cell's depth. Copied rather than shared
+                    # because the two matchers differ; the reasoning does not.
+                    before = _token_before(line, match.start())
+                    if "://" in before:
+                        continue
+                    if before and re.search(r"[\w@\-/\\]$", before):
+                        continue
                     pointer = match.group(1)
                     if not (path.parent / pointer).is_file():
                         findings.append(
@@ -588,21 +614,39 @@ def _frontmatterless(text: str) -> str:
     return text if end == -1 else text[end + 4:].lstrip(chr(10))
 
 
+FENCE_MARKER = re.compile(r"\A(`{3,}|~{3,})")
+
+
 def _unfenced_numbered(text: str) -> list[tuple[int, str]]:
     """Non-fenced lines as (line number, stripped text), numbering preserved.
 
-    `_unfenced` below drops the numbers, which check_doctrine does not need
-    and the reference checks do -- a finding that cannot say where it is
-    cannot be acted on. Same fence rule, so the two cannot disagree about
-    what is displayed rather than performed.
+    A fence closes only on the same character at least as long as the one
+    that opened it -- CommonMark's rule, and the renderer every reader of
+    these files is looking at. A naive toggle gets this wrong in both
+    directions: a ``` line quoted inside a ```` block ends the fence early,
+    so displayed prose is read as live; and a ~~~ line inside a ``` block
+    fails to end it, so live prose goes unread to the end of the file. Both
+    are what a cell teaching markdown writes, not an adversary's input.
+
+    This is the one implementation. `_unfenced` below delegates rather than
+    repeating it, because two copies of a rule kept in agreement by hand is
+    the defect this repository's own authoring standard forbids -- and the
+    duplicate was found under review, having already drifted in behaviour
+    from nothing but being written twice.
     """
-    out, fenced = [], False
+    out, opener = [], None
     for lineno, raw in enumerate(text.splitlines(), 1):
         stripped = raw.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            fenced = not fenced
-            continue
-        if not fenced:
+        marker = FENCE_MARKER.match(stripped)
+        if marker:
+            run = marker.group(1)
+            if opener is None:
+                opener = run
+                continue
+            if run[0] == opener[0] and len(run) >= len(opener):
+                opener = None
+                continue
+        if opener is None:
             out.append((lineno, stripped))
     return out
 
@@ -628,15 +672,7 @@ def _unfenced(text: str) -> list[str]:
     backticked one is. This file's own docstring reasons from that premise;
     the guard below has to apply it to both spellings or to neither.
     """
-    lines, fenced = [], False
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            fenced = not fenced
-            continue
-        if not fenced:
-            lines.append(stripped)
-    return lines
+    return [line for _lineno, line in _unfenced_numbered(text)]
 
 
 def check_doctrine(root: Path) -> list[str]:
