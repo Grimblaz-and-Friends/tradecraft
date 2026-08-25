@@ -277,3 +277,149 @@ def test_the_charter_is_counted_below_its_frontmatter():
     assert repo_figures.figure_always_on(ROOT)["data"]["charter"] == len(
         lint._frontmatterless(charter))
     assert len(lint._frontmatterless(charter)) < len(charter)
+
+
+# --- the delta's base side, which shipped guarded by nothing ----------------
+#
+# `always_on_at` and the delta were added to close "the figure this change
+# turns on is guarded by nothing", and arrived with no test of their own. Four
+# mutations left the whole suite green: the base side no longer counting
+# CLAUDE.md, every delta's sign inverted, `--base` losing its effect entirely,
+# and the cell filter widening. The sign one is the reason these exist -- it
+# would tell the owner a growing surface shrank, which is the exact reading the
+# delta was added to make impossible.
+
+def git_tree(tmp_path):
+    """A real repository: always_on_at reads blobs through git, not the disk.
+
+    Isolated from the caller's git configuration, because a repository this
+    small inherits whatever the machine has -- `commit.gpgsign` being the one
+    that turns a fixture into a hang.
+    """
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), *args],
+            check=True, capture_output=True, text=True,
+            env={"GIT_CONFIG_GLOBAL": str(tmp_path / "nonexistent"),
+                 "GIT_CONFIG_SYSTEM": str(tmp_path / "nonexistent"),
+                 "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+                 "PATH": __import__("os").environ.get("PATH", "")},
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    return git
+
+
+def surface(root, agents="a" * 100, pointer="b" * 40, charter_body="Body."):
+    (root / "AGENTS.md").write_text(agents, encoding="utf-8")
+    (root / "CLAUDE.md").write_text(pointer, encoding="utf-8")
+    cell = root / "skills" / "charter"
+    cell.mkdir(parents=True, exist_ok=True)
+    (cell / "SKILL.md").write_text(
+        "---" + NL + "name: charter" + NL + "description: Desc." + NL + "---" + NL
+        + NL + charter_body + NL, encoding="utf-8")
+
+
+def test_the_base_side_reproduces_the_working_tree_figure(tmp_path):
+    """One tree, two readers, one number.
+
+    always_on_at re-derived figure_always_on's composition by hand, so the two
+    could disagree with nothing comparing them -- and a mutation stopping the
+    base side counting CLAUDE.md left 336 tests green. This is the equality
+    that mutation breaks.
+    """
+    git = git_tree(tmp_path)
+    surface(tmp_path)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    head = git("rev-parse", "HEAD")
+    assert repo_figures.always_on_at(tmp_path, head) == (
+        repo_figures.figure_always_on(tmp_path)["data"]["repo_total"])
+
+
+def test_the_base_side_counts_both_doctrine_files(tmp_path):
+    """The half of the equality above that a single fixture could satisfy by
+    accident: measured against a tree whose two doctrine files have different
+    sizes, so dropping either one is visible in the number."""
+    git = git_tree(tmp_path)
+    surface(tmp_path)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    head = git("rev-parse", "HEAD")
+    charter = (tmp_path / "skills" / "charter" / "SKILL.md").read_text(encoding="utf-8")
+    expected = (100 + 40 + len("charter") + len("Desc.")
+                + len(lint._frontmatterless(charter)))
+    assert repo_figures.always_on_at(tmp_path, head) == expected
+
+
+def test_growth_and_shrink_carry_their_own_sign(tmp_path):
+    """A delta whose sign can invert with the suite green is worse than no
+    delta: it reports the one direction the ceiling exists to resist as its
+    opposite. Both directions, against one base."""
+    git = git_tree(tmp_path)
+    surface(tmp_path)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    before = repo_figures.always_on_at(tmp_path, base)
+
+    (tmp_path / "AGENTS.md").write_text("a" * 150, encoding="utf-8")
+    grown = repo_figures.figure_always_on(tmp_path)["data"]["repo_total"]
+    assert grown - before == 50
+
+    (tmp_path / "AGENTS.md").write_text("a" * 70, encoding="utf-8")
+    shrunk = repo_figures.figure_always_on(tmp_path)["data"]["repo_total"]
+    assert shrunk - before == -30
+
+
+def test_the_rendered_delta_says_which_way_the_surface_moved(tmp_path):
+    """Sign, not just shape.
+
+    The first pin written for this matched `[-+]` and so stayed green when
+    every delta's sign was inverted -- a mutation that tells the owner a
+    growing surface shrank, which is the one reading the delta exists to make
+    impossible. Both directions, rendered through the callout's own function.
+    """
+    import doctrine_callout as dc
+
+    git = git_tree(tmp_path)
+    surface(tmp_path)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+
+    (tmp_path / "AGENTS.md").write_text("a" * 150, encoding="utf-8")
+    assert dc._always_on_delta(repo_figures, tmp_path, base) == " (+50 this PR)"
+
+    (tmp_path / "AGENTS.md").write_text("a" * 70, encoding="utf-8")
+    assert dc._always_on_delta(repo_figures, tmp_path, base) == " (-30 this PR)"
+
+
+def test_a_nested_skill_file_is_not_a_cell(tmp_path):
+    """The set both readers count, pinned where they used to differ.
+
+    The working tree globbed one level and the base side matched
+    `endswith("/SKILL.md")` over a recursive listing. Nothing in this tree is
+    nested, so the two agreed and a mutation widening either left the suite
+    green. A cell is `skills/<name>/SKILL.md`; a SKILL.md quoted or drafted
+    under a cell's own subdirectory is not a ninth always-on description.
+    """
+    git = git_tree(tmp_path)
+    surface(tmp_path)
+    nested = tmp_path / "skills" / "charter" / "references"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "---" + NL + "name: quoted" + NL + "description: Not a cell." + NL
+        + "---" + NL + NL + "An example, not a roster entry." + NL,
+        encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    head = git("rev-parse", "HEAD")
+
+    data = repo_figures.figure_always_on(tmp_path)["data"]
+    assert data["cells"] == 1
+    assert data["roster"] == len("charter") + len("Desc.")
+    assert repo_figures.always_on_at(tmp_path, head) == data["repo_total"]

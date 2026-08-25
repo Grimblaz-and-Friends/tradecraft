@@ -14,6 +14,7 @@ the loudness guarantee itself — is never executed by anything.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -440,3 +441,25 @@ def test_the_callout_carries_the_always_on_size(tmp_path, monkeypatch):
     monkeypatch.setattr(dc, "ROOT", tmp_path)
     degraded = dc._always_on_line()
     assert degraded.startswith("_Always-on surface: not derived")
+
+
+def test_the_delta_renders_its_sign_and_states_a_base_it_cannot_read():
+    """Three renderings that must differ, because two of them did not.
+
+    `--base` had no test of any kind: deleting its whole effect from `run()`
+    left the suite green, and so did inverting every delta's sign. Worse, an
+    unresolvable base returned "" -- byte-identical to no base at all -- which
+    is how the delta shipped absent from every CI callout for a full cycle
+    without anyone being able to see it from the comment.
+    """
+    plain = dc._body(["AGENTS.md"])
+    measured = dc._body(["AGENTS.md"], base="HEAD~1")
+    unreadable = dc._body(["AGENTS.md"], base="0" * 40)
+
+    assert measured != plain, "--base must change the body"
+    assert unreadable != plain, "an unreadable base is not the same as no base"
+    # Shape only. The *direction* is pinned in test_repo_figures.py against a
+    # tree whose movement is known -- this assertion matched either sign, and
+    # stayed green when every delta was inverted.
+    assert re.search(r"chars here \([-+][\d,]+ this PR\)", measured), measured
+    assert "movement not derived" in unreadable and "0" * 40 in unreadable
