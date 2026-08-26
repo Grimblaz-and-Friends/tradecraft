@@ -1,0 +1,9 @@
+# The dispatch contract
+
+**Loaded when** you are writing the dispatch that sends a review role its work — a seat, a defense, a judge, a post-fix prosecution look. A recipient reading a dispatch it was handed does not need it.
+
+**Every dispatch is built in three parts, in this order** [D-90] [D-97]. The **shared block** comes first, with nothing before it but a byte-identical title line — a preamble puts per-recipient framing ahead of the shared block. It carries, verbatim or by link and never the dispatcher's paraphrase, the assignment — artifact location, diff base, purpose statement, evidence standards, and any session note reporting use of the artifact — and every predecessor stage's output whole, which a dispatch read cold does not receive; nothing else in it aims attention. The assignment is byte-identical across every recipient dispatched against the same diff base. Then a **dispatcher's note** where there is one, labeled as such and additive; no seat or post-fix prosecution dispatch takes one, because a cold vantage sits among them and aimed attention is what that vantage is defined against. Last, **in this skill's own words**, the recipient's identity and its lens brief. Its output format and working location where it differs are the only other per-recipient content. **Calling attention is lawful; filtering and restating are not** — an author compressing its own charter is an interested party.
+
+**Independence extends to every role**: defense and judge are staffed like seats — never the artifact's author, and the judge never a finder. In a single-session lane, all review roles are dispatches, not the authoring session reviewing itself.
+
+**Seats that mutate the tree get their own worktree.** Mutation testing, red-probes, anything that writes: dispatch it isolated, or concurrent readers see files change underneath them mid-review.

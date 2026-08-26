@@ -1,0 +1,18 @@
+# Staffing the panel — the roster, the seats, and the tier each gets
+
+**Loaded when** you are choosing who sits on a review — the panel's seats, the defense, the judge, a post-fix look — or deciding what model tier staffs them. A recipient carrying out a brief it was handed does not need it.
+
+## The roster — four slots, five names
+
+Three seats stand; the fourth is chosen by the artifact's shape. Seats differ or they are waste: a seat is added for a lens or vantage the panel lacks, never for a second pass at one it has. A **vantage** is where a seat reads from — cold, briefed, or as the consumer; a **lens** is what it is told to look for. What a dispatch prompt could have said is a lens, not a vantage.
+
+- **`cold-read`** — fresh vantage, no lens brief: forms its own view of the artifact before any prior findings exist for it. A brief aims attention, and aimed attention has a shadow; this seat is what falls in it.
+- **`wiring-falsifier`** — scripts and contracts: does the code enforce what the prose claims, does anything call it, can each guard actually fail? Probe by execution, not reading.
+- **`operational`** — walk the artifact as its consumer: a fresh executor following the text, reporting where it under-determines or misleads action.
+- **The fourth seat, by shape:** **`claims-vs-evidence`** on substantially new prose — verify every load-bearing claim, number, and quotation against its cited source; also the default when no shape fits. **`revision-diff`** on amendments to governing prose — report every load-bearing sentence whose *meaning* changed without the change being recorded (in the decision entry where one exists, else the PR body), including the sentence whose characters never changed while a term it turns on was redefined elsewhere in the change; the unit of comparison is the governing claim, not the diff hunk, so its read scope is the whole change. When the artifact is both shapes, both seats sit and the panel is five. A needed lens the roster lacks — `security` on a write path or trust boundary, `position` when the artifact builds on an unreviewed design (review the earlier artifact first; position beats depth) — takes the shape slot or widens the panel by declared risk, named in the report.
+
+**The cold boundary, operationally**: a dispatch read cold carries the assignment and none of the review's history: no prior findings, no self-review, no conversation context, and not the PR's comment thread, which carries another party's findings within seconds of the PR opening. A cold seat is therefore always a fresh dispatch, never the session that authored or discussed the artifact. **A session note is not among the things withheld**, and carrying it spends that vantage rather than preserving it: a note names the sentences use actually broke on, so a seat reads it already pointed. It travels in the assignment (`../references/dispatch.md`) because real-use evidence is worth that price, not because it costs nothing.
+
+## Staffing
+
+Every seat runs at the strongest model tier the runtime's budget bears. Where the top tier is scarce, concentrate it where open-ended perception lives — the `cold-read` — and where single dispatches carry the most leverage — the judge. Terminal stages run at least the seats' reasoning effort. The report records which model and runtime staffed each seat, so per-runtime evidence can accumulate.

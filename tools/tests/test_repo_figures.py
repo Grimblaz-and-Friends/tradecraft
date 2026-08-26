@@ -434,7 +434,8 @@ FIGURES_ALWAYS_EMITTED = (
     "figure_tests", "figure_doc", "figure_charter",
     "figure_always_on", "figure_census",
 )
-FIGURES_ON_DEMAND = ("figure_delta", "figure_cell", "figure_cell_description")
+FIGURES_ON_DEMAND = ("figure_delta", "figure_cell", "figure_cell_total",
+                     "figure_cell_description")
 
 
 def test_the_module_docstring_enumerates_every_figure_always_emitted():
