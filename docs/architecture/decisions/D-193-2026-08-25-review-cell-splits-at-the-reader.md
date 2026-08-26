@@ -28,7 +28,7 @@
 
 **A body cap is dodgeable one directory down, so the cell's total is reported beside it.** `figure_cell_total` is emitted whenever `--cell` is given, and is **deliberately unbudgeted** — a ceiling on the total would cap depth-shedding itself, which is the move the standard wants. What it buys is that the dodge is visible to whoever takes it. It lives in `tools/figures.py` rather than the engine because it exists as a consequence of a repo-only guard capping a cell's body, which is the same ground `figure_cell_description` sits on.
 
-**The description is untouched**, so no outflow is owed: the always-on surface is unchanged by this change at 15,753 here and 9,747 for an adopter, and moving prose into `references/` does not reach it.
+**The description is untouched**, so no outflow is owed: this change moves the always-on surface by **zero** — 16,241 here and 10,243 for an adopter at both its merge base `87d1d65` and the tree it lands in — and moving prose into `references/` does not reach it. The invariant is the claim; the absolute moves whenever any cell is added, as #192 did while this change was open.
 
 ## Rejected
 
