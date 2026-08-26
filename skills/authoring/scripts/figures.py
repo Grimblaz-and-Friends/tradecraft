@@ -59,6 +59,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Shared code lives in lib/, which ships beside this cell, so the import
+# resolves in a source checkout and an installed plugin alike -- against
+# this file's own directory, never the working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "lib"))
+from winio import utf8_stdio  # noqa: E402
+
 # The pytest -q summary line: counts and outcomes, with the trailing duration
 # ("in 1.23s") dropped — a duration is not a figure a write-up states, and
 # keeping it would make every derived block differ from every re-derivation.
@@ -125,7 +131,7 @@ def figure_tests(repo: Path, paths: list[str]) -> dict:
     if proc.returncode in (4, 5):
         raise SystemExit(
             f"figures: pytest measured nothing over '{' '.join(paths)}' "
-            f"(exit {proc.returncode}: {summary}) — check the test paths"
+            f"(exit {proc.returncode}: {summary}) -- check the test paths"
         )
     return {
         "name": "suite",
@@ -209,7 +215,7 @@ def _base_files(repo: Path, base: str, paths: list[str]) -> list[str]:
     proc = _git(repo, "ls-tree", "-r", "--name-only", "-z", base, "--", *paths)
     if proc.returncode != 0:
         raise SystemExit(
-            f"figures: cannot enumerate '{base}' — {_decoded(proc.stderr).strip()}"
+            f"figures: cannot enumerate '{base}' -- {_decoded(proc.stderr).strip()}"
         )
     return [name for name in _decoded(proc.stdout).split("\0") if name]
 
@@ -224,7 +230,7 @@ def _worktree_files(repo: Path, paths: list[str]) -> list[str]:
     )
     if proc.returncode != 0:
         raise SystemExit(
-            f"figures: cannot enumerate the working tree — "
+            f"figures: cannot enumerate the working tree -- "
             f"{_decoded(proc.stderr).strip()}"
         )
     return [name for name in _decoded(proc.stdout).split("\0") if name]
@@ -246,7 +252,7 @@ def figure_delta(
     if not base_names and not current_names:
         raise SystemExit(
             f"figures: --delta {' '.join(paths)} matched no files on either "
-            f"side — check the paths and suffixes"
+            f"side -- check the paths and suffixes"
         )
 
     base_total = 0
@@ -254,7 +260,7 @@ def figure_delta(
         blob = _git(repo, "cat-file", "blob", f"{base}:{name}")
         if blob.returncode != 0:
             raise SystemExit(
-                f"figures: cannot read '{base}:{name}' — "
+                f"figures: cannot read '{base}:{name}' -- "
                 f"{_decoded(blob.stderr).strip()}"
             )
         base_total += _normalized_chars(blob.stdout)
@@ -267,7 +273,7 @@ def figure_delta(
     suffix_note = f", {'/'.join(suffixes)} files only" if suffixes else ""
     return {
         "name": f"prose delta vs `{base}`",
-        "value": f"{delta:+,} chars (base {base_total:,} → current {current_total:,})",
+        "value": f"{delta:+,} chars (base {base_total:,} -> current {current_total:,})",
         "basis": (
             f"raw base blobs vs working-tree bytes, decoded UTF-8, CRLF "
             f"normalized to LF{suffix_note}, over: {', '.join(paths)}"
@@ -284,9 +290,9 @@ def render_markdown(stamp: dict, command: str, figures: list[dict]) -> str:
         tree = "no git tree identified"
     else:
         tree = f"tree `{stamp['commit']}`" + (" (dirty)" if stamp["dirty"] else " (clean)")
-    lines = [f"**Figures** — {tree}, derived by `{command}`"]
+    lines = [f"**Figures** -- {tree}, derived by `{command}`"]
     for fig in figures:
-        lines.append(f"- {fig['name']}: **{fig['value']}** — {fig['basis']}")
+        lines.append(f"- {fig['name']}: **{fig['value']}** -- {fig['basis']}")
     return "\n".join(lines)
 
 
@@ -331,7 +337,7 @@ def figures_from_args(repo: Path, args: argparse.Namespace) -> list[dict]:
         )
     if (args.delta is None) != (args.base is None):
         raise SystemExit(
-            "figures: --delta needs --base and --base needs --delta — "
+            "figures: --delta needs --base and --base needs --delta -- "
             "the base is a caller decision, never defaulted"
         )
     if args.delta_suffix and not args.delta:
@@ -347,19 +353,10 @@ def figures_from_args(repo: Path, args: argparse.Namespace) -> list[dict]:
         figures.append(figure_delta(repo, args.base, args.delta, args.delta_suffix))
     if not figures:
         raise SystemExit(
-            "figures: no figure requested — give --tests, --doc/--budget, "
+            "figures: no figure requested -- give --tests, --doc/--budget, "
             "--cell/--budget, or --base/--delta"
         )
     return figures
-
-
-def utf8_stdio() -> None:
-    """Figures and refusals are UTF-8 on both streams; a cp1252 console (or a
-    UTF-8-assuming harness capturing either stream) must not garble the
-    derivation this exists to make cheap."""
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def repo_root(path: Path) -> Path:
@@ -386,9 +383,9 @@ def stamped_command(repo: Path, argv: list[str]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
     argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(argv)
-    utf8_stdio()
     repo = repo_root(Path(args.repo).resolve())
     figures = figures_from_args(repo, args)
     stamp = tree_stamp(repo)

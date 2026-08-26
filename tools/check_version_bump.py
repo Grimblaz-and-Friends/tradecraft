@@ -37,6 +37,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Shared with the shipped zone, which is the lawful direction: repo-only
+# code may import shipped code. Resolved from this file rather than the
+# working directory, so the script runs from any cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from winio import utf8_stdio  # noqa: E402
 MANIFEST = ".claude-plugin/plugin.json"
 # ADR-004's shipped zone. The manifest itself is excluded: bumping the version
 # is what this guard demands, so counting it as a shipped-zone change would make
@@ -133,7 +139,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     lines: list[str] = []
     base, why = _resolve_base(base_ref)
     if base is None:
-        return UNDETERMINED, [f"version-bump: cannot determine a base — {why}"]
+        return UNDETERMINED, [f"version-bump: cannot determine a base -- {why}"]
 
     # Two independent mechanisms give the moved-base answer, and either alone
     # suffices: `base` is resolved to a merge base above, AND `...` re-derives
@@ -152,7 +158,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     if code != 0:
         return UNDETERMINED, [
             f"version-bump: could not diff against {base[:7]}"
-            + (f" — {err}" if err else "")
+            + (f" -- {err}" if err else "")
         ]
     changed = _paths(out)
 
@@ -172,7 +178,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         if code != 0:
             return UNDETERMINED, [
                 "version-bump: could not read the working tree "
-                f"({' '.join(args)} failed{': ' + err if err else ''}) — "
+                f"({' '.join(args)} failed{': ' + err if err else ''}) -- "
                 "refusing to answer from committed history alone"
             ]
         changed.extend(_paths(out))
@@ -186,9 +192,9 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     old, old_err = _version_at(base)
     new, new_err = _version_at(None)
     if old is None:
-        return UNDETERMINED, [f"version-bump: base version unreadable — {old_err}"]
+        return UNDETERMINED, [f"version-bump: base version unreadable -- {old_err}"]
     if new is None:
-        return UNDETERMINED, [f"version-bump: current version unreadable — {new_err}"]
+        return UNDETERMINED, [f"version-bump: current version unreadable -- {new_err}"]
 
     shown = ".".join(map(str, old)), ".".join(map(str, new))
     if new > old:
@@ -206,7 +212,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
               else f"went BACKWARDS, {shown[0]} -> {shown[1]}")
     lines.append(
         f"version-bump: {len(touched)} shipped-zone file(s) changed but "
-        f"the plugin version {detail} — a consumer cannot tell installed from "
+        f"the plugin version {detail} -- a consumer cannot tell installed from "
         f"current. Raise \"version\" in {MANIFEST} (see AGENTS.md, 'The flow')"
     )
     lines.extend(f"    {f}" for f in touched)
@@ -214,8 +220,10 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
     parser = argparse.ArgumentParser(
-        description=__doc__,
+        description=
+        "Refuse a pull request whose shipped-zone files changed without a plugin version bump. Three outcomes: PASS, FAIL, and UNDETERMINED when the base cannot be resolved -- UNDETERMINED is a failure, not a pass.",
         # The outcome table is the point of --help; the default formatter
         # collapses it into one run-on line.
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -226,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     for line in lines:
         print(line)
     if status == UNDETERMINED:
-        print("version-bump: UNDETERMINED is a failure, not a pass — see AGENTS.md, 'The flow'")
+        print("version-bump: UNDETERMINED is a failure, not a pass -- see AGENTS.md, 'The flow'")
     return status
 
 
