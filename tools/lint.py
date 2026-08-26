@@ -74,9 +74,11 @@ Checks:
 14. docstring not piped: no script passes __doc__ as an argparse
     description. --help writes it to stdout before any stream setup runs,
     which turns the docstring check 12 exempts into locale-encoded output.
-15. stdio wired: every script with a main() calls utf8_stdio() as its first
-    statement, so runtime data this repository did not write reaches the
-    stream protected. The first statement is a position, and a position is
+15. stdio wired: every script with a main() imports utf8_stdio by that name
+    and calls it as the first statement, so runtime data this repository did
+    not write reaches the stream protected. Both halves are checked: without
+    the import binding, a local no-op with the right name would satisfy the
+    call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
