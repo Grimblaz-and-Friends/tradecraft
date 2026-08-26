@@ -80,6 +80,13 @@ Checks:
     the import binding, a local no-op with the right name would satisfy the
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
+16. project roster: every cell has an entry under .claude/skills/ carrying its
+    frontmatter byte for byte, and no entry names a cell that is gone. That
+    directory is the only surface a session working in THIS repository loads a
+    description from -- the plugin is never installed here -- so without it
+    every trigger routed to a description reaches every adopter and misses us
+    (#199). The expectation is tools/roster.py's own, never recomputed here:
+    a guard holding a second definition drifts from the writer it judges.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -109,6 +116,12 @@ ROOT = Path(__file__).resolve().parent.parent
 # working directory, so the script runs from any cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
+
+# Repo-only importing repo-only, resolved from this file rather than the
+# working directory. The roster's expected content is the generator's to
+# define; check 16 asks it rather than reproducing it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import roster  # noqa: E402
 
 SHIPPED_DIRS = (
     "skills", "lib", "commands", "agents", "hooks", ".claude-plugin",
@@ -298,10 +311,19 @@ ENTRY_PATH = re.compile(r"`([\w.-]+(?:[\\/][\w.-]+)+(?::\d+)?)`")
 #
 # Declared, not merely present: `lib`, `commands` and `agents` are named in the
 # doctrine's shipped zone and hold no file yet. `.claude` is deliberately
-# absent though a directory of that name exists locally -- it is untracked and
-# ungitignored, so resolving against it gave `python tools/lint.py` two answers
-# for the same commit depending on whether a session had created
-# `.claude/agents`, and the local answer instructed a repair that reds CI.
+# absent though a directory of that name exists locally -- most of it is
+# untracked and ungitignored, so resolving against it gave
+# `python tools/lint.py` two answers for the same commit depending on whether a
+# session had created `.claude/agents`, and the local answer instructed a
+# repair that reds CI.
+#
+# #199 tracked one subtree of it -- `.claude/skills`, the generated roster --
+# and that did not change this. The reason is about the rest: a session can
+# still drop `.claude/agents` or `.claude/commands` into a working tree, so
+# admitting `.claude` as a root would reinstate the two-answers defect for
+# every path under it that is not the roster. Admitting the roster alone would
+# be a root that is one directory deep, which nothing else here is. Left out,
+# with the narrowed reason recorded rather than the old one left standing.
 REPO_ROOTS = frozenset(SHIPPED_DIRS) | {
     "tools", "docs", ".github", ".", "..",
 }
@@ -2113,6 +2135,7 @@ def run(root: Path) -> list[str]:
         + check_harness_tokens(root)
         + check_delivery(root)
         + check_cell_frontmatter(root)
+        + check_project_roster(root)
         + check_sideways_deps(root)
         + check_cell_references(root)
         + check_doctrine_citations(root)
@@ -2125,6 +2148,30 @@ def run(root: Path) -> list[str]:
         + check_docstring_not_piped(root)
         + check_stdio_wired(root)
     )
+
+
+def check_project_roster(root: Path) -> list[str]:
+    """Every cell has a `.claude/skills/` entry carrying its frontmatter.
+
+    That directory is the whole of what a session working in this repository
+    loads a description from. An adopter installs the plugin and receives the
+    roster from it; this repository never installs itself, so before #199 no
+    session here held any cell's name or description, and every trigger routed
+    to a description over several changes reached every consumer and missed
+    us. `tools/roster.py` carries the mechanism and the evidence.
+
+    The expectation is the generator's, asked for rather than recomputed. A
+    guard that computes its own copy of what a writer produces is a second
+    definition of the same thing, and the two agree exactly until either is
+    edited -- the failure `_always_on` in `tools/figures.py` already records,
+    where two hand-written copies of one sum let a mutation through green.
+
+    An empty `skills/` is a finding rather than a pass, for the reason #198
+    states about a sibling guard: no cell found is indistinguishable from
+    every cell lawful, and the cheapest route to green must never be deleting
+    what the check reads.
+    """
+    return roster.verify(root)
 
 
 def always_on_note(root: Path) -> str:

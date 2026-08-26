@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 
 sys.path.insert(0, str(ROOT / "tools"))
 import lint  # noqa: E402
+import roster  # noqa: E402
 
 
 def load(name, path):
@@ -233,9 +234,44 @@ def test_the_two_audiences_are_not_the_same_set():
     """
     data = repo_figures.figure_always_on(ROOT)["data"]
     assert data["adopter_total"] == data["charter"] + data["roster"]
-    assert data["repo_total"] == data["doctrine"] + data["adopter_total"]
+    # Spelled out rather than `doctrine + adopter_total`, which is the same
+    # number on any tree the roster guard passes and stops being the same
+    # composition the moment it does not. The two rosters are read from two
+    # directories; an identity that cannot tell them apart is the assumption
+    # #199 found standing in for a measurement.
+    assert data["repo_total"] == (
+        data["doctrine"] + data["charter"] + data["roster_here"]
+    )
     assert data["doctrine"] > 0, "the doctrine files are part of the repo total"
     assert data["adopter_total"] < data["repo_total"]
+
+
+def test_the_repo_side_reads_the_roster_it_actually_loads(tmp_path):
+    """#199's correction, pinned by the mutation that produced it.
+
+    Both sides used to count `skills/`, which is true of an adopter and was
+    false here: nothing installs the plugin in this repository, so the 4,890
+    characters of name and description the figure reported were loaded by no
+    session. Removing an entry must move the repo total and leave the
+    adopter's alone -- if it moves neither, the figure is asserting the
+    surface rather than reading it.
+    """
+    surface(tmp_path)
+    make_cell = tmp_path / "skills" / "extra"
+    make_cell.mkdir(parents=True)
+    (make_cell / "SKILL.md").write_bytes(
+        ("---" + NL + "name: extra" + NL + "description: Trigger." + NL + "---"
+         + NL + NL + "Body." + NL).encode("utf-8"))
+    roster.write(tmp_path)
+    before = repo_figures.figure_always_on(tmp_path)["data"]
+    (tmp_path / ".claude" / "skills" / "extra" / "SKILL.md").unlink()
+    after = repo_figures.figure_always_on(tmp_path)["data"]
+    assert before["repo_total"] - after["repo_total"] == (
+        len("extra") + len("Trigger.")
+    )
+    assert after["adopter_total"] == before["adopter_total"]
+    assert after["entries"] == before["entries"] - 1
+    assert after["cells"] == before["cells"]
 
 
 def test_the_repo_total_counts_both_doctrine_files(tmp_path):
@@ -321,6 +357,12 @@ def surface(root, agents="a" * 100, pointer="b" * 40, charter_body="Body."):
     (cell / "SKILL.md").write_text(
         "---" + NL + "name: charter" + NL + "description: Desc." + NL + "---" + NL
         + NL + charter_body + NL, encoding="utf-8")
+    # The repo side reads its roster from `.claude/skills/`, which is the
+    # directory a session working here actually loads. A fixture with cells and
+    # no roster models the tree #199 found, not a lawful one -- and the
+    # equality these tests pin would then hold over a surface neither reader
+    # counts.
+    roster.write(root)
 
 
 def test_the_base_side_reproduces_the_working_tree_figure(tmp_path):
