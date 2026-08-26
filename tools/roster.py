@@ -159,6 +159,32 @@ def expected(root: Path, name: str) -> bytes:
     return block + _body(name)
 
 
+def inside_roster(root: Path, entry: Path) -> bool:
+    """Whether an entry's real location is still under the roster directory.
+
+    `write()` creates directories and files, so a link in the middle of the
+    path sends both outside the repository: with `.claude/skills/alpha` linked
+    elsewhere, `mkdir(parents=True)` and `write_bytes` follow it and the file
+    lands at the link's target. Reproduced.
+
+    **Resolved-path containment rather than `is_symlink()`**, because on
+    Windows the reachable form is a *junction* -- `mklink /J` needs no
+    privilege, where `mklink /D` is refused without it -- and
+    `Path.is_symlink()` returns False for one. A guard reading the obvious
+    predicate would pass exactly the case that is easiest to create. Raised by
+    the external reviewer against `is_symlink`; the containment check is the
+    part that survives contact with this platform.
+
+    Scoped to the roster side. A link under `skills/` is not checked here: this
+    script only ever reads a cell, and reading through one escapes nothing.
+    """
+    base = (root / ROSTER).resolve()
+    try:
+        return entry.resolve().is_relative_to(base)
+    except (OSError, ValueError):
+        return False
+
+
 def is_generated(path: Path) -> bool:
     """Whether this file is one `write()` produced, and so one it may remove.
 
@@ -224,6 +250,13 @@ def verify(root: Path) -> list[str]:
     cells = cell_names(root)
     for name in cells:
         target = root / ROSTER / name / CELL_FILE
+        if not inside_roster(root, target.parent):
+            findings.append(
+                f"roster: {ROSTER}/{name}/ resolves outside {ROSTER}/, so "
+                f"writing there would land outside this repository -- no "
+                f"command repairs this; remove the link"
+            )
+            continue
         try:
             want = expected(root, name)
         except (ValueError, OSError) as exc:
@@ -297,6 +330,11 @@ def write(root: Path) -> list[str]:
             changed.append(f"skipped {CELLS}/{name}/{CELL_FILE}: {exc}")
             continue
         target = root / ROSTER / name / CELL_FILE
+        if not inside_roster(root, target.parent):
+            changed.append(
+                f"left {ROSTER}/{name}/: resolves outside {ROSTER}/"
+            )
+            continue
         if target.is_file():
             if target.read_bytes() == want:
                 continue

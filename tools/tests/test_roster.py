@@ -411,3 +411,65 @@ def test_this_repository_carries_a_roster_for_every_cell(tmp_path):
         assert b"\r" not in entry.read_bytes(), (
             f"{name}: the tree holds CRLF where .gitattributes pins LF"
         )
+
+
+def test_a_linked_entry_directory_is_refused_rather_than_written_through(tmp_path):
+    """`write()` creates directories and files, so a link mid-path sends both
+    outside the repository. Reproduced before the guard existed: the bytes
+    landed at the link's target.
+
+    The check is resolved-path containment, not `is_symlink()`. On Windows the
+    reachable form is a junction -- `mklink /J` needs no privilege where
+    `mklink /D` is refused without it -- and `Path.is_symlink()` returns False
+    for one, so the obvious predicate passes exactly the easiest case. Raised
+    by the external reviewer against `is_symlink`; the containment check is
+    what survives contact with this platform.
+
+    Skipped where the platform will not make a link at all, which is its own
+    honest answer rather than a silent pass.
+    """
+    import os
+    import subprocess
+
+    make_cell(tmp_path, "alpha")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    entry = tmp_path / ".claude" / "skills" / "alpha"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(outside, entry, target_is_directory=True)
+    except (OSError, NotImplementedError, AttributeError):
+        # Windows refuses an unprivileged symlink but grants a junction, which
+        # is why the junction is the reachable form here and why the guard
+        # cannot be `is_symlink()`. Falling back rather than skipping keeps
+        # this pin live on the platform the repository actually runs on.
+        if os.name != "nt":
+            pytest.skip("this platform will not create a directory link")
+        made = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(entry), str(outside)],
+            capture_output=True, text=True,
+        )
+        if made.returncode != 0:
+            pytest.skip(f"no directory link available: {made.stdout}{made.stderr}")
+
+    assert not roster.inside_roster(tmp_path, entry)
+    findings = [f for f in roster.verify(tmp_path) if "resolves outside" in f]
+    assert len(findings) == 1
+    assert "--write" not in findings[0]
+
+    lines = roster.write(tmp_path)
+    assert any("resolves outside" in line for line in lines)
+    assert not (outside / "SKILL.md").exists(), (
+        "write() followed the link and created a file outside the repository"
+    )
+
+
+def test_the_ordinary_entry_directory_is_not_refused(tmp_path):
+    """The lawful polarity: containment must not reject the normal case, which
+    is every entry on every tree this guard actually runs against."""
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha"
+    assert roster.inside_roster(tmp_path, entry)
+    assert roster.verify(tmp_path) == []
+    assert roster.inside_roster(ROOT, ROOT / ".claude" / "skills" / "filing")
