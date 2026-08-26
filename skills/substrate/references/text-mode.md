@@ -5,7 +5,7 @@ Text mode is the substrate's sharpest edge, and it takes three rules because it 
 ## The three rules
 
 - **Machine-read output stays ASCII.** No non-ASCII character in a string constant that is not a docstring.
-- **A stream is set to UTF-8 with LF endings before anything is written to it.** First statement of the entry point, and the ordering is not incidental: a call after argument parsing is a call that `--help` has already outrun.
+- **A stream is set to UTF-8 with LF endings before anything is written to it.** First statement of the entry point, and the ordering is not incidental: a call after argument parsing is a call that `--help` has already outrun. `lib/winio.py`'s `utf8_stdio()` does both halves and ships, so reach for it rather than hand-rolling: the obvious hand-rolled call sets the encoding and leaves the newline translation in place, which satisfies the sentence and not the rule.
 - **A file that will later be compared, restored or measured is written and read as bytes**, with byte-identity asserted on restore.
 
 ## Why the first two are not a choice
