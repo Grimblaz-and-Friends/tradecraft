@@ -51,12 +51,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-from pathlib import Path
-
 # Shared with the shipped zone, which is the lawful direction: repo-only
 # code may import shipped code. Resolved from this file rather than the
 # working directory, so the script runs from any cwd.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
 # Matches `.github/CODEOWNERS`. Widening this to skills or decisions is a
