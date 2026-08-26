@@ -162,7 +162,7 @@ def figure_cell_total(root: Path, rel_path: str) -> dict:
     return {
         "name": f"cell `{target.parent.relative_to(root).as_posix()}` (total prose)",
         "value": (
-            f"{body + depth_chars:,} chars — body {body:,} + {len(depth)} "
+            f"{body + depth_chars:,} chars -- body {body:,} + {len(depth)} "
             f"depth file(s) {depth_chars:,}"
         ),
         "basis": (
