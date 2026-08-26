@@ -197,7 +197,28 @@ POINTER_BUDGET_CHARS = 500
 # in a frozen entry does not. Cells absent from this map are unbudgeted on
 # purpose: a number chosen for a cell nobody has argued about would be a
 # ruling on its size arriving as a constant.
-CELL_BODY_BUDGET_CHARS = {"skills/authoring/SKILL.md": 7_359}
+# `adversarial-review` is the second entry, and the first chosen rather than
+# inherited. #184 left it out on the ground that a number for a cell nobody
+# has argued about is a ruling arriving as a constant; #177 is that argument,
+# and the owner ruled a budget follows the split. The basis is the size the
+# split landed at -- 8,736, from 24,155 -- plus 264, which is about one
+# bullet; the body is 8,738 after this change's own review, headroom 262.
+# That margin is deliberate in both directions: at zero headroom every
+# reword of the body is a constant change, which turns the cap into noise
+# nobody reads, while a section-sized regrowth cannot fit under it. The number
+# is a ceiling above a measured body, not the measured body, so nothing here
+# should be read as "no larger than you started". What it holds is the split's
+# own claim: #54's rewrite took the body to 13,721 at the reset (401669f,
+# #74) and it regrew 76.0% to 24,155 because nothing failed when it did.
+# Re-derive that pair before citing it -- an earlier draft here said 63%,
+# which no reset-anchored measurement returns, and the understatement sat
+# in the one comment a session reads while about to raise this constant. A body cap is dodgeable by moving prose one directory down,
+# which is why tools/figures.py reports the cell's total beside it, unbudgeted
+# -- a ceiling on the total would cap depth-shedding itself.
+CELL_BODY_BUDGET_CHARS = {
+    "skills/adversarial-review/SKILL.md": 9_000,
+    "skills/authoring/SKILL.md": 7_359,
+}
 
 # The one cell any other cell may reference, and the one cell that may
 # reference the others. Self-containment exists to stop loading cost and
@@ -228,6 +249,16 @@ CELL_REF_HEAD = re.compile(r"\A[Cc]ells?\b")
 # A pointer from a cell into its own depth. Resolved against the directory of
 # the file naming it, the same rule a script's calling contract follows.
 REFERENCES_REF = re.compile(r"(references/[\w.-]+\.md)")
+# The same pointer written relatively, which is the only form a cell's depth
+# can use to reach its sibling depth: the bare form above would resolve to
+# references/references/x.md from inside references/. Anchored at `.md` rather
+# than filtered afterwards, because RELATIVE_REF's trailing class swallows the
+# full stop that ends a sentence -- `../references/x.md.` -- and a suffix test
+# on that text answers "not markdown" for a pointer that plainly is. Its head
+# is RELATIVE_REF's, so the two agree on where a relative reference starts.
+RELATIVE_MD_REF = re.compile(
+    r"(?<![\w.\\/-])(?:\.\.?[\\/])+[\w.][\w.\\/-]*\.md", re.IGNORECASE
+)
 # The first segment may itself be dot-leading (`.github`), so the class after
 # the prefix admits a dot. Requiring a word character there let every relative
 # form of `.github/` through while catching `docs/` and `tools/` -- the one
@@ -454,6 +485,16 @@ def _iter_files(base: Path):
     for path in sorted(base.rglob("*")):
         if path.is_file():
             yield path
+
+
+def cell_of(rel_posix: str) -> str | None:
+    """The cell a repo-relative path belongs to, or None if it is in no cell.
+
+    `skills/<cell>` itself counts, so a pointer's target and the file naming
+    it are compared on the same footing whichever depth either sits at.
+    """
+    parts = rel_posix.split("/")
+    return parts[1] if len(parts) >= 2 and parts[0] == "skills" else None
 
 
 def _token_before(line: str, start: int) -> str:
@@ -760,6 +801,44 @@ def check_cell_references(root: Path) -> list[str]:
                             f"'{pointer}', which does not resolve against this "
                             f"file's own directory"
                         )
+                # The relative form of the same pointer, which the branch
+                # above cannot see: from inside references/ the bare form
+                # would resolve to references/references/x.md, so depth that
+                # points at its sibling depth writes `../references/x.md` --
+                # and _token_before reads the `../` prefix as more path and
+                # skips it as somebody else's tree. It was skipped in silence
+                # until this cell shed five files' worth of depth and wrote
+                # the tree's first sibling pointers; a probe renaming one
+                # target left the suite green.
+                #
+                # Two bounds, and both are about who owns the finding. Only
+                # .md targets, because a script mention is check 6's, resolved
+                # the same way. And only targets landing inside the naming
+                # file's OWN cell, because a relative reference out of a cell
+                # is the zone wall's or the sideways rule's -- unlawful
+                # whether or not it resolves, and reporting it twice prices
+                # one defect as two.
+                for match in RELATIVE_MD_REF.finditer(line):
+                    raw = match.group(0)
+                    target = (path.parent / raw.replace("\\", "/")).resolve()
+                    try:
+                        rel = target.relative_to(root.resolve()).as_posix()
+                    except ValueError:
+                        # Knowingly silent, and not for the reason the arm
+                        # below is: check_sideways_deps does catch an
+                        # out-of-cell target, and nothing in lint.run
+                        # reports one outside the repository at all.
+                        # Left so because the bound is the naming file's
+                        # own cell; no cell has ever written such a path.
+                        continue
+                    if cell_of(rel_file) is None or cell_of(rel) != cell_of(rel_file):
+                        continue
+                    if not target.is_file():
+                        findings.append(
+                            f"reference-pointer: {rel_file}:{lineno} points at "
+                            f"'{raw}', which does not resolve against this "
+                            f"file's own directory"
+                        )
     return findings
 
 
@@ -880,7 +959,9 @@ def check_doctrine(root: Path) -> list[str]:
         if size > budget:
             findings.append(
                 f"doctrine-budget: {rel}'s body is {size} chars, budget is "
-                f"{budget} -- shed depth to references/ or route content out"
+                f"{budget} -- shed depth to references/ or route content out; "
+                f"`python tools/figures.py --cell {rel} --cell-budget {budget}` "
+                f"reports the cell total, which shedding does not reduce"
             )
     # The charter reaches a consumer through the hook, but it reaches a session
     # in THIS repository only through an import in a file that is itself

@@ -4,8 +4,10 @@
 The general engine ships in the authoring skill; this wrapper is the
 repo-specific application: it feeds the engine this repository's parameters
 and adds the figures that reach a repo-only guard: the census, which reuses
-check_entry_references' own resolution, and the description ceiling, which is
-check_cell_frontmatter's. The budgets are the guards' own constants. Dependencies point
+check_entry_references' own resolution, the description ceiling, which is
+check_cell_frontmatter's, and the cell total, which exists because
+check_doctrine caps a cell's body and a body cap is dodgeable one
+directory down. The budgets are the guards' own constants. Dependencies point
 the lawful direction — repo-only code importing shipped code — and the numbers
 that must agree with a guard come from the guard:
 
@@ -29,9 +31,11 @@ Always emitted, in this order:
   5. figure_census -- the decision log
 
 With --base, figure_delta adds the governing-prose delta (AGENTS.md, CLAUDE.md,
-and the .md files under skills/) against that ref. With --cell, figure_cell and
-figure_cell_description add that cell's two figures. Both the delta's base and
-a cell's budget are caller decisions neither script will default.
+and the .md files under skills/) against that ref. With --cell, figure_cell,
+figure_cell_total and figure_cell_description add that cell's three figures --
+the body against its budget, the cell's whole prose unbudgeted, and the
+always-on description. Both the delta's base and a cell's budget are
+caller decisions neither script will default.
 """
 from __future__ import annotations
 
@@ -127,6 +131,54 @@ def figure_cell_description(root: Path, rel_path: str) -> dict:
         "data": {
             "path": rel_path, "chars": chars, "budget": budget,
             "headroom": budget - chars,
+        },
+    }
+
+
+def figure_cell_total(root: Path, rel_path: str) -> dict:
+    """Every character of prose the cell carries, body and depth together.
+
+    Emitted beside the body figure because a body budget can be satisfied by
+    moving prose one directory down, and a body-only figure certifies that as
+    a reduction. Deliberately unbudgeted: capping the total would cap
+    depth-shedding itself, which is the move the standard wants. What it buys
+    is that the dodge is visible to whoever takes it -- #177's ruling.
+
+    Markdown only. A script the cell carries is code a session runs, not prose
+    it loads, and counting it would price a test file against a prose ceiling.
+    """
+    if not is_cell_path(rel_path):
+        raise SystemExit(
+            f"figures: --cell '{rel_path}' is not a cell -- this figure walks the "
+            "naming file's whole directory, so on a non-cell path it reports a "
+            "confidently-labelled total for whatever tree happens to sit above it"
+        )
+    target = root / rel_path
+    if not target.is_file():
+        raise SystemExit(f"figures: {rel_path} is not a readable file under {root}")
+    body = len(engine.frontmatterless(
+        target.read_text(encoding="utf-8", errors="replace")
+    ))
+    depth = sorted(
+        p for p in target.parent.rglob("*.md") if p.resolve() != target.resolve()
+    )
+    depth_chars = sum(
+        len(p.read_text(encoding="utf-8", errors="replace")) for p in depth
+    )
+    return {
+        "name": f"cell `{target.parent.relative_to(root).as_posix()}` (total prose)",
+        "value": (
+            f"{body + depth_chars:,} chars -- body {body:,} + {len(depth)} "
+            f"depth file(s) {depth_chars:,}"
+        ),
+        "basis": (
+            "decoded UTF-8 characters, universal-newline read; SKILL.md below "
+            "its frontmatter plus every other .md in the cell whole; no budget "
+            "-- a ceiling here would cap depth-shedding itself; working tree"
+        ),
+        "data": {
+            "path": rel_path, "body": body, "depth_files": len(depth),
+            "depth": depth_chars, "total": body + depth_chars,
         },
     }
 
@@ -300,7 +352,28 @@ def build_figures(root: Path, base: str | None,
                 "caller decision and picking one silently is how a stated "
                 "figure diverges from the guard that judges it"
             )
-        figures.append(engine.figure_cell(root, cell, budget))
+        enforced = lint.CELL_BODY_BUDGET_CHARS.get(cell)
+        if enforced is not None and enforced != budget:
+            raise SystemExit(
+                f"figures: --cell-budget {budget} disagrees with the {enforced} "
+                f"check_doctrine enforces for {cell}. Refusing rather than "
+                "defaulting: the caller decides the budget, and a stated headroom "
+                "no guard backs is the drift this script exists to stop"
+            )
+        cell_figure = engine.figure_cell(root, cell, budget)
+        if enforced is not None:
+            # The budget is now guard-backed for this cell -- the refusal above
+            # made it so -- and a basis reading "the budget is the caller's" is
+            # byte-identical to what an uncapped cell emits. Same shape the
+            # charter's own figure uses, and for the same reason. (Spelled
+            # without that function's name on purpose: the docstring
+            # enumeration test scans this source for figure_* tokens.)
+            cell_figure["basis"] += (
+                " -- and here check_doctrine enforces that budget, so the figure "
+                "cannot drift from the guard that judges it"
+            )
+        figures.append(cell_figure)
+        figures.append(figure_cell_total(root, cell))
         figures.append(figure_cell_description(root, cell))
     return figures
 
@@ -315,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", metavar="REF",
                         help="also emit the governing-prose delta against REF")
     parser.add_argument("--cell", metavar="PATH",
-                        help="also emit a cell's body and description figures")
+                        help="also emit a cell's body, total-prose and description figures")
     parser.add_argument("--cell-budget", metavar="N", type=int,
                         help="the body budget --cell is measured against")
     parser.add_argument("--json", action="store_true",
