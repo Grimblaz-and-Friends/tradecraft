@@ -35,7 +35,7 @@ Checks:
 
   Checks 5 and 6 split on form, not on check. The *name* form is read
   outside fenced blocks only: a name inside a fence is a spelling being
-  shown, as check 7 already reasons about an import. Every *path* form is
+  shown, as check 8 already reasons about an import. Every *path* form is
   read everywhere, fences included -- check 5's rooted and relative skill
   paths and check 6's references/ pointers alike -- because a path that does
   not resolve is broken whatever encloses it, this repository's fenced blocks
@@ -43,34 +43,38 @@ Checks:
   inside them. Both checks also read one wrap — a line ending in `<name>` whose successor
   begins "cell" — because a reflow is a formatting edit no reviewer inspects
   and it would otherwise silently remove a reference from both checks.
-  7. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
+  7. doctrine citations: every [D-N] the doctrine writes names an entry that
+     exists. The log's own references are check 12's; a marker in the always-on
+     surface was checked by nothing, which the outflow rule makes load-bearing
+     by instructing a session to compress prose into one.
+  8. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  8. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  9. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  9. review index: docs/reviews.jsonl, when present, parses and carries one
+  10. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review — date, artifact, lane, per-seat counts, what came of
      the findings, the split by consequence shape, the model and runtime that
      staffed it, report URL. The split reconciles against the disposition
      counts; nothing else on the row reconciles against anything.
- 10. decision index: every decision entry has a row in the log's index, and
+ 11. decision index: every decision entry has a row in the log's index, and
      every row a file.
- 11. entry references: every path reference and relative link a decision entry
+ 12. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
-12. emitted ASCII: no Python file states a non-ASCII character in a
+13. emitted ASCII: no Python file states a non-ASCII character in a
     non-docstring string constant. Windows encodes stdout and stderr to the
     locale codepage, pipes included, so a captured em dash garbles in the one
     message a guard exists to deliver. It reads literals, not reachability:
     a filename and a regex source are flagged too, and a character built at
     runtime is out of reach. Docstrings and comments are exempt.
-13. docstring not piped: no script passes __doc__ as an argparse
+14. docstring not piped: no script passes __doc__ as an argparse
     description. --help writes it to stdout before any stream setup runs,
     which turns the docstring check 12 exempts into locale-encoded output.
-14. stdio wired: every script with a main() calls utf8_stdio() as its first
+15. stdio wired: every script with a main() calls utf8_stdio() as its first
     statement, so runtime data this repository did not write reaches the
     stream protected. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
@@ -87,6 +91,7 @@ from __future__ import annotations
 
 import ast
 import datetime
+import importlib.util
 import json
 import re
 import subprocess
@@ -148,18 +153,49 @@ CELL_FIELD_MAX_CHARS = {"name": 64, "description": 700}
 CHARTER_IMPORT = f"@{CHARTER}"
 
 # The predecessor's root file passed 30k chars in eight months because every
-# incident defaulted to a paragraph. The budget is the structural counterweight:
-# at the limit, adding a line means routing something out (the charter,
-# "Admitting a new requirement"; this file states the budget that makes it
-# bite here).
-AGENTS_BUDGET_CHARS = 8_000
+# incident defaulted to a paragraph. The budget is the structural counterweight;
+# the outflow every edit owes is the rule, and this ceiling is only what makes
+# an unpaid one visible. [D-184]
+# Ratcheted from 8,000 once the file measured 5,511. This file shrank through
+# both of its rewrites -- 7,980 to 5,958 to 5,659; what grew through both is
+# the always-on surface it belongs to, because prose moved between artifacts
+# and each change reported the file it emptied. That is why the figure to watch
+# is the total rather than this one. Set so roughly one substantial rule fits
+# before something has to leave, not so the margin stays comfortable, which is
+# the failure mode. It is expected to be tight and already is: it was
+# 5,511 when this ceiling was chosen and is 5,747 now, so 236 characters have
+# gone -- 112 from the change that set it, 177 from a merge that landed while
+# it was open, less 53 a review remedy took back out. Headroom is 253. The
+# answer to a change that wants more is an outflow.
+AGENTS_BUDGET_CHARS = 6_000
 # The charter is the half that ships, and an adopter pays for it on every
 # SessionStart event -- resume and compact included -- so it needs the
 # displacement pressure more than this repo's own file does, not less.
-# 6,000 leaves real headroom over today's size and stays well under the
-# 2,500-token ceiling Codex applies to a hook's additional context.
-CHARTER_BUDGET_CHARS = 6_000
+# The ceiling leaves real headroom over today's size and stays well under
+# the 2,500-token limit Codex applies to a hook's additional context.
+# Ratcheted from 6,000 against a measured 5,353. The margin is smaller than
+# the doctrine's because the charter is not audited here -- its prose was
+# left untouched deliberately, so the ceiling is the only pressure it gets.
+CHARTER_BUDGET_CHARS = 5_600
 POINTER_BUDGET_CHARS = 500
+# A cell body whose budget is enforced rather than remembered. `authoring`'s
+# cap was stated in #169 as that change's own evidence that depth-shedding is
+# applicable rather than aspirational -- and enforced by nothing: it lived in a
+# command string inside a decision entry that has since frozen. A budget a
+# guard does not hold is a budget the next edit does not have. The value is
+# the bound #169 declared and held itself under, not a fresh judgement: that
+# entry's own derivation command reads `--budget 7359`, against a body that
+# measured 7,358 before that change. The comparison below is `>`, so 7,359
+# itself passes -- the cap admits one character more than the size it was
+# derived from, and is not the tighter "no larger than you started" it reads
+# like. #169's tree came in at 7,285 and this one is at 7,354, so nothing
+# turns on the character today; it is stated because a session raising this
+# constant reads here first. Raising
+# it is a decision to be made and recorded, which is what a constant makes visible and a sentence
+# in a frozen entry does not. Cells absent from this map are unbudgeted on
+# purpose: a number chosen for a cell nobody has argued about would be a
+# ruling on its size arriving as a constant.
+CELL_BODY_BUDGET_CHARS = {"skills/authoring/SKILL.md": 7_359}
 
 # The one cell any other cell may reference, and the one cell that may
 # reference the others. Self-containment exists to stop loading cost and
@@ -222,6 +258,26 @@ RUNS_SCRIPT = re.compile(r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout
 # The event is named; the gate's exact wording is not, so a lawful rewrite
 # (adding `&& !draft`, or moving to ${{ }} form) does not fail a required check.
 GATED_ON_PR = re.compile(r"^\s+if:.*pull_request")
+# The delta's base side reads blobs at another revision, which a shallow clone
+# does not have: the read fails, the delta drops out, and the callout states a
+# total with no direction while every check stays green. The job cannot go red
+# for its own missing figure, so the pin is here. `0` and not a positive depth
+# -- a bounded depth is still a shallow clone, and the base sits any distance
+# back.
+FULL_HISTORY = re.compile(
+    r"^\s+fetch-depth:\s*['\"]?0['\"]?\s*(?:#.*)?$"
+)
+# The delta's *request*, where the pin above is only its precondition. Both
+# seams, because neither regex can see the other's: deleting `--base` leaves
+# the env line standing, and deleting the env line leaves the run line
+# standing while `--base "$BASE_SHA"` expands to `--base ""` -- falsy, so the
+# delta drops out with the command still reading correctly. Four one-token
+# deletions across these two lines each rendered the callout the review had
+# already ruled an unmet criterion, with the whole suite green.
+BASE_FLAG = re.compile(
+    r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout\.py\b.*--base\b"
+)
+BASE_ENV = re.compile(r"^\s+BASE_SHA:\s*\S")
 
 # A decision entry's references. Markdown links claim to resolve outright;
 # backticked paths are the form entries actually use most, and are what PR #104
@@ -581,6 +637,54 @@ def check_sideways_deps(root: Path) -> list[str]:
     return findings
 
 
+DOCTRINE_CITATION = re.compile(r"\[D-(\d+)\]")
+
+
+def check_doctrine_citations(root: Path) -> list[str]:
+    """Every [D-N] the doctrine writes names a decision entry that exists.
+
+    check_entry_references resolves what the decision log itself writes, and
+    stops there -- so a marker in the always-on surface resolved to nothing and
+    lint stayed green, verified for all four of them. That mattered little
+    while the doctrine merely cited; it matters now that the outflow rule
+    instructs a session to replace prose with a citation and requires one that
+    resolves. A reason compressed into a marker nobody checks is a reason
+    deleted on the next renumbering, on the surface every session reads first.
+
+    Scoped to the doctrine files by decision, not by the shipped cells being
+    clean: they carry eighteen `[D-N]` markers, and D-173 priced exactly that
+    cost rather than arguing it away, on the ground that the party who would
+    unknowingly undo the ruling is looking at the cell and not at the log. An
+    adopter cannot resolve any of them -- they receive the cells and not the
+    decision log -- so widening this guard would either mean stripping reasons
+    the practice deliberately kept, or a permanent exemption list. That is the
+    owner's call to reopen, not a repair a guard should make on its own; until
+    he does, the eighteen are lawful and out of reach here.
+
+    (The zone wall is not what puts them out of reach, whatever the shape of
+    the argument suggests: a `[D-N]` marker is not a path and violates no
+    zone rule. The reason is the resolution cost above.)
+    """
+    findings = []
+    directory = root / "docs" / "architecture" / "decisions"
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = root / name
+        if not path.is_file():
+            continue  # its absence is check 8's finding, not this one's
+        text = _read_text(path)
+        if text is None:
+            continue
+        for lineno, line in _unfenced_numbered(text):
+            for match in DOCTRINE_CITATION.finditer(line):
+                number = match.group(1)
+                if not any(directory.glob(f"D-{number}-*.md")):
+                    findings.append(
+                        f"doctrine-citation: {name}:{lineno} cites "
+                        f"[D-{number}], which is not an entry in the log"
+                    )
+    return findings
+
+
 def check_cell_references(root: Path) -> list[str]:
     """Every `<name>` cell reference names a real skill, and every pointer resolves.
 
@@ -760,6 +864,21 @@ def check_doctrine(root: Path) -> list[str]:
             findings.append(
                 f"doctrine-budget: {CHARTER}'s body is {size} chars, budget "
                 f"is {CHARTER_BUDGET_CHARS} -- route content out"
+            )
+    # An absent cell is not a budget violation -- a tree without it simply has
+    # no such cell, and every minimal fixture is one. What an absent cell WOULD
+    # do is silently drop the budget on a rename, so that the map still names a
+    # real cell is pinned against this repository's own tree in the suite,
+    # where the question has an answer, rather than guessed at here.
+    for rel, budget in sorted(CELL_BODY_BUDGET_CHARS.items()):
+        cell = root / rel
+        if not cell.is_file():
+            continue
+        size = len(_frontmatterless(cell.read_text(encoding="utf-8", errors="replace")))
+        if size > budget:
+            findings.append(
+                f"doctrine-budget: {rel}'s body is {size} chars, budget is "
+                f"{budget} -- shed depth to references/ or route content out"
             )
     # The charter reaches a consumer through the hook, but it reaches a session
     # in THIS repository only through an import in a file that is itself
@@ -1181,6 +1300,15 @@ def check_doctrine_callout(root: Path) -> list[str]:
     for pattern, why in (
         (RUNS_SCRIPT, "does not run tools/doctrine_callout.py"),
         (GATED_ON_PR, "is not gated on a pull_request event"),
+        (FULL_HISTORY, "does not check out full history (`fetch-depth: 0`), "
+                       "so the base revision is unreadable and the callout "
+                       "loses this PR's own movement"),
+        (BASE_FLAG, "does not pass `--base` to tools/doctrine_callout.py, so "
+                    "the callout states a total and says nothing about "
+                    "direction"),
+        (BASE_ENV, "does not put the base revision in the environment as "
+                   "`BASE_SHA`, so `--base` expands to nothing and the delta "
+                   "is dropped with the command still reading correctly"),
     ):
         if not any(pattern.match(line) for line in block):
             findings.append(
@@ -1985,6 +2113,7 @@ def run(root: Path) -> list[str]:
         + check_cell_frontmatter(root)
         + check_sideways_deps(root)
         + check_cell_references(root)
+        + check_doctrine_citations(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)
         + check_review_index(root)
@@ -1996,11 +2125,45 @@ def run(root: Path) -> list[str]:
     )
 
 
+def always_on_note(root: Path) -> str:
+    """The always-on total, where a session sees it before it writes.
+
+    A cold consumer adding a binding rule found this number only because it
+    thought to go looking: `tools/figures.py` is named in no always-on surface
+    and in no skill prose, only inside frozen decision entries. It said the
+    number changed what it did -- it measured its rule and its outflow before
+    writing either, against 253 characters of headroom -- which is the whole
+    argument for putting it where the flow already goes.
+
+    The callout is a merge-surface instrument by design and gated to
+    `pull_request`, so it cannot reach the session doing the editing. This is
+    that session's answer, and it costs no always-on characters, owes no
+    outflow, and adds no sentence anybody has to read.
+
+    Never fatal. A figure that will not derive is stated and moves on; a clean
+    tree does not go red because a number was unavailable.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "repo_figures", root / "tools" / "figures.py"
+        )
+        figures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(figures)
+        data = figures.figure_always_on(root)["data"]
+    except Exception as exc:  # noqa: BLE001 -- reported, never fatal
+        return f"always-on surface: not derived ({type(exc).__name__}: {exc})"
+    return (
+        f"always-on surface: {data['repo_total']:,} chars here, "
+        f"{data['adopter_total']:,} from this practice for an adopter"
+    )
+
+
 def main() -> int:
     utf8_stdio()
     findings = run(ROOT)
     for finding in findings:
         print(finding)
+    print(always_on_note(ROOT))
     print(f"lint: {len(findings)} finding(s)")
     return 1 if findings else 0
 

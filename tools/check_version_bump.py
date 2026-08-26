@@ -198,8 +198,13 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
 
     shown = ".".join(map(str, old)), ".".join(map(str, new))
     if new > old:
+        # The names, not just the count. A session that edited only
+        # repo-only files still sees a shipped-zone count here -- the unit is
+        # the PR against its merge base, not this commit -- and a bare number
+        # sends it looking for a mistake it did not make.
         lines.append(
-            f"version-bump: {len(touched)} shipped-zone file(s) changed, "
+            f"version-bump: {len(touched)} shipped-zone file(s) changed "
+            f"({', '.join(sorted(touched))}), "
             f"version {shown[0]} -> {shown[1]} ({why})"
         )
         return PASS, lines

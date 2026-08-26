@@ -14,6 +14,7 @@ the loudness guarantee itself — is never executed by anything.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -96,7 +97,7 @@ def gh(monkeypatch):
 
 
 def _callout(files="`AGENTS.md`", author=BOT, cid=7):
-    return {"id": cid, "author": author, "body": dc.CALLOUT.format(files=files)}
+    return {"id": cid, "author": author, "body": dc._body_from(files)}
 
 
 WITHDRAWN_COMMENT = {"id": 7, "author": BOT, "body": dc.WITHDRAWN}
@@ -145,12 +146,24 @@ def test_doctrine_pr_gets_label_and_comment(gh):
 
 
 def test_the_body_names_the_files_the_pr_actually_touched(gh):
-    """A CLAUDE.md-only PR must not be sent to read the AGENTS.md diff."""
+    """A CLAUDE.md-only PR must not be sent to read the AGENTS.md diff.
+
+    Scoped to the two lines that carry the file list, where it used to search
+    the whole body above the footer. The always-on figure now names AGENTS.md
+    in every callout because that is the file its ceiling governs, and a
+    whole-body search cannot tell a priced figure from an instruction -- it
+    would fail this lawful rendering, and a guard that blocks lawful work
+    fails as hard as one that passes unlawful work.
+    """
     stub = gh(["CLAUDE.md"])
     dc.run("79", None)
     body = stub.posted_body()
     assert "Read the `CLAUDE.md` diff" in body
-    assert "AGENTS.md" not in body.split("<sub>")[0]
+    instructions = [line for line in body.splitlines()
+                    if line.startswith("**This PR changes the doctrine.**")
+                    or line.startswith("Touched:")]
+    assert len(instructions) == 2, instructions
+    assert not any("AGENTS.md" in line for line in instructions), instructions
 
 
 def test_label_is_created_before_it_is_applied(gh):
@@ -348,7 +361,7 @@ def test_a_long_argument_does_not_bury_the_reason(monkeypatch):
 
     monkeypatch.setattr(dc.subprocess, "run", lambda *a, **k: Proc())
     with pytest.raises(dc.CalloutError) as exc:
-        dc._gh("pr", "comment", "79", "--body", dc.CALLOUT.format(files="`AGENTS.md`"))
+        dc._gh("pr", "comment", "79", "--body", dc._body_from("`AGENTS.md`"))
     message = str(exc.value)
     assert "chars]" in message and message.count("\n") == 0
     assert message.endswith("HTTP 403")
@@ -408,3 +421,77 @@ def test_repo_flag_reaches_every_call(gh):
             assert "--repo" in call and "o/n" in call
         if call[0] == "api":
             assert any("repos/o/n/" in a for a in call)
+
+
+def test_the_callout_carries_the_always_on_size(tmp_path, monkeypatch):
+    """The budget the owner is deciding against, on the surface he decides on.
+
+    Both arms: the figure is there when it derives, and its failure is a
+    stated absence rather than a silent omission -- a callout that quietly
+    drops a number is one nobody can trust the rest of.
+    """
+    body = dc._body(["AGENTS.md"])
+    assert "Always-on surface:" in body
+    assert "for an adopter" in body
+
+    # Patching the module attribute now reaches the function, because root
+    # resolves at call time rather than binding as a default -- the earlier
+    # shape made this line inert and would have let a later test measure
+    # the real repository while appearing to isolate it.
+    monkeypatch.setattr(dc, "ROOT", tmp_path)
+    degraded = dc._always_on_line()
+    assert degraded.startswith("_Always-on surface: not derived")
+
+
+def test_the_delta_survives_the_path_ci_actually_takes(gh):
+    """The seam, not the function.
+
+    Every pin written for the delta called the arithmetic directly, and no
+    test in the suite passed a base through `run()` or `main()` at all. So
+    `run()` dropping `base=base`, and `main()` dropping `base=args.base`,
+    each posted a callout with no delta and left the whole suite green --
+    reproducing byte-for-byte the artifact this review ruled an unmet
+    acceptance criterion. The workflow's two halves of the same seam are
+    pinned in the lint; these are the two inside the script.
+    """
+    stub = gh(["AGENTS.md"])
+    dc.run("79", None, base="HEAD~1")
+    assert re.search(r"chars here \([-+][\d,]+ this PR\)", stub.posted_body())
+
+
+def test_main_threads_its_base_argument_through(gh):
+    """The outermost seam: CI invokes `main`, not `run`."""
+    stub = gh(["AGENTS.md"])
+    dc.main(["--pr", "79", "--base", "HEAD~1"])
+    assert re.search(r"chars here \([-+][\d,]+ this PR\)", stub.posted_body())
+
+
+def test_no_base_still_posts_a_callout_without_a_delta(gh):
+    """The lawful polarity of both: a PR whose base cannot be resolved is not
+    a failure, and must still get its total."""
+    stub = gh(["AGENTS.md"])
+    dc.run("79", None)
+    body = stub.posted_body()
+    assert "Always-on surface:" in body and "this PR)" not in body
+
+
+def test_the_delta_renders_its_sign_and_states_a_base_it_cannot_read():
+    """Three renderings that must differ, because two of them did not.
+
+    `--base` had no test of any kind: deleting its whole effect from `run()`
+    left the suite green, and so did inverting every delta's sign. Worse, an
+    unresolvable base returned "" -- byte-identical to no base at all -- which
+    is how the delta shipped absent from every CI callout for a full cycle
+    without anyone being able to see it from the comment.
+    """
+    plain = dc._body(["AGENTS.md"])
+    measured = dc._body(["AGENTS.md"], base="HEAD~1")
+    unreadable = dc._body(["AGENTS.md"], base="0" * 40)
+
+    assert measured != plain, "--base must change the body"
+    assert unreadable != plain, "an unreadable base is not the same as no base"
+    # Shape only. The *direction* is pinned in test_repo_figures.py against a
+    # tree whose movement is known -- this assertion matched either sign, and
+    # stayed green when every delta was inverted.
+    assert re.search(r"chars here \([-+][\d,]+ this PR\)", measured), measured
+    assert "movement not derived" in unreadable and "0" * 40 in unreadable
