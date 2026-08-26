@@ -2,9 +2,12 @@
 
 Each fixture builds a minimal tree in tmp_path, so the generator and the guard
 are proven to fire and to stay quiet, per shape. The unlawful shapes are the
-point: this guard exists because a roster that is absent, stale, or orphaned
-is invisible from inside a session -- the descriptions simply do not load, and
-nothing in the transcript says so.
+point, and they fail in two different ways: an **absent** entry loads nothing,
+while a **stale** one loads the superseded trigger to every session until
+somebody regenerates. The second is the worse failure and the one this guard
+is really for -- an earlier version of this docstring called both of them "the
+descriptions simply do not load", which named the milder failure for the shape
+its own out-of-step test calls the guard's whole point. [PR #210 review, M20]
 """
 
 import sys
@@ -85,6 +88,109 @@ def test_an_orphan_entry_fires_and_is_removed(tmp_path):
     roster.write(tmp_path)
     assert roster.verify(tmp_path) == []
     assert not (tmp_path / ".claude" / "skills" / "beta").exists()
+
+
+def test_a_hand_written_project_skill_is_never_removed(tmp_path):
+    """The high this review raised, at the site it fires.
+
+    `.claude/skills/<name>/SKILL.md` is the runtime's documented home for a
+    project's own skills, which is the whole property this generator depends
+    on -- so the directory is shared, not owned. The orphan branch used to
+    print `--write` against anything it found there, and `--write` unlinked
+    it: an untracked file, no prompt, exit 0, lint green afterwards. Three
+    seats ran that deletion independently.
+    """
+    make_cell(tmp_path, "alpha")
+    helper = tmp_path / ".claude" / "skills" / "repo-helper"
+    helper.mkdir(parents=True)
+    (helper / "SKILL.md").write_bytes(
+        ("---" + NL + "name: repo-helper" + NL
+         + "description: Written by hand, not by the generator." + NL
+         + "---" + NL + NL + "Real content somebody wrote." + NL).encode("utf-8")
+    )
+    findings = roster.verify(tmp_path)
+    orphan = [f for f in findings if "repo-helper" in f]
+    assert len(orphan) == 1
+    assert "not written by tools/roster.py" in orphan[0]
+    assert "--write" not in orphan[0], (
+        "the remedy that would destroy the file must not be named"
+    )
+    roster.write(tmp_path)
+    assert (helper / "SKILL.md").is_file(), "write() removed a file it did not author"
+
+
+def test_a_generated_orphan_is_still_removed(tmp_path):
+    """The lawful polarity of the same branch: refusing to touch what it did
+    not write must not stop it removing what it did."""
+    make_cell(tmp_path, "alpha")
+    make_cell(tmp_path, "beta")
+    roster.write(tmp_path)
+    (tmp_path / "skills" / "beta" / "SKILL.md").unlink()
+    roster.write(tmp_path)
+    assert not (tmp_path / ".claude" / "skills" / "beta").exists()
+    assert roster.verify(tmp_path) == []
+
+
+def test_residue_left_by_a_removal_is_reported_not_hidden(tmp_path):
+    """A removed orphan with siblings leaves a directory the guard and the
+    figure can both no longer see. Reporting it is what stops the lint going
+    green over it."""
+    make_cell(tmp_path, "alpha")
+    make_cell(tmp_path, "beta")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "beta"
+    (entry / "references").mkdir()
+    (entry / "references" / "notes.md").write_bytes(b"depth\n")
+    (tmp_path / "skills" / "beta" / "SKILL.md").unlink()
+    lines = roster.write(tmp_path)
+    assert any("left" in line and "references" in line for line in lines)
+    residue = [f for f in roster.verify(tmp_path) if "holds no SKILL.md" in f]
+    assert len(residue) == 1
+
+
+def test_write_reports_an_unreadable_cell_and_finishes_the_rest(tmp_path):
+    """`--write` is the command every repairable finding names, so it must not
+    hand back a traceback and a tree in neither state.
+
+    Ordered so the broken cell sits between two that need work: before the
+    fix, `alpha` was written, `zeta` was not, and the orphan survived because
+    the removal loop was never reached.
+    """
+    make_cell(tmp_path, "alpha", "Needs regenerating.")
+    make_cell(tmp_path, "zeta", "Also needs regenerating.")
+    roster.write(tmp_path)
+    make_cell(tmp_path, "alpha", "Edited after generation.")
+    make_cell(tmp_path, "zeta", "Edited after generation too.")
+    broken = tmp_path / "skills" / "mm-broken"
+    broken.mkdir()
+    (broken / "SKILL.md").write_bytes(b"# no frontmatter\n")
+    orphan = tmp_path / ".claude" / "skills" / "gone"
+    orphan.mkdir(parents=True)
+    (orphan / "SKILL.md").write_bytes(roster.expected(tmp_path, "alpha"))
+
+    lines = roster.write(tmp_path)
+
+    assert any("skipped" in line and "mm-broken" in line for line in lines)
+    for name in ("alpha", "zeta"):
+        entry = (tmp_path / ".claude" / "skills" / name / "SKILL.md").read_bytes()
+        assert b"Edited after generation" in entry, f"{name} was not regenerated"
+    assert not orphan.exists(), "the removal loop was never reached"
+    remaining = roster.verify(tmp_path)
+    assert len(remaining) == 1 and "no parseable frontmatter" in remaining[0]
+
+
+def test_the_two_shapes_no_command_repairs_do_not_name_one(tmp_path):
+    """`verify`'s docstring used to claim every finding names the one command
+    that fixes it. It does not, for these two -- and stating the universal
+    where it did not hold is what let the crash above read as a broken tool."""
+    empty = roster.verify(tmp_path)
+    assert len(empty) == 1 and "--write" not in empty[0]
+    broken = tmp_path / "skills" / "alpha"
+    broken.mkdir(parents=True)
+    (broken / "SKILL.md").write_bytes(b"# no frontmatter\n")
+    unparseable = roster.verify(tmp_path)
+    assert len(unparseable) == 1 and "--write" not in unparseable[0]
+    assert "fix the cell's frontmatter" in unparseable[0]
 
 
 def test_no_cells_is_a_finding_not_a_pass(tmp_path):

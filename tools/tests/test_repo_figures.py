@@ -382,6 +382,50 @@ def test_the_base_side_reproduces_the_working_tree_figure(tmp_path):
         repo_figures.figure_always_on(tmp_path)["data"]["repo_total"])
 
 
+def test_the_base_side_reads_the_roster_from_the_directory_it_loads(tmp_path):
+    """The git-ref reader's roster half, pinned against the swap that survived.
+
+    `figure_always_on`'s half is pinned by
+    `test_the_repo_side_reads_the_roster_it_actually_loads`; this one was not,
+    and swapping `always_on_at` back to `skills/`/`is_cell_path` left all 397
+    tests green -- the identical swap in the working-tree reader fails, so the
+    suite discriminated everywhere except here. Every fixture had the two
+    directories in agreement, and two readers cannot be told apart on a tree
+    where they read the same thing.
+
+    So this fixture commits a tree where they deliberately disagree: the cell
+    stays, its roster entry goes. Under the mutation both refs read `skills/`
+    and the delta collapses to zero. **The disagreement is the point -- a
+    later session must not "repair" it.**
+
+    `always_on_at` has one caller, the CI callout's `(+N this PR)`, which is
+    what D-184's outflow rule is priced against. [PR #210 review, M5]
+    """
+    git = git_tree(tmp_path)
+    surface(tmp_path)
+    extra = tmp_path / "skills" / "extra"
+    extra.mkdir(parents=True)
+    (extra / "SKILL.md").write_bytes(
+        ("---" + NL + "name: extra" + NL + "description: Trigger." + NL + "---"
+         + NL + NL + "Body." + NL).encode("utf-8"))
+    roster.write(tmp_path)
+    git("add", "-A")
+    git("commit", "-qm", "both in step")
+    before = git("rev-parse", "HEAD")
+
+    (tmp_path / ".claude" / "skills" / "extra" / "SKILL.md").unlink()
+    git("add", "-A")
+    git("commit", "-qm", "roster entry gone, cell kept")
+    after = git("rev-parse", "HEAD")
+
+    assert repo_figures.always_on_at(tmp_path, before) - (
+        repo_figures.always_on_at(tmp_path, after)
+    ) == len("extra") + len("Trigger."), (
+        "always_on_at read the roster from skills/, where the cell still is, "
+        "rather than from .claude/skills/, where the entry was removed"
+    )
+
+
 def test_the_base_side_counts_both_doctrine_files(tmp_path):
     """The half of the equality above that a single fixture could satisfy by
     accident: measured against a tree whose two doctrine files have different

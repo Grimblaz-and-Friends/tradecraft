@@ -82,11 +82,13 @@ Checks:
     exact -- a call after parse_args is one that --help has outrun.
 16. project roster: every cell has an entry under .claude/skills/ carrying its
     frontmatter byte for byte, and no entry names a cell that is gone. That
-    directory is the only surface a session working in THIS repository loads a
-    description from -- the plugin is never installed here -- so without it
-    every trigger routed to a description reaches every adopter and misses us
-    (#199). The expectation is tools/roster.py's own, never recomputed here:
-    a guard holding a second definition drifts from the writer it judges.
+    directory is the only surface a Claude Code session working in THIS
+    repository loads a description from -- the plugin is never installed here
+    -- so without it every trigger routed to a description reaches every
+    adopter and misses us (#199). Codex is not reached by it and reads cells by
+    opening files, which is why the scope is named rather than left universal.
+    The expectation is tools/roster.py's own, never recomputed here: a guard
+    holding a second definition drifts from the writer it judges.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -2153,12 +2155,19 @@ def run(root: Path) -> list[str]:
 def check_project_roster(root: Path) -> list[str]:
     """Every cell has a `.claude/skills/` entry carrying its frontmatter.
 
-    That directory is the whole of what a session working in this repository
-    loads a description from. An adopter installs the plugin and receives the
-    roster from it; this repository never installs itself, so before #199 no
-    session here held any cell's name or description, and every trigger routed
-    to a description over several changes reached every consumer and missed
-    us. `tools/roster.py` carries the mechanism and the evidence.
+    That directory is the whole of what a **Claude Code** session working in
+    this repository loads a description from. An adopter installs the plugin
+    and receives the roster from it; this repository never installs itself, so
+    before #199 no session here held any cell's name or description, and every
+    trigger routed to a description over several changes reached every consumer
+    and missed us. `tools/roster.py` carries the mechanism and the evidence.
+
+    **Codex is outside that scope and stays outside it.** It is not documented
+    to load this directory, so a Codex session here reaches a cell by opening
+    the file, exactly as it did before. The runtime is named rather than left
+    to a universal because this repository's doctrine states its audience as
+    every runtime, and a sentence claiming every session would have asserted a
+    fix Codex never received. [PR #210 review, M10]
 
     The expectation is the generator's, asked for rather than recomputed. A
     guard that computes its own copy of what a writer produces is a second
