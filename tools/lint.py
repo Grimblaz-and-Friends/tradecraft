@@ -80,6 +80,8 @@ Checks:
     the import binding, a local no-op with the right name would satisfy the
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
+16. marketplace source: the tradecraft entry's source stays the exact string
+    `./`, because Codex cannot discover the plugin from Claude's object form.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -471,6 +473,12 @@ REVIEW_ROWS_GRANDFATHERED = 20
 # than one moving constant -- raising a single one would silently un-oblige
 # every row between the two boundaries, in a file nobody may edit.
 REVIEW_ROWS_FACING_GRANDFATHERED = 31
+
+# `external` was recorded as though it were a panel seat in 26 of the 37 rows
+# already present when the distinction became enforceable. Those rows are
+# immutable exhaust, so the first 37 are exempt and every later row names only
+# actual panel seats in `seats`.
+REVIEW_ROWS_EXTERNAL_SEAT_GRANDFATHERED = 37
 
 
 def _read_text(path: Path) -> str | None:
@@ -1105,7 +1113,7 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
             f"review's report -- the row holds counts, the report holds the findings"
         )
     if "seats" in row:
-        _check_seats(row["seats"], where, findings)
+        _check_seats(row["seats"], row_index, where, findings)
     _check_dispositions_and_staffing(row, row_index, where, findings)
     _check_facing(row, row_index, where, findings)
 
@@ -1289,13 +1297,22 @@ def _check_staffing(staffing, where: str, findings: list) -> None:
         )
 
 
-def _check_seats(seats, where: str, findings: list) -> None:
+def _check_seats(seats, row_index: int, where: str, findings: list) -> None:
     if not isinstance(seats, dict) or not seats:
         findings.append(
             f"{where} seats must be a non-empty mapping of seat name to counts"
         )
         return
     for name, counts in seats.items():
+        if (
+            name == "external"
+            and row_index >= REVIEW_ROWS_EXTERNAL_SEAT_GRANDFATHERED
+        ):
+            findings.append(
+                f"{where} seat 'external' books an external pass as though it "
+                f"were staffed on the panel -- an external pass is not a panel "
+                f"seat and does not belong in `seats`"
+            )
         if not isinstance(name, str) or not TOKEN.match(name):
             findings.append(
                 f"{where} seat name '{name}' must be a lowercase token of "
@@ -1849,6 +1866,33 @@ def check_delivery(root: Path) -> list[str]:
     return findings
 
 
+def check_marketplace_source(root: Path) -> list[str]:
+    """Keep the tradecraft source in the form both plugin runtimes accept."""
+    manifest = root / ".claude-plugin" / "marketplace.json"
+    if not manifest.is_file():
+        return []
+    try:
+        parsed = json.loads(manifest.read_text(encoding="utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        # The marketplace validator owns the manifest's general shape. This
+        # guard owns the one valid Claude shape that Codex cannot consume.
+        return []
+    plugins = parsed.get("plugins", []) if isinstance(parsed, dict) else []
+    if not isinstance(plugins, list):
+        return []
+    findings = []
+    for plugin in plugins:
+        if not isinstance(plugin, dict) or plugin.get("name") != "tradecraft":
+            continue
+        if plugin.get("source") != "./":
+            findings.append(
+                "marketplace-source: .claude-plugin/marketplace.json tradecraft "
+                "source must be the string `./` -- Codex cannot discover the "
+                "plugin from Claude's object form"
+            )
+    return findings
+
+
 def check_harness_tokens(root: Path) -> list[str]:
     """No shipped file outside `hooks/` names a harness-specific path token."""
     findings = []
@@ -2205,6 +2249,7 @@ def run(root: Path) -> list[str]:
         + check_emitted_ascii(root)
         + check_docstring_not_piped(root)
         + check_stdio_wired(root)
+        + check_marketplace_source(root)
     )
 
 

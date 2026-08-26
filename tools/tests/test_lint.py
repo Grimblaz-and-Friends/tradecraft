@@ -119,6 +119,15 @@ def _ci(root: Path, text: str) -> None:
     (root / ".github" / "workflows" / "ci.yml").write_text(text, encoding="utf-8")
 
 
+def _write_marketplace(root: Path, source) -> None:
+    marketplace = root / ".claude-plugin"
+    marketplace.mkdir(exist_ok=True)
+    (marketplace / "marketplace.json").write_text(
+        json.dumps({"plugins": [{"name": "tradecraft", "source": source}]}) + NL,
+        encoding="utf-8",
+    )
+
+
 def test_clean_tree_passes(tmp_path):
     make_clean_tree(tmp_path)
     assert lint.run(tmp_path) == []
@@ -185,6 +194,19 @@ def test_delivery_fires_when_the_hook_names_a_path_that_is_not_there(tmp_path):
 
 def test_delivery_stays_quiet_on_a_wired_tree(tmp_path):
     make_clean_tree(tmp_path)
+    assert lint.run(tmp_path) == []
+
+
+def test_marketplace_source_is_the_exact_codex_discovery_string(tmp_path):
+    """Both polarities of the Codex compatibility boundary: Claude's object
+    form is valid there but undiscoverable in Codex; the relative string is
+    accepted by both runtimes."""
+    make_clean_tree(tmp_path)
+    _write_marketplace(tmp_path, {"source": "directory", "path": "./"})
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "source must be the string `./`" in findings[0]
+
+    _write_marketplace(tmp_path, "./")
     assert lint.run(tmp_path) == []
 
 
@@ -679,7 +701,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
     "check_emitted_ascii", "check_docstring_not_piped",
-    "check_stdio_wired",
+    "check_stdio_wired", "check_marketplace_source",
 )
 
 
@@ -2006,6 +2028,27 @@ def test_row_carrying_a_reconciling_facing_is_clean(tmp_path):
     make_clean_tree(tmp_path)
     _write_index(tmp_path, _row_with_facing())
     assert lint.run(tmp_path) == []
+
+
+def test_external_pass_is_not_a_panel_seat_after_the_legacy_boundary(tmp_path):
+    """Both polarities of the row distinction: the landed record remains
+    untouched, but a new row must name an actual panel seat rather than booking
+    an external pass in the same shape."""
+    counts = {"raw": 1, "merged": 1, "sustained": 1, "high": 0}
+    bad = json.dumps(_row_with_facing(
+        artifact="pr-next", seats={"external": counts}
+    )) + NL
+    root = _index_tree(tmp_path, extra=bad)
+    findings = lint.check_review_index(root)
+    assert len(findings) == 1 and "external pass is not a panel seat" in findings[0]
+
+    good = json.dumps(_row_with_facing(
+        artifact="pr-next", seats={"cold-read": counts}
+    )) + NL
+    (root / "docs" / "reviews.jsonl").write_text(
+        _real_index_rows() + good, encoding="utf-8"
+    )
+    assert lint.check_review_index(root) == []
 
 
 def test_row_appended_past_the_facing_boundary_must_carry_it(tmp_path, monkeypatch):
