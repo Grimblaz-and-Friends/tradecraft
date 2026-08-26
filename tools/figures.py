@@ -104,8 +104,8 @@ def figure_cell_description(root: Path, rel_path: str) -> dict:
     """A cell's always-on surface: the frontmatter field every session loads.
 
     Separate from the body figure because they are paid at different times and
-    move independently -- #169 shed 25 chars of body and added 147 of
-    description, and a body-only figure certified that as "no more to load".
+    move independently -- #169 shed body and grew description in the same
+    change, and a body-only figure certified that as "no more to load".
     """
     target = root / rel_path
     if not target.is_file():

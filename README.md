@@ -60,13 +60,12 @@ marketplace sources, and this plugin's source is a relative path, so `sha` does
 not apply to it at all.
 
 **What lands in your session.** Every skill's name and description sit in every
-session's context — about 940 tokens for the seven methodology cells, plus about
-140 for the charter — and each skill's body loads only when it fires. One of
+session's context — `python tools/figures.py` prices that surface on whatever
+tree you are on — and each skill's body loads only when it fires. One of
 those skills is the charter itself, so wherever the hook below does not reach
 you, a session can still be asked for the practice's rules by name. On top of that,
 the plugin ships one `SessionStart` hook, which emits [the charter](skills/charter/SKILL.md)
-— about 1,000 tokens of binding rules — so the practice governs rather than
-merely being available. That matcher is match-all, so the charter is re-emitted
+in full, so the practice governs rather than merely being available. That matcher is match-all, so the charter is re-emitted
 on resume, clear, compact and fork as well as at startup: budget per
 `SessionStart` event, not per session, and expect a long compacting session to
 pay it several times.
