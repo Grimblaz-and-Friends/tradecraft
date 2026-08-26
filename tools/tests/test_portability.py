@@ -171,18 +171,32 @@ def test_script_runs_from_the_relocated_root(script: Path, installed: Path):
     """Each script starts where it is installed, with no harness variable set."""
     relocated = installed / "skills" / script.parents[1].name / "scripts" / script.name
     assert relocated.is_file()
+    # Bytes, not text. With text=True this assertion was structurally unable
+    # to see the defect it should have caught: on a cp1252 machine Python
+    # decodes the locale byte 0x97 straight back to the em dash, so a --help
+    # that piped a module docstring round-tripped losslessly and the test
+    # stayed green while every captured byte was wrong.
     result = subprocess.run(
         [sys.executable, str(relocated), "--help"],
         capture_output=True,
-        text=True,
         env=_clean_env(),
         cwd=str(installed),
     )
+    stderr = result.stderr.decode("utf-8", "replace")
     assert result.returncode == 0, (
-        f"{script.name} exited {result.returncode} from its installed location\n"
-        f"stderr: {result.stderr}"
+        f"{script.name} exited {result.returncode} from its installed location"
+        f" -- stderr: {stderr}"
     )
-    assert "Traceback" not in result.stderr
+    assert "Traceback" not in stderr
+    for name, stream in (("stdout", result.stdout), ("stderr", result.stderr)):
+        try:
+            stream.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise AssertionError(
+                f"{script.name} put a non-ASCII byte on {name} at offset "
+                f"{exc.start} -- a consumer capturing this reads it garbled, "
+                f"and which byte it becomes depends on their code page"
+            ) from None
 
 
 def test_no_shipped_skill_names_a_harness_token(installed: Path):

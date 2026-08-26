@@ -65,6 +65,19 @@ Checks:
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
+13. emitted ASCII: no Python file states a non-ASCII character in a
+    non-docstring string constant. Windows encodes stdout and stderr to the
+    locale codepage, pipes included, so a captured em dash garbles in the one
+    message a guard exists to deliver. It reads literals, not reachability:
+    a filename and a regex source are flagged too, and a character built at
+    runtime is out of reach. Docstrings and comments are exempt.
+14. docstring not piped: no script passes __doc__ as an argparse
+    description. --help writes it to stdout before any stream setup runs,
+    which turns the docstring check 12 exempts into locale-encoded output.
+15. stdio wired: every script with a main() calls utf8_stdio() as its first
+    statement, so runtime data this repository did not write reaches the
+    stream protected. The first statement is a position, and a position is
+    exact -- a call after parse_args is one that --help has outrun.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -76,15 +89,24 @@ Exit 0 when clean, 1 with findings listed one per line.
 """
 from __future__ import annotations
 
+import ast
 import datetime
 import importlib.util
 import json
 import re
+import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Shared with the shipped zone, which is the lawful direction: repo-only
+# code may import shipped code. Resolved from this file rather than the
+# working directory, so the script runs from any cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from winio import utf8_stdio  # noqa: E402
 
 SHIPPED_DIRS = (
     "skills", "lib", "commands", "agents", "hooks", ".claude-plugin",
@@ -896,7 +918,7 @@ def check_doctrine(root: Path) -> list[str]:
         if size > AGENTS_BUDGET_CHARS:
             findings.append(
                 f"doctrine-budget: AGENTS.md is {size} chars, "
-                f"budget is {AGENTS_BUDGET_CHARS} — route content out (skill, decision entry, mechanism)"
+                f"budget is {AGENTS_BUDGET_CHARS} -- route content out (skill, decision entry, mechanism)"
             )
     charter = root / CHARTER
     if charter.is_file():
@@ -938,7 +960,7 @@ def check_doctrine(root: Path) -> list[str]:
         if CHARTER_IMPORT not in lines:
             findings.append(
                 "doctrine-import: AGENTS.md carries no bare "
-                f"'{CHARTER_IMPORT}' line — without it the binding half "
+                f"'{CHARTER_IMPORT}' line -- without it the binding half "
                 "reaches no session in this repository, which installs no plugin"
             )
         elif not charter.is_file():
@@ -950,7 +972,7 @@ def check_doctrine(root: Path) -> list[str]:
     pointer = root / "CLAUDE.md"
     if not pointer.is_file():
         findings.append(
-            "doctrine-pointer: CLAUDE.md is missing — Claude Code loads "
+            "doctrine-pointer: CLAUDE.md is missing -- Claude Code loads "
             "no root doctrine without it; it must be a live @AGENTS.md import"
         )
         return findings
@@ -959,7 +981,7 @@ def check_doctrine(root: Path) -> list[str]:
     if first_line != "@AGENTS.md" or len(text) > POINTER_BUDGET_CHARS:
         findings.append(
             "doctrine-pointer: CLAUDE.md must begin with a bare "
-            "'@AGENTS.md' import line and stay a short pointer — a backticked or "
+            "'@AGENTS.md' import line and stay a short pointer -- a backticked or "
             "buried mention does not import, and any fork diverges the runtimes"
         )
     return findings
@@ -994,7 +1016,7 @@ def _not_a_mapping(row, where: str, findings: list) -> bool:
     """A JSON array or scalar row must be rejected before any field is read."""
     if not isinstance(row, dict):
         findings.append(
-            f"{where} is not a JSON object (got {type(row).__name__}) — a row "
+            f"{where} is not a JSON object (got {type(row).__name__}) -- a row "
             f"must be a mapping of fields"
         )
         return True
@@ -1066,7 +1088,7 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
     if "report" in row and not _is_https_url(row["report"]):
         findings.append(
             f"{where} report '{row.get('report')}' must be an https URL to the "
-            f"review's report — the row holds counts, the report holds the findings"
+            f"review's report -- the row holds counts, the report holds the findings"
         )
     if "seats" in row:
         _check_seats(row["seats"], where, findings)
@@ -1097,7 +1119,7 @@ def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: 
         if field not in row:
             if required:
                 findings.append(
-                    f"{where} missing field '{field}' — rows past the first "
+                    f"{where} missing field '{field}' -- rows past the first "
                     f"{REVIEW_ROWS_GRANDFATHERED} carry it"
                     + (
                         f" ({', '.join(DISPOSITIONS)} counts)"
@@ -1134,7 +1156,7 @@ def _check_disposition_counts(dispositions, where: str, findings: list) -> None:
     if unknown:
         findings.append(
             f"{where} dispositions carries unknown key(s) "
-            f"{', '.join(sorted(unknown))} — the vocabulary is the terminal "
+            f"{', '.join(sorted(unknown))} -- the vocabulary is the terminal "
             f"stage's own: {', '.join(DISPOSITIONS)}"
         )
 
@@ -1159,7 +1181,7 @@ def _check_facing(row, row_index: int, where: str, findings: list) -> None:
     if "facing" not in row:
         if row_index >= REVIEW_ROWS_FACING_GRANDFATHERED:
             findings.append(
-                f"{where} missing field 'facing' — rows past the first "
+                f"{where} missing field 'facing' -- rows past the first "
                 f"{REVIEW_ROWS_FACING_GRANDFATHERED} carry it "
                 f"({', '.join(FACING_FIELDS)} counts, summing to the "
                 f"dispositions total)"
@@ -1185,7 +1207,7 @@ def _check_facing(row, row_index: int, where: str, findings: list) -> None:
     if unknown:
         findings.append(
             f"{where} facing carries unknown key(s) "
-            f"{', '.join(sorted(unknown))} — a consequence lands on the "
+            f"{', '.join(sorted(unknown))} -- a consequence lands on the "
             f"artifact or on the record of having reviewed it, and a finding "
             f"citing both is artifact-facing"
         )
@@ -1220,7 +1242,7 @@ def _check_facing_reconciles(row, facing, where: str, findings: list) -> None:
     total = sum(dispositions[f] for f in DISPOSITIONS)
     if split != total:
         findings.append(
-            f"{where} facing sums to {split} and dispositions to {total} — "
+            f"{where} facing sums to {split} and dispositions to {total} -- "
             f"both count one entry per terminal ruling, so they reconcile; "
             f"the per-seat columns do not and are not meant to"
         )
@@ -1248,7 +1270,7 @@ def _check_staffing(staffing, where: str, findings: list) -> None:
     if unknown:
         findings.append(
             f"{where} staffing carries unknown key(s) "
-            f"{', '.join(sorted(unknown))} — the row names one model and one "
+            f"{', '.join(sorted(unknown))} -- the row names one model and one "
             f"runtime; an uneven panel says so in the value"
         )
 
@@ -1263,7 +1285,7 @@ def _check_seats(seats, where: str, findings: list) -> None:
         if not isinstance(name, str) or not TOKEN.match(name):
             findings.append(
                 f"{where} seat name '{name}' must be a lowercase token of "
-                f"letters, digits and hyphens — one seat, one bucket"
+                f"letters, digits and hyphens -- one seat, one bucket"
             )
         if not isinstance(counts, dict):
             findings.append(f"{where} seat '{name}' counts must be a mapping")
@@ -1315,7 +1337,7 @@ def check_doctrine_callout(root: Path) -> list[str]:
     workflow = root / ".github" / "workflows" / "ci.yml"
     if not script.is_file():
         findings.append(
-            "doctrine-callout: tools/doctrine_callout.py is missing — nothing "
+            "doctrine-callout: tools/doctrine_callout.py is missing -- nothing "
             "would flag a doctrine change for the owner's merge-time read [D-81]"
         )
     if not workflow.is_file():
@@ -1339,7 +1361,7 @@ def check_doctrine_callout(root: Path) -> list[str]:
     else:
         findings.append(
             "doctrine-callout: no live `doctrine-callout:` job in "
-            ".github/workflows/ci.yml — the callout would stop firing with "
+            ".github/workflows/ci.yml -- the callout would stop firing with "
             "nothing going red [D-81]"
         )
         return findings
@@ -1366,7 +1388,7 @@ def check_doctrine_callout(root: Path) -> list[str]:
     if not any(PR_TRIGGER.match(line) for line in lines):
         findings.append(
             "doctrine-callout: .github/workflows/ci.yml has no `pull_request:` "
-            "trigger — the callout job would never run [D-81]"
+            "trigger -- the callout job would never run [D-81]"
         )
     return findings
 
@@ -1391,7 +1413,7 @@ def check_decision_index(root: Path) -> list[str]:
     for name in sorted(entries - listed):
         findings.append(
             f"decision-index: {name} has no row in "
-            f"docs/architecture/decisions/README.md \u2014 the entry is unreachable "
+            f"docs/architecture/decisions/README.md -- the entry is unreachable "
             f"from its number"
         )
     for name in sorted(listed - entries):
@@ -1451,7 +1473,7 @@ def check_entry_references(root: Path) -> list[str]:
                 findings.append(
                     f"entry-reference: docs/architecture/decisions/{path.name}:"
                     f"{lineno} {form} '{ref}' resolves to nothing. If you moved "
-                    f"its target, repoint it here in the same change — unless "
+                    f"its target, repoint it here in the same change -- unless "
                     f"repointing would leave this sentence untrue of the "
                     f"target at its new home, in which case record it in "
                     f"UNREPAIRABLE_AFTER_LANDING with a reason. Do not add a "
@@ -1477,7 +1499,7 @@ def _check_recorded_rows(root: Path, directory: Path, seen) -> list[str]:
             if not str(reason).strip():
                 findings.append(
                     f"entry-reference: {label} row {name}:{lineno} '{ref}' has "
-                    f"no reason — every recorded reference states why it stands"
+                    f"no reason -- every recorded reference states why it stands"
                 )
             # A row naming an entry this tree does not contain is not stale, it
             # is inapplicable: the same module lints partial trees and fixtures.
@@ -1486,12 +1508,12 @@ def _check_recorded_rows(root: Path, directory: Path, seen) -> list[str]:
             if key not in seen:
                 findings.append(
                     f"entry-reference: {label} row {name}:{lineno} '{ref}' "
-                    f"matches no reference in the tree — remove the stale row"
+                    f"matches no reference in the tree -- remove the stale row"
                 )
             elif _entry_ref_resolves(root, directory, ref):
                 findings.append(
                     f"entry-reference: {label} row {name}:{lineno} '{ref}' "
-                    f"resolves again — remove the row; this record only shrinks"
+                    f"resolves again -- remove the row; this record only shrinks"
                 )
     return findings
 
@@ -1837,6 +1859,321 @@ def check_harness_tokens(root: Path) -> list[str]:
     return findings
 
 
+def _python_files(base: Path):
+    """Every `.py` *file* under `base`, sorted, directories excluded.
+
+    `rglob("*.py")` matches a directory named like a module, and reading one
+    raises. A delivery test creates exactly that shape deliberately, so this is
+    not hypothetical: it took a check down mid-run twice while this change was
+    being written. The third walk got this helper rather than the same patch a
+    third time.
+    """
+    for path in sorted(base.rglob("*.py")):
+        if path.is_file():
+            yield path
+
+
+def _docstring_constants(tree: ast.AST) -> set[int]:
+    """Identities of the string constants that are docstrings, not output.
+
+    A docstring is the first statement of a module, class or function and is
+    never written to a stream, so the house style's punctuation is free there.
+    Identity rather than position because two docstrings can share a line
+    number after a reflow, and `is` is what distinguishes the node.
+    """
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.body:
+            continue
+        first = node.body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+            if isinstance(first.value.value, str):
+                found.add(id(first.value))
+    return found
+
+
+def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
+    """Which of `paths` git is told to ignore, or an empty set if it cannot say.
+
+    The alternative -- a hardcoded skip list -- makes every future top-level
+    directory silently escape this check until someone remembers to add it.
+    Asking git costs one subprocess and stays correct as the repository grows.
+
+    `git ls-files` was the other candidate and is wrong here: it lists *tracked*
+    files, so a script a session has written but not yet added would go
+    unchecked, and catching a new script before it merges is the whole point.
+
+    An empty set on any failure is deliberate. A tree with no git (this check's
+    own tests build one) is scanned whole, which is the safe direction: the
+    filter may only ever remove noise, never hide a finding.
+    """
+    if not paths:
+        return set()
+    try:
+        proc = subprocess.run(
+            ["git", "check-ignore", "--stdin", "-z"],
+            input="\0".join(str(path) for path in paths),
+            capture_output=True, text=True, cwd=root, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode not in (0, 1):  # 1 is "nothing ignored", not an error
+        return set()
+    return {Path(name) for name in proc.stdout.split("\0") if name}
+
+
+def _true_lineno(text: str, node: ast.Constant, char: str) -> int:
+    """The physical line carrying `char`, not the line the constant opens on.
+
+    `node.lineno` is where the literal starts, and CPython folds implicit
+    concatenation into one node -- the shape of nearly every message in this
+    repository. Reporting the opening line sent a reader to a line with nothing
+    wrong on it, measured at 12 of the 44 findings on the tree that motivated
+    this check.
+
+    A character written as an escape (`\u2014`) appears nowhere in the source,
+    so there is no true line to find and the opening line is the best available
+    answer. Returning it is not a defeat: the escape form is caught, which is
+    the property that matters, and no line would have been searchable anyway.
+    """
+    lines = text.splitlines()
+    first = node.lineno - 1
+    last = min(node.end_lineno or node.lineno, len(lines))
+    for offset in range(first, last):
+        if char in lines[offset]:
+            return offset + 1
+    return node.lineno
+
+
+def check_emitted_ascii(root: Path) -> list[str]:
+    """No Python file states a non-ASCII character outside a docstring.
+
+    Python's text mode encodes stdout and stderr to the platform's locale
+    codepage -- cp1252 on Windows, including when the destination is a pipe,
+    which is what a CI log, an agent harness and a captured command all are.
+    An em dash leaves as one byte that a UTF-8 reader renders as a replacement
+    character, and a guard speaks exactly when something is already wrong, so
+    the one moment its message matters is the moment it is least readable.
+
+    **What this checks is a proxy, and the proxy is stated rather than implied.**
+    It reads string *literals*; it does not compute whether one reaches a
+    stream, which is not decidable from an AST. So it flags a filename, a regex
+    source and a dict key alongside a message, and it cannot see a character
+    that is constructed at runtime -- `chr()`, `str.format`, `%`, a `__str__`.
+    Saying "reaches a stream" cost this repository a disarmed regression test:
+    a session met a lawful fixture, was told a false thing about it, and
+    reasoned correctly from the falsehood. The message now says what is true.
+
+    Runtime data is out of reach by construction -- a path this repository did
+    not write can carry anything -- and `lib/winio.py` is what protects that
+    half. The two are complementary, not alternatives, and check 14 is what
+    keeps the second one wired.
+
+    Docstrings are exempt because the house prose style is free where it is
+    read as prose. Note the exemption is about docstrings, not about reaching a
+    stream: `argparse(description=__doc__)` pipes a module docstring to stdout,
+    which is why check 13 bans that construction outright.
+    """
+    findings = []
+    candidates = [
+        path for path in _python_files(root)
+        if ".git" not in path.parts
+    ]
+    ignored = _git_ignored(root, candidates)
+    for path in candidates:
+        if path in ignored:
+            continue
+        rel_file = path.relative_to(root).as_posix()
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            findings.append(
+                f"emitted-ascii: {rel_file} is not valid UTF-8 ({exc.reason} at "
+                f"byte {exc.start}) -- the substrate reads UTF-8, and a file it "
+                f"cannot decode cannot be checked for what it states"
+            )
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError as exc:
+            findings.append(
+                f"emitted-ascii: {rel_file}:{exc.lineno} does not parse ({exc.msg}) "
+                f"-- an unparseable file is not checked, and a check that skips in "
+                f"silence cannot be told apart from a clean tree"
+            )
+            continue
+        docstrings = _docstring_constants(tree)
+        seen = set()
+        per_file = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if id(node) in docstrings:
+                continue
+            for char in node.value:
+                if ord(char) < 128:
+                    continue
+                lineno = _true_lineno(text, node, char)
+                if (lineno, ord(char)) in seen:
+                    continue
+                seen.add((lineno, ord(char)))
+                per_file.append((lineno, ord(char), char))
+        for lineno, _codepoint, char in sorted(per_file):
+            findings.append(
+                f"emitted-ascii: {rel_file}:{lineno} states "
+                f"U+{ord(char):04X} ({unicodedata.name(char, 'unnamed')}) "
+                f"in a non-docstring string constant -- machine-read output "
+                f"stays ASCII, because Windows encodes it to the locale "
+                f"codepage and a captured non-ASCII byte garbles. If this "
+                f"string is data rather than output, it still stays ASCII "
+                f"here: build the character with chr() as the fixtures do"
+            )
+    return findings
+
+
+def check_docstring_not_piped(root: Path) -> list[str]:
+    """No script hands its module docstring to argparse as help text.
+
+    **The warrant is check 12's exemption, not the encoding.** Check 12 lets a
+    docstring carry any character the house prose style likes, and the reason it
+    can is that a docstring is read as prose and never written to a stream.
+    `ArgumentParser(description=__doc__)` falsifies that premise: it makes the
+    docstring output. The ban is what keeps check 12's exemption true.
+
+    An earlier version of this docstring gave the reason as "--help exits inside
+    parse_args before any stream setup runs" -- which was accurate when it was
+    written and was falsified by check 14 in the same change, since the stream
+    is now set up before parse_args is reached. Left standing, a session that
+    checked the stated reason would find it false and reason correctly to
+    deleting the check. The reason above is the one that survives check 14.
+
+    Two narrower warrants also survive: a module that parses arguments at import
+    with no `main()` at all, which check 14 does not reach, and a run where
+    `utf8_stdio` hit its swallowed except and set nothing up.
+
+    `epilog` is banned on the same terms. argparse writes it to stdout on --help
+    exactly as it writes the description, and it is the conventional home for
+    the long-form prose a module docstring holds -- so it is the compliant-
+    looking route to the same defect, which is the worst kind to leave open.
+
+    This is a call-site ban rather than a reachability analysis, which is what
+    makes it exact: the pattern is one keyword argument whose value is the name
+    `__doc__`, and matching it needs no guess about what reaches where.
+    """
+    findings = []
+    for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in _python_files(base):
+            text = _read_text(path)
+            if text is None:
+                continue
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                continue
+            rel_file = path.relative_to(root).as_posix()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for keyword in node.keywords:
+                    if keyword.arg not in ("description", "epilog"):
+                        continue
+                    if isinstance(keyword.value, ast.Name) and keyword.value.id == "__doc__":
+                        findings.append(
+                            f"docstring-piped: {rel_file}:{node.lineno} passes "
+                            f"__doc__ as an argparse {keyword.arg} -- --help writes "
+                            f"it to stdout, so a docstring becomes output and the "
+                            f"exemption that lets it carry any character stops being "
+                            f"true. Write the help text as its own ASCII string"
+                        )
+    return findings
+
+
+def check_stdio_wired(root: Path) -> list[str]:
+    """Every script with a `main()` imports `utf8_stdio` and calls it first.
+
+    The emitted-ASCII check protects what this repository writes; it reads
+    literals and cannot reach what the repository is handed -- a path from git,
+    a filename a consumer chose. On Windows that garbles, and for anything
+    outside cp1252 it raises mid-report so the offending path never prints.
+    `lib/winio.py` closes that half, and this closes the gap between having a
+    helper and having called it.
+
+    The objection this answers was the reason a helper was once rejected
+    outright: "the helper was called on this entry path" sounds like a
+    reachability question, and reachability is not decidable from an AST. It is
+    not that question. **The first statement of `main()` is a position, and a
+    position is exact.** Ordering is the whole point -- a call after
+    `parse_args` is a call that `--help` has already outrun.
+
+    Position alone proved insufficient, though, and the claim of exactness is
+    what made that worth closing: a module defining its own no-op `utf8_stdio`
+    satisfied the call site while setting nothing up, so the guard reported
+    green on precisely the tree it exists to catch. The import binding is
+    checked too, which is what makes "it was called" mean "the helper was
+    called".
+
+    Scoped to the whole tree, minus what git is told to ignore, for the same
+    reason check 12 is: a zone list silently exempts the next directory someone
+    adds, and `scripts/` or `.claude/` is exactly where a session drops a
+    helper. A module without a `main()` is not a script and is not asked.
+    """
+    findings = []
+    candidates = [path for path in _python_files(root)
+                  if ".git" not in path.parts and "tests" not in path.parts]
+    ignored = _git_ignored(root, candidates)
+    for path in candidates:
+        if path in ignored:
+            continue
+        text = _read_text(path)
+        if text is None:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        main = next((n for n in tree.body
+                     if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+        if main is None:
+            continue
+        rel_file = path.relative_to(root).as_posix()
+        body = list(main.body)
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            body = body[1:]  # its docstring
+        first = body[0] if body else None
+        called = (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Call)
+            and isinstance(first.value.func, ast.Name)
+            and first.value.func.id == "utf8_stdio"
+        )
+        imported = any(
+            isinstance(node, ast.ImportFrom)
+            and any(alias.asname == "utf8_stdio"
+                    or (alias.asname is None and alias.name == "utf8_stdio")
+                    for alias in node.names)
+            for node in ast.walk(tree)
+        )
+        if not called or not imported:
+            missing = "does not call it first" if imported else (
+                "calls it first but never imports it" if called else
+                "neither imports nor calls it first")
+            findings.append(
+                f"stdio-unwired: {rel_file}:{main.lineno} defines main() and "
+                f"{missing} -- runtime data this repository did not write "
+                f"reaches the stream unprotected, and a call placed later is "
+                f"one that --help has outrun. Import utf8_stdio from lib/winio.py, "
+                f"resolving lib/ against this file's own directory rather than "
+                f"the working directory, and call it as the first statement"
+            )
+    return findings
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
@@ -1851,6 +2188,9 @@ def run(root: Path) -> list[str]:
         + check_review_index(root)
         + check_decision_index(root)
         + check_entry_references(root)
+        + check_emitted_ascii(root)
+        + check_docstring_not_piped(root)
+        + check_stdio_wired(root)
     )
 
 
@@ -1888,6 +2228,7 @@ def always_on_note(root: Path) -> str:
 
 
 def main() -> int:
+    utf8_stdio()
     findings = run(ROOT)
     for finding in findings:
         print(finding)

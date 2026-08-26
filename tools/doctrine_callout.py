@@ -51,6 +51,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+from pathlib import Path
+
+# Shared with the shipped zone, which is the lawful direction: repo-only
+# code may import shipped code. Resolved from this file rather than the
+# working directory, so the script runs from any cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from winio import utf8_stdio  # noqa: E402
+
 # Matches `.github/CODEOWNERS`. Widening this to skills or decisions is a
 # different requirement and wants its own incident. The charter cell is
 # not a widening: it holds the half of the doctrine that moved out of
@@ -60,7 +68,7 @@ DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md", "skills/charter/SKILL.md")
 
 LABEL = "doctrine"
 LABEL_COLOR = "5319e7"
-LABEL_DESC = "Changes the doctrine or the shipped charter — read the diff before merging"
+LABEL_DESC = "Changes the doctrine or the shipped charter -- read the diff before merging"
 
 # The one standing coupling to an identity. Its tripwire is the log line in
 # `run()`: under a future identity change (a PAT, a GitHub App) the callout
@@ -74,7 +82,7 @@ EXPECTED_AUTHOR = "github-actions[bot]"
 MARKER = "<!-- tradecraft:doctrine-callout -->"
 
 CALLOUT = f"""{MARKER}
-**This PR changes the doctrine.** Read the {{files}} diff before merging — \
+**This PR changes the doctrine.** Read the {{files}} diff before merging -- \
 nothing else performs that read.
 
 Touched: {{files}}
@@ -331,7 +339,7 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         return f"_Always-on surface: not derived ({type(exc).__name__}: {exc})._"
     return (
         f"Always-on surface: **{data['repo_total']:,}** chars here{movement}, "
-        f"**{data['adopter_total']:,}** from this practice for an adopter — "
+        f"**{data['adopter_total']:,}** from this practice for an adopter -- "
         + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
         + f", {data['cells']} cell name/description {data['roster']:,}."
     )
@@ -380,7 +388,7 @@ def _body(touched: list[str], base: str | None = None) -> str:
 
 def _edit_comment(comment_id: object, repo: str | None, body: str) -> None:
     if comment_id is None:
-        raise CalloutError("the callout comment came back without an id — cannot edit it")
+        raise CalloutError("the callout comment came back without an id -- cannot edit it")
     _gh("api", "--method", "PATCH",
         f"repos/{_slug(repo)}/issues/comments/{comment_id}", "-f", f"body={body}")
 
@@ -446,8 +454,10 @@ def run(pr: str, repo: str | None, *, dry_run: bool = False,
 
 
 def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
     parser = argparse.ArgumentParser(
-        description=__doc__,
+        description=
+        "Label and comment on a pull request that changes the doctrine or the shipped charter, so the owner reads the diff before merging. Exit 0 when the PR state matches its diff; non-zero turns the check red.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--pr", required=True, type=int, help="pull request number")

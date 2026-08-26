@@ -27,6 +27,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Shared code lives in lib/, which ships beside this cell, so the import
+# resolves in a source checkout and an installed plugin alike -- against
+# this file's own directory, never the working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "lib"))
+from winio import utf8_stdio  # noqa: E402
+
 MIN_MESSAGE_CHARS = 10
 GLOB_CHARS = set("*?[")
 
@@ -94,7 +100,9 @@ def pick_remote(branch: str) -> tuple[str, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    utf8_stdio()
+    parser = argparse.ArgumentParser(description=
+        "Stage exactly the paths named, commit, and push -- verifying the push landed. Exits 0 only on a verified push; every other outcome is one line reading not-persisted: <reason>, on exit 1.")
     parser.add_argument("paths", nargs="+", help="files or directories to stage, and nothing else")
     parser.add_argument("-m", "--message", required=True, help="commit message")
     parser.add_argument("--expect-branch", help="refuse to run unless HEAD is this branch")
