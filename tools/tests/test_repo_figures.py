@@ -13,6 +13,8 @@ import importlib.util
 import json
 import re
 import sys
+
+import pytest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -169,6 +171,93 @@ def test_the_body_strip_the_engine_ships_is_the_one_the_guard_applies():
         text = cell.read_text(encoding="utf-8")
         assert engine.frontmatterless(text) == lint._frontmatterless(text), cell.name
 
+
+def _cell(root, name, body, depth=None, scripts=None):
+    """A cell on disk: SKILL.md with frontmatter, plus whatever depth is asked."""
+    cell = root / "skills" / name
+    (cell / "references").mkdir(parents=True, exist_ok=True)
+    header = ("---" + NL + "name: " + name + NL
+              + "description: A fixture cell." + NL + "---" + NL + NL)
+    (cell / "SKILL.md").write_text(header + body, encoding="utf-8", newline=NL)
+    for fname, text in (depth or {}).items():
+        (cell / "references" / fname).write_text(
+            text, encoding="utf-8", newline=NL)
+    for fname, text in (scripts or {}).items():
+        (cell / "scripts").mkdir(exist_ok=True)
+        (cell / "scripts" / fname).write_text(text, encoding="utf-8", newline=NL)
+    return cell
+
+
+def test_the_cell_total_counts_the_body_once_and_markdown_only(tmp_path):
+    """#193's review: the figure shipped with nothing pinning its arithmetic.
+
+    It is the only instrument watching the half of a cell that is deliberately
+    unbudgeted, so a regression here is invisible by construction -- the body
+    cap stays green while the total drifts. Four things are pinned: the body is
+    counted once and not again as depth, depth is summed whole, a script is not
+    prose, and nested depth is reached.
+    """
+    _cell(tmp_path, "example-skill", "x" * 40 + NL,
+          depth={"flat.md": "y" * 10, "other.md": "z" * 20},
+          scripts={"s.py": "print(1)" + NL})
+    sub = tmp_path / "skills" / "example-skill" / "references" / "sub"
+    sub.mkdir()
+    (sub / "deep.md").write_text("w" * 5, encoding="utf-8", newline=NL)
+
+    data = repo_figures.figure_cell_total(
+        tmp_path, "skills/example-skill/SKILL.md")["data"]
+    assert data["body"] == 41, data       # 40 plus the trailing newline
+    assert data["depth_files"] == 3, data  # the .py is not prose
+    assert data["depth"] == 35, data       # 10 + 20 + 5, nested reached
+    assert data["total"] == 76, data       # and the body is not doubled
+
+
+def test_the_cell_total_refuses_a_path_that_is_not_a_cell(tmp_path):
+    """It walks the naming file's whole directory, so on a non-cell path it
+    reports a confidently-labelled total for whatever tree sits above it --
+    `--cell AGENTS.md` walked the entire repository and called it cell '.'.
+    The CLI did exit non-zero, but only because a LATER figure failed on a
+    missing description, which is a different figure's incidental strictness.
+    """
+    _cell(tmp_path, "example-skill", "x" + NL, depth={"flat.md": "y"})
+    (tmp_path / "AGENTS.md").write_text("doc" + NL, encoding="utf-8", newline=NL)
+    for bad in ("AGENTS.md", "skills/example-skill/references/flat.md"):
+        with pytest.raises(SystemExit) as caught:
+            repo_figures.figure_cell_total(tmp_path, bad)
+        assert "is not a cell" in str(caught.value), bad
+    # The lawful arm, so this is not a guard that refuses everything.
+    assert repo_figures.figure_cell_total(
+        tmp_path, "skills/example-skill/SKILL.md")["data"]["total"] == 3
+
+
+def test_a_cell_budget_disagreeing_with_the_guard_is_refused(tmp_path, monkeypatch):
+    """#193's review: --cell-budget printed any budget handed to it, including
+    one no guard backs -- `--cell-budget 12000` emitted "headroom 3,264" where
+    lint allowed 264, one line below a basis boasting that the charter figure
+    cannot drift from what check_doctrine enforces. It refuses rather than
+    defaulting, because the caller deciding the budget is the older rule and it
+    is right; what it may not do is disagree with the guard in silence.
+    """
+    _cell(tmp_path, "example-skill", "x" * 40 + NL)
+    rel = "skills/example-skill/SKILL.md"
+    monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {rel: 9_000})
+    stub = lambda *a, **k: {"name": "stub", "value": "skipped",
+                            "basis": "stubbed", "data": {}}
+    # Everything build_figures emits before the cell figures needs a full tree;
+    # this test is about the budget check and nothing else.
+    monkeypatch.setattr(repo_figures.engine, "figure_tests", stub)
+    monkeypatch.setattr(repo_figures.engine, "figure_doc", stub)
+    monkeypatch.setattr(repo_figures, "figure_charter", stub)
+    monkeypatch.setattr(repo_figures, "figure_always_on", stub)
+    monkeypatch.setattr(repo_figures, "figure_census", stub)
+    monkeypatch.setattr(repo_figures, "figure_cell_description", stub)
+    with pytest.raises(SystemExit) as caught:
+        repo_figures.build_figures(tmp_path, None, rel, 12_000)
+    assert "disagrees with the 9000" in str(caught.value)
+    # Agreeing is lawful, and so is a budget for a cell the guard does not cap.
+    assert repo_figures.build_figures(tmp_path, None, rel, 9_000)
+    monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {})
+    assert repo_figures.build_figures(tmp_path, None, rel, 12_000)
 
 def test_the_description_ceiling_comes_from_the_guard(tmp_path, monkeypatch):
     """The figure reads check_cell_frontmatter's constant, not a copy of it."""
@@ -520,7 +609,8 @@ FIGURES_ALWAYS_EMITTED = (
     "figure_tests", "figure_doc", "figure_charter",
     "figure_always_on", "figure_census",
 )
-FIGURES_ON_DEMAND = ("figure_delta", "figure_cell", "figure_cell_description")
+FIGURES_ON_DEMAND = ("figure_delta", "figure_cell", "figure_cell_total",
+                     "figure_cell_description")
 
 
 def test_the_module_docstring_enumerates_every_figure_always_emitted():
