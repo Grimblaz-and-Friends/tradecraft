@@ -101,6 +101,7 @@ def test_a_hand_written_project_skill_is_never_removed(tmp_path):
     seats ran that deletion independently.
     """
     make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
     helper = tmp_path / ".claude" / "skills" / "repo-helper"
     helper.mkdir(parents=True)
     (helper / "SKILL.md").write_bytes(
@@ -108,15 +109,48 @@ def test_a_hand_written_project_skill_is_never_removed(tmp_path):
          + "description: Written by hand, not by the generator." + NL
          + "---" + NL + NL + "Real content somebody wrote." + NL).encode("utf-8")
     )
-    findings = roster.verify(tmp_path)
-    orphan = [f for f in findings if "repo-helper" in f]
-    assert len(orphan) == 1
-    assert "not written by tools/roster.py" in orphan[0]
-    assert "--write" not in orphan[0], (
-        "the remedy that would destroy the file must not be named"
+    assert roster.verify(tmp_path) == [], (
+        "a project skill at a name that is no cell is not the roster's "
+        "business, and reporting it was a red the lint could never clear"
     )
     roster.write(tmp_path)
     assert (helper / "SKILL.md").is_file(), "write() removed a file it did not author"
+    assert b"Real content" in (helper / "SKILL.md").read_bytes()
+
+
+def test_a_hand_written_file_at_a_cells_name_is_reported_not_overwritten(tmp_path):
+    """The other half of the same ownership question, and the one the first
+    fix missed.
+
+    Removal was guarded and regeneration was not, so a hand-written file whose
+    name collided with a cell was still destroyed by the command the guard
+    printed -- reported as `wrote`, exit 0, lint green afterwards. `spikes`,
+    `filing` and `authoring` are ordinary names for a project skill, so the
+    collision is not exotic.
+
+    It is a finding rather than silence, unlike the no-cell case above,
+    because the hand-written frontmatter is what the runtime loads: the cell's
+    real description loads nowhere, which is criterion 1 failing quietly.
+    """
+    make_cell(tmp_path, "spikes")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "spikes" / "SKILL.md"
+    entry.write_bytes(
+        ("---" + NL + "name: spikes" + NL + "description: Mine, by hand." + NL
+         + "---" + NL + NL + "Irreplaceable, untracked." + NL).encode("utf-8")
+    )
+
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 1
+    assert "was not written by tools/roster.py" in findings[0]
+    assert "move your file out" in findings[0]
+
+    lines = roster.write(tmp_path)
+    assert any("left" in line and "spikes" in line for line in lines)
+    assert b"Irreplaceable, untracked." in entry.read_bytes(), (
+        "write() overwrote a file it did not author"
+    )
+    assert roster.verify(tmp_path) != [], "the collision must not go quiet"
 
 
 def test_a_generated_orphan_is_still_removed(tmp_path):
@@ -131,10 +165,16 @@ def test_a_generated_orphan_is_still_removed(tmp_path):
     assert roster.verify(tmp_path) == []
 
 
-def test_residue_left_by_a_removal_is_reported_not_hidden(tmp_path):
-    """A removed orphan with siblings leaves a directory the guard and the
-    figure can both no longer see. Reporting it is what stops the lint going
-    green over it."""
+def test_residue_left_by_a_removal_is_reported_when_it_is_created(tmp_path):
+    """A removed orphan with siblings leaves a directory behind, and `write()`
+    says so at the moment it does it -- which is where the report is useful.
+
+    `verify()` says nothing about it afterwards, deliberately. A standing
+    finding there would red the lint on any directory a session left under
+    `.claude/skills/`, which is the unclearable red the ownership rule exists
+    to stop. The accepted residual is that a directory with no `SKILL.md`
+    draws no standing red; it holds no skill, so it loads nothing.
+    """
     make_cell(tmp_path, "alpha")
     make_cell(tmp_path, "beta")
     roster.write(tmp_path)
@@ -144,8 +184,22 @@ def test_residue_left_by_a_removal_is_reported_not_hidden(tmp_path):
     (tmp_path / "skills" / "beta" / "SKILL.md").unlink()
     lines = roster.write(tmp_path)
     assert any("left" in line and "references" in line for line in lines)
-    residue = [f for f in roster.verify(tmp_path) if "holds no SKILL.md" in f]
-    assert len(residue) == 1
+    assert roster.verify(tmp_path) == []
+
+
+def test_deleting_one_entry_reports_one_finding_not_two(tmp_path):
+    """The commonest repairable state must not also draw an unrepairable one.
+
+    The residue branch used to fire alongside the missing-entry finding on the
+    same condition, so one deletion produced two findings and only one of them
+    named a command.
+    """
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    (tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md").unlink()
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 1
+    assert "is missing" in findings[0]
 
 
 def test_write_reports_an_unreadable_cell_and_finishes_the_rest(tmp_path):
@@ -179,18 +233,55 @@ def test_write_reports_an_unreadable_cell_and_finishes_the_rest(tmp_path):
     assert len(remaining) == 1 and "no parseable frontmatter" in remaining[0]
 
 
-def test_the_two_shapes_no_command_repairs_do_not_name_one(tmp_path):
-    """`verify`'s docstring used to claim every finding names the one command
-    that fixes it. It does not, for these two -- and stating the universal
-    where it did not hold is what let the crash above read as a broken tool."""
-    empty = roster.verify(tmp_path)
-    assert len(empty) == 1 and "--write" not in empty[0]
-    broken = tmp_path / "skills" / "alpha"
-    broken.mkdir(parents=True)
-    (broken / "SKILL.md").write_bytes(b"# no frontmatter\n")
-    unparseable = roster.verify(tmp_path)
+def test_every_shape_the_docstring_names_behaves_as_it_says(tmp_path):
+    """The docstring names its shapes instead of counting them, because a
+    stated count has now been wrong twice -- the second time in the sentence
+    written to fix the first. This walks the named list.
+
+    Three name `--write`; two name no command; one condition is silent.
+    """
+    # Silent: a foreign entry at a name that is no cell.
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    foreign = tmp_path / ".claude" / "skills" / "mine"
+    foreign.mkdir(parents=True)
+    (foreign / "SKILL.md").write_bytes(b"---\nname: mine\ndescription: d\n---\n\nx\n")
+    assert roster.verify(tmp_path) == []
+    (foreign / "SKILL.md").unlink()
+    foreign.rmdir()
+
+    # Names --write: missing, out of step, generated orphan.
+    (tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md").unlink()
+    assert all("--write" in f for f in roster.verify(tmp_path))
+    roster.write(tmp_path)
+    make_cell(tmp_path, "alpha", "Moved on since generation.")
+    assert all("--write" in f for f in roster.verify(tmp_path))
+    roster.write(tmp_path)
+    orphan = tmp_path / ".claude" / "skills" / "gone"
+    orphan.mkdir(parents=True)
+    (orphan / "SKILL.md").write_bytes(roster.expected(tmp_path, "alpha"))
+    assert all("--write" in f for f in roster.verify(tmp_path))
+    roster.write(tmp_path)
+
+    # Names no command: collision, and unparseable frontmatter.
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry.write_bytes(b"---\nname: alpha\ndescription: mine\n---\n\nhand-written\n")
+    collision = roster.verify(tmp_path)
+    assert len(collision) == 1 and "--write" not in collision[0].split(" -- ")[0]
+    assert "move your file out" in collision[0]
+    entry.unlink()
+    roster.write(tmp_path)
+    (tmp_path / "skills" / "alpha" / "SKILL.md").write_bytes(b"# no frontmatter\n")
+    unparseable = [f for f in roster.verify(tmp_path) if "parseable" in f]
     assert len(unparseable) == 1 and "--write" not in unparseable[0]
     assert "fix the cell's frontmatter" in unparseable[0]
+
+
+def test_an_empty_skills_directory_names_no_command_either(tmp_path):
+    """#198's shape keeps its own pin: it is a finding, and no command
+    repairs it."""
+    empty = roster.verify(tmp_path)
+    assert len(empty) == 1 and "--write" not in empty[0]
 
 
 def test_no_cells_is_a_finding_not_a_pass(tmp_path):

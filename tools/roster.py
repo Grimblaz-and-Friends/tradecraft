@@ -35,8 +35,12 @@ platform, so the bytes are the same everywhere and the comparison is exact.
 
 Usage:  python tools/roster.py [--write]
 
-    0  the roster matches the cells -- or, with --write, now does
-    1  the roster is out of step (without --write), or could not be read
+    0  the roster matches the cells -- with --write, it did and now does
+    1  a finding remains. `--write` re-verifies after writing and reports
+       what it could not repair, so its exit code answers whether the tree
+       is lawful rather than whether the loop ran: a cell whose frontmatter
+       will not parse, or a file at a cell's name that this script did not
+       write, both survive a --write and both keep the exit at 1.
 """
 from __future__ import annotations
 
@@ -170,21 +174,45 @@ def is_generated(path: Path) -> bool:
 
 
 def verify(root: Path) -> list[str]:
-    """Findings: a missing entry, an orphan, one out of step, and the two
-    shapes that no command repairs.
+    """Findings, by shape rather than by count.
 
-    **Most findings name the one command that fixes them**, because for most
-    the fix is always that command and a guard reporting a diff without it
-    makes the reader derive what the script already knows. Two shapes name no
-    command, and say what they need instead: a cell whose frontmatter will not
-    parse, which `--write` cannot copy, and a file under the roster directory
-    that this generator did not write, which it must not remove. Stating the
-    universal where it did not hold is what let the crash below read as the
-    tool being broken. [PR #210 review, M3/M4]
+    **What the roster owns is exactly two things: a name that is a cell, and a
+    file carrying `MARKER`.** Everything else under `.claude/skills/` belongs
+    to whoever put it there. Ownership is checked on **every path that touches
+    a file**, not only on removal -- checking it on one path is what let the
+    regeneration branch go on destroying hand-written content after the
+    removal branch stopped. [PR #210 cycle one, C1-F2/C1-F3]
+
+    Five shapes. Three name `--write`, because for those the fix is always
+    that command and a guard reporting a diff without it makes the reader
+    derive what the script already knows:
+
+    - **missing** -- a cell with no entry;
+    - **out of step** -- a cell whose entry this script wrote and the cell has
+      since moved on;
+    - **orphan** -- an entry this script wrote whose cell is gone.
+
+    Two name no command, because none exists and only a person can choose:
+
+    - **collision** -- a cell's name taken by a file this script did not
+      write. Reported rather than overwritten, and reported rather than
+      ignored: the hand-written frontmatter is what loads, so the cell's real
+      description does not, which is a silent criterion-1 failure;
+    - **unparseable frontmatter** -- a cell `--write` cannot copy.
+
+    And one condition that is not a finding at all: **a foreign entry at a
+    name that is not a cell**, which is a project skill somebody wrote in the
+    runtime's documented place for one. Policing it produced a red the lint
+    could never clear on a lawful tree. A directory there holding no
+    `SKILL.md` is likewise silent; `write()` reports residue at the moment it
+    creates it, which is where that report is useful.
+
+    Named rather than counted on purpose: a stated count of shapes has now
+    been wrong twice, and the second time in the sentence written to fix the
+    first. [PR #210 cycle one, C1-F5]
     """
     findings = []
     cells = cell_names(root)
-    entries = roster_names(root)
     for name in cells:
         target = root / ROSTER / name / CELL_FILE
         try:
@@ -202,41 +230,30 @@ def verify(root: Path) -> list[str]:
                 f"run `python tools/roster.py --write`"
             )
             continue
-        if target.read_bytes() != want:
+        if target.read_bytes() == want:
+            continue
+        if is_generated(target):
             findings.append(
                 f"roster: {ROSTER}/{name}/{CELL_FILE} is out of step with "
                 f"{CELLS}/{name}/{CELL_FILE} -- run "
                 f"`python tools/roster.py --write`"
             )
-    for name in entries:
+        else:
+            findings.append(
+                f"roster: {ROSTER}/{name}/{CELL_FILE} was not written by "
+                f"tools/roster.py and holds the name of the `{name}` cell, so "
+                f"that cell's description loads in no session here and nothing "
+                f"will overwrite yours -- move your file out of {ROSTER}/, "
+                f"then run `python tools/roster.py --write`"
+            )
+    for name in roster_names(root):
         if name in cells:
             continue
-        entry = root / ROSTER / name / CELL_FILE
-        if is_generated(entry):
+        if is_generated(root / ROSTER / name / CELL_FILE):
             findings.append(
                 f"roster: {ROSTER}/{name}/{CELL_FILE} names no cell under "
                 f"{CELLS}/ -- run `python tools/roster.py --write`"
             )
-        else:
-            findings.append(
-                f"roster: {ROSTER}/{name}/{CELL_FILE} names no cell under "
-                f"{CELLS}/ and was not written by tools/roster.py, so nothing "
-                f"here will remove it -- move it out of {ROSTER}/ or delete "
-                f"it yourself"
-            )
-    # Residue: an entry directory with no SKILL.md. `write()` leaves one behind
-    # when a removed orphan had siblings, and reporting it is what stops the
-    # lint going green over a directory neither the guard nor the figure can
-    # see any more.
-    directory = root / ROSTER
-    if directory.is_dir():
-        for path in sorted(p for p in directory.iterdir() if p.is_dir()):
-            if not (path / CELL_FILE).is_file():
-                findings.append(
-                    f"roster: {ROSTER}/{path.name}/ holds no {CELL_FILE}, so "
-                    f"it is invisible to this guard and to the always-on "
-                    f"figure -- remove it or give it a cell"
-                )
     if not cells:
         findings.append(
             f"roster: no cell found under {CELLS}/, so nothing was compared "
@@ -271,8 +288,20 @@ def write(root: Path) -> list[str]:
             changed.append(f"skipped {CELLS}/{name}/{CELL_FILE}: {exc}")
             continue
         target = root / ROSTER / name / CELL_FILE
-        if target.is_file() and target.read_bytes() == want:
-            continue
+        if target.is_file():
+            if target.read_bytes() == want:
+                continue
+            # Ownership is checked here too, not only on removal. This branch
+            # went on overwriting whatever sat at a cell's name after the
+            # removal branch stopped deleting orphans -- the same irreversible
+            # loss of untracked, hand-written content, reported as `wrote` and
+            # exiting 0. [PR #210 cycle one, C1-F2]
+            if not is_generated(target):
+                changed.append(
+                    f"left {ROSTER}/{name}/{CELL_FILE}: not written by this "
+                    f"script, and it holds the `{name}` cell's name"
+                )
+                continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(want)
         changed.append(f"wrote {ROSTER}/{name}/{CELL_FILE}")
@@ -305,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--write", action="store_true",
-        help="regenerate the roster instead of verifying it",
+        help="regenerate the roster, then verify it and report what remains",
     )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if args.write:
