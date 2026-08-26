@@ -200,7 +200,8 @@ POINTER_BUDGET_CHARS = 500
 # has argued about is a ruling arriving as a constant; #177 is that argument,
 # and the owner ruled a budget follows the split. The basis is the size the
 # split landed at -- 8,736, from 24,155 -- plus 264, which is about one
-# bullet. That margin is deliberate in both directions: at zero headroom every
+# bullet; the body is 8,738 after this change's own review, headroom 262.
+# That margin is deliberate in both directions: at zero headroom every
 # reword of the body is a constant change, which turns the cap into noise
 # nobody reads, while a section-sized regrowth cannot fit under it. The number
 # is a ceiling above a measured body, not the measured body, so nothing here

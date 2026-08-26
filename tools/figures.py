@@ -360,7 +360,19 @@ def build_figures(root: Path, base: str | None,
                 "defaulting: the caller decides the budget, and a stated headroom "
                 "no guard backs is the drift this script exists to stop"
             )
-        figures.append(engine.figure_cell(root, cell, budget))
+        cell_figure = engine.figure_cell(root, cell, budget)
+        if enforced is not None:
+            # The budget is now guard-backed for this cell -- the refusal above
+            # made it so -- and a basis reading "the budget is the caller's" is
+            # byte-identical to what an uncapped cell emits. Same shape the
+            # charter's own figure uses, and for the same reason. (Spelled
+            # without that function's name on purpose: the docstring
+            # enumeration test scans this source for figure_* tokens.)
+            cell_figure["basis"] += (
+                " -- and here check_doctrine enforces that budget, so the figure "
+                "cannot drift from the guard that judges it"
+            )
+        figures.append(cell_figure)
         figures.append(figure_cell_total(root, cell))
         figures.append(figure_cell_description(root, cell))
     return figures
