@@ -2078,10 +2078,12 @@ def test_non_mapping_facing_is_a_finding_not_a_crash(tmp_path):
 def test_a_real_qualitative_row_appended_to_the_index_is_lawful(tmp_path):
     """The green half of the cutover pin, through the repository's own index.
 
-    Its sibling above catches a constant raised too far. This catches one set
-    too far the other way: were the cutover past the file's actual row count,
-    the next lawful row a session writes would red, and the guard would be
-    demanding the very shape this change retired."""
+    Were the cutover set past the file's actual row count, the next lawful row
+    a session writes would red and the guard would be demanding the very shape
+    this change retired. The other direction -- a cutover set too low, which
+    re-classes rows already in the file -- is caught by
+    `test_every_row_already_in_the_repo_index_stays_valid`, not by the sibling
+    immediately above this one."""
     row = json.dumps(_qualitative_row(artifact="pr-next")) + "\n"
     root = _index_tree(tmp_path, extra=row)
     assert lint.check_review_index(root) == []
@@ -2871,4 +2873,70 @@ def test_a_row_before_the_cutover_may_still_carry_counts(tmp_path, monkeypatch):
     make_clean_tree(tmp_path)
     monkeypatch.setattr(lint, "REVIEW_ROWS_QUALITATIVE", 5)
     _write_index(tmp_path, _review_row())
+    assert lint.run(tmp_path) == []
+
+
+def test_qualitative_row_refuses_arithmetic_under_a_fresh_key(tmp_path, monkeypatch):
+    """Naming the three retired fields was never the rule.
+
+    A review found that the same totals under `counts`, `totals`, or any name
+    nobody had thought of passed clean, so "the row carries no arithmetic" was
+    enforced as "not these three words". The key set is what makes it real.
+    """
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(counts={"raw": 43, "merged": 29, "sustained": 20, "high": 6}),
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "unknown key(s) counts" in findings[0], findings[0]
+
+
+def test_qualitative_row_names_every_unknown_key_at_once(tmp_path, monkeypatch):
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(totals={"a": 1}, tally=2))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "tally, totals" in findings[0], findings[0]
+
+
+def test_a_retired_field_gets_the_retired_message_not_the_unknown_one(tmp_path, monkeypatch):
+    """The specific diagnosis survives the general one: a session that copied
+    the row above it is told which shape it copied, not merely that a key is
+    unrecognised."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(facing={"artifact": 1, "apparatus": 0}),
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "retired" in findings[0] and "unknown key" not in findings[0], findings[0]
+
+
+@pytest.mark.parametrize("field", ["notes", "date", "artifact", "lane", "report", "staffing", "highs"])
+def test_the_closed_key_set_admits_every_field_the_row_is_made_of(
+    tmp_path, monkeypatch, field
+):
+    """The lawful polarity, field by field. `notes` is on the list deliberately:
+    the free-text half of the arithmetic problem was priced out, because reading
+    prose for totals is the prose-scanning this change's boundary excludes."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    row = _qualitative_row(notes="external pass rate-limited; one seat re-dispatched")
+    assert field in row
+    _write_index(tmp_path, row)
+    assert lint.run(tmp_path) == []
+
+
+def test_a_row_before_the_cutover_may_carry_any_key(tmp_path, monkeypatch):
+    """The key set closes forward only. The rows already written carry `round`
+    and `notes` and were never held to a schema that did not exist."""
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_QUALITATIVE", 5)
+    _write_index(tmp_path, _review_row(round="one", notes="whatever it said"))
     assert lint.run(tmp_path) == []

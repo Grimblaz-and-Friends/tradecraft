@@ -5,7 +5,7 @@ description: How to create and revise content in this practice — the purpose h
 
 # authoring
 
-**Purpose:** make every governing document and skill in the practice accountable to a stated job, and the figures a write-up states checkable rather than inherited. **Audience:** any session creating or revising a skill or governing document, or stating derived figures in a write-up — in this repo or a repo that adopts the practice. **Success:** every document it governs can say what it is for, who reads it, and what its review should judge it against — and contains nothing that fails that test; every skill earns what it puts in a session's context and keeps the rest behind a pointer; every figure it governs travels with the derivation that produced it.
+**Purpose:** make every governing document and skill in the practice accountable to a stated job, and the figures a write-up rests on re-derivable rather than inherited. **Audience:** any session creating or revising a skill or governing document, or stating derived figures in a write-up — in this repo or a repo that adopts the practice. **Success:** every document it governs can say what it is for, who reads it, and what its review should judge it against — and contains nothing that fails that test; every skill earns what it puts in a session's context and keeps the rest behind a pointer; every figure it governs lives where it re-derives, or names the command that does.
 
 ## The purpose header
 
@@ -27,7 +27,7 @@ Every piece of content has one home: methodology in a skill, a binding rule in t
 - **State the rule with its reason; link the evidence.** The reason is one short clause that lets a reader apply the rule well and notice when it stops applying. The evidence — counts, incidents, history — goes behind a link. Prose that litigates its own justification taxes every future reader to persuade one who is not there.
 - **Do not armor against misreadings.** A clause defending against a reader who would not actually err is pure cost. If a competent reader genuinely could go wrong, restate the sentence more plainly rather than appending a qualifier to it.
 - **Deletion is a first-class edit.** Propose removals with the same energy as additions. Net growth of a governing document needs a justification the way a new rule does — the default direction of revision is shorter.
-- **A derived figure is its command, never a number**, and a quotation is pinned to the commit it shipped at. A document that freezes cannot be revised while the tree moves on, so what it states must survive being read later. This cell ships the mechanism at `scripts/figures.py`; the standards are in `references/frozen-documents.md` — load it when a document freezes, or when a write-up anywhere states a derived figure.
+- **A derived figure is its command and the tree it runs on, never a number**, and a quotation is pinned to the commit it shipped at. A document that freezes cannot be revised while the tree moves on, so what it states must survive being read later. This cell ships the mechanism at `scripts/figures.py`; the standards are in `references/frozen-documents.md` — load it before a figure goes into anything that freezes.
 
 ## Revising governing prose
 

@@ -4,12 +4,11 @@
 Hand-derived figures are wrong at a measurable rate: across two consecutive
 changes in this practice's home repository, every figure carried forward or
 stated from memory was wrong at least once, and every figure computed at the
-moment of writing was right. The authoring standard already requires a document
-carrying counts to carry the query that produced them; this script is that
-rule's mechanism. Each figure prints with what was measured, in what units,
-against which tree — so a write-up pastes the block instead of improvising the
-arithmetic, and a later reader can re-run the derivation instead of inheriting
-the number.
+moment of writing was right. The authoring standard is that a derived figure lives only where it re-derives
+at read time, and that a surface which freezes names the command and the tree it
+runs on rather than the output; this script is the command that standard names.
+Each figure prints with what was measured, in what units, against which tree, so
+a reader who runs it re-derives rather than inherits.
 
 Figures, each requested explicitly:
 
@@ -31,9 +30,9 @@ Figures, each requested explicitly:
                                figures go wrong. --delta-suffix limits the
                                enumeration (e.g. `.md`).
 
-Output is markdown for pasting (default) or --json for tooling. Every mode
-stamps the tree the figures were derived from (commit, and whether the working
-tree was dirty) and the exact invocation, so the block carries its own query.
+Output is markdown (default) or --json for tooling. Every mode stamps the tree
+the figures were derived from (commit, and whether the working tree was dirty)
+and the exact invocation, so what a reader runs is what produced the figure.
 
 A figure whose inputs are incomplete is a loud refusal (non-zero exit), never
 a guess: --doc without --budget, --delta without --base (or the reverse), or no
@@ -271,15 +270,23 @@ def figure_delta(
 
     delta = current_total - base_total
     suffix_note = f", {'/'.join(suffixes)} files only" if suffixes else ""
+    # A moving ref satisfies "given explicitly" and still leaves the figure
+    # un-recheckable: `origin/main` means one tree today and another tomorrow,
+    # and a reader cannot tell a wrong figure from a moved base. The resolved
+    # sha is what a later reader re-runs against.
+    resolved = _git(repo, "rev-parse", "--short", base)
+    base_sha = _decoded(resolved.stdout).strip() if resolved.returncode == 0 else ""
+    base_label = f"`{base}` ({base_sha})" if base_sha and base_sha != base else f"`{base}`"
     return {
-        "name": f"prose delta vs `{base}`",
+        "name": f"prose delta vs {base_label}",
         "value": f"{delta:+,} chars (base {base_total:,} -> current {current_total:,})",
         "basis": (
             f"raw base blobs vs working-tree bytes, decoded UTF-8, CRLF "
             f"normalized to LF{suffix_note}, over: {', '.join(paths)}"
         ),
         "data": {
-            "base": base, "paths": paths, "suffixes": suffixes or [],
+            "base": base, "base_sha": base_sha, "paths": paths,
+            "suffixes": suffixes or [],
             "base_chars": base_total, "current_chars": current_total, "delta": delta,
         },
     }

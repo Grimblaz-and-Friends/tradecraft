@@ -55,11 +55,12 @@ Checks:
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
   10. review index: docs/reviews.jsonl, when present, parses and carries one
-     valid row per review — date, artifact, lane, the sustained highs named
-     (rows past the cutover) or per-seat counts (rows before it), what came of
-     the findings, the split by consequence shape, the model and runtime that
-     staffed it, report URL. The split reconciles against the disposition
-     counts; nothing else on the row reconciles against anything.
+     valid row per review. Past the cutover: date, artifact, lane, the
+     sustained highs named, the model and runtime that staffed it, report URL,
+     and no arithmetic — the key set is closed. Before it: per-seat counts,
+     what came of the findings, and the split by consequence shape, which
+     reconciles against the disposition counts and is the only cross-total on
+     the row that is sound.
  11. decision index: every decision entry has a row in the log's index, and
      every row a file.
  12. entry references: every path reference and relative link a decision entry
@@ -164,7 +165,7 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # the total rather than this one -- and why neither is written here: `python
 # tools/figures.py` prices this file and that surface against these constants
 # on whatever tree you are on, and the headroom this comment used to state was
-# false three commits after it was written. Set so roughly one substantial rule
+# false one commit after the change that wrote it landed. Set so roughly one substantial rule
 # fits before something has to leave, not so the margin stays comfortable,
 # which is the failure mode. It is expected to be tight. The answer to a change
 # that wants more is an outflow.
@@ -407,6 +408,9 @@ SEAT_COUNTS = ("raw", "merged", "sustained", "high")
 # and obliges this guard to validate two live shapes for ever.
 REVIEW_ROWS_QUALITATIVE = 36
 COUNTING_FIELDS = ("seats", "dispositions", "facing")
+QUALITATIVE_FIELDS = frozenset(
+    {"date", "artifact", "lane", "report", "highs", "staffing", "notes"}
+)
 
 # What became of the findings, in the terminal stage's own vocabulary: clause
 # (a) dismisses, clause (b) sustains and fixes, routes, or prices out. The row
@@ -1040,7 +1044,7 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
     if "report" in row and not _is_https_url(row["report"]):
         findings.append(
             f"{where} report '{row.get('report')}' must be an https URL to the "
-            f"review's report -- the row holds counts, the report holds the findings"
+            f"review's report -- the row points at the findings, it does not hold them"
         )
     _check_row_shape(row, row_index, where, findings)
     if "seats" in row:
@@ -1060,7 +1064,10 @@ def _check_row_shape(row, row_index: int, where: str, findings: list) -> None:
     """
     if row_index < REVIEW_ROWS_QUALITATIVE:
         if "seats" not in row:
-            findings.append(f"{where} missing field seats")
+            findings.append(
+                f"{where} missing field 'seats' -- rows before the first "
+                f"{REVIEW_ROWS_QUALITATIVE} carry per-seat counts"
+            )
         return
     if "highs" not in row:
         findings.append(
@@ -1076,6 +1083,18 @@ def _check_row_shape(row, row_index: int, where: str, findings: list) -> None:
             f"rows past the first {REVIEW_ROWS_QUALITATIVE} carry no arithmetic: "
             f"a total on a frozen row is a figure nothing re-derives. What the "
             f"review was worth is in the report it links"
+        )
+    # Naming the three retired fields is not the rule -- the same totals under a
+    # fresh key are the same frozen arithmetic, and passed clean until this
+    # closed. The key set is what makes "no arithmetic" enforceable rather than
+    # merely stated; a new field is a decision somebody makes here.
+    unknown = sorted(set(row) - QUALITATIVE_FIELDS - set(COUNTING_FIELDS))
+    if unknown:
+        findings.append(
+            f"{where} carries unknown key(s) {', '.join(unknown)} -- past the "
+            f"first {REVIEW_ROWS_QUALITATIVE} the row's key set is closed "
+            f"({', '.join(sorted(QUALITATIVE_FIELDS))}); arithmetic under a "
+            f"fresh name is the arithmetic this cutover retired"
         )
 
 
@@ -2217,7 +2236,7 @@ def always_on_note(root: Path) -> str:
 
     A cold consumer adding a binding rule found this number only because it
     thought to go looking: `tools/figures.py` is named in no always-on surface
-    and in no skill prose, only inside frozen decision entries. It said the
+    and in no skill prose. It said the
     number changed what it did -- it measured its rule and its outflow before
     writing either, against whatever headroom the tree had -- which is the whole
     argument for putting it where the flow already goes.
