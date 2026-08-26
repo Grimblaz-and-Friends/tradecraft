@@ -234,11 +234,15 @@ def test_write_reports_an_unreadable_cell_and_finishes_the_rest(tmp_path):
 
 
 def test_every_shape_the_docstring_names_behaves_as_it_says(tmp_path):
-    """The docstring names its shapes instead of counting them, because a
-    stated count has now been wrong twice -- the second time in the sentence
-    written to fix the first. This walks the named list.
+    """The docstring names each shape and what its message names. This walks
+    that list and asserts against the **whole** message.
 
-    Three name `--write`; two name no command; one condition is silent.
+    An earlier version of this test asserted `"--write" not in
+    finding.split(" -- ")[0]`, which cuts the string before the remedy clause
+    -- the only place a command ever appears. So it passed over a message that
+    did name `--write`, while its own docstring claimed the opposite: a guard
+    that could not fail on the thing it was named for. That masking is why the
+    stated count survived two corrections. [PR #210 cycle two, C2-F1]
     """
     # Silent: a foreign entry at a name that is no cell.
     make_cell(tmp_path, "alpha")
@@ -263,18 +267,38 @@ def test_every_shape_the_docstring_names_behaves_as_it_says(tmp_path):
     assert all("--write" in f for f in roster.verify(tmp_path))
     roster.write(tmp_path)
 
-    # Names no command: collision, and unparseable frontmatter.
+    # Collision: names the move first and --write second, both over the whole
+    # message. Asserted against the full string, not a prefix of it.
     entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
     entry.write_bytes(b"---\nname: alpha\ndescription: mine\n---\n\nhand-written\n")
     collision = roster.verify(tmp_path)
-    assert len(collision) == 1 and "--write" not in collision[0].split(" -- ")[0]
+    assert len(collision) == 1
     assert "move your file out" in collision[0]
+    assert "--write" in collision[0], (
+        "the collision message names the move and then --write; the docstring "
+        "says so, and this asserts the whole message rather than a prefix"
+    )
+    assert collision[0].index("move your file out") < collision[0].index("--write")
     entry.unlink()
     roster.write(tmp_path)
     (tmp_path / "skills" / "alpha" / "SKILL.md").write_bytes(b"# no frontmatter\n")
     unparseable = [f for f in roster.verify(tmp_path) if "parseable" in f]
     assert len(unparseable) == 1 and "--write" not in unparseable[0]
     assert "fix the cell's frontmatter" in unparseable[0]
+
+
+def test_the_docstring_states_no_count_of_shapes(tmp_path):
+    """The arithmetic is gone rather than corrected again.
+
+    Three successive versions of `verify`'s docstring stated a count of its
+    finding shapes and all three were wrong, each in the sentence written to
+    correct the one before. This asserts the class cannot recur: no count of
+    shapes is stated, so none can be false.
+    """
+    doc = roster.verify.__doc__
+    for word in ("Two shapes", "Three name", "Five shapes", "Four name",
+                 "Six shapes", "two name", "three name"):
+        assert word not in doc, f"verify()'s docstring counts its shapes again: {word!r}"
 
 
 def test_an_empty_skills_directory_names_no_command_either(tmp_path):

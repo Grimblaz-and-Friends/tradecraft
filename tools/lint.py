@@ -81,7 +81,13 @@ Checks:
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
 16. project roster: every cell has an entry under .claude/skills/ carrying its
-    frontmatter byte for byte, and no entry names a cell that is gone. That
+    frontmatter byte for byte, and no entry THIS GENERATOR WROTE names a cell
+    that is gone. A file it did not write is not its business: at a name that
+    is no cell it draws no finding at all, because that is a project skill in
+    the runtime's documented place for one; at a cell's name it is reported
+    and never overwritten. The qualifier is load-bearing and was missing --
+    an experience session read this line, concluded a hand-written entry was
+    a finding, and had to open roster.py to find it was not. That
     directory is the only surface a Claude Code session working in THIS
     repository loads a description from -- the plugin is never installed here
     -- so without it every trigger routed to a description reaches every

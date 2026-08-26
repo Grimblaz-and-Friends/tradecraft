@@ -183,22 +183,31 @@ def verify(root: Path) -> list[str]:
     regeneration branch go on destroying hand-written content after the
     removal branch stopped. [PR #210 cycle one, C1-F2/C1-F3]
 
-    Five shapes. Three name `--write`, because for those the fix is always
-    that command and a guard reporting a diff without it makes the reader
-    derive what the script already knows:
+    Each shape below says what its own message names. There is no count here:
+    a stated count of these has been wrong three times running, each time in
+    the sentence written to correct the one before, so the arithmetic is gone
+    rather than corrected a fourth time. [PR #210 cycle two, C2-F1]
 
-    - **missing** -- a cell with no entry;
+    - **missing** -- a cell with no entry. Names `--write`.
     - **out of step** -- a cell whose entry this script wrote and the cell has
-      since moved on;
-    - **orphan** -- an entry this script wrote whose cell is gone.
-
-    Two name no command, because none exists and only a person can choose:
-
+      since moved on. Names `--write`.
+    - **orphan** -- an entry this script wrote whose cell is gone. Names
+      `--write`.
     - **collision** -- a cell's name taken by a file this script did not
-      write. Reported rather than overwritten, and reported rather than
-      ignored: the hand-written frontmatter is what loads, so the cell's real
-      description does not, which is a silent criterion-1 failure;
-    - **unparseable frontmatter** -- a cell `--write` cannot copy.
+      write. Names the move first and `--write` second, because both are
+      needed and only a person can do the first. Reported rather than
+      overwritten, and reported rather than ignored: the hand-written
+      frontmatter is what loads, so the cell's real description does not,
+      which is a silent criterion-1 failure.
+    - **unparseable frontmatter** -- a cell `--write` cannot copy. Names no
+      command; the cell's frontmatter is what has to change.
+    - **no cell at all** -- nothing under `skills/` to compare against. Names
+      no command, for the reason #198 gives about a sibling guard: no cell
+      found is indistinguishable from every cell lawful.
+
+    The three that name `--write` alone do so because for them the fix is
+    always that command, and a guard reporting a diff without it makes the
+    reader derive what the script already knows.
 
     And one condition that is not a finding at all: **a foreign entry at a
     name that is not a cell**, which is a project skill somebody wrote in the
