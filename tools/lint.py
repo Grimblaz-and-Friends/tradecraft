@@ -205,8 +205,11 @@ POINTER_BUDGET_CHARS = 500
 # nobody reads, while a section-sized regrowth cannot fit under it. The number
 # is a ceiling above a measured body, not the measured body, so nothing here
 # should be read as "no larger than you started". What it holds is the split's
-# own claim: #54's rewrite bought 38KB and regrew 63% because nothing failed
-# when it did. A body cap is dodgeable by moving prose one directory down,
+# own claim: #54's rewrite took the body to 13,721 at the reset (401669f,
+# #74) and it regrew 76.0% to 24,155 because nothing failed when it did.
+# Re-derive that pair before citing it -- an earlier draft here said 63%,
+# which no reset-anchored measurement returns, and the understatement sat
+# in the one comment a session reads while about to raise this constant. A body cap is dodgeable by moving prose one directory down,
 # which is why tools/figures.py reports the cell's total beside it, unbudgeted
 # -- a ceiling on the total would cap depth-shedding itself.
 CELL_BODY_BUDGET_CHARS = {
@@ -818,7 +821,13 @@ def check_cell_references(root: Path) -> list[str]:
                     try:
                         rel = target.relative_to(root.resolve()).as_posix()
                     except ValueError:
-                        continue  # escapes the repo — not this lint's concern
+                        # Knowingly silent, and not for the reason the arm
+                        # below is: check_sideways_deps does catch an
+                        # out-of-cell target, and nothing in lint.run
+                        # reports one outside the repository at all.
+                        # Left so because the bound is the naming file's
+                        # own cell; no cell has ever written such a path.
+                        continue
                     if cell_of(rel_file) is None or cell_of(rel) != cell_of(rel_file):
                         continue
                     if not target.is_file():
@@ -947,7 +956,9 @@ def check_doctrine(root: Path) -> list[str]:
         if size > budget:
             findings.append(
                 f"doctrine-budget: {rel}'s body is {size} chars, budget is "
-                f"{budget} -- shed depth to references/ or route content out"
+                f"{budget} -- shed depth to references/ or route content out; "
+                f"`python tools/figures.py --cell {rel} --cell-budget {budget}` "
+                f"reports the cell total, which shedding does not reduce"
             )
     # The charter reaches a consumer through the hook, but it reaches a session
     # in THIS repository only through an import in a file that is itself

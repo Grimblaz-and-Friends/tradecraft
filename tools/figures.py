@@ -147,6 +147,12 @@ def figure_cell_total(root: Path, rel_path: str) -> dict:
     Markdown only. A script the cell carries is code a session runs, not prose
     it loads, and counting it would price a test file against a prose ceiling.
     """
+    if not is_cell_path(rel_path):
+        raise SystemExit(
+            f"figures: --cell '{rel_path}' is not a cell -- this figure walks the "
+            "naming file's whole directory, so on a non-cell path it reports a "
+            "confidently-labelled total for whatever tree happens to sit above it"
+        )
     target = root / rel_path
     if not target.is_file():
         raise SystemExit(f"figures: {rel_path} is not a readable file under {root}")
@@ -346,6 +352,14 @@ def build_figures(root: Path, base: str | None,
                 "caller decision and picking one silently is how a stated "
                 "figure diverges from the guard that judges it"
             )
+        enforced = lint.CELL_BODY_BUDGET_CHARS.get(cell)
+        if enforced is not None and enforced != budget:
+            raise SystemExit(
+                f"figures: --cell-budget {budget} disagrees with the {enforced} "
+                f"check_doctrine enforces for {cell}. Refusing rather than "
+                "defaulting: the caller decides the budget, and a stated headroom "
+                "no guard backs is the drift this script exists to stop"
+            )
         figures.append(engine.figure_cell(root, cell, budget))
         figures.append(figure_cell_total(root, cell))
         figures.append(figure_cell_description(root, cell))
@@ -362,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", metavar="REF",
                         help="also emit the governing-prose delta against REF")
     parser.add_argument("--cell", metavar="PATH",
-                        help="also emit a cell's body and description figures")
+                        help="also emit a cell's body, total-prose and description figures")
     parser.add_argument("--cell-budget", metavar="N", type=int,
                         help="the body budget --cell is measured against")
     parser.add_argument("--json", action="store_true",

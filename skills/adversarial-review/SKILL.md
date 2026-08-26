@@ -27,12 +27,12 @@ Why a panel and not one strong pass: seats find largely different defects. In th
 
 ## The pipeline, and where each stage's depth lives
 
-Every stage is held to the charter above and the evidence standards below. Each stage's own machinery is one hop away, and the pointer says when to open it — a session on one step of the pipeline has no use for the rest.
+Every stage is held to everything in this file. Each stage's own machinery is one hop away, and the pointer says when to open it — a session on one step of the pipeline has no use for the rest.
 
-- **Staffing a panel, or any review role** → `references/roster.md`: the four slots and the fifth name, the cold boundary operationally, and which tier each role gets.
+- **Staffing a panel, or any review role** → `references/roster.md`: the four slots and the fifth name, the cold boundary operationally, and the tier rule.
 - **Building a dispatch** → `references/dispatch.md`: the three parts in order, what a dispatch read cold does not receive, and which roles take no dispatcher's note.
 - **Merging findings, defending, or ruling as the terminal stage** → `references/arbitration.md`: the merge's ownership and the consequence shape it records, the defense's verdicts and the price it states, and the terminal stage's docket and two clauses.
-- **A fix batch that has landed, or an open pull request** → `references/after-the-fix.md`: the post-fix look's scope, the two conditions that end the cycle, and every external comment's disposition.
+- **A fix batch that has landed, or an open pull request an automated reviewer may have posted on** → `references/after-the-fix.md`: the post-fix look's scope, the two conditions that end the cycle, and every external comment's disposition.
 - **Closing the review** → `references/the-record.md`: what the final report carries, the next-pass ruling, the relevance terminus, and the index row with its counting conventions.
 
 ## Evidence standards — every seat, every stage

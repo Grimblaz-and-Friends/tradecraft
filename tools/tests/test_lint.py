@@ -931,11 +931,20 @@ def test_a_relative_reference_out_of_the_cell_is_not_this_guard_s(tmp_path):
     skill = tmp_path / "skills" / "example-skill"
     depth = skill / "references"
     depth.mkdir(parents=True, exist_ok=True)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True, exist_ok=True)
+    _write_cell(other, "A sibling cell." + NL)
     _write_cell(skill, "Nothing to see." + NL)
     (depth / "sibling.md").write_text(
         "See ../../other-skill/references/gone.md." + NL, encoding="utf-8")
-    findings = [f for f in lint.run(tmp_path) if "reference-pointer" in f]
-    assert findings == [], findings
+    findings = lint.run(tmp_path)
+    assert [f for f in findings if "reference-pointer" in f] == [], findings
+    # The other half of the bound, which this test asserted nowhere until #193's
+    # review: it is lawful for THIS guard to stay quiet only because another one
+    # speaks. Without this line the test passes against the pre-fix lint and
+    # would keep passing if check_sideways_deps were later narrowed until
+    # nothing caught the text -- turning a deliberate bound into a silent gap.
+    assert [f for f in findings if "sideways-dep" in f], findings
 
 
 def test_a_pointer_inside_a_fence_is_still_a_pointer(tmp_path):
