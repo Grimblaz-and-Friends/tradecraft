@@ -106,7 +106,12 @@ WIRED_CI = (
     "    if: github.event_name == 'pull_request'\n"
     "    runs-on: ubuntu-latest\n"
     "    steps:\n"
-    "      - run: python tools/doctrine_callout.py --pr 1\n"
+    "      - uses: actions/checkout@v5\n"
+    "        with:\n"
+    "          fetch-depth: 0\n"
+    "      - env:\n"
+    "          BASE_SHA: xyz\n"
+    "        run: python tools/doctrine_callout.py --pr 1 --base $BASE_SHA\n"
 )
 
 
@@ -670,6 +675,7 @@ def test_a_references_pointer_must_resolve_against_its_own_file(tmp_path):
 LINT_CHECKS_IN_ORDER = (
     "check_zone_wall", "check_harness_tokens", "check_delivery",
     "check_cell_frontmatter", "check_sideways_deps", "check_cell_references",
+    "check_doctrine_citations",
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
 )
@@ -694,6 +700,114 @@ def test_the_module_docstring_enumerates_every_check_run_calls():
     assert [int(n) for n in numbered] == list(
         range(1, len(LINT_CHECKS_IN_ORDER) + 1)
     ), "the docstring's numbered checks do not match what run() calls"
+
+
+def make_entry(root: Path, number: int) -> None:
+    """One decision entry, named the way check_doctrine_citations globs it."""
+    directory = root / "docs" / "architecture" / "decisions"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / ("D-%d-2026-01-01-slug.md" % number)).write_text(
+        ("# D-%d" % number) + NL, encoding="utf-8")
+
+
+def test_a_doctrine_citation_that_resolves_is_not_a_finding(tmp_path):
+    """The lawful polarity, and the one that matters most here: the outflow
+    rule tells a session to replace prose with a citation, so a guard that
+    goes red on a citation that resolves would block the rule it exists to
+    serve."""
+    make_clean_tree(tmp_path)
+    make_entry(tmp_path, 81)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + "The callout is the owner's read. [D-81]" + NL,
+                      encoding="utf-8")
+    assert lint.run(tmp_path) == []
+
+
+def test_a_doctrine_citation_that_resolves_to_nothing_is_a_finding(tmp_path):
+    """A reason compressed into a marker nobody checks is a reason deleted on
+    the next renumbering, on the surface every session reads first. All four
+    markers in the doctrine resolved to nothing while lint stayed green."""
+    make_clean_tree(tmp_path)
+    make_entry(tmp_path, 81)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + "Compressed to its reason. [D-9999]" + NL,
+                      encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "doctrine-citation" in findings[0] and "[D-9999]" in findings[0]
+
+
+def test_the_citation_guard_reads_the_pointer_too(tmp_path):
+    """Both doctrine files, because both are always-on here and a rule can
+    move between them."""
+    make_clean_tree(tmp_path)
+    pointer = tmp_path / "CLAUDE.md"
+    pointer.write_text(pointer.read_text(encoding="utf-8") + "[D-9999]" + NL,
+                       encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "doctrine-citation" in f]
+    assert len(findings) == 1 and "CLAUDE.md" in findings[0]
+
+
+def test_the_citation_guard_leaves_the_placeholder_and_fenced_prose_alone(tmp_path):
+    """Two lawful forms a naive scan turns red.
+
+    `[D-N]` is how the doctrine names the *form* of a citation, and N is not a
+    number; a fenced block is displayed prose, not a live rule. A guard that
+    fails a required check on either blocks lawful work, which fails as hard
+    as passing unlawful work.
+    """
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(
+        agents.read_text(encoding="utf-8")
+        + "A rule may cite its decision (`[D-N]`)." + NL
+        + "```" + NL + "See [D-9999] for the shape." + NL + "```" + NL,
+        encoding="utf-8")
+    assert lint.run(tmp_path) == []
+
+
+@pytest.mark.parametrize("rendering", [
+    "fetch-depth: 0",
+    "fetch-depth: 0  # full history, for the delta's base",
+    "fetch-depth: '0'",
+    'fetch-depth: "0"',
+])
+def test_lawful_renderings_of_full_history_are_not_findings(tmp_path, rendering):
+    """A guard that fails a required check on a lawful reformat blocks lawful
+    work, which fails as hard as passing unlawful work.
+
+    The first anchor written for this ended at `$` with neither quoting nor a
+    comment admitted, so three of these four went red -- on the one key whose
+    whole purpose is that a later session not delete it.
+    """
+    make_clean_tree(tmp_path)
+    _ci(tmp_path, WIRED_CI.replace("fetch-depth: 0", rendering))
+    assert lint.run(tmp_path) == []
+
+
+def test_the_lint_reports_the_always_on_total(capsys):
+    """The number reaches the session doing the editing, not only the owner
+    at the merge button.
+
+    An experience session found the derivation reachable only through frozen
+    decision entries, and said the number changed what it did once it had it.
+    """
+    lint.main()
+    out = capsys.readouterr().out
+    assert "always-on surface:" in out
+    assert "for an adopter" in out and "not derived" not in out
+
+
+def test_an_underivable_figure_does_not_fail_the_lint(tmp_path, monkeypatch):
+    """The other polarity, and the one that matters: this is a required check.
+    A tree with no figures module is not a lint finding, and a number that
+    cannot be derived must never turn a clean tree red."""
+    make_clean_tree(tmp_path)
+    note = lint.always_on_note(tmp_path)
+    assert note.startswith("always-on surface: not derived")
+    assert lint.run(tmp_path) == []
 
 
 def test_a_fence_closes_only_on_its_own_marker(tmp_path):
@@ -1144,6 +1258,29 @@ def test_deleting_the_callout_job_is_a_finding(tmp_path):
     ("trigger switched to pull_request_target",
      lambda t: t.replace("  pull_request:\n", "  pull_request_target:\n", 1),
      "no `pull_request:` trigger"),
+    # Not a dead job but a blind one, and this is the shape that shipped:
+    # the delta's base side reads blobs at another revision, a shallow
+    # clone has none, and the read failing costs the callout its figure
+    # while every check still reports green. Omitting the key is what
+    # produces depth 1, so the default is the trap.
+    ("full history dropped",
+     lambda t: t.replace("          fetch-depth: 0\n", ""),
+     "does not check out full history"),
+    # A bounded depth is still a shallow clone and the base sits any
+    # distance back, so the pin is `0` rather than evidence that somebody
+    # thought about depth at all.
+    ("depth bounded instead of full",
+     lambda t: t.replace("fetch-depth: 0", "fetch-depth: 50"),
+     "does not check out full history"),
+    # The delta's request, at both seams. Deleting either leaves the other
+    # standing and the command still reading correctly, which is why one
+    # pattern on the run line cannot hold this.
+    ("the --base flag deleted",
+     lambda t: t.replace(" --base $BASE_SHA", ""),
+     "does not pass `--base`"),
+    ("the BASE_SHA environment line deleted",
+     lambda t: t.replace("          BASE_SHA: xyz\n", ""),
+     "does not put the base revision in the environment"),
 ])
 def test_a_dead_callout_job_is_a_finding(tmp_path, name, mutate, expected):
     make_clean_tree(tmp_path)
@@ -2114,11 +2251,70 @@ def test_the_declared_description_ceiling_is_the_one_these_tests_pin(tmp_path):
     assert lint.CELL_FIELD_MAX_CHARS == {"name": 64, "description": 700}
 
 
+def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
+    """#164, discharged: the two constants the earlier fix left deriving
+    their bounds from themselves.
+
+    Both were mutable with the suite green -- every test that touched them
+    built its input out of the constant it was testing, so the bound moved
+    with the value it was meant to hold. Literals here, and the behavioural
+    arms below, so a change to either is a deliberate act with a red suite
+    behind it.
+    """
+    assert lint.AGENTS_BUDGET_CHARS == 6_000
+    assert lint.POINTER_BUDGET_CHARS == 500
+
+
+def test_a_cell_body_budget_is_enforced_in_both_polarities(tmp_path):
+    """The cap #169 stated and nothing held.
+
+    It lived in a command string inside a decision entry that has frozen, so
+    the only thing standing between the body and unbounded growth was that
+    somebody remembered. The lawful arm is half the pin: a cell at its budget
+    must pass, or the guard is a ratchet nobody can land a change through.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    budget = 200
+    monkey = dict(lint.CELL_BODY_BUDGET_CHARS)
+    monkey["skills/example-skill/SKILL.md"] = budget
+    original = lint.CELL_BODY_BUDGET_CHARS
+    try:
+        lint.CELL_BODY_BUDGET_CHARS = monkey
+        _write_cell(skill, "x" * budget + NL)
+        over = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
+        assert len(over) == 1 and "example-skill" in over[0], over
+        # Exactly at the budget, not under it: this is the arm that catches a
+        # guard drifting to >=, and a cell sitting five chars from its cap
+        # makes landing on the boundary an ordinary next edit.
+        _write_cell(skill, "x" * budget)
+        assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []
+    finally:
+        lint.CELL_BODY_BUDGET_CHARS = original
+
+
+def test_every_budgeted_cell_exists_in_this_repository():
+    """A rename would drop the budget in silence.
+
+    The guard skips a cell it cannot find, because a tree without that cell is
+    an ordinary tree and every fixture is one. That makes absence invisible
+    exactly where it matters -- here, against the real tree, where the map's
+    keys have an answer.
+    """
+    root = Path(__file__).resolve().parents[2]
+    for rel in lint.CELL_BODY_BUDGET_CHARS:
+        assert (root / rel).is_file(), f"{rel} carries a body budget and does not exist"
+
+
+def test_the_declared_cell_body_budgets_are_the_ones_these_tests_pin():
+    assert lint.CELL_BODY_BUDGET_CHARS == {"skills/authoring/SKILL.md": 7_359}
+
+
 def test_the_declared_charter_budget_is_the_one_these_tests_pin():
     """The rule stated just above, applied to the constant the fix that
     stated it left deriving its bound from itself.
     """
-    assert lint.CHARTER_BUDGET_CHARS == 6_000
+    assert lint.CHARTER_BUDGET_CHARS == 5_600
 
 
 def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):

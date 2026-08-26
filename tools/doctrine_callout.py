@@ -43,9 +43,13 @@ with `pull-requests: write`, `issues: write` and `contents: read`).
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
 
 # Matches `.github/CODEOWNERS`. Widening this to skills or decisions is a
 # different requirement and wants its own incident. The charter cell is
@@ -74,6 +78,8 @@ CALLOUT = f"""{MARKER}
 nothing else performs that read.
 
 Touched: {{files}}
+
+{{always_on}}
 
 <sub>Posted by `tools/doctrine_callout.py`. `CODEOWNERS` cannot request a \
 review from a pull request's own author, and today every PR here is the \
@@ -273,8 +279,103 @@ def _edit_label(pr: str, repo: str | None, *, add: bool) -> None:
     _gh(*args)
 
 
-def _body(touched: list[str]) -> str:
-    return CALLOUT.format(files=", ".join(f"`{f}`" for f in touched))
+# What the callout prices, and against what. Each row is a size and the
+# ceiling that governs *exactly* that size -- the doctrine's two-file sum was
+# once rendered against AGENTS.md's budget alone, asserting a ceiling that did
+# not exist. Module level so a test can name the binding rather than infer it
+# from a rendered string: the label carries the ceiling, so reordering rows is
+# harmless and substituting one size for another is not.
+PRICED = (
+    # label,          lint constant,            figure_always_on data key
+    ("AGENTS.md",     "AGENTS_BUDGET_CHARS",    "agents"),
+    ("CLAUDE.md",     "POINTER_BUDGET_CHARS",   "pointer"),
+    ("charter body",  "CHARTER_BUDGET_CHARS",   "charter"),
+)
+
+
+def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
+    """The size of what every session reads, where the owner is when he merges.
+
+    A budget only bites where somebody sees it, and this one has always been
+    read after the fact -- in a write-up, by a session that had already decided
+    what to add. The merge surface is the one moment the number can still
+    change an outcome.
+
+    The delta is the half that answers his actual question. An absolute total
+    cannot tell him whether this PR grew the surface or shrank it, and growth
+    is the thing the ceiling exists to resist -- a number with no direction
+    reproduces the defect it was added to end.
+
+    `root` resolves at call time rather than as a default, because a default
+    binds at definition and a test patching the module attribute would silently
+    measure the real repository instead.
+
+    A failure to derive is stated rather than dropped, with the exception's own
+    message: a callout that quietly loses its figure is one nobody can trust
+    the rest of, and one that loses the reason cannot be acted on either.
+    """
+    root = ROOT if root is None else root
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "repo_figures", root / "tools" / "figures.py"
+        )
+        figures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(figures)
+        data = figures.figure_always_on(root)["data"]
+        priced = [
+            (label, data[key], getattr(figures.lint, const))
+            for label, const, key in PRICED
+        ]
+        movement = _always_on_delta(figures, root, base)
+    except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
+        return f"_Always-on surface: not derived ({type(exc).__name__}: {exc})._"
+    return (
+        f"Always-on surface: **{data['repo_total']:,}** chars here{movement}, "
+        f"**{data['adopter_total']:,}** from this practice for an adopter — "
+        + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
+        + f", {data['cells']} cell name/description {data['roster']:,}."
+    )
+
+
+def _always_on_delta(figures, root: Path, base: str | None) -> str:
+    """This PR's own movement, or why it could not be measured.
+
+    A delta against a guessed base would be worse than none, so an unreadable
+    base still yields no number. What it no longer yields is silence. This
+    returned an empty string on any failure, which renders byte-identically to
+    a run that was given no base at all -- so a base that could not be read
+    looked exactly like a caller that never asked, and the callout shipped for
+    a full cycle without its delta in the one environment that runs it. Nobody
+    could have seen it from the comment. Its sibling `_always_on_line` names
+    its own failures for this reason; one function answering the same question
+    two opposite ways is how the gap survived.
+
+    The base is named because it is the actionable half: the failure is
+    essentially always that the object is not in this clone.
+    """
+    if not base:
+        return ""
+    try:
+        before = figures.always_on_at(root, base)
+    except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
+        return f" (movement not derived: {type(exc).__name__} reading {base})"
+    change = figures.figure_always_on(root)["data"]["repo_total"] - before
+    return f" ({change:+,} this PR)"
+
+
+def _body_from(files: str, base: str | None = None) -> str:
+    """The rendered callout for an already-joined file list.
+
+    Split out so a test can build the exact body the callout posts without
+    re-deriving the join -- the previous shape let a test format the template
+    directly, which meant a new field could be added to the body and the test
+    would keep asserting the old one.
+    """
+    return CALLOUT.format(files=files, always_on=_always_on_line(base=base))
+
+
+def _body(touched: list[str], base: str | None = None) -> str:
+    return _body_from(", ".join(f"`{f}`" for f in touched), base=base)
 
 
 def _edit_comment(comment_id: object, repo: str | None, body: str) -> None:
@@ -291,7 +392,8 @@ def _post_comment(pr: str, repo: str | None, body: str) -> None:
     _gh(*args)
 
 
-def run(pr: str, repo: str | None, *, dry_run: bool = False) -> tuple[int, list[str]]:
+def run(pr: str, repo: str | None, *, dry_run: bool = False,
+        base: str | None = None) -> tuple[int, list[str]]:
     """Bring the PR's label and comment into agreement with its diff."""
     lines: list[str] = []
     touched = touched_doctrine(changed_paths(pr, repo))
@@ -322,7 +424,7 @@ def run(pr: str, repo: str | None, *, dry_run: bool = False) -> tuple[int, list[
     # the thread say that. Posting, withdrawing, reinstating and refreshing a
     # stale `Touched:` list are the same operation seen at four moments.
     if touched:
-        desired = _body(touched)
+        desired = _body(touched, base=base)
     elif ours is not None:
         desired = WITHDRAWN          # it says something that is no longer so
     else:
@@ -350,11 +452,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--pr", required=True, type=int, help="pull request number")
     parser.add_argument("--repo", default=None, help="OWNER/NAME (default: the checkout's)")
+    parser.add_argument("--base", default=None,
+                        help="revision to measure the always-on delta against; "
+                             "omitted, the callout states the total and no delta")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would change; touch nothing")
     args = parser.parse_args(argv)
     try:
-        status, _ = run(args.pr, args.repo, dry_run=args.dry_run)
+        status, _ = run(args.pr, args.repo, dry_run=args.dry_run, base=args.base)
     except CalloutError as exc:
         reason = " ".join(str(exc).split())
         # A workflow error annotation, so the reason reaches the checks panel

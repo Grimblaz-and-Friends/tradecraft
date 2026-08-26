@@ -17,7 +17,7 @@ Branch first (`main` refuses direct pushes) → build → `python tools/lint.py`
 
 ## Review, here
 
-The review report states what it judged against, and every review appends one row to `docs/reviews.jsonl`.
+Every review appends one row to `docs/reviews.jsonl`.
 
 ## Content routing, here
 
@@ -27,7 +27,7 @@ The charter carries the routing map. Specific to here:
 - **A binding rule the practice exports** → the `charter` cell, within its own job. **A rule or mechanic only this repository needs** → this file, within its budget.
 - **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`; a decision entry lives at the path under Decisions below.
 
-The charter states the admission order; this file's budget is what makes it bite here. At the budget, adding a line means routing something out.
+The charter states the admission order; this file's budget is what makes it bite here. **Every edit of an always-on surface owes an outflow**, at the budget or nowhere near it — the `authoring` cell carries the three moves and what they may not do. [D-184]
 
 ## Decisions
 
@@ -40,7 +40,7 @@ Records are append-only and never maintained: no backfilling, no reconciling, no
 ## Structure and substrate
 
 - **Two zones.** Shipped (`skills/`, `lib/`, `commands/`, `agents/`, `hooks/`, `.claude-plugin/`) never references repo-only (`docs/`, `tools/`, `.github/`) — not a path, not a doc link; the lint enforces the checkable subset. Consumers must never *depend* on repo-only, which is not the same as never receiving it: the plugin's source is the repo root, so a git-source install clones everything and those files do reach a consumer's cache as inert content. General standards ship in the skill that teaches them, or in the `charter` cell where they must bind before any skill fires; repo-specific application lives here. **Capability wrappers do not belong in any of them.**
-- **The calling-contract rule is the `authoring` cell's**; two mechanisms enforce it here — the lint bans the tokens, and `tools/tests/test_portability.py` checks that every script mention in a cell resolves against the naming file's directory. The runtimes it is written against: Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}`, and `${CLAUDE_SKILL_DIR}`, into a skill's body before the model reads it; Codex does neither, delivering the root as an environment variable to hook commands only. [D-156]
+- **The calling-contract rule is the `authoring` cell's**; two mechanisms enforce it here — the lint bans the harness tokens, and `tools/tests/test_portability.py` checks that every script mention in a cell resolves against the naming file's directory. Which runtime substitutes what, and why a token-bearing contract is dead in one of them, is [D-156].
 - **Substrate here is Python**, per the `authoring` cell's standard, tested on Linux and Windows in CI — one CI matrix, and one thing every new script can assume. PowerShell is rejected for new code. `AGENTS.md` is canonical because Codex reads it natively; `CLAUDE.md` is a pointer to it, never a fork.
 - **The predecessor** ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra)) is reference material with no presumption of correctness: pull lessons, never artifacts.
 - **Vendor memory is an inbox, never an archive.** A lesson lands same-session in its home from the routing table above.
