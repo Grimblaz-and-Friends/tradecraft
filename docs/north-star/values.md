@@ -13,7 +13,7 @@ Economic machinery sharpens cost estimates for all work but value estimates only
 ## How it is used
 
 - **At any gate**, when the worth-it question outruns the evidence, the answer is argued from this ranking — by number, so the reasoning is checkable.
-- **Order resolves conflict.** When two values collide, the higher one wins. A decision that sacrifices a higher value for a lower one is wrong even if locally attractive.
+- **Order resolves conflict.** When two values collide, the higher one wins. A decision that sacrifices a higher value for a lower one is wrong even if locally attractive. Precedence operates within a single decision; it never drains lanes — allocation exists precisely so lower-ranked values stay funded, and the ranking informs lane sizes rather than overriding lane boundaries.
 - **Allocation, not per-item ROI.** Work whose value resists measurement is funded as a standing share of capacity per value, and competes within that lane — never head-to-head against measurable-value work.
 - **The re-ask still applies**, but asks "is this still serving its declared value, within its allocation?" — not "have metrics proven it?"
 - **Both-ways guard.** No demanding measurement from values-funded work; no dressing values-funded work in proxy metrics. A claim names the value it serves, or it isn't one.
