@@ -423,6 +423,69 @@ def test_repo_flag_reaches_every_call(gh):
             assert any("repos/o/n/" in a for a in call)
 
 
+def test_the_callout_line_decomposes_its_own_total(tmp_path, monkeypatch):
+    """The printed terms must sum to the total the same sentence states.
+
+    They stopped doing so when the always-on figure split its roster by
+    audience: the total was rebuilt from the roster this repository loads,
+    under `.claude/skills/`, while this line went on printing the adopter's,
+    from `skills/`. The two agree on any in-step tree, so nothing showed --
+    and this job carries no `needs:` on `lint-and-test`, so it posts on
+    exactly the trees where the roster guard is red and they disagree.
+
+    Measured on a tree where they disagree, which is the only tree that can
+    tell the two readers apart. The fix shipped unpinned and reverting it left
+    the whole suite green -- the same shape as the mutation that survived in
+    `always_on_at`, in the batch that closed it. [PR #210 cycle one, C1-F4]
+    """
+    import shutil
+
+    import roster as _roster
+
+    # The line resolves `tools/figures.py` against ROOT and that file reaches
+    # `lint`, `winio` and the shipped engine, so the fixture carries the real
+    # machinery rather than a stub: a mock here would pin the test's own
+    # arithmetic instead of the renderer's choice of keys.
+    repo = Path(__file__).resolve().parents[2]
+    shutil.copytree(repo / "tools", tmp_path / "tools",
+                    ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    shutil.copytree(repo / "lib", tmp_path / "lib",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(repo / "skills" / "authoring" / "scripts",
+                    tmp_path / "skills" / "authoring" / "scripts",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+
+    (tmp_path / "AGENTS.md").write_bytes(b"a" * 100)
+    (tmp_path / "CLAUDE.md").write_bytes(b"@AGENTS.md\n")
+    for name, desc in (("charter", "Binding rules."), ("extra", "Trigger.")):
+        cell = tmp_path / "skills" / name
+        cell.mkdir(parents=True, exist_ok=True)
+        (cell / "SKILL.md").write_bytes(
+            ("---\nname: " + name + "\ndescription: " + desc
+             + "\n---\n\nBody.\n").encode("utf-8"))
+    _roster.write(tmp_path)
+    # Out of step on purpose: one cell keeps its entry, one does not.
+    (tmp_path / ".claude" / "skills" / "extra" / "SKILL.md").unlink()
+
+    monkeypatch.setattr(dc, "ROOT", tmp_path)
+    line = dc._always_on_line()
+
+    flat = line.replace(",", "")
+    stated_total = int(re.search(r"\*\*(\d+)\*\* chars here", flat).group(1))
+    terms = [int(n) for n in re.findall(r"(\d+) of \d+", flat)]
+    # Deliberately label-agnostic: the pin is on the arithmetic, not on the
+    # wording. Keying it to `roster name/description` would make it crash
+    # rather than fail when the term reverts to the adopter's, and a crash
+    # reports a missing regex where the defect is a number that does not add
+    # up.
+    roster_term = int(re.search(r"(\d+) (?:roster|cell) name/description (\d+)",
+                                flat).group(2))
+    assert sum(terms) + roster_term == stated_total, (
+        "the callout's printed terms sum to "
+        f"{sum(terms) + roster_term}, not the {stated_total} it states: {line}"
+    )
+
+
 def test_the_callout_carries_the_always_on_size(tmp_path, monkeypatch):
     """The budget the owner is deciding against, on the surface he decides on.
 

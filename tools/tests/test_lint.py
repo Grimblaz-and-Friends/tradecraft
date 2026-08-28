@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import lint
+import roster
 
 
 import importlib.util as _ilu
@@ -40,6 +41,10 @@ def _write_cell(skill: Path, body: str) -> None:
         + "description: A fixture cell." + NL + "---" + NL + NL + body,
         encoding="utf-8",
     )
+    # A cell without its roster entry is an unlawful tree, so writing one here
+    # keeps every other check's fixture about that check. The roster guard is
+    # proven by its own tests, which build the unlawful shapes deliberately.
+    roster.write(skill.parents[1])
 
 
 def make_clean_tree(root: Path) -> None:
@@ -58,6 +63,12 @@ def make_clean_tree(root: Path) -> None:
     _write_cell(skill, "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n")
     _wire_callout(root)
     _wire_delivery(root)
+    # A conforming tree carries the roster its cells generate, for the same
+    # reason the pointer above has a target: the fixture models a lawful tree,
+    # not one whose parts merely exist. Generated rather than hand-written, so
+    # a fixture cell added later is covered by regenerating rather than by
+    # remembering what the entry looks like.
+    roster.write(root)
 
 
 def _wire_delivery(root: Path) -> None:
@@ -674,7 +685,8 @@ def test_a_references_pointer_must_resolve_against_its_own_file(tmp_path):
 # say eight while `run` called ten, silently, from #156 until #169 found it.
 LINT_CHECKS_IN_ORDER = (
     "check_zone_wall", "check_harness_tokens", "check_delivery",
-    "check_cell_frontmatter", "check_sideways_deps", "check_cell_references",
+    "check_cell_frontmatter", "check_project_roster",
+    "check_sideways_deps", "check_cell_references",
     "check_doctrine_citations",
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
