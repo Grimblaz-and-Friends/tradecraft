@@ -224,8 +224,9 @@ POINTER_BUDGET_CHARS = 500
 # inherited. #184 left it out on the ground that a number for a cell nobody
 # has argued about is a ruling arriving as a constant; #177 is that argument,
 # and the owner ruled a budget follows the split. The basis is the size the
-# split landed at -- 8,736, from 24,155 -- plus 264, which is about one
-# bullet; the body is 8,738 after this change's own review, headroom 262.
+# split landed at plus about one bullet, which
+# `python tools/figures.py --cell skills/adversarial-review/SKILL.md
+# --cell-budget 9000` prices against this constant on whatever tree you are on.
 # That margin is deliberate in both directions: at zero headroom every
 # reword of the body is a constant change, which turns the cap into noise
 # nobody reads, while a section-sized regrowth cannot fit under it. The number

@@ -19,7 +19,7 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 
 ## Choosing the shape
 
-- **Routine change**: one adversarial pass that reads the artifact **cold** (its index row books under `cold-read`), then defense — the terminal stage on this lane — then executable re-validation of fixes.
+- **Routine change**: one adversarial pass that reads the artifact **cold**, then defense — the terminal stage on this lane — then executable re-validation of fixes.
 - **Substantial artifact** (newly written foundational prose, new scripts, high blast radius — and when in doubt, this lane): the four-seat panel, then defense, then judge, then re-validation. Width beyond four is bought by declared risk.
 - **The report records which lane was chosen and why, in one line** — an unrecorded shape choice can never be audited later.
 
