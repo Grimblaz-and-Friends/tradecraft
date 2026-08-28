@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import lint
+import roster
 
 
 import importlib.util as _ilu
@@ -40,6 +41,10 @@ def _write_cell(skill: Path, body: str) -> None:
         + "description: A fixture cell." + NL + "---" + NL + NL + body,
         encoding="utf-8",
     )
+    # A cell without its roster entry is an unlawful tree, so writing one here
+    # keeps every other check's fixture about that check. The roster guard is
+    # proven by its own tests, which build the unlawful shapes deliberately.
+    roster.write(skill.parents[1])
 
 
 def make_clean_tree(root: Path) -> None:
@@ -58,6 +63,12 @@ def make_clean_tree(root: Path) -> None:
     _write_cell(skill, "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n")
     _wire_callout(root)
     _wire_delivery(root)
+    # A conforming tree carries the roster its cells generate, for the same
+    # reason the pointer above has a target: the fixture models a lawful tree,
+    # not one whose parts merely exist. Generated rather than hand-written, so
+    # a fixture cell added later is covered by regenerating rather than by
+    # remembering what the entry looks like.
+    roster.write(root)
 
 
 def _wire_delivery(root: Path) -> None:
@@ -674,7 +685,8 @@ def test_a_references_pointer_must_resolve_against_its_own_file(tmp_path):
 # say eight while `run` called ten, silently, from #156 until #169 found it.
 LINT_CHECKS_IN_ORDER = (
     "check_zone_wall", "check_harness_tokens", "check_delivery",
-    "check_cell_frontmatter", "check_sideways_deps", "check_cell_references",
+    "check_cell_frontmatter", "check_project_roster",
+    "check_sideways_deps", "check_cell_references",
     "check_doctrine_citations",
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
@@ -882,6 +894,69 @@ def test_a_references_pointer_guard_leaves_lawful_prose_alone(tmp_path):
     _write_cell(skill, "Depth lives in references/gone.md.\n")
     findings = [f for f in lint.run(tmp_path) if "reference-pointer" in f]
     assert len(findings) == 1 and "references/gone.md" in findings[0]
+
+
+def test_depth_pointing_at_its_sibling_depth_is_resolved(tmp_path):
+    """The relative form, which the bare-pointer branch cannot see.
+
+    From inside references/ the bare form resolves to
+    references/references/x.md, so a cell whose depth cites its own sibling
+    depth has to write `../references/x.md` -- and the bare branch skips it,
+    reading the `../` prefix as more path and the whole thing as somebody
+    else's tree. That skip was silent until #177 shed five files of depth and
+    wrote the tree's first sibling pointers: renaming a target left the suite
+    green. Both arms, because a guard that fires on a live pointer is as bad
+    as one that misses a dead one.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    depth = skill / "references"
+    depth.mkdir(parents=True, exist_ok=True)
+    (depth / "detail.md").write_text("# Detail" + NL, encoding="utf-8")
+    _write_cell(skill, "Depth lives in references/detail.md." + NL)
+
+    (depth / "sibling.md").write_text(
+        "See ../references/detail.md." + NL, encoding="utf-8")
+    assert [f for f in lint.run(tmp_path) if "reference-pointer" in f] == []
+
+    # With the full stop that ends the sentence, which is how a pointer is
+    # actually written. A suffix test over RELATIVE_REF's match answers "not
+    # markdown" here, because its trailing class swallows the stop -- the
+    # first version of this guard did exactly that and this arm caught it.
+    (depth / "sibling.md").write_text(
+        "See ../references/gone.md." + NL, encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "reference-pointer" in f]
+    assert len(findings) == 1 and "../references/gone.md" in findings[0], findings
+    assert "gone.md." not in findings[0], findings
+
+
+def test_a_relative_reference_out_of_the_cell_is_not_this_guard_s(tmp_path):
+    """One defect, one finding.
+
+    A relative reference that leaves the cell is unlawful whether or not it
+    resolves -- the zone wall's, or the sideways rule's -- so adding an
+    existence check over the same text would price one defect as two. The
+    bound is the naming file's own cell, which is why a target one directory
+    up inside the same cell still fires above.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    depth = skill / "references"
+    depth.mkdir(parents=True, exist_ok=True)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True, exist_ok=True)
+    _write_cell(other, "A sibling cell." + NL)
+    _write_cell(skill, "Nothing to see." + NL)
+    (depth / "sibling.md").write_text(
+        "See ../../other-skill/references/gone.md." + NL, encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert [f for f in findings if "reference-pointer" in f] == [], findings
+    # The other half of the bound, which this test asserted nowhere until #193's
+    # review: it is lawful for THIS guard to stay quiet only because another one
+    # speaks. Without this line the test passes against the pre-fix lint and
+    # would keep passing if check_sideways_deps were later narrowed until
+    # nothing caught the text -- turning a deliberate bound into a silent gap.
+    assert [f for f in findings if "sideways-dep" in f], findings
 
 
 def test_a_pointer_inside_a_fence_is_still_a_pointer(tmp_path):
@@ -2322,7 +2397,10 @@ def test_every_budgeted_cell_exists_in_this_repository():
 
 
 def test_the_declared_cell_body_budgets_are_the_ones_these_tests_pin():
-    assert lint.CELL_BODY_BUDGET_CHARS == {"skills/authoring/SKILL.md": 7_359}
+    assert lint.CELL_BODY_BUDGET_CHARS == {
+        "skills/adversarial-review/SKILL.md": 9_000,
+        "skills/authoring/SKILL.md": 7_359,
+    }
 
 
 def test_the_declared_charter_budget_is_the_one_these_tests_pin():

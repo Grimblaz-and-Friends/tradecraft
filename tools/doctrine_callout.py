@@ -51,12 +51,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-from pathlib import Path
-
 # Shared with the shipped zone, which is the lawful direction: repo-only
 # code may import shipped code. Resolved from this file rather than the
 # working directory, so the script runs from any cwd.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
 # Matches `.github/CODEOWNERS`. Widening this to skills or decisions is a
@@ -341,7 +339,16 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         f"Always-on surface: **{data['repo_total']:,}** chars here{movement}, "
         f"**{data['adopter_total']:,}** from this practice for an adopter -- "
         + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
-        + f", {data['cells']} cell name/description {data['roster']:,}."
+        # `entries`/`roster_here`, never `cells`/`roster`: the total this
+        # sentence opens with is built from the roster THIS repository loads,
+        # under `.claude/skills/`, and the adopter's roster under `skills/` is
+        # a different set. Printing the second as the breakdown of the first
+        # decomposed to a number the sentence did not state -- invisible while
+        # the two agree, and wrong exactly on the trees where the roster guard
+        # is red, which this job posts on because it carries no `needs:` on
+        # `lint-and-test`. Same class as the two-file sum this line once
+        # rendered against one file's budget. [PR #210 review, M1]
+        + f", {data['entries']} roster name/description {data['roster_here']:,}."
     )
 
 

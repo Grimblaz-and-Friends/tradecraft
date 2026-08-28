@@ -4,8 +4,10 @@
 The general engine ships in the authoring skill; this wrapper is the
 repo-specific application: it feeds the engine this repository's parameters
 and adds the figures that reach a repo-only guard: the census, which reuses
-check_entry_references' own resolution, and the description ceiling, which is
-check_cell_frontmatter's. The budgets are the guards' own constants. Dependencies point
+check_entry_references' own resolution, the description ceiling, which is
+check_cell_frontmatter's, and the cell total, which exists because
+check_doctrine caps a cell's body and a body cap is dodgeable one
+directory down. The budgets are the guards' own constants. Dependencies point
 the lawful direction — repo-only code importing shipped code — and the numbers
 that must agree with a guard come from the guard:
 
@@ -29,9 +31,11 @@ Always emitted, in this order:
   5. figure_census -- the decision log
 
 With --base, figure_delta adds the governing-prose delta (AGENTS.md, CLAUDE.md,
-and the .md files under skills/) against that ref. With --cell, figure_cell and
-figure_cell_description add that cell's two figures. Both the delta's base and
-a cell's budget are caller decisions neither script will default.
+and the .md files under skills/) against that ref. With --cell, figure_cell,
+figure_cell_total and figure_cell_description add that cell's three figures --
+the body against its budget, the cell's whole prose unbudgeted, and the
+always-on description. Both the delta's base and a cell's budget are
+caller decisions neither script will default.
 """
 from __future__ import annotations
 
@@ -131,6 +135,54 @@ def figure_cell_description(root: Path, rel_path: str) -> dict:
     }
 
 
+def figure_cell_total(root: Path, rel_path: str) -> dict:
+    """Every character of prose the cell carries, body and depth together.
+
+    Emitted beside the body figure because a body budget can be satisfied by
+    moving prose one directory down, and a body-only figure certifies that as
+    a reduction. Deliberately unbudgeted: capping the total would cap
+    depth-shedding itself, which is the move the standard wants. What it buys
+    is that the dodge is visible to whoever takes it -- #177's ruling.
+
+    Markdown only. A script the cell carries is code a session runs, not prose
+    it loads, and counting it would price a test file against a prose ceiling.
+    """
+    if not is_cell_path(rel_path):
+        raise SystemExit(
+            f"figures: --cell '{rel_path}' is not a cell -- this figure walks the "
+            "naming file's whole directory, so on a non-cell path it reports a "
+            "confidently-labelled total for whatever tree happens to sit above it"
+        )
+    target = root / rel_path
+    if not target.is_file():
+        raise SystemExit(f"figures: {rel_path} is not a readable file under {root}")
+    body = len(engine.frontmatterless(
+        target.read_text(encoding="utf-8", errors="replace")
+    ))
+    depth = sorted(
+        p for p in target.parent.rglob("*.md") if p.resolve() != target.resolve()
+    )
+    depth_chars = sum(
+        len(p.read_text(encoding="utf-8", errors="replace")) for p in depth
+    )
+    return {
+        "name": f"cell `{target.parent.relative_to(root).as_posix()}` (total prose)",
+        "value": (
+            f"{body + depth_chars:,} chars -- body {body:,} + {len(depth)} "
+            f"depth file(s) {depth_chars:,}"
+        ),
+        "basis": (
+            "decoded UTF-8 characters, universal-newline read; SKILL.md below "
+            "its frontmatter plus every other .md in the cell whole; no budget "
+            "-- a ceiling here would cap depth-shedding itself; working tree"
+        ),
+        "data": {
+            "path": rel_path, "body": body, "depth_files": len(depth),
+            "depth": depth_chars, "total": body + depth_chars,
+        },
+    }
+
+
 def is_cell_path(path: str) -> bool:
     """skills/<cell>/SKILL.md, and nothing deeper.
 
@@ -144,7 +196,40 @@ def is_cell_path(path: str) -> bool:
     return len(parts) == 3 and parts[0] == "skills" and parts[2] == "SKILL.md"
 
 
-def _always_on(read, cell_paths: list[str]) -> dict:
+def is_roster_path(path: str) -> bool:
+    """.claude/skills/<cell>/SKILL.md, and nothing deeper.
+
+    The repository's own roster, which is a different set from the cells and
+    is why it gets a predicate rather than a widened `is_cell_path`. The two
+    sets are held equal by `check_project_roster`, not by this file -- and a
+    figure that assumed the equality it is meant to report would be the defect
+    #199 records, where the roster was counted here and loaded nowhere.
+    """
+    parts = path.split("/")
+    return (len(parts) == 4 and parts[0] == ".claude"
+            and parts[1] == "skills" and parts[3] == "SKILL.md")
+
+
+def _roster(read, paths: list[str]) -> tuple[int, int]:
+    """Name plus description over a set of cell files: (chars, files read).
+
+    Both audiences load a roster; they load it from different directories, so
+    the arithmetic is shared and the input is not. An adopter's comes from the
+    plugin's `skills/`; a session working in this repository loads only what
+    `.claude/skills/` holds, which is what #199 found reported and never read.
+    """
+    chars = files = 0
+    for path in paths:
+        text = read(path)
+        if text is None:
+            continue
+        files += 1
+        fields = lint._frontmatter_fields(text) or {}
+        chars += len(fields.get("name", "")) + len(fields.get("description", ""))
+    return chars, files
+
+
+def _always_on(read, cell_paths: list[str], roster_paths: list[str]) -> dict:
     """Everything a session reads before it does anything, for both audiences.
 
     The composition lives here once, and its two callers supply only bytes:
@@ -170,17 +255,23 @@ def _always_on(read, cell_paths: list[str]) -> dict:
     in a consumer's cache as inert files and are never loaded, so an adopter
     reads the charter and the roster's descriptions and nothing else, while
     this repository reads its own doctrine on top.
+
+    **Each audience's roster is read from the directory that audience actually
+    loads**, which is the correction #199 bought. Both sides used to be
+    counted from `skills/` -- true of an adopter, who installs the plugin, and
+    false here, where nothing installs it and the descriptions loaded nowhere.
+    The figure said 16,241 against 11,351 read, and every trigger routed to a
+    description was priced as though it fired here. Now the repo side reads
+    `.claude/skills/`, so deleting the roster moves the number rather than
+    leaving it to assert what the tree stopped doing.
     """
-    roster = charter = cells = 0
+    charter = 0
     for path in cell_paths:
         text = read(path)
-        if text is None:
-            continue
-        cells += 1
-        fields = lint._frontmatter_fields(text) or {}
-        roster += len(fields.get("name", "")) + len(fields.get("description", ""))
-        if path == lint.CHARTER:
+        if text is not None and path == lint.CHARTER:
             charter = len(lint._frontmatterless(text))
+    roster, cells = _roster(read, cell_paths)
+    roster_here, entries = _roster(read, roster_paths)
     agents = len(read(DOC) or "")
     # CLAUDE.md counts here for the same reason it has its own budget: this
     # runtime loads it, and leaving it out meant a rule could move from
@@ -196,8 +287,16 @@ def _always_on(read, cell_paths: list[str]) -> dict:
         # are governed by two different ceilings and a consumer that prices
         # the sum against either one states a ceiling that does not exist.
         "doctrine": agents + pointer, "agents": agents, "pointer": pointer,
-        "charter": charter, "roster": roster, "cells": cells,
-        "repo_total": agents + pointer + adopter, "adopter_total": adopter,
+        "charter": charter,
+        # `roster` is the adopter's, from the plugin's cells; `roster_here` is
+        # this repository's, from the directory its own sessions load. Equal
+        # on a tree the roster guard passes, and reported apart anyway,
+        # because a figure that reads one number twice cannot show the tree
+        # where they stopped agreeing.
+        "roster": roster, "cells": cells,
+        "roster_here": roster_here, "entries": entries,
+        "repo_total": agents + pointer + charter + roster_here,
+        "adopter_total": adopter,
     }
 
 
@@ -208,17 +307,27 @@ def figure_always_on(root: Path) -> dict:
         return (target.read_text(encoding="utf-8", errors="replace")
                 if target.is_file() else None)
 
-    cells = sorted(
-        p.relative_to(root).as_posix() for p in (root / "skills").glob("*/SKILL.md")
-    ) if (root / "skills").is_dir() else []
-    data = _always_on(read, [c for c in cells if is_cell_path(c)])
+    def listing(directory: str, predicate) -> list[str]:
+        base = root / directory
+        if not base.is_dir():
+            return []
+        found = sorted(p.relative_to(root).as_posix()
+                       for p in base.glob("*/SKILL.md"))
+        return [p for p in found if predicate(p)]
+
+    data = _always_on(
+        read,
+        listing("skills", is_cell_path),
+        listing(".claude/skills", is_roster_path),
+    )
     return {
         "name": "always-on surface",
         "value": (
             f"{data['repo_total']:,} chars here, {data['adopter_total']:,} "
             f"from this practice for an adopter "
             f"-- doctrine {data['doctrine']:,} + charter body {data['charter']:,} + "
-            f"{data['cells']} cell name/description {data['roster']:,}"
+            f"{data['entries']} roster name/description {data['roster_here']:,}; "
+            f"an adopter's {data['cells']} cell name/description {data['roster']:,}"
         ),
         "basis": (
             "decoded UTF-8 characters; AGENTS.md and CLAUDE.md whole, the "
@@ -226,7 +335,10 @@ def figure_always_on(root: Path) -> dict:
             "description as check_cell_frontmatter reads them; an adopter's "
             "total omits both doctrine files, which reach a plugin cache as "
             "inert files and are never loaded, and counts only what this "
-            "practice contributes to their always-on surface; working tree"
+            "practice contributes to their always-on surface; the roster is "
+            "read from the directory each audience loads it from -- skills/ "
+            "for an adopter, who installs the plugin, and .claude/skills/ "
+            "here, where nothing installs it; working tree"
         ),
         "data": data,
     }
@@ -259,11 +371,22 @@ def always_on_at(root: Path, ref: str) -> int:
         text = out.stdout.decode("utf-8", errors="replace")
         return text.replace("\r\n", "\n").replace("\r", "\n")
 
-    listing = subprocess.run(
-        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", ref, "skills/"],
-        capture_output=True, text=True, check=True,
-    ).stdout.split()
-    return _always_on(read, [p for p in listing if is_cell_path(p)])["repo_total"]
+    def listing(prefix: str, predicate) -> list[str]:
+        # `ls-tree` on a prefix absent from the revision exits 0 with no
+        # output, which is the wanted answer rather than an error: a base
+        # predating `.claude/skills/` had no roster, and a delta across this
+        # change should show the surface rising by what it did not load.
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-tree", "-r", "--name-only", ref, prefix],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        return [p for p in out if predicate(p)]
+
+    return _always_on(
+        read,
+        listing("skills/", is_cell_path),
+        listing(".claude/skills/", is_roster_path),
+    )["repo_total"]
 
 
 def figure_charter(root: Path) -> dict:
@@ -300,7 +423,28 @@ def build_figures(root: Path, base: str | None,
                 "caller decision and picking one silently is how a stated "
                 "figure diverges from the guard that judges it"
             )
-        figures.append(engine.figure_cell(root, cell, budget))
+        enforced = lint.CELL_BODY_BUDGET_CHARS.get(cell)
+        if enforced is not None and enforced != budget:
+            raise SystemExit(
+                f"figures: --cell-budget {budget} disagrees with the {enforced} "
+                f"check_doctrine enforces for {cell}. Refusing rather than "
+                "defaulting: the caller decides the budget, and a stated headroom "
+                "no guard backs is the drift this script exists to stop"
+            )
+        cell_figure = engine.figure_cell(root, cell, budget)
+        if enforced is not None:
+            # The budget is now guard-backed for this cell -- the refusal above
+            # made it so -- and a basis reading "the budget is the caller's" is
+            # byte-identical to what an uncapped cell emits. Same shape the
+            # charter's own figure uses, and for the same reason. (Spelled
+            # without that function's name on purpose: the docstring
+            # enumeration test scans this source for figure_* tokens.)
+            cell_figure["basis"] += (
+                " -- and here check_doctrine enforces that budget, so the figure "
+                "cannot drift from the guard that judges it"
+            )
+        figures.append(cell_figure)
+        figures.append(figure_cell_total(root, cell))
         figures.append(figure_cell_description(root, cell))
     return figures
 
@@ -315,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", metavar="REF",
                         help="also emit the governing-prose delta against REF")
     parser.add_argument("--cell", metavar="PATH",
-                        help="also emit a cell's body and description figures")
+                        help="also emit a cell's body, total-prose and description figures")
     parser.add_argument("--cell-budget", metavar="N", type=int,
                         help="the body budget --cell is measured against")
     parser.add_argument("--json", action="store_true",

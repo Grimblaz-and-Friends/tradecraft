@@ -76,10 +76,27 @@ Checks:
 14. docstring not piped: no script passes __doc__ as an argparse
     description. --help writes it to stdout before any stream setup runs,
     which turns the docstring check 12 exempts into locale-encoded output.
-15. stdio wired: every script with a main() calls utf8_stdio() as its first
-    statement, so runtime data this repository did not write reaches the
-    stream protected. The first statement is a position, and a position is
+15. stdio wired: every script with a main() imports utf8_stdio by that name
+    and calls it as the first statement, so runtime data this repository did
+    not write reaches the stream protected. Both halves are checked: without
+    the import binding, a local no-op with the right name would satisfy the
+    call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
+16. project roster: every cell has an entry under .claude/skills/ carrying its
+    frontmatter byte for byte, and no entry THIS GENERATOR WROTE names a cell
+    that is gone. A file it did not write is not its business: at a name that
+    is no cell it draws no finding at all, because that is a project skill in
+    the runtime's documented place for one; at a cell's name it is reported
+    and never overwritten. The qualifier is load-bearing and was missing --
+    an experience session read this line, concluded a hand-written entry was
+    a finding, and had to open roster.py to find it was not. That
+    directory is the only surface a Claude Code session working in THIS
+    repository loads a description from -- the plugin is never installed here
+    -- so without it every trigger routed to a description reaches every
+    adopter and misses us (#199). Codex is not reached by it and reads cells by
+    opening files, which is why the scope is named rather than left universal.
+    The expectation is tools/roster.py's own, never recomputed here: a guard
+    holding a second definition drifts from the writer it judges.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -109,6 +126,12 @@ ROOT = Path(__file__).resolve().parent.parent
 # working directory, so the script runs from any cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
+
+# Repo-only importing repo-only, resolved from this file rather than the
+# working directory. The roster's expected content is the generator's to
+# define; check 16 asks it rather than reproducing it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import roster  # noqa: E402
 
 SHIPPED_DIRS = (
     "skills", "lib", "commands", "agents", "hooks", ".claude-plugin",
@@ -197,7 +220,28 @@ POINTER_BUDGET_CHARS = 500
 # in a frozen entry does not. Cells absent from this map are unbudgeted on
 # purpose: a number chosen for a cell nobody has argued about would be a
 # ruling on its size arriving as a constant.
-CELL_BODY_BUDGET_CHARS = {"skills/authoring/SKILL.md": 7_359}
+# `adversarial-review` is the second entry, and the first chosen rather than
+# inherited. #184 left it out on the ground that a number for a cell nobody
+# has argued about is a ruling arriving as a constant; #177 is that argument,
+# and the owner ruled a budget follows the split. The basis is the size the
+# split landed at -- 8,736, from 24,155 -- plus 264, which is about one
+# bullet; the body is 8,738 after this change's own review, headroom 262.
+# That margin is deliberate in both directions: at zero headroom every
+# reword of the body is a constant change, which turns the cap into noise
+# nobody reads, while a section-sized regrowth cannot fit under it. The number
+# is a ceiling above a measured body, not the measured body, so nothing here
+# should be read as "no larger than you started". What it holds is the split's
+# own claim: #54's rewrite took the body to 13,721 at the reset (401669f,
+# #74) and it regrew 76.0% to 24,155 because nothing failed when it did.
+# Re-derive that pair before citing it -- an earlier draft here said 63%,
+# which no reset-anchored measurement returns, and the understatement sat
+# in the one comment a session reads while about to raise this constant. A body cap is dodgeable by moving prose one directory down,
+# which is why tools/figures.py reports the cell's total beside it, unbudgeted
+# -- a ceiling on the total would cap depth-shedding itself.
+CELL_BODY_BUDGET_CHARS = {
+    "skills/adversarial-review/SKILL.md": 9_000,
+    "skills/authoring/SKILL.md": 7_359,
+}
 
 # The one cell any other cell may reference, and the one cell that may
 # reference the others. Self-containment exists to stop loading cost and
@@ -228,6 +272,16 @@ CELL_REF_HEAD = re.compile(r"\A[Cc]ells?\b")
 # A pointer from a cell into its own depth. Resolved against the directory of
 # the file naming it, the same rule a script's calling contract follows.
 REFERENCES_REF = re.compile(r"(references/[\w.-]+\.md)")
+# The same pointer written relatively, which is the only form a cell's depth
+# can use to reach its sibling depth: the bare form above would resolve to
+# references/references/x.md from inside references/. Anchored at `.md` rather
+# than filtered afterwards, because RELATIVE_REF's trailing class swallows the
+# full stop that ends a sentence -- `../references/x.md.` -- and a suffix test
+# on that text answers "not markdown" for a pointer that plainly is. Its head
+# is RELATIVE_REF's, so the two agree on where a relative reference starts.
+RELATIVE_MD_REF = re.compile(
+    r"(?<![\w.\\/-])(?:\.\.?[\\/])+[\w.][\w.\\/-]*\.md", re.IGNORECASE
+)
 # The first segment may itself be dot-leading (`.github`), so the class after
 # the prefix admits a dot. Requiring a word character there let every relative
 # form of `.github/` through while catching `docs/` and `tools/` -- the one
@@ -298,10 +352,19 @@ ENTRY_PATH = re.compile(r"`([\w.-]+(?:[\\/][\w.-]+)+(?::\d+)?)`")
 #
 # Declared, not merely present: `lib`, `commands` and `agents` are named in the
 # doctrine's shipped zone and hold no file yet. `.claude` is deliberately
-# absent though a directory of that name exists locally -- it is untracked and
-# ungitignored, so resolving against it gave `python tools/lint.py` two answers
-# for the same commit depending on whether a session had created
-# `.claude/agents`, and the local answer instructed a repair that reds CI.
+# absent though a directory of that name exists locally -- most of it is
+# untracked and ungitignored, so resolving against it gave
+# `python tools/lint.py` two answers for the same commit depending on whether a
+# session had created `.claude/agents`, and the local answer instructed a
+# repair that reds CI.
+#
+# #199 tracked one subtree of it -- `.claude/skills`, the generated roster --
+# and that did not change this. The reason is about the rest: a session can
+# still drop `.claude/agents` or `.claude/commands` into a working tree, so
+# admitting `.claude` as a root would reinstate the two-answers defect for
+# every path under it that is not the roster. Admitting the roster alone would
+# be a root that is one directory deep, which nothing else here is. Left out,
+# with the narrowed reason recorded rather than the old one left standing.
 REPO_ROOTS = frozenset(SHIPPED_DIRS) | {
     "tools", "docs", ".github", ".", "..",
 }
@@ -405,8 +468,12 @@ SEAT_COUNTS = ("raw", "merged", "sustained", "high")
 # eight tool calls. Rows before this index keep the counting shape and its
 # validators untouched; from it the counting fields are FORBIDDEN rather than
 # optional -- an optional field lets the shape drift back one row at a time,
-# and obliges this guard to validate two live shapes for ever.
-REVIEW_ROWS_QUALITATIVE = 36
+# and obliges this guard to validate two live shapes for ever. The value is
+# the file's row count when this landed, and it moved once before landing:
+# reviews closed on `main` while this change was open, and their rows are
+# exempt for the same reason every earlier row is -- records are appended,
+# never rewritten to suit a schema that arrived after them.
+REVIEW_ROWS_QUALITATIVE = 39
 COUNTING_FIELDS = ("seats", "dispositions", "facing")
 QUALITATIVE_FIELDS = frozenset(
     {"date", "artifact", "lane", "report", "highs", "staffing", "notes"}
@@ -474,6 +541,16 @@ def _iter_files(base: Path):
     for path in sorted(base.rglob("*")):
         if path.is_file():
             yield path
+
+
+def cell_of(rel_posix: str) -> str | None:
+    """The cell a repo-relative path belongs to, or None if it is in no cell.
+
+    `skills/<cell>` itself counts, so a pointer's target and the file naming
+    it are compared on the same footing whichever depth either sits at.
+    """
+    parts = rel_posix.split("/")
+    return parts[1] if len(parts) >= 2 and parts[0] == "skills" else None
 
 
 def _token_before(line: str, start: int) -> str:
@@ -780,6 +857,44 @@ def check_cell_references(root: Path) -> list[str]:
                             f"'{pointer}', which does not resolve against this "
                             f"file's own directory"
                         )
+                # The relative form of the same pointer, which the branch
+                # above cannot see: from inside references/ the bare form
+                # would resolve to references/references/x.md, so depth that
+                # points at its sibling depth writes `../references/x.md` --
+                # and _token_before reads the `../` prefix as more path and
+                # skips it as somebody else's tree. It was skipped in silence
+                # until this cell shed five files' worth of depth and wrote
+                # the tree's first sibling pointers; a probe renaming one
+                # target left the suite green.
+                #
+                # Two bounds, and both are about who owns the finding. Only
+                # .md targets, because a script mention is check 6's, resolved
+                # the same way. And only targets landing inside the naming
+                # file's OWN cell, because a relative reference out of a cell
+                # is the zone wall's or the sideways rule's -- unlawful
+                # whether or not it resolves, and reporting it twice prices
+                # one defect as two.
+                for match in RELATIVE_MD_REF.finditer(line):
+                    raw = match.group(0)
+                    target = (path.parent / raw.replace("\\", "/")).resolve()
+                    try:
+                        rel = target.relative_to(root.resolve()).as_posix()
+                    except ValueError:
+                        # Knowingly silent, and not for the reason the arm
+                        # below is: check_sideways_deps does catch an
+                        # out-of-cell target, and nothing in lint.run
+                        # reports one outside the repository at all.
+                        # Left so because the bound is the naming file's
+                        # own cell; no cell has ever written such a path.
+                        continue
+                    if cell_of(rel_file) is None or cell_of(rel) != cell_of(rel_file):
+                        continue
+                    if not target.is_file():
+                        findings.append(
+                            f"reference-pointer: {rel_file}:{lineno} points at "
+                            f"'{raw}', which does not resolve against this "
+                            f"file's own directory"
+                        )
     return findings
 
 
@@ -900,7 +1015,9 @@ def check_doctrine(root: Path) -> list[str]:
         if size > budget:
             findings.append(
                 f"doctrine-budget: {rel}'s body is {size} chars, budget is "
-                f"{budget} -- shed depth to references/ or route content out"
+                f"{budget} -- shed depth to references/ or route content out; "
+                f"`python tools/figures.py --cell {rel} --cell-budget {budget}` "
+                f"reports the cell total, which shedding does not reduce"
             )
     # The charter reaches a consumer through the hook, but it reaches a session
     # in THIS repository only through an import in a file that is itself
@@ -2217,6 +2334,7 @@ def run(root: Path) -> list[str]:
         + check_harness_tokens(root)
         + check_delivery(root)
         + check_cell_frontmatter(root)
+        + check_project_roster(root)
         + check_sideways_deps(root)
         + check_cell_references(root)
         + check_doctrine_citations(root)
@@ -2229,6 +2347,37 @@ def run(root: Path) -> list[str]:
         + check_docstring_not_piped(root)
         + check_stdio_wired(root)
     )
+
+
+def check_project_roster(root: Path) -> list[str]:
+    """Every cell has a `.claude/skills/` entry carrying its frontmatter.
+
+    That directory is the whole of what a **Claude Code** session working in
+    this repository loads a description from. An adopter installs the plugin
+    and receives the roster from it; this repository never installs itself, so
+    before #199 no session here held any cell's name or description, and every
+    trigger routed to a description over several changes reached every consumer
+    and missed us. `tools/roster.py` carries the mechanism and the evidence.
+
+    **Codex is outside that scope and stays outside it.** It is not documented
+    to load this directory, so a Codex session here reaches a cell by opening
+    the file, exactly as it did before. The runtime is named rather than left
+    to a universal because this repository's doctrine states its audience as
+    every runtime, and a sentence claiming every session would have asserted a
+    fix Codex never received. [PR #210 review, M10]
+
+    The expectation is the generator's, asked for rather than recomputed. A
+    guard that computes its own copy of what a writer produces is a second
+    definition of the same thing, and the two agree exactly until either is
+    edited -- the failure `_always_on` in `tools/figures.py` already records,
+    where two hand-written copies of one sum let a mutation through green.
+
+    An empty `skills/` is a finding rather than a pass, for the reason #198
+    states about a sibling guard: no cell found is indistinguishable from
+    every cell lawful, and the cheapest route to green must never be deleting
+    what the check reads.
+    """
+    return roster.verify(root)
 
 
 def always_on_note(root: Path) -> str:
