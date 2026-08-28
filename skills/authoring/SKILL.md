@@ -5,7 +5,7 @@ description: How to create and revise this practice's prose — the purpose head
 
 # authoring
 
-**Purpose:** make every governing document and skill in the practice accountable to a stated job, and the figures a write-up rests on re-derivable rather than inherited. **Audience:** any session creating or revising a skill or governing document, or stating derived figures in a write-up — in this repo or a repo that adopts the practice. **Success:** every document it governs can say what it is for, who reads it, and what its review should judge it against — and contains nothing that fails that test; every skill earns what it puts in a session's context and keeps the rest behind a pointer; every figure it governs lives where it re-derives, or names the command that does.
+**Purpose:** make every governing document and skill in the practice accountable to a stated job, and the figures a write-up rests on re-derivable rather than inherited. **Audience:** any session creating or revising a skill or governing document, or stating derived figures in a write-up — in this repo or a repo that adopts the practice. **Success:** every document it governs can say what it is for, who reads it, and what its review should judge it against — and contains nothing that fails that test; every skill earns what it puts in a session's context and keeps the rest behind a pointer; every figure it governs is its command and tree, or lives where it re-derives.
 
 ## The purpose header
 

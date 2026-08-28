@@ -276,7 +276,11 @@ def figure_delta(
     # sha is what a later reader re-runs against.
     resolved = _git(repo, "rev-parse", "--short", base)
     base_sha = _decoded(resolved.stdout).strip() if resolved.returncode == 0 else ""
-    base_label = f"`{base}` ({base_sha})" if base_sha and base_sha != base else f"`{base}`"
+    base_label = (
+        f"`{base}` ({base_sha})"
+        if base_sha and not base.startswith(base_sha)
+        else f"`{base}`"
+    )
     return {
         "name": f"prose delta vs {base_label}",
         "value": f"{delta:+,} chars (base {base_total:,} -> current {current_total:,})",

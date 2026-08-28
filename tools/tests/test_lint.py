@@ -3018,3 +3018,65 @@ def test_a_row_before_the_cutover_may_carry_any_key(tmp_path, monkeypatch):
     monkeypatch.setattr(lint, "REVIEW_ROWS_QUALITATIVE", 5)
     _write_index(tmp_path, _review_row(round="one", notes="whatever it said"))
     assert lint.run(tmp_path) == []
+
+
+def test_highs_refuses_a_repeated_high(tmp_path, monkeypatch):
+    """`len(highs)` is what the record now answers "how many highs" with.
+
+    An external reviewer found this against the fix tree: migrating off per-seat
+    counts, a high credited to three seats is the thing most likely to be copied
+    three times, and the row is appended and never corrected. The count would be
+    permanently wrong in the one field this change made canonical.
+    """
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(highs=["the guard let it back in", "the guard let it back in"]))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "highs[1] repeats highs[0]" in findings[0], findings[0]
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        ("A stale sentence", "a stale sentence"),
+        ("A stale sentence", "A  stale   sentence"),
+        ("A stale sentence", "A stale sentence\n"),
+    ],
+)
+def test_a_repeat_is_caught_through_case_and_whitespace(tmp_path, monkeypatch, pair):
+    """The copies this catches are hand-made, so they differ in the ways hand
+    copies differ. An exact-match check would pass the realistic case."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(highs=list(pair)))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "repeats" in findings[0], findings[0]
+
+
+def test_two_genuinely_different_highs_are_left_alone(tmp_path, monkeypatch):
+    """The lawful polarity. A review sustaining several highs is the ordinary
+    case, and near-neighbours are not repeats."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(highs=[
+            "the purpose header states the superseded rule",
+            "the purpose header omits the tree half",
+        ]),
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_a_repeat_does_not_swallow_the_empty_string_finding(tmp_path, monkeypatch):
+    """Two blanks are two malformed entries, not a repeat: the repeat check must
+    not reach entries the type check already rejected, or one finding replaces
+    two and the second blank is fixed only on the next run."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(highs=["", "  "]))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 2, findings
+    assert all("must be a non-empty string" in f for f in findings), findings

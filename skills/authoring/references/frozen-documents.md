@@ -2,7 +2,7 @@
 
 **Loaded when** you are about to put a figure into anything that freezes on landing — a decision entry, a report, a commit message, a PR body, a pre-implementation artifact, a comment beside code. The trigger is having a figure to place, not having decided it is a lawful one. Nothing else needs it.
 
-**A derived figure lives only on a surface that re-derives it at read time.** A surface that freezes — a decision entry, a commit message, a PR body, a pre-implementation artifact, a comment beside code — states the command and the tree it runs on, never the output. Deriving at write time buys nothing, because the prose outlives the moment it was true: the instrument is right and the photograph of it ages.
+**A derived figure lives only on a surface that re-derives it at read time.** A surface that freezes — a decision entry, a report, a commit message, a PR body, a pre-implementation artifact, a comment beside code — states the command and the tree it runs on, never the output. Deriving at write time buys nothing, because the prose outlives the moment it was true: the instrument is right and the photograph of it ages.
 
 **The falsifier is one question, asked of any number on such a surface: *which command, on which tree?*** A number standing where a command belongs is a violation a reviewer can name without consulting anything else. **A comment beside code answers the tree half with the reader's own** — it travels with the code, so naming a fixed tree in it makes it false everywhere else; say the command prices whatever tree you are on, and pin only a figure that is genuinely about one past tree.
 

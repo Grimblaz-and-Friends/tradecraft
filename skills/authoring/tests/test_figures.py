@@ -400,6 +400,10 @@ def test_delta_resolves_a_moving_base_to_a_sha(tmp_path):
     sha = fig["data"]["base_sha"]
     assert sha and sha != "moving"
     assert f"`moving` ({sha})" in fig["name"], fig["name"]
-    # The negative control: a base given AS a sha must not be doubled up.
-    fixed = figures.figure_delta(repo, sha, ["NOTES.md"])
-    assert fixed["name"] == f"prose delta vs `{sha}`", fixed["name"]
+    # The negative control: a base already given as a sha must not be doubled up.
+    # Both spellings, because the first version of this control bound only the
+    # abbreviated one and a full sha -- the most pinned base a write-up can name
+    # -- was doubled with the control green.
+    for pinned in (sha, run(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()):
+        fixed = figures.figure_delta(repo, pinned, ["NOTES.md"])
+        assert fixed["name"] == f"prose delta vs `{pinned}`", fixed["name"]

@@ -456,8 +456,8 @@ REVIEW_LANES = {"panel", "routine"}
 SEAT_COUNTS = ("raw", "merged", "sustained", "high")
 
 # The row stops carrying arithmetic here. Every count on it was hand-totalled
-# and re-derived by nothing, which is the class of figure that may not live on
-# a surface that freezes -- and it is this index's whole defect record: two
+# and reconciled by hand into a file nobody may edit, and that is this index's
+# whole defect record: two
 # open issues about values no stage produces, plus reconciliation prose inside
 # rows nobody may edit. What a review was worth is read from the report it
 # links; how many highs it sustained is the length of `highs`, derived at read
@@ -1198,8 +1198,9 @@ def _check_row_shape(row, row_index: int, where: str, findings: list) -> None:
         findings.append(
             f"{where} carries retired counting field(s) {', '.join(present)} -- "
             f"rows past the first {REVIEW_ROWS_QUALITATIVE} carry no arithmetic: "
-            f"a total on a frozen row is a figure nothing re-derives. What the "
-            f"review was worth is in the report it links"
+            f"every count this row used to carry was totalled and reconciled by "
+            f"hand into a file nobody may edit. What the review was worth is in "
+            f"the report it links"
         )
     # Naming the three retired fields is not the rule -- the same totals under a
     # fresh key are the same frozen arithmetic, and passed clean until this
@@ -1228,12 +1229,24 @@ def _check_highs(highs, where: str, findings: list) -> None:
             f"(got {type(highs).__name__})"
         )
         return
+    seen: dict[str, int] = {}
     for position, high in enumerate(highs):
         if not isinstance(high, str) or not high.strip():
             findings.append(
                 f"{where} highs[{position}] must be a non-empty string naming "
                 f"one sustained high"
             )
+            continue
+        key = " ".join(high.split()).casefold()
+        if key in seen:
+            findings.append(
+                f"{where} highs[{position}] repeats highs[{seen[key]}] -- the "
+                f"list's length is what the record now answers 'how many highs' "
+                f"with, so a high credited to several seats is named once, not "
+                f"once per credit. A row is appended and never corrected"
+            )
+        else:
+            seen[key] = position
 
 
 def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: list) -> None:

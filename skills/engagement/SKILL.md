@@ -14,7 +14,7 @@ Every surface the owner enters opens with one.
 > **In plain terms:** a few sentences of plain English at the top, set off from everything below, that explain the thing to the owner as a person — what it is, why it matters, what they are being asked.
 
 - **Form:** a blockquote opening with a bold lead-in — `> **In plain terms:** …` — at the very top of the surface, with nothing above it but a title.
-- **Plain English, and no term the owner would have to look up.** It explains; it does not compress. Issue numbers, decision citations, file paths and the command behind any figure are not plain English, and they belong below.
+- **Plain English, and no term the owner would have to look up.** It explains; it does not compress. Issue numbers, decision citations, file paths, and a figure or the command that derives it, are not plain English, and they belong below.
 - **What earns a place:** what this is, why it matters, what the owner is being asked. **What is disqualified:** anything that would only matter once they had already decided — implementation detail, supporting evidence, enumerations, the alternatives rejected on the way here.
 - **Length is not a count.** The bar is readable in one pass, and longer is lawful where there is a reason for it. The disqualifier is what keeps a brief short; a word limit would reject a good six-sentence brief for being seven, which is why concision is stated as a rule about content rather than length.
 - **It is accountable, not authoritative.** The brief must be true of what sits beneath it, and what sits beneath it is what is agreed. A brief that misrepresents its body is a defect found in that body's review, never a second contract competing with it.
