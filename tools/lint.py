@@ -7,22 +7,21 @@ Checks:
      (docs/, tools/, .github/) by any path form — rooted, relative (../ or ./),
      backslashed, or case-shifted. Full web URLs are lawful: they resolve for
      consumers; repo paths do not.
-  2. harness tokens: no shipped file outside hooks/ names a harness-specific
+  2. harness tokens: no shipped file names a harness-specific
      path token (${CLAUDE_PLUGIN_ROOT} and kin). Not because they fail --
      Claude Code substitutes them into a skill's body -- but because Codex does
      not, so any such contract binds in one runtime and is dead in the other.
-  3. delivery: the shipped charter exists and the hook that delivers it still
-     can, so a session in either runtime receives it at session start.
+  3. charter cell: the shipped charter exists, has a body, and carries no depth
+     files whose binding prose an adopting repository would fail to load.
   4. cell frontmatter: every skill declares a name and a description the
      runtime can parse, each within its field budget. A cell whose description
      is absent or malformed silently never fires.
   5. sideways deps: no skill may reference another skill — by path (rooted or
      relative) or by the name form `<name>` cell — and lib/ and hooks/ may
-     reference no skill but the charter (deps point down otherwise). The
+     reference no skill (deps point down otherwise). The
      charter is exempt in the name form only and as a target from anywhere,
-     because it is already always-on in every session, so the citation costs
-     no loading and cannot drift the way a second copy can; the hook that
-     emits it must name it, and check 3 requires that dependency to exist.
+     because an adopting repository loads it before substantive work, so the
+     citation costs no second loading and cannot drift like a copied rule.
      Paths between cells stay findings even from the charter, for a reason
      self-containment never covered — a rooted skills/ path does not resolve
      once installed, while the name survives relocation.
@@ -55,10 +54,12 @@ Checks:
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
   10. review index: docs/reviews.jsonl, when present, parses and carries one
-     valid row per review — date, artifact, lane, per-seat counts, what came of
-     the findings, the split by consequence shape, the model and runtime that
-     staffed it, report URL. The split reconciles against the disposition
-     counts; nothing else on the row reconciles against anything.
+     valid row per review. Past the cutover: date, artifact, lane, the
+     sustained highs named, the model and runtime that staffed it, report URL,
+     and no arithmetic — the key set is closed. Before it: per-seat counts,
+     what came of the findings, and the split by consequence shape, which
+     reconciles against the disposition counts and is the only cross-total on
+     the row that is sound.
  11. decision index: every decision entry has a row in the log's index, and
      every row a file.
  12. entry references: every path reference and relative link a decision entry
@@ -80,7 +81,22 @@ Checks:
     the import binding, a local no-op with the right name would satisfy the
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
-16. marketplace source: the tradecraft entry's source stays the exact string
+16. project roster: every cell has an entry under .claude/skills/ carrying its
+    frontmatter byte for byte, and no entry THIS GENERATOR WROTE names a cell
+    that is gone. A file it did not write is not its business: at a name that
+    is no cell it draws no finding at all, because that is a project skill in
+    the runtime's documented place for one; at a cell's name it is reported
+    and never overwritten. The qualifier is load-bearing and was missing --
+    an experience session read this line, concluded a hand-written entry was
+    a finding, and had to open roster.py to find it was not. That
+    directory is the only surface a Claude Code session working in THIS
+    repository loads a description from -- the plugin is never installed here
+    -- so without it every trigger routed to a description reaches every
+    adopter and misses us (#199). Codex is not reached by it and reads cells by
+    opening files, which is why the scope is named rather than left universal.
+    The expectation is tools/roster.py's own, never recomputed here: a guard
+    holding a second definition drifts from the writer it judges.
+17. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
@@ -112,6 +128,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
+# Repo-only importing repo-only, resolved from this file rather than the
+# working directory. The roster's expected content is the generator's to
+# define; check 16 asks it rather than reproducing it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import roster  # noqa: E402
+
 SHIPPED_DIRS = (
     "skills", "lib", "commands", "agents", "hooks", ".claude-plugin",
 )
@@ -120,8 +142,8 @@ REPO_ONLY_NAMES = {"docs", "tools", ".github"}
 # A shipped calling contract naming a harness token binds in one runtime only.
 # Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` -- and `${CLAUDE_SKILL_DIR}` --
 # into a skill's body before the model reads it; Codex substitutes neither,
-# setting the root as an environment variable for hook commands alone. Both
-# shipped scripts carried the token, so both were Claude-only until this guard.
+# and exposes harness-owned roots through runtime-specific mechanisms. Shipped
+# contracts carried these tokens before this guard, making them runtime-bound.
 # `CLAUDE_SKILL_DIR` is the vendor's own skill-relative placeholder and it
 # does expand -- in Claude Code only. It is banned here on the same ground
 # the forced output style was rejected: a form that binds in one runtime and
@@ -137,16 +159,6 @@ HARNESS_TOKENS = re.compile(
     rf"|(?i:\$env:(?:{_HARNESS_NAMES}))"
     rf"|(?i:%(?:{_HARNESS_NAMES})%)"
 )
-# `hooks/` is the exemption because it is hook configuration, which is where
-# the token is the vendor's contract rather than a dead reference -- plus the
-# prose explaining that. Claude Code substitutes it there; Codex supplies the
-# same value through the hook's environment, which its POSIX shell expands and
-# `cmd.exe` does not. That last gap is disclosed in `hooks/README.md`.
-HARNESS_TOKEN_EXEMPT_DIRS = frozenset({"hooks"})
-
-# Inside `hooks/` the placeholder is real, so the guard resolves what it
-# points at rather than banning it.
-PLUGIN_ROOT_REF = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)")
 CHARTER = "skills/charter/SKILL.md"
 # The always-on surface of a cell, budgeted because every adopter pays for
 # it in every session whether or not the cell ever fires. Not #130's
@@ -160,24 +172,24 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # incident defaulted to a paragraph. The budget is the structural counterweight;
 # the outflow every edit owes is the rule, and this ceiling is only what makes
 # an unpaid one visible. [D-184]
-# Ratcheted from 8,000 once the file measured 5,511. This file shrank through
-# both of its rewrites -- 7,980 to 5,958 to 5,659; what grew through both is
-# the always-on surface it belongs to, because prose moved between artifacts
-# and each change reported the file it emptied. That is why the figure to watch
-# is the total rather than this one. Set so roughly one substantial rule fits
-# before something has to leave, not so the margin stays comfortable, which is
-# the failure mode. It is expected to be tight and already is: it was
-# 5,511 when this ceiling was chosen and is 5,747 now, so 236 characters have
-# gone -- 112 from the change that set it, 177 from a merge that landed while
-# it was open, less 53 a review remedy took back out. Headroom is 253. The
-# answer to a change that wants more is an outflow.
+# Ratcheted from 8,000 against the size measured at the tree that set it. This
+# file shrank through both of its rewrites; what grew through both is the
+# always-on surface it belongs to, because prose moved between artifacts and
+# each change reported the file it emptied. That is why the figure to watch is
+# the total rather than this one -- and why neither is written here: `python
+# tools/figures.py` prices this file and that surface against these constants
+# on whatever tree you are on, and the headroom this comment used to state was
+# false one commit after the change that wrote it landed. Set so roughly one substantial rule
+# fits before something has to leave, not so the margin stays comfortable,
+# which is the failure mode. It is expected to be tight. The answer to a change
+# that wants more is an outflow.
 AGENTS_BUDGET_CHARS = 6_000
-# The charter is the half that ships, and an adopter pays for it on every
-# SessionStart event -- resume and compact included -- so it needs the
-# displacement pressure more than this repo's own file does, not less.
-# The ceiling leaves real headroom over today's size and stays well under
-# the 2,500-token limit Codex applies to a hook's additional context.
-# Ratcheted from 6,000 against a measured 5,353. The margin is smaller than
+# The charter is the half that ships, and an adopting repository directs every
+# session to load it before substantive work, so it needs the displacement
+# pressure more than this repo's own file does, not less.
+# Ratcheted from 6,000 against the size measured when it was set, which
+# `python tools/figures.py` prices against this constant on whatever tree you
+# are on. The margin is smaller than
 # the doctrine's because the charter is not audited here -- its prose was
 # left untouched deliberately, so the ceiling is the only pressure it gets.
 CHARTER_BUDGET_CHARS = 5_600
@@ -188,13 +200,11 @@ POINTER_BUDGET_CHARS = 500
 # command string inside a decision entry that has since frozen. A budget a
 # guard does not hold is a budget the next edit does not have. The value is
 # the bound #169 declared and held itself under, not a fresh judgement: that
-# entry's own derivation command reads `--budget 7359`, against a body that
-# measured 7,358 before that change. The comparison below is `>`, so 7,359
-# itself passes -- the cap admits one character more than the size it was
-# derived from, and is not the tighter "no larger than you started" it reads
-# like. #169's tree came in at 7,285 and this one is at 7,354, so nothing
-# turns on the character today; it is stated because a session raising this
-# constant reads here first. Raising
+# entry's own derivation command reads `--budget 7359`. The comparison below is
+# `>`, so 7,359 itself passes -- the cap admits one character more than the body
+# measured before that change, and is not the tighter "no larger than you
+# started" it reads like. Nothing has turned on that character yet; it is
+# stated because a session raising this constant reads here first. Raising
 # it is a decision to be made and recorded, which is what a constant makes visible and a sentence
 # in a frozen entry does not. Cells absent from this map are unbudgeted on
 # purpose: a number chosen for a cell nobody has argued about would be a
@@ -203,8 +213,9 @@ POINTER_BUDGET_CHARS = 500
 # inherited. #184 left it out on the ground that a number for a cell nobody
 # has argued about is a ruling arriving as a constant; #177 is that argument,
 # and the owner ruled a budget follows the split. The basis is the size the
-# split landed at -- 8,736, from 24,155 -- plus 264, which is about one
-# bullet; the body is 8,738 after this change's own review, headroom 262.
+# split landed at plus about one bullet, which
+# `python tools/figures.py --cell skills/adversarial-review/SKILL.md
+# --cell-budget 9000` prices against this constant on whatever tree you are on.
 # That margin is deliberate in both directions: at zero headroom every
 # reword of the body is a constant change, which turns the cap into noise
 # nobody reads, while a section-sized regrowth cannot fit under it. The number
@@ -225,8 +236,8 @@ CELL_BODY_BUDGET_CHARS = {
 # The one cell any other cell may reference, and the one cell that may
 # reference the others. Self-containment exists to stop loading cost and
 # multi-site drift; neither applies here. The charter is always-on in every
-# session by construction -- imported by AGENTS.md, instructed, and emitted by
-# the SessionStart hook -- so a cell citing it points at prose the reader has
+# session by construction -- imported by this repository's AGENTS.md and loaded
+# by an adopter's repository instruction -- so a cell citing it points at prose the reader has
 # already loaded, and a citation cannot fall out of agreement the way a second
 # copy can. The exemption is one target at depth one: cells may cite the
 # charter and it may cite them, no cell may cite any other, so the shape
@@ -331,10 +342,19 @@ ENTRY_PATH = re.compile(r"`([\w.-]+(?:[\\/][\w.-]+)+(?::\d+)?)`")
 #
 # Declared, not merely present: `lib`, `commands` and `agents` are named in the
 # doctrine's shipped zone and hold no file yet. `.claude` is deliberately
-# absent though a directory of that name exists locally -- it is untracked and
-# ungitignored, so resolving against it gave `python tools/lint.py` two answers
-# for the same commit depending on whether a session had created
-# `.claude/agents`, and the local answer instructed a repair that reds CI.
+# absent though a directory of that name exists locally -- most of it is
+# untracked and ungitignored, so resolving against it gave
+# `python tools/lint.py` two answers for the same commit depending on whether a
+# session had created `.claude/agents`, and the local answer instructed a
+# repair that reds CI.
+#
+# #199 tracked one subtree of it -- `.claude/skills`, the generated roster --
+# and that did not change this. The reason is about the rest: a session can
+# still drop `.claude/agents` or `.claude/commands` into a working tree, so
+# admitting `.claude` as a root would reinstate the two-answers defect for
+# every path under it that is not the roster. Admitting the roster alone would
+# be a root that is one directory deep, which nothing else here is. Left out,
+# with the narrowed reason recorded rather than the old one left standing.
 REPO_ROOTS = frozenset(SHIPPED_DIRS) | {
     "tools", "docs", ".github", ".", "..",
 }
@@ -421,10 +441,33 @@ BASELINE_UNRESOLVABLE = {
 # diff on the pull request that created the situation.
 UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {}
 
-REVIEW_FIELDS = {"date", "artifact", "lane", "seats", "report"}
+REVIEW_FIELDS = {"date", "artifact", "lane", "report"}
 REVIEW_LANES = {"panel", "routine"}
 SEAT_COUNTS = ("raw", "merged", "sustained", "high")
-EXTERNAL_COUNTS = ("raw", "sustained")
+
+# The row stops carrying arithmetic here. Every count on it was hand-totalled
+# and reconciled by hand into a file nobody may edit, and that is this index's
+# whole defect record: two
+# open issues about values no stage produces, plus reconciliation prose inside
+# rows nobody may edit. What a review was worth is read from the report it
+# links; how many highs it sustained is the length of `highs`, derived at read
+# time from the row rather than transcribed into it.
+#
+# Grandfathered by POSITION, like the two boundaries above and for the reason
+# stated there: a date cutoff is one an experience session reached past in
+# eight tool calls. Rows before this index keep the counting shape and its
+# validators untouched; from it the counting fields are FORBIDDEN rather than
+# optional -- an optional field lets the shape drift back one row at a time,
+# and obliges this guard to validate two live shapes for ever. The value is
+# the file's row count when this landed, and it moved once before landing:
+# reviews closed on `main` while this change was open, and their rows are
+# exempt for the same reason every earlier row is -- records are appended,
+# never rewritten to suit a schema that arrived after them.
+REVIEW_ROWS_QUALITATIVE = 39
+COUNTING_FIELDS = ("seats", "dispositions", "facing")
+QUALITATIVE_FIELDS = frozenset(
+    {"date", "artifact", "lane", "report", "highs", "staffing", "notes"}
+)
 
 # What became of the findings, in the terminal stage's own vocabulary: clause
 # (a) dismisses, clause (b) sustains and fixes, routes, or prices out. The row
@@ -474,14 +517,6 @@ REVIEW_ROWS_GRANDFATHERED = 20
 # than one moving constant -- raising a single one would silently un-oblige
 # every row between the two boundaries, in a file nobody may edit.
 REVIEW_ROWS_FACING_GRANDFATHERED = 31
-
-# `external` was recorded as though it were a panel seat in 27 of the 38 rows
-# already present when the distinction became enforceable. Those rows are
-# immutable exhaust, so the first 38 are exempt. Every later row names only
-# actual panel seats in `seats` and records the external pass in its own
-# top-level raw/sustained pair.
-REVIEW_ROWS_EXTERNAL_GRANDFATHERED = 38
-
 
 def _read_text(path: Path) -> str | None:
     """Return decoded text, or None for binary content (NUL in first 1KB)."""
@@ -589,19 +624,14 @@ def _name_form_is_sideways(own: str | None, target: str) -> bool:
     an installed plugin's skills as `<plugin>:<skill>`), so the name is the
     part a reader can still follow, not a string that resolves bare.
 
-    The charter is exempt as a target from anywhere, not only from another
-    cell: the SessionStart hook's whole job is to emit it, and check_delivery
-    requires that dependency to exist. A rule forbidding what a sibling guard
-    mandates would be two answers to one question.
-
-    `own is None` is lib/ or hooks/, neither of which is a cell. Their deps
-    still point down for every other skill -- naming `engagement` from a hook
-    is the coupling that rule exists for.
+    The charter is exempt as a target from another cell because an adopting
+    repository has already loaded it. `own is None` is lib/ or hooks/, neither
+    of which is a cell, so any skill dependency from either points sideways.
     """
-    if target.lower() == CHARTER_CELL:
-        return False
     if own is None:
         return True
+    if target.lower() == CHARTER_CELL:
+        return False
     if target.lower() == own.lower():
         return False
     return own.lower() != CHARTER_CELL
@@ -973,9 +1003,10 @@ def check_doctrine(root: Path) -> list[str]:
                 f"`python tools/figures.py --cell {rel} --cell-budget {budget}` "
                 f"reports the cell total, which shedding does not reduce"
             )
-    # The charter reaches a consumer through the hook, but it reaches a session
-    # in THIS repository only through an import in a file that is itself
-    # imported. Checked by shape rather than by position: unlike CLAUDE.md the
+    # An adopter loads the installed charter because its repository instructions
+    # say so. In THIS source repository the local charter reaches the session
+    # through an import in a file that is itself imported. Checked by shape
+    # rather than by position: unlike CLAUDE.md the
     # import does not lead the file, and a backticked mention imports nothing.
     # Nor does a fenced one -- the same premise, and the guard rejected one
     # spelling of not-bare while accepting the other.
@@ -1048,12 +1079,15 @@ def _not_a_mapping(row, where: str, findings: list) -> bool:
 
 
 def check_review_index(root: Path) -> list[str]:
-    """One row per review: date, artifact, lane, per-seat counts, what came of
-    the findings, the staffing, and the report URL.
+    """One row per review: date, artifact, lane, the staffing, the report URL,
+    and — past REVIEW_ROWS_QUALITATIVE — each sustained high named, in place of
+    the arithmetic the rows before it carry.
 
     The row is written once when the review ends and never maintained after —
-    it exists so process-weight questions (which seats earn their keep, where
-    defects concentrate) are answerable when asked, from the reports it links.
+    it exists so process-weight questions are answerable when asked, from the
+    reports it links. It answers none of them by itself, which is why it no
+    longer totals anything: the counts it used to carry were re-derived by
+    nothing and had to be reconciled by hand into a file nobody may edit.
     """
     findings: list[str] = []
     index = root / "docs" / "reviews.jsonl"
@@ -1112,13 +1146,92 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
     if "report" in row and not _is_https_url(row["report"]):
         findings.append(
             f"{where} report '{row.get('report')}' must be an https URL to the "
-            f"review's report -- the row holds counts, the report holds the findings"
+            f"review's report -- the row points at the findings, it does not hold them"
         )
+    _check_row_shape(row, row_index, where, findings)
     if "seats" in row:
-        _check_seats(row["seats"], row_index, where, findings)
-    _check_external(row, row_index, where, findings)
+        _check_seats(row["seats"], where, findings)
+    if "highs" in row:
+        _check_highs(row["highs"], where, findings)
     _check_dispositions_and_staffing(row, row_index, where, findings)
     _check_facing(row, row_index, where, findings)
+
+
+def _check_row_shape(row, row_index: int, where: str, findings: list) -> None:
+    """Which of the two shapes this row's position obliges.
+
+    Before the cutover a row carries per-seat counts; from it a row carries
+    `highs` and no arithmetic at all. Both directions are checked, because a
+    guard that only catches the missing field lets the retired shape back in.
+    """
+    if row_index < REVIEW_ROWS_QUALITATIVE:
+        if "seats" not in row:
+            findings.append(
+                f"{where} missing field 'seats' -- rows before the first "
+                f"{REVIEW_ROWS_QUALITATIVE} carry per-seat counts"
+            )
+        return
+    if "highs" not in row:
+        findings.append(
+            f"{where} missing field 'highs' -- rows past the first "
+            f"{REVIEW_ROWS_QUALITATIVE} name each sustained high instead of "
+            f"counting anything (a list of strings; empty where none was "
+            f"sustained)"
+        )
+    present = [f for f in COUNTING_FIELDS if f in row]
+    if present:
+        findings.append(
+            f"{where} carries retired counting field(s) {', '.join(present)} -- "
+            f"rows past the first {REVIEW_ROWS_QUALITATIVE} carry no arithmetic: "
+            f"every count this row used to carry was totalled and reconciled by "
+            f"hand into a file nobody may edit. What the review was worth is in "
+            f"the report it links"
+        )
+    # Naming the three retired fields is not the rule -- the same totals under a
+    # fresh key are the same frozen arithmetic, and passed clean until this
+    # closed. The key set is what makes "no arithmetic" enforceable rather than
+    # merely stated; a new field is a decision somebody makes here.
+    unknown = sorted(set(row) - QUALITATIVE_FIELDS - set(COUNTING_FIELDS))
+    if unknown:
+        findings.append(
+            f"{where} carries unknown key(s) {', '.join(unknown)} -- past the "
+            f"first {REVIEW_ROWS_QUALITATIVE} the row's key set is closed "
+            f"({', '.join(sorted(QUALITATIVE_FIELDS))}); arithmetic under a "
+            f"fresh name is the arithmetic this cutover retired"
+        )
+
+
+def _check_highs(highs, where: str, findings: list) -> None:
+    """Each sustained high, named. The list is the record and its length is the
+    count, so nothing here is transcribed and nothing can fail to reconcile.
+
+    An empty list is lawful and means what it says -- a review that sustained
+    no high is a valid outcome, and the field cannot express it otherwise.
+    """
+    if not isinstance(highs, list):
+        findings.append(
+            f"{where} highs must be a list naming each sustained high "
+            f"(got {type(highs).__name__})"
+        )
+        return
+    seen: dict[str, int] = {}
+    for position, high in enumerate(highs):
+        if not isinstance(high, str) or not high.strip():
+            findings.append(
+                f"{where} highs[{position}] must be a non-empty string naming "
+                f"one sustained high"
+            )
+            continue
+        key = " ".join(high.split()).casefold()
+        if key in seen:
+            findings.append(
+                f"{where} highs[{position}] repeats highs[{seen[key]}] -- the "
+                f"list's length is what the record now answers 'how many highs' "
+                f"with, so a high credited to several seats is named once, not "
+                f"once per credit. A row is appended and never corrected"
+            )
+        else:
+            seen[key] = position
 
 
 def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: list) -> None:
@@ -1136,13 +1249,23 @@ def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: 
     reached its vehicle, which needs the vehicle named, and it detects no
     recurring defect class.
     """
-    required = row_index >= REVIEW_ROWS_GRANDFATHERED
+    # `staffing` survives the cutover -- a model and a runtime are facts about
+    # who ran the review, not arithmetic about it, and this row is the only
+    # queryable home the per-runtime evidence has. `dispositions` does not, so
+    # its window closes where the counting shape does; without that it would be
+    # required to carry a field it is forbidden to carry.
+    required = {
+        "dispositions": (
+            REVIEW_ROWS_GRANDFATHERED <= row_index < REVIEW_ROWS_QUALITATIVE
+        ),
+        "staffing": row_index >= REVIEW_ROWS_GRANDFATHERED,
+    }
     for field, checker in (
         ("dispositions", _check_disposition_counts),
         ("staffing", _check_staffing),
     ):
         if field not in row:
-            if required:
+            if required[field]:
                 findings.append(
                     f"{where} missing field '{field}' -- rows past the first "
                     f"{REVIEW_ROWS_GRANDFATHERED} carry it"
@@ -1192,41 +1315,6 @@ def _is_count(value) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and value >= 0
 
 
-def _check_external(row, row_index: int, where: str, findings: list) -> None:
-    """The external pass, separate from the staffed panel that it follows."""
-    if "external" not in row:
-        if row_index >= REVIEW_ROWS_EXTERNAL_GRANDFATHERED:
-            findings.append(
-                f"{where} missing field 'external' -- rows past the first "
-                f"{REVIEW_ROWS_EXTERNAL_GRANDFATHERED} carry it "
-                f"({', '.join(EXTERNAL_COUNTS)} counts)"
-            )
-        return
-    external = row["external"]
-    if not isinstance(external, dict):
-        findings.append(
-            f"{where} external must be a mapping of "
-            f"{', '.join(EXTERNAL_COUNTS)} to counts"
-        )
-        return
-    missing = set(EXTERNAL_COUNTS) - set(external)
-    if missing:
-        findings.append(f"{where} external missing {', '.join(sorted(missing))}")
-    for field in EXTERNAL_COUNTS:
-        if field in external and not _is_count(external[field]):
-            findings.append(
-                f"{where} external {field} '{external[field]}' must be a "
-                f"non-negative integer"
-            )
-    unknown = set(external) - set(EXTERNAL_COUNTS)
-    if unknown:
-        findings.append(
-            f"{where} external carries unknown key(s) "
-            f"{', '.join(sorted(unknown))} -- an external pass records only "
-            f"{', '.join(EXTERNAL_COUNTS)}"
-        )
-
-
 def _check_facing(row, row_index: int, where: str, findings: list) -> None:
     """The split by consequence shape -- what the review's rulings were about.
 
@@ -1239,7 +1327,11 @@ def _check_facing(row, row_index: int, where: str, findings: list) -> None:
     whenever present, so rows already written stay valid untouched.
     """
     if "facing" not in row:
-        if row_index >= REVIEW_ROWS_FACING_GRANDFATHERED:
+        if (
+            REVIEW_ROWS_FACING_GRANDFATHERED
+            <= row_index
+            < REVIEW_ROWS_QUALITATIVE
+        ):
             findings.append(
                 f"{where} missing field 'facing' -- rows past the first "
                 f"{REVIEW_ROWS_FACING_GRANDFATHERED} carry it "
@@ -1335,22 +1427,13 @@ def _check_staffing(staffing, where: str, findings: list) -> None:
         )
 
 
-def _check_seats(seats, row_index: int, where: str, findings: list) -> None:
+def _check_seats(seats, where: str, findings: list) -> None:
     if not isinstance(seats, dict) or not seats:
         findings.append(
             f"{where} seats must be a non-empty mapping of seat name to counts"
         )
         return
     for name, counts in seats.items():
-        if (
-            name == "external"
-            and row_index >= REVIEW_ROWS_EXTERNAL_GRANDFATHERED
-        ):
-            findings.append(
-                f"{where} seat 'external' books an external pass as though it "
-                f"were staffed on the panel -- an external pass is not a panel "
-                f"seat and does not belong in `seats`"
-            )
         if not isinstance(name, str) or not TOKEN.match(name):
             findings.append(
                 f"{where} seat name '{name}' must be a lowercase token of "
@@ -1807,17 +1890,14 @@ def _plain_scalar_hazard(value: str) -> str | None:
     return None
 
 
-def check_delivery(root: Path) -> list[str]:
-    """The shipped charter exists, and the hook that delivers it still can.
+def check_charter_cell(root: Path) -> list[str]:
+    """The single shipped charter source exists and keeps all binding prose.
 
-    Nothing guarded either one when they landed: deleting the charter,
-    deleting `hooks/hooks.json`, or typo-ing the path inside it all left every
-    required check green, while a consumer session silently received no
-    doctrine at all. On Windows the failure is silent at the adopter's end too
-    (the emitter exits non-zero, but a runtime keying on exit status is the
-    only thing that would notice), so CI is where it has to be caught.
+    Repository adoption tells a session to load this cell completely before
+    substantive work. Depth under the charter would therefore be available but
+    not binding, so this check keeps the source both singular and complete.
 
-    Deliberately not checked: that the charter carries its eleven items. That
+    Deliberately not checked: that the charter carries a fixed item count. That
     couples a machine check to editable governing prose and would go stale on
     the first lawful edit -- priced out in review, and the price holds.
     """
@@ -1825,12 +1905,13 @@ def check_delivery(root: Path) -> list[str]:
     charter = root / CHARTER
     if not charter.is_file():
         findings.append(
-            f"delivery: {CHARTER} is missing -- the shipped half of the "
-            "doctrine, the cell a session can pull it from, and what the "
-            "SessionStart hook emits"
+            f"charter-cell: {CHARTER} is missing -- an adopting repository "
+            "cannot load the practice's binding rules"
         )
     elif not _frontmatterless(_read_text(charter) or "").strip():
-        findings.append(f"delivery: {CHARTER} has no body below its frontmatter")
+        findings.append(
+            f"charter-cell: {CHARTER} has no body below its frontmatter"
+        )
 
     # Compared by path, not basename: `references/SKILL.md` shares the name
     # and is exactly what an author following `skills/authoring`'s depth
@@ -1842,65 +1923,14 @@ def check_delivery(root: Path) -> list[str]:
         if q.is_file() and q != charter_file
     ) if charter_file.parent.is_dir() else []
     if stray:
-        # A binding rule routed into the charter's own references/ -- which
-        # `skills/authoring` tells a cell's author to do -- would escape the
-        # owner's doctrine read, the budget, and the hook that delivers it,
-        # becoming available rather than binding. That is the property this
-        # whole change refused. The charter routes content out, never down.
+        # A binding rule routed into the charter's own references/ would escape
+        # the complete load the adoption instruction requires. The charter
+        # routes content out, never down.
         findings.append(
-            f"delivery: the charter cell carries {stray} -- only SKILL.md is "
-            f"delivered, budgeted, and read by the owner, so anything else "
-            f"there is binding prose nothing enforces"
+            f"charter-cell: the charter cell carries {stray} -- only SKILL.md "
+            f"is adopted, budgeted, and read completely, so anything else "
+            f"there is binding prose the adoption instruction does not reach"
         )
-
-    config = root / "hooks" / "hooks.json"
-    if not config.is_file():
-        findings.append(
-            "delivery: hooks/hooks.json is missing -- nothing delivers the "
-            "charter to a consumer session"
-        )
-        return findings
-
-    raw = _read_text(config) or ""
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        # The vendor's own validator on a malformed hooks.json: "At runtime
-        # this breaks the entire plugin load" -- the skills go too, not just
-        # the charter.
-        findings.append(f"delivery: hooks/hooks.json does not parse -- {exc}")
-        return findings
-
-    events = (parsed.get("hooks") or {}) if isinstance(parsed, dict) else {}
-    entries = events.get("SessionStart") or []
-    # `.get("command")` rather than `.get("command", "")`: an absent key and a
-    # null value both have to reach the emptiness test below. The earlier shape
-    # returned "" for an absent key, so `commands` was truthy and a config
-    # declaring no command at all passed green; a null value reached the regex
-    # and raised TypeError, taking down the whole run and suppressing every
-    # other finding in it.
-    commands = [
-        hook.get("command")
-        for entry in entries if isinstance(entry, dict)
-        for hook in (entry.get("hooks") or []) if isinstance(hook, dict)
-        if hook.get("type", "command") == "command"
-    ]
-    runnable = [c for c in commands if isinstance(c, str) and c.strip()]
-    if not runnable:
-        findings.append(
-            "delivery: hooks/hooks.json declares no runnable SessionStart "
-            "command -- nothing delivers the charter to a consumer session"
-        )
-    for command in runnable:
-        for ref in PLUGIN_ROOT_REF.findall(command):
-            # is_file, not exists: a directory of the right name satisfies the
-            # latter while being unrunnable, and the message below would then
-            # be false about a path that is right there.
-            if not (root / ref).is_file():
-                findings.append(
-                    f"delivery: hooks/hooks.json names '{ref}', which is not "
-                    f"a file in the shipped tree"
-                )
     return findings
 
 
@@ -1932,11 +1962,9 @@ def check_marketplace_source(root: Path) -> list[str]:
 
 
 def check_harness_tokens(root: Path) -> list[str]:
-    """No shipped file outside `hooks/` names a harness-specific path token."""
+    """No shipped file names a harness-specific path token."""
     findings = []
     for dirname in SHIPPED_DIRS:
-        if dirname in HARNESS_TOKEN_EXEMPT_DIRS:
-            continue
         base = root / dirname
         if not base.is_dir():
             continue
@@ -2274,8 +2302,9 @@ def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
         + check_harness_tokens(root)
-        + check_delivery(root)
+        + check_charter_cell(root)
         + check_cell_frontmatter(root)
+        + check_project_roster(root)
         + check_sideways_deps(root)
         + check_cell_references(root)
         + check_doctrine_citations(root)
@@ -2291,14 +2320,45 @@ def run(root: Path) -> list[str]:
     )
 
 
+def check_project_roster(root: Path) -> list[str]:
+    """Every cell has a `.claude/skills/` entry carrying its frontmatter.
+
+    That directory is the whole of what a **Claude Code** session working in
+    this repository loads a description from. An adopter installs the plugin
+    and receives the roster from it; this repository never installs itself, so
+    before #199 no session here held any cell's name or description, and every
+    trigger routed to a description over several changes reached every consumer
+    and missed us. `tools/roster.py` carries the mechanism and the evidence.
+
+    **Codex is outside that scope and stays outside it.** It is not documented
+    to load this directory, so a Codex session here reaches a cell by opening
+    the file, exactly as it did before. The runtime is named rather than left
+    to a universal because this repository's doctrine states its audience as
+    every runtime, and a sentence claiming every session would have asserted a
+    fix Codex never received. [PR #210 review, M10]
+
+    The expectation is the generator's, asked for rather than recomputed. A
+    guard that computes its own copy of what a writer produces is a second
+    definition of the same thing, and the two agree exactly until either is
+    edited -- the failure `_always_on` in `tools/figures.py` already records,
+    where two hand-written copies of one sum let a mutation through green.
+
+    An empty `skills/` is a finding rather than a pass, for the reason #198
+    states about a sibling guard: no cell found is indistinguishable from
+    every cell lawful, and the cheapest route to green must never be deleting
+    what the check reads.
+    """
+    return roster.verify(root)
+
+
 def always_on_note(root: Path) -> str:
     """The always-on total, where a session sees it before it writes.
 
     A cold consumer adding a binding rule found this number only because it
     thought to go looking: `tools/figures.py` is named in no always-on surface
-    and in no skill prose, only inside frozen decision entries. It said the
+    and in no skill prose. It said the
     number changed what it did -- it measured its rule and its outflow before
-    writing either, against 253 characters of headroom -- which is the whole
+    writing either, against whatever headroom the tree had -- which is the whole
     argument for putting it where the flow already goes.
 
     The callout is a merge-surface instrument by design and gated to
