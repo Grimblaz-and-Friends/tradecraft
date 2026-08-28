@@ -55,10 +55,12 @@ Checks:
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
   10. review index: docs/reviews.jsonl, when present, parses and carries one
-     valid row per review — date, artifact, lane, per-seat counts, what came of
-     the findings, the split by consequence shape, the model and runtime that
-     staffed it, report URL. The split reconciles against the disposition
-     counts; nothing else on the row reconciles against anything.
+     valid row per review. Past the cutover: date, artifact, lane, the
+     sustained highs named, the model and runtime that staffed it, report URL,
+     and no arithmetic — the key set is closed. Before it: per-seat counts,
+     what came of the findings, and the split by consequence shape, which
+     reconciles against the disposition counts and is the only cross-total on
+     the row that is sound.
  11. decision index: every decision entry has a row in the log's index, and
      every row a file.
  12. entry references: every path reference and relative link a decision entry
@@ -179,24 +181,26 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # incident defaulted to a paragraph. The budget is the structural counterweight;
 # the outflow every edit owes is the rule, and this ceiling is only what makes
 # an unpaid one visible. [D-184]
-# Ratcheted from 8,000 once the file measured 5,511. This file shrank through
-# both of its rewrites -- 7,980 to 5,958 to 5,659; what grew through both is
-# the always-on surface it belongs to, because prose moved between artifacts
-# and each change reported the file it emptied. That is why the figure to watch
-# is the total rather than this one. Set so roughly one substantial rule fits
-# before something has to leave, not so the margin stays comfortable, which is
-# the failure mode. It is expected to be tight and already is: it was
-# 5,511 when this ceiling was chosen and is 5,747 now, so 236 characters have
-# gone -- 112 from the change that set it, 177 from a merge that landed while
-# it was open, less 53 a review remedy took back out. Headroom is 253. The
-# answer to a change that wants more is an outflow.
+# Ratcheted from 8,000 against the size measured at the tree that set it. This
+# file shrank through both of its rewrites; what grew through both is the
+# always-on surface it belongs to, because prose moved between artifacts and
+# each change reported the file it emptied. That is why the figure to watch is
+# the total rather than this one -- and why neither is written here: `python
+# tools/figures.py` prices this file and that surface against these constants
+# on whatever tree you are on, and the headroom this comment used to state was
+# false one commit after the change that wrote it landed. Set so roughly one substantial rule
+# fits before something has to leave, not so the margin stays comfortable,
+# which is the failure mode. It is expected to be tight. The answer to a change
+# that wants more is an outflow.
 AGENTS_BUDGET_CHARS = 6_000
 # The charter is the half that ships, and an adopter pays for it on every
 # SessionStart event -- resume and compact included -- so it needs the
 # displacement pressure more than this repo's own file does, not less.
 # The ceiling leaves real headroom over today's size and stays well under
 # the 2,500-token limit Codex applies to a hook's additional context.
-# Ratcheted from 6,000 against a measured 5,353. The margin is smaller than
+# Ratcheted from 6,000 against the size measured when it was set, which
+# `python tools/figures.py` prices against this constant on whatever tree you
+# are on. The margin is smaller than
 # the doctrine's because the charter is not audited here -- its prose was
 # left untouched deliberately, so the ceiling is the only pressure it gets.
 CHARTER_BUDGET_CHARS = 5_600
@@ -207,13 +211,11 @@ POINTER_BUDGET_CHARS = 500
 # command string inside a decision entry that has since frozen. A budget a
 # guard does not hold is a budget the next edit does not have. The value is
 # the bound #169 declared and held itself under, not a fresh judgement: that
-# entry's own derivation command reads `--budget 7359`, against a body that
-# measured 7,358 before that change. The comparison below is `>`, so 7,359
-# itself passes -- the cap admits one character more than the size it was
-# derived from, and is not the tighter "no larger than you started" it reads
-# like. #169's tree came in at 7,285 and this one is at 7,354, so nothing
-# turns on the character today; it is stated because a session raising this
-# constant reads here first. Raising
+# entry's own derivation command reads `--budget 7359`. The comparison below is
+# `>`, so 7,359 itself passes -- the cap admits one character more than the body
+# measured before that change, and is not the tighter "no larger than you
+# started" it reads like. Nothing has turned on that character yet; it is
+# stated because a session raising this constant reads here first. Raising
 # it is a decision to be made and recorded, which is what a constant makes visible and a sentence
 # in a frozen entry does not. Cells absent from this map are unbudgeted on
 # purpose: a number chosen for a cell nobody has argued about would be a
@@ -222,8 +224,9 @@ POINTER_BUDGET_CHARS = 500
 # inherited. #184 left it out on the ground that a number for a cell nobody
 # has argued about is a ruling arriving as a constant; #177 is that argument,
 # and the owner ruled a budget follows the split. The basis is the size the
-# split landed at -- 8,736, from 24,155 -- plus 264, which is about one
-# bullet; the body is 8,738 after this change's own review, headroom 262.
+# split landed at plus about one bullet, which
+# `python tools/figures.py --cell skills/adversarial-review/SKILL.md
+# --cell-budget 9000` prices against this constant on whatever tree you are on.
 # That margin is deliberate in both directions: at zero headroom every
 # reword of the body is a constant change, which turns the cap into noise
 # nobody reads, while a section-sized regrowth cannot fit under it. The number
@@ -449,9 +452,33 @@ BASELINE_UNRESOLVABLE = {
 # diff on the pull request that created the situation.
 UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {}
 
-REVIEW_FIELDS = {"date", "artifact", "lane", "seats", "report"}
+REVIEW_FIELDS = {"date", "artifact", "lane", "report"}
 REVIEW_LANES = {"panel", "routine"}
 SEAT_COUNTS = ("raw", "merged", "sustained", "high")
+
+# The row stops carrying arithmetic here. Every count on it was hand-totalled
+# and reconciled by hand into a file nobody may edit, and that is this index's
+# whole defect record: two
+# open issues about values no stage produces, plus reconciliation prose inside
+# rows nobody may edit. What a review was worth is read from the report it
+# links; how many highs it sustained is the length of `highs`, derived at read
+# time from the row rather than transcribed into it.
+#
+# Grandfathered by POSITION, like the two boundaries above and for the reason
+# stated there: a date cutoff is one an experience session reached past in
+# eight tool calls. Rows before this index keep the counting shape and its
+# validators untouched; from it the counting fields are FORBIDDEN rather than
+# optional -- an optional field lets the shape drift back one row at a time,
+# and obliges this guard to validate two live shapes for ever. The value is
+# the file's row count when this landed, and it moved once before landing:
+# reviews closed on `main` while this change was open, and their rows are
+# exempt for the same reason every earlier row is -- records are appended,
+# never rewritten to suit a schema that arrived after them.
+REVIEW_ROWS_QUALITATIVE = 39
+COUNTING_FIELDS = ("seats", "dispositions", "facing")
+QUALITATIVE_FIELDS = frozenset(
+    {"date", "artifact", "lane", "report", "highs", "staffing", "notes"}
+)
 
 # What became of the findings, in the terminal stage's own vocabulary: clause
 # (a) dismisses, clause (b) sustains and fixes, routes, or prices out. The row
@@ -1068,12 +1095,15 @@ def _not_a_mapping(row, where: str, findings: list) -> bool:
 
 
 def check_review_index(root: Path) -> list[str]:
-    """One row per review: date, artifact, lane, per-seat counts, what came of
-    the findings, the staffing, and the report URL.
+    """One row per review: date, artifact, lane, the staffing, the report URL,
+    and — past REVIEW_ROWS_QUALITATIVE — each sustained high named, in place of
+    the arithmetic the rows before it carry.
 
     The row is written once when the review ends and never maintained after —
-    it exists so process-weight questions (which seats earn their keep, where
-    defects concentrate) are answerable when asked, from the reports it links.
+    it exists so process-weight questions are answerable when asked, from the
+    reports it links. It answers none of them by itself, which is why it no
+    longer totals anything: the counts it used to carry were re-derived by
+    nothing and had to be reconciled by hand into a file nobody may edit.
     """
     findings: list[str] = []
     index = root / "docs" / "reviews.jsonl"
@@ -1132,12 +1162,92 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
     if "report" in row and not _is_https_url(row["report"]):
         findings.append(
             f"{where} report '{row.get('report')}' must be an https URL to the "
-            f"review's report -- the row holds counts, the report holds the findings"
+            f"review's report -- the row points at the findings, it does not hold them"
         )
+    _check_row_shape(row, row_index, where, findings)
     if "seats" in row:
         _check_seats(row["seats"], where, findings)
+    if "highs" in row:
+        _check_highs(row["highs"], where, findings)
     _check_dispositions_and_staffing(row, row_index, where, findings)
     _check_facing(row, row_index, where, findings)
+
+
+def _check_row_shape(row, row_index: int, where: str, findings: list) -> None:
+    """Which of the two shapes this row's position obliges.
+
+    Before the cutover a row carries per-seat counts; from it a row carries
+    `highs` and no arithmetic at all. Both directions are checked, because a
+    guard that only catches the missing field lets the retired shape back in.
+    """
+    if row_index < REVIEW_ROWS_QUALITATIVE:
+        if "seats" not in row:
+            findings.append(
+                f"{where} missing field 'seats' -- rows before the first "
+                f"{REVIEW_ROWS_QUALITATIVE} carry per-seat counts"
+            )
+        return
+    if "highs" not in row:
+        findings.append(
+            f"{where} missing field 'highs' -- rows past the first "
+            f"{REVIEW_ROWS_QUALITATIVE} name each sustained high instead of "
+            f"counting anything (a list of strings; empty where none was "
+            f"sustained)"
+        )
+    present = [f for f in COUNTING_FIELDS if f in row]
+    if present:
+        findings.append(
+            f"{where} carries retired counting field(s) {', '.join(present)} -- "
+            f"rows past the first {REVIEW_ROWS_QUALITATIVE} carry no arithmetic: "
+            f"every count this row used to carry was totalled and reconciled by "
+            f"hand into a file nobody may edit. What the review was worth is in "
+            f"the report it links"
+        )
+    # Naming the three retired fields is not the rule -- the same totals under a
+    # fresh key are the same frozen arithmetic, and passed clean until this
+    # closed. The key set is what makes "no arithmetic" enforceable rather than
+    # merely stated; a new field is a decision somebody makes here.
+    unknown = sorted(set(row) - QUALITATIVE_FIELDS - set(COUNTING_FIELDS))
+    if unknown:
+        findings.append(
+            f"{where} carries unknown key(s) {', '.join(unknown)} -- past the "
+            f"first {REVIEW_ROWS_QUALITATIVE} the row's key set is closed "
+            f"({', '.join(sorted(QUALITATIVE_FIELDS))}); arithmetic under a "
+            f"fresh name is the arithmetic this cutover retired"
+        )
+
+
+def _check_highs(highs, where: str, findings: list) -> None:
+    """Each sustained high, named. The list is the record and its length is the
+    count, so nothing here is transcribed and nothing can fail to reconcile.
+
+    An empty list is lawful and means what it says -- a review that sustained
+    no high is a valid outcome, and the field cannot express it otherwise.
+    """
+    if not isinstance(highs, list):
+        findings.append(
+            f"{where} highs must be a list naming each sustained high "
+            f"(got {type(highs).__name__})"
+        )
+        return
+    seen: dict[str, int] = {}
+    for position, high in enumerate(highs):
+        if not isinstance(high, str) or not high.strip():
+            findings.append(
+                f"{where} highs[{position}] must be a non-empty string naming "
+                f"one sustained high"
+            )
+            continue
+        key = " ".join(high.split()).casefold()
+        if key in seen:
+            findings.append(
+                f"{where} highs[{position}] repeats highs[{seen[key]}] -- the "
+                f"list's length is what the record now answers 'how many highs' "
+                f"with, so a high credited to several seats is named once, not "
+                f"once per credit. A row is appended and never corrected"
+            )
+        else:
+            seen[key] = position
 
 
 def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: list) -> None:
@@ -1155,13 +1265,23 @@ def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: 
     reached its vehicle, which needs the vehicle named, and it detects no
     recurring defect class.
     """
-    required = row_index >= REVIEW_ROWS_GRANDFATHERED
+    # `staffing` survives the cutover -- a model and a runtime are facts about
+    # who ran the review, not arithmetic about it, and this row is the only
+    # queryable home the per-runtime evidence has. `dispositions` does not, so
+    # its window closes where the counting shape does; without that it would be
+    # required to carry a field it is forbidden to carry.
+    required = {
+        "dispositions": (
+            REVIEW_ROWS_GRANDFATHERED <= row_index < REVIEW_ROWS_QUALITATIVE
+        ),
+        "staffing": row_index >= REVIEW_ROWS_GRANDFATHERED,
+    }
     for field, checker in (
         ("dispositions", _check_disposition_counts),
         ("staffing", _check_staffing),
     ):
         if field not in row:
-            if required:
+            if required[field]:
                 findings.append(
                     f"{where} missing field '{field}' -- rows past the first "
                     f"{REVIEW_ROWS_GRANDFATHERED} carry it"
@@ -1223,7 +1343,11 @@ def _check_facing(row, row_index: int, where: str, findings: list) -> None:
     whenever present, so rows already written stay valid untouched.
     """
     if "facing" not in row:
-        if row_index >= REVIEW_ROWS_FACING_GRANDFATHERED:
+        if (
+            REVIEW_ROWS_FACING_GRANDFATHERED
+            <= row_index
+            < REVIEW_ROWS_QUALITATIVE
+        ):
             findings.append(
                 f"{where} missing field 'facing' -- rows past the first "
                 f"{REVIEW_ROWS_FACING_GRANDFATHERED} carry it "
@@ -2275,9 +2399,9 @@ def always_on_note(root: Path) -> str:
 
     A cold consumer adding a binding rule found this number only because it
     thought to go looking: `tools/figures.py` is named in no always-on surface
-    and in no skill prose, only inside frozen decision entries. It said the
+    and in no skill prose. It said the
     number changed what it did -- it measured its rule and its outflow before
-    writing either, against 253 characters of headroom -- which is the whole
+    writing either, against whatever headroom the tree had -- which is the whole
     argument for putting it where the flow already goes.
 
     The callout is a merge-surface instrument by design and gated to

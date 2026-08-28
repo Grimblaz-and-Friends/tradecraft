@@ -1938,18 +1938,22 @@ def test_every_row_already_in_the_repo_index_stays_valid(tmp_path):
     assert lint.check_review_index(root) == []
 
 
-def test_a_row_appended_past_the_grandfathered_ones_is_obliged(tmp_path):
-    """The behavioural pin on the constant. Deliberately *not* an assertion
-    that it equals the index's row count: that goes stale the moment the next
-    row lands, turning the guard into the bookkeeping the tripwire deletes.
-    Raising the constant silently exempts real rows, and only this catches it."""
+def test_a_row_appended_past_the_cutover_is_obliged(tmp_path):
+    """The behavioural pin on the cutover constant. Deliberately *not* an
+    assertion that it equals the index's row count: that goes stale the moment
+    the next row lands, turning the guard into the bookkeeping the tripwire
+    deletes. Raising the constant silently readmits the retired shape into a
+    file nobody may edit, and only this catches it.
+
+    The row appended here is the shape every row before the cutover carries, so
+    it is what a session copying the row above it would write."""
     bare = json.dumps(_review_row(artifact="pr-next")) + "\n"
     root = _index_tree(tmp_path, extra=bare)
     findings = lint.check_review_index(root)
-    assert len(findings) == 3
-    assert any("dispositions" in f for f in findings)
+    assert len(findings) == 3, findings
+    assert any("highs" in f for f in findings)
+    assert any("retired" in f and "seats" in f for f in findings)
     assert any("staffing" in f for f in findings)
-    assert any("facing" in f for f in findings)
 
 
 def test_a_row_that_fails_to_parse_does_not_shift_later_rows(tmp_path):
@@ -1966,7 +1970,11 @@ def test_a_row_that_fails_to_parse_does_not_shift_later_rows(tmp_path):
     (docs / "reviews.jsonl").write_text(corrupted + bare, encoding="utf-8")
     findings = lint.check_review_index(tmp_path)
     assert any("not valid JSON" in f for f in findings)
-    assert len([f for f in findings if "missing field" in f]) == 3
+    # Discriminating only since the cutover: one position earlier the appended
+    # row is pre-cutover, so it owes dispositions and facing and carries `seats`
+    # lawfully -- three missing fields and no retired-shape finding at all.
+    assert any("retired" in f for f in findings), findings
+    assert len([f for f in findings if "missing field" in f]) == 2, findings
 
 
 def test_staffing_rejects_unknown_keys(tmp_path):
@@ -2142,13 +2150,18 @@ def test_non_mapping_facing_is_a_finding_not_a_crash(tmp_path):
     assert len(findings) == 1 and "facing must be a mapping" in findings[0]
 
 
-def test_a_real_row_appended_without_facing_is_caught(tmp_path):
-    """Driven through the repository's own index, so the boundary constant is
-    exercised by real position arithmetic rather than a monkeypatched one."""
-    row = json.dumps(_row_with_extras(artifact="pr-next")) + "\n"
+def test_a_real_qualitative_row_appended_to_the_index_is_lawful(tmp_path):
+    """The green half of the cutover pin, through the repository's own index.
+
+    Were the cutover set past the file's actual row count, the next lawful row
+    a session writes would red and the guard would be demanding the very shape
+    this change retired. The other direction -- a cutover set too low, which
+    re-classes rows already in the file -- is caught by
+    `test_every_row_already_in_the_repo_index_stays_valid`, not by the sibling
+    immediately above this one."""
+    row = json.dumps(_qualitative_row(artifact="pr-next")) + "\n"
     root = _index_tree(tmp_path, extra=row)
-    findings = lint.check_review_index(root)
-    assert len(findings) == 1 and "facing" in findings[0]
+    assert lint.check_review_index(root) == []
 
 
 FRONTMATTER_CASES = [
@@ -2781,3 +2794,289 @@ def test_epilog_piped_to_argparse_is_caught(tmp_path):
     findings = lint.check_docstring_not_piped(tmp_path)
     assert len(findings) == 1, findings
     assert "epilog" in findings[0], findings[0]
+
+
+# --- the qualitative row -----------------------------------------------------
+
+def _qualitative_row(**overrides):
+    row = {
+        "date": "2026-08-26",
+        "artifact": "pr-192",
+        "lane": "panel",
+        "highs": ["the guard let the retired shape back in"],
+        "staffing": {"model": "claude-opus-5", "runtime": "claude-code (windows)"},
+        "report": "https://github.com/example/repo/pull/192#issuecomment-9",
+    }
+    row.update(overrides)
+    return row
+
+
+def _at_cutover(monkeypatch):
+    """Every row in the fixture index is past the cutover, and past the
+    boundary that obliges staffing."""
+    monkeypatch.setattr(lint, "REVIEW_ROWS_QUALITATIVE", 0)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 0)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_FACING_GRANDFATHERED", 0)
+
+
+def test_qualitative_row_is_clean(tmp_path, monkeypatch):
+    """The lawful case. A guard blocking lawful work fails as hard as one
+    passing unlawful work, and this shape is what every future row must be."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row())
+    assert lint.run(tmp_path) == []
+
+
+def test_qualitative_row_sustaining_no_high_is_lawful(tmp_path, monkeypatch):
+    """Zero findings from all seats is a valid outcome, and an empty list is
+    the only way the field can say so."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(highs=[]))
+    assert lint.run(tmp_path) == []
+
+
+def test_qualitative_row_must_name_its_highs(tmp_path, monkeypatch):
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    row = _qualitative_row()
+    del row["highs"]
+    _write_index(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "highs" in findings[0], findings[0]
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("seats", {"cold-read": {"raw": 1, "merged": 1, "sustained": 0, "high": 0}}),
+        ("dispositions", {"fixed": 1, "routed": 0, "priced_out": 0, "dismissed": 0}),
+        ("facing", {"artifact": 1, "apparatus": 0}),
+    ],
+)
+def test_qualitative_row_refuses_the_retired_counting_fields(
+    tmp_path, monkeypatch, field, value
+):
+    """Forbidden, not optional. An optional field lets the shape drift back one
+    row at a time, and each row that takes it lands in a file nobody may edit."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(**{field: value}))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert field in findings[0] and "retired" in findings[0], findings[0]
+
+
+def test_qualitative_row_names_every_retired_field_it_carries(tmp_path, monkeypatch):
+    """One finding listing all three, so a row carrying the whole old shape is
+    not fixed three times."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(
+            seats={"cold-read": {"raw": 1, "merged": 1, "sustained": 0, "high": 0}},
+            dispositions={"fixed": 1, "routed": 0, "priced_out": 0, "dismissed": 0},
+            facing={"artifact": 1, "apparatus": 0},
+        ),
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert all(f in findings[0] for f in ("seats", "dispositions", "facing"))
+
+
+@pytest.mark.parametrize("highs", ["a high", {"one": "high"}, 3])
+def test_highs_must_be_a_list(tmp_path, monkeypatch, highs):
+    """A bare string is the plausible wrong shape: it is iterable, so a laxer
+    check would accept it and record one high per character."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(highs=highs))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "must be a list" in findings[0], findings[0]
+
+
+@pytest.mark.parametrize("entry", ["", "   ", None, 7])
+def test_each_high_must_be_a_non_empty_string(tmp_path, monkeypatch, entry):
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(highs=["a real one", entry]))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "highs[1]" in findings[0], findings[0]
+
+
+def test_staffing_survives_the_cutover(tmp_path, monkeypatch):
+    """The one field on the row that is a fact about who ran the review rather
+    than arithmetic about it, and the only queryable home the per-runtime
+    evidence has."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    row = _qualitative_row()
+    del row["staffing"]
+    _write_index(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "staffing" in findings[0], findings[0]
+
+
+def test_dispositions_is_not_owed_past_the_cutover(tmp_path, monkeypatch):
+    """The obligation closes where the counting shape does. Without this the
+    row would be required to carry a field it is forbidden to carry."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row())
+    assert not any("dispositions" in f for f in lint.run(tmp_path))
+
+
+def test_row_before_the_cutover_still_owes_its_seats(tmp_path, monkeypatch):
+    """`seats` left the always-required set when the two shapes split, so the
+    obligation on the rows that predate the cutover needs its own probe."""
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_QUALITATIVE", 5)
+    row = _review_row()
+    del row["seats"]
+    _write_index(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "seats" in findings[0], findings[0]
+
+
+def test_a_row_before_the_cutover_may_still_carry_counts(tmp_path, monkeypatch):
+    """The cutover is forward-only: the rows already written stay valid
+    untouched, arithmetic and all."""
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_QUALITATIVE", 5)
+    _write_index(tmp_path, _review_row())
+    assert lint.run(tmp_path) == []
+
+
+def test_qualitative_row_refuses_arithmetic_under_a_fresh_key(tmp_path, monkeypatch):
+    """Naming the three retired fields was never the rule.
+
+    A review found that the same totals under `counts`, `totals`, or any name
+    nobody had thought of passed clean, so "the row carries no arithmetic" was
+    enforced as "not these three words". The key set is what makes it real.
+    """
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(counts={"raw": 43, "merged": 29, "sustained": 20, "high": 6}),
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "unknown key(s) counts" in findings[0], findings[0]
+
+
+def test_qualitative_row_names_every_unknown_key_at_once(tmp_path, monkeypatch):
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(totals={"a": 1}, tally=2))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "tally, totals" in findings[0], findings[0]
+
+
+def test_a_retired_field_gets_the_retired_message_not_the_unknown_one(tmp_path, monkeypatch):
+    """The specific diagnosis survives the general one: a session that copied
+    the row above it is told which shape it copied, not merely that a key is
+    unrecognised."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(facing={"artifact": 1, "apparatus": 0}),
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "retired" in findings[0] and "unknown key" not in findings[0], findings[0]
+
+
+@pytest.mark.parametrize("field", ["notes", "date", "artifact", "lane", "report", "staffing", "highs"])
+def test_the_closed_key_set_admits_every_field_the_row_is_made_of(
+    tmp_path, monkeypatch, field
+):
+    """The lawful polarity, field by field. `notes` is on the list deliberately:
+    the free-text half of the arithmetic problem was priced out, because reading
+    prose for totals is the prose-scanning this change's boundary excludes."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    row = _qualitative_row(notes="external pass rate-limited; one seat re-dispatched")
+    assert field in row
+    _write_index(tmp_path, row)
+    assert lint.run(tmp_path) == []
+
+
+def test_a_row_before_the_cutover_may_carry_any_key(tmp_path, monkeypatch):
+    """The key set closes forward only. The rows already written carry `round`
+    and `notes` and were never held to a schema that did not exist."""
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_QUALITATIVE", 5)
+    _write_index(tmp_path, _review_row(round="one", notes="whatever it said"))
+    assert lint.run(tmp_path) == []
+
+
+def test_highs_refuses_a_repeated_high(tmp_path, monkeypatch):
+    """`len(highs)` is what the record now answers "how many highs" with.
+
+    An external reviewer found this against the fix tree: migrating off per-seat
+    counts, a high credited to three seats is the thing most likely to be copied
+    three times, and the row is appended and never corrected. The count would be
+    permanently wrong in the one field this change made canonical.
+    """
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(highs=["the guard let it back in", "the guard let it back in"]))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "highs[1] repeats highs[0]" in findings[0], findings[0]
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        ("A stale sentence", "a stale sentence"),
+        ("A stale sentence", "A  stale   sentence"),
+        ("A stale sentence", "A stale sentence\n"),
+    ],
+)
+def test_a_repeat_is_caught_through_case_and_whitespace(tmp_path, monkeypatch, pair):
+    """The copies this catches are hand-made, so they differ in the ways hand
+    copies differ. An exact-match check would pass the realistic case."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(highs=list(pair)))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "repeats" in findings[0], findings[0]
+
+
+def test_two_genuinely_different_highs_are_left_alone(tmp_path, monkeypatch):
+    """The lawful polarity. A review sustaining several highs is the ordinary
+    case, and near-neighbours are not repeats."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(highs=[
+            "the purpose header states the superseded rule",
+            "the purpose header omits the tree half",
+        ]),
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_a_repeat_does_not_swallow_the_empty_string_finding(tmp_path, monkeypatch):
+    """Two blanks are two malformed entries, not a repeat: the repeat check must
+    not reach entries the type check already rejected, or one finding replaces
+    two and the second blank is fixed only on the next run."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(highs=["", "  "]))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 2, findings
+    assert all("must be a non-empty string" in f for f in findings), findings

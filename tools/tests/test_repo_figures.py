@@ -368,7 +368,7 @@ def test_the_repo_total_counts_both_doctrine_files(tmp_path):
 
     Omitting it meant a rule could move from AGENTS.md into it and the total
     would report a reduction while nothing left the surface -- the failure
-    routing.md's closing paragraph names, reachable in 489 characters.
+    routing.md's closing paragraph names, reachable within the file's closing paragraph.
     """
     (tmp_path / "AGENTS.md").write_text("a" * 100, encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_text("b" * 40, encoding="utf-8")
@@ -377,7 +377,7 @@ def test_the_repo_total_counts_both_doctrine_files(tmp_path):
 
 
 def test_the_roster_counts_names_as_well_as_descriptions(tmp_path):
-    """Descriptions alone read 89 low across eight cells.
+    """Descriptions alone read low across the roster.
 
     D-169 named this successor error in advance; the callout committed it and
     an external reviewer found it independently. The figure counts both, and

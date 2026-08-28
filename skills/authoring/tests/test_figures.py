@@ -78,9 +78,10 @@ def test_delta_normalizes_crlf_on_both_sides(tmp_path):
     commit_all(repo, "base")
     (repo / "NOTES.md").write_bytes(b"x\r\nyz")
     fig = figures.figure_delta(repo, "HEAD", ["NOTES.md"])
+    base_sha = fig["data"]["base_sha"]
     # base "x\ny" = 3 chars, current "x\nyz" = 4 — CRLF never inflates either side
     assert fig["data"] == {
-        "base": "HEAD", "paths": ["NOTES.md"], "suffixes": [],
+        "base": "HEAD", "base_sha": base_sha, "paths": ["NOTES.md"], "suffixes": [],
         "base_chars": 3, "current_chars": 4, "delta": 1,
     }
     assert "+1" in fig["value"]
@@ -131,7 +132,8 @@ def test_delta_refuses_when_no_file_matches_on_either_side(tmp_path):
     (repo / "new" / "b.md").write_bytes(b"12")
     fig = figures.figure_delta(repo, "HEAD", ["new"])
     assert fig["data"] == {
-        "base": "HEAD", "paths": ["new"], "suffixes": [],
+        "base": "HEAD", "base_sha": fig["data"]["base_sha"], "paths": ["new"],
+        "suffixes": [],
         "base_chars": 0, "current_chars": 2, "delta": 2,
     }
 
@@ -377,3 +379,31 @@ def test_cell_refuses_without_a_budget_a_missing_file_and_a_doubled_measure(tmp_
     # ...and the lawful spelling of each still works.
     assert cli(tmp_path, "--cell", "SKILL.md", "--budget", "10").returncode == 0
     assert cli(tmp_path, "--doc", "SKILL.md", "--budget", "10").returncode == 0
+
+
+def test_delta_resolves_a_moving_base_to_a_sha(tmp_path):
+    """A moving ref satisfies "given explicitly" and still leaves the figure
+    un-recheckable.
+
+    A review found that `--base origin/main` was echoed back exactly as given,
+    so a write-up complying with the figure rule in full could still name a base
+    that means a different tree tomorrow — which is the basis error the rule was
+    written against. The label carries the resolution; the ref alone did not.
+    """
+    repo = make_repo(tmp_path)
+    (repo / "NOTES.md").write_bytes(b"aaa")
+    commit_all(repo, "base")
+    run(["git", "branch", "moving"], cwd=repo)
+    (repo / "NOTES.md").write_bytes(b"aaaa")
+
+    fig = figures.figure_delta(repo, "moving", ["NOTES.md"])
+    sha = fig["data"]["base_sha"]
+    assert sha and sha != "moving"
+    assert f"`moving` ({sha})" in fig["name"], fig["name"]
+    # The negative control: a base already given as a sha must not be doubled up.
+    # Both spellings, because the first version of this control bound only the
+    # abbreviated one and a full sha -- the most pinned base a write-up can name
+    # -- was doubled with the control green.
+    for pinned in (sha, run(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()):
+        fixed = figures.figure_delta(repo, pinned, ["NOTES.md"])
+        assert fixed["name"] == f"prose delta vs `{pinned}`", fixed["name"]
