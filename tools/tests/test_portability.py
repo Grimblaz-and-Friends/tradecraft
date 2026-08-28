@@ -91,22 +91,21 @@ def _clean_env() -> dict:
     return env
 
 
-def _hook_env(plugin_root: Path) -> dict:
-    """A runtime's hook environment, which is not a consumer's shell.
+def _claude_hook_env(plugin_root: Path) -> dict:
+    """Claude Code's plugin-hook environment after command substitution."""
+    env = _clean_env()
+    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    return env
+
+
+def _codex_hook_env(plugin_root: Path) -> dict:
+    """Codex's plugin-hook environment, including its runtime discriminator.
 
     `_clean_env()` is right for a shipped script: it must not depend on the
     harness, so the harness is taken away. It is backwards here. A hook command
-    runs *inside* the harness by definition, and both runtimes supply the plugin
-    root to it -- Claude Code by substituting the placeholder into the command
-    string, Codex by inserting `CLAUDE_PLUGIN_ROOT` into the hook's environment
-    (`codex-rs/hooks/src/engine/discovery.rs`, "For OOTB compat with existing
-    plugins that use this env var"). Stripping it failed an emitter that reads
-    the variable and delivers the charter byte-identically -- the shape Codex
-    is built to serve, and the shape this guard exists to permit.
-
-    This models the union of what the two runtimes supply. Claude Code receives
-    the default command after placeholder substitution; Codex on Windows
-    receives `commandWindows` and expands `PLUGIN_ROOT` through `cmd.exe`.
+    runs *inside* the harness by definition. Codex supplies both the compatibility
+    variable and its own `PLUGIN_ROOT`; the latter is the documented discriminator
+    that selects the JSON context envelope without changing Claude Code's output.
     """
     env = _clean_env()
     env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
@@ -262,14 +261,16 @@ def test_the_declared_hook_command_delivers_the_charter(bracketed: Path, tmp_pat
 
     What it certifies, stated as narrowly as it is true: run under the plugin
     root the runtime supplies, from a working directory that is not the plugin
-    root, the declared command emits exactly the charter. It does not certify
+    root, the declared command carries exactly the charter in that runtime's
+    output form. It does not certify
     that every conceivable delivering emitter passes -- an earlier draft of this
     docstring said so and a probe falsified it in one cycle, because the fixture
     was stripping the variable a lawful emitter reads.
 
     Identity, not non-emptiness. Non-emptiness passes an emitter that prints
-    the README. Line endings are normalized first, so a CRLF-only difference is
-    not a failure; nothing else is forgiven.
+    the README. The context limit is checked against the charter's UTF-8 size,
+    too. Line endings are normalized first, so a CRLF-only difference is not a
+    failure; nothing else is forgiven.
     """
     commands = _declared_hook_commands(bracketed)
     assert commands, "hooks/hooks.json declares no SessionStart command"
@@ -278,6 +279,20 @@ def test_the_declared_hook_command_delivers_the_charter(bracketed: Path, tmp_pat
     charter = lint._frontmatterless(
         (bracketed / lint.CHARTER).read_text(encoding="utf-8")
     )
+    config = json.loads(
+        (bracketed / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    handlers = [
+        hook
+        for entry in config["hooks"]["SessionStart"]
+        for hook in entry["hooks"]
+        if hook.get("type") == "command"
+    ]
+    assert all(
+        hook.get("additionalContextLimit", 0)
+        >= max(lint.CHARTER_BUDGET_CHARS, len(charter.encode("utf-8")))
+        for hook in handlers
+    ), "the declared context limit can truncate a charter that passes its budget"
 
     for field, command in commands:
         if field == "commandWindows" and os.name != "nt":
@@ -295,25 +310,36 @@ def test_the_declared_hook_command_delivers_the_charter(bracketed: Path, tmp_pat
             if field == "commandWindows"
             else expanded
         )
-        result = subprocess.run(
-            invocation,
-            shell=field != "commandWindows",
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            env=_hook_env(bracketed),
-            # Never the plugin root: that is the one directory a runtime is
-            # guaranteed not to hand a SessionStart hook, and running there
-            # silently blesses a cwd-relative command that dies on every
-            # real install.
-            cwd=str(tmp_path),
-        )
-        assert result.returncode == 0, (
-            f"the declared hook command exited {result.returncode}\n"
-            f"field: {field}\ncommand: {expanded}\n"
-            f"stderr: {result.stderr.decode(errors='replace')}"
-        )
-        emitted = result.stdout.decode("utf-8").replace("\r\n", "\n")
-        assert emitted == charter, (
-            "the declared hook command did not emit the charter: got "
-            f"{len(emitted)} chars, expected {len(charter)}"
-        )
+        cases = [("codex", _codex_hook_env(bracketed))]
+        if field == "command":
+            cases.insert(0, ("claude", _claude_hook_env(bracketed)))
+
+        for runtime, env in cases:
+            result = subprocess.run(
+                invocation,
+                shell=field != "commandWindows",
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                env=env,
+                # Never the plugin root: that is the one directory a runtime is
+                # guaranteed not to hand a SessionStart hook, and running there
+                # silently blesses a cwd-relative command that dies on every
+                # real install.
+                cwd=str(tmp_path),
+            )
+            assert result.returncode == 0, (
+                f"the declared hook command exited {result.returncode}\n"
+                f"runtime: {runtime}\nfield: {field}\ncommand: {expanded}\n"
+                f"stderr: {result.stderr.decode(errors='replace')}"
+            )
+            emitted = result.stdout.decode("utf-8").replace("\r\n", "\n")
+            if runtime == "claude":
+                assert emitted == charter
+                continue
+            payload = json.loads(emitted)
+            assert payload == {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": charter,
+                }
+            }

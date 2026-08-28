@@ -12,13 +12,18 @@ contract ("exit 0: stdout is shown to the model") makes indistinguishable from a
 hook that deliberately emitted nothing.
 
 This script is the same three fixes: decode explicitly, open by literal path,
-and exit non-zero with a reason on stderr when there is nothing to emit. It
-prints nothing but the charter, so plain stdout remains the delivery form.
+and exit non-zero with a reason on stderr when there is nothing to emit. Claude
+Code receives the charter as plain stdout. Codex currently drops that documented
+form for plugin SessionStart hooks, so its Codex-specific ``PLUGIN_ROOT``
+environment selects the documented ``hookSpecificOutput.additionalContext``
+JSON envelope instead.
 
 Exit codes: 0 with the charter on stdout; 1 with a reason on stderr otherwise.
 """
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -48,6 +53,21 @@ def _body(text: str) -> str:
     return text[end + 4:].lstrip(chr(10))
 
 
+def _output(text: str, *, codex: bool) -> str:
+    """Render one charter for the runtime that invoked the plugin hook."""
+    if not codex:
+        return text
+    return json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": text,
+            }
+        },
+        ensure_ascii=False,
+    )
+
+
 def main() -> int:
     utf8_stdio()
     try:
@@ -65,16 +85,17 @@ def main() -> int:
         print(f"charter-not-emitted: {CHARTER} is empty", file=sys.stderr)
         return 1
 
-    # The runtime reads this stream and compares it byte for byte, so it
-    # depends on the LF that utf8_stdio pins -- which it does for every
-    # caller, not specially for this one. utf8_stdio ran first, at the
-    # top of main(); this branch is only about a stream that had no
-    # reconfigure for it to use, where the bytes are written directly.
+    rendered = _output(text, codex="PLUGIN_ROOT" in os.environ)
+    # The runtime reads this stream, so it depends on the LF that utf8_stdio
+    # pins -- which it does for every caller, not specially for this one.
+    # utf8_stdio ran first, at the top of main(); this branch is only about a
+    # stream that had no reconfigure for it to use, where the bytes are written
+    # directly.
     out = sys.stdout
     if hasattr(out, "reconfigure"):
-        out.write(text)
+        out.write(rendered)
     else:
-        sys.stdout.buffer.write(text.encode("utf-8"))
+        sys.stdout.buffer.write(rendered.encode("utf-8"))
     return 0
 
 

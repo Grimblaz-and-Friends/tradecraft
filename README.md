@@ -91,7 +91,10 @@ installation: after installing, open `/hooks`, inspect the command, and trust it
 before expecting the charter at `SessionStart`. On Windows Codex selects the
 plugin's `commandWindows` arm, where `cmd.exe` expands the supplied
 `%PLUGIN_ROOT%`; Claude Code continues to use the default placeholder command.
-Both arms invoke the same emitter and deliver the same charter.
+Both arms invoke the same emitter and deliver the same charter. Claude Code
+receives plain stdout; Codex's plugin-specific environment selects its
+`hookSpecificOutput.additionalContext` JSON envelope, which works around a
+plain-output delivery defect observed in CLI `0.150.0-alpha.8`.
 
 **Re-run the Codex compatibility check.** First install this tree's plugin
 version, open `/hooks`, inspect its command, and trust it. Then, from a host
