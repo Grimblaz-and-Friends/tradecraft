@@ -1956,10 +1956,11 @@ def test_a_row_appended_past_the_grandfathered_ones_is_obliged(tmp_path):
     bare = json.dumps(_review_row(artifact="pr-next")) + "\n"
     root = _index_tree(tmp_path, extra=bare)
     findings = lint.check_review_index(root)
-    assert len(findings) == 3
+    assert len(findings) == 4
     assert any("dispositions" in f for f in findings)
     assert any("staffing" in f for f in findings)
     assert any("facing" in f for f in findings)
+    assert any("external" in f for f in findings)
 
 
 def test_a_row_that_fails_to_parse_does_not_shift_later_rows(tmp_path):
@@ -1976,7 +1977,7 @@ def test_a_row_that_fails_to_parse_does_not_shift_later_rows(tmp_path):
     (docs / "reviews.jsonl").write_text(corrupted + bare, encoding="utf-8")
     findings = lint.check_review_index(tmp_path)
     assert any("not valid JSON" in f for f in findings)
-    assert len([f for f in findings if "missing field" in f]) == 3
+    assert len([f for f in findings if "missing field" in f]) == 4
 
 
 def test_staffing_rejects_unknown_keys(tmp_path):
@@ -2036,19 +2037,56 @@ def test_external_pass_is_not_a_panel_seat_after_the_legacy_boundary(tmp_path):
     an external pass in the same shape."""
     counts = {"raw": 1, "merged": 1, "sustained": 1, "high": 0}
     bad = json.dumps(_row_with_facing(
-        artifact="pr-next", seats={"external": counts}
+        artifact="pr-next", seats={"external": counts},
+        external={"raw": 1, "sustained": 1},
     )) + NL
     root = _index_tree(tmp_path, extra=bad)
     findings = lint.check_review_index(root)
     assert len(findings) == 1 and "external pass is not a panel seat" in findings[0]
 
     good = json.dumps(_row_with_facing(
-        artifact="pr-next", seats={"cold-read": counts}
+        artifact="pr-next", seats={"cold-read": counts},
+        external={"raw": 1, "sustained": 1},
     )) + NL
     (root / "docs" / "reviews.jsonl").write_text(
         _real_index_rows() + good, encoding="utf-8"
     )
     assert lint.check_review_index(root) == []
+
+
+def test_new_row_must_record_the_external_pass_at_top_level(tmp_path):
+    good = json.dumps(_row_with_facing(
+        artifact="pr-next",
+        external={"raw": 0, "sustained": 0},
+    )) + NL
+    root = _index_tree(tmp_path, extra=good)
+    assert lint.check_review_index(root) == []
+
+    missing = json.dumps(_row_with_facing(artifact="pr-next")) + NL
+    (root / "docs" / "reviews.jsonl").write_text(
+        _real_index_rows() + missing, encoding="utf-8"
+    )
+    findings = lint.check_review_index(root)
+    assert len(findings) == 1 and "missing field 'external'" in findings[0]
+
+
+@pytest.mark.parametrize(
+    "external, fragment",
+    [
+        ({"raw": True, "sustained": 0}, "non-negative integer"),
+        ({"raw": 0, "sustained": -1}, "non-negative integer"),
+        ({"raw": 0}, "missing sustained"),
+        ({"raw": 0, "sustained": 0, "merged": 0}, "unknown key"),
+        (["ran"], "must be a mapping"),
+    ],
+)
+def test_external_pass_counts_have_one_closed_shape(tmp_path, external, fragment):
+    row = json.dumps(_row_with_facing(
+        artifact="pr-next", external=external,
+    )) + NL
+    root = _index_tree(tmp_path, extra=row)
+    findings = lint.check_review_index(root)
+    assert len(findings) == 1 and fragment in findings[0]
 
 
 def test_row_appended_past_the_facing_boundary_must_carry_it(tmp_path, monkeypatch):
@@ -2179,7 +2217,9 @@ def test_a_real_row_appended_without_facing_is_caught(tmp_path):
     row = json.dumps(_row_with_extras(artifact="pr-next")) + "\n"
     root = _index_tree(tmp_path, extra=row)
     findings = lint.check_review_index(root)
-    assert len(findings) == 1 and "facing" in findings[0]
+    assert len(findings) == 2
+    assert any("facing" in f for f in findings)
+    assert any("external" in f for f in findings)
 
 
 FRONTMATTER_CASES = [

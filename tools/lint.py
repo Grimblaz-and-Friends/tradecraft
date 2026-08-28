@@ -424,6 +424,7 @@ UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {}
 REVIEW_FIELDS = {"date", "artifact", "lane", "seats", "report"}
 REVIEW_LANES = {"panel", "routine"}
 SEAT_COUNTS = ("raw", "merged", "sustained", "high")
+EXTERNAL_COUNTS = ("raw", "sustained")
 
 # What became of the findings, in the terminal stage's own vocabulary: clause
 # (a) dismisses, clause (b) sustains and fixes, routes, or prices out. The row
@@ -474,11 +475,12 @@ REVIEW_ROWS_GRANDFATHERED = 20
 # every row between the two boundaries, in a file nobody may edit.
 REVIEW_ROWS_FACING_GRANDFATHERED = 31
 
-# `external` was recorded as though it were a panel seat in 26 of the 37 rows
+# `external` was recorded as though it were a panel seat in 27 of the 38 rows
 # already present when the distinction became enforceable. Those rows are
-# immutable exhaust, so the first 37 are exempt and every later row names only
-# actual panel seats in `seats`.
-REVIEW_ROWS_EXTERNAL_SEAT_GRANDFATHERED = 37
+# immutable exhaust, so the first 38 are exempt. Every later row names only
+# actual panel seats in `seats` and records the external pass in its own
+# top-level raw/sustained pair.
+REVIEW_ROWS_EXTERNAL_GRANDFATHERED = 38
 
 
 def _read_text(path: Path) -> str | None:
@@ -1114,6 +1116,7 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
         )
     if "seats" in row:
         _check_seats(row["seats"], row_index, where, findings)
+    _check_external(row, row_index, where, findings)
     _check_dispositions_and_staffing(row, row_index, where, findings)
     _check_facing(row, row_index, where, findings)
 
@@ -1187,6 +1190,41 @@ def _is_count(value) -> bool:
     """A count, at the bar the seat counts already meet: bool subclasses int,
     so True would otherwise pass as a count of one."""
     return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def _check_external(row, row_index: int, where: str, findings: list) -> None:
+    """The external pass, separate from the staffed panel that it follows."""
+    if "external" not in row:
+        if row_index >= REVIEW_ROWS_EXTERNAL_GRANDFATHERED:
+            findings.append(
+                f"{where} missing field 'external' -- rows past the first "
+                f"{REVIEW_ROWS_EXTERNAL_GRANDFATHERED} carry it "
+                f"({', '.join(EXTERNAL_COUNTS)} counts)"
+            )
+        return
+    external = row["external"]
+    if not isinstance(external, dict):
+        findings.append(
+            f"{where} external must be a mapping of "
+            f"{', '.join(EXTERNAL_COUNTS)} to counts"
+        )
+        return
+    missing = set(EXTERNAL_COUNTS) - set(external)
+    if missing:
+        findings.append(f"{where} external missing {', '.join(sorted(missing))}")
+    for field in EXTERNAL_COUNTS:
+        if field in external and not _is_count(external[field]):
+            findings.append(
+                f"{where} external {field} '{external[field]}' must be a "
+                f"non-negative integer"
+            )
+    unknown = set(external) - set(EXTERNAL_COUNTS)
+    if unknown:
+        findings.append(
+            f"{where} external carries unknown key(s) "
+            f"{', '.join(sorted(unknown))} -- an external pass records only "
+            f"{', '.join(EXTERNAL_COUNTS)}"
+        )
 
 
 def _check_facing(row, row_index: int, where: str, findings: list) -> None:
@@ -1306,7 +1344,7 @@ def _check_seats(seats, row_index: int, where: str, findings: list) -> None:
     for name, counts in seats.items():
         if (
             name == "external"
-            and row_index >= REVIEW_ROWS_EXTERNAL_SEAT_GRANDFATHERED
+            and row_index >= REVIEW_ROWS_EXTERNAL_GRANDFATHERED
         ):
             findings.append(
                 f"{where} seat 'external' books an external pass as though it "

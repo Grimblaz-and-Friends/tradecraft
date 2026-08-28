@@ -86,12 +86,27 @@ to ask.
 
 **On declining the hook.** Claude Code gates plugin hooks on workspace trust and
 the `disableAllHooks` setting; there is no supported way to take this plugin's
-skills while declining its hook. Codex does have hook-level trust and will ask.
-One quadrant does not work at all: on **Windows under Codex**, hook commands run
-through `cmd.exe` with the plugin root supplied as an environment variable, which
-this hook's command cannot resolve — you get the skills, and should read the
-charter by invoking the `charter` skill — it is the same file the hook reads out,
-which is why the plugin ships it as a cell.
+skills while declining its hook. Codex keeps hook trust separate from plugin
+installation: after installing, open `/hooks`, inspect the command, and trust it
+before expecting the charter at `SessionStart`. On Windows Codex selects the
+plugin's `commandWindows` arm, where `cmd.exe` expands the supplied
+`%PLUGIN_ROOT%`; Claude Code continues to use the default placeholder command.
+Both arms invoke the same emitter and deliver the same charter.
+
+**Re-run the Codex compatibility check.** First install this tree's plugin
+version, open `/hooks`, inspect its command, and trust it. Then, from a host
+shell with an authenticated Codex CLI and a real `python` interpreter, run:
+
+```
+python tools/check_codex_compat.py
+```
+
+The check records the resolved Codex executable and version, the installed
+plugin version, and the explicitly selected model, reasoning effort, read-only
+sandbox, and ephemeral session. It launches from an empty consumer directory,
+so the charter cannot arrive through this repository's `AGENTS.md`. On Windows
+it can find the Codex app-bundle executable even when `codex` is absent from
+`PATH`; `--codex PATH` pins an exact executable on any platform.
 
 **What does not reach you, by design.** Everything under `docs/`, `tools/`, and
 `.github/` is this repository's own machinery. A git-source install clones the

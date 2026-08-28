@@ -104,14 +104,13 @@ def _hook_env(plugin_root: Path) -> dict:
     the variable and delivers the charter byte-identically -- the shape Codex
     is built to serve, and the shape this guard exists to permit.
 
-    This models the *union* of what the two runtimes supply, so a pass certifies
-    delivery in at least one runtime. It is not cross-runtime coverage: no
-    single command string serves both a textual placeholder and a `%VAR%`-style
-    variable, which is why Codex on Windows gets nothing and why that is
-    disclosed rather than guarded.
+    This models the union of what the two runtimes supply. Claude Code receives
+    the default command after placeholder substitution; Codex on Windows
+    receives `commandWindows` and expands `PLUGIN_ROOT` through `cmd.exe`.
     """
     env = _clean_env()
     env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    env["PLUGIN_ROOT"] = str(plugin_root)
     return env
 
 
@@ -178,6 +177,7 @@ def test_script_runs_from_the_relocated_root(script: Path, installed: Path):
     # stayed green while every captured byte was wrong.
     result = subprocess.run(
         [sys.executable, str(relocated), "--help"],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         env=_clean_env(),
         cwd=str(installed),
@@ -217,14 +217,16 @@ def test_no_shipped_skill_names_a_harness_token(installed: Path):
     assert not offenders, f"harness token in shipped skills: {offenders}"
 
 
-def _declared_hook_commands(root: Path) -> list[str]:
+def _declared_hook_commands(root: Path) -> list[tuple[str, str]]:
     """The SessionStart commands `hooks/hooks.json` actually declares."""
     config = json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
     return [
-        hook["command"]
+        (field, hook[field])
         for entry in config["hooks"]["SessionStart"]
         for hook in entry["hooks"]
-        if hook.get("type") == "command" and hook.get("command")
+        if hook.get("type") == "command"
+        for field in ("command", "commandWindows")
+        if hook.get(field)
     ]
 
 
@@ -277,18 +279,26 @@ def test_the_declared_hook_command_delivers_the_charter(bracketed: Path, tmp_pat
         (bracketed / lint.CHARTER).read_text(encoding="utf-8")
     )
 
-    for command in commands:
+    for field, command in commands:
+        if field == "commandWindows" and os.name != "nt":
+            # Windows CI executes this arm. Elsewhere, retain a static guard
+            # against the two mistakes that made the old command dead there.
+            assert "%PLUGIN_ROOT%" in command
+            assert "${CLAUDE_PLUGIN_ROOT}" not in command
+            continue
         # Claude Code's half of the contract: it substitutes the placeholder
-        # into the command string before any shell sees it. Codex performs no
-        # substitution at all -- it supplies the same value through the
-        # environment, which `_hook_env` sets. Modelling both is what lets a
-        # lawful emitter of either shape pass. `check_delivery`'s
-        # PLUGIN_ROOT_REF makes the same substitution assumption, so the two
-        # guards drift together or not at all.
+        # into the default command before any shell sees it. Codex's Windows
+        # arm uses cmd.exe environment expansion instead.
         expanded = command.replace("${CLAUDE_PLUGIN_ROOT}", bracketed.as_posix())
+        invocation = (
+            f"cmd.exe /d /c {expanded}"
+            if field == "commandWindows"
+            else expanded
+        )
         result = subprocess.run(
-            expanded,
-            shell=True,
+            invocation,
+            shell=field != "commandWindows",
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             env=_hook_env(bracketed),
             # Never the plugin root: that is the one directory a runtime is
@@ -299,7 +309,8 @@ def test_the_declared_hook_command_delivers_the_charter(bracketed: Path, tmp_pat
         )
         assert result.returncode == 0, (
             f"the declared hook command exited {result.returncode}\n"
-            f"command: {expanded}\nstderr: {result.stderr.decode(errors='replace')}"
+            f"field: {field}\ncommand: {expanded}\n"
+            f"stderr: {result.stderr.decode(errors='replace')}"
         )
         emitted = result.stdout.decode("utf-8").replace("\r\n", "\n")
         assert emitted == charter, (

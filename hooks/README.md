@@ -47,24 +47,17 @@ agent's context, while a malformed bare-`{additionalContext}` hook did not. If a
 runtime later requires the envelope, that is a change to `hooks.json`, not to the
 charter.
 
-**Why `${CLAUDE_PLUGIN_ROOT}` is lawful here** when a shipped calling contract may
-not name it: this is hook configuration, which is where the token actually
-expands. Claude Code substitutes it as a path placeholder before any shell sees
-the command, on every platform; Codex sets it as an environment variable,
-explicitly for compatibility with plugins written against it, which works
-wherever its hook shell expands one — and not on Windows (below).
-
-**Known gap: Codex on Windows.** Codex runs a plugin hook through `cmd.exe /C`
-and delivers the root as an environment variable rather than substituting it, so
-`${CLAUDE_PLUGIN_ROOT}` is passed through literally and the command cannot
-resolve. No single command string serves both a textual placeholder and a
-`%VAR%`-style environment variable, so this hook does not deliver the charter to
-a Windows Codex adopter. Claude Code on Windows is unaffected, because it
-substitutes before any shell runs. An adopter in that quadrant gets the skills
-and can invoke the charter cell by name, which is the same file this hook reads
-out and the reason the charter ships as a cell at all.
+**Why the root tokens are lawful here** when a shipped calling contract may not
+name one: this is hook configuration, where the runtime supplies the plugin
+root. Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` in the default command
+before a shell sees it. Codex selects `commandWindows` on Windows and supplies
+`PLUGIN_ROOT` to `cmd.exe`, which expands `%PLUGIN_ROOT%`. Both commands invoke
+the same emitter and therefore deliver the same charter; the portability suite
+runs both Windows paths from an installed-looking root and compares their output
+byte for byte.
 
 **Trust.** Claude Code gates plugin hooks on workspace trust plus the
 `disableAllHooks` setting; there is no per-plugin, hooks-only decline, so an
-adopter who does not want this hook declines the plugin. Codex does have
-hook-level trust and reviews a plugin's hooks before arming them.
+adopter who does not want this hook declines the plugin. Codex does not
+automatically trust an installed plugin's hooks: open `/hooks`, inspect this
+command, and trust it before expecting the charter at `SessionStart`.
