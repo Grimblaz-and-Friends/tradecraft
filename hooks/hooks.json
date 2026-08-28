@@ -7,8 +7,7 @@
           {
             "type": "command",
             "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/emit_charter.py\"",
-            "commandWindows": "python \"%PLUGIN_ROOT%\\hooks\\emit_charter.py\"",
-            "additionalContextLimit": 12000
+            "commandWindows": "python \"%PLUGIN_ROOT%\\hooks\\emit_charter.py\""
           }
         ]
       }

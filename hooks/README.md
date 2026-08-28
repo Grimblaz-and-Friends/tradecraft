@@ -1,11 +1,11 @@
 # hooks
 
-One hook: `SessionStart` runs `emit_charter.py`, which sends the body of the
-`charter` cell through the runtime's model-context output, so a session in a
-repository that has installed this plugin holds the practice's binding rules
-before it acts. The cell is the same file a session can invoke by name — one
-file, two doors — and the emitter strips its frontmatter, which is addressed to
-the runtime's skill index rather than to a reader. Without it a consumer receives the
+One hook: `SessionStart` runs `emit_charter.py`, which prints the body of the
+`charter` cell on stdout, so a session in a repository that has installed this
+plugin holds the practice's binding rules before it acts. The cell is the same
+file a session can invoke by name — one file, two doors — and the emitter
+strips its frontmatter, which is addressed to the runtime's skill index rather
+than to a reader. Without it a consumer receives the
 skills and no doctrine unless it asks for the charter cell by name — a plugin's
 root `AGENTS.md` and `CLAUDE.md` land
 in the install cache but are never loaded as context, which the vendor's own
@@ -30,30 +30,31 @@ non-zero `SessionStart` hook shows stderr to the user and never to the model, th
 session proceeds with no doctrine and no signal that any was expected. CI does
 not close this: `actions/setup-python` puts `python` on both runners' PATH, so
 the matrix cannot see the case. What the source repository does check is that
-the declared command runs at all: its portability suite executes each runtime
-form and compares the context it carries to the charter byte for byte, so the
-hook cannot rot silently in the environments that suite does cover.
+the declared command runs at all: its portability suite executes this command
+and compares the output to the charter byte for byte, so the hook cannot rot
+silently in the environments that suite does cover.
 
-**Why two output forms.** Claude Code receives plain stdout. Codex receives the
-documented `hookSpecificOutput.additionalContext` JSON envelope, selected by
-Codex's plugin-specific `PLUGIN_ROOT` environment variable. Codex documents
-plain `SessionStart` stdout as model context too, but CLI `0.150.0-alpha.8`
-logged the installed hook starting and completing without giving that text to
-the model. An isolated [Sol/high spike](https://github.com/Grimblaz-and-Friends/tradecraft/issues/24#issuecomment-5448061498)
-proved the JSON envelope reaches context in the same runtime. The adapter lives
-in the emitter, not the charter; `additionalContextLimit` stays above the
-charter's enforced size budget so Codex cannot silently replace it with a
-truncated preview.
+**Why plain stdout rather than the JSON envelope.** Both runtimes accept either:
+Claude Code adds plain stdout as context for `SessionStart`, and so does Codex.
+Plain text has one fewer thing to get wrong. Two upstream reports bear on the
+choice and are named so a later session can check them rather than trust this
+paragraph: [anthropics/claude-code#12151](https://github.com/anthropics/claude-code/issues/12151)
+(open) reports plugin-sourced `SessionStart` output not reaching context, with
+its most recent evidence specific to the `additionalContext` envelope; and
+[#53682](https://github.com/anthropics/claude-code/issues/53682) contains a
+reproduction in which a plugin hook emitting **plain stdout** did reach the
+agent's context, while a malformed bare-`{additionalContext}` hook did not. If a
+runtime later requires the envelope, that is a change to `hooks.json`, not to the
+charter.
 
 **Why the root tokens are lawful here** when a shipped calling contract may not
 name one: this is hook configuration, where the runtime supplies the plugin
 root. Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` in the default command
 before a shell sees it. Codex selects `commandWindows` on Windows and supplies
-`PLUGIN_ROOT` to `cmd.exe`, which expands `%PLUGIN_ROOT%`; Codex also sets the
-Claude-named variable for plugin compatibility. Both commands invoke the same
-emitter and therefore deliver the same charter, in the output form their runtime
-actually carries; the portability suite runs both Windows paths from an
-installed-looking root and compares their delivered context byte for byte.
+`PLUGIN_ROOT` to `cmd.exe`, which expands `%PLUGIN_ROOT%`. Both commands invoke
+the same emitter and therefore deliver the same charter; the portability suite
+runs both Windows paths from an installed-looking root and compares their output
+byte for byte.
 
 **Trust.** Claude Code gates plugin hooks on workspace trust plus the
 `disableAllHooks` setting; there is no per-plugin, hooks-only decline, so an
