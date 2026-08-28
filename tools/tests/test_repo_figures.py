@@ -392,7 +392,7 @@ def test_the_roster_counts_names_as_well_as_descriptions(tmp_path):
 
 
 def test_the_charter_is_counted_below_its_frontmatter():
-    """The body, not the file -- the same unit the SessionStart hook emits.
+    """The body, not the file -- the unit an adopting session reads completely.
 
     Counting the whole file would double-count the description, which the
     roster already carries, and would price the charter against a unit no

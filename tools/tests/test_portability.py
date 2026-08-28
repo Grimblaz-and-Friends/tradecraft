@@ -1,11 +1,9 @@
 """The shipped zone runs from wherever it is installed, not only from here.
 
 A consumer install puts the shipped zone under a plugin cache with no
-repository around it. Both shipped scripts named `${CLAUDE_PLUGIN_ROOT}/...`,
-which Claude Code substitutes into a skill's body but Codex does not -- Codex
-sets the root as an environment variable for hook commands and performs no
-textual substitution anywhere else. So the old contract held in one runtime and
-was dead in the other, which is the failure these tests exist to keep out.
+repository around it. Shipped scripts once named a harness-owned plugin root,
+so the contract held in one runtime and was dead in another. These tests keep
+runtime-owned path tokens out of the portable calling contract.
 
 These tests relocate the shipped zone and exercise the property that failure
 violated: every script a skill names is reachable by resolving that name against
@@ -14,7 +12,6 @@ repo-only directory in reach.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -70,7 +67,7 @@ def installed(tmp_path_factory) -> Path:
     """The shipped zone alone, at a path unrelated to this repository."""
     dest = tmp_path_factory.mktemp("plugin-root")
     # Built from the declared zone, not a hand-list: a hand-list is how the
-    # version guard came to be blind to `charter/` and `hooks/` after they were
+    # version guard came to be blind to new shipped directories after they were
     # added to the zone everywhere else.
     for name in lint.SHIPPED_DIRS:
         source = ROOT / name
@@ -88,29 +85,6 @@ def _clean_env() -> dict:
     for key in list(env):
         if key.startswith(("CLAUDE_", "CODEX_")) or key in {"PLUGIN_ROOT", "PLUGIN_DATA"}:
             del env[key]
-    return env
-
-
-def _hook_env(plugin_root: Path) -> dict:
-    """A runtime's hook environment, which is not a consumer's shell.
-
-    `_clean_env()` is right for a shipped script: it must not depend on the
-    harness, so the harness is taken away. It is backwards here. A hook command
-    runs *inside* the harness by definition, and both runtimes supply the plugin
-    root to it -- Claude Code by substituting the placeholder into the command
-    string, Codex by inserting `CLAUDE_PLUGIN_ROOT` into the hook's environment
-    (`codex-rs/hooks/src/engine/discovery.rs`, "For OOTB compat with existing
-    plugins that use this env var"). Stripping it failed an emitter that reads
-    the variable and delivers the charter byte-identically -- the shape Codex
-    is built to serve, and the shape this guard exists to permit.
-
-    This models the union of what the two runtimes supply. Claude Code receives
-    the default command after placeholder substitution; Codex on Windows
-    receives `commandWindows` and expands `PLUGIN_ROOT` through `cmd.exe`.
-    """
-    env = _clean_env()
-    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
-    env["PLUGIN_ROOT"] = str(plugin_root)
     return env
 
 
@@ -215,105 +189,3 @@ def test_no_shipped_skill_names_a_harness_token(installed: Path):
                 rel = path.relative_to(installed).as_posix()
                 offenders.append(f"{rel}:{lineno}")
     assert not offenders, f"harness token in shipped skills: {offenders}"
-
-
-def _declared_hook_commands(root: Path) -> list[tuple[str, str]]:
-    """The SessionStart commands `hooks/hooks.json` actually declares."""
-    config = json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-    return [
-        (field, hook[field])
-        for entry in config["hooks"]["SessionStart"]
-        for hook in entry["hooks"]
-        if hook.get("type") == "command"
-        for field in ("command", "commandWindows")
-        if hook.get(field)
-    ]
-
-
-@pytest.fixture(scope="module")
-def bracketed(tmp_path_factory) -> Path:
-    """An installed root whose path contains `[`.
-
-    Not decoration: the first shape of this hook used `cat`, whose PowerShell
-    alias resolves `-Path` as a wildcard, so a bracket anywhere in the plugin
-    cache path made the read fail -- at exit 0 with empty stdout, which the
-    runtime contract renders indistinguishable from a deliberate silence.
-    """
-    dest = tmp_path_factory.mktemp("cache") / "tradecraft[0.34.0]"
-    for name in lint.SHIPPED_DIRS:
-        source = ROOT / name
-        if source.is_dir():
-            shutil.copytree(source, dest / name)
-    return dest
-
-
-def test_the_declared_hook_command_delivers_the_charter(bracketed: Path, tmp_path: Path):
-    """Run the command the plugin actually declares, and compare what it emits.
-
-    This is the guard for the delivery path, and it is written as an execution
-    check rather than as a static one on purpose. `hooks.json` names the
-    emitter, the emitter names the charter, and a guard that resolved that
-    second reference would still have to resolve a third if the emitter ever
-    computed its path -- while failing an emitter that legitimately does. Every
-    static rung fails one of those two ways. Running the command answers both
-    questions at once: it catches a typo'd charter name, an emptied emitter, a
-    syntax error, an emitter that exits 0 with nothing, and an emitter that
-    emits the wrong file.
-
-    What it certifies, stated as narrowly as it is true: run under the plugin
-    root the runtime supplies, from a working directory that is not the plugin
-    root, the declared command emits exactly the charter. It does not certify
-    that every conceivable delivering emitter passes -- an earlier draft of this
-    docstring said so and a probe falsified it in one cycle, because the fixture
-    was stripping the variable a lawful emitter reads.
-
-    Identity, not non-emptiness. Non-emptiness passes an emitter that prints
-    the README. Line endings are normalized first, so a CRLF-only difference is
-    not a failure; nothing else is forgiven.
-    """
-    commands = _declared_hook_commands(bracketed)
-    assert commands, "hooks/hooks.json declares no SessionStart command"
-    # The body, not the file: the hook strips the cell's frontmatter, which
-    # is addressed to the runtime's skill index rather than to a reader.
-    charter = lint._frontmatterless(
-        (bracketed / lint.CHARTER).read_text(encoding="utf-8")
-    )
-
-    for field, command in commands:
-        if field == "commandWindows" and os.name != "nt":
-            # Windows CI executes this arm. Elsewhere, retain a static guard
-            # against the two mistakes that made the old command dead there.
-            assert "%PLUGIN_ROOT%" in command
-            assert "${CLAUDE_PLUGIN_ROOT}" not in command
-            continue
-        # Claude Code's half of the contract: it substitutes the placeholder
-        # into the default command before any shell sees it. Codex's Windows
-        # arm uses cmd.exe environment expansion instead.
-        expanded = command.replace("${CLAUDE_PLUGIN_ROOT}", bracketed.as_posix())
-        invocation = (
-            f"cmd.exe /d /c {expanded}"
-            if field == "commandWindows"
-            else expanded
-        )
-        result = subprocess.run(
-            invocation,
-            shell=field != "commandWindows",
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            env=_hook_env(bracketed),
-            # Never the plugin root: that is the one directory a runtime is
-            # guaranteed not to hand a SessionStart hook, and running there
-            # silently blesses a cwd-relative command that dies on every
-            # real install.
-            cwd=str(tmp_path),
-        )
-        assert result.returncode == 0, (
-            f"the declared hook command exited {result.returncode}\n"
-            f"field: {field}\ncommand: {expanded}\n"
-            f"stderr: {result.stderr.decode(errors='replace')}"
-        )
-        emitted = result.stdout.decode("utf-8").replace("\r\n", "\n")
-        assert emitted == charter, (
-            "the declared hook command did not emit the charter: got "
-            f"{len(emitted)} chars, expected {len(charter)}"
-        )

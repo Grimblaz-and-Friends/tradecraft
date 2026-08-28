@@ -4,14 +4,14 @@
 Preconditions:
 
 * `python` resolves to a real interpreter rather than the Windows Store alias.
+* `git` can initialize the temporary consumer repository.
 * The Codex CLI is authenticated and may reach its service.
 * The tradecraft plugin version in this tree is installed and enabled in Codex.
-* The installed plugin's hook has been inspected and trusted through `/hooks`.
 
-The probe runs in an empty consumer directory. It therefore cannot receive the
-charter through this repository's AGENTS.md; a pass demonstrates that the
-trusted SessionStart hook supplied the charter and that the installed skill
-catalog supplied all nine tradecraft cells. The nested session is ephemeral and
+The probe creates a temporary consumer repository outside this source tree and
+gives it the supported adoption instruction in its own AGENTS.md. A pass proves
+that Codex loaded the repository instruction, the installed charter in full,
+and all nine complete skill descriptions. The nested session is ephemeral and
 read-only, and its model and reasoning effort are explicit launch inputs.
 
 Usage: python tools/check_codex_compat.py [--codex PATH]
@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -33,18 +34,31 @@ sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
 MANIFEST = ROOT / ".claude-plugin" / "plugin.json"
-SENTINEL = "TRADECRAFT_CODEX_COMPAT_OK"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING = "high"
 
-PROMPT = f"""You are a compatibility probe. Do not call tools or read files.
-Examine only context that was already present before this prompt. Respond with
-exactly {SENTINEL} and nothing else only if both conditions hold:
-1. The full tradecraft charter body was supplied at SessionStart, including the
-   sentence 'Capability wrappers are deliberately not in it.'
-2. The skill catalog contains all nine tradecraft cells, and each description
-   reaches its final non-trigger clause rather than ending mid-description.
-Otherwise respond with TRADECRAFT_CODEX_COMPAT_FAIL followed by a short reason.
+ADOPTION_TEMPLATE = """## Tradecraft
+
+Before substantive action, load and read the installed `tradecraft:charter`
+skill completely. If it is unavailable, stop and tell the owner that Tradecraft
+is not installed or enabled.
+
+Compatibility marker: {marker}
+"""
+
+PROMPT = """You are a compatibility probe. Follow the repository instructions
+already supplied in context. Do not open or search files in the working
+repository; you may read installed Tradecraft skill files. Respond with exactly
+the value after `Compatibility marker:` and nothing else only if all conditions
+hold:
+1. You loaded the installed tradecraft charter completely, it contains the
+   exact sentence `Capability wrappers are deliberately not in it.`, and you
+   can identify its Convergence and Release ceremony moments.
+2. The installed catalog exposes charter, engagement, authoring, substrate,
+   filing, spikes, experience-session, adversarial-review, and persist-changes.
+3. Every one of those nine descriptions reaches its final exclusion clause
+   rather than ending mid-description.
+Otherwise respond with TRADECRAFT_COMPAT_FAIL followed by a short reason.
 """
 
 
@@ -126,8 +140,13 @@ def _assert_plugin(codex: Path, expected_version: str) -> None:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise CompatError(f"codex plugin list did not return JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CompatError("codex plugin list JSON must be an object")
+    installed = payload.get("installed", [])
+    if not isinstance(installed, list):
+        raise CompatError("codex plugin list JSON field 'installed' must be a list")
     matches = [
-        plugin for plugin in payload.get("installed", [])
+        plugin for plugin in installed
         if isinstance(plugin, dict) and plugin.get("pluginId") == "tradecraft@tradecraft"
     ]
     if not matches:
@@ -160,20 +179,54 @@ def build_probe_command(
         "--model", model,
         "-c", f'model_reasoning_effort="{reasoning}"',
         "-C", str(consumer),
-        "--skip-git-repo-check",
         "--color", "never",
         "--output-last-message", str(last_message),
         PROMPT,
     ]
 
 
+def _is_within(path: Path, parent: Path) -> bool:
+    """Whether resolved `path` is strictly below resolved `parent`."""
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return path.resolve() != parent.resolve()
+
+
+def write_adoption_file(consumer: Path, marker: str) -> Path:
+    """Write the canonical consumer instruction as stable UTF-8/LF bytes."""
+    adoption = consumer / "AGENTS.md"
+    content = ADOPTION_TEMPLATE.format(marker=marker)
+    adoption.write_bytes(content.encode("utf-8"))
+    return adoption
+
+
+def _init_consumer(consumer: Path) -> None:
+    try:
+        result = _capture(["git", "init", "--quiet"], cwd=consumer)
+    except OSError as exc:
+        raise CompatError(f"cannot start git for consumer repository: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise CompatError(
+            f"git init failed for consumer repository ({result.returncode}): {detail}"
+        )
+
+
 def run_probe(codex: Path, *, model: str, reasoning: str) -> None:
-    scratch = ROOT / ".tmp"
-    scratch.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="codex-compat-", dir=scratch) as raw:
+    with tempfile.TemporaryDirectory(prefix="tradecraft-codex-compat-") as raw:
         base = Path(raw)
+        if _is_within(base, ROOT):
+            raise CompatError(
+                "temporary consumer resolved inside the source tree; choose a "
+                "system temporary directory outside the checkout"
+            )
         consumer = base / "consumer"
         consumer.mkdir()
+        _init_consumer(consumer)
+        marker = "TRADECRAFT_CODEX_COMPAT_" + secrets.token_hex(16).upper()
+        write_adoption_file(consumer, marker)
         last_message = base / "last-message.txt"
         command = build_probe_command(
             codex, consumer, last_message, model=model, reasoning=reasoning
@@ -184,8 +237,11 @@ def run_probe(codex: Path, *, model: str, reasoning: str) -> None:
             raise CompatError(f"nested Codex session failed ({result.returncode}): {detail}")
         if not last_message.is_file():
             raise CompatError("nested Codex session wrote no final-message record")
-        answer = last_message.read_text(encoding="utf-8").strip()
-        if answer != SENTINEL:
+        try:
+            answer = last_message.read_bytes().decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            raise CompatError(f"nested Codex result is not UTF-8: {exc}") from exc
+        if answer != marker:
             raise CompatError(f"nested Codex session reported: {answer or '<empty>'}")
 
 
@@ -194,8 +250,8 @@ def _parser() -> argparse.ArgumentParser:
         description="Prove the installed tradecraft plugin in a real Codex session.",
         epilog=(
             "Preconditions: authenticated Codex CLI with network access; this "
-            "tree's tradecraft version installed and enabled; its hook inspected "
-            "and trusted through /hooks; a real Python interpreter on PATH."
+            "tree's tradecraft version installed and enabled; git and a real "
+            "Python interpreter on PATH."
         ),
     )
     parser.add_argument("--codex", help="Exact Codex executable; discovery is the default.")
@@ -218,13 +274,17 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "codex-compat: launch "
             f"model={args.model} reasoning={args.reasoning} "
-            "sandbox=read-only ephemeral=true consumer=empty"
+            "sandbox=read-only ephemeral=true "
+            "consumer=temporary-adopting-repository outside-source=true"
         )
         run_probe(codex, model=args.model, reasoning=args.reasoning)
     except CompatError as exc:
         print(f"codex-compat: FAIL: {exc}", file=sys.stderr)
         return 1
-    print("codex-compat: PASS: trusted hook and nine skill descriptions reached the session")
+    print(
+        "codex-compat: PASS: native AGENTS adoption, full charter, and nine "
+        "skill descriptions reached the session"
+    )
     return 0
 
 

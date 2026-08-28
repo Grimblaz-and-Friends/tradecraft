@@ -75,15 +75,37 @@ def test_probe_launch_pins_isolation_and_staffing(tmp_path):
     assert command[command.index("--model") + 1] == "gpt-5.6-sol"
     assert 'model_reasoning_effort="high"' in command
     assert command[command.index("-C") + 1].endswith("consumer")
-    assert "--skip-git-repo-check" in command
+    assert "--skip-git-repo-check" not in command
     assert command[-1] == compat.PROMPT
+    assert "TRADECRAFT_CODEX_COMPAT_" not in compat.PROMPT
+
+
+def test_adoption_file_names_the_single_supported_flow(tmp_path):
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    path = compat.write_adoption_file(consumer, "TRADECRAFT_CODEX_COMPAT_TEST")
+    content = path.read_bytes().decode("utf-8")
+    assert "load and read the installed `tradecraft:charter`" in content
+    assert "completely" in content
+    assert "If it is unavailable, stop and tell the owner" in content
+    assert "TRADECRAFT_CODEX_COMPAT_TEST" in content
+    assert "hooks" not in content.casefold()
+
+
+def test_consumer_boundary_rejects_the_source_tree_and_accepts_a_sibling(tmp_path):
+    source = tmp_path / "source"
+    inside = source / "consumer"
+    sibling = tmp_path / "consumer"
+    assert compat._is_within(inside, source)
+    assert not compat._is_within(source, source)
+    assert not compat._is_within(sibling, source)
 
 
 def test_plugin_check_requires_the_tree_version(monkeypatch):
     payload = {
         "installed": [{
             "pluginId": "tradecraft@tradecraft",
-            "version": "0.49.0",
+            "version": "0.50.0",
             "installed": True,
             "enabled": True,
         }]
@@ -97,6 +119,20 @@ def test_plugin_check_requires_the_tree_version(monkeypatch):
         })()
 
     monkeypatch.setattr(compat, "_capture", captured)
-    compat._assert_plugin(Path("codex"), "0.49.0")
+    compat._assert_plugin(Path("codex"), "0.50.0")
     with pytest.raises(compat.CompatError, match="this tree"):
+        compat._assert_plugin(Path("codex"), "0.51.0")
+
+
+@pytest.mark.parametrize("payload", [[], None])
+def test_plugin_check_rejects_json_that_is_not_an_object(monkeypatch, payload):
+    def captured(_command, *, cwd=None):
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": json.dumps(payload),
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr(compat, "_capture", captured)
+    with pytest.raises(compat.CompatError, match="must be an object"):
         compat._assert_plugin(Path("codex"), "0.50.0")

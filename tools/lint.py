@@ -237,9 +237,9 @@ CELL_BODY_BUDGET_CHARS = {
 # reference the others. Self-containment exists to stop loading cost and
 # multi-site drift; neither applies here. The charter is always-on in every
 # session by construction -- imported by this repository's AGENTS.md and loaded
-# by an adopter's repository instruction -- so a cell citing it points at prose the reader has
-# already loaded, and a citation cannot fall out of agreement the way a second
-# copy can. The exemption is one target at depth one: cells may cite the
+# by an adopter's repository instruction -- so a cell citing it points at prose
+# the reader has already loaded, and a citation cannot fall out of agreement
+# the way a second copy can. The exemption is one target at depth one: cells may cite the
 # charter and it may cite them, no cell may cite any other, so the shape
 # cannot grow into the mesh of mutual references the predecessor accumulated.
 CHARTER_CELL = "charter"
@@ -439,7 +439,14 @@ BASELINE_UNRESOLVABLE = {
 # deadlock lawful. It is not an open exemption list: every row states its own
 # reason, the reason is enforced non-empty, and a row is one visible line of
 # diff on the pull request that created the situation.
-UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {}
+UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {
+    ("D-156-2026-08-24-installable-plugin-and-shipped-charter.md", 43,
+     "hooks/README.md"):
+        "target retired by PR #222 with the lifecycle-hook fallback it documented",
+    ("D-186-2026-08-25-windows-text-mode-defaults.md", 9,
+     "hooks/emit_charter.py"):
+        "target retired by PR #222 with the lifecycle-hook fallback it implemented",
+}
 
 REVIEW_FIELDS = {"date", "artifact", "lane", "report"}
 REVIEW_LANES = {"panel", "routine"}
