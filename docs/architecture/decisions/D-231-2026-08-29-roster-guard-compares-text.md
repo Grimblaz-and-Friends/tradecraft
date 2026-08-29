@@ -53,9 +53,22 @@ No always-on surface is edited here, so no outflow is owed. [D-184]
 
 The filing deferred *whether anything else the two-zone layout tracks under `.claude/` has the same exposure*. **It does not** — and the enumeration that establishes it is not the one this entry first gave.
 
-`git ls-files .claude` returns the nine roster entries and nothing else. Tracing every read of them during one lint run — by patching `Path.read_bytes` and `read_text` and running `lint.main()` — the readers are `roster.expected`, `roster.verify`, `lint._read_text`, `tools/figures.py:read`, and `lint.check_doctrine`. **Only `roster` compares them**; every other reader either counts characters or matches text, and each normalises newlines already. So the answer is right and the `lib/`-helper rejection stands.
+`git ls-files .claude` returns the nine roster entries and nothing else. **Who reads them is a census, so this entry records the command rather than its output** -- twice this section stated the result instead and twice the result was wrong, both times by reporting a count without printing the paths it was counted over:
 
-The first draft claimed *"exactly two things consume them"*, naming `_normalized_chars` in `skills/authoring/scripts/figures.py` as the sibling that reached for the same move first. **That was wrong in both directions.** `_normalized_chars` reads a roster entry in no run this repository performs — its only caller is `figure_delta`, whose `PROSE_PATHS` do not include `.claude` — and the readers that do were invisible to a census scoped to `read_bytes()` calls, one of which (`lint._read_text`) is a `read_bytes()` call the stated method should have found. The predicate `_normalized_chars` uses is still the same move for the same reason; it is simply not the sibling at this site.
+```
+# On whatever tree you are on, run the lint under an intercept that:
+#   - wraps every route to opening a file -- builtins.open and os.open as
+#     well as Path.read_bytes/read_text. Scoping it to the Path methods
+#     alone is what produced the first wrong draft.
+#   - buckets each hit by whether the resolved path is under .claude/skills/
+#     or is a cell under skills/. Not bucketing is what produced the second.
+#   - prints the calling frame and the path, never only a count.
+python tools/lint.py
+```
+
+**What it returns on a lawful tree: two call sites read an entry** -- `roster.verify`, which compares it, and the local `read` inside `figure_always_on` in `tools/figures.py`, which decodes with universal newlines and counts characters. **Only `roster` compares an entry against an expectation**, which is the answer #224 asked for and the reason a `lib/` helper buys nothing. **The falsifier:** any third frame in the entry bucket, or `figure_always_on`'s read becoming a byte read.
+
+Both wrong drafts are recorded, because the shape recurred rather than slipped. The first named `_normalized_chars` in `skills/authoring/scripts/figures.py` as the sibling reader: it reaches a roster entry in no run this repository performs, its only caller being `figure_delta`, which this repository's wrapper calls over paths that do not include `.claude`. The second named five readers, three of which -- `roster.expected`, `lint._read_text`, `lint.check_doctrine` -- read **cells** under `skills/` and never an entry, a census counting cell reads as entry reads; and it added that every other reader "normalises newlines already", which is false of `lint._read_text`, that being `read_bytes()` then `decode` and normalising nothing.
 
 ## What was rejected
 

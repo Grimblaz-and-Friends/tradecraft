@@ -230,14 +230,23 @@ def matches(entry: bytes, want: bytes) -> bool:
     "strip every carriage return", an all-CR entry kills "treat a lone `\\r` as
     a line ending", and either alone leaves the other mutant alive.
 
-    Every other reader of these files -- `lint._read_text`, `tools/figures.py`,
-    `lint.check_doctrine` -- already normalises newlines or matches text. This
-    is the only one that compares them, which is the whole of the exposure
-    #224 asked about. `_normalized_chars` in
-    `skills/authoring/scripts/figures.py` reaches for the same move for the
-    same stated reason, and is worth reading for it, but it is reached by no
-    run this repository performs: its only caller's `PROSE_PATHS` do not
-    include `.claude`.
+    **This is the only site that compares one of these files**, which is the
+    whole of the exposure #224 asked about. Two call sites read one at all:
+    this one, and the local `read` inside `figure_always_on` in
+    `tools/figures.py`, which decodes with universal newlines and counts
+    characters. Re-derive that rather than trusting it -- run `python
+    tools/lint.py` on whatever tree you are on, under an intercept wrapping
+    every route to opening a file, bucketing each hit by whether the resolved
+    path is under `.claude/skills/`, and printing the frame and the path. D-231
+    carries the command and why it is recorded instead of its answer: two
+    drafts of this paragraph named readers that turned out to read **cells**
+    under `skills/`, because a census that prints only a count cannot tell the
+    two apart.
+
+    `_normalized_chars` in `skills/authoring/scripts/figures.py` reaches for
+    the same move for the same stated reason and is worth reading for it. It
+    is live code on a path this repository runs constantly -- it does not
+    reach a roster **entry**, which is the only claim made about it here.
     """
     return entry.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n")
 

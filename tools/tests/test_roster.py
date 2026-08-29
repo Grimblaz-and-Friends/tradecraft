@@ -43,7 +43,7 @@ def make_cell(root: Path, name: str, description: str = "A fixture cell.") -> Pa
 
 
 def crlf(path: Path) -> None:
-    """Rewrite a file the way a Claude Code worktree's copy of `.claude/` does.
+    """Rewrite a file the way a Claude Code session worktree's harness copy does.
 
     Not a hypothetical: a Claude Code **session** worktree comes up with these
     nine files and `CLAUDE.md` written in text mode by the harness, while git
@@ -153,10 +153,12 @@ def test_a_stray_carriage_return_is_not_forgiven(tmp_path):
     apart: a `\\r\\n` normalisation still reports it, and the wider
     "strip every carriage return" forgives it.
 
-    An earlier version replaced every line feed with a carriage return instead.
-    Both predicates report that one, so it passed under the very mutation it
-    was written to catch -- caught here by running the mutation rather than by
-    reading the test, which is the only way that class shows up.
+    This fixture was added when the all-CR one below was found not to
+    discriminate against strip-every-carriage-return. **Both are needed and
+    neither replaces the other**: the sibling below kills the mutant this one
+    cannot. What that episode established is the method -- running the
+    mutation, rather than reading the test, is the only way a
+    non-discriminating fixture shows up at all.
     """
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
@@ -172,19 +174,19 @@ def test_an_all_carriage_return_entry_is_not_forgiven_either(tmp_path):
     """The other half of the pair, and neither half pins the bound alone.
 
     This entry's line feeds are *replaced* by carriage returns rather than
-    paired with them. A `\r\n` normalisation leaves it wholly unlike its cell
-    and reports it; the wider "treat a lone `\r` as a line ending" folds it
+    paired with them. A `\\r\\n` normalisation leaves it wholly unlike its cell
+    and reports it; the wider "treat a lone `\\r` as a line ending" folds it
     back to the cell and goes silent. So this fixture kills that mutant and
     `test_a_stray_carriage_return_is_not_forgiven` does not -- while that one
     kills "strip every carriage return" and this one does not.
 
     **This fixture was here, was replaced by the stray-byte one, and had to
     come back.** The replacement was made because the original did not
-    discriminate against strip-every-`\r`; nobody checked what it *had* been
+    discriminate against strip-every-`\\r`; nobody checked what it *had* been
     discriminating against, so the bound `matches()` states went unpinned while
     a mutation matrix in the commit message read as full coverage. The hazard
     is live rather than theoretical: `tools/figures.py` already normalises a
-    lone `\r` to a newline, so a session harmonising the two writes exactly
+    lone `\\r` to a newline, so a session harmonising the two writes exactly
     this mutant and gets a green suite. [#224 review, M9]
     """
     make_cell(tmp_path, "alpha")
@@ -211,8 +213,8 @@ def test_a_cell_that_is_itself_crlf_still_matches_its_entry(tmp_path):
     from the same bytes. A cell that goes CRLF *after* its entry was written
     is the other composition, and it does **not** match: `expected()` slices
     the cell by raw bytes, so `frontmatter()`'s trailing byte lands on the
-    `
-` and the copied block loses a newline that no later normalisation
+    carriage return -- `frontmatter()` returns `---\\r` there, final byte
+    `0x0d` -- and the copied block loses a newline that no later normalisation
     restores. That fires a truthful out-of-step finding whose named command
     then writes an entry a Linux checkout disagrees with. Pre-existing, older
     than [#224], and filed rather than fixed here -- the repair is inside
@@ -526,8 +528,9 @@ def test_the_generator_introduces_no_carriage_return_of_its_own(tmp_path):
     **This is the only guard on the write half**, since the tree-level test
     stopped asserting the entries are LF on disk -- so read what it does not
     say. It said "and this file is compared byte for byte on every lint run"
-    for one revision after [#224] made that false, which is an argument for
-    deleting this test, and the argument is wrong: what the write half buys is
+    at `e99f261`, `81a4b1f` and `56d71ff` -- the first of those is where it
+    became false -- which is an argument for deleting this test, and the
+    argument is wrong: what the write half buys is
     one byte sequence from one generator on every platform, and the comparison
     relaxing has no bearing on it.
     """
@@ -564,10 +567,13 @@ def test_this_repository_carries_a_roster_for_every_cell(tmp_path):
     proves the shapes, and this proves the shipped tree is in one of them --
     which is the claim #199 found false and nothing was checking.
 
-    **It no longer asserts the entries are LF on disk**, which was false in
-    every Claude Code worktree here and put a second red in front of a session
-    that had changed nothing -- the suite failing beside the lint, from the one
-    cause, and neither of them nameable as its own doing. That assertion was
+    **It no longer asserts the entries are LF on disk**, which is false in a
+    session worktree here and put a second red in front of a session that had
+    changed nothing -- the suite failing beside the lint, from the one cause,
+    and neither of them nameable as its own doing. It is *true* in an `agent-*`
+    subagent worktree, which is why the assertion cannot come back on the
+    strength of one tree reading LF: the property it tests belongs to whatever
+    wrote the tree, and both answers are lawful. That assertion was
     also the wrong instrument for what it wanted: what the generator writes is
     pinned deterministically in tmp_path by
     `test_the_generator_introduces_no_carriage_return_of_its_own`, where it
