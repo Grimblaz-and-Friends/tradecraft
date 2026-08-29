@@ -52,7 +52,8 @@ def fail(reason: str) -> None:
 
 
 def git(*args: str) -> str:
-    proc = subprocess.run(["git", *args], capture_output=True, text=True)
+    proc = subprocess.run(["git", *args], stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True)
     if proc.returncode != 0:
         fail(f"git {args[0]} failed: {(proc.stderr or proc.stdout).strip()}")
     return proc.stdout.strip()
@@ -84,7 +85,7 @@ def pick_remote(branch: str) -> tuple[str, str]:
     """The branch's upstream remote, or the sole remote; never a guess."""
     proc = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-        capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
     )
     if proc.returncode == 0 and "/" in proc.stdout.strip():
         remote, _, remote_branch = proc.stdout.strip().partition("/")
@@ -142,7 +143,7 @@ def main() -> None:
 
     push = subprocess.run(
         ["git", "push", remote, f"HEAD:refs/heads/{remote_branch}"],
-        capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
     )
     if push.returncode != 0:
         detail = (push.stderr or push.stdout).strip()

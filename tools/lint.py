@@ -105,6 +105,9 @@ Checks:
     holding a second definition drifts from the writer it judges.
 18. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
+19. subprocess stdin: every subprocess launch names stdin, because an unnamed
+    one is inherited and on Windows the inherited handle is invalid wherever
+    fd 0 has been redirected.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -2446,6 +2449,100 @@ def check_stdio_wired(root: Path) -> list[str]:
     return findings
 
 
+_LAUNCHERS = ("run", "Popen", "call", "check_call", "check_output")
+
+
+def check_subprocess_stdin(root: Path) -> list[str]:
+    """Every `subprocess` launch names its stdin.
+
+    **An unnamed `stdin` means inherit, and on Windows what gets inherited can
+    be a handle that no longer exists.** `subprocess` implements inheritance as
+    `GetStdHandle(STD_INPUT_HANDLE)` followed by `DuplicateHandle`. Anything
+    that redirects fd 0 -- pytest's default capture, most harnesses -- closes
+    the handle the process's std-handle table still points at, and
+    `GetStdHandle` goes on returning the stale value. The duplicate then raises
+    `OSError: [WinError 6] The handle is invalid`, from a call that has nothing
+    to do with the command being run.
+
+    **It fails intermittently, which is the part that costs.** Windows recycles
+    handle values: when some unrelated object in the process happens to hold
+    the recycled value the duplicate succeeds and the child silently receives
+    an unrelated handle as its stdin; when the value is free, the launch
+    raises. On this repository's own suite that produced a different set of red
+    tests on every run, all of them this one error, while CI stayed green --
+    a runner has no console on fd 0, so `GetStdHandle` returns `None` and
+    `subprocess` takes its `CreatePipe` branch and cannot reach the defect.
+    Green CI does not tell a consumer anything about this. [#229]
+
+    `stdin=subprocess.DEVNULL` is the remedy for a program not meant to read
+    input, which is all of them here; `input=` satisfies this too, because it
+    implies `stdin=PIPE`.
+
+    **A call-site check, not a reachability analysis** -- the same bound
+    `check_docstring_not_piped` states, and for the same reason: the pattern is
+    one keyword on one call, and matching it needs no guess about what reaches
+    where. Two consequences follow and are the guard's stated limits. A call
+    forwarding `**kwargs` is left alone, since whether stdin is in there cannot
+    be read off the call and reporting it would block lawful work -- the
+    polarity the substrate cell says fails as hard as the other. And a wrapper
+    that names stdin once for many callers passes on the wrapper's own line,
+    which is the shape this repository already uses.
+    """
+    findings = []
+    for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in _python_files(base):
+            text = _read_text(path)
+            if text is None:
+                continue
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                continue
+            # `from subprocess import run` binds a bare name, and a check
+            # matching only `subprocess.run` would pass it. Collected per file
+            # because the binding is per module.
+            bare = {
+                (alias.asname or alias.name)
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module == "subprocess"
+                for alias in node.names
+                if alias.name in _LAUNCHERS
+            }
+            rel_file = path.relative_to(root).as_posix()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "subprocess"
+                    and func.attr in _LAUNCHERS
+                ):
+                    shown = f"subprocess.{func.attr}"
+                elif isinstance(func, ast.Name) and func.id in bare:
+                    shown = func.id
+                else:
+                    continue
+                named = {keyword.arg for keyword in node.keywords}
+                if "stdin" in named or "input" in named or None in named:
+                    continue
+                findings.append(
+                    f"subprocess-stdin: {rel_file}:{node.lineno} calls "
+                    f"{shown} without naming stdin -- an unnamed stdin is "
+                    f"inherited, and on Windows the inherited handle is "
+                    f"invalid wherever fd 0 has been redirected, so the "
+                    f"launch fails with WinError 6 intermittently and for a "
+                    f"reason that is not the command's. Pass "
+                    f"stdin=subprocess.DEVNULL, or input= where the program "
+                    f"is given something to read"
+                )
+    return findings
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
@@ -2465,6 +2562,7 @@ def run(root: Path) -> list[str]:
         + check_emitted_ascii(root)
         + check_docstring_not_piped(root)
         + check_stdio_wired(root)
+        + check_subprocess_stdin(root)
         + check_marketplace_source(root)
     )
 

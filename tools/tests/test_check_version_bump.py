@@ -30,7 +30,7 @@ PASS, FAIL, UNDETERMINED = cvb.PASS, cvb.FAIL, cvb.UNDETERMINED
 
 def _run(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True,
-                   capture_output=True, text=True)
+                   stdin=subprocess.DEVNULL, capture_output=True, text=True)
 
 
 def _manifest(repo: Path, version: str) -> None:

@@ -360,7 +360,7 @@ def always_on_at(root: Path, ref: str) -> int:
     def read(path: str) -> str | None:
         out = subprocess.run(
             ["git", "-C", str(root), "show", f"{ref}:{path}"],
-            capture_output=True,
+            stdin=subprocess.DEVNULL, capture_output=True,
         )
         if out.returncode != 0:
             return None
@@ -378,7 +378,7 @@ def always_on_at(root: Path, ref: str) -> int:
         # change should show the surface rising by what it did not load.
         out = subprocess.run(
             ["git", "-C", str(root), "ls-tree", "-r", "--name-only", ref, prefix],
-            capture_output=True, text=True, check=True,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True,
         ).stdout.split()
         return [p for p in out if predicate(p)]
 

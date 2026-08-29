@@ -672,7 +672,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
     "check_emitted_ascii", "check_docstring_not_piped",
-    "check_stdio_wired", "check_marketplace_source",
+    "check_stdio_wired", "check_subprocess_stdin", "check_marketplace_source",
 )
 
 
@@ -2728,6 +2728,98 @@ def test_a_module_without_main_is_not_asked(tmp_path):
     """Not every module is a script, and a library owes no stream setup."""
     _zoned(tmp_path, "tools/helper.py", "def helper():" + chr(10) + "    return 1" + chr(10))
     assert lint.check_stdio_wired(tmp_path) == []
+
+
+# --- check_subprocess_stdin -------------------------------------------------
+#
+# Both polarities, and the two forms the check has to reach: the qualified
+# `subprocess.run` and the bare name `from subprocess import run` binds. The
+# defect this guards is #229 -- an unnamed stdin is inherited, and on Windows
+# the inherited handle is invalid wherever fd 0 has been redirected.
+
+
+def test_an_unnamed_stdin_is_caught(tmp_path):
+    """The shape every call site here had before #229."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.run(["git", "status"], capture_output=True)' + chr(10))
+    findings = lint.check_subprocess_stdin(tmp_path)
+    assert len(findings) == 1, findings
+    assert "subprocess-stdin" in findings[0]
+    assert "tools/script.py:2" in findings[0]
+    assert "subprocess.run" in findings[0]
+
+
+def test_the_shipped_zone_is_walked_too(tmp_path):
+    """`persist.py` and `figures.py` are shipped, and a consumer running one
+    on Windows hits this before any test does. A check that only walked the
+    repo-only zone would have left the half that reaches consumers open."""
+    _zoned(tmp_path, "skills/thing/scripts/thing.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.Popen(["git"])' + chr(10))
+    findings = lint.check_subprocess_stdin(tmp_path)
+    assert len(findings) == 1, findings
+    assert "skills/thing/scripts/thing.py" in findings[0]
+
+
+def test_the_bare_imported_name_is_caught(tmp_path):
+    """`from subprocess import run` binds a name no attribute match reaches."""
+    _zoned(tmp_path, "tools/script.py",
+           "from subprocess import run" + chr(10)
+           + 'run(["git", "status"])' + chr(10))
+    findings = lint.check_subprocess_stdin(tmp_path)
+    assert len(findings) == 1, findings
+    assert "calls run without naming stdin" in findings[0]
+
+
+def test_devnull_is_left_alone(tmp_path):
+    """The lawful form, and the remedy every finding names."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.run(["git"], stdin=subprocess.DEVNULL)' + chr(10))
+    assert lint.check_subprocess_stdin(tmp_path) == []
+
+
+def test_input_satisfies_it(tmp_path):
+    """`input=` implies `stdin=PIPE`, so the inherited handle is never touched.
+
+    This is not a hypothetical accommodation: `check_ignored` in this very
+    module launches `git check-ignore --stdin` that way, and it is one of the
+    two call sites #229 never saw fail."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.run(["git"], input="x")' + chr(10))
+    assert lint.check_subprocess_stdin(tmp_path) == []
+
+
+def test_a_kwargs_forwarder_is_left_alone(tmp_path):
+    """The guard's stated bound, held as a test rather than left to the prose.
+
+    Whether stdin is inside `**kwargs` cannot be read off the call, and a guard
+    that reddened here would block lawful work -- the polarity the substrate
+    cell says fails as hard as the other."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + "def launch(cmd, **kwargs):" + chr(10)
+           + "    return subprocess.run(cmd, **kwargs)" + chr(10))
+    assert lint.check_subprocess_stdin(tmp_path) == []
+
+
+def test_something_else_named_run_is_not_a_launch(tmp_path):
+    """`lint.run` exists in this repository and takes no stdin."""
+    _zoned(tmp_path, "tools/script.py",
+           "import other" + chr(10)
+           + "other.run(1)" + chr(10)
+           + "run(2)" + chr(10))
+    assert lint.check_subprocess_stdin(tmp_path) == []
+
+
+def test_this_repository_names_stdin_at_every_launch():
+    """The tree this exists for, not a restatement of the guard.
+
+    The guard proves the shape; this proves the shipped and repo-only trees are
+    in it -- which is the claim #229 found false and nothing was checking."""
+    assert lint.check_subprocess_stdin(Path(__file__).resolve().parents[2]) == []
 
 
 def test_emitted_ascii_reports_the_line_carrying_the_character(tmp_path):

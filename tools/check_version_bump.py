@@ -70,6 +70,7 @@ def _git(*args: str) -> tuple[int, str, str]:
     """
     proc = subprocess.run(
         ["git", "-C", str(ROOT), "-c", "core.quotePath=false", *args],
+        stdin=subprocess.DEVNULL,
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return proc.returncode, (proc.stdout or ""), (proc.stderr or "").strip()

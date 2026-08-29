@@ -145,7 +145,8 @@ def _gh(*args: str) -> str:
     """
     try:
         proc = subprocess.run(
-            ["gh", *args], capture_output=True, text=True,
+            ["gh", *args], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True,
             encoding="utf-8", errors="replace",
         )
     except OSError as exc:                      # gh absent from the runner

@@ -21,7 +21,8 @@ spec.loader.exec_module(figures)
 
 
 def run(cmd, cwd):
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    return subprocess.run(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True)
 
 
 def cli(cwd, *args):

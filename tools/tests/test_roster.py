@@ -74,6 +74,57 @@ def test_an_entry_out_of_step_fires(tmp_path):
     assert roster.verify(tmp_path) == []
 
 
+def test_an_entry_rewritten_to_crlf_is_still_in_step(tmp_path):
+    """The condition [D-186] rules is expected here, which this guard was the
+    one place calling a defect.
+
+    A Claude Code worktree arrived with every `.claude/skills/` entry rewritten
+    in text mode, and `python tools/lint.py` reported every cell out of step
+    against a tree git considered clean -- before the session had changed
+    anything. Reading the working copy as bytes is what did that; nothing the
+    guard claims needs it, because `.gitattributes` pins the index to LF and a
+    drift that is only line endings cannot reach a commit. [#229]
+    """
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r\n"))
+    assert b"\r\n" in entry.read_bytes()
+    assert roster.verify(tmp_path) == []
+
+
+def test_crlf_does_not_hide_a_real_drift(tmp_path):
+    """The other polarity, and the one that would make the fix a deletion.
+
+    A guard that stopped reporting because it stopped comparing would pass this
+    too. The entry here carries CRLF *and* a description its cell no longer
+    has, which is the whole triggering surface out of date."""
+    make_cell(tmp_path, "alpha", "The first description.")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r\n"))
+    make_cell(tmp_path, "alpha", "A different description entirely.")
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 1, findings
+    assert "out of step" in findings[0]
+
+
+def test_write_still_restores_the_canonical_bytes(tmp_path):
+    """`verify` tolerates the rewrite; `--write` repairs it.
+
+    Two questions, two answers -- and this pins the second, because a `write()`
+    that had followed `verify` into normalizing would leave a CRLF entry on
+    disk with nothing left in the repository able to say so."""
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    canonical = entry.read_bytes()
+    entry.write_bytes(canonical.replace(b"\n", b"\r\n"))
+    changed = roster.write(tmp_path)
+    assert entry.read_bytes() == canonical
+    assert any("wrote" in line for line in changed), changed
+
+
 def test_an_orphan_entry_fires_and_is_removed(tmp_path):
     """An entry naming a cell that is gone puts a retired trigger in every
     session's context, which is worse than the missing entry above: the
@@ -447,7 +498,7 @@ def test_a_linked_entry_directory_is_refused_rather_than_written_through(tmp_pat
             pytest.skip("this platform will not create a directory link")
         made = subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(entry), str(outside)],
-            capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
         )
         if made.returncode != 0:
             pytest.skip(f"no directory link available: {made.stdout}{made.stderr}")

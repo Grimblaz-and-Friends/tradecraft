@@ -14,6 +14,7 @@ description: How this practice writes the code it ships and runs — one substra
 - **Guard-shaped code is probed in both polarities** — the unlawful case caught, the lawful case left alone — since a guard blocking lawful work fails as hard as one passing unlawful work.
 - **The calling contract names no harness token**, because one runtime substitutes it and another does not, so a contract carrying one binds in the first and is dead in the second. [D-156]
 - **A path resolved against the directory of the file naming it** works in a source repository and in an installed plugin alike.
+- **Every subprocess launch names its stdin** — `stdin=subprocess.DEVNULL` for a program not meant to read input, which is nearly all of them. An unnamed stdin is *inherited*, and on Windows the inherited handle is invalid wherever fd 0 has been redirected — under a test runner's capture, under most harnesses — so the launch fails with `WinError 6`, intermittently, for a reason that is not the command's. The intermittency is the cost: Windows recycles handle values, so the same call can succeed, fail, or hand the child an unrelated handle, and a suite reports a different red each run while CI, whose runners have no console on fd 0, never reproduces it.
 
 ## Text mode
 
