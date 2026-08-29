@@ -21,13 +21,13 @@ Branch first (`main` refuses direct pushes) → build → `python tools/lint.py`
 
 ## Review, here
 
-Every review appends one row to `docs/reviews.jsonl`.
+Every review appends one row to `docs/reviews.jsonl`, and every `record` ruling one entry to `docs/recorded-findings.jsonl`.
 
 ## Content routing, here
 
 The charter carries the routing map. Specific to here:
 
-- **Cell structure is the `authoring` cell's standard** — self-containment, the charter's exemption from it, and depth on demand from a cell's own `references/`; the lint enforces the checkable subset here. Shared code lives only in `lib/`.
+- **Cell structure is the `authoring` cell's standard**, whose checkable subset the lint enforces here. Shared code lives only in `lib/`.
 - **A binding rule the practice exports** → the `charter` cell, within its own job. **A rule or mechanic only this repository needs** → this file, within its budget.
 - **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`; a decision entry lives at the path under Decisions below.
 
