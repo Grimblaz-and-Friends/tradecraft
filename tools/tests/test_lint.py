@@ -2819,7 +2819,7 @@ def test_qualitative_row_must_name_its_external_outcome(tmp_path, monkeypatch):
     assert "missing field 'external'" in findings[0], findings[0]
 
 
-@pytest.mark.parametrize("external", ["", "   ", None, {"raw": 2}, 2])
+@pytest.mark.parametrize("external", ["", "   ", "2", None, {"raw": 2}, 2])
 def test_external_outcome_must_be_qualitative(tmp_path, monkeypatch, external):
     make_clean_tree(tmp_path)
     _at_cutover(monkeypatch)

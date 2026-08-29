@@ -1261,7 +1261,11 @@ def _check_external(row, row_index: int, where: str, findings: list) -> None:
             )
         return
     value = row["external"]
-    if not isinstance(value, str) or not value.strip():
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value.strip().isdigit()
+    ):
         findings.append(
             f"{where} external must be a non-empty qualitative string naming "
             "what actually posted -- never a count or a panel seat"
