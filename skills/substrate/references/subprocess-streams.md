@@ -11,11 +11,14 @@ So *"name your stdin"* is the wrong rule, and wrong in the direction that costs:
 ## The compliant forms
 
 - `run(cmd, stdin=DEVNULL, capture_output=True)` — a program given nothing to read, whose output you want. Nearly everything.
-- `run(cmd, input=payload, capture_output=True)` — a program you feed; `input=` implies `stdin=PIPE`, so it covers that stream. `input=None` does **not**: it never reaches `run`'s `if input is not None`, so it leaves stdin inherited while looking named.
+- `run(cmd, input=payload, capture_output=True)` — a program you feed; `input=` implies `stdin=PIPE`, so it covers that stream. On `run` alone, `input=None` does **not**: it never reaches `run`'s `if input is not None`, so it leaves stdin inherited while looking named.
 - `run(cmd)` — a program run purely for its side effects, output going wherever the caller's went. Lawful, and adding a keyword to it is the mistake above.
-- **`getoutput`, `getstatusoutput` and `os.popen` have no compliant form.** Each redirects a stream by construction and exposes no stdin parameter, so they cannot satisfy the rule at all. Do not use them.
+- **`check_output` redirects `stdout` before you pass anything**, since it is `run(*popenargs, stdout=PIPE, ...)`. So `check_output(cmd)` is *not* the lawful bare form above — it is a partial redirect, measured failing 20 times in 20. Its compliant form is `check_output(cmd, stdin=DEVNULL, stderr=DEVNULL)`; naming all three is impossible, because supplying `stdout=` raises `ValueError`. It also rewrites `input=None` to `b''` before calling `run`, so unlike `run` it pipes stdin either way.
+- **`getoutput`, `getstatusoutput` and `os.popen` have no compliant form at all.** Each redirects a stream by construction *and* exposes no stdin parameter, so nothing you can pass satisfies the rule. Do not use them.
 
 `stdin=None` is the default spelled out, so it redirects nothing and covers nothing.
+
+**Read a launcher against its own source, not against `run`'s.** The two bullets above are both cases where a wrapper's behaviour is not `run`'s, and both were missed by people reasoning from `run` — including, three times over, by reviewers proposing fixes for the first two.
 
 ## Why it fails intermittently, and why green CI says nothing
 
@@ -25,4 +28,4 @@ Windows recycles handle values. When some unrelated object in the process happen
 
 ## The guard, and what it cannot see
 
-A call-site check reads this off one call and needs no guess about what reaches where. Two things it cannot read, and so stays silent about: a `**kwargs` splat, and a `capture_output` whose value is not a literal. Silence there is deliberate — whether a stream is redirected is genuinely unknown, and a guard that reddened on it would block lawful work, which fails as hard as passing unlawful work.
+A call-site check reads this off one call and needs no guess about what reaches where. **What it reads is keyword arguments: anything positional, splatted, or not a literal is unread**, and unread is silence rather than a finding — whether a stream is redirected is genuinely unknown there, and a guard that reddened on it would block lawful work, which fails as hard as passing unlawful work. The bound is stated as that criterion rather than as a list of cases, because the list was tried and the spellings that escaped it were the ones nobody had thought of.

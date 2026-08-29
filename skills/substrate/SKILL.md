@@ -1,6 +1,6 @@
 ---
 name: substrate
-description: How this practice writes the code it ships and runs — one substrate, tests that travel with the script they prove, guards probed in both polarities, a calling contract portable across runtimes and installs, and text mode's silent damage to output and line endings. Use when writing or revising a script, test, hook or guard, when choosing a language for new code, or when a script prints, writes a file, or finds a file it needs; not for how prose is written or where a rule belongs, not for reviewing finished code, and not for committing and pushing it.
+description: How this practice writes the code it ships and runs — one substrate, tests that travel with the script they prove, guards probed in both polarities, a calling contract portable across runtimes and installs, text mode's silent damage to output and line endings, and the streams a launch must name. Use when writing or revising a script, test, hook or guard, when choosing a language for new code, or when a script prints, writes a file, finds a file it needs, or launches another program; not for how prose is written or where a rule belongs, not for reviewing finished code, and not for committing and pushing it.
 ---
 
 # substrate

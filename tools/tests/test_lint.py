@@ -2965,6 +2965,117 @@ def test_something_else_named_run_is_not_a_launch(tmp_path):
     assert _streams(tmp_path) == []
 
 
+def test_check_output_bare_is_partial_not_bare(tmp_path):
+    """`check_output` is `run(*popenargs, stdout=PIPE, ...)`, so it redirects a
+    stream before any keyword is read.
+
+    The cycle-one guard read "redirects nothing" off the keywords and certified
+    this call, which measures 20/20 failures under real capture -- the shape
+    the shipped cell calls lawful, reproduced inside the batch that closed the
+    class. [PR #232 post-fix, P1]"""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.check_output(["git", "rev-parse", "HEAD"])' + chr(10))
+    findings = _streams(tmp_path)
+    assert len(findings) == 1, findings
+    assert "stdin, stderr unnamed" in findings[0]
+
+
+def test_check_output_naming_the_other_two_is_left_alone(tmp_path):
+    """Its compliant form, measured 0/20 -- and the polarity that disproved the
+    remedy of flagging `check_output` unconditionally."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.check_output(["git"], stdin=subprocess.DEVNULL,' + chr(10)
+           + "                        stderr=subprocess.DEVNULL)" + chr(10))
+    assert _streams(tmp_path) == []
+
+
+def test_check_output_is_never_told_to_name_all_three(tmp_path):
+    """Naming `stdout` on `check_output` raises `ValueError`, and offering to
+    redirect none of them is not on offer either."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.check_output(["git"])' + chr(10))
+    finding = _streams(tmp_path)[0]
+    assert "redirect none of them" not in finding
+    assert "stdout" not in finding.split("--")[0]
+
+
+def test_input_none_pipes_on_check_output_but_not_on_run(tmp_path):
+    """`check_output` rewrites `input=None` to `b''` before calling `run`, so
+    unlike `run` it pipes stdin either way.
+
+    Read uniformly, this reddened a call measured safe at 0/20. [PR #232
+    post-fix, D1]"""
+    _zoned(tmp_path, "tools/co.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.check_output(["git"], input=None,' + chr(10)
+           + "                        stderr=subprocess.DEVNULL)" + chr(10))
+    assert _streams(tmp_path) == []
+    _zoned(tmp_path, "tools/r.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.run(["git"], input=None, capture_output=True)' + chr(10))
+    findings = [f for f in _streams(tmp_path) if "tools/r.py" in f]
+    assert len(findings) == 1, findings
+
+
+def test_capture_output_is_credited_on_run_alone(tmp_path):
+    """`Popen`, `call` and `check_call` reject `capture_output` with a
+    `TypeError`, so crediting it there certified a call that cannot run.
+    [PR #232 post-fix, P3]"""
+    body = "import subprocess" + chr(10)
+    for name in ("Popen", "call", "check_call"):
+        body += (f'subprocess.{name}(["git"], stdin=subprocess.DEVNULL,'
+                 + " capture_output=True)" + chr(10))
+    _zoned(tmp_path, "tools/script.py", body)
+    findings = _streams(tmp_path)
+    assert len(findings) == 3, findings
+
+
+def test_a_positional_stream_is_unread_rather_than_absent(tmp_path):
+    """`_redirected` reads keywords, so a positionally-passed stream is unread.
+
+    Silence here is the deliberate kind, and the fixture is chosen so the two
+    versions of the guard disagree: with a keyword alongside the positional
+    streams, the old predicate saw one covered stream and reported a partial
+    redirect, having read none of the positional ones. It reached the right
+    verdict on the fixture without them only by luck -- `Popen(cmd, -1, None,
+    DEVNULL)` measured 20/20 failures with the guard silent.
+
+    **The trade is stated rather than hidden**: this call is genuinely unsafe
+    and the guard now says nothing about it, where before it said something
+    accidentally. Silence is the ruled remedy because the alternative reddens
+    calls whose redirection cannot be read. [PR #232 post-fix, P2]"""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.run(["git"], -1, None, None, subprocess.PIPE,' + chr(10)
+           + "               stdin=subprocess.DEVNULL)" + chr(10))
+    assert _streams(tmp_path) == []
+
+
+def test_a_splatted_argument_list_is_unread(tmp_path):
+    """The other half of the same criterion."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + "def launch(args):" + chr(10)
+           + "    return subprocess.run(*args, capture_output=True)" + chr(10))
+    assert _streams(tmp_path) == []
+
+
+def test_os_popen_is_caught_through_every_import_spelling(tmp_path):
+    """`from os import popen` and `import os.path` both bind names the cycle-one
+    resolution missed -- M2's class, on code the cycle-one fix added.
+    [PR #232 post-fix, P2]"""
+    _zoned(tmp_path, "tools/a.py",
+           "from os import popen" + chr(10) + 'popen("git status")' + chr(10))
+    _zoned(tmp_path, "tools/b.py",
+           "import os.path" + chr(10) + 'os.popen("git status")' + chr(10))
+    findings = _streams(tmp_path)
+    assert len(findings) == 2, findings
+    assert all("takes no stdin argument" in f for f in findings)
+
+
 def test_this_repository_names_its_streams_at_every_launch():
     """The tree this exists for, not a restatement of the guard.
 
