@@ -93,8 +93,10 @@ The check records the resolved Codex executable and version, the installed
 plugin version, and the explicitly selected model, reasoning effort, read-only
 sandbox, ephemeral session, and bounded launch time. It creates a temporary git
 repository outside this source tree, writes only the adoption instruction above
-plus a random sentinel to that repository's `AGENTS.md`, and proves the complete
-installed charter reached the cold session through its final paragraph. On
+plus a random sentinel to that repository's `AGENTS.md`, and compares
+source-derived opening, ceremony, and final-paragraph evidence returned by the
+cold session with this tree's charter. None of those evidence values appears in
+the prompt. On
 Windows it can find the Codex app-bundle executable even when `codex` is absent
 from `PATH`; `--codex PATH` pins an exact executable on any platform, and
 `--timeout-seconds N` changes the default 300-second launch bound.

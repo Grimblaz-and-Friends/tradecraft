@@ -197,6 +197,22 @@ def test_marketplace_source_rejects_uninspectable_manifests(tmp_path, content, e
     assert len(findings) == 1 and expected in findings[0]
 
 
+def test_marketplace_source_reports_a_failed_read(tmp_path, monkeypatch):
+    make_clean_tree(tmp_path)
+    manifest = tmp_path / ".claude-plugin" / "marketplace.json"
+    original_read_text = Path.read_text
+
+    def denied(path, *args, **kwargs):
+        if path == manifest:
+            raise PermissionError("probe denied")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    findings = lint.check_marketplace_source(tmp_path)
+    assert len(findings) == 1
+    assert "cannot be read" in findings[0] and "probe denied" in findings[0]
+
+
 def test_harness_token_fires_on_powershell_and_cmd_spellings_any_case(tmp_path):
     """`$env:` and `%VAR%` are case-insensitive in the shells that read them.
 

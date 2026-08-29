@@ -79,7 +79,10 @@ def test_probe_launch_pins_isolation_and_staffing(tmp_path):
     assert "--skip-git-repo-check" not in command
     assert command[-1] == compat.PROMPT
     assert "TRADECRAFT_CODEX_COMPAT_" not in compat.PROMPT
-    assert "a review finding about governing prose is not an incident." in compat.PROMPT
+    evidence = compat._charter_evidence()
+    assert evidence["opening"] not in compat.PROMPT
+    assert evidence["tail"] not in compat.PROMPT
+    assert all(ceremony not in compat.PROMPT for ceremony in evidence["ceremonies"])
     assert "nine descriptions" not in compat.PROMPT
 
 
@@ -163,6 +166,7 @@ def test_nested_session_timeout_is_a_named_failure(tmp_path, monkeypatch):
 
     def captured(command, *, cwd=None, timeout=None):
         if command[:2] == ["git", "init"]:
+            assert timeout is None
             return subprocess.CompletedProcess(command, 0, "", "")
         assert timeout == 17
         raise subprocess.TimeoutExpired(command, timeout)
@@ -177,6 +181,56 @@ def test_nested_session_timeout_is_a_named_failure(tmp_path, monkeypatch):
         compat.run_probe(
             Path("codex"), model="gpt-5.6-sol", reasoning="high", timeout_seconds=17
         )
+
+
+def test_nested_session_success_pins_completion_and_timeout_scope(tmp_path, monkeypatch):
+    class FixedTemporaryDirectory:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return str(tmp_path)
+
+        def __exit__(self, *_args):
+            return False
+
+    source = tmp_path / "source"
+    charter = source / "skills" / "charter" / "SKILL.md"
+    charter.parent.mkdir(parents=True)
+    charter.write_text(
+        (compat.ROOT / "skills" / "charter" / "SKILL.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    timeouts = []
+
+    def captured(command, *, cwd=None, timeout=None):
+        timeouts.append(timeout)
+        if command[:2] == ["git", "init"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        adoption = (Path(cwd) / "AGENTS.md").read_text(encoding="utf-8")
+        marker = adoption.split("Compatibility marker: ", 1)[1].strip()
+        last_message = Path(command[command.index("--output-last-message") + 1])
+        last_message.write_text(
+            json.dumps(compat._expected_probe_payload(marker), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(compat.tempfile, "TemporaryDirectory", FixedTemporaryDirectory)
+    monkeypatch.setattr(compat, "_capture", captured)
+    monkeypatch.setattr(compat, "ROOT", source)
+    compat.run_probe(
+        Path("codex"), model="gpt-5.6-sol", reasoning="high", timeout_seconds=17
+    )
+    assert timeouts == [None, 17]
+
+
+def test_probe_answer_rejects_a_truncated_charter_tail():
+    marker = "TRADECRAFT_CODEX_COMPAT_TEST"
+    payload = compat._expected_probe_payload(marker)
+    payload["tail"] = str(payload["tail"])[:-1]
+    with pytest.raises(compat.CompatError, match="source charter evidence"):
+        compat._assert_probe_answer(json.dumps(payload), marker)
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])

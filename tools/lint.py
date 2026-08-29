@@ -1978,7 +1978,14 @@ def check_marketplace_source(root: Path) -> list[str]:
             "one marketplace manifest"
         ]
     try:
-        parsed = json.loads(manifest.read_text(encoding="utf-8", errors="replace"))
+        content = manifest.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json cannot be read "
+            f"({exc}) -- the shared tradecraft source cannot be verified"
+        ]
+    try:
+        parsed = json.loads(content)
     except json.JSONDecodeError as exc:
         return [
             "marketplace-source: .claude-plugin/marketplace.json is not valid "

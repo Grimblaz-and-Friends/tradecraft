@@ -22,6 +22,7 @@ import argparse
 import json
 import math
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -50,15 +51,20 @@ Compatibility marker: {marker}
 
 PROMPT = """You are a compatibility probe. Follow the repository instructions
 already supplied in context. Do not open or search files in the working
-repository; you may read installed Tradecraft skill files. Respond with exactly
-the value after `Compatibility marker:` and nothing else only if all conditions
-hold:
-1. You loaded the installed tradecraft charter completely, it contains the
-   exact sentence `Capability wrappers are deliberately not in it.`, and you
-   can identify its Convergence and Release ceremony moments.
-2. The loaded charter reaches its final paragraph, which contains the exact
-   sentence `a review finding about governing prose is not an incident.`
-Otherwise respond with TRADECRAFT_COMPAT_FAIL followed by a short reason.
+repository; you may read installed Tradecraft skill files. After loading the
+installed tradecraft charter completely, respond with one JSON object and
+nothing else. It must have exactly these keys:
+
+* `marker`: the value after `Compatibility marker:` in the repository
+  instructions;
+* `opening`: the charter's first prose paragraph after its purpose header,
+  with internal whitespace collapsed to single spaces and Markdown preserved;
+* `ceremonies`: the two bold ceremony labels, in order and without punctuation;
+* `tail`: the charter's final prose paragraph, with internal whitespace
+  collapsed to single spaces and Markdown preserved.
+
+Do not use code fences. If the charter is unavailable, respond instead with
+TRADECRAFT_COMPAT_FAIL followed by a short reason.
 """
 
 
@@ -212,6 +218,67 @@ def write_adoption_file(consumer: Path, marker: str) -> Path:
     return adoption
 
 
+def _collapse_whitespace(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _charter_evidence() -> dict[str, object]:
+    """Derive source-sensitive anchors without placing their values in PROMPT."""
+    charter = ROOT / "skills" / "charter" / "SKILL.md"
+    try:
+        text = charter.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CompatError(f"cannot read source charter {charter}: {exc}") from exc
+
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) != 3:
+            raise CompatError(f"source charter {charter} has incomplete frontmatter")
+        body = parts[2]
+    else:
+        body = text
+
+    paragraphs = [
+        _collapse_whitespace(block)
+        for block in re.split(r"\r?\n\s*\r?\n", body)
+        if block.strip()
+    ]
+    opening = next(
+        (
+            block for block in paragraphs
+            if not block.startswith("#") and not block.startswith("**Purpose:**")
+        ),
+        None,
+    )
+    ceremonies = re.findall(r"(?m)^- \*\*([^*]+)\.\*\*", body)
+    if opening is None or len(ceremonies) != 2 or not paragraphs:
+        raise CompatError(f"source charter {charter} has no stable compatibility anchors")
+    return {
+        "opening": opening,
+        "ceremonies": ceremonies,
+        "tail": paragraphs[-1],
+    }
+
+
+def _expected_probe_payload(marker: str) -> dict[str, object]:
+    return {"marker": marker, **_charter_evidence()}
+
+
+def _assert_probe_answer(answer: str, marker: str) -> None:
+    if answer.startswith("TRADECRAFT_COMPAT_FAIL"):
+        raise CompatError(f"nested Codex session reported: {answer}")
+    try:
+        payload = json.loads(answer)
+    except json.JSONDecodeError as exc:
+        raise CompatError(f"nested Codex result is not JSON: {exc}") from exc
+    expected = _expected_probe_payload(marker)
+    if payload != expected:
+        raise CompatError(
+            "nested Codex result did not match the source charter evidence: "
+            f"{payload!r}"
+        )
+
+
 def _init_consumer(consumer: Path) -> None:
     try:
         result = _capture(["git", "init", "--quiet"], cwd=consumer)
@@ -263,8 +330,7 @@ def run_probe(
             answer = last_message.read_bytes().decode("utf-8").strip()
         except UnicodeDecodeError as exc:
             raise CompatError(f"nested Codex result is not UTF-8: {exc}") from exc
-        if answer != marker:
-            raise CompatError(f"nested Codex session reported: {answer or '<empty>'}")
+        _assert_probe_answer(answer, marker)
 
 
 def _positive_timeout(value: str) -> float:
