@@ -36,9 +36,8 @@ def utf8_stdio() -> None:
 
     That is the wanted behaviour for machine-read output: one byte sequence
     from every script on every platform, so a consumer comparing, diffing or
-    hashing a captured stream gets the same answer wherever it ran. The charter
-    hook depends on it, its stream being compared byte for byte by the runtime.
-    An earlier version of this docstring claimed the opposite -- that the
+    hashing a captured stream gets the same answer wherever it ran. An earlier
+    version of this docstring claimed the opposite -- that the
     default left translation alone -- which was false of the line beneath it
     and would have sent anyone debugging the change to the editor or to
     `.gitattributes` instead of here.

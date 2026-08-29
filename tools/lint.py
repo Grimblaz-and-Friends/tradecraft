@@ -7,22 +7,21 @@ Checks:
      (docs/, tools/, .github/) by any path form — rooted, relative (../ or ./),
      backslashed, or case-shifted. Full web URLs are lawful: they resolve for
      consumers; repo paths do not.
-  2. harness tokens: no shipped file outside hooks/ names a harness-specific
+  2. harness tokens: no shipped file names a harness-specific
      path token (${CLAUDE_PLUGIN_ROOT} and kin). Not because they fail --
      Claude Code substitutes them into a skill's body -- but because Codex does
      not, so any such contract binds in one runtime and is dead in the other.
-  3. delivery: the shipped charter exists and the hook that delivers it still
-     can, so a session in either runtime receives it at session start.
+  3. charter cell: the shipped charter exists, has a body, and carries no depth
+     files whose binding prose an adopting repository would fail to load.
   4. cell frontmatter: every skill declares a name and a description the
      runtime can parse, each within its field budget. A cell whose description
      is absent or malformed silently never fires.
   5. sideways deps: no skill may reference another skill — by path (rooted or
      relative) or by the name form `<name>` cell — and lib/ and hooks/ may
-     reference no skill but the charter (deps point down otherwise). The
+     reference no skill (deps point down otherwise). The
      charter is exempt in the name form only and as a target from anywhere,
-     because it is already always-on in every session, so the citation costs
-     no loading and cannot drift the way a second copy can; the hook that
-     emits it must name it, and check 3 requires that dependency to exist.
+     because an adopting repository loads it before substantive work, so the
+     citation costs no second loading and cannot drift like a copied rule.
      Paths between cells stay findings even from the charter, for a reason
      self-containment never covered — a rooted skills/ path does not resolve
      once installed, while the name survives relocation.
@@ -104,6 +103,8 @@ Checks:
     opening files, which is why the scope is named rather than left universal.
     The expectation is tools/roster.py's own, never recomputed here: a guard
     holding a second definition drifts from the writer it judges.
+18. marketplace source: the tradecraft entry's source stays the exact string
+    `./`, because Codex cannot discover the plugin from Claude's object form.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -148,8 +149,8 @@ REPO_ONLY_NAMES = {"docs", "tools", ".github"}
 # A shipped calling contract naming a harness token binds in one runtime only.
 # Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` -- and `${CLAUDE_SKILL_DIR}` --
 # into a skill's body before the model reads it; Codex substitutes neither,
-# setting the root as an environment variable for hook commands alone. Both
-# shipped scripts carried the token, so both were Claude-only until this guard.
+# and exposes harness-owned roots through runtime-specific mechanisms. Shipped
+# contracts carried these tokens before this guard, making them runtime-bound.
 # `CLAUDE_SKILL_DIR` is the vendor's own skill-relative placeholder and it
 # does expand -- in Claude Code only. It is banned here on the same ground
 # the forced output style was rejected: a form that binds in one runtime and
@@ -165,16 +166,6 @@ HARNESS_TOKENS = re.compile(
     rf"|(?i:\$env:(?:{_HARNESS_NAMES}))"
     rf"|(?i:%(?:{_HARNESS_NAMES})%)"
 )
-# `hooks/` is the exemption because it is hook configuration, which is where
-# the token is the vendor's contract rather than a dead reference -- plus the
-# prose explaining that. Claude Code substitutes it there; Codex supplies the
-# same value through the hook's environment, which its POSIX shell expands and
-# `cmd.exe` does not. That last gap is disclosed in `hooks/README.md`.
-HARNESS_TOKEN_EXEMPT_DIRS = frozenset({"hooks"})
-
-# Inside `hooks/` the placeholder is real, so the guard resolves what it
-# points at rather than banning it.
-PLUGIN_ROOT_REF = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)")
 CHARTER = "skills/charter/SKILL.md"
 # The always-on surface of a cell, budgeted because every adopter pays for
 # it in every session whether or not the cell ever fires. Not #130's
@@ -200,11 +191,9 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # which is the failure mode. It is expected to be tight. The answer to a change
 # that wants more is an outflow.
 AGENTS_BUDGET_CHARS = 6_000
-# The charter is the half that ships, and an adopter pays for it on every
-# SessionStart event -- resume and compact included -- so it needs the
-# displacement pressure more than this repo's own file does, not less.
-# The ceiling leaves real headroom over today's size and stays well under
-# the 2,500-token limit Codex applies to a hook's additional context.
+# The charter is the half that ships, and an adopting repository directs every
+# session to load it before substantive work, so it needs the displacement
+# pressure more than this repo's own file does, not less.
 # Ratcheted from 6,000 against the size measured when it was set, which
 # `python tools/figures.py` prices against this constant on whatever tree you
 # are on. The margin is smaller than
@@ -254,10 +243,10 @@ CELL_BODY_BUDGET_CHARS = {
 # The one cell any other cell may reference, and the one cell that may
 # reference the others. Self-containment exists to stop loading cost and
 # multi-site drift; neither applies here. The charter is always-on in every
-# session by construction -- imported by AGENTS.md, instructed, and emitted by
-# the SessionStart hook -- so a cell citing it points at prose the reader has
-# already loaded, and a citation cannot fall out of agreement the way a second
-# copy can. The exemption is one target at depth one: cells may cite the
+# session by construction -- imported by this repository's AGENTS.md and loaded
+# by an adopter's repository instruction -- so a cell citing it points at prose
+# the reader has already loaded, and a citation cannot fall out of agreement
+# the way a second copy can. The exemption is one target at depth one: cells may cite the
 # charter and it may cite them, no cell may cite any other, so the shape
 # cannot grow into the mesh of mutual references the predecessor accumulated.
 CHARTER_CELL = "charter"
@@ -457,7 +446,14 @@ BASELINE_UNRESOLVABLE = {
 # deadlock lawful. It is not an open exemption list: every row states its own
 # reason, the reason is enforced non-empty, and a row is one visible line of
 # diff on the pull request that created the situation.
-UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {}
+UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {
+    ("D-156-2026-08-24-installable-plugin-and-shipped-charter.md", 43,
+     "hooks/README.md"):
+        "target retired by PR #222 with the lifecycle-hook fallback it documented",
+    ("D-186-2026-08-25-windows-text-mode-defaults.md", 9,
+     "hooks/emit_charter.py"):
+        "target retired by PR #222 with the lifecycle-hook fallback it implemented",
+}
 
 REVIEW_FIELDS = {"date", "artifact", "lane", "report"}
 REVIEW_LANES = {"panel", "routine"}
@@ -482,9 +478,19 @@ SEAT_COUNTS = ("raw", "merged", "sustained", "high")
 # exempt for the same reason every earlier row is -- records are appended,
 # never rewritten to suit a schema that arrived after them.
 REVIEW_ROWS_QUALITATIVE = 39
+# The first qualitative row predates the rule that the index itself carries a
+# qualitative external-pass outcome. Preserve it by position; every later row
+# names what actually posted without turning the pass into a seat or a count.
+# Moved a second time for the same reason it moved the first: PR #225's review
+# closed on `main` while this change was open, and its row cannot be rewritten
+# to carry a field the schema gained after it was appended.
+REVIEW_ROWS_EXTERNAL_QUALITATIVE = 42
 COUNTING_FIELDS = ("seats", "dispositions", "facing")
 QUALITATIVE_FIELDS = frozenset(
-    {"date", "artifact", "lane", "report", "highs", "staffing", "notes"}
+    {
+        "date", "artifact", "lane", "report", "highs", "staffing", "external",
+        "notes",
+    }
 )
 
 # What became of the findings, in the terminal stage's own vocabulary: clause
@@ -535,7 +541,6 @@ REVIEW_ROWS_GRANDFATHERED = 20
 # than one moving constant -- raising a single one would silently un-oblige
 # every row between the two boundaries, in a file nobody may edit.
 REVIEW_ROWS_FACING_GRANDFATHERED = 31
-
 
 def _read_text(path: Path) -> str | None:
     """Return decoded text, or None for binary content (NUL in first 1KB)."""
@@ -643,19 +648,14 @@ def _name_form_is_sideways(own: str | None, target: str) -> bool:
     an installed plugin's skills as `<plugin>:<skill>`), so the name is the
     part a reader can still follow, not a string that resolves bare.
 
-    The charter is exempt as a target from anywhere, not only from another
-    cell: the SessionStart hook's whole job is to emit it, and check_delivery
-    requires that dependency to exist. A rule forbidding what a sibling guard
-    mandates would be two answers to one question.
-
-    `own is None` is lib/ or hooks/, neither of which is a cell. Their deps
-    still point down for every other skill -- naming `engagement` from a hook
-    is the coupling that rule exists for.
+    The charter is exempt as a target from another cell because an adopting
+    repository has already loaded it. `own is None` is lib/ or hooks/, neither
+    of which is a cell, so any skill dependency from either points sideways.
     """
-    if target.lower() == CHARTER_CELL:
-        return False
     if own is None:
         return True
+    if target.lower() == CHARTER_CELL:
+        return False
     if target.lower() == own.lower():
         return False
     return own.lower() != CHARTER_CELL
@@ -1100,9 +1100,10 @@ def check_doctrine(root: Path) -> list[str]:
                 f"`python tools/figures.py --cell {rel} --cell-budget {budget}` "
                 f"reports the cell total, which shedding does not reduce"
             )
-    # The charter reaches a consumer through the hook, but it reaches a session
-    # in THIS repository only through an import in a file that is itself
-    # imported. Checked by shape rather than by position: unlike CLAUDE.md the
+    # An adopter loads the installed charter because its repository instructions
+    # say so. In THIS source repository the local charter reaches the session
+    # through an import in a file that is itself imported. Checked by shape
+    # rather than by position: unlike CLAUDE.md the
     # import does not lead the file, and a backticked mention imports nothing.
     # Nor does a fenced one -- the same premise, and the guard rejected one
     # spelling of not-bare while accepting the other.
@@ -1176,7 +1177,8 @@ def _not_a_mapping(row, where: str, findings: list) -> bool:
 
 def check_review_index(root: Path) -> list[str]:
     """One row per review: date, artifact, lane, the staffing, the report URL,
-    and — past REVIEW_ROWS_QUALITATIVE — each sustained high named, in place of
+    and — past REVIEW_ROWS_QUALITATIVE — each sustained high named, plus the
+    external pass's qualitative outcome from its later boundary, in place of
     the arithmetic the rows before it carry.
 
     The row is written once when the review ends and never maintained after —
@@ -1249,6 +1251,7 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
         _check_seats(row["seats"], where, findings)
     if "highs" in row:
         _check_highs(row["highs"], where, findings)
+    _check_external(row, row_index, where, findings)
     _check_dispositions_and_staffing(row, row_index, where, findings)
     _check_facing(row, row_index, where, findings)
 
@@ -1328,6 +1331,28 @@ def _check_highs(highs, where: str, findings: list) -> None:
             )
         else:
             seen[key] = position
+
+
+def _check_external(row, row_index: int, where: str, findings: list) -> None:
+    """The external pass's qualitative outcome, never its arithmetic."""
+    if "external" not in row:
+        if row_index >= REVIEW_ROWS_EXTERNAL_QUALITATIVE:
+            findings.append(
+                f"{where} missing field 'external' -- rows past the first "
+                f"{REVIEW_ROWS_EXTERNAL_QUALITATIVE} name the external pass's "
+                "qualitative outcome without counts or a panel seat"
+            )
+        return
+    value = row["external"]
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value.strip().isdigit()
+    ):
+        findings.append(
+            f"{where} external must be a non-empty qualitative string naming "
+            "what actually posted -- never a count or a panel seat"
+        )
 
 
 def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: list) -> None:
@@ -1986,17 +2011,14 @@ def _plain_scalar_hazard(value: str) -> str | None:
     return None
 
 
-def check_delivery(root: Path) -> list[str]:
-    """The shipped charter exists, and the hook that delivers it still can.
+def check_charter_cell(root: Path) -> list[str]:
+    """The single shipped charter source exists and keeps all binding prose.
 
-    Nothing guarded either one when they landed: deleting the charter,
-    deleting `hooks/hooks.json`, or typo-ing the path inside it all left every
-    required check green, while a consumer session silently received no
-    doctrine at all. On Windows the failure is silent at the adopter's end too
-    (the emitter exits non-zero, but a runtime keying on exit status is the
-    only thing that would notice), so CI is where it has to be caught.
+    Repository adoption tells a session to load this cell completely before
+    substantive work. Depth under the charter would therefore be available but
+    not binding, so this check keeps the source both singular and complete.
 
-    Deliberately not checked: that the charter carries its eleven items. That
+    Deliberately not checked: that the charter carries a fixed item count. That
     couples a machine check to editable governing prose and would go stale on
     the first lawful edit -- priced out in review, and the price holds.
     """
@@ -2004,12 +2026,13 @@ def check_delivery(root: Path) -> list[str]:
     charter = root / CHARTER
     if not charter.is_file():
         findings.append(
-            f"delivery: {CHARTER} is missing -- the shipped half of the "
-            "doctrine, the cell a session can pull it from, and what the "
-            "SessionStart hook emits"
+            f"charter-cell: {CHARTER} is missing -- an adopting repository "
+            "cannot load the practice's binding rules"
         )
     elif not _frontmatterless(_read_text(charter) or "").strip():
-        findings.append(f"delivery: {CHARTER} has no body below its frontmatter")
+        findings.append(
+            f"charter-cell: {CHARTER} has no body below its frontmatter"
+        )
 
     # Compared by path, not basename: `references/SKILL.md` shares the name
     # and is exactly what an author following `skills/authoring`'s depth
@@ -2021,74 +2044,75 @@ def check_delivery(root: Path) -> list[str]:
         if q.is_file() and q != charter_file
     ) if charter_file.parent.is_dir() else []
     if stray:
-        # A binding rule routed into the charter's own references/ -- which
-        # `skills/authoring` tells a cell's author to do -- would escape the
-        # owner's doctrine read, the budget, and the hook that delivers it,
-        # becoming available rather than binding. That is the property this
-        # whole change refused. The charter routes content out, never down.
+        # A binding rule routed into the charter's own references/ would escape
+        # the complete load the adoption instruction requires. The charter
+        # routes content out, never down.
         findings.append(
-            f"delivery: the charter cell carries {stray} -- only SKILL.md is "
-            f"delivered, budgeted, and read by the owner, so anything else "
-            f"there is binding prose nothing enforces"
+            f"charter-cell: the charter cell carries {stray} -- only SKILL.md "
+            f"is adopted, budgeted, and read completely, so anything else "
+            f"there is binding prose the adoption instruction does not reach"
         )
+    return findings
 
-    config = root / "hooks" / "hooks.json"
-    if not config.is_file():
-        findings.append(
-            "delivery: hooks/hooks.json is missing -- nothing delivers the "
-            "charter to a consumer session"
-        )
-        return findings
 
-    raw = _read_text(config) or ""
+def check_marketplace_source(root: Path) -> list[str]:
+    """Keep the tradecraft source in the form both plugin runtimes accept."""
+    manifest = root / ".claude-plugin" / "marketplace.json"
+    if not manifest.is_file():
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json is missing -- "
+            "Codex and Claude must discover the shared tradecraft plugin from "
+            "one marketplace manifest"
+        ]
     try:
-        parsed = json.loads(raw)
+        content = manifest.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json cannot be read "
+            f"({exc}) -- the shared tradecraft source cannot be verified"
+        ]
+    try:
+        parsed = json.loads(content)
     except json.JSONDecodeError as exc:
-        # The vendor's own validator on a malformed hooks.json: "At runtime
-        # this breaks the entire plugin load" -- the skills go too, not just
-        # the charter.
-        findings.append(f"delivery: hooks/hooks.json does not parse -- {exc}")
-        return findings
-
-    events = (parsed.get("hooks") or {}) if isinstance(parsed, dict) else {}
-    entries = events.get("SessionStart") or []
-    # `.get("command")` rather than `.get("command", "")`: an absent key and a
-    # null value both have to reach the emptiness test below. The earlier shape
-    # returned "" for an absent key, so `commands` was truthy and a config
-    # declaring no command at all passed green; a null value reached the regex
-    # and raised TypeError, taking down the whole run and suppressing every
-    # other finding in it.
-    commands = [
-        hook.get("command")
-        for entry in entries if isinstance(entry, dict)
-        for hook in (entry.get("hooks") or []) if isinstance(hook, dict)
-        if hook.get("type", "command") == "command"
-    ]
-    runnable = [c for c in commands if isinstance(c, str) and c.strip()]
-    if not runnable:
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json is not valid "
+            f"JSON ({exc}) -- the shared tradecraft source cannot be verified"
+        ]
+    if not isinstance(parsed, dict):
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json must be an "
+            "object containing the shared tradecraft plugin"
+        ]
+    plugins = parsed.get("plugins")
+    if not isinstance(plugins, list):
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json field "
+            "'plugins' must be a list containing tradecraft"
+        ]
+    findings = []
+    found = False
+    for plugin in plugins:
+        if not isinstance(plugin, dict) or plugin.get("name") != "tradecraft":
+            continue
+        found = True
+        if plugin.get("source") != "./":
+            findings.append(
+                "marketplace-source: .claude-plugin/marketplace.json tradecraft "
+                "source must be the string `./` -- Codex cannot discover the "
+                "plugin from Claude's object form"
+            )
+    if not found:
         findings.append(
-            "delivery: hooks/hooks.json declares no runnable SessionStart "
-            "command -- nothing delivers the charter to a consumer session"
+            "marketplace-source: .claude-plugin/marketplace.json has no "
+            "tradecraft plugin entry -- the shared plugin cannot be discovered"
         )
-    for command in runnable:
-        for ref in PLUGIN_ROOT_REF.findall(command):
-            # is_file, not exists: a directory of the right name satisfies the
-            # latter while being unrunnable, and the message below would then
-            # be false about a path that is right there.
-            if not (root / ref).is_file():
-                findings.append(
-                    f"delivery: hooks/hooks.json names '{ref}', which is not "
-                    f"a file in the shipped tree"
-                )
     return findings
 
 
 def check_harness_tokens(root: Path) -> list[str]:
-    """No shipped file outside `hooks/` names a harness-specific path token."""
+    """No shipped file names a harness-specific path token."""
     findings = []
     for dirname in SHIPPED_DIRS:
-        if dirname in HARNESS_TOKEN_EXEMPT_DIRS:
-            continue
         base = root / dirname
         if not base.is_dir():
             continue
@@ -2426,7 +2450,7 @@ def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
         + check_harness_tokens(root)
-        + check_delivery(root)
+        + check_charter_cell(root)
         + check_cell_frontmatter(root)
         + check_project_roster(root)
         + check_sideways_deps(root)
@@ -2441,6 +2465,7 @@ def run(root: Path) -> list[str]:
         + check_emitted_ascii(root)
         + check_docstring_not_piped(root)
         + check_stdio_wired(root)
+        + check_marketplace_source(root)
     )
 
 

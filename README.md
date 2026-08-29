@@ -21,30 +21,28 @@ Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19
 
 ## Install it
 
-Tradecraft is a plugin. Installing it gives your repository the skills and the
-practice's binding rules; it is the same package in both runtimes, because Codex
-reads Claude's plugin manifests by name.
+Tradecraft is one plugin package for both runtimes. Installation makes its nine
+skills available; repository adoption makes the charter binding.
 
 **Claude Code**
 
-```
+```sh
 claude plugin marketplace add Grimblaz-and-Friends/tradecraft --scope project
 claude plugin install tradecraft@tradecraft --scope project
 ```
 
 **Codex**
 
-```
+```sh
 codex plugin marketplace add Grimblaz-and-Friends/tradecraft
 codex plugin add tradecraft@tradecraft
 ```
 
 `--scope project` writes `extraKnownMarketplaces` and `enabledPlugins` into your
 repository's `.claude/settings.json`, so the declaration is checked in and the
-content is not. Omit it and the CLI defaults to `user` scope, which arms the
-plugin — and its session-start hook — in *every* repository on that machine.
-Codex installs at user scope by design, with the same consequence: a repository
-cannot auto-install a plugin by committing configuration.
+content is not. Omit it and the CLI defaults to `user` scope. Codex installs at
+user scope by design. In either runtime a repository cannot auto-install a
+plugin by committing configuration.
 
 What a teammate gets from cloning a repository that carries only the checked-in
 declaration is not something we have measured; every CLI surface we tried
@@ -59,40 +57,49 @@ editing the marketplace entry by hand. A commit `sha` pins *plugin* sources, not
 marketplace sources, and this plugin's source is a relative path, so `sha` does
 not apply to it at all.
 
-**What lands in your session.** Every skill's name and description sit in every
-session's context, and each skill's body loads only when it fires. One of
-those skills is the charter itself, so wherever the hook below does not reach
-you, a session can still be asked for the practice's rules by name. On top of that,
-the plugin ships one `SessionStart` hook, which emits [the charter](skills/charter/SKILL.md)
-below its frontmatter, so the practice governs rather than merely being available.
-To price that before you install, measure the two things it is: the `name` and
-`description` of each `skills/*/SKILL.md`, and the charter below its own
-frontmatter. That matcher is match-all, so the charter is re-emitted
-on resume, clear, compact and fork as well as at startup: budget per
-`SessionStart` event, not per session, and expect a long compacting session to
-pay it several times.
+## Adopt it in a repository
 
-Note that `claude plugin details` gets the cost wrong in your favour: it reports
-the always-on figure as skills only, and annotates the hook `(harness-only — no
-model context cost)`. The hook does cost you context.
+Put the following in the repository's canonical `AGENTS.md`:
 
-**One more thing that can go wrong.** The hook runs `python`. On a Linux host
-that carries only `python3` it will exit without emitting, and a failed
-session-start hook reports to you, not to the model — so the session simply
-proceeds without the charter. If `python -V` does not work on your machine, this
-plugin's hook gives you nothing. The charter is itself one of the skills, so a
-session can still be asked for it by name — but that is availability, not
-governance: nothing announces the absence to the model, so someone has to know
-to ask.
+```md
+## Tradecraft
 
-**On declining the hook.** Claude Code gates plugin hooks on workspace trust and
-the `disableAllHooks` setting; there is no supported way to take this plugin's
-skills while declining its hook. Codex does have hook-level trust and will ask.
-One quadrant does not work at all: on **Windows under Codex**, hook commands run
-through `cmd.exe` with the plugin root supplied as an environment variable, which
-this hook's command cannot resolve — you get the skills, and should read the
-charter by invoking the `charter` skill — it is the same file the hook reads out,
-which is why the plugin ships it as a cell.
+Before substantive action, load and read the installed `tradecraft:charter`
+skill completely. If it is unavailable, stop and tell the owner that Tradecraft
+is not installed or enabled.
+```
+
+Claude Code can consume the same instruction through a root `CLAUDE.md` whose
+first non-empty line is `@AGENTS.md`. Codex reads `AGENTS.md` directly. A future
+runtime joins the same flow by reading `AGENTS.md` natively or through a
+zero-logic pointer; a runtime that supports neither is not currently supported.
+
+This distinction is deliberate: installation is availability, not adoption.
+Every skill's name and description can be present while no instruction makes
+the practice govern the session. The repository instruction closes that gap and
+fails loudly when the plugin or charter is unavailable. There is no lifecycle
+hook, copied charter, global instruction, or second plugin manifest to keep in
+sync.
+
+**Re-run the Codex compatibility check.** First install this tree's plugin
+version. Then, from a host shell with authenticated Codex and a real `python`
+interpreter, run:
+
+```sh
+python tools/check_codex_compat.py
+```
+
+The check records the resolved Codex executable and version, the installed
+plugin version, and the explicitly selected model, reasoning effort, read-only
+sandbox, ephemeral session, and bounded launch time. It creates a temporary git
+repository outside this source tree, writes only the adoption instruction above
+plus a random sentinel to that repository's `AGENTS.md`, and compares
+source-derived opening, ceremony, and final-paragraph evidence returned by the
+cold session with this tree's charter. None of those evidence values appears in
+the prompt. On
+Windows it can find the Codex app-bundle executable even when `codex` is absent
+from `PATH`; `--codex PATH` pins an exact executable on any platform, and
+`--timeout-seconds N` changes the default 300-second launch bound.
 
 **What does not reach you, by design.** Everything under `docs/`, `tools/`, and
 `.github/` is this repository's own machinery. A git-source install clones the
@@ -101,4 +108,4 @@ shipped references them and nothing you use should.
 
 ## Status
 
-Installable and proven in a consumer repository (2026-08-24), by running it: the install path, skill discovery and hook registration; both shipped scripts from the installed cache; the declared hook command emitting the charter byte-for-byte; and — in an attended session in that repository — the charter arriving in the session's context from the hook, and the `charter` cell invocable by name. Before that, reset complete (2026-08-19): the doctrine, the shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.
+Installable as one shared plugin in Claude Code and Codex. Repository adoption is explicit through canonical `AGENTS.md`; Claude's root pointer reaches the same file, and the Codex compatibility check proves the native path in an isolated consumer repository. Before that, reset complete (2026-08-19): the doctrine, the shipped skills (`persist-changes`, `adversarial-review`, `authoring`, `engagement`, `filing`, `spikes`, `experience-session`), and the packaging lint with Linux + Windows CI. The pre-reset constitution — a twelve-section statute over a frozen nine-ADR preamble — is a frozen archive under [docs/architecture/](docs/architecture/), and its records sit beside it in [docs/ledger.jsonl](docs/ledger.jsonl) (869 defect rows) and [docs/seat-record.jsonl](docs/seat-record.jsonl): all readable history, never binding.
