@@ -49,8 +49,13 @@ def crlf(path: Path) -> None:
     a green lint, and the harness's own worktree off the same commit produces
     these, because it copies the directory rather than checking it out. This is
     the tree every session here starts in. [#224]
+
+    Normalised before converting, so this is a text-mode round trip rather than
+    a doubling: applied to something already CRLF it is the identity, which is
+    what lets a fixture call it on both a cell and its entry.
     """
-    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    data = path.read_bytes()
+    path.write_bytes(data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
 
 
 def test_a_generated_roster_verifies_clean(tmp_path):
@@ -135,18 +140,52 @@ def test_write_leaves_a_crlf_entry_alone_rather_than_rewriting_it(tmp_path):
     assert entry.read_bytes() == before
 
 
-def test_a_lone_carriage_return_is_not_forgiven(tmp_path):
+def test_a_stray_carriage_return_is_not_forgiven(tmp_path):
     """The bound on the tolerance, in the direction it could have been written
-    too wide. `\\r\\n` is what a Windows text-mode write produces and what was
-    observed; a bare carriage return is not a line ending anything here emits,
-    so an entry carrying one is corrupt rather than copied."""
+    too wide -- with a fixture chosen so that it discriminates.
+
+    `\\r\\n` is what a Windows text-mode write produces and what was observed. A
+    carriage return standing on its own is not a line ending anything here
+    emits, so an entry carrying one is corrupt rather than copied. The entry
+    below is the realistic composite -- the copy a worktree produces, plus one
+    stray byte -- because that is what tells the two candidate predicates
+    apart: a `\\r\\n` normalisation still reports it, and the wider
+    "strip every carriage return" forgives it.
+
+    An earlier version replaced every line feed with a carriage return instead.
+    Both predicates report that one, so it passed under the very mutation it
+    was written to catch -- caught here by running the mutation rather than by
+    reading the test, which is the only way that class shows up.
+    """
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
     entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
-    entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r"))
+    crlf(entry)
+    entry.write_bytes(entry.read_bytes().replace(b"# alpha", b"\r# alpha"))
     findings = roster.verify(tmp_path)
     assert len(findings) == 1
     assert "out of step" in findings[0]
+
+
+def test_a_cell_that_is_itself_crlf_still_matches_its_entry(tmp_path):
+    """Why both sides are normalised, and not the entry on disk alone.
+
+    Today only the entry can arrive CRLF, because git checks the cell out LF --
+    so this is a shape the tree does not reach, and it is pinned anyway.
+    Normalising the entry side alone makes it an unclearable red: the entry
+    normalises, `want` does not, `--write` writes `want`, and the re-verify
+    fails again, which is #224's defect rebuilt one layer down. Reaching it
+    takes a CRLF cell, because no assertion about an LF cell can tell the two
+    predicates apart -- the entry-side-only mutation survives every other test
+    in this file.
+    """
+    make_cell(tmp_path, "alpha")
+    crlf(tmp_path / "skills" / "alpha" / "SKILL.md")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    crlf(entry)
+    assert roster.verify(tmp_path) == []
+    assert roster.write(tmp_path) == []
 
 
 def test_an_orphan_entry_fires_and_is_removed(tmp_path):
