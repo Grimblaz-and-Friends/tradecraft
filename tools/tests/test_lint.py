@@ -785,6 +785,35 @@ def test_a_doctrine_path_that_resolves_to_nothing_is_a_finding(tmp_path):
     assert "docs/valuez.md" in findings[0]
 
 
+def test_a_doctrine_path_broken_from_the_root_is_a_finding(tmp_path):
+    """The doctrine writes its paths from the repository root, so that is the
+    only base that answers the question. Inheriting the entry resolver's
+    `skills/` leniency made the guard blind on `charter/SKILL.md` -- the
+    shortened form a session under budget pressure reaches for, and the one
+    path whose death takes the charter with it."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + "Read `charter/SKILL.md` now." + NL, encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert any("doctrine-reference" in f and "charter/SKILL.md" in f
+               for f in findings)
+
+
+def test_a_dead_doctrine_path_inside_a_fence_is_a_finding(tmp_path):
+    """Fences included, per this module's own rule: a path that does not
+    resolve is broken whatever encloses it, and this repository's fenced blocks
+    are calling contracts rather than examples."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + "```" + NL + "run `docs/gone.md`" + NL + "```" + NL,
+                      encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert any("doctrine-reference" in f and "docs/gone.md" in f
+               for f in findings)
+
+
 def test_the_doctrine_reference_guard_reads_the_pointer_too(tmp_path):
     """Both doctrine files, for the reason the citation guard reads both: a
     rule can move between them and the guard must not follow it only one way."""
