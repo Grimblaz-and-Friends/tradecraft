@@ -34,7 +34,7 @@ Checks:
 
   Checks 5 and 6 split on form, not on check. The *name* form is read
   outside fenced blocks only: a name inside a fence is a spelling being
-  shown, as check 8 already reasons about an import. Every *path* form is
+  shown, as check 9 already reasons about an import. Every *path* form is
   read everywhere, fences included -- check 5's rooted and relative skill
   paths and check 6's references/ pointers alike -- because a path that does
   not resolve is broken whatever encloses it, this repository's fenced blocks
@@ -43,45 +43,52 @@ Checks:
   begins "cell" — because a reflow is a formatting edit no reviewer inspects
   and it would otherwise silently remove a reference from both checks.
   7. doctrine citations: every [D-N] the doctrine writes names an entry that
-     exists. The log's own references are check 12's; a marker in the always-on
+     exists. The log's own references are check 13's; a marker in the always-on
      surface was checked by nothing, which the outflow rule makes load-bearing
      by instructing a session to compress prose into one.
-  8. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
+  8. doctrine references: every repo path the doctrine writes resolves.
+     Check 13 covers the decision log, which is frozen exhaust, so the
+     surface carrying the live rules was the one nothing checked --
+     repointing the doctrine's own docs/values.md mention left lint
+     green while the identical break inside an entry fired. Scoped to
+     the doctrine files: docs/*.md needs resolver work, not a path-list
+     edit, because references there resolve relative to their file.
+  9. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  9. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  10. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  10. review index: docs/reviews.jsonl, when present, parses and carries one
+  11. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review. Past the cutover: date, artifact, lane, the
      sustained highs named, the model and runtime that staffed it, report URL,
      and no arithmetic — the key set is closed. Before it: per-seat counts,
      what came of the findings, and the split by consequence shape, which
      reconciles against the disposition counts and is the only cross-total on
      the row that is sound.
- 11. decision index: every decision entry has a row in the log's index, and
+ 12. decision index: every decision entry has a row in the log's index, and
      every row a file.
- 12. entry references: every path reference and relative link a decision entry
+ 13. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
-13. emitted ASCII: no Python file states a non-ASCII character in a
+14. emitted ASCII: no Python file states a non-ASCII character in a
     non-docstring string constant. Windows encodes stdout and stderr to the
     locale codepage, pipes included, so a captured em dash garbles in the one
     message a guard exists to deliver. It reads literals, not reachability:
     a filename and a regex source are flagged too, and a character built at
     runtime is out of reach. Docstrings and comments are exempt.
-14. docstring not piped: no script passes __doc__ as an argparse
+15. docstring not piped: no script passes __doc__ as an argparse
     description. --help writes it to stdout before any stream setup runs,
-    which turns the docstring check 12 exempts into locale-encoded output.
-15. stdio wired: every script with a main() imports utf8_stdio by that name
+    which turns the docstring check 15 exempts into locale-encoded output.
+16. stdio wired: every script with a main() imports utf8_stdio by that name
     and calls it as the first statement, so runtime data this repository did
     not write reaches the stream protected. Both halves are checked: without
     the import binding, a local no-op with the right name would satisfy the
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
-16. project roster: every cell has an entry under .claude/skills/ carrying its
+17. project roster: every cell has an entry under .claude/skills/ carrying its
     frontmatter byte for byte, and no entry THIS GENERATOR WROTE names a cell
     that is gone. A file it did not write is not its business: at a name that
     is no cell it draws no finding at all, because that is a project skill in
@@ -96,7 +103,7 @@ Checks:
     opening files, which is why the scope is named rather than left universal.
     The expectation is tools/roster.py's own, never recomputed here: a guard
     holding a second definition drifts from the writer it judges.
-17. marketplace source: the tradecraft entry's source stays the exact string
+18. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
@@ -130,7 +137,7 @@ from winio import utf8_stdio  # noqa: E402
 
 # Repo-only importing repo-only, resolved from this file rather than the
 # working directory. The roster's expected content is the generator's to
-# define; check 16 asks it rather than reproducing it.
+# define; check 17 asks it rather than reproducing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import roster  # noqa: E402
 
@@ -474,7 +481,10 @@ REVIEW_ROWS_QUALITATIVE = 39
 # The first qualitative row predates the rule that the index itself carries a
 # qualitative external-pass outcome. Preserve it by position; every later row
 # names what actually posted without turning the pass into a seat or a count.
-REVIEW_ROWS_EXTERNAL_QUALITATIVE = 40
+# Moved a second time for the same reason it moved the first: PR #225's review
+# closed on `main` while this change was open, and its row cannot be rewritten
+# to carry a field the schema gained after it was appended.
+REVIEW_ROWS_EXTERNAL_QUALITATIVE = 42
 COUNTING_FIELDS = ("seats", "dispositions", "facing")
 QUALITATIVE_FIELDS = frozenset(
     {
@@ -767,7 +777,7 @@ def check_doctrine_citations(root: Path) -> list[str]:
     for name in ("AGENTS.md", "CLAUDE.md"):
         path = root / name
         if not path.is_file():
-            continue  # its absence is check 8's finding, not this one's
+            continue  # its absence is check 9's finding, not this one's
         text = _read_text(path)
         if text is None:
             continue
@@ -780,6 +790,79 @@ def check_doctrine_citations(root: Path) -> list[str]:
                         f"[D-{number}], which is not an entry in the log"
                     )
     return findings
+
+
+def check_doctrine_references(root: Path) -> list[str]:
+    """Every repo path the doctrine writes resolves.
+
+    check_entry_references covers the decision log, which is frozen exhaust,
+    and stops there -- so the surface carrying the live rules was the one
+    nothing checked. The gap is not theoretical: repointing the doctrine's
+    `docs/values.md` mention at a path that does not exist left lint green and
+    the whole suite passing, while the identical break inside an entry fired.
+    A future change that moves a target repoints every entry, because
+    mover-pays and this module force it to, and has nothing telling it the
+    doctrine named the target too -- so the guarded surfaces are the record and
+    the unguarded one is the rule a session actually follows.
+
+    Scoped to the doctrine files and no wider. `docs/*.md` was measured and
+    left out: `_entry_ref_resolves` does not resolve a reference relative to
+    its containing file, so `north-star/flow.md` and `../values.md` report as
+    unresolved from documents that read them fine. That is resolver work, not
+    a path-list edit, and doing it badly here would red the tree with no
+    compliant answer -- as bad as passing unlawful work.
+
+    No pin form and no recorded set, deliberately: both exist because an entry
+    freezes on landing and cannot be repaired. The doctrine is editable, so its
+    only lawful answer is to repoint, and offering an exemption would invite
+    the doctrine to carry a dead path with a note instead.
+    """
+    findings: list[str] = []
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = root / name
+        if not path.is_file():
+            continue  # its absence is check 9's finding, not this one's
+        text = _read_text(path)
+        if text is None:
+            continue
+        # Fences included, per this module's own rule: a path that does not
+        # resolve is broken whatever encloses it, and this repository's fenced
+        # blocks are calling contracts rather than examples.
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for ref, form, _pinned in _entry_refs(line):
+                if _doctrine_ref_resolves(root, ref):
+                    continue
+                findings.append(
+                    f"doctrine-reference: {name}:{lineno} {form} '{ref}' "
+                    f"resolves to nothing. The doctrine is editable, so "
+                    f"repoint it at the target's current location -- a pin "
+                    f"and the decision log's recorded sets are for entries "
+                    f"that froze on landing, and neither applies here"
+                )
+    return findings
+
+
+def _doctrine_ref_resolves(root: Path, ref: str) -> bool:
+    """From the repository root and nowhere else.
+
+    `_entry_ref_resolves` also tries the entry's own directory and `skills/`,
+    because decision entries write the skills-relative shorthand routinely. The
+    doctrine does not, and inheriting that leniency made the guard blind on the
+    one path it most needs to see: `charter/SKILL.md` -- broken from the root,
+    and the shortened form a session under budget pressure would reach for --
+    resolved under `skills/` and drew no finding, while a nonexistent cell name
+    in the same position did. The doctrine's paths are written from the root,
+    so that is the only base that answers the question it is asked.
+    """
+    ref = ref.replace("\\", "/")
+    if not ref or ref.startswith("/"):
+        return False
+    candidate = root / ref
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return False
+    return _within(resolved, root) and resolved.exists()
 
 
 def check_cell_references(root: Path) -> list[str]:
@@ -2157,13 +2240,13 @@ def check_emitted_ascii(root: Path) -> list[str]:
 
     Runtime data is out of reach by construction -- a path this repository did
     not write can carry anything -- and `lib/winio.py` is what protects that
-    half. The two are complementary, not alternatives, and check 14 is what
+    half. The two are complementary, not alternatives, and check 15 is what
     keeps the second one wired.
 
     Docstrings are exempt because the house prose style is free where it is
     read as prose. Note the exemption is about docstrings, not about reaching a
     stream: `argparse(description=__doc__)` pipes a module docstring to stdout,
-    which is why check 13 bans that construction outright.
+    which is why check 15 bans that construction outright.
     """
     findings = []
     candidates = [
@@ -2226,21 +2309,21 @@ def check_emitted_ascii(root: Path) -> list[str]:
 def check_docstring_not_piped(root: Path) -> list[str]:
     """No script hands its module docstring to argparse as help text.
 
-    **The warrant is check 12's exemption, not the encoding.** Check 12 lets a
+    **The warrant is check 14's exemption, not the encoding.** Check 14 lets a
     docstring carry any character the house prose style likes, and the reason it
     can is that a docstring is read as prose and never written to a stream.
     `ArgumentParser(description=__doc__)` falsifies that premise: it makes the
-    docstring output. The ban is what keeps check 12's exemption true.
+    docstring output. The ban is what keeps check 14's exemption true.
 
     An earlier version of this docstring gave the reason as "--help exits inside
     parse_args before any stream setup runs" -- which was accurate when it was
-    written and was falsified by check 14 in the same change, since the stream
+    written and was falsified by check 16 in the same change, since the stream
     is now set up before parse_args is reached. Left standing, a session that
     checked the stated reason would find it false and reason correctly to
-    deleting the check. The reason above is the one that survives check 14.
+    deleting the check. The reason above is the one that survives check 16.
 
     Two narrower warrants also survive: a module that parses arguments at import
-    with no `main()` at all, which check 14 does not reach, and a run where
+    with no `main()` at all, which check 16 does not reach, and a run where
     `utf8_stdio` hit its swallowed except and set nothing up.
 
     `epilog` is banned on the same terms. argparse writes it to stdout on --help
@@ -2308,7 +2391,7 @@ def check_stdio_wired(root: Path) -> list[str]:
     called".
 
     Scoped to the whole tree, minus what git is told to ignore, for the same
-    reason check 12 is: a zone list silently exempts the next directory someone
+    reason check 13 is: a zone list silently exempts the next directory someone
     adds, and `scripts/` or `.claude/` is exactly where a session drops a
     helper. A module without a `main()` is not a script and is not asked.
     """
@@ -2373,6 +2456,7 @@ def run(root: Path) -> list[str]:
         + check_sideways_deps(root)
         + check_cell_references(root)
         + check_doctrine_citations(root)
+        + check_doctrine_references(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)
         + check_review_index(root)
