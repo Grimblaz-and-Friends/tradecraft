@@ -578,9 +578,20 @@ def test_this_repository_carries_a_roster_for_every_cell(tmp_path):
     pinned deterministically in tmp_path by
     `test_the_generator_introduces_no_carriage_return_of_its_own`, where it
     cannot be moved by whatever copied the tree afterwards. [#224]
+
+    **It asks that every cell has an entry, not that nothing else is there.**
+    The equality it used to assert made a *lawful* tree red: `.claude/skills/`
+    is the runtime's documented home for a project's own skills, `MARKER` and
+    `verify()` exist precisely to leave a hand-written one alone, and
+    `verify()` draws no finding at a name that is no cell -- so writing one put
+    the suite in the red while the lint stayed green, which is this issue's own
+    defect shape at a second site. Found by a cold session that was asked to
+    add a project skill and did exactly what the material tells it to. A
+    generated entry whose cell is gone is still caught, by `verify()` below.
     """
-    assert roster.cell_names(ROOT) == roster.roster_names(ROOT)
-    assert roster.cell_names(ROOT) != []
+    cells = roster.cell_names(ROOT)
+    assert cells != []
+    assert set(cells) <= set(roster.roster_names(ROOT))
     assert roster.verify(ROOT) == []
 
 
