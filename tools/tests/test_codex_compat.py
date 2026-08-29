@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -78,6 +79,8 @@ def test_probe_launch_pins_isolation_and_staffing(tmp_path):
     assert "--skip-git-repo-check" not in command
     assert command[-1] == compat.PROMPT
     assert "TRADECRAFT_CODEX_COMPAT_" not in compat.PROMPT
+    assert "a review finding about governing prose is not an incident." in compat.PROMPT
+    assert "nine descriptions" not in compat.PROMPT
 
 
 def test_adoption_file_names_the_single_supported_flow(tmp_path):
@@ -136,3 +139,54 @@ def test_plugin_check_rejects_json_that_is_not_an_object(monkeypatch, payload):
     monkeypatch.setattr(compat, "_capture", captured)
     with pytest.raises(compat.CompatError, match="must be an object"):
         compat._assert_plugin(Path("codex"), "0.50.0")
+
+
+def test_capture_translates_launch_failure(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise OSError("binary unavailable")
+
+    monkeypatch.setattr(compat.subprocess, "run", unavailable)
+    with pytest.raises(compat.CompatError, match="cannot launch codex.*binary unavailable"):
+        compat._capture(["codex", "--version"])
+
+
+def test_nested_session_timeout_is_a_named_failure(tmp_path, monkeypatch):
+    class FixedTemporaryDirectory:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return str(tmp_path)
+
+        def __exit__(self, *_args):
+            return False
+
+    def captured(command, *, cwd=None, timeout=None):
+        if command[:2] == ["git", "init"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        assert timeout == 17
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    monkeypatch.setattr(compat.tempfile, "TemporaryDirectory", FixedTemporaryDirectory)
+    monkeypatch.setattr(compat, "_capture", captured)
+    monkeypatch.setattr(compat, "ROOT", tmp_path / "source")
+    with pytest.raises(
+        compat.CompatError,
+        match="timed out after 17 seconds before returning a result",
+    ):
+        compat.run_probe(
+            Path("codex"), model="gpt-5.6-sol", reasoning="high", timeout_seconds=17
+        )
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
+def test_timeout_must_be_positive(value):
+    with pytest.raises(
+        compat.argparse.ArgumentTypeError,
+        match="finite number greater than zero",
+    ):
+        compat._positive_timeout(value)
+
+
+def test_timeout_accepts_fractional_seconds():
+    assert compat._positive_timeout("2.5") == 2.5

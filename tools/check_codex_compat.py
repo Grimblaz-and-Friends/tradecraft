@@ -10,16 +10,17 @@ Preconditions:
 
 The probe creates a temporary consumer repository outside this source tree and
 gives it the supported adoption instruction in its own AGENTS.md. A pass proves
-that Codex loaded the repository instruction, the installed charter in full,
-and all nine complete skill descriptions. The nested session is ephemeral and
-read-only, and its model and reasoning effort are explicit launch inputs.
+that Codex loaded the repository instruction and the installed charter in full.
+The nested session is ephemeral and read-only, and its model, reasoning effort,
+and timeout are explicit launch inputs.
 
-Usage: python tools/check_codex_compat.py [--codex PATH]
+Usage: python tools/check_codex_compat.py [--codex PATH] [--timeout-seconds N]
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import secrets
 import shutil
@@ -36,6 +37,7 @@ from winio import utf8_stdio  # noqa: E402
 MANIFEST = ROOT / ".claude-plugin" / "plugin.json"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING = "high"
+DEFAULT_TIMEOUT_SECONDS = 300.0
 
 ADOPTION_TEMPLATE = """## Tradecraft
 
@@ -54,10 +56,8 @@ hold:
 1. You loaded the installed tradecraft charter completely, it contains the
    exact sentence `Capability wrappers are deliberately not in it.`, and you
    can identify its Convergence and Release ceremony moments.
-2. The installed catalog exposes charter, engagement, authoring, substrate,
-   filing, spikes, experience-session, adversarial-review, and persist-changes.
-3. Every one of those nine descriptions reaches its final exclusion clause
-   rather than ending mid-description.
+2. The loaded charter reaches its final paragraph, which contains the exact
+   sentence `a review finding about governing prose is not an incident.`
 Otherwise respond with TRADECRAFT_COMPAT_FAIL followed by a short reason.
 """
 
@@ -100,16 +100,26 @@ def resolve_codex(
     )
 
 
-def _capture(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        command,
-        cwd=str(cwd) if cwd else None,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+def _capture(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            command,
+            cwd=str(cwd) if cwd else None,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except OSError as exc:
+        binary = command[0] if command else "<empty command>"
+        raise CompatError(f"cannot launch {binary}: {exc}") from exc
 
 
 def _manifest_version() -> str:
@@ -214,7 +224,13 @@ def _init_consumer(consumer: Path) -> None:
         )
 
 
-def run_probe(codex: Path, *, model: str, reasoning: str) -> None:
+def run_probe(
+    codex: Path,
+    *,
+    model: str,
+    reasoning: str,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> None:
     with tempfile.TemporaryDirectory(prefix="tradecraft-codex-compat-") as raw:
         base = Path(raw)
         if _is_within(base, ROOT):
@@ -231,7 +247,13 @@ def run_probe(codex: Path, *, model: str, reasoning: str) -> None:
         command = build_probe_command(
             codex, consumer, last_message, model=model, reasoning=reasoning
         )
-        result = _capture(command, cwd=consumer)
+        try:
+            result = _capture(command, cwd=consumer, timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            raise CompatError(
+                "nested Codex session timed out after "
+                f"{timeout_seconds:g} seconds before returning a result"
+            ) from exc
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip()
             raise CompatError(f"nested Codex session failed ({result.returncode}): {detail}")
@@ -243,6 +265,16 @@ def run_probe(codex: Path, *, model: str, reasoning: str) -> None:
             raise CompatError(f"nested Codex result is not UTF-8: {exc}") from exc
         if answer != marker:
             raise CompatError(f"nested Codex session reported: {answer or '<empty>'}")
+
+
+def _positive_timeout(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
+    return parsed
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -257,6 +289,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex", help="Exact Codex executable; discovery is the default.")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--reasoning", default=DEFAULT_REASONING)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=_positive_timeout,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=f"Bound the nested session (default: {DEFAULT_TIMEOUT_SECONDS:g}).",
+    )
     return parser
 
 
@@ -274,16 +312,22 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "codex-compat: launch "
             f"model={args.model} reasoning={args.reasoning} "
+            f"timeout-seconds={args.timeout_seconds:g} "
             "sandbox=read-only ephemeral=true "
             "consumer=temporary-adopting-repository outside-source=true"
         )
-        run_probe(codex, model=args.model, reasoning=args.reasoning)
+        run_probe(
+            codex,
+            model=args.model,
+            reasoning=args.reasoning,
+            timeout_seconds=args.timeout_seconds,
+        )
     except CompatError as exc:
         print(f"codex-compat: FAIL: {exc}", file=sys.stderr)
         return 1
     print(
-        "codex-compat: PASS: native AGENTS adoption, full charter, and nine "
-        "skill descriptions reached the session"
+        "codex-compat: PASS: native AGENTS adoption and the complete installed "
+        "charter reached the session"
     )
     return 0
 

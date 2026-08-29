@@ -91,12 +91,13 @@ python tools/check_codex_compat.py
 
 The check records the resolved Codex executable and version, the installed
 plugin version, and the explicitly selected model, reasoning effort, read-only
-sandbox, and ephemeral session. It creates a temporary git repository outside
-this source tree, writes only the adoption instruction above plus a random
-sentinel to that repository's `AGENTS.md`, and proves the installed charter and
-all nine complete descriptions reached the cold session. On Windows it can find
-the Codex app-bundle executable even when `codex` is absent from `PATH`;
-`--codex PATH` pins an exact executable on any platform.
+sandbox, ephemeral session, and bounded launch time. It creates a temporary git
+repository outside this source tree, writes only the adoption instruction above
+plus a random sentinel to that repository's `AGENTS.md`, and proves the complete
+installed charter reached the cold session through its final paragraph. On
+Windows it can find the Codex app-bundle executable even when `codex` is absent
+from `PATH`; `--codex PATH` pins an exact executable on any platform, and
+`--timeout-seconds N` changes the default 300-second launch bound.
 
 **What does not reach you, by design.** Everything under `docs/`, `tools/`, and
 `.github/` is this repository's own machinery. A git-source install clones the

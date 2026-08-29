@@ -471,9 +471,16 @@ SEAT_COUNTS = ("raw", "merged", "sustained", "high")
 # exempt for the same reason every earlier row is -- records are appended,
 # never rewritten to suit a schema that arrived after them.
 REVIEW_ROWS_QUALITATIVE = 39
+# The first qualitative row predates the rule that the index itself carries a
+# qualitative external-pass outcome. Preserve it by position; every later row
+# names what actually posted without turning the pass into a seat or a count.
+REVIEW_ROWS_EXTERNAL_QUALITATIVE = 40
 COUNTING_FIELDS = ("seats", "dispositions", "facing")
 QUALITATIVE_FIELDS = frozenset(
-    {"date", "artifact", "lane", "report", "highs", "staffing", "notes"}
+    {
+        "date", "artifact", "lane", "report", "highs", "staffing", "external",
+        "notes",
+    }
 )
 
 # What became of the findings, in the terminal stage's own vocabulary: clause
@@ -1087,7 +1094,8 @@ def _not_a_mapping(row, where: str, findings: list) -> bool:
 
 def check_review_index(root: Path) -> list[str]:
     """One row per review: date, artifact, lane, the staffing, the report URL,
-    and — past REVIEW_ROWS_QUALITATIVE — each sustained high named, in place of
+    and — past REVIEW_ROWS_QUALITATIVE — each sustained high named, plus the
+    external pass's qualitative outcome from its later boundary, in place of
     the arithmetic the rows before it carry.
 
     The row is written once when the review ends and never maintained after —
@@ -1160,6 +1168,7 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
         _check_seats(row["seats"], where, findings)
     if "highs" in row:
         _check_highs(row["highs"], where, findings)
+    _check_external(row, row_index, where, findings)
     _check_dispositions_and_staffing(row, row_index, where, findings)
     _check_facing(row, row_index, where, findings)
 
@@ -1239,6 +1248,24 @@ def _check_highs(highs, where: str, findings: list) -> None:
             )
         else:
             seen[key] = position
+
+
+def _check_external(row, row_index: int, where: str, findings: list) -> None:
+    """The external pass's qualitative outcome, never its arithmetic."""
+    if "external" not in row:
+        if row_index >= REVIEW_ROWS_EXTERNAL_QUALITATIVE:
+            findings.append(
+                f"{where} missing field 'external' -- rows past the first "
+                f"{REVIEW_ROWS_EXTERNAL_QUALITATIVE} name the external pass's "
+                "qualitative outcome without counts or a panel seat"
+            )
+        return
+    value = row["external"]
+    if not isinstance(value, str) or not value.strip():
+        findings.append(
+            f"{where} external must be a non-empty qualitative string naming "
+            "what actually posted -- never a count or a panel seat"
+        )
 
 
 def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: list) -> None:
@@ -1945,26 +1972,46 @@ def check_marketplace_source(root: Path) -> list[str]:
     """Keep the tradecraft source in the form both plugin runtimes accept."""
     manifest = root / ".claude-plugin" / "marketplace.json"
     if not manifest.is_file():
-        return []
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json is missing -- "
+            "Codex and Claude must discover the shared tradecraft plugin from "
+            "one marketplace manifest"
+        ]
     try:
         parsed = json.loads(manifest.read_text(encoding="utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        # The marketplace validator owns the manifest's general shape. This
-        # guard owns the one valid Claude shape that Codex cannot consume.
-        return []
-    plugins = parsed.get("plugins", []) if isinstance(parsed, dict) else []
+    except json.JSONDecodeError as exc:
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json is not valid "
+            f"JSON ({exc}) -- the shared tradecraft source cannot be verified"
+        ]
+    if not isinstance(parsed, dict):
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json must be an "
+            "object containing the shared tradecraft plugin"
+        ]
+    plugins = parsed.get("plugins")
     if not isinstance(plugins, list):
-        return []
+        return [
+            "marketplace-source: .claude-plugin/marketplace.json field "
+            "'plugins' must be a list containing tradecraft"
+        ]
     findings = []
+    found = False
     for plugin in plugins:
         if not isinstance(plugin, dict) or plugin.get("name") != "tradecraft":
             continue
+        found = True
         if plugin.get("source") != "./":
             findings.append(
                 "marketplace-source: .claude-plugin/marketplace.json tradecraft "
                 "source must be the string `./` -- Codex cannot discover the "
                 "plugin from Claude's object form"
             )
+    if not found:
+        findings.append(
+            "marketplace-source: .claude-plugin/marketplace.json has no "
+            "tradecraft plugin entry -- the shared plugin cannot be discovered"
+        )
     return findings
 
 

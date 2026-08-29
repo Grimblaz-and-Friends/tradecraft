@@ -55,6 +55,7 @@ def make_clean_tree(root: Path) -> None:
     _write_cell(skill, "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n")
     _wire_callout(root)
     _wire_charter(root)
+    _write_marketplace(root, "./")
     # A conforming tree carries the roster its cells generate, for the same
     # reason the pointer above has a target: the fixture models a lawful tree,
     # not one whose parts merely exist. Generated rather than hand-written, so
@@ -164,6 +165,36 @@ def test_marketplace_source_is_the_exact_codex_discovery_string(tmp_path):
 
     _write_marketplace(tmp_path, "./")
     assert lint.run(tmp_path) == []
+
+
+def test_marketplace_source_requires_the_manifest_and_tradecraft_entry(tmp_path):
+    """The exact-source guard must fail closed when there is no source to inspect."""
+    make_clean_tree(tmp_path)
+    manifest = tmp_path / ".claude-plugin" / "marketplace.json"
+    manifest.unlink()
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "marketplace.json is missing" in findings[0]
+
+    manifest.write_text(json.dumps({"plugins": []}) + NL, encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and "no tradecraft plugin entry" in findings[0]
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ("not json", "not valid JSON"),
+        (json.dumps([]), "must be an object"),
+        (json.dumps({"plugins": {}}), "'plugins' must be a list"),
+    ],
+)
+def test_marketplace_source_rejects_uninspectable_manifests(tmp_path, content, expected):
+    make_clean_tree(tmp_path)
+    (tmp_path / ".claude-plugin" / "marketplace.json").write_text(
+        content + NL, encoding="utf-8"
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and expected in findings[0]
 
 
 def test_harness_token_fires_on_powershell_and_cmd_spellings_any_case(tmp_path):
@@ -1883,8 +1914,9 @@ def test_a_row_appended_past_the_cutover_is_obliged(tmp_path):
     bare = json.dumps(_review_row(artifact="pr-next")) + "\n"
     root = _index_tree(tmp_path, extra=bare)
     findings = lint.check_review_index(root)
-    assert len(findings) == 3, findings
+    assert len(findings) == 4, findings
     assert any("highs" in f for f in findings)
+    assert any("external" in f for f in findings)
     assert any("retired" in f and "seats" in f for f in findings)
     assert any("staffing" in f for f in findings)
 
@@ -1905,9 +1937,10 @@ def test_a_row_that_fails_to_parse_does_not_shift_later_rows(tmp_path):
     assert any("not valid JSON" in f for f in findings)
     # Discriminating only since the cutover: one position earlier the appended
     # row is pre-cutover, so it owes dispositions and facing and carries `seats`
-    # lawfully -- three missing fields and no retired-shape finding at all.
+    # lawfully -- the appended row then lacks the new qualitative obligations
+    # and carries no retired-shape finding at all.
     assert any("retired" in f for f in findings), findings
-    assert len([f for f in findings if "missing field" in f]) == 2, findings
+    assert len([f for f in findings if "missing field" in f]) == 3, findings
 
 
 def test_staffing_rejects_unknown_keys(tmp_path):
@@ -2098,7 +2131,7 @@ def test_a_real_qualitative_row_appended_to_the_index_is_lawful(tmp_path):
 
 
 def test_external_pass_cannot_reenter_the_qualitative_row_as_arithmetic(tmp_path):
-    """The external outcome belongs in the report, not a revived seat or count."""
+    """The external outcome is qualitative, not a revived seat or count."""
     counts = {"raw": 1, "merged": 1, "sustained": 1, "high": 0}
     bad = _qualitative_row(artifact="pr-next", seats={"external": counts})
     root = _index_tree(tmp_path, extra=json.dumps(bad) + NL)
@@ -2107,7 +2140,7 @@ def test_external_pass_cannot_reenter_the_qualitative_row_as_arithmetic(tmp_path
 
     good = _qualitative_row(
         artifact="pr-next",
-        notes="external pass outcome is recorded in the linked report",
+        external="self-invoked review posted two findings; both were fixed",
     )
     (root / "docs" / "reviews.jsonl").write_text(
         _real_index_rows() + json.dumps(good) + NL,
@@ -2734,6 +2767,7 @@ def _qualitative_row(**overrides):
         "lane": "panel",
         "highs": ["the guard let the retired shape back in"],
         "staffing": {"model": "claude-opus-5", "runtime": "claude-code (windows)"},
+        "external": "configured reviewer posted no actionable findings",
         "report": "https://github.com/example/repo/pull/192#issuecomment-9",
     }
     row.update(overrides)
@@ -2744,6 +2778,7 @@ def _at_cutover(monkeypatch):
     """Every row in the fixture index is past the cutover, and past the
     boundary that obliges staffing."""
     monkeypatch.setattr(lint, "REVIEW_ROWS_QUALITATIVE", 0)
+    monkeypatch.setattr(lint, "REVIEW_ROWS_EXTERNAL_QUALITATIVE", 0)
     monkeypatch.setattr(lint, "REVIEW_ROWS_GRANDFATHERED", 0)
     monkeypatch.setattr(lint, "REVIEW_ROWS_FACING_GRANDFATHERED", 0)
 
@@ -2755,6 +2790,27 @@ def test_qualitative_row_is_clean(tmp_path, monkeypatch):
     _at_cutover(monkeypatch)
     _write_index(tmp_path, _qualitative_row())
     assert lint.run(tmp_path) == []
+
+
+def test_qualitative_row_must_name_its_external_outcome(tmp_path, monkeypatch):
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    row = _qualitative_row()
+    del row["external"]
+    _write_index(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "missing field 'external'" in findings[0], findings[0]
+
+
+@pytest.mark.parametrize("external", ["", "   ", None, {"raw": 2}, 2])
+def test_external_outcome_must_be_qualitative(tmp_path, monkeypatch, external):
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(tmp_path, _qualitative_row(external=external))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "external must be a non-empty qualitative string" in findings[0]
 
 
 def test_qualitative_row_sustaining_no_high_is_lawful(tmp_path, monkeypatch):
@@ -2925,7 +2981,10 @@ def test_a_retired_field_gets_the_retired_message_not_the_unknown_one(tmp_path, 
     assert "retired" in findings[0] and "unknown key" not in findings[0], findings[0]
 
 
-@pytest.mark.parametrize("field", ["notes", "date", "artifact", "lane", "report", "staffing", "highs"])
+@pytest.mark.parametrize(
+    "field",
+    ["notes", "date", "artifact", "lane", "report", "staffing", "highs", "external"],
+)
 def test_the_closed_key_set_admits_every_field_the_row_is_made_of(
     tmp_path, monkeypatch, field
 ):
