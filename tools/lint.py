@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""tradecraft packaging lint — enforcement for the doctrine's checkable subset.
+"""tradecraft packaging lint â€” enforcement for the doctrine's checkable subset.
 
 Checks:
 
   1. zone wall: no file in the shipped zone may reference the repo-only zone
-     (docs/, tools/, .github/) by any path form — rooted, relative (../ or ./),
+     (docs/, tools/, .github/) by any path form â€” rooted, relative (../ or ./),
      backslashed, or case-shifted. Full web URLs are lawful: they resolve for
      consumers; repo paths do not.
   2. harness tokens: no shipped file outside hooks/ names a harness-specific
@@ -16,15 +16,15 @@ Checks:
   4. cell frontmatter: every skill declares a name and a description the
      runtime can parse, each within its field budget. A cell whose description
      is absent or malformed silently never fires.
-  5. sideways deps: no skill may reference another skill — by path (rooted or
-     relative) or by the name form `<name>` cell — and lib/ and hooks/ may
+  5. sideways deps: no skill may reference another skill â€” by path (rooted or
+     relative) or by the name form `<name>` cell â€” and lib/ and hooks/ may
      reference no skill but the charter (deps point down otherwise). The
      charter is exempt in the name form only and as a target from anywhere,
      because it is already always-on in every session, so the citation costs
      no loading and cannot drift the way a second copy can; the hook that
      emits it must name it, and check 3 requires that dependency to exist.
      Paths between cells stay findings even from the charter, for a reason
-     self-containment never covered — a rooted skills/ path does not resolve
+     self-containment never covered â€” a rooted skills/ path does not resolve
      once installed, while the name survives relocation.
   6. cell references: every `<name>` cell reference names a skill that
      exists, and every references/ pointer resolves against the directory of
@@ -40,49 +40,56 @@ Checks:
   paths and check 6's references/ pointers alike -- because a path that does
   not resolve is broken whatever encloses it, this repository's fenced blocks
   are calling contracts rather than examples, and checks 1 and 2 already fire
-  inside them. Both checks also read one wrap — a line ending in `<name>` whose successor
-  begins "cell" — because a reflow is a formatting edit no reviewer inspects
+  inside them. Both checks also read one wrap â€” a line ending in `<name>` whose successor
+  begins "cell" â€” because a reflow is a formatting edit no reviewer inspects
   and it would otherwise silently remove a reference from both checks.
   7. doctrine citations: every [D-N] the doctrine writes names an entry that
      exists. The log's own references are check 12's; a marker in the always-on
      surface was checked by nothing, which the outflow rule makes load-bearing
      by instructing a session to compress prose into one.
-  8. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
-     is a live @AGENTS.md import — checked by position (first non-empty line,
+  8. doctrine references: every repo path the doctrine writes resolves.
+     Check 14 covers the decision log, which is frozen exhaust, so the
+     surface carrying the live rules was the one nothing checked --
+     repointing the doctrine's own docs/values.md mention left lint
+     green while the identical break inside an entry fired. Scoped to
+     the doctrine files: docs/*.md needs resolver work, not a path-list
+     edit, because references there resolve relative to their file.
+  9. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
+     is a live @AGENTS.md import â€” checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  9. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  10. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  10. review index: docs/reviews.jsonl, when present, parses and carries one
+  11. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review. Past the cutover: date, artifact, lane, the
      sustained highs named, the model and runtime that staffed it, report URL,
-     and no arithmetic — the key set is closed. Before it: per-seat counts,
+     and no arithmetic â€” the key set is closed. Before it: per-seat counts,
      what came of the findings, and the split by consequence shape, which
      reconciles against the disposition counts and is the only cross-total on
      the row that is sound.
- 11. decision index: every decision entry has a row in the log's index, and
+ 12. decision index: every decision entry has a row in the log's index, and
      every row a file.
- 12. entry references: every path reference and relative link a decision entry
+ 13. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
-13. emitted ASCII: no Python file states a non-ASCII character in a
+14. emitted ASCII: no Python file states a non-ASCII character in a
     non-docstring string constant. Windows encodes stdout and stderr to the
     locale codepage, pipes included, so a captured em dash garbles in the one
     message a guard exists to deliver. It reads literals, not reachability:
     a filename and a regex source are flagged too, and a character built at
     runtime is out of reach. Docstrings and comments are exempt.
-14. docstring not piped: no script passes __doc__ as an argparse
+15. docstring not piped: no script passes __doc__ as an argparse
     description. --help writes it to stdout before any stream setup runs,
     which turns the docstring check 12 exempts into locale-encoded output.
-15. stdio wired: every script with a main() imports utf8_stdio by that name
+16. stdio wired: every script with a main() imports utf8_stdio by that name
     and calls it as the first statement, so runtime data this repository did
     not write reaches the stream protected. Both halves are checked: without
     the import binding, a local no-op with the right name would satisfy the
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
-16. project roster: every cell has an entry under .claude/skills/ carrying its
+17. project roster: every cell has an entry under .claude/skills/ carrying its
     frontmatter byte for byte, and no entry THIS GENERATOR WROTE names a cell
     that is gone. A file it did not write is not its business: at a name that
     is no cell it draws no finding at all, because that is a project skill in
@@ -103,7 +110,7 @@ constitution) is not validated: it is history, not a live format (D-74).
 
 All shipped files are scanned regardless of extension; binary content (NUL
 byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
-from any cwd — paths resolve from this file's own location.
+from any cwd â€” paths resolve from this file's own location.
 Exit 0 when clean, 1 with findings listed one per line.
 """
 from __future__ import annotations
@@ -782,6 +789,54 @@ def check_doctrine_citations(root: Path) -> list[str]:
                         f"doctrine-citation: {name}:{lineno} cites "
                         f"[D-{number}], which is not an entry in the log"
                     )
+    return findings
+
+
+def check_doctrine_references(root: Path) -> list[str]:
+    """Every repo path the doctrine writes resolves.
+
+    check_entry_references covers the decision log, which is frozen exhaust,
+    and stops there -- so the surface carrying the live rules was the one
+    nothing checked. The gap is not theoretical: repointing the doctrine's
+    `docs/values.md` mention at a path that does not exist left lint green and
+    the whole suite passing, while the identical break inside an entry fired.
+    A future change that moves a target repoints every entry, because
+    mover-pays and this module force it to, and has nothing telling it the
+    doctrine named the target too -- so the guarded surfaces are the record and
+    the unguarded one is the rule a session actually follows.
+
+    Scoped to the doctrine files and no wider. `docs/*.md` was measured and
+    left out: `_entry_ref_resolves` does not resolve a reference relative to
+    its containing file, so `north-star/flow.md` and `../values.md` report as
+    unresolved from documents that read them fine. That is resolver work, not
+    a path-list edit, and doing it badly here would red the tree with no
+    compliant answer -- as bad as passing unlawful work.
+
+    No pin form and no recorded set, deliberately: both exist because an entry
+    freezes on landing and cannot be repaired. The doctrine is editable, so its
+    only lawful answer is to repoint, and offering an exemption would invite
+    the doctrine to carry a dead path with a note instead.
+    """
+    findings: list[str] = []
+    directory = root / "docs" / "architecture" / "decisions"
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = root / name
+        if not path.is_file():
+            continue  # its absence is check 8's finding, not this one's
+        text = _read_text(path)
+        if text is None:
+            continue
+        for lineno, line in _unfenced_numbered(text):
+            for ref, form, _pinned in _entry_refs(line):
+                if _entry_ref_resolves(root, directory, ref):
+                    continue
+                findings.append(
+                    f"doctrine-reference: {name}:{lineno} {form} '{ref}' "
+                    f"resolves to nothing. The doctrine is editable, so "
+                    f"repoint it at the target's current location -- a pin "
+                    f"and the decision log's recorded sets are for entries "
+                    f"that froze on landing, and neither applies here"
+                )
     return findings
 
 
@@ -2352,6 +2407,7 @@ def run(root: Path) -> list[str]:
         + check_sideways_deps(root)
         + check_cell_references(root)
         + check_doctrine_citations(root)
+        + check_doctrine_references(root)
         + check_doctrine(root)
         + check_doctrine_callout(root)
         + check_review_index(root)

@@ -13,11 +13,11 @@
 ## The ceremony moments, here
 
 - **Convergence.** The settled pre-implementation artifact is posted as a comment on its issue (file one if none exists). The session records the affirmation on the issue, naming that comment, before the first commit; from there the owner is next needed at PR review. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR; when in doubt, ask the cheap question.
-- **Release.** `ci.yml` labels and comments on any PR touching this file, `CLAUDE.md`, or the `charter` cell, flagging it for the owner's specific review [D-81]
+- **Release.** `ci.yml` labels and comments on any PR touching this file, `CLAUDE.md`, or the `charter` cell, flagging it for the owner's specific review. [D-81]
 
 ## The flow
 
-Branch first (`main` refuses direct pushes) → build → `python tools/lint.py` and `python tools/check_version_bump.py` → commit → publish the branch, open the PR, run the experience session the change bought or record the one line declining it, run the review, reconcile external reviewer comments — in that order, without being asked; on a change that has a PR, running the review is a check, never a question. The PR body states `Closes #N`, or one line saying it closes none and why. A shipped-zone change bumps the plugin version (the unit is the PR against its merge base).
+Branch first (`main` refuses direct pushes) → build → `python tools/lint.py` and `python tools/check_version_bump.py` → commit → publish the branch, open the PR, run the experience session the change bought or record the one line declining it, run the review, reconcile external reviewer comments — in that order, without being asked; on a change that has a PR, running the review is a check, never a question. A fix batch buys another session before the review closes. [D-178] The PR body states `Closes #N`, or one line saying it closes none and why. A shipped-zone change bumps the plugin version (the unit is the PR against its merge base).
 
 ## Review, here
 

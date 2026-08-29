@@ -687,7 +687,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_zone_wall", "check_harness_tokens", "check_delivery",
     "check_cell_frontmatter", "check_project_roster",
     "check_sideways_deps", "check_cell_references",
-    "check_doctrine_citations",
+    "check_doctrine_citations", "check_doctrine_references",
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
     "check_emitted_ascii", "check_docstring_not_piped",
@@ -751,6 +751,49 @@ def test_a_doctrine_citation_that_resolves_to_nothing_is_a_finding(tmp_path):
     findings = lint.run(tmp_path)
     assert len(findings) == 1
     assert "doctrine-citation" in findings[0] and "[D-9999]" in findings[0]
+
+
+def test_a_doctrine_path_that_resolves_is_not_a_finding(tmp_path):
+    """The lawful polarity, and the one that decides the guard's worth: the
+    doctrine names seven repo paths that all resolve, so a guard reddening on
+    any of them would block every future doctrine edit."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + "Argue it against `docs/values.md`, by number." + NL,
+                      encoding="utf-8")
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / "values.md").write_text("# Values" + NL,
+                                                 encoding="utf-8")
+    assert lint.run(tmp_path) == []
+
+
+def test_a_doctrine_path_that_resolves_to_nothing_is_a_finding(tmp_path):
+    """The gap this guard closes, in the shape it was found in: repointing the
+    doctrine's own `docs/values.md` mention at a path that does not exist left
+    lint green and the suite passing, while the identical break inside a
+    decision entry fired. The guarded surface was the frozen record and the
+    unguarded one was the live rule."""
+    make_clean_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + "Argue it against `docs/valuez.md`, by number." + NL,
+                      encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1
+    assert "doctrine-reference" in findings[0]
+    assert "docs/valuez.md" in findings[0]
+
+
+def test_the_doctrine_reference_guard_reads_the_pointer_too(tmp_path):
+    """Both doctrine files, for the reason the citation guard reads both: a
+    rule can move between them and the guard must not follow it only one way."""
+    make_clean_tree(tmp_path)
+    pointer = tmp_path / "CLAUDE.md"
+    pointer.write_text(pointer.read_text(encoding="utf-8")
+                       + "See `docs/gone.md`." + NL, encoding="utf-8")
+    findings = lint.run(tmp_path)
+    assert any("doctrine-reference: CLAUDE.md" in f for f in findings)
 
 
 def test_the_citation_guard_reads_the_pointer_too(tmp_path):
