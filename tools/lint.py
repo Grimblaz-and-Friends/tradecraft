@@ -110,6 +110,12 @@ Checks:
     holding a second definition drifts from the writer it judges.
 18. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
+19. docstring control characters: no docstring's compiled value holds a
+    control character other than a line feed or a tab. A docstring is not raw,
+    so `` written in one is a carriage return at runtime. Read from the
+    compiled value rather than the source bytes, because the instance that
+    motivated this had clean bytes on disk and four carriage returns in
+    `__doc__` [D-231].
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -2065,6 +2071,71 @@ def check_charter_cell(root: Path) -> list[str]:
     return findings
 
 
+def check_docstring_control_chars(root: Path) -> list[str]:
+    """No docstring's compiled value holds a control character but LF or TAB.
+
+    A docstring is not raw, so `\\r` written in one **is** a carriage return at
+    runtime -- reaching `pydoc`, `help()`, `inspect.getdoc` and any tooltip,
+    where a bare CR makes a terminal overwrite the line it sat on. The prose
+    here names control characters constantly, because the practice's own rules
+    are about them, so the escape and the character are one keystroke apart and
+    the source looks identical either way.
+
+    **This fired three times in one change and nothing caught any of them.** In
+    PR #231: two literal control bytes reached a committed decision-log row and
+    split a markdown table; a new test's docstring carried four carriage
+    returns after a repair converted its bytes into escapes it never doubled;
+    and a code span lost the character it named. [#233]
+
+    It reads the **compiled** value, not the source, which is the whole point:
+    the bytes on disk were clean in the second instance and the runtime value
+    was not. A scan for carriage-return bytes catches the first instance and
+    neither of the others.
+
+    LF and TAB are exempt because prose is written in lines and indented. A
+    docstring that genuinely needs another control character builds it with
+    `chr()`, which is this repository's sanctioned route for exactly this and
+    is the same idiom `check_emitted_ascii` records as its own live tension.
+    """
+    findings = []
+    candidates = [
+        path for path in _python_files(root)
+        if ".git" not in path.parts
+    ]
+    ignored = _git_ignored(root, candidates)
+    allowed = {10, 9}
+    for path in candidates:
+        if path in ignored:
+            continue
+        rel_file = path.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(path.read_bytes().decode("utf-8-sig"))
+        except (UnicodeDecodeError, SyntaxError):
+            # check_emitted_ascii walks the same files and reports both, so a
+            # second message here would be one defect stated twice.
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                     ast.AsyncFunctionDef)):
+                continue
+            doc = ast.get_docstring(node, clean=False)
+            if not doc:
+                continue
+            for char in doc:
+                point = ord(char)
+                if point >= 32 or point in allowed:
+                    continue
+                owner = getattr(node, "name", "module")
+                findings.append(
+                    f"docstring-control-char: {rel_file}:{node.lineno} "
+                    f"({owner}) holds U+{point:04X} in its docstring -- a "
+                    f"docstring is not raw, so an escape written there is the "
+                    f"character at runtime; double the backslash, or build it "
+                    f"with chr() where the character is meant"
+                )
+                break
+    return findings
+
 def check_marketplace_source(root: Path) -> list[str]:
     """Keep the tradecraft source in the form both plugin runtimes accept."""
     manifest = root / ".claude-plugin" / "marketplace.json"
@@ -2476,6 +2547,7 @@ def run(root: Path) -> list[str]:
         + check_docstring_not_piped(root)
         + check_stdio_wired(root)
         + check_marketplace_source(root)
+        + check_docstring_control_chars(root)
     )
 
 

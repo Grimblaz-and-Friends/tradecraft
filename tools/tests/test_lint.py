@@ -673,6 +673,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_decision_index", "check_entry_references",
     "check_emitted_ascii", "check_docstring_not_piped",
     "check_stdio_wired", "check_marketplace_source",
+    "check_docstring_control_chars",
 )
 
 
@@ -3156,3 +3157,92 @@ def test_a_repeat_does_not_swallow_the_empty_string_finding(tmp_path, monkeypatc
     findings = lint.run(tmp_path)
     assert len(findings) == 2, findings
     assert all("must be a non-empty string" in f for f in findings), findings
+
+
+BS = chr(92)
+
+
+def test_docstring_control_chars_stays_quiet_on_a_lawful_tree(tmp_path):
+    """The polarity that matters as much as the other: a guard that reds prose
+    written correctly is a guard somebody deletes. A docstring naming a carriage
+    return by its escape, doubled, is this repository's convention and passes.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Names `" + BS*2 + "r` as text, indented" + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "ok.py").write_bytes(source.encode("utf-8"))
+    assert lint.check_docstring_control_chars(tmp_path) == []
+
+
+def test_docstring_control_chars_catches_the_escape_that_became_the_character(tmp_path):
+    """The defect, at the site it fired. One backslash in a non-raw docstring is
+    the character at runtime, and on disk it is one byte away from the lawful
+    form above -- which is why reading the source rather than the compiled value
+    would miss it.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Names `" + BS + "r` with one backslash." + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    assert chr(13) not in source, "the fixture is an escape, not a raw byte"
+    (tmp_path / "bad.py").write_bytes(source.encode("utf-8"))
+    findings = lint.check_docstring_control_chars(tmp_path)
+    assert len(findings) == 1
+    assert "bad.py" in findings[0]
+    assert "U+000D" in findings[0]
+
+
+def test_docstring_control_chars_reads_the_compiled_value_not_the_bytes(tmp_path):
+    """The distinguishing claim, pinned. The fixture above holds no carriage
+    return byte on disk and one in `__doc__`, which is the instance that
+    motivated this check and the reason a scan for carriage-return bytes does
+    not replace it: that scan reads the bytes and finds nothing.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Holds `" + BS + "r` as an escape." + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    path = tmp_path / "escaped.py"
+    path.write_bytes(source.encode("utf-8"))
+    assert chr(13).encode() not in path.read_bytes()
+    assert lint.check_docstring_control_chars(tmp_path) != []
+
+
+def test_docstring_control_chars_exempts_the_characters_prose_is_written_in(tmp_path):
+    """Line feeds and tabs are how prose is written, so forgiving them is the
+    check being usable rather than a hole: a multi-line indented docstring is
+    every docstring in this repository.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "First line." + chr(10) + chr(10) + chr(9) + "Indented." + chr(10) + "    " + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "prose.py").write_bytes(source.encode("utf-8"))
+    assert lint.check_docstring_control_chars(tmp_path) == []
+
+
+def test_docstring_control_chars_leaves_a_non_docstring_string_alone(tmp_path):
+    """Scope, stated by probe. A control character in an ordinary string is code
+    building a byte deliberately -- the sanctioned route -- and this check is
+    about prose a reader is handed, not about what code constructs.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    return " + chr(34) + "a" + chr(92) + "rb" + chr(34) + chr(10)
+    )
+    (tmp_path / "code.py").write_bytes(source.encode("utf-8"))
+    assert lint.check_docstring_control_chars(tmp_path) == []
+
+
+def test_this_repository_holds_no_control_character_in_any_docstring():
+    """The tree this exists for. PR #231 shipped four carriage returns in one
+    test's `__doc__` with clean bytes on disk and every guard green; this is
+    what would have caught them.
+    """
+    root = Path(__file__).resolve().parents[2]
+    assert lint.check_docstring_control_chars(root) == []
