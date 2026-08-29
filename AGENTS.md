@@ -6,14 +6,18 @@
 
 **Read `skills/charter/SKILL.md` now, before acting** — the line above imports it where the runtime supports imports, and Codex has none, so the instruction is what carries it there. It carries the binding half of this practice — authority and which decisions are the owner's, the two ceremony moments, review, and where content goes — and it is what this repository ships to anyone who adopts the practice. This file adds only what is specific to here. Where the two touch, the charter states the rule and this file states how it is done in this repository.
 
+## Worth doing
+
+**When the worth-it question outruns the evidence, argue it against `docs/values.md`, by number** — the ranking of what this practice values, the owner's alone to amend.
+
 ## The ceremony moments, here
 
 - **Convergence.** The settled pre-implementation artifact is posted as a comment on its issue (file one if none exists). The session records the affirmation on the issue, naming that comment, before the first commit; from there the owner is next needed at PR review. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR; when in doubt, ask the cheap question.
-- **Release.** `ci.yml` labels and comments on any PR touching this file, `CLAUDE.md`, or the `charter` cell, flagging it for the owner's specific review — not `CODEOWNERS`, which cannot reach a PR's own author, today always him. [D-81]
+- **Release.** `ci.yml` labels and comments on any PR touching this file, `CLAUDE.md`, or the `charter` cell, flagging it for the owner's specific review [D-81]
 
 ## The flow
 
-Branch first (`main` refuses direct pushes) → build → `python tools/lint.py` and `python tools/check_version_bump.py` → commit → publish the branch, open the PR, run the experience session the change bought or record the one line declining it, run the review, reconcile external reviewer comments — in that order, without being asked; on a change that has a PR, running the review is a check, never a question. A fix batch that rewrites what the material instructs buys one more session on the last tree the review's fixes produce, or the one line declining it, before the review closes. The PR body states `Closes #N`, or one line saying it closes none and why. A shipped-zone change bumps the plugin version (the unit is the PR against its merge base).
+Branch first (`main` refuses direct pushes) → build → `python tools/lint.py` and `python tools/check_version_bump.py` → commit → publish the branch, open the PR, run the experience session the change bought or record the one line declining it, run the review, reconcile external reviewer comments — in that order, without being asked; on a change that has a PR, running the review is a check, never a question. The PR body states `Closes #N`, or one line saying it closes none and why. A shipped-zone change bumps the plugin version (the unit is the PR against its merge base).
 
 ## Review, here
 

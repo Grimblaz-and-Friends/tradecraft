@@ -4,7 +4,7 @@
 
 **Purpose:** give the unmeasurable half of every worth-it judgment an explicit declaration to be judged against, so work whose value resists measurement is funded deliberately rather than lost to the measurable by default. **Audience:** the owner when amending it; any session weighing whether work is worth doing when the evidence runs out. **Success:** worth-it judgments on unmeasurable work cite a numbered value rather than vibes, and the shipped portfolio does not drift toward only the short-horizon and measurable.
 
-**Status: north star companion.** Declared alongside `flow.md`; binds nothing until adopted through normal ceremony. Amendment is the owner's alone.
+**Status: adopted, and binding.** Declared alongside [`north-star/flow.md`](north-star/flow.md) as reference that bound nothing, and adopted through normal ceremony on [#215](https://github.com/Grimblaz-and-Friends/tradecraft/issues/215) — this repository's doctrine now points here, and a worth-it judgment whose evidence runs out is argued against the ranking below, by number. Amendment is the owner's alone.
 
 ## Why this exists
 
@@ -17,6 +17,7 @@ Economic machinery sharpens cost estimates for all work but value estimates only
 - **Allocation, not per-item ROI.** Work whose value resists measurement is funded as a standing share of capacity per value, and competes within that lane — never head-to-head against measurable-value work.
 - **The re-ask still applies**, but asks "is this still serving its declared value, within its allocation?" — not "have metrics proven it?"
 - **Both-ways guard.** No demanding measurement from values-funded work; no dressing values-funded work in proxy metrics. A claim names the value it serves, or it isn't one.
+- **Recognition is what makes that guard fireable.** A claim carries its value because someone is arguing worth as it is read. An open item is read at rest — by a ranking pass, a staleness sweep, any evidence-shaped filter — with nobody present to argue it, and a values-funded item has no measurable payoff by construction, so it reads as weak and the guard never fires for it. **So an open item whose case for being picked up rests on unmeasurable value names that value too**, by number, where its case is made. Absence of a name means untagged, never *measurable*: a sweep gives an untagged item what it would have given it anyway, and reading absence as a measurability claim turns this guard backwards onto the work it exists to protect.
 - **Tripwire:** periodically look at what actually shipped. If it's all short-horizon and measurable, the drift is happening regardless of how each call felt.
 - **Amendment is the owner's**, with the same ceremony as any rule change. Sessions argue against it freely; they don't reinterpret it.
 
