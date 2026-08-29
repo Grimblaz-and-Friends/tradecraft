@@ -493,9 +493,11 @@ QUALITATIVE_FIELDS = frozenset(
     }
 )
 
-# What became of the findings, in the terminal stage's own vocabulary: clause
-# (a) dismisses, clause (b) sustains and fixes, routes, or prices out. The row
-# copies counts the ruling already produced; it does not derive them.
+# What became of the findings, in the vocabulary the terminal stage used before
+# the cutover: clause (a) dismissed, clause (b) sustained and fixed, routed, or
+# priced out. All four are retired [D-230] and frozen here as history -- they
+# validate the grandfathered rows and describe no live ruling. The row copies
+# counts the ruling already produced; it does not derive them.
 #
 # `dismissed` earns its place as the only field that measures noise. Measuring
 # value while never measuring noise is how the predecessor's pipeline could

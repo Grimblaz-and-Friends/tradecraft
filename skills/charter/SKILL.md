@@ -28,9 +28,9 @@ Process weight concentrates at exactly two moments; everything between them is m
 
 ## Review
 
-Every reviewable artifact states its purpose, audience, and success criteria — the `authoring` cell carries that header's standard. The review judges against that statement; the review's own charter, roster, and evidence standards travel with the review practice, in the `adversarial-review` cell, which also carries how a finding is dispositioned.
+Every reviewable artifact states its purpose, audience, and success criteria — the `authoring` cell carries that header's standard. The review judges against that statement; its own charter, roster, evidence standards and dispositions travel with it, in the `adversarial-review` cell.
 
-**Fix what needs no decision, whatever its scope** — a remedy needing neither the owner's attention, a design call, nor a change to what this change is, lands here; scope does not decide it. Needing any of the three, it is a decision rather than a fix: it goes to the owner argued, or to the board where it earns its own issue. Real but not yet worth acting on is **recorded**, not filed. **Fixing needs no permission; declining to fix does** — a drop, a record, or a retired lens is ruled by a stage that is not the session that built the change, and naming a finding in conversation is not a disposition.
+**Fix what needs no decision, whatever its scope** — a remedy needing neither the owner's attention, a design call, nor a change to what this change is, lands here; scope does not decide it. Needing any of the three, it is a decision rather than a fix: it goes to the owner argued, or to the board where it earns its own issue. Real but not yet worth acting on is **recorded**, not filed. **Fixing needs no permission; declining to fix does** — a drop, a record, or a retired lens is ruled by a stage that is not the session that built the change. Outside a review no such stage exists, so there the decline is recorded on the work itself; naming a finding in conversation is not a disposition.
 
 ## Where content goes
 

@@ -8,4 +8,6 @@
 
 **Independence extends to every role**: defense and judge are staffed like seats — never the artifact's author, and the judge never a finder. In a single-session lane, all review roles are fresh dispatches, not the authoring session reviewing itself. The launch records the working root, sandbox or permission boundary, model, and reasoning effort; those are inputs to the evidence, not ambient defaults.
 
+**A dispatch whose subject is text the change edits gets a working root carrying only that text**, and is told that any always-on text reaching it otherwise is not its governing text. A runtime injects the repository's own doctrine and charter into every session it starts, from wherever it resolves them — which on this practice's own evidence can be the default branch while the tree under review holds the amendment, so a recipient reads the rule the change replaced and rules against it. Naming the working root is not enough on its own [D-222]: the stale text arrives beside it, and only an isolated root plus that statement has been observed to make a recipient reject it.
+
 **Seats that mutate the tree get their own worktree and write boundary there.** Mutation testing, red-probes, anything that writes: dispatch it isolated, or concurrent readers see files change underneath them mid-review.
