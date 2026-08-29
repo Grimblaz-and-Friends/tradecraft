@@ -25,13 +25,24 @@ second place, and every cell edit into two diffs, to save that hop -- the sum
 over every cell at `8a0c71e` of the file's decoded characters less the block
 `frontmatter()` returns.
 
-**Written and read as bytes**, per the substrate cell's third text-mode rule:
-these files are compared by `check_project_roster` on every lint run, and a
-text-mode write would turn every line feed into a carriage return pair on
-Windows and not on Linux, so the same tree would hold different bytes
-depending on where this last ran. The copied frontmatter carries the cell's
-own line endings by construction; `.gitattributes` pins those to LF on every
-platform, so the bytes are the same everywhere and the comparison is exact.
+**Written as bytes, compared as text.** The write half is the substrate cell's
+third text-mode rule: a text-mode write would turn every line feed into a
+carriage return pair on Windows and not on Linux, so the same tree would hold
+different bytes depending on where this last ran. That half is unchanged and
+guarded by a test of its own.
+
+The read half cannot be the same, because **the line endings these files carry
+on disk are not this repository's to set.** `.gitattributes` pins the checkout
+to LF and the index to LF, so no route through git produces anything else --
+but a Claude Code worktree does not reach `.claude/` through git. It copies the
+directory, gitignored files and all, and that copy rewrites LF to CRLF; a plain
+`git worktree add` off the same commit produces LF and a green lint, which is
+how the two were told apart. So every session starting work in such a worktree
+met a finding per cell before touching anything, could not tell that red from
+one it had caused, and could not clear it durably: `--write` rewrote the entries
+LF, git recorded nothing because the index already held LF, and the next
+worktree started red again (#224). `matches()` below is where that is answered,
+and it says why the comparison may not be tightened back.
 
 Usage:  python tools/roster.py [--write]
 
@@ -159,6 +170,44 @@ def expected(root: Path, name: str) -> bytes:
     return block + _body(name)
 
 
+def matches(entry: bytes, want: bytes) -> bool:
+    """Whether an entry on disk is the one `expected()` describes.
+
+    **Text identity, not byte identity, and the difference is exactly the line
+    endings.** Everything else is compared as it always was: a changed
+    description, a reordered field, a stray character, a truncated block all
+    still differ here.
+
+    The warrant is that a newline difference at this site **cannot reach the
+    repository and cannot be repaired in the tree it appears in.**
+    `.gitattributes` normalises the entry to LF on the way into the index, so
+    a CRLF entry and its LF twin are the same commit; and the CRLF is written
+    by a copy no command here performs, so re-running the writer clears the
+    working tree for as long as that tree lives and the next one starts over.
+    Reporting it was therefore a finding with no lawful response, on a tree
+    nobody had touched. [#224]
+
+    **Both sides are normalised, not only the entry.** `want` is built from a
+    cell that git checks out LF, so today only the entry side can differ --
+    but normalising one side would make an unclearable red possible the moment
+    a cell arrived CRLF too, where the symmetric form stays self-consistent
+    whatever either side carries. The cost of the symmetry is nothing; the
+    cost of the asymmetry is a red that `--write` cannot clear.
+
+    **`\\r\\n` only, never a lone `\\r`.** That pair is what a Windows
+    text-mode write produces and what was observed; a bare carriage return is
+    not a line ending anything here emits, and treating it as one would
+    silently accept a corrupted entry.
+
+    `_normalized_chars` in `skills/authoring/scripts/figures.py` is the same
+    move at the other site that reads these files, for the same reason stated
+    the same way -- one fixed basis, so the answer cannot depend on which
+    checkout produced the tree. That site had it and this one did not, which
+    is the whole of the exposure #224 asked about.
+    """
+    return entry.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n")
+
+
 def inside_roster(root: Path, entry: Path) -> bool:
     """Whether an entry's real location is still under the roster directory.
 
@@ -216,7 +265,10 @@ def verify(root: Path) -> list[str]:
 
     - **missing** -- a cell with no entry. Names `--write`.
     - **out of step** -- a cell whose entry this script wrote and the cell has
-      since moved on. Names `--write`.
+      since moved on. Names `--write`. Judged by `matches()`, so an entry
+      differing from its cell in line endings alone is not this shape and not
+      any other: that difference cannot reach a commit and no command clears
+      it durably, so reporting it named a fix that did not fix.
     - **orphan** -- an entry this script wrote whose cell is gone. Names
       `--write`.
     - **collision** -- a cell's name taken by a file this script did not
@@ -272,7 +324,7 @@ def verify(root: Path) -> list[str]:
                 f"run `python tools/roster.py --write`"
             )
             continue
-        if target.read_bytes() == want:
+        if matches(target.read_bytes(), want):
             continue
         if is_generated(target):
             findings.append(
@@ -336,7 +388,7 @@ def write(root: Path) -> list[str]:
             )
             continue
         if target.is_file():
-            if target.read_bytes() == want:
+            if matches(target.read_bytes(), want):
                 continue
             # Ownership is checked here too, not only on removal. This branch
             # went on overwriting whatever sat at a cell's name after the

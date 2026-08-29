@@ -42,6 +42,17 @@ def make_cell(root: Path, name: str, description: str = "A fixture cell.") -> Pa
     return path
 
 
+def crlf(path: Path) -> None:
+    """Rewrite a file the way a Claude Code worktree's copy of `.claude/` does.
+
+    Not a hypothetical: `git worktree add` off a commit produces LF entries and
+    a green lint, and the harness's own worktree off the same commit produces
+    these, because it copies the directory rather than checking it out. This is
+    the tree every session here starts in. [#224]
+    """
+    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+
+
 def test_a_generated_roster_verifies_clean(tmp_path):
     """The lawful polarity, which matters as much as the others: a guard that
     reds a tree nobody can fix is a guard somebody deletes."""
@@ -72,6 +83,70 @@ def test_an_entry_out_of_step_fires(tmp_path):
     assert "out of step" in findings[0]
     roster.write(tmp_path)
     assert roster.verify(tmp_path) == []
+
+
+def test_an_entry_that_differs_only_in_line_endings_is_not_a_finding(tmp_path):
+    """The tree a session actually starts work in.
+
+    Before #224 this was a finding per cell on a tree nobody had touched, and
+    the session had no way to tell it from a red it had caused. The difference
+    reaches no commit -- `.gitattributes` normalises the entry to LF on the way
+    into the index -- and no command clears it durably, because the CRLF is
+    written by a copy no command here performs.
+    """
+    make_cell(tmp_path, "alpha")
+    make_cell(tmp_path, "beta")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    crlf(entry)
+    assert b"\r\n" in entry.read_bytes(), "the fixture must model the copy"
+    assert roster.verify(tmp_path) == []
+
+
+def test_a_crlf_entry_that_has_actually_drifted_still_fires(tmp_path):
+    """The other polarity, and the one that says what the tolerance costs.
+
+    Line endings are the whole of what `matches()` forgives. An entry whose
+    description has moved on is still the stale trigger this guard exists for,
+    and arriving CRLF must not launder it -- which is the failure a
+    normalisation reached for carelessly would introduce.
+    """
+    make_cell(tmp_path, "alpha", "The first description.")
+    roster.write(tmp_path)
+    make_cell(tmp_path, "alpha", "A different description entirely.")
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    crlf(entry)
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 1
+    assert "out of step" in findings[0]
+
+
+def test_write_leaves_a_crlf_entry_alone_rather_than_rewriting_it(tmp_path):
+    """`--write` is the command every repairable finding names, so what it says
+    on this tree is what a session believes about it. Rewriting nine entries
+    that git will not record is the churn #224 records: it reported work done,
+    left no trace, and the next worktree started over."""
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    crlf(entry)
+    before = entry.read_bytes()
+    assert roster.write(tmp_path) == []
+    assert entry.read_bytes() == before
+
+
+def test_a_lone_carriage_return_is_not_forgiven(tmp_path):
+    """The bound on the tolerance, in the direction it could have been written
+    too wide. `\\r\\n` is what a Windows text-mode write produces and what was
+    observed; a bare carriage return is not a line ending anything here emits,
+    so an entry carrying one is corrupt rather than copied."""
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r"))
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 1
+    assert "out of step" in findings[0]
 
 
 def test_an_orphan_entry_fires_and_is_removed(tmp_path):
@@ -402,15 +477,20 @@ def test_the_guard_asks_the_generator_rather_than_recomputing(tmp_path):
 def test_this_repository_carries_a_roster_for_every_cell(tmp_path):
     """The tree this all exists for. Not a restatement of the guard: the guard
     proves the shapes, and this proves the shipped tree is in one of them --
-    which is the claim #199 found false and nothing was checking."""
+    which is the claim #199 found false and nothing was checking.
+
+    **It no longer asserts the entries are LF on disk**, which was false in
+    every Claude Code worktree here and put a second red in front of a session
+    that had changed nothing -- the suite failing beside the lint, from the one
+    cause, and neither of them nameable as its own doing. That assertion was
+    also the wrong instrument for what it wanted: what the generator writes is
+    pinned deterministically in tmp_path by
+    `test_the_generator_introduces_no_carriage_return_of_its_own`, where it
+    cannot be moved by whatever copied the tree afterwards. [#224]
+    """
     assert roster.cell_names(ROOT) == roster.roster_names(ROOT)
     assert roster.cell_names(ROOT) != []
     assert roster.verify(ROOT) == []
-    for name in roster.roster_names(ROOT):
-        entry = ROOT / ".claude" / "skills" / name / "SKILL.md"
-        assert b"\r" not in entry.read_bytes(), (
-            f"{name}: the tree holds CRLF where .gitattributes pins LF"
-        )
 
 
 def test_a_linked_entry_directory_is_refused_rather_than_written_through(tmp_path):
