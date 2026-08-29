@@ -581,11 +581,14 @@ def test_this_repository_carries_a_roster_for_every_cell(tmp_path):
 
     **It asks that every cell has an entry, not that nothing else is there.**
     The equality it used to assert made a *lawful* tree red: `.claude/skills/`
-    is the runtime's documented home for a project's own skills, `MARKER` and
-    `verify()` exist precisely to leave a hand-written one alone, and
-    `verify()` draws no finding at a name that is no cell -- so writing one put
-    the suite in the red while the lint stayed green, which is this issue's own
-    defect shape at a second site. Found by a cold session that was asked to
+    is the runtime's documented home for a project's own skills, and `MARKER`
+    exists precisely to leave a hand-written one alone: `verify()` draws no
+    finding at a **hand-written** name that is no cell. So writing one put the
+    suite in the red while the lint stayed green, which is this issue's own
+    defect shape at a second site. The qualifier is the whole of it -- a
+    *generated* entry at a name that is no cell is an orphan and still fires,
+    which an earlier draft of this paragraph asserted away in a universal its
+    own closing sentence contradicted. Found by a cold session that was asked to
     add a project skill and did exactly what the material tells it to. A
     generated entry whose cell is gone is still caught, by `verify()` below.
     """

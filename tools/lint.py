@@ -112,10 +112,13 @@ Checks:
     `./`, because Codex cannot discover the plugin from Claude's object form.
 19. docstring control characters: no docstring's compiled value holds a
     control character other than a line feed or a tab. A docstring is not raw,
-    so `` written in one is a carriage return at runtime. Read from the
-    compiled value rather than the source bytes, because the instance that
-    motivated this had clean bytes on disk and four carriage returns in
-    `__doc__` [D-231].
+    so a backslash followed by r, written in one, is a carriage return at
+    runtime. Named in words rather than shown: four attempts to write that
+    escape into this repository's prose produced the character instead, one of
+    them in this sentence, so the form that cannot be lost is the one that
+    spells it out. Read from the compiled value rather than the source bytes,
+    because the instance that motivated this had clean bytes on disk and four
+    carriage returns in `__doc__` [D-231].
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -2092,10 +2095,15 @@ def check_docstring_control_chars(root: Path) -> list[str]:
     was not. A scan for carriage-return bytes catches the first instance and
     neither of the others.
 
-    LF and TAB are exempt because prose is written in lines and indented. A
-    docstring that genuinely needs another control character builds it with
-    `chr()`, which is this repository's sanctioned route for exactly this and
-    is the same idiom `check_emitted_ascii` records as its own live tension.
+    LF and TAB are exempt because prose is written in lines and indented. Every
+    other `Cc` character is banned outright, and **there is no sanctioned escape
+    hatch here, unlike `check_emitted_ascii`'s.** That check's live tension is
+    `chr()` in *code*, which code can call; a docstring is a literal and calls
+    nothing, so `chr(13)` written in one is four characters of prose. An earlier
+    version of the finding message offered it anyway -- a remedy that cannot be
+    applied where the message names it, which is the shape `verify()` records as
+    "a fix that did not fix". Where the character itself is genuinely meant, it
+    belongs in code.
     """
     findings = []
     candidates = [
@@ -2103,7 +2111,13 @@ def check_docstring_control_chars(root: Path) -> list[str]:
         if ".git" not in path.parts
     ]
     ignored = _git_ignored(root, candidates)
-    allowed = {10, 9}
+    # Line feed and tab are how prose is written; every other Cc character
+    # is one. `Cc` rather than `point < 32` because DEL and the C1 block
+    # (U+007F-U+009F) are control characters too -- U+0085 is a line break
+    # to `str.splitlines()`, so it mis-renders anything paginating a
+    # docstring -- and the stated rule said "control character", not
+    # "below U+0020".
+    allowed = {ord(chr(10)), ord(chr(9))}
     for path in candidates:
         if path in ignored:
             continue
@@ -2121,20 +2135,28 @@ def check_docstring_control_chars(root: Path) -> list[str]:
             doc = ast.get_docstring(node, clean=False)
             if not doc:
                 continue
-            for char in doc:
-                point = ord(char)
-                if point >= 32 or point in allowed:
+            # `ast.Module` carries no `lineno`, and this used to format it
+            # unguarded: a control character in a *module* docstring -- which is
+            # exactly the shape this check teaches about -- raised out of
+            # `run()`, so the mandated first step of the flow answered with a
+            # traceback and none of the other checks' findings. The same defect
+            # `roster.write` records at [PR #210 review, M4], reinstated by the
+            # guard written to end a different one.
+            line = getattr(node, "lineno", 1)
+            owner = getattr(node, "name", "module")
+            for point in sorted({ord(c) for c in doc} - allowed):
+                if unicodedata.category(chr(point)) != "Cc":
                     continue
-                owner = getattr(node, "name", "module")
                 findings.append(
-                    f"docstring-control-char: {rel_file}:{node.lineno} "
+                    f"docstring-control-char: {rel_file}:{line} "
                     f"({owner}) holds U+{point:04X} in its docstring -- a "
                     f"docstring is not raw, so an escape written there is the "
-                    f"character at runtime; double the backslash, or build it "
-                    f"with chr() where the character is meant"
+                    f"character at runtime; double the backslash. A docstring "
+                    f"cannot build one, being a literal: where the character "
+                    f"itself is meant, it belongs in code and not in prose"
                 )
-                break
     return findings
+
 
 def check_marketplace_source(root: Path) -> list[str]:
     """Keep the tradecraft source in the form both plugin runtimes accept."""

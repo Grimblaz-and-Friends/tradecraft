@@ -3246,3 +3246,66 @@ def test_this_repository_holds_no_control_character_in_any_docstring():
     """
     root = Path(__file__).resolve().parents[2]
     assert lint.check_docstring_control_chars(root) == []
+
+
+def test_docstring_control_chars_reports_a_module_docstring_without_raising(tmp_path):
+    """The crash this guard shipped with, at the shape it teaches about.
+
+    `ast.Module` carries no `lineno`, and formatting it unguarded raised out of
+    `run()` -- so a control character in a *module* docstring answered the
+    mandated first step of the flow with a traceback and none of the other
+    checks' findings. `roster.write` records the same defect at [PR #210
+    review, M4]: a cell it cannot read is reported, never raised.
+    """
+    source = (
+        chr(34)*3 + "Names `" + BS + "r` in a module docstring." + chr(34)*3 + chr(10)
+        + "def f():" + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "mod.py").write_bytes(source.encode("utf-8"))
+    findings = lint.check_docstring_control_chars(tmp_path)
+    assert len(findings) == 1
+    assert "(module)" in findings[0]
+    assert "U+000D" in findings[0]
+
+
+@pytest.mark.parametrize("point, label", [(127, "U+007F"), (133, "U+0085")])
+def test_docstring_control_chars_reaches_del_and_the_c1_block(tmp_path, point, label):
+    """Scope, matched to what the rule says rather than to `point < 32`.
+
+    The stated rule is *control character*, and DEL and the C1 block are
+    control characters -- U+0085 is a line break to `str.splitlines()`, so it
+    mis-renders anything paginating a docstring. An earlier predicate exempted
+    both in fact while the registration banned them in words.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Holds " + chr(point) + " here." + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "c1.py").write_bytes(source.encode("utf-8"))
+    findings = lint.check_docstring_control_chars(tmp_path)
+    assert len(findings) == 1
+    assert label in findings[0]
+
+
+def test_docstring_control_chars_reports_every_character_not_only_the_first(tmp_path):
+    """A guard reporting one offender per file sends a session back for a
+    second red it could have fixed in the same pass. An earlier version broke
+    out of the loop on the first character, with no wording saying so.
+
+    Both characters arrive as **escapes**, and the first draft of this fixture
+    wrote a raw carriage-return byte instead and saw only one finding: Python's
+    tokenizer folds a lone carriage return in source to a line feed, so it never
+    reaches the compiled value at all. That is why this check cannot see a raw
+    control byte on disk, and why a byte-level scan is not subsumed by it.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Holds " + BS + "r and " + BS + "x0b." + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "two.py").write_bytes(source.encode("utf-8"))
+    findings = lint.check_docstring_control_chars(tmp_path)
+    assert len(findings) == 2
+    assert {"U+000B", "U+000D"} == {f.split("holds ")[1][:6] for f in findings}
