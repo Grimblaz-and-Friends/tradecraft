@@ -89,8 +89,12 @@ Checks:
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
 17. project roster: every cell has an entry under .claude/skills/ carrying its
-    frontmatter byte for byte, and no entry THIS GENERATOR WROTE names a cell
-    that is gone. A file it did not write is not its business: at a name that
+    frontmatter, and no entry THIS GENERATOR WROTE names a cell that is gone.
+    The entry is written byte for byte and compared as text: the comparison
+    normalises the carriage-return/line-feed pair on both sides and forgives
+    nothing else, because a harness copy sets those bytes on disk and no
+    command here clears them durably. This said "byte for byte" for one
+    revision after that stopped being true [D-231]. A file it did not write is not its business: at a name that
     is no cell it draws no finding at all, because that is a project skill in
     the runtime's documented place for one; at a cell's name it is reported
     and never overwritten. The qualifier is load-bearing and was missing --

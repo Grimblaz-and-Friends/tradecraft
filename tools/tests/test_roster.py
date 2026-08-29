@@ -45,10 +45,11 @@ def make_cell(root: Path, name: str, description: str = "A fixture cell.") -> Pa
 def crlf(path: Path) -> None:
     """Rewrite a file the way a Claude Code worktree's copy of `.claude/` does.
 
-    Not a hypothetical: `git worktree add` off a commit produces LF entries and
-    a green lint, and the harness's own worktree off the same commit produces
-    these, because it copies the directory rather than checking it out. This is
-    the tree every session here starts in. [#224]
+    Not a hypothetical: a Claude Code **session** worktree comes up with these
+    nine files and `CLAUDE.md` written in text mode by the harness, while git
+    checks out the other 108 tracked files LF in the same second. `agent-*`
+    subagent worktrees do not do this, and saying "every worktree" is what sent
+    all five seats of this change's review to the wrong conclusion. [#224]
 
     Normalised before converting, so this is a text-mode round trip rather than
     a doubling: applied to something already CRLF it is the identity, which is
@@ -167,17 +168,55 @@ def test_a_stray_carriage_return_is_not_forgiven(tmp_path):
     assert "out of step" in findings[0]
 
 
+def test_an_all_carriage_return_entry_is_not_forgiven_either(tmp_path):
+    """The other half of the pair, and neither half pins the bound alone.
+
+    This entry's line feeds are *replaced* by carriage returns rather than
+    paired with them. A `\r\n` normalisation leaves it wholly unlike its cell
+    and reports it; the wider "treat a lone `\r` as a line ending" folds it
+    back to the cell and goes silent. So this fixture kills that mutant and
+    `test_a_stray_carriage_return_is_not_forgiven` does not -- while that one
+    kills "strip every carriage return" and this one does not.
+
+    **This fixture was here, was replaced by the stray-byte one, and had to
+    come back.** The replacement was made because the original did not
+    discriminate against strip-every-`\r`; nobody checked what it *had* been
+    discriminating against, so the bound `matches()` states went unpinned while
+    a mutation matrix in the commit message read as full coverage. The hazard
+    is live rather than theoretical: `tools/figures.py` already normalises a
+    lone `\r` to a newline, so a session harmonising the two writes exactly
+    this mutant and gets a green suite. [#224 review, M9]
+    """
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r"))
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 1
+    assert "out of step" in findings[0]
+
+
 def test_a_cell_that_is_itself_crlf_still_matches_its_entry(tmp_path):
     """Why both sides are normalised, and not the entry on disk alone.
 
-    Today only the entry can arrive CRLF, because git checks the cell out LF --
-    so this is a shape the tree does not reach, and it is pinned anyway.
-    Normalising the entry side alone makes it an unclearable red: the entry
-    normalises, `want` does not, `--write` writes `want`, and the re-verify
-    fails again, which is #224's defect rebuilt one layer down. Reaching it
-    takes a CRLF cell, because no assertion about an LF cell can tell the two
-    predicates apart -- the entry-side-only mutation survives every other test
-    in this file.
+    Normalising the entry side alone makes an unclearable red possible: the
+    entry normalises, `want` does not, `--write` writes `want`, and the
+    re-verify fails again, which is #224's defect rebuilt one layer down.
+    Reaching it takes a CRLF cell, because no assertion about an LF cell can
+    tell the two predicates apart -- the entry-side-only mutation survives
+    every other test in this file.
+
+    **It pins one composition of two, and the docstring said otherwise.** Here
+    the cell is CRLF *before* the entry is generated, so both sides descend
+    from the same bytes. A cell that goes CRLF *after* its entry was written
+    is the other composition, and it does **not** match: `expected()` slices
+    the cell by raw bytes, so `frontmatter()`'s trailing byte lands on the
+    `
+` and the copied block loses a newline that no later normalisation
+    restores. That fires a truthful out-of-step finding whose named command
+    then writes an entry a Linux checkout disagrees with. Pre-existing, older
+    than [#224], and filed rather than fixed here -- the repair is inside
+    `frontmatter()`, which `verify` and `write` share.
     """
     make_cell(tmp_path, "alpha")
     crlf(tmp_path / "skills" / "alpha" / "SKILL.md")
@@ -480,10 +519,17 @@ def test_the_generator_introduces_no_carriage_return_of_its_own(tmp_path):
     An LF cell must produce an LF entry on every platform. A text-mode write
     would turn each line feed into a carriage return pair on Windows and not
     on Linux, so the same tree would hold different bytes depending on where
-    the generator last ran -- and this file is compared byte for byte on every
-    lint run. The copied frontmatter carries the source's own line endings by
-    construction, which is what `.gitattributes` pins to LF here; what this
-    pins is that nothing downstream of the read adds any.
+    the generator last ran. The copied frontmatter carries the source's own
+    line endings by construction, which is what `.gitattributes` pins to LF
+    here; what this pins is that nothing downstream of the read adds any.
+
+    **This is the only guard on the write half**, since the tree-level test
+    stopped asserting the entries are LF on disk -- so read what it does not
+    say. It said "and this file is compared byte for byte on every lint run"
+    for one revision after [#224] made that false, which is an argument for
+    deleting this test, and the argument is wrong: what the write half buys is
+    one byte sequence from one generator on every platform, and the comparison
+    relaxing has no bearing on it.
     """
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)

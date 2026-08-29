@@ -33,16 +33,33 @@ guarded by a test of its own.
 
 The read half cannot be the same, because **the line endings these files carry
 on disk are not this repository's to set.** `.gitattributes` pins the checkout
-to LF and the index to LF, so no route through git produces anything else --
-but a Claude Code worktree does not reach `.claude/` through git. It copies the
-directory, gitignored files and all, and that copy rewrites LF to CRLF; a plain
-`git worktree add` off the same commit produces LF and a green lint, which is
-how the two were told apart. So every session starting work in such a worktree
-met a finding per cell before touching anything, could not tell that red from
-one it had caused, and could not clear it durably: `--write` rewrote the entries
-LF, git recorded nothing because the index already held LF, and the next
-worktree started red again (#224). `matches()` below is where that is answered,
-and it says why the comparison may not be tightened back.
+to LF, and git honours it -- but not every file in a worktree arrives through
+git. A Claude Code **session** worktree comes up with ten files written in text
+mode by the harness: these nine entries and `CLAUDE.md`. The other 108 tracked
+files are checked out LF in the same second, `.gitattributes` among them, which
+is how the two writers were told apart.
+
+**Which worktrees, precisely, because the wide version is worse than useless.**
+Session worktrees do this; `agent-*` subagent worktrees do not, and they are
+Claude Code worktrees too. An earlier version of this paragraph said *every*
+Claude Code worktree, and all five seats of this change's own review -- every
+one of them running in an `agent-*` tree -- checked, found LF, and reported the
+cause recorded here as false.
+
+**`CLAUDE.md` is the cheap check, and the only durable one.** Nothing in this
+repository ever rewrites it, where `--write` erases the evidence under
+`.claude/skills/` the moment anyone clears the red; so its line endings are a
+fossil of how a worktree was made. Across the owner's machine: 14 of 15 session
+trees CRLF, 0 of 16 `agent-*` trees, source checkout LF.
+
+    python -c "print(open('CLAUDE.md','rb').read())"
+
+So a session starting work in such a worktree met a finding per cell before
+touching anything, could not tell that red from one it had caused, and could
+not clear it durably: `--write` rewrote the entries LF, git recorded nothing
+because the index already held LF, and the next worktree started red again
+(#224). `matches()` below is where that is answered, and it says why the
+comparison may not be tightened back.
 
 Usage:  python tools/roster.py [--write]
 
@@ -178,32 +195,49 @@ def matches(entry: bytes, want: bytes) -> bool:
     description, a reordered field, a stray character, a truncated block all
     still differ here.
 
-    The warrant is that a newline difference at this site **cannot reach the
-    repository and cannot be repaired in the tree it appears in.**
-    `.gitattributes` normalises the entry to LF on the way into the index, so
-    a CRLF entry and its LF twin are the same commit; and the CRLF is written
-    by a copy no command here performs, so re-running the writer clears the
-    working tree for as long as that tree lives and the next one starts over.
-    Reporting it was therefore a finding with no lawful response, on a tree
-    nobody had touched. [#224]
+    The warrant is that a newline difference at this site is **normally
+    invisible to the repository and cannot be repaired in the tree it appears
+    in.** `.gitattributes` normalises the entry to LF on the way into the
+    index; and the CRLF is written by a copy no command here performs, so
+    re-running the writer clears the working tree for as long as that tree
+    lives and the next one starts over. Reporting it was therefore a finding
+    with no lawful response, on a tree nobody had touched. [#224]
+
+    **"Normally" is doing work, and the bound is real.** Git's `text=auto`
+    refuses to normalise **any file holding a lone carriage return** -- one
+    bare `\\r` anywhere disables the conversion for that whole file, and every
+    CRLF in it is committed verbatim. An entry in that composition is forgiven
+    here and recorded by git, where the byte comparison this replaced fired
+    and `--write` repaired it. Found the hard way: this change's own first
+    draft put two control bytes into its decision-log row, the only CR-bearing
+    blob in the repository, past a lint that has no carriage-return check. The
+    guard for that class is filed, not built here.
 
     **Both sides are normalised, not only the entry.** `want` is built from a
-    cell that git checks out LF, so today only the entry side can differ --
-    but normalising one side would make an unclearable red possible the moment
-    a cell arrived CRLF too, where the symmetric form stays self-consistent
-    whatever either side carries. The cost of the symmetry is nothing; the
-    cost of the asymmetry is a red that `--write` cannot clear.
+    cell git checks out LF, so today only the entry side arrives CRLF from the
+    harness copy -- a cell can still reach that state through a Windows
+    text-mode write, which `AGENTS.md` calls normal. Normalising one side
+    would make an unclearable red possible the moment a cell arrived CRLF too,
+    where the symmetric form stays self-consistent whatever either side
+    carries. The cost of the symmetry is nothing; the cost of the asymmetry is
+    a red that `--write` cannot clear.
 
     **`\\r\\n` only, never a lone `\\r`.** That pair is what a Windows
     text-mode write produces and what was observed; a bare carriage return is
     not a line ending anything here emits, and treating it as one would
-    silently accept a corrupted entry.
+    silently accept a corrupted entry. It takes **two** fixtures to pin, and
+    the tests carry both: a stray `\\r` inside an otherwise-CRLF entry kills
+    "strip every carriage return", an all-CR entry kills "treat a lone `\\r` as
+    a line ending", and either alone leaves the other mutant alive.
 
-    `_normalized_chars` in `skills/authoring/scripts/figures.py` is the same
-    move at the other site that reads these files, for the same reason stated
-    the same way -- one fixed basis, so the answer cannot depend on which
-    checkout produced the tree. That site had it and this one did not, which
-    is the whole of the exposure #224 asked about.
+    Every other reader of these files -- `lint._read_text`, `tools/figures.py`,
+    `lint.check_doctrine` -- already normalises newlines or matches text. This
+    is the only one that compares them, which is the whole of the exposure
+    #224 asked about. `_normalized_chars` in
+    `skills/authoring/scripts/figures.py` reaches for the same move for the
+    same stated reason, and is worth reading for it, but it is reached by no
+    run this repository performs: its only caller's `PROSE_PATHS` do not
+    include `.claude`.
     """
     return entry.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n")
 
@@ -258,17 +292,24 @@ def verify(root: Path) -> list[str]:
     regeneration branch go on destroying hand-written content after the
     removal branch stopped. [PR #210 cycle one, C1-F2/C1-F3]
 
-    Each shape below says what its own message names. There is no count here:
-    a stated count of these has been wrong three times running, each time in
-    the sentence written to correct the one before, so the arithmetic is gone
-    rather than corrected a fourth time. [PR #210 cycle two, C2-F1]
+    Each shape below says what its own message names, and they are named
+    rather than counted: a stated count of these has been wrong three times
+    running, each time in the sentence written to correct the one before, so
+    the arithmetic is gone rather than corrected a fourth time. [PR #210 cycle
+    one, C1-F5; cycle two, C2-F1]
 
+    - **outside the roster** -- an entry directory whose real location
+      resolves out of `.claude/skills/`, so writing there would land outside
+      this repository. Names no command: only a person can remove the link.
     - **missing** -- a cell with no entry. Names `--write`.
     - **out of step** -- a cell whose entry this script wrote and the cell has
       since moved on. Names `--write`. Judged by `matches()`, so an entry
       differing from its cell in line endings alone is not this shape and not
-      any other: that difference cannot reach a commit and no command clears
-      it durably, so reporting it named a fix that did not fix.
+      any other: no command clears that difference durably, so reporting it
+      named a fix that did not fix. **A CRLF *cell* is a different matter** --
+      `expected()` slices it by raw bytes before `matches()` ever sees it, so
+      the block it copies loses a newline and this shape fires truthfully on a
+      document that really does differ. See `frontmatter()` for the bound.
     - **orphan** -- an entry this script wrote whose cell is gone. Names
       `--write`.
     - **collision** -- a cell's name taken by a file this script did not
@@ -278,7 +319,10 @@ def verify(root: Path) -> list[str]:
       frontmatter is what loads, so the cell's real description does not,
       which is a silent criterion-1 failure.
     - **unparseable frontmatter** -- a cell `--write` cannot copy. Names no
-      command; the cell's frontmatter is what has to change.
+      command; the cell's frontmatter is what has to change. The same branch
+      catches a cell that cannot be **read** at all -- a permission failure, a
+      broken link on the `skills/` side -- and carries the OS error with it,
+      so read the error before taking the frontmatter advice.
     - **no cell at all** -- nothing under `skills/` to compare against. Names
       no command, for the reason #198 gives about a sibling guard: no cell
       found is indistinguishable from every cell lawful.
@@ -293,10 +337,6 @@ def verify(root: Path) -> list[str]:
     could never clear on a lawful tree. A directory there holding no
     `SKILL.md` is likewise silent; `write()` reports residue at the moment it
     creates it, which is where that report is useful.
-
-    Named rather than counted on purpose: a stated count of shapes has now
-    been wrong twice, and the second time in the sentence written to fix the
-    first. [PR #210 cycle one, C1-F5]
     """
     findings = []
     cells = cell_names(root)
