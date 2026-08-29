@@ -493,11 +493,14 @@ QUALITATIVE_FIELDS = frozenset(
     }
 )
 
-# What became of the findings, in the vocabulary the terminal stage used before
-# the cutover: clause (a) dismissed, clause (b) sustained and fixed, routed, or
-# priced out. All four are retired [D-230] and frozen here as history -- they
-# validate the grandfathered rows and describe no live ruling. The row copies
-# counts the ruling already produced; it does not derive them.
+# What became of the findings, in the vocabulary these rows were written in.
+# All four are dead as *fields*: D-194's cutover forbids `dispositions` on any
+# row past REVIEW_ROWS_QUALITATIVE, so they validate grandfathered rows and
+# nothing else. Two are also dead as *rulings* -- [D-230] retired `routed` and
+# `priced_out` -- while a terminal stage still fixes, and still drops where it
+# once dismissed. What it may rule today is the review cell's, never this
+# comment's. The row copies counts the ruling already produced; it does not
+# derive them.
 #
 # `dismissed` earns its place as the only field that measures noise. Measuring
 # value while never measuring noise is how the predecessor's pipeline could
