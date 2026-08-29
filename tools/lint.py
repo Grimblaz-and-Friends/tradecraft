@@ -105,9 +105,9 @@ Checks:
     holding a second definition drifts from the writer it judges.
 18. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
-19. subprocess stdin: every subprocess launch names stdin, because an unnamed
-    one is inherited and on Windows the inherited handle is invalid wherever
-    fd 0 has been redirected.
+19. subprocess streams: a launch redirects nothing, or names all three of
+    stdin, stdout and stderr, because on Windows an unnamed stream resolves
+    through a std-handle table that can still name a closed handle.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -2451,42 +2451,115 @@ def check_stdio_wired(root: Path) -> list[str]:
 
 _LAUNCHERS = ("run", "Popen", "call", "check_call", "check_output")
 
+# Wrappers that redirect a stream by construction and expose no way to name the
+# others: `getoutput` and `getstatusoutput` are `check_output(..., shell=True)`
+# with no `stdin` parameter at all, and `os.popen` is `Popen(..., stdout=PIPE)`.
+# The rule below therefore has no compliant form for them -- measured at 10/10
+# failures each under a stale std-handle table -- so they are named rather than
+# stream-checked. [D-232]
+_NO_STDIN = {
+    ("subprocess", "getoutput"),
+    ("subprocess", "getstatusoutput"),
+    ("os", "popen"),
+}
+_STREAMS = ("stdin", "stdout", "stderr")
 
-def check_subprocess_stdin(root: Path) -> list[str]:
-    """Every `subprocess` launch names its stdin.
 
-    **An unnamed `stdin` means inherit, and on Windows what gets inherited can
-    be a handle that no longer exists.** `subprocess` implements inheritance as
-    `GetStdHandle(STD_INPUT_HANDLE)` followed by `DuplicateHandle`. Anything
-    that redirects fd 0 -- pytest's default capture, most harnesses -- closes
-    the handle the process's std-handle table still points at, and
-    `GetStdHandle` goes on returning the stale value. The duplicate then raises
-    `OSError: [WinError 6] The handle is invalid`, from a call that has nothing
-    to do with the command being run.
+def _module_aliases(tree: ast.AST, module: str) -> set[str]:
+    """Every name this file binds to `module` through `import`.
+
+    `import subprocess as sp` binds a name no literal match reaches. The first
+    version of this check closed the `from subprocess import run` route and not
+    this one, so it read as complete while an ordinary idiom walked through it
+    -- found by three seats and by both external reviewers. [D-232]
+    """
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree) if isinstance(node, ast.Import)
+        for alias in node.names if alias.name == module
+    }
+
+
+def _is_none(node: ast.AST) -> bool:
+    """Whether this argument is the literal `None`, which redirects nothing.
+
+    `stdin=None` is the default spelled out, and `input=None` never reaches
+    `run`'s `if input is not None: kwargs['stdin'] = PIPE`, so neither redirects
+    anything. Read as merely *named*, both satisfied the first version of this
+    check while meaning inherit, at 10/10 failures each. An external reviewer
+    contested the second with a cited answer saying `input=None` behaves as
+    `input=b''`; `subprocess.run`'s own source says otherwise, and the finding
+    is sustained on the source and the probes rather than on that answer.
+    """
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _redirected(call: ast.Call) -> set[str] | None:
+    """Which of the three streams this call redirects, or None if unreadable.
+
+    None where an argument cannot be read off the call -- a `**kwargs` splat, or
+    a `capture_output` whose value is not a literal. **Unreadable is silence,
+    not a finding**: whether a stream is redirected is genuinely unknown there,
+    and reddening on it blocks lawful work, which the `substrate` cell holds
+    fails as hard as passing unlawful work.
+    """
+    covered = set()
+    for keyword in call.keywords:
+        if keyword.arg is None:                      # **kwargs
+            return None
+        if keyword.arg in _STREAMS and not _is_none(keyword.value):
+            covered.add(keyword.arg)
+        elif keyword.arg == "input" and not _is_none(keyword.value):
+            covered.add("stdin")                     # implies stdin=PIPE
+        elif keyword.arg == "capture_output":
+            if not isinstance(keyword.value, ast.Constant):
+                return None
+            if keyword.value.value:
+                covered.update(("stdout", "stderr"))
+    return covered
+
+
+def check_subprocess_streams(root: Path) -> list[str]:
+    """A launch redirects nothing, or names all three streams.
+
+    **The rule is about the whole call, not about stdin, and the first version
+    of this check had that wrong in the direction that costs.** On Windows
+    `_get_handles` opens with `if stdin is None and stdout is None and stderr is
+    None: return (-1, ...)`, so a launch that redirects **nothing** never asks
+    `GetStdHandle` anything and cannot fail. Redirect one stream and leave
+    another unnamed, and the unnamed one resolves through the process's
+    std-handle table -- which can still name a handle something has since
+    closed. `DuplicateHandle` on that raises `OSError: [WinError 6] The handle
+    is invalid`, from a call that has nothing to do with the command.
+
+    Requiring `stdin=` alone therefore **manufactured the defect on a launch
+    that did not have it**: measured under real pytest capture, 20 launches per
+    case in a fresh process each, `run(cmd)` failed 0/20 while
+    `run(cmd, stdin=DEVNULL)` failed 20/20. [D-232]
 
     **It fails intermittently, which is the part that costs.** Windows recycles
-    handle values: when some unrelated object in the process happens to hold
-    the recycled value the duplicate succeeds and the child silently receives
-    an unrelated handle as its stdin; when the value is free, the launch
-    raises. On this repository's own suite that produced a different set of red
-    tests on every run, all of them this one error, while CI stayed green --
-    a runner has no console on fd 0, so `GetStdHandle` returns `None` and
-    `subprocess` takes its `CreatePipe` branch and cannot reach the defect.
-    Green CI does not tell a consumer anything about this. [#229]
+    handle values: when some unrelated object in the process happens to hold the
+    recycled value the duplicate succeeds and the child silently receives an
+    unrelated handle; when the value is free, the launch raises. On this
+    repository's own suite that produced a different set of red tests every run,
+    all of them this one error, while CI stayed green -- a step's Python is born
+    with its streams already redirected, and that is itself the immunity, so a
+    green Windows leg cannot speak to this either way. [#229]
 
-    `stdin=subprocess.DEVNULL` is the remedy for a program not meant to read
-    input, which is all of them here; `input=` satisfies this too, because it
-    implies `stdin=PIPE`.
+    `stdin=subprocess.DEVNULL, capture_output=True` is the compliant form for a
+    program not meant to read input, which is nearly all of them here -- not
+    all: `check_ignored` in this module feeds `git check-ignore --stdin` through
+    `input=`, which implies `stdin=PIPE` and covers that stream.
 
     **A call-site check, not a reachability analysis** -- the same bound
     `check_docstring_not_piped` states, and for the same reason: the pattern is
-    one keyword on one call, and matching it needs no guess about what reaches
-    where. Two consequences follow and are the guard's stated limits. A call
-    forwarding `**kwargs` is left alone, since whether stdin is in there cannot
-    be read off the call and reporting it would block lawful work -- the
-    polarity the substrate cell says fails as hard as the other. And a wrapper
-    that names stdin once for many callers passes on the wrapper's own line,
-    which is the shape this repository already uses.
+    readable off one call, and matching it needs no guess about what reaches
+    where. Its limits are `_redirected`'s two None cases and the walk itself,
+    which covers `SHIPPED_DIRS` and `REPO_ONLY_NAMES` and so not a
+    repository-root script -- a file class this tree does not have, priced out
+    rather than overlooked. Ignored files are walked, on the same footing as
+    `check_docstring_not_piped`; the two siblings that filter through
+    `_git_ignored` buy that with a subprocess per run. [D-232]
     """
     findings = []
     for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
@@ -2501,15 +2574,13 @@ def check_subprocess_stdin(root: Path) -> list[str]:
                 tree = ast.parse(text)
             except SyntaxError:
                 continue
-            # `from subprocess import run` binds a bare name, and a check
-            # matching only `subprocess.run` would pass it. Collected per file
-            # because the binding is per module.
+            modules = {n: "subprocess" for n in _module_aliases(tree, "subprocess")}
+            modules.update({n: "os" for n in _module_aliases(tree, "os")})
             bare = {
-                (alias.asname or alias.name)
+                (alias.asname or alias.name): alias.name
                 for node in ast.walk(tree)
                 if isinstance(node, ast.ImportFrom) and node.module == "subprocess"
                 for alias in node.names
-                if alias.name in _LAUNCHERS
             }
             rel_file = path.relative_to(root).as_posix()
             for node in ast.walk(tree):
@@ -2519,26 +2590,45 @@ def check_subprocess_stdin(root: Path) -> list[str]:
                 if (
                     isinstance(func, ast.Attribute)
                     and isinstance(func.value, ast.Name)
-                    and func.value.id == "subprocess"
-                    and func.attr in _LAUNCHERS
+                    and func.value.id in modules
                 ):
-                    shown = f"subprocess.{func.attr}"
+                    module, attr = modules[func.value.id], func.attr
+                    shown = f"{func.value.id}.{attr}"
                 elif isinstance(func, ast.Name) and func.id in bare:
+                    module, attr = "subprocess", bare[func.id]
                     shown = func.id
                 else:
                     continue
-                named = {keyword.arg for keyword in node.keywords}
-                if "stdin" in named or "input" in named or None in named:
+                if (module, attr) in _NO_STDIN:
+                    findings.append(
+                        f"subprocess-streams: {rel_file}:{node.lineno} calls "
+                        f"{shown}, which redirects a stream and takes no stdin "
+                        f"argument, so it can never name all three -- on "
+                        f"Windows it fails with WinError 6 wherever the "
+                        f"std-handle table has gone stale. Use subprocess.run("
+                        f"..., stdin=DEVNULL, capture_output=True) instead"
+                    )
                     continue
+                if module != "subprocess" or attr not in _LAUNCHERS:
+                    continue
+                covered = _redirected(node)
+                if covered is None or not covered or len(covered) == 3:
+                    continue
+                missing = ", ".join(s for s in _STREAMS if s not in covered)
+                devnull = (
+                    f"{func.value.id}.DEVNULL"
+                    if isinstance(func, ast.Attribute)
+                    else "DEVNULL, which this file must import from subprocess"
+                )
                 findings.append(
-                    f"subprocess-stdin: {rel_file}:{node.lineno} calls "
-                    f"{shown} without naming stdin -- an unnamed stdin is "
-                    f"inherited, and on Windows the inherited handle is "
-                    f"invalid wherever fd 0 has been redirected, so the "
-                    f"launch fails with WinError 6 intermittently and for a "
-                    f"reason that is not the command's. Pass "
-                    f"stdin=subprocess.DEVNULL, or input= where the program "
-                    f"is given something to read"
+                    f"subprocess-streams: {rel_file}:{node.lineno} calls {shown} "
+                    f"redirecting some streams and leaving {missing} unnamed -- "
+                    f"on Windows an unnamed stream resolves through a "
+                    f"std-handle table that can still name a closed handle, so "
+                    f"the launch fails with WinError 6 intermittently and for a "
+                    f"reason that is not the command's. Name all three "
+                    f"({devnull} for a program given nothing to read), or "
+                    f"redirect none of them"
                 )
     return findings
 
@@ -2562,7 +2652,7 @@ def run(root: Path) -> list[str]:
         + check_emitted_ascii(root)
         + check_docstring_not_piped(root)
         + check_stdio_wired(root)
-        + check_subprocess_stdin(root)
+        + check_subprocess_streams(root)
         + check_marketplace_source(root)
     )
 

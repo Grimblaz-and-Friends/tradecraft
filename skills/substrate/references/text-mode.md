@@ -6,7 +6,7 @@ Text mode is the substrate's sharpest edge, and it takes three rules because it 
 
 - **Machine-read output stays ASCII.** No non-ASCII character in a string constant that is not a docstring.
 - **A stream is set to UTF-8 with LF endings before anything is written to it.** First statement of the entry point, and the ordering is not incidental: a call after argument parsing is a call that `--help` has already outrun. The shipped `winio` module's `utf8_stdio()` does both halves — import it by resolving the practice's `lib/` against the importing file's own directory, as every script here does — so reach for it rather than hand-rolling: the obvious hand-rolled call sets the encoding and leaves the newline translation in place, which satisfies the sentence and not the rule.
-- **A file that will later be compared, restored or measured is written and read as bytes**, with byte-identity asserted on restore.
+- **A file that will later be compared, restored or measured is written as bytes** — and **compared line endings aside**. Two questions, two answers: the write is what keeps one tree's bytes the same on every platform, while the comparison has to survive a working copy some other tool rewrote in text mode. A comparison reading raw bytes calls that rewrite a defect, which is the third section below.
 
 ## Why the first two are not a choice
 
@@ -26,9 +26,9 @@ Say so where you state the rule. Leave it unsaid and whoever notices their redir
 
 ## The third rule, and what it is not about
 
-Not encoding at all. A text-mode write turns a line feed into a carriage return pair, version control reports the tree clean against a blob that has neither, and a validator asked about the same content can answer differently — so a harness can measure a tree that its own commit does not contain.
+Not encoding at all — and it has now fired, which is where the rule's two halves come from. A guard compared two working-tree files byte for byte and reported every one of them out of step, on a tree version control called clean and a commit whose bytes were untouched — because the harness that created the checkout had rewritten one side in text mode. No conjunction was needed and no other fragility was exposed; reading the comparison as bytes was the whole defect.
 
-Its warrant is narrower than it first looks and is worth stating narrowly: a validator flipping on line endings usually needs a conjunction, some other fragility that the changed bytes expose. Preventive against a mutation seat that introduces one — which is what mutation testing does to prose — rather than a response to a defect already firing.
+So state the two halves apart. **Write as bytes**, always: a text-mode write turns a line feed into a carriage return pair, version control reports the tree clean against a blob that has neither, and a validator asked about the same content can answer differently — so a harness can measure a tree its own commit does not contain. **Compare line endings aside**, wherever version control normalises them on the way in: a difference that cannot survive into a commit is not drift, and treating it as drift reddens a lawful tree. The repair belongs on the comparison; leave the write exact, so the command that regenerates the file still restores the canonical bytes.
 
 ## The exemption that has to stay true
 

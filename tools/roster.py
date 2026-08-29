@@ -148,6 +148,22 @@ def in_step(actual: bytes, want: bytes) -> bool:
     pin, so nothing this guard actually claims is given up by ignoring one.
     Everything else -- a description edited, a name changed, a body replaced
     -- still reports. [#229]
+
+    **This reaches the entry side, and the cell side is left as it is.** With
+    the *cell* in CRLF, `expected()` has already lost a byte before this
+    comparison sees anything -- `frontmatter()`'s own documented bound, where a
+    CRLF source ends the block at the bare `` -- so `verify` still reports,
+    and `--write` then converges to green having rewritten every entry. That is
+    real and it is left standing: the repair belongs in `frontmatter()`, which
+    other checks read, and the broken polarity is unobserved where the fixed one
+    is live -- 0 of 26 worktrees measured carry CRLF on a cell, 3 of 26 carry it
+    on an entry. Filed rather than fixed here. [PR #232 review, M10]
+
+    One consequence, accepted: `--write` still repairs a CRLF entry, and nothing
+    now tells a session that. The alternative is a line from `verify` in the
+    condition this exists to stop reporting, which reinstates the noise. The
+    remedy is here instead, where a session asking why its tree looks modified
+    will be reading. [PR #232 review, M20]
     """
     return actual.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n")
 

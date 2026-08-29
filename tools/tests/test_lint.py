@@ -672,7 +672,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_doctrine", "check_doctrine_callout", "check_review_index",
     "check_decision_index", "check_entry_references",
     "check_emitted_ascii", "check_docstring_not_piped",
-    "check_stdio_wired", "check_subprocess_stdin", "check_marketplace_source",
+    "check_stdio_wired", "check_subprocess_streams", "check_marketplace_source",
 )
 
 
@@ -2730,24 +2730,56 @@ def test_a_module_without_main_is_not_asked(tmp_path):
     assert lint.check_stdio_wired(tmp_path) == []
 
 
-# --- check_subprocess_stdin -------------------------------------------------
+# --- check_subprocess_streams -----------------------------------------------
 #
-# Both polarities, and the two forms the check has to reach: the qualified
-# `subprocess.run` and the bare name `from subprocess import run` binds. The
-# defect this guards is #229 -- an unnamed stdin is inherited, and on Windows
-# the inherited handle is invalid wherever fd 0 has been redirected.
+# The rule is *redirect nothing, or name all three*, and the first version of
+# this check asked only for stdin -- which flagged immune launches and
+# prescribed the edit that breaks them (PR #232 review, M1). So the polarities
+# here are three, not two: the partial redirect caught, the bare launch left
+# alone, and the fully-named launch left alone. Every spelling below that
+# escaped the first version is pinned, because each was found by a seat or an
+# external reviewer rather than anticipated: the module alias, `stdin=None`,
+# `input=None`, and the `getoutput` family. [D-232]
 
 
-def test_an_unnamed_stdin_is_caught(tmp_path):
-    """The shape every call site here had before #229."""
+def _streams(root):
+    return lint.check_subprocess_streams(root)
+
+
+def test_a_partial_redirect_is_caught(tmp_path):
+    """The shape #229 actually measured: stdout and stderr redirected, stdin
+    left to resolve through a std-handle table that may name a closed handle."""
     _zoned(tmp_path, "tools/script.py",
            "import subprocess" + chr(10)
            + 'subprocess.run(["git", "status"], capture_output=True)' + chr(10))
-    findings = lint.check_subprocess_stdin(tmp_path)
+    findings = _streams(tmp_path)
     assert len(findings) == 1, findings
-    assert "subprocess-stdin" in findings[0]
+    assert "subprocess-streams" in findings[0]
     assert "tools/script.py:2" in findings[0]
-    assert "subprocess.run" in findings[0]
+    assert "stdin unnamed" in findings[0]
+
+
+def test_a_launch_that_redirects_nothing_is_left_alone(tmp_path):
+    """The polarity the first version got wrong, and the reason it mattered.
+
+    `_get_handles` returns early when all three are None, so this launch never
+    asks `GetStdHandle` anything. Requiring `stdin=` here reddened a call that
+    could not fail and prescribed the one edit that makes it fail -- 0/20
+    against 20/20 under real pytest capture. A guard that blocks lawful work
+    fails as hard as one that passes unlawful work."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.run(["git", "add", "-A"], check=True)' + chr(10))
+    assert _streams(tmp_path) == []
+
+
+def test_all_three_named_is_left_alone(tmp_path):
+    """The compliant form every launch in this repository uses."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.run(["git"], stdin=subprocess.DEVNULL,' + chr(10)
+           + "               capture_output=True)" + chr(10))
+    assert _streams(tmp_path) == []
 
 
 def test_the_shipped_zone_is_walked_too(tmp_path):
@@ -2756,70 +2788,189 @@ def test_the_shipped_zone_is_walked_too(tmp_path):
     repo-only zone would have left the half that reaches consumers open."""
     _zoned(tmp_path, "skills/thing/scripts/thing.py",
            "import subprocess" + chr(10)
-           + 'subprocess.Popen(["git"])' + chr(10))
-    findings = lint.check_subprocess_stdin(tmp_path)
+           + 'subprocess.Popen(["git"], stdout=subprocess.PIPE)' + chr(10))
+    findings = _streams(tmp_path)
     assert len(findings) == 1, findings
     assert "skills/thing/scripts/thing.py" in findings[0]
+
+
+def test_the_module_alias_is_caught(tmp_path):
+    """`import subprocess as sp` -- the hole the first version shipped.
+
+    Three seats and both external reviewers found it independently, which is
+    what makes it worth a pin rather than a line in a bounds list."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess as sp" + chr(10)
+           + 'sp.run(["git", "status"], capture_output=True)' + chr(10))
+    findings = _streams(tmp_path)
+    assert len(findings) == 1, findings
+    assert "sp.run" in findings[0]
 
 
 def test_the_bare_imported_name_is_caught(tmp_path):
     """`from subprocess import run` binds a name no attribute match reaches."""
     _zoned(tmp_path, "tools/script.py",
            "from subprocess import run" + chr(10)
-           + 'run(["git", "status"])' + chr(10))
-    findings = lint.check_subprocess_stdin(tmp_path)
+           + 'run(["git", "status"], capture_output=True)' + chr(10))
+    findings = _streams(tmp_path)
     assert len(findings) == 1, findings
-    assert "calls run without naming stdin" in findings[0]
+    assert "calls run redirecting" in findings[0]
 
 
-def test_devnull_is_left_alone(tmp_path):
-    """The lawful form, and the remedy every finding names."""
+def test_the_bare_name_remedy_does_not_name_a_module_it_lacks(tmp_path):
+    """The message must not prescribe `subprocess.DEVNULL` into a file with no
+    `subprocess` binding.
+
+    It did: the remedied file passed the lint and raised `NameError` on its
+    first call, so a green lint positively confirmed a broken edit. [PR #232
+    review, M15]"""
+    _zoned(tmp_path, "tools/script.py",
+           "from subprocess import run" + chr(10)
+           + 'run(["git"], capture_output=True)' + chr(10))
+    finding = _streams(tmp_path)[0]
+    assert "subprocess.DEVNULL" not in finding
+    assert "import from subprocess" in finding
+
+
+def test_an_alias_remedy_names_the_alias(tmp_path):
+    """The other half of the same rule: where the module is bound, the message
+    names the binding the file actually has."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess as sp" + chr(10)
+           + 'sp.run(["git"], capture_output=True)' + chr(10))
+    assert "sp.DEVNULL" in _streams(tmp_path)[0]
+
+
+def test_stdin_none_does_not_satisfy_it(tmp_path):
+    """`stdin=None` is the default spelled out; it redirects nothing.
+
+    Read as merely *named*, it satisfied the first version while meaning
+    inherit -- 10/10 failures under a stale table. [PR #232 review, M3]"""
     _zoned(tmp_path, "tools/script.py",
            "import subprocess" + chr(10)
-           + 'subprocess.run(["git"], stdin=subprocess.DEVNULL)' + chr(10))
-    assert lint.check_subprocess_stdin(tmp_path) == []
+           + 'subprocess.run(["git"], stdin=None, capture_output=True)' + chr(10))
+    assert len(_streams(tmp_path)) == 1
 
 
-def test_input_satisfies_it(tmp_path):
-    """`input=` implies `stdin=PIPE`, so the inherited handle is never touched.
+def test_input_none_does_not_satisfy_it(tmp_path):
+    """`input=None` never reaches `run`'s `if input is not None`, so no PIPE.
 
-    This is not a hypothetical accommodation: `check_ignored` in this very
-    module launches `git check-ignore --stdin` that way, and it is one of the
-    two call sites #229 never saw fail."""
+    An external reviewer contested this with a cited answer saying `input=None`
+    behaves as `input=b''`. `subprocess.run`'s own source says otherwise, and
+    the probes agree at 10/10 -- so this pins the source, not the answer."""
     _zoned(tmp_path, "tools/script.py",
            "import subprocess" + chr(10)
-           + 'subprocess.run(["git"], input="x")' + chr(10))
-    assert lint.check_subprocess_stdin(tmp_path) == []
+           + 'subprocess.run(["git"], input=None, capture_output=True)' + chr(10))
+    assert len(_streams(tmp_path)) == 1
+
+
+def test_a_real_input_covers_stdin(tmp_path):
+    """`input=` with something to read implies `stdin=PIPE`.
+
+    Not an accommodation: `check_ignored` in `tools/lint.py` feeds
+    `git check-ignore --stdin` exactly this way, and it is one of the sites
+    #229 never saw fail."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.run(["git"], input="x", capture_output=True)' + chr(10))
+    assert _streams(tmp_path) == []
+
+
+def test_capture_output_false_redirects_nothing(tmp_path):
+    """The literal is read, not merely the keyword: `capture_output=False`
+    leaves stdout and stderr inherited, so this launch redirects nothing."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + 'subprocess.run(["git"], capture_output=False)' + chr(10))
+    assert _streams(tmp_path) == []
+
+
+def test_the_no_stdin_wrappers_are_named(tmp_path):
+    """`getoutput`, `getstatusoutput` and `os.popen` redirect a stream and take
+    no stdin argument, so the rule has no compliant form for them.
+
+    Silence there read as permission, and the cell's rule was unsatisfiable
+    rather than merely unenforced. [PR #232 review, M4]"""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + "import os" + chr(10)
+           + 'subprocess.getoutput("git rev-parse HEAD")' + chr(10)
+           + 'subprocess.getstatusoutput("git status")' + chr(10)
+           + 'os.popen("git status").read()' + chr(10))
+    findings = _streams(tmp_path)
+    assert len(findings) == 3, findings
+    assert all("takes no stdin argument" in f for f in findings)
+
+
+def test_every_launcher_name_is_reached(tmp_path):
+    """All five, not the two the first version's fixtures exercised.
+
+    Narrowing `_LAUNCHERS` to `("run", "Popen")` left the whole suite green,
+    so the coverage the docstring claimed was asserted and not held. [PR #232
+    review, M12]"""
+    body = "import subprocess" + chr(10)
+    for name in ("run", "Popen", "call", "check_call", "check_output"):
+        body += f'subprocess.{name}(["git"], stdout=subprocess.PIPE)' + chr(10)
+    _zoned(tmp_path, "tools/script.py", body)
+    findings = _streams(tmp_path)
+    assert len(findings) == 5, findings
+    for name in ("run", "Popen", "call", "check_call", "check_output"):
+        assert any(f"subprocess.{name}" in f for f in findings), name
+
+
+def test_the_message_offers_input_to_nobody_that_rejects_it(tmp_path):
+    """`Popen`, `call` and `check_call` take no `input` argument.
+
+    The first version's message offered it to all five, and D-232 rejects an
+    alternative design on exactly that ground -- a remedy raising `TypeError`.
+    [PR #232 review, M14]"""
+    body = "import subprocess" + chr(10)
+    for name in ("Popen", "call", "check_call"):
+        body += f'subprocess.{name}(["git"], stdout=subprocess.PIPE)' + chr(10)
+    _zoned(tmp_path, "tools/script.py", body)
+    for finding in _streams(tmp_path):
+        assert "input=" not in finding, finding
 
 
 def test_a_kwargs_forwarder_is_left_alone(tmp_path):
     """The guard's stated bound, held as a test rather than left to the prose.
 
-    Whether stdin is inside `**kwargs` cannot be read off the call, and a guard
+    Whether a stream is redirected cannot be read off the call, and a guard
     that reddened here would block lawful work -- the polarity the substrate
     cell says fails as hard as the other."""
     _zoned(tmp_path, "tools/script.py",
            "import subprocess" + chr(10)
            + "def launch(cmd, **kwargs):" + chr(10)
            + "    return subprocess.run(cmd, **kwargs)" + chr(10))
-    assert lint.check_subprocess_stdin(tmp_path) == []
+    assert _streams(tmp_path) == []
+
+
+def test_an_unreadable_capture_output_is_left_alone(tmp_path):
+    """The bound's other half: a non-literal `capture_output` leaves the guard
+    unable to say whether two streams are redirected, and unreadable is
+    silence."""
+    _zoned(tmp_path, "tools/script.py",
+           "import subprocess" + chr(10)
+           + "def launch(cmd, quiet):" + chr(10)
+           + "    return subprocess.run(cmd, capture_output=quiet)" + chr(10))
+    assert _streams(tmp_path) == []
 
 
 def test_something_else_named_run_is_not_a_launch(tmp_path):
-    """`lint.run` exists in this repository and takes no stdin."""
+    """`lint.run` exists in this repository and redirects nothing."""
     _zoned(tmp_path, "tools/script.py",
            "import other" + chr(10)
-           + "other.run(1)" + chr(10)
-           + "run(2)" + chr(10))
-    assert lint.check_subprocess_stdin(tmp_path) == []
+           + "other.run(1, capture_output=True)" + chr(10)
+           + "run(2, capture_output=True)" + chr(10))
+    assert _streams(tmp_path) == []
 
 
-def test_this_repository_names_stdin_at_every_launch():
+def test_this_repository_names_its_streams_at_every_launch():
     """The tree this exists for, not a restatement of the guard.
 
     The guard proves the shape; this proves the shipped and repo-only trees are
     in it -- which is the claim #229 found false and nothing was checking."""
-    assert lint.check_subprocess_stdin(Path(__file__).resolve().parents[2]) == []
+    assert lint.check_subprocess_streams(Path(__file__).resolve().parents[2]) == []
 
 
 def test_emitted_ascii_reports_the_line_carrying_the_character(tmp_path):
