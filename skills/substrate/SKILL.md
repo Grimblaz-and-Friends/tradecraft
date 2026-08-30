@@ -5,11 +5,11 @@ description: How this practice writes the code it ships and runs — one substra
 
 # substrate
 
-**Purpose:** make the code this practice ships and runs behave the same for every consumer, on every platform, in every runtime. **Audience:** any session writing or revising a script, test, hook or guard — in this repo or a repo that adopts the practice, whose own substrate is its own choice and not this one's to set. **Success:** a script written under these standards runs the same from a source checkout as from an installed plugin, its output survives being captured, and whatever proves it travels with it.
+**Purpose:** make the code this practice ships and runs behave the same for every consumer, on every platform, in every runtime. **Audience:** any session writing or revising a script, test, hook or guard, in this repo or a repo that adopts the practice. **Success:** a script written under these standards runs the same from a source checkout as from an installed plugin, its output survives being captured, and whatever proves it travels with it.
 
 ## The standards
 
-- **Stdlib-first Python** here, because one substrate is one set of idioms to harden. The pick is this practice's own; what carries over is that a practice has one.
+- **One substrate, chosen once and hardened**, because one substrate is one set of idioms to harden. Which one is the adopting repository's own call, made in its doctrine.
 - **Tests ride beside the script they cover**, so what proves the code travels with it to every consumer.
 - **Guard-shaped code is probed in both polarities** — the unlawful case caught, the lawful case left alone — since a guard blocking lawful work fails as hard as one passing unlawful work.
 - **The calling contract names no harness token**, because one runtime substitutes it and another does not, so a contract carrying one binds in the first and is dead in the second. [D-156]
