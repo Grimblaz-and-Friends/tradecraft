@@ -1733,10 +1733,11 @@ def check_doctrine_callout(root: Path) -> list[str]:
 def check_decision_index(root: Path) -> list[str]:
     """Every decision entry has a row in the log's index, and every row a file.
 
-    The row is part of landing, written once in the PR that lands the entry and
-    never maintained after. Without it the entry is unreachable: the shipped
-    rule carries at most a bare `[D-N]` marker, so the index is the only route
-    a later session has from a decision's number to its reasoning.
+    The row is part of landing, written once in the PR that lands the entry.
+    It is not maintained after, but for the same two narrow repairs the entry
+    itself admits -- see the log's README. Without it the entry is unreachable:
+    the shipped rule carries at most a bare `[D-N]` marker, so the index is the
+    only route a later session has from a decision's number to its reasoning.
     """
     findings: list[str] = []
     directory = root / "docs" / "architecture" / "decisions"
@@ -1764,9 +1765,9 @@ def check_decision_index(root: Path) -> list[str]:
 def check_entry_references(root: Path) -> list[str]:
     """Every reference a decision entry makes resolves, is pinned, or is recorded.
 
-    An entry is frozen on landing but for a moved reference: the change that
-    moves a target repoints every entry reference to it, and that repair is
-    only lawful inside the moving change. This guard is what makes the
+    An entry is frozen on landing but for two narrow repairs, of which this
+    guard reaches one: the change that moves a target repoints every entry
+    reference to it, and that repair is only lawful inside the moving change. This guard is what makes the
     permission fire at that moment -- without it the mover has no signal, and
     by the time anyone notices, no change is the mover any more. PR #104
     stranded three references that way and PR #132 stranded three more the next
