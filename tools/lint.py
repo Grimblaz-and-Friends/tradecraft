@@ -2524,13 +2524,20 @@ def _is_none(node: ast.AST) -> bool:
 def _redirected(call: ast.Call, launcher: str) -> set[str] | None:
     """Which of the three streams this call redirects, or None if unreadable.
 
-    **The bound is a criterion, not a list: only keyword arguments are read.**
-    Anything positional, splatted, or non-literal is unread, and unread is
-    silence rather than a finding -- whether a stream is redirected is genuinely
-    unknown there, and reddening on it blocks lawful work, which the `substrate`
-    cell holds fails as hard as passing unlawful work. Stated as a criterion
-    because the first version stated it as two items and four spellings walked
-    through the gap between them. [D-232]
+    **What is read is the callee and its keyword arguments.** A second
+    positional argument, a splat of either kind, and a non-literal
+    `capture_output` are unread, and unread is silence -- whether a stream is
+    redirected is genuinely unknown there, and reddening on it blocks lawful
+    work, which the `substrate` cell holds fails as hard as passing unlawful
+    work.
+
+    **A stream keyword whose value is not the literal `None` is read as a
+    redirect, including a name that happens to be `None` at run time.** That is
+    a permanent bound of a call-site check rather than a gap to close: nothing
+    at the syntax tree knows what a name evaluates to. It is stated because the
+    sentence this replaces said the opposite -- it claimed non-literals were
+    unread, which is false of all 17 launches in this repository, every one of
+    them `stdin=subprocess.DEVNULL`. [D-232]
     """
     if len(call.args) > 1 or any(isinstance(a, ast.Starred) for a in call.args):
         return None
