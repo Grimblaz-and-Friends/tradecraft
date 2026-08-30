@@ -121,6 +121,26 @@ Checks:
     because the instance that motivated this had clean bytes on disk and four
     carriage returns in `__doc__` [D-231].
 
+21. hollow code span: no inline code span holds nothing but whitespace. Prose
+    here names control characters constantly, and a span written to show one
+    that no longer holds it reads as finished while saying nothing -- three
+    instances in one change, one of which reached a commit and broke a row in
+    the decision index. The predicate is *non-empty* whitespace: the
+    doubled-backtick idiom's inner span is exactly empty, so the non-empty
+    clause separates lawful prose about fences from the defect on a property
+    rather than on a list of call sites that would go stale. Fenced blocks are
+    skipped, as checks 5 and 6 skip the name form inside one.
+22. committed carriage return: no tracked file carries a carriage return into
+    the index. The LF pin has one hole and git states it plainly -- text=auto
+    refuses to normalize a file holding a lone carriage return, and commits
+    every line ending in it verbatim. Read through git ls-files --eol, which
+    answers for every file in one call; a file it declines to call text has
+    its committed bytes read before anything is said, because a genuine binary
+    reports the same way. Disjoint from check 20 by the tokenizer, which folds
+    a lone carriage return in source to a line feed before a docstring
+    compiles: it is the one control character reading the compiled value
+    cannot see.
+
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
 
@@ -2167,6 +2187,217 @@ def check_docstring_control_chars(root: Path) -> list[str]:
                 )
     return findings
 
+# The frozen archive: history, not a live format (D-74). Records are
+# append-only and never maintained, so a finding inside one is a red no lawful
+# edit can clear -- the shape #224 was about, reinstated by a guard rather than
+# a comparison. Nothing here can newly appear either, which is what makes the
+# exclusion cheap: these files stopped changing before either guard existed.
+FROZEN = frozenset({
+    "docs/ledger.jsonl",
+    "docs/seat-record.jsonl",
+    "docs/architecture/constitution-archived.md",
+    "docs/architecture/evidence-archived.md",
+    "docs/architecture/open-questions-archived.md",
+})
+
+# A single-backtick inline code span, with the doubled form excluded on both
+# sides. `re.S` because a span may hold one line break and the instance this
+# was written for held exactly that; more than one is not a code span in
+# CommonMark and is filtered below.
+CODE_SPAN = re.compile(r"(?<!`)`([^`]*?)`(?!`)", re.S)
+FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def _prose_files(root: Path):
+    """Every file under the repository, `.git` aside, for the caller to filter.
+
+    Collected the way `check_emitted_ascii` collects Python files and filtered
+    the same way, for the reason `_git_ignored` states on itself: a hardcoded
+    skip list makes every future top-level directory silently escape. `git
+    ls-files` is wrong here for its reason too -- it lists tracked files, and a
+    decision entry a session has just written is exactly the untracked file
+    these guards exist to catch before it commits.
+    """
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or ".git" in path.parts:
+            continue
+        yield path
+
+
+def _unfenced_text(text: str) -> str:
+    """The text with fenced blocks blanked, line numbers preserved.
+
+    A code span inside a fence is being *shown*, not written -- the premise
+    checks 5 and 6 already reason from for the name form, and the one these
+    guards need, since a fixture demonstrating the defect has to be able to
+    quote it. Blanked rather than dropped so a finding's line number still
+    names the line the reader will open.
+    """
+    inside = False
+    out = []
+    for line in text.split("\n"):
+        if FENCE.match(line):
+            inside = not inside
+            out.append("")
+            continue
+        out.append("" if inside else line)
+    return "\n".join(out)
+
+
+def check_hollow_code_span(root: Path) -> list[str]:
+    """No inline code span holds nothing but whitespace.
+
+    A code span that is all whitespace is prose that lost the character it was
+    naming. This repository's prose names control characters constantly --
+    whole changes here are about the difference between a carriage-return pair
+    and a bare one -- so a sentence explaining a byte, with the byte gone from
+    the span that was supposed to show it, reads as finished and says nothing.
+    Three instances landed in one pull request, two of them inside the repair
+    of the first; one reached a commit and broke a row in the decision index
+    [#233].
+
+    **The predicate is non-empty whitespace, and the non-empty half is what
+    removes the design call.** The obvious form -- content that strips to
+    nothing -- was measured over every tracked file and reported the
+    doubled-backtick idiom every time it appears, which is prose about fences
+    and entirely lawful. Every one of those has content that is *exactly*
+    empty, because the idiom's inner span is the gap between the doubled
+    backticks; the real instance's content was a line break. So requiring the
+    content to be non-empty separates them on a property rather than on a list
+    of call sites, and a list would have gone stale the next time anybody wrote
+    about fences.
+
+    **This is disjoint from check 20, which reads compiled docstrings.** That
+    one catches the escape that became the character; this one catches the
+    character that went missing. Neither sees the other's instance, which is
+    the whole reason the class needed two guards and not one.
+
+    A span holding more than one line break is not a code span in CommonMark
+    and is skipped, rather than reported as a very long hollow one.
+    """
+    findings = []
+    candidates = list(_prose_files(root))
+    ignored = _git_ignored(root, candidates)
+    for path in candidates:
+        if path in ignored:
+            continue
+        rel_file = path.relative_to(root).as_posix()
+        if rel_file in FROZEN:
+            continue
+        text = _read_text(path)
+        if text is None:
+            continue
+        for match in CODE_SPAN.finditer(_unfenced_text(text)):
+            content = match.group(1)
+            if content.count("\n") > 1 or not content or content.strip():
+                continue
+            lineno = text.count("\n", 0, match.start()) + 1
+            shown = "".join(f"U+{ord(c):04X} " for c in content).strip()
+            findings.append(
+                f"hollow-code-span: {rel_file}:{lineno} has a code span "
+                f"holding only whitespace ({shown}) -- a span written to show "
+                f"a character it no longer holds. If the character itself is "
+                f"meant, name it in words: every attempt to write one into "
+                f"this repository's prose so far has produced the character "
+                f"instead of the escape"
+            )
+    return findings
+
+
+def check_committed_carriage_return(root: Path) -> list[str]:
+    """No tracked file carries a carriage return into the repository.
+
+    `.gitattributes` pins this repository's index to LF, and a text-mode write
+    producing CRLF on disk is expected rather than a defect [D-186] precisely
+    because that pin normalizes it away. **The pin has one hole and git states
+    it plainly: `text=auto` refuses to normalize any file holding a lone
+    carriage return.** Such a file is classified as binary and every line
+    ending in it commits verbatim -- which is how a decision-index row appended
+    by a script whose escapes had become control bytes reached a commit,
+    splitting one table row into a truncated row and a 2,181-character orphan.
+    The lint was green over it, and a repository-wide byte scan found it the
+    only such file [#233].
+
+    **Read from the index rather than the working tree, and in one call.**
+    `git ls-files --eol` reports what each file's committed form holds, which
+    is the question -- a CRLF working copy is lawful here and says nothing.
+    `i/-text` is the tell: it is git declining to treat the file as text.
+    Reading every blob with `git cat-file` answers the same question directly
+    and was measured at roughly seventy times the cost, on the one command the
+    flow mandates before every commit -- so the cheap classification narrows,
+    and only what it flags is read. A genuine binary reports `i/-text` too,
+    which is why the carriage return is confirmed against the committed bytes
+    before anything is said about it.
+
+    **Disjoint from check 20 by the tokenizer, not by scope.** Python folds a
+    lone carriage return in *source* to a line feed before a docstring
+    compiles, so a raw one on disk is the single control character reading the
+    compiled value cannot see. Measured against every other raw control byte --
+    vertical tab, form feed, ESC, DEL, the C1 block -- check 20 sees all of
+    them. The gap is one character wide, and this closes it.
+
+    Silent when git cannot answer, for `_git_ignored`'s reason: a tree with no
+    git is not a tree with a finding, and these guards may only remove noise.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "--eol", "-z"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8",
+            cwd=root, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    flagged = []
+    for row in proc.stdout.split(chr(0)):
+        if not row.strip():
+            continue
+        # `i/<eol> w/<eol> attr/<attrs><TAB><path>`. Split on the tab, because
+        # the attrs field may be empty and a path may hold spaces.
+        fields, _, rel_file = row.partition(chr(9))
+        index_eol = fields.split()[0]
+        if index_eol == "i/lf" or rel_file in FROZEN:
+            continue
+        flagged.append((rel_file, index_eol))
+    findings = []
+    for rel_file, index_eol in flagged:
+        # `i/-text` is also how a genuine binary reports, so the committed
+        # bytes are read rather than the classification trusted. Two things
+        # come out of that read and both are needed: binary content is skipped
+        # by the NUL rule this module already applies everywhere, and the
+        # carriage return is confirmed rather than inferred. Without the first,
+        # the next image committed here goes red for its own file signature --
+        # a PNG's is a carriage return and a line feed. Without the second, a
+        # binary with no carriage return in it goes red for a character it does
+        # not hold, which is the trap `check_emitted_ascii`'s docstring
+        # records. On a lawful tree nothing is flagged and neither read runs.
+        try:
+            blob = subprocess.run(
+                ["git", "cat-file", "-p", f"HEAD:{rel_file}"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True, cwd=root, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        data = blob.stdout
+        if blob.returncode != 0 or bytes([13]) not in data:
+            continue
+        if bytes([0]) in data[:1024]:
+            continue
+        findings.append(
+            f"committed-carriage-return: {rel_file} commits as {index_eol} "
+            f"rather than i/lf and its committed bytes hold a carriage "
+            f"return -- git refuses to normalize a file holding a lone one, "
+            f"so every line ending in this one is committed verbatim and "
+            f"renders wherever it lands. Rewrite the file with line feeds; if "
+            f"a control character is genuinely meant, it belongs in code and "
+            f"not in prose"
+        )
+    return findings
+
+
 def check_marketplace_source(root: Path) -> list[str]:
     """Keep the tradecraft source in the form both plugin runtimes accept."""
     manifest = root / ".claude-plugin" / "marketplace.json"
@@ -2915,6 +3146,8 @@ CHECKS = (
     check_stdio_wired,
     check_subprocess_streams,
     check_docstring_control_chars,
+    check_hollow_code_span,
+    check_committed_carriage_return,
     check_marketplace_source,
 )
 

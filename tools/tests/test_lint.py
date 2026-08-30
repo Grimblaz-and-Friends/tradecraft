@@ -686,6 +686,8 @@ LINT_CHECKS_IN_ORDER = (
     "check_stdio_wired",
     "check_subprocess_streams",
     "check_docstring_control_chars",
+    "check_hollow_code_span",
+    "check_committed_carriage_return",
     "check_marketplace_source",
 )
 
@@ -3812,3 +3814,168 @@ def test_where_states_unknown_rather_than_inventing_a_frame():
     stating something it never computed.
     """
     assert lint._where(ValueError("never raised")) == "unknown"
+
+
+CR = chr(13)
+TICK = chr(96)
+
+
+def test_hollow_code_span_catches_the_character_that_went_missing(tmp_path):
+    """Instance 3's shape: a span written to show a character, with the
+    character gone. The sentence still reads as an explanation of a byte and
+    names no byte. [#233]
+    """
+    (tmp_path / "note.md").write_text(
+        "The block ends at the bare " + TICK + CR + TICK + ", so verify reports." + NL,
+        encoding="utf-8", newline="",
+    )
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1
+    assert "note.md:1" in findings[0]
+    assert "U+000D" in findings[0]
+
+
+def test_hollow_code_span_reads_across_the_one_line_break_a_span_may_hold(tmp_path):
+    """The live instance sat in a docstring where the lost character was a
+    line break, so the span crossed a source line. A single-line predicate
+    reports the doubled-backtick idiom and misses the only real defect in the
+    tree -- measured, which is why this is pinned.
+    """
+    (tmp_path / "mod.py").write_text(
+        "def f():" + NL
+        + '    """Ends at the bare ' + TICK + NL + TICK + " -- so it reports." + NL
+        + '    """' + NL,
+        encoding="utf-8", newline="",
+    )
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1 and "U+000A" in findings[0]
+
+
+def test_hollow_code_span_leaves_the_doubled_backtick_idiom_alone(tmp_path):
+    """The other polarity, and the one that decides the predicate.
+
+    Every false positive the strip-to-nothing form produced across this
+    repository was this idiom, which is prose about fences and lawful. Its
+    inner span is *exactly* empty; the defect's is not. A guard that reported
+    it would be refused within a release, which is the failure a guard
+    blocking lawful work always is.
+    """
+    (tmp_path / "note.md").write_text(
+        "Pin as " + TICK*2 + " " + TICK + "path" + TICK + " at " + TICK
+        + "<sha>" + TICK + " " + TICK*2 + " at authoring time." + NL,
+        encoding="utf-8", newline="",
+    )
+    assert lint.check_hollow_code_span(tmp_path) == []
+
+
+def test_hollow_code_span_leaves_ordinary_prose_alone(tmp_path):
+    """A span with content in it is what every lawful span is."""
+    (tmp_path / "note.md").write_text(
+        "Run " + TICK + "python tools/lint.py" + TICK + " before committing." + NL,
+        encoding="utf-8", newline="",
+    )
+    assert lint.check_hollow_code_span(tmp_path) == []
+
+
+def test_hollow_code_span_skips_a_fenced_block(tmp_path):
+    """A span inside a fence is being shown, not written -- the premise checks
+    5 and 6 already reason from, and the one a fixture demonstrating this
+    defect depends on.
+    """
+    (tmp_path / "note.md").write_text(
+        "The defect looks like this:" + NL + NL
+        + "```" + NL
+        + "ends at the bare " + TICK + CR + TICK + NL
+        + "```" + NL,
+        encoding="utf-8", newline="",
+    )
+    assert lint.check_hollow_code_span(tmp_path) == []
+
+
+def test_this_repository_holds_no_hollow_code_span():
+    """The tree this exists for. `tools/roster.py` carried one until the
+    change that added this guard; run against the diff base it reports that
+    line, and against this revision it is silent.
+    """
+    root = Path(__file__).resolve().parents[2]
+    assert lint.check_hollow_code_span(root) == []
+
+
+def _git_repo_with(tmp_path, name, data: bytes):
+    """A committed fixture repository carrying this repository's own
+    `.gitattributes`, so the normalisation under test is the real one.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    attributes = Path(__file__).resolve().parents[2] / ".gitattributes"
+    (tmp_path / ".gitattributes").write_bytes(attributes.read_bytes())
+    (tmp_path / name).write_bytes(data)
+    for args in (["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t",
+                                 "commit", "-qm", "fixture"]):
+        subprocess.run(["git", "-C", str(tmp_path)] + args, check=True,
+                       stdin=subprocess.DEVNULL, capture_output=True)
+    return tmp_path
+
+
+def test_committed_carriage_return_catches_the_byte_that_reached_a_commit(tmp_path):
+    """Instance 1: a decision-index row appended by a script whose escapes had
+    become control bytes. `text=auto` refuses to normalise a file holding a
+    lone carriage return, so every line ending in it committed verbatim and
+    the row rendered as a truncated row plus an orphan. [#233]
+    """
+    _git_repo_with(tmp_path, "index.md",
+                   ("a lone " + CR + " row" + NL + "next" + NL).encode("utf-8"))
+    findings = lint.check_committed_carriage_return(tmp_path)
+    assert len(findings) == 1
+    assert "index.md" in findings[0]
+
+
+def test_committed_carriage_return_leaves_a_crlf_working_copy_alone(tmp_path):
+    """The polarity that decides whether this guard is usable here at all.
+
+    A CRLF working copy is expected rather than a defect [D-186]: the pin
+    normalises it into the index, so nothing reaches the repository. A guard
+    reporting it would reinstate the unclearable red #224 was about.
+    """
+    _git_repo_with(tmp_path, "note.md",
+                   ("first" + CR + NL + "second" + CR + NL).encode("utf-8"))
+    assert lint.check_committed_carriage_return(tmp_path) == []
+
+
+def test_committed_carriage_return_leaves_a_genuine_binary_alone(tmp_path):
+    """A binary reports `i/-text` exactly as a lone-carriage-return file does.
+
+    A PNG's own file signature *is* a carriage return and a line feed, so
+    confirming the byte is not enough on its own: the first image committed
+    here would go red for its own header. Binary content is skipped by the NUL
+    rule this module applies everywhere, which is what makes the confirmation
+    safe rather than merely truthful.
+    """
+    png = bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes([0, 0, 0, 13]) + b"IHDR"
+    _git_repo_with(tmp_path, "image.png", png)
+    assert lint.check_committed_carriage_return(tmp_path) == [], (
+        "a binary is skipped even though its signature holds a carriage return"
+    )
+
+
+def test_committed_carriage_return_still_reads_a_text_file_git_calls_binary(tmp_path):
+    """The other polarity of that skip, and the one that matters: git calls a
+    lone-carriage-return *text* file binary too, and that file is the whole
+    point. The NUL rule is what tells the two apart, not git's classification.
+    """
+    _git_repo_with(tmp_path, "index.md",
+                   ("row" + CR + "orphan" + NL).encode("utf-8"))
+    assert len(lint.check_committed_carriage_return(tmp_path)) == 1
+
+
+def test_committed_carriage_return_is_silent_where_git_cannot_answer(tmp_path):
+    """A tree with no git is not a tree with a finding, per `_git_ignored`'s
+    reason: these guards may only ever remove noise.
+    """
+    (tmp_path / "note.md").write_bytes(("a" + CR + "b" + NL).encode("utf-8"))
+    assert lint.check_committed_carriage_return(tmp_path) == []
+
+
+def test_this_repository_commits_no_carriage_return():
+    """The tree this exists for, and the state PR #231 restored it to."""
+    root = Path(__file__).resolve().parents[2]
+    assert lint.check_committed_carriage_return(root) == []
