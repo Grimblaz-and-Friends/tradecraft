@@ -105,6 +105,9 @@ Checks:
     holding a second definition drifts from the writer it judges.
 18. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
+19. subprocess streams: a launch redirects nothing, or names all three of
+    stdin, stdout and stderr, because on Windows an unnamed stream resolves
+    through a std-handle table that can still name a closed handle.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution) is not validated: it is history, not a live format (D-74).
@@ -2451,6 +2454,235 @@ def check_stdio_wired(root: Path) -> list[str]:
     return findings
 
 
+_LAUNCHERS = ("run", "Popen", "call", "check_call", "check_output")
+
+# Wrappers that redirect a stream by construction and expose no way to name the
+# others: `getoutput` and `getstatusoutput` are `check_output(..., shell=True)`
+# with no `stdin` parameter at all, and `os.popen` is `Popen(..., stdout=PIPE)`.
+# The rule below therefore has no compliant form for them -- measured at 10/10
+# failures each under a stale std-handle table -- so they are named rather than
+# stream-checked. **`check_output` is deliberately not here**: it also redirects
+# by construction, but it does have a compliant form, so flagging it
+# unconditionally would redden lawful work. It is handled in `_redirected`
+# instead, which is the distinction PR #232's own post-fix look and its defense
+# established between them. [D-232]
+_NO_STDIN = {
+    ("subprocess", "getoutput"),
+    ("subprocess", "getstatusoutput"),
+    ("os", "popen"),
+}
+_STREAMS = ("stdin", "stdout", "stderr")
+
+# What each launcher redirects before any argument is read, and which keyword
+# rewritings it performs. Read out of each one's own source rather than off
+# `run`'s -- three proposed remedies in this change's review diagnosed correctly
+# and prescribed a fix that reddened a lawful call, every one of them by
+# assuming a wrapper behaves as `run` does. [D-232]
+_IMPLICIT = {"check_output": frozenset({"stdout"})}   # run(*a, stdout=PIPE, ...)
+_TAKES_CAPTURE_OUTPUT = frozenset({"run"})
+_TAKES_INPUT = frozenset({"run", "check_output"})
+
+
+def _module_aliases(tree: ast.AST, module: str) -> set[str]:
+    """Every name this file binds to `module` through `import`.
+
+    `import subprocess as sp` binds a name no literal match reaches, and
+    `import os.path` binds `os` while naming something else. The first version
+    of this check closed the `from subprocess import run` route and neither of
+    these, so it read as complete while ordinary idioms walked through it.
+    [D-232]
+    """
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Import):
+            continue
+        for alias in node.names:
+            if alias.asname:
+                if alias.name == module:
+                    names.add(alias.asname)
+            elif alias.name == module or alias.name.startswith(module + "."):
+                names.add(module)
+    return names
+
+
+def _is_none(node: ast.AST) -> bool:
+    """Whether this argument is the literal `None`.
+
+    `stdin=None` is the default spelled out on every launcher, so it redirects
+    nothing. `input=None` is **`run`'s** case only: it never reaches `run`'s
+    `if input is not None: kwargs['stdin'] = PIPE`, so stdin stays inherited --
+    where `check_output` rewrites `input=None` to `b''` before calling `run`,
+    and so does pipe it. That split is why `_redirected` asks which launcher it
+    is looking at rather than applying one reading to all five. An external
+    reviewer contested the `run` half with a cited answer saying `input=None`
+    behaves as `input=b''`; the source contradicts them for `run` and agrees
+    with them for `check_output`. [D-232]
+    """
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _redirected(call: ast.Call, launcher: str) -> set[str] | None:
+    """Which of the three streams this call redirects, or None if unreadable.
+
+    **What is read is the callee and its keyword arguments.** A second
+    positional argument, a splat of either kind, and a non-literal
+    `capture_output` are unread, and unread is silence -- whether a stream is
+    redirected is genuinely unknown there, and reddening on it blocks lawful
+    work, which the `substrate` cell holds fails as hard as passing unlawful
+    work.
+
+    **A stream keyword whose value is not the literal `None` is read as a
+    redirect, including a name that happens to be `None` at run time.** That is
+    a permanent bound of a call-site check rather than a gap to close: nothing
+    at the syntax tree knows what a name evaluates to. It is stated because the
+    sentence this replaces said the opposite -- it claimed non-literals were
+    unread, which is false of all 17 launches in this repository, every one of
+    them `stdin=subprocess.DEVNULL`. [D-232]
+    """
+    if len(call.args) > 1 or any(isinstance(a, ast.Starred) for a in call.args):
+        return None
+    covered = set(_IMPLICIT.get(launcher, ()))
+    for keyword in call.keywords:
+        if keyword.arg is None:                      # **kwargs
+            return None
+        if keyword.arg in _STREAMS and not _is_none(keyword.value):
+            covered.add(keyword.arg)
+        elif keyword.arg == "input" and launcher in _TAKES_INPUT:
+            # `check_output` rewrites None to b'' and pipes either way.
+            if launcher == "check_output" or not _is_none(keyword.value):
+                covered.add("stdin")
+        elif keyword.arg == "capture_output" and launcher in _TAKES_CAPTURE_OUTPUT:
+            if not isinstance(keyword.value, ast.Constant):
+                return None
+            if keyword.value.value:
+                covered.update(("stdout", "stderr"))
+    return covered
+
+
+def check_subprocess_streams(root: Path) -> list[str]:
+    """A launch redirects nothing, or names all three streams.
+
+    **The rule is about the whole call, not about stdin.** On Windows
+    `_get_handles` opens with `if stdin is None and stdout is None and stderr is
+    None: return (-1, ...)`, so a launch that redirects **nothing** never asks
+    `GetStdHandle` anything and cannot fail. Redirect one stream and leave
+    another unnamed, and the unnamed one resolves through the process's
+    std-handle table -- which can still name a handle something has since
+    closed. `DuplicateHandle` on that raises `OSError: [WinError 6] The handle
+    is invalid`, from a call that has nothing to do with the command.
+
+    Requiring `stdin=` alone therefore **manufactured the defect on a launch
+    that did not have it**: measured under real pytest capture, 20 launches per
+    case in a fresh process each, `run(cmd)` failed 0/20 while
+    `run(cmd, stdin=DEVNULL)` failed 20/20. [D-232]
+
+    **A launcher is read against its own source.** `check_output` redirects
+    `stdout` by construction and forbids naming it, so *redirects nothing* is
+    false of `check_output(cmd)` however few keywords it carries -- measured at
+    20/20 while the first version of this check certified it. Its compliant form
+    is `stdin=` and `stderr=`, measured 0/20. `getoutput`, `getstatusoutput` and
+    `os.popen` have no compliant form at all and are named in `_NO_STDIN`.
+
+    **It fails intermittently, which is the part that costs.** Windows recycles
+    handle values: when some unrelated object in the process happens to hold the
+    recycled value the duplicate succeeds and the child silently receives an
+    unrelated handle; when the value is free, the launch raises. On this
+    repository's own suite that produced a different set of red tests every run,
+    all of them this one error, while CI stayed green -- a step's Python is born
+    with its streams already redirected, and that is itself the immunity, so a
+    green Windows leg cannot speak to this either way. [#229]
+
+    `stdin=subprocess.DEVNULL, capture_output=True` is the compliant form for a
+    program not meant to read input, which is nearly all of them here -- not
+    all: `check_ignored` in this module feeds `git check-ignore --stdin` through
+    `input=`, which implies `stdin=PIPE` and covers that stream.
+
+    **A call-site check, not a reachability analysis** -- the same bound
+    `check_docstring_not_piped` states, and for the same reason: the pattern is
+    readable off one call, and matching it needs no guess about what reaches
+    where. What it reads is stated as a criterion in `_redirected`, and the walk
+    covers `SHIPPED_DIRS` and `REPO_ONLY_NAMES` -- so not a repository-root
+    script, and not an ignored file. Both of those are recorded in
+    `docs/recorded-findings.jsonl` rather than fixed. [D-232]
+    """
+    findings = []
+    for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in _python_files(base):
+            text = _read_text(path)
+            if text is None:
+                continue
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                continue
+            modules = {n: "subprocess" for n in _module_aliases(tree, "subprocess")}
+            modules.update({n: "os" for n in _module_aliases(tree, "os")})
+            bare = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module in ("subprocess", "os"):
+                    for alias in node.names:
+                        bare[alias.asname or alias.name] = (node.module, alias.name)
+            rel_file = path.relative_to(root).as_posix()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id in modules
+                ):
+                    module, attr = modules[func.value.id], func.attr
+                    shown = f"{func.value.id}.{attr}"
+                elif isinstance(func, ast.Name) and func.id in bare:
+                    module, attr = bare[func.id]
+                    shown = func.id
+                else:
+                    continue
+                if (module, attr) in _NO_STDIN:
+                    findings.append(
+                        f"subprocess-streams: {rel_file}:{node.lineno} calls "
+                        f"{shown}, which redirects a stream and takes no stdin "
+                        f"argument, so it can never name all three -- on "
+                        f"Windows it fails with WinError 6 wherever the "
+                        f"std-handle table has gone stale. Use subprocess.run("
+                        f"..., stdin=DEVNULL, capture_output=True) instead"
+                    )
+                    continue
+                if module != "subprocess" or attr not in _LAUNCHERS:
+                    continue
+                covered = _redirected(node, attr)
+                if covered is None or not covered or len(covered) == 3:
+                    continue
+                missing = [s for s in _STREAMS if s not in covered]
+                devnull = (
+                    f"{func.value.id}.DEVNULL"
+                    if isinstance(func, ast.Attribute)
+                    else "DEVNULL, which this file must import from subprocess"
+                )
+                # `redirect none of them` is not on offer where the launcher
+                # redirects by construction, and neither is naming the stream it
+                # owns: `check_output(..., stdout=...)` raises ValueError.
+                escape = (
+                    "" if attr in _IMPLICIT
+                    else ", or redirect none of them"
+                )
+                findings.append(
+                    f"subprocess-streams: {rel_file}:{node.lineno} calls {shown} "
+                    f"redirecting some streams and leaving "
+                    f"{', '.join(missing)} unnamed -- on Windows an unnamed "
+                    f"stream resolves through a std-handle table that can still "
+                    f"name a closed handle, so the launch fails with WinError 6 "
+                    f"intermittently and for a reason that is not the command's. "
+                    f"Name {' and '.join(missing)} "
+                    f"({devnull} for a program given nothing to read){escape}"
+                )
+    return findings
+
+
 def run(root: Path) -> list[str]:
     return (
         check_zone_wall(root)
@@ -2470,6 +2702,7 @@ def run(root: Path) -> list[str]:
         + check_emitted_ascii(root)
         + check_docstring_not_piped(root)
         + check_stdio_wired(root)
+        + check_subprocess_streams(root)
         + check_marketplace_source(root)
     )
 

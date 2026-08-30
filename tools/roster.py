@@ -25,13 +25,18 @@ second place, and every cell edit into two diffs, to save that hop -- the sum
 over every cell at `8a0c71e` of the file's decoded characters less the block
 `frontmatter()` returns.
 
-**Written and read as bytes**, per the substrate cell's third text-mode rule:
-these files are compared by `check_project_roster` on every lint run, and a
+**Written as bytes**, per the substrate cell's third text-mode rule: a
 text-mode write would turn every line feed into a carriage return pair on
 Windows and not on Linux, so the same tree would hold different bytes
 depending on where this last ran. The copied frontmatter carries the cell's
 own line endings by construction; `.gitattributes` pins those to LF on every
-platform, so the bytes are the same everywhere and the comparison is exact.
+platform, so what this writes is the same everywhere.
+
+**Read as bytes and compared line endings aside**, which is a separate
+question with a separate answer -- see `in_step`. The write is what keeps the
+tree canonical; the comparison has to survive a working copy some other tool
+rewrote, and reading that rewrite as drift is what took the lint red in a
+worktree nobody had touched. [#229]
 
 Usage:  python tools/roster.py [--write]
 
@@ -117,6 +122,50 @@ def frontmatter(data: bytes) -> bytes | None:
     if end == -1:
         return None
     return data[:end + len(_CLOSE) + 1]
+
+
+def in_step(actual: bytes, want: bytes) -> bool:
+    """Whether an entry carries what its cell carries, line endings aside.
+
+    **The comparison normalizes CRLF; the write does not.** Those are two
+    different questions and this repository has already answered the second:
+    `write()` emits bytes so the committed tree holds one set of them
+    everywhere, and `.gitattributes` pins the index to LF on every platform.
+    What that pin does not pin is the working copy, where a text-mode writer
+    outside this repository can turn every line feed into a carriage return
+    pair -- the condition [D-186] rules is expected here rather than a defect.
+
+    Read as bytes, this guard was the one place calling that condition a
+    defect. A Claude Code worktree whose `.claude/skills/` entries had been
+    rewritten in text mode on creation reported every cell out of step, and
+    took `python tools/lint.py` red, against a tree git considered clean and
+    a commit whose bytes were untouched -- before the session had changed
+    anything. Reproduced in this repository at `8b080c8`; `git worktree add`
+    from the same commit gives LF on both sides and a clean lint, so the
+    rewrite is not git's.
+
+    A drift that is *only* line endings cannot reach a commit through that
+    pin, so nothing this guard actually claims is given up by ignoring one.
+    Everything else -- a description edited, a name changed, a body replaced
+    -- still reports. [#229]
+
+    **This reaches the entry side, and the cell side is left as it is.** With
+    the *cell* in CRLF, `expected()` has already lost a byte before this
+    comparison sees anything -- `frontmatter()`'s own documented bound, where a
+    CRLF source ends the block at the bare `` -- so `verify` still reports,
+    and `--write` then converges to green having rewritten every entry. That is
+    real and it is left standing: the repair belongs in `frontmatter()`, which
+    other checks read, and the broken polarity is unobserved where the fixed one
+    is live -- 0 of 26 worktrees measured carry CRLF on a cell, 3 of 26 carry it
+    on an entry. Filed rather than fixed here. [PR #232 review, M10]
+
+    One consequence, accepted: `--write` still repairs a CRLF entry, and nothing
+    now tells a session that. The alternative is a line from `verify` in the
+    condition this exists to stop reporting, which reinstates the noise. The
+    remedy is here instead, where a session asking why its tree looks modified
+    will be reading. [PR #232 review, M20]
+    """
+    return actual.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n")
 
 
 def cell_names(root: Path) -> list[str]:
@@ -272,7 +321,7 @@ def verify(root: Path) -> list[str]:
                 f"run `python tools/roster.py --write`"
             )
             continue
-        if target.read_bytes() == want:
+        if in_step(target.read_bytes(), want):
             continue
         if is_generated(target):
             findings.append(
@@ -336,6 +385,11 @@ def write(root: Path) -> list[str]:
             )
             continue
         if target.is_file():
+            # Byte-exact here where `verify` is not: this branch decides
+            # whether to rewrite, and rewriting an entry a text-mode tool
+            # turned to CRLF restores the canonical bytes -- which is a
+            # remedy worth offering, not noise. `verify` decides whether the
+            # tree is lawful, and by `in_step` that entry already is.
             if target.read_bytes() == want:
                 continue
             # Ownership is checked here too, not only on removal. This branch
