@@ -2175,6 +2175,11 @@ def check_docstring_control_chars(root: Path) -> list[str]:
             # check_emitted_ascii walks the same files and reports both, so a
             # second message here would be one defect stated twice.
             continue
+        except OSError:
+            # Reported by check 14 for the same reason and on the same walk,
+            # so this one stays silent rather than stating it twice -- but it
+            # must not raise, which it did. [PR #247 review, post-fix 5]
+            continue
         for node in ast.walk(tree):
             if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
                                      ast.AsyncFunctionDef)):
@@ -2204,39 +2209,67 @@ def check_docstring_control_chars(root: Path) -> list[str]:
                 )
     return findings
 
-# What the prose guards do not read. Two different reasons, one list.
+# What the guards do not read. **Two populations, because the two guards skip
+# for two different reasons, and one list conflated them.**
 #
-# **The frozen archive** is history, not a live format (D-74), and nothing in
-# it can newly appear. **The live records** -- `docs/reviews.jsonl` and
-# `docs/recorded-findings.jsonl` -- are append-only and never maintained, and
-# they are the sharper case: a finding quoting a hollow span is exactly what
-# gets appended to them, since a finding must quote the line it names. Either
-# way the finding would be a red no lawful edit can clear, which is the shape
+# **The frozen archive** is history rather than a live format (D-74), and
+# nothing in it can newly appear. Both guards skip it: a finding inside a file
+# that may not change is a red no lawful edit can clear, which is the shape
 # #224 was about, reinstated by a guard rather than by a comparison.
+# `docs/architecture/adr/` is a prefix rather than a file -- `AGENTS.md` names
+# the ADRs as part of the archive and there are ten of them.
 #
-# `docs/architecture/adr/` is a prefix, not a file: `AGENTS.md` names the
-# ADRs as part of the frozen archive and there are ten of them. An earlier
-# version of this list said it covered the frozen archive and omitted them.
-UNREAD_FILES = frozenset({
+# **The live records** -- `docs/reviews.jsonl` and `docs/recorded-findings.jsonl`
+# -- are skipped by the prose guard only, and the asymmetry is the point. A
+# finding must quote the line it names, so a review row about a hollow code
+# span holds one: that is intended content, and reporting it would red the
+# lint over a file doctrine forbids repairing. **A lone carriage return in
+# those files is not content at all.** It is corruption of the row's own
+# format -- `{"a": "x<CR>y"}` and a record split across a stray one are both
+# invalid JSON -- and #233's motivating instance was exactly a row appended by
+# a script whose escapes had become control bytes. Skipping them from the byte
+# guard withdrew, for `docs/recorded-findings.jsonl`, the pre-commit catch this
+# change's own M2 remedy had just bought; `docs/reviews.jsonl` is covered
+# either way, because check 11 parses it and reds on the same run.
+# [PR #247 review, post-fix 1]
+FROZEN_ARCHIVE = frozenset({
     "docs/ledger.jsonl",
     "docs/seat-record.jsonl",
-    "docs/reviews.jsonl",
-    "docs/recorded-findings.jsonl",
     "docs/architecture/constitution-archived.md",
     "docs/architecture/evidence-archived.md",
     "docs/architecture/open-questions-archived.md",
 })
-UNREAD_PREFIXES = ("docs/architecture/adr/",)
+FROZEN_PREFIXES = ("docs/architecture/adr/",)
+LIVE_RECORDS = frozenset({
+    "docs/reviews.jsonl",
+    "docs/recorded-findings.jsonl",
+})
 
 
-def _unread(rel_file: str) -> bool:
-    """Whether a prose guard skips this path, by name or by prefix."""
-    return rel_file in UNREAD_FILES or rel_file.startswith(UNREAD_PREFIXES)
+def _frozen(rel_file: str) -> bool:
+    """Whether this path is in the frozen archive, by name or by prefix.
+
+    What **both** guards skip. A new frozen path goes here; a new append-only
+    record that is still written to goes in `LIVE_RECORDS` instead.
+    """
+    return rel_file in FROZEN_ARCHIVE or rel_file.startswith(FROZEN_PREFIXES)
 
 
-# A single-backtick inline code span, with the doubled form excluded on both
-# sides. `re.S` because a span may hold one line break and the instance this
-# was written for held exactly that; more than one is filtered below.
+def _unread_as_prose(rel_file: str) -> bool:
+    """Whether the prose guard skips this path: frozen, or a live record."""
+    return _frozen(rel_file) or rel_file in LIVE_RECORDS
+
+
+# Git's own binary-detection window, matched deliberately. This module skips
+# binary content on a NUL in the first kilobyte everywhere else; check 22 uses
+# git's number instead, so lint's answer to "is this text" and git's cannot
+# disagree inside the window. A binary whose first NUL falls past 8000 bytes
+# still classifies as `-text` and still draws a finding -- unclosable, because
+# git's own classification cannot separate it from a lone-carriage-return text
+# file, which is the thing the check exists for. Recorded, not fixed.
+# [PR #247 review, post-fix 4]
+BINARY_WINDOW = 8000
+
 CODE_SPAN = re.compile(r"(?<!`)`([^`]*?)`(?!`)", re.S)
 
 
@@ -2278,7 +2311,12 @@ def _unfenced_text(text: str) -> str:
     lawful displayed prose -- the very construct
     `test_a_fence_closes_only_on_its_own_marker` pins as lawful for the
     sibling checks -- while a `~~~` line inside a backtick block, or a single
-    unclosed fence, blanked the rest of the file in silence.
+    opener whose info string holds a backtick, blanked the rest of the file
+    in silence. A genuinely unclosed fence is *not* among them: both
+    implementations blank to the end of the document there, and so does
+    CommonMark. An earlier version of this sentence named that construct, and
+    a reader took it literally and concluded a defect was still open.
+    [PR #247 review, post-fix 6]
 
     **This is a second implementation of one rule, and that is a defect held
     open on purpose.** It shares `FENCE_MARKER` and nothing else; it cannot
@@ -2286,9 +2324,15 @@ def _unfenced_text(text: str) -> str:
     than blanks them, and unifying the two reaches four other checks. Filed
     [PR #247 review, M4]. **One deliberate divergence to carry into that
     work:** the opener here must begin within three spaces of the margin,
-    which is CommonMark's limit and which the sibling does not enforce. Every
-    fence line in this repository sits at the margin, so the two agree on
-    every file that exists today.
+    which is CommonMark's limit and which the sibling does not enforce -- and
+    the gate is read before the opener/closer branch, so it governs closing
+    fences too, which is also what CommonMark says. Every fence line in this
+    repository sits at the margin, so the two agree on every file that exists
+    today. **This is a correctness fix the sibling still owes, not a stylistic
+    carve-out**: on an indented fence marker `_unfenced_numbered` drops the
+    rest of the file where a reference parser reads an indented code block and
+    a paragraph, so unifying the two by adopting the sibling's machine would
+    regress this check. [PR #247 review, post-fix E3]
     """
     out, opener = [], None
     for raw in text.split("\n"):
@@ -2396,7 +2440,7 @@ def check_hollow_code_span(root: Path) -> list[str]:
         if path in ignored:
             continue
         rel_file = path.relative_to(root).as_posix()
-        if _unread(rel_file) or _is_generated_entry(root, rel_file):
+        if _unread_as_prose(rel_file) or _is_generated_entry(root, rel_file):
             continue
         text = _read_text(path)
         if text is None:
@@ -2531,14 +2575,14 @@ def check_committed_carriage_return(root: Path) -> list[str]:
         fields, _, rel_file = row.partition(chr(9))
         parts = fields.split()
         index_eol, worktree_eol = parts[0], parts[1]
-        if _unread(rel_file) or _is_generated_entry(root, rel_file):
+        if _frozen(rel_file) or _is_generated_entry(root, rel_file):
             continue
         if index_eol not in ("i/lf", "i/none"):
             candidates.setdefault(rel_file, []).append("index")
         if worktree_eol not in ("w/lf", "w/none"):
             candidates.setdefault(rel_file, []).append("working tree")
     for rel_file in untracked:
-        if not _unread(rel_file) and not _is_generated_entry(root, rel_file):
+        if not _frozen(rel_file) and not _is_generated_entry(root, rel_file):
             candidates.setdefault(rel_file, []).append("working tree")
 
     findings = []
@@ -2562,7 +2606,7 @@ def check_committed_carriage_return(root: Path) -> list[str]:
                     data = (root / rel_file).read_bytes()
                 except OSError:
                     continue
-            if bytes([0]) in data[:1024]:
+            if bytes([0]) in data[:BINARY_WINDOW]:
                 continue
             at = _lone_cr(data)
             if at is not None:
@@ -2577,7 +2621,7 @@ def check_committed_carriage_return(root: Path) -> list[str]:
         copy, at, lineno = min(held, key=lambda h: h[0] != "working tree")
         both = " (its index copy holds one too)" if len(held) > 1 else ""
         remedy = (
-            "rewrite the file with line feeds and stage it"
+            "if it is text, rewrite it with line feeds and stage it"
             if copy == "working tree"
             else "the working copy is already clean -- stage it"
         )
@@ -2801,7 +2845,20 @@ def check_emitted_ascii(root: Path) -> list[str]:
         if path in ignored:
             continue
         rel_file = path.relative_to(root).as_posix()
-        raw = path.read_bytes()
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            # Reported, never raised -- `_read_text`'s rule, which this read
+            # predates and did not have. A file an editor or a scanner holds
+            # a lock on, or one that vanishes between the walk and the read,
+            # used to take this check's whole territory with it.
+            # [PR #247 review, post-fix 5]
+            findings.append(
+                f"emitted-ascii: {rel_file} could not be read ({exc.strerror}) "
+                f"-- it is unchecked, and a check that skips in silence cannot "
+                f"be told apart from a clean tree"
+            )
+            continue
         try:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
@@ -3220,7 +3277,7 @@ def check_subprocess_streams(root: Path) -> list[str]:
 
 
 def _where(exc: BaseException) -> str:
-    """The innermost frame of a raised check, as `file:line`.
+    """The innermost frame of a raised check **inside this repository**, as `file:line`.
 
     Computed from the traceback rather than guessed. Without it the finding
     names an exception and no site -- `AttributeError: 'Module' object has no
@@ -3229,7 +3286,16 @@ def _where(exc: BaseException) -> str:
     enough to find the line that raised it, and the traceback that carried it
     is exactly what isolating the check throws away.
 
-    Unknown when there is no traceback, which is stated rather than filled in.
+    **Innermost under `ROOT`, not innermost.** The last frame is usually
+    inside the standard library, and `json/decoder.py:361` is unsearchable
+    from here and reads like a repository path. A later session simplifying
+    this back to `frames[-1]` would be undoing that, so the scoping is stated
+    here rather than left to the loop. [PR #247 review, M8]
+
+    The fallback string is not reachable from the one production caller:
+    `run()` calls this from its own `except`, so `lint.py`'s frame is always
+    on the traceback and always under `ROOT`. It exists for a caller that has
+    neither, and says so rather than naming a frame it never found.
     """
     for frame in reversed(traceback.extract_tb(exc.__traceback__)):
         try:

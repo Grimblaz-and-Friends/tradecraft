@@ -3639,6 +3639,18 @@ def test_docstring_control_chars_reports_a_module_docstring_without_raising(tmp_
     assert "U+000D" in findings[0]
 
 
+def test_emitted_ascii_omits_a_position_it_does_not_have(tmp_path):
+    """A `SyntaxError` from a raw NUL carries no line number, and the message
+    printed it as `:None` — a position that does not exist, in a module whose
+    convention is that `file:lineno` is searchable.
+    """
+    (tmp_path / "mod.py").write_bytes(b"x = 1" + bytes([0]) + b"2" + NL.encode())
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1
+    assert ":None" not in findings[0]
+    assert findings[0].startswith("emitted-ascii: mod.py does not parse")
+
+
 @pytest.mark.parametrize("point, label", [(127, "U+007F"), (133, "U+0085")])
 def test_docstring_control_chars_reaches_del_and_the_c1_block(tmp_path, point, label):
     """Scope, matched to what the rule says rather than to `point < 32`.
@@ -3908,6 +3920,7 @@ def _git_repo_with(tmp_path, name, data: bytes):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     attributes = Path(__file__).resolve().parents[2] / ".gitattributes"
     (tmp_path / ".gitattributes").write_bytes(attributes.read_bytes())
+    (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / name).write_bytes(data)
     for args in (["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t",
                                  "commit", "-qm", "fixture"]):
@@ -4194,17 +4207,20 @@ def test_the_prose_guards_skip_the_records_doctrine_forbids_editing(tmp_path):
     assert "docs/live.md" in findings[0]
 
 
-def test_the_unread_list_covers_what_the_doctrine_calls_frozen():
-    """The list is prose-derived, so it is checked against the prose. An
-    earlier version claimed to cover the frozen archive and omitted the ADRs.
+def test_the_skip_lists_hold_the_paths_the_doctrine_names(tmp_path):
+    """The membership this repository depends on, pinned by name.
+
+    **It does not derive the lists from `AGENTS.md`, and the docstring used to
+    imply it did.** Deriving them is the real remedy for a frozen path added to
+    the doctrine and omitted here, and it was priced as bigger than the defect;
+    this pins what the lists hold instead, which is the narrower true thing.
+    [PR #247 review, post-fix R3]
     """
-    doctrine = (Path(__file__).resolve().parents[2] / "AGENTS.md").read_text(
-        encoding="utf-8"
-    )
-    assert "docs/ledger.jsonl" in doctrine and "docs/seat-record.jsonl" in doctrine
-    assert lint._unread("docs/architecture/adr/ADR-001.md")
-    assert lint._unread("docs/reviews.jsonl")
-    assert not lint._unread("docs/values.md")
+    assert lint._frozen("docs/architecture/adr/ADR-001.md")
+    assert lint._frozen("docs/ledger.jsonl")
+    assert lint._frozen("docs/seat-record.jsonl")
+    assert lint._unread_as_prose("docs/recorded-findings.jsonl")
+    assert not lint._unread_as_prose("docs/values.md")
 
 
 def test_committed_carriage_return_sees_the_working_tree(tmp_path):
@@ -4331,3 +4347,136 @@ def test_hollow_code_span_does_not_walk_the_git_directory(tmp_path):
     (tmp_path / "shown.md").write_text(defect, encoding="utf-8", newline="")
     findings = lint.check_hollow_code_span(tmp_path)
     assert len(findings) == 1 and "shown.md" in findings[0]
+
+
+# --- PR #247 review, post-fix cycle 1 ----------------------------------------
+
+
+def test_a_lone_carriage_return_in_a_live_record_is_still_reported(tmp_path):
+    """Post-fix 1: the two guards skip for different reasons, and one list
+    conflated them.
+
+    A hollow code span in a review row is intended content — a finding must
+    quote the line it names — so the prose guard skips it. A lone carriage
+    return there is not content at all: it is corruption of the row's own JSON,
+    and #233's motivating instance was a row appended by a script whose escapes
+    had become control bytes. Sharing one list withdrew the pre-commit catch
+    this change's own M2 remedy had just bought.
+    """
+    _git_repo_with(tmp_path, "docs/note.md", ("ok" + NL).encode("utf-8"))
+    for rel in ("docs/reviews.jsonl", "docs/recorded-findings.jsonl",
+                "docs/ledger.jsonl"):
+        (tmp_path / rel).write_bytes(("{" + chr(34) + "f" + chr(34) + ": "
+                                      + chr(34) + "row" + CR + "orphan"
+                                      + chr(34) + "}" + NL).encode("utf-8"))
+    reported = {f.split(":")[1].strip() for f
+                in lint.check_committed_carriage_return(tmp_path)}
+    assert "docs/reviews.jsonl" in reported
+    assert "docs/recorded-findings.jsonl" in reported
+    assert "docs/ledger.jsonl" not in reported, "the frozen archive stays skipped"
+
+
+def test_a_hollow_span_in_a_live_record_is_still_skipped(tmp_path):
+    """The other polarity of the same split, and the reason it exists: a
+    finding quoting a hollow span is what gets appended to these files, and
+    reporting it would red the lint over a record doctrine forbids repairing.
+    """
+    defect = "row " + TICK + " " + TICK + "." + NL
+    for rel in ("docs/reviews.jsonl", "docs/recorded-findings.jsonl",
+                "docs/ledger.jsonl", "docs/live.md"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(defect, encoding="utf-8", newline="")
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1 and "docs/live.md" in findings[0]
+
+
+def test_the_frozen_archive_is_what_both_guards_skip():
+    """The two populations, named apart. A new frozen path goes in one; a new
+    append-only record that is still written to goes in the other.
+    """
+    assert lint._frozen("docs/architecture/adr/ADR-001.md")
+    assert lint._frozen("docs/ledger.jsonl")
+    assert not lint._frozen("docs/reviews.jsonl"), "a live record is not frozen"
+    assert lint._unread_as_prose("docs/reviews.jsonl")
+    assert not lint._unread_as_prose("docs/values.md")
+
+
+def test_committed_carriage_return_reads_the_index_copy_not_head(tmp_path):
+    """Post-fix 3: `git ls-files --eol` classifies the index, so the confirming
+    read must be of the index.
+
+    Spelled `HEAD:<path>` this loses the whole index-only population — a file
+    staged and then cleaned on disk, which is the case commit `9a9f221` was
+    written for. The earlier pin stopped covering it once the working-tree
+    population landed, because its fixture leaves the bytes on disk too.
+    """
+    _git_repo_with(tmp_path, "note.md", ("clean" + NL).encode("utf-8"))
+    staged = tmp_path / "staged.md"
+    staged.write_bytes(("row" + CR + "orphan" + NL).encode("utf-8"))
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    # the working copy is repaired; only the index still holds the byte
+    staged.write_bytes(("row" + NL + "orphan" + NL).encode("utf-8"))
+    findings = lint.check_committed_carriage_return(tmp_path)
+    assert len(findings) == 1
+    assert "staged.md" in findings[0] and "index copy" in findings[0]
+
+
+def test_committed_carriage_return_uses_gits_own_binary_window(tmp_path):
+    """Post-fix 4: this module skips binary content on a NUL in the first
+    kilobyte; git's own window is 8000 bytes. A PDF with CR-only line endings
+    and its first NUL between the two was classified `-text` by git and text by
+    the check, so it drew a finding whose only named remedy would corrupt it.
+    """
+    pdf = ("%PDF-1.4" + CR).encode("utf-8") + ("obj" + CR).encode("utf-8") * 300 \
+        + bytes([0]) * 8 + ("%%EOF" + NL).encode("utf-8")
+    assert bytes([0]) not in pdf[:1024], "the fixture's NUL is past the old window"
+    assert bytes([0]) in pdf[:lint.BINARY_WINDOW], "and inside git's"
+    _git_repo_with(tmp_path, "paper.pdf", pdf)
+    assert lint.check_committed_carriage_return(tmp_path) == []
+
+
+def test_the_carriage_return_remedy_does_not_assume_the_file_is_text(tmp_path):
+    """The same class, one construct on: the check cannot prove a flagged file
+    is text, so the remedy stops instructing a rewrite unconditionally.
+    """
+    _git_repo_with(tmp_path, "note.md", ("row" + CR + "orphan" + NL).encode("utf-8"))
+    finding = lint.check_committed_carriage_return(tmp_path)[0]
+    assert "if it is text, rewrite it with line feeds" in finding
+
+
+def test_emitted_ascii_reports_a_file_it_cannot_read(tmp_path, monkeypatch):
+    """Post-fix 5: `_read_text` learned to answer rather than raise, and these
+    two checks read bytes directly and did not. One locked or vanished file
+    took the whole check's territory with it.
+    """
+    (tmp_path / "mod.py").write_text("x = 1" + NL, encoding="utf-8", newline="")
+    real = Path.read_bytes
+
+    def denied(self, *args, **kwargs):
+        if self.name == "mod.py":
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1
+    assert "could not be read" in findings[0] and "mod.py" in findings[0]
+    # and its sibling on the same walk stays silent rather than raising
+    assert lint.check_docstring_control_chars(tmp_path) == []
+
+
+def test_hollow_code_span_caps_an_opening_fence_at_three_spaces(tmp_path):
+    """Post-fix 7: the divergence the docstring says must be carried into the
+    unification was pinned by nothing, so it could be dropped in silence.
+
+    Four spaces makes an indented code block, not a fence — so the marker is
+    content, the text after it is ordinary prose, and a defect there reports.
+    """
+    (tmp_path / "note.md").write_text(
+        "intro" + NL + NL + "    " + TICK*3 + NL + "    code" + NL + NL
+        + "tail " + TICK + CR + TICK + "." + NL,
+        encoding="utf-8", newline="",
+    )
+    assert len(lint.check_hollow_code_span(tmp_path)) == 1
