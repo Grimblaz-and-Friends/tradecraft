@@ -18,4 +18,4 @@ description: How this practice writes the code it ships and runs — one substra
 
 ## Text mode
 
-**Text-mode defaults take rules of their own** — output stays ASCII, streams are set up before anything is written, and a file to be compared later is handled as bytes. `references/text-mode.md` carries them, their bounds, and the shipped helper that discharges the stream half; load it when writing a script that prints or writes files. [D-186]
+**Text-mode defaults take rules of their own** — output stays ASCII, streams are set up before anything is written, and a file to be compared later is handled as bytes. `references/text-mode.md` carries them, their bounds, and the two properties the stream half turns on — which a shipped helper discharges here and a reader outside this tree writes for themselves; load it when writing a script that prints or writes files. [D-186]
