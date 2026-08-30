@@ -214,17 +214,16 @@ def test_a_cell_that_is_itself_crlf_still_matches_its_entry(tmp_path):
     review, and this branch deferred to it rather than re-litigating a landed
     call on the same mechanism.
 
-    **It pins one composition of two, and the docstring said otherwise.** Here
-    the cell is CRLF *before* the entry is generated, so both sides descend
-    from the same bytes. A cell that goes CRLF *after* its entry was written
-    is the other composition, and it does **not** match: `expected()` slices
-    the cell by raw bytes, so `frontmatter()`'s trailing byte lands on the
-    carriage return -- `frontmatter()` returns `---\\r` there, final byte
-    `0x0d` -- and the copied block loses a newline that no later normalisation
-    restores. That fires a truthful out-of-step finding whose named command
-    then writes an entry a Linux checkout disagrees with. Pre-existing, older
-    than [#224], and filed rather than fixed here -- the repair is inside
-    `frontmatter()`, which `verify` and `write` share.
+    **It pins one composition of two.** Here the cell is CRLF *before* the
+    entry is generated, so both sides descend from the same bytes. The other
+    composition -- a cell that goes CRLF *after* its entry was written -- is
+    pinned by `test_a_crlf_cell_no_longer_reds_a_tree_that_linux_agrees_with`
+    below, and it matches too. It did not until [#234] was fixed: the slice
+    took one byte after the terminator, which on a CRLF source is the carriage
+    return rather than the newline, so the copied block lost a blank line that
+    no later normalisation could restore. This paragraph described that as
+    live for one commit after it was repaired, which is how one file came to
+    state two contradictory things about one function. [PR #247 review, M9]
     """
     make_cell(tmp_path, "alpha")
     crlf(tmp_path / "skills" / "alpha" / "SKILL.md")

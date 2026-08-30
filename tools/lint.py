@@ -81,7 +81,7 @@ Checks:
     runtime is out of reach. Docstrings and comments are exempt.
 15. docstring not piped: no script passes __doc__ as an argparse
     description. --help writes it to stdout before any stream setup runs,
-    which turns the docstring check 15 exempts into locale-encoded output.
+    which turns the docstring check 14 exempts into locale-encoded output.
 16. stdio wired: every script with a main() imports utf8_stdio by that name
     and calls it as the first statement, so runtime data this repository did
     not write reaches the stream protected. Both halves are checked: without
@@ -129,20 +129,26 @@ Checks:
     doubled-backtick idiom's inner span is exactly empty, so the non-empty
     clause separates lawful prose about fences from the defect on a property
     rather than on a list of call sites that would go stale. Fenced blocks are
-    skipped, as checks 5 and 6 skip the name form inside one.
-22. committed carriage return: no tracked file carries a carriage return into
-    the index. The LF pin has one hole and git states it plainly -- text=auto
-    refuses to normalize a file holding a lone carriage return, and commits
-    every line ending in it verbatim. Read through git ls-files --eol, which
-    answers for every file in one call; a file it declines to call text has
-    its committed bytes read before anything is said, because a genuine binary
-    reports the same way. Disjoint from check 20 by the tokenizer, which folds
-    a lone carriage return in source to a line feed before a docstring
-    compiles: it is the one control character reading the compiled value
-    cannot see.
+    skipped, as checks 5 and 6 skip the name form inside one, and by the same
+    closing rule -- a fence ends only on its own marker.
+22. committed carriage return: no file reaches a commit holding a lone
+    carriage return. The LF pin has one hole and git states it plainly --
+    text=auto refuses to normalize such a file, and commits every line ending
+    in it verbatim. Three populations are read, because the flow runs this
+    command before staging and reading the index alone answered a question
+    about the previous commit: the index copy of a tracked file, the working
+    copy where git classifies it differently, and untracked files git is not
+    told to ignore. What the classification flags has its bytes read before
+    anything is said, because a genuine binary reports the same way. Disjoint
+    from check 20 by the tokenizer, which folds a lone carriage return in
+    source to a line feed before a docstring compiles -- a NUL is invisible
+    there too, for its own reason, and check 14 is what reports that file.
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
-constitution) is not validated: it is history, not a live format (D-74).
+constitution and the ADRs beneath it) is not validated: it is history, not a
+live format (D-74). The prose guards skip the live append-only records too --
+docs/reviews.jsonl and docs/recorded-findings.jsonl -- because a finding
+inside one is a red no lawful edit can clear.
 
 All shipped files are scanned regardless of extension; binary content (NUL
 byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
@@ -589,8 +595,20 @@ REVIEW_ROWS_GRANDFATHERED = 20
 REVIEW_ROWS_FACING_GRANDFATHERED = 31
 
 def _read_text(path: Path) -> str | None:
-    """Return decoded text, or None for binary content (NUL in first 1KB)."""
-    data = path.read_bytes()
+    """Decoded text, or None for binary content or a file that will not open.
+
+    **Unreadable is None, not an exception**, matching `roster.is_generated`
+    and `_git_ignored`, which both answer rather than raise. A caller walking
+    the whole tree meets files that vanish between the walk and the read, and
+    on Windows files an editor or a scanner holds an exclusive lock on; with
+    the read unguarded, one of those cost the calling check its entire
+    territory and named a frame inside the standard library. Reproduced with a
+    real exclusive lock, not a patched walk. [PR #247 review, D1]
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
     if b"\0" in data[:1024]:
         return None
     return data.decode("utf-8", errors="replace")
@@ -2131,9 +2149,8 @@ def check_docstring_control_chars(root: Path) -> list[str]:
     `chr()` in *code*, which code can call; a docstring is a literal and calls
     nothing, so `chr(13)` written in one is four characters of prose. An earlier
     version of the finding message offered it anyway -- a remedy that cannot be
-    applied where the message names it, which is the shape `verify()` records as
-    "a fix that did not fix". Where the character itself is genuinely meant, it
-    belongs in code.
+    applied where the message names it, which is a fix that does not fix.
+    Where the character itself is genuinely meant, it belongs in code.
     """
     findings = []
     candidates = [
@@ -2187,36 +2204,55 @@ def check_docstring_control_chars(root: Path) -> list[str]:
                 )
     return findings
 
-# The frozen archive: history, not a live format (D-74). Records are
-# append-only and never maintained, so a finding inside one is a red no lawful
-# edit can clear -- the shape #224 was about, reinstated by a guard rather than
-# a comparison. Nothing here can newly appear either, which is what makes the
-# exclusion cheap: these files stopped changing before either guard existed.
-FROZEN = frozenset({
+# What the prose guards do not read. Two different reasons, one list.
+#
+# **The frozen archive** is history, not a live format (D-74), and nothing in
+# it can newly appear. **The live records** -- `docs/reviews.jsonl` and
+# `docs/recorded-findings.jsonl` -- are append-only and never maintained, and
+# they are the sharper case: a finding quoting a hollow span is exactly what
+# gets appended to them, since a finding must quote the line it names. Either
+# way the finding would be a red no lawful edit can clear, which is the shape
+# #224 was about, reinstated by a guard rather than by a comparison.
+#
+# `docs/architecture/adr/` is a prefix, not a file: `AGENTS.md` names the
+# ADRs as part of the frozen archive and there are ten of them. An earlier
+# version of this list said it covered the frozen archive and omitted them.
+UNREAD_FILES = frozenset({
     "docs/ledger.jsonl",
     "docs/seat-record.jsonl",
+    "docs/reviews.jsonl",
+    "docs/recorded-findings.jsonl",
     "docs/architecture/constitution-archived.md",
     "docs/architecture/evidence-archived.md",
     "docs/architecture/open-questions-archived.md",
 })
+UNREAD_PREFIXES = ("docs/architecture/adr/",)
+
+
+def _unread(rel_file: str) -> bool:
+    """Whether a prose guard skips this path, by name or by prefix."""
+    return rel_file in UNREAD_FILES or rel_file.startswith(UNREAD_PREFIXES)
+
 
 # A single-backtick inline code span, with the doubled form excluded on both
 # sides. `re.S` because a span may hold one line break and the instance this
-# was written for held exactly that; more than one is not a code span in
-# CommonMark and is filtered below.
+# was written for held exactly that; more than one is filtered below.
 CODE_SPAN = re.compile(r"(?<!`)`([^`]*?)`(?!`)", re.S)
-FENCE = re.compile(r"^\s*(```|~~~)")
 
 
 def _prose_files(root: Path):
     """Every file under the repository, `.git` aside, for the caller to filter.
 
-    Collected the way `check_emitted_ascii` collects Python files and filtered
-    the same way, for the reason `_git_ignored` states on itself: a hardcoded
-    skip list makes every future top-level directory silently escape. `git
-    ls-files` is wrong here for its reason too -- it lists tracked files, and a
-    decision entry a session has just written is exactly the untracked file
-    these guards exist to catch before it commits.
+    Walked rather than listed, for the reason `_git_ignored` states on itself:
+    a hardcoded skip list makes every future top-level directory silently
+    escape. `git ls-files` is wrong here for its reason too -- it lists
+    *tracked* files, and a decision entry a session has just written is
+    exactly the untracked file these guards exist to catch before it commits.
+
+    A third repository-wide walk, which is one more than there should be.
+    `_iter_files` is the same walk without the `.git` clause and is live at
+    four call sites, none of which passes the repository root. Recorded rather
+    than unified here [PR #247 review, M16].
     """
     for path in sorted(root.rglob("*")):
         if not path.is_file() or ".git" in path.parts:
@@ -2225,22 +2261,55 @@ def _prose_files(root: Path):
 
 
 def _unfenced_text(text: str) -> str:
-    """The text with fenced blocks blanked, line numbers preserved.
+    """The text with fenced blocks blanked, line numbering preserved.
 
     A code span inside a fence is being *shown*, not written -- the premise
-    checks 5 and 6 already reason from for the name form, and the one these
-    guards need, since a fixture demonstrating the defect has to be able to
-    quote it. Blanked rather than dropped so a finding's line number still
-    names the line the reader will open.
+    checks 5 and 6 already reason from for the name form, and the one this
+    guard needs, since a fixture demonstrating the defect has to be able to
+    quote it. Blanked rather than dropped so the caller can count lines here
+    and have them mean lines in the original.
+
+    **A fence closes only on the same character, at least as long as the one
+    that opened it**, and a backtick opener whose info string holds a backtick
+    is not a fence at all -- CommonMark's rules, and the ones
+    `_unfenced_numbered` already implements for checks 5, 6 and 7. This began
+    as an unconditional toggle, which got all three wrong: a ``` line shown
+    inside a ```` block ended the fence early and drew a finding against
+    lawful displayed prose -- the very construct
+    `test_a_fence_closes_only_on_its_own_marker` pins as lawful for the
+    sibling checks -- while a `~~~` line inside a backtick block, or a single
+    unclosed fence, blanked the rest of the file in silence.
+
+    **This is a second implementation of one rule, and that is a defect held
+    open on purpose.** It shares `FENCE_MARKER` and nothing else; it cannot
+    share `_unfenced_numbered` itself, which strips its lines and drops rather
+    than blanks them, and unifying the two reaches four other checks. Filed
+    [PR #247 review, M4]. **One deliberate divergence to carry into that
+    work:** the opener here must begin within three spaces of the margin,
+    which is CommonMark's limit and which the sibling does not enforce. Every
+    fence line in this repository sits at the margin, so the two agree on
+    every file that exists today.
     """
-    inside = False
-    out = []
-    for line in text.split("\n"):
-        if FENCE.match(line):
-            inside = not inside
-            out.append("")
-            continue
-        out.append("" if inside else line)
+    out, opener = [], None
+    for raw in text.split("\n"):
+        stripped = raw.strip()
+        marker = None
+        # CommonMark allows an opening fence up to three spaces of indent;
+        # a fourth makes the line an indented code block, not a fence.
+        if len(raw) - len(raw.lstrip(" ")) <= 3:
+            marker = FENCE_MARKER.match(stripped)
+        if marker:
+            run, info = marker.group(1), marker.group(2)
+            if opener is None:
+                if not (run[0] == "`" and "`" in info):
+                    opener = run
+                    out.append("")
+                    continue
+            elif run[0] == opener[0] and len(run) >= len(opener) and not info.strip():
+                opener = None
+                out.append("")
+                continue
+        out.append("" if opener is not None else raw)
     return "\n".join(out)
 
 
@@ -2248,19 +2317,33 @@ def _is_generated_entry(root: Path, rel_file: str) -> bool:
     """Whether this path is a roster entry `tools/roster.py` wrote.
 
     A generated entry's frontmatter is its cell's, byte for byte, so a defect
-    in one prose guard's territory is reported twice for a single edit -- once
-    against the cell, once against the copy. The copy's finding is the useless
-    half: the file it names says *do not edit this one*, so a reader acting on
-    it edits a generated file and the defect comes back on the next `--write`.
-    That is the shape `roster.verify` records as "a fix that did not fix".
+    in one prose guard's territory would be reported twice for a single edit
+    -- once against the cell, once against the copy. The copy's finding is the
+    useless half: the file it names says *do not edit this one*, so a reader
+    acting on it edits a generated file and the next `--write` brings the
+    defect back.
 
-    Nothing hides behind this. Check 17 holds the entry in step with its cell,
-    and a lone carriage return is not among what its comparison forgives, so a
-    copy that diverged from the cell is already a finding there. A *hand-written*
-    project skill under the same directory is not this generator's and is not
-    skipped -- `is_generated` reads the marker out of the file rather than
-    inferring from the location, which is shared by design.
+    **The location is tested first, and that is the whole of what was wrong
+    here.** `roster.is_generated` answers whether a file holds the generator's
+    marker, and its five other callers all hand it a path under the roster
+    directory. Handed every path in the repository, it also answers True for
+    `tools/roster.py`, which contains that marker's own byte literal -- so
+    both prose guards went blind on the one file both of their motivating
+    instances came out of, and the falsification this guard's own tests name
+    returned nothing. Every seat of this change's review found it
+    independently [PR #247 review, M1].
+
+    The marker is still read, and is what decides it inside that directory:
+    `.claude/skills/` is the runtime's documented home for a project's own
+    skills, so a hand-written one there is nobody's copy and is still read.
+
+    Nothing hides behind this. Check 17 holds every entry in step with its
+    cell, and a lone carriage return is not among what its comparison
+    forgives, so a copy that diverged from its cell is already a finding
+    there.
     """
+    if not rel_file.startswith(roster.ROSTER + "/"):
+        return False
     return roster.is_generated(root / rel_file)
 
 
@@ -2284,16 +2367,27 @@ def check_hollow_code_span(root: Path) -> list[str]:
     empty, because the idiom's inner span is the gap between the doubled
     backticks; the real instance's content was a line break. So requiring the
     content to be non-empty separates them on a property rather than on a list
-    of call sites, and a list would have gone stale the next time anybody wrote
-    about fences.
+    of call sites, and a list would have gone stale the next time anybody
+    wrote about fences.
+
+    **The line number is counted in the blanked text, not the original.**
+    `match.start()` is an offset into what `_unfenced_text` returned, and
+    blanking shortens every line it touches; counting that offset in the
+    original reported a line too early for every file carrying a fence above
+    the span -- eight of the eight such files in this repository, measured, at
+    the moment the guard shipped. The two texts have the same number of lines
+    by construction, which is what makes counting in the blanked one correct.
+    [PR #247 review, M3]
 
     **This is disjoint from check 20, which reads compiled docstrings.** That
     one catches the escape that became the character; this one catches the
     character that went missing. Neither sees the other's instance, which is
-    the whole reason the class needed two guards and not one.
+    the whole reason the class needed more than one guard.
 
-    A span holding more than one line break is not a code span in CommonMark
-    and is skipped, rather than reported as a very long hollow one.
+    A span holding more than one line break is skipped. CommonMark ends a code
+    span at a **blank line**, not at a second line break -- and in content that
+    is all whitespace, two line breaks put a blank line between them, which is
+    why the count is the cheap test for the rule rather than the rule itself.
     """
     findings = []
     candidates = list(_prose_files(root))
@@ -2302,16 +2396,17 @@ def check_hollow_code_span(root: Path) -> list[str]:
         if path in ignored:
             continue
         rel_file = path.relative_to(root).as_posix()
-        if rel_file in FROZEN or _is_generated_entry(root, rel_file):
+        if _unread(rel_file) or _is_generated_entry(root, rel_file):
             continue
         text = _read_text(path)
         if text is None:
             continue
-        for match in CODE_SPAN.finditer(_unfenced_text(text)):
+        unfenced = _unfenced_text(text)
+        for match in CODE_SPAN.finditer(unfenced):
             content = match.group(1)
             if content.count("\n") > 1 or not content or content.strip():
                 continue
-            lineno = text.count("\n", 0, match.start()) + 1
+            lineno = unfenced.count("\n", 0, match.start()) + 1
             shown = "".join(f"U+{ord(c):04X} " for c in content).strip()
             findings.append(
                 f"hollow-code-span: {rel_file}:{lineno} has a code span "
@@ -2324,105 +2419,175 @@ def check_hollow_code_span(root: Path) -> list[str]:
     return findings
 
 
+def _lone_cr(data: bytes) -> int | None:
+    """Offset of the first carriage return not followed by a line feed.
+
+    **A lone one, not any one.** Git's `text=auto` declines to normalize a
+    file for exactly this reason and no other, so `\\r\\n` in a working copy is
+    lawful here under [D-186] and must not be read as the defect. Testing for
+    any carriage return reported a binary whose only ones were part of pairs
+    -- a PDF's own header is a carriage return and a line feed -- with a
+    message asserting a lone one it had never looked for. [PR #247 review, M5]
+    """
+    start = 0
+    while True:
+        at = data.find(b"\r", start)
+        if at == -1:
+            return None
+        if data[at + 1:at + 2] != b"\n":
+            return at
+        start = at + 1
+
+
+def _git_lines(root: Path, args: list[str]) -> list[str] | None:
+    """NUL-separated output of one `git ls-files` call, or None if git cannot answer.
+
+    None rather than an empty list, so the caller can tell "git said nothing"
+    from "git could not be asked" -- `_git_ignored`'s reason, and the same
+    direction of safety: these guards may only ever remove noise.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files"] + args,
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8",
+            cwd=root, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return [row for row in proc.stdout.split(chr(0)) if row.strip()]
+
+
 def check_committed_carriage_return(root: Path) -> list[str]:
-    """No tracked file carries a carriage return into the repository.
+    """No file reaches a commit carrying a lone carriage return.
 
     `.gitattributes` pins this repository's index to LF, and a text-mode write
     producing CRLF on disk is expected rather than a defect [D-186] precisely
     because that pin normalizes it away. **The pin has one hole and git states
     it plainly: `text=auto` refuses to normalize any file holding a lone
     carriage return.** Such a file is classified as binary and every line
-    ending in it commits verbatim -- which is how a decision-index row appended
-    by a script whose escapes had become control bytes reached a commit,
-    splitting one table row into a truncated row and a 2,181-character orphan.
-    The lint was green over it, and a repository-wide byte scan found it the
-    only such file [#233].
+    ending in it commits verbatim -- which is how a decision-index row
+    appended by a script whose escapes had become control bytes reached a
+    commit, splitting one table row into a truncated row and a
+    2,181-character orphan. The lint was green over it, and a repository-wide
+    byte scan found it the only such file [#233].
 
-    **Read from the index rather than the working tree, and in one call.**
-    `git ls-files --eol` reports what each file's committed form holds, which
-    is the question -- a CRLF working copy is lawful here and says nothing.
-    `i/-text` is the tell: it is git declining to treat the file as text.
-    Reading every blob with `git cat-file` answers the same question directly
-    and was measured at roughly seventy times the cost, on the one command the
-    flow mandates before every commit -- so the cheap classification narrows,
-    and only what it flags is read. A genuine binary reports `i/-text` too,
-    which is why the carriage return is confirmed against the committed bytes
-    before anything is said about it.
+    **It reads the working tree as well as the index, and that is the whole
+    point of the guard.** `AGENTS.md` orders the flow build, then this command,
+    then commit -- and `persist.py` refuses to run against a pre-loaded index,
+    so at the moment the lint runs the index provably does not hold the
+    session's work. Reading only the index therefore answered a question about
+    the previous commit: the guard could not fire until the run *after* the
+    bad bytes had landed, on a file that by then is often a frozen decision
+    entry or an append-only record. Every stage of this change's review
+    reached it independently, and an earlier commit had already half-closed it
+    without noticing the other half. [PR #247 review, M2]
+
+    So three populations are read, in one `ls-files` call each: the index
+    copy of a tracked file, the working copy where git classifies it
+    differently from the index, and untracked files git is not told to ignore
+    -- the last being where a decision entry a session has just written lives,
+    which is `_prose_files`' reason for rejecting a tracked-only listing.
+
+    **What the classification cannot do is tell a text file from a binary**,
+    so what it flags is confirmed against bytes rather than trusted. Binary
+    content is skipped by the NUL rule this module applies everywhere, without
+    which the first image committed here goes red for its own file signature.
+    `i/none` -- an empty file, or one with no trailing terminator -- is
+    lawful and is skipped before any read; the predicate used to flag both and
+    pay a subprocess for each, against a docstring claiming nothing was read
+    on a lawful tree. [PR #247 review, M5, and `claims-vs-evidence` #3]
+
+    **The finding names the copy and the position.** Naming neither is what
+    made an earlier version of this message unusable: it told the reader to
+    rewrite a file whose working copy was already clean, so following the
+    remedy left the finding standing word for word, which is a fix that does
+    not fix. [PR #247 review, M6]
 
     **Disjoint from check 20 by the tokenizer, not by scope.** Python folds a
     lone carriage return in *source* to a line feed before a docstring
-    compiles, so a raw one on disk is the single control character reading the
-    compiled value cannot see. Measured against every other raw control byte --
-    vertical tab, form feed, ESC, DEL, the C1 block -- check 20 sees all of
-    them. The gap is one character wide, and this closes it.
+    compiles, so a raw one on disk is invisible to a check reading the
+    compiled value. It is not the only such character -- a NUL is invisible
+    there too, for its own reason, and check 14 is what reports that file --
+    but it is the one this closes.
 
     Silent when git cannot answer, for `_git_ignored`'s reason: a tree with no
     git is not a tree with a finding, and these guards may only remove noise.
     """
-    try:
-        proc = subprocess.run(
-            ["git", "ls-files", "--eol", "-z"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8",
-            cwd=root, timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError):
+    tracked = _git_lines(root, ["--eol", "-z"])
+    untracked = _git_lines(root, ["--others", "--exclude-standard", "-z"])
+    if tracked is None or untracked is None:
         return []
-    if proc.returncode != 0:
-        return []
-    flagged = []
-    for row in proc.stdout.split(chr(0)):
-        if not row.strip():
-            continue
+
+    # path -> the copies to read, in report order. The index copy is read
+    # through git, because that is the blob a commit would take; a working
+    # copy is read off disk.
+    candidates: dict[str, list[str]] = {}
+    for row in tracked:
         # `i/<eol> w/<eol> attr/<attrs><TAB><path>`. Split on the tab, because
         # the attrs field may be empty and a path may hold spaces.
         fields, _, rel_file = row.partition(chr(9))
-        index_eol = fields.split()[0]
-        if index_eol == "i/lf" or rel_file in FROZEN:
+        parts = fields.split()
+        index_eol, worktree_eol = parts[0], parts[1]
+        if _unread(rel_file) or _is_generated_entry(root, rel_file):
             continue
-        if _is_generated_entry(root, rel_file):
-            continue
-        flagged.append((rel_file, index_eol))
+        if index_eol not in ("i/lf", "i/none"):
+            candidates.setdefault(rel_file, []).append("index")
+        if worktree_eol not in ("w/lf", "w/none"):
+            candidates.setdefault(rel_file, []).append("working tree")
+    for rel_file in untracked:
+        if not _unread(rel_file) and not _is_generated_entry(root, rel_file):
+            candidates.setdefault(rel_file, []).append("working tree")
+
     findings = []
-    for rel_file, index_eol in flagged:
-        # `i/-text` is also how a genuine binary reports, so the committed
-        # bytes are read rather than the classification trusted. Two things
-        # come out of that read and both are needed: binary content is skipped
-        # by the NUL rule this module already applies everywhere, and the
-        # carriage return is confirmed rather than inferred. Without the first,
-        # the next image committed here goes red for its own file signature --
-        # a PNG's is a carriage return and a line feed. Without the second, a
-        # binary with no carriage return in it goes red for a character it does
-        # not hold, which is the trap `check_emitted_ascii`'s docstring
-        # records. On a lawful tree nothing is flagged and neither read runs.
-        try:
-            blob = subprocess.run(
-                # `:<path>` is the *index* copy, which is what `ls-files
-                # --eol` classified. `HEAD:<path>` was the first spelling and
-                # answers a different question: a file staged and not yet
-                # committed has no HEAD copy, so the read failed and the check
-                # went silent on exactly the file a session is about to
-                # commit -- and silent again in a repository with no commits
-                # at all. Found by building a fixture tree that had neither.
-                ["git", "cat-file", "-p", f":{rel_file}"],
-                stdin=subprocess.DEVNULL,
-                capture_output=True, cwd=root, timeout=60,
-            )
-        except (OSError, subprocess.SubprocessError):
+    for rel_file, copies in candidates.items():
+        held = []
+        for copy in copies:
+            if copy == "index":
+                try:
+                    blob = subprocess.run(
+                        ["git", "cat-file", "-p", f":{rel_file}"],
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True, cwd=root, timeout=60,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    continue
+                if blob.returncode != 0:
+                    continue
+                data = blob.stdout
+            else:
+                try:
+                    data = (root / rel_file).read_bytes()
+                except OSError:
+                    continue
+            if bytes([0]) in data[:1024]:
+                continue
+            at = _lone_cr(data)
+            if at is not None:
+                held.append((copy, at, data.count(bytes([10]), 0, at) + 1))
+        if not held:
             continue
-        data = blob.stdout
-        if blob.returncode != 0 or bytes([13]) not in data:
-            continue
-        if bytes([0]) in data[:1024]:
-            continue
+        # One finding per path. A file whose index and working copies both
+        # hold the byte is one defect, and reporting it twice is the shape
+        # the sibling guard's own skip exists to stop. Anchored on the
+        # working copy where both hold it, because that is the one a reader
+        # can edit.
+        copy, at, lineno = min(held, key=lambda h: h[0] != "working tree")
+        both = " (its index copy holds one too)" if len(held) > 1 else ""
+        remedy = (
+            "rewrite the file with line feeds and stage it"
+            if copy == "working tree"
+            else "the working copy is already clean -- stage it"
+        )
         findings.append(
-            f"committed-carriage-return: {rel_file} commits as {index_eol} "
-            f"rather than i/lf and its committed bytes hold a carriage "
-            f"return -- git refuses to normalize a file holding a lone one, "
-            f"so every line ending in this one is committed verbatim and "
-            f"renders wherever it lands. Rewrite the file with line feeds; if "
-            f"a control character is genuinely meant, it belongs in code and "
-            f"not in prose"
+            f"committed-carriage-return: {rel_file}:{lineno} holds a lone "
+            f"carriage return at byte {at} of its {copy} copy{both} -- git "
+            f"refuses to normalize a file holding one, so "
+            f"every line ending in it is committed verbatim and renders "
+            f"wherever it lands. To clear this, {remedy}; if a control "
+            f"character is genuinely meant, it belongs in code and not in prose"
         )
     return findings
 
@@ -2649,8 +2814,9 @@ def check_emitted_ascii(root: Path) -> list[str]:
         try:
             tree = ast.parse(text)
         except SyntaxError as exc:
+            at = f":{exc.lineno}" if exc.lineno is not None else ""
             findings.append(
-                f"emitted-ascii: {rel_file}:{exc.lineno} does not parse ({exc.msg}) "
+                f"emitted-ascii: {rel_file}{at} does not parse ({exc.msg}) "
                 f"-- an unparseable file is not checked, and a check that skips in "
                 f"silence cannot be told apart from a clean tree"
             )
@@ -3065,15 +3231,13 @@ def _where(exc: BaseException) -> str:
 
     Unknown when there is no traceback, which is stated rather than filled in.
     """
-    frames = traceback.extract_tb(exc.__traceback__)
-    if not frames:
-        return "unknown"
-    frame = frames[-1]
-    try:
-        where = Path(frame.filename).resolve().relative_to(ROOT).as_posix()
-    except ValueError:
-        where = Path(frame.filename).name
-    return f"{where}:{frame.lineno}"
+    for frame in reversed(traceback.extract_tb(exc.__traceback__)):
+        try:
+            where = Path(frame.filename).resolve().relative_to(ROOT).as_posix()
+        except (ValueError, OSError):
+            continue
+        return f"{where}:{frame.lineno}"
+    return "no frame inside this repository"
 
 
 def run(root: Path) -> list[str]:
@@ -3153,7 +3317,7 @@ def check_project_roster(root: Path) -> list[str]:
     return roster.verify(root)
 
 
-# Every check, in report order. A list rather than an expression because
+# Every check, in report order. A tuple rather than an expression because
 # `run()` calls them one at a time to isolate them; see its docstring.
 CHECKS = (
     check_zone_wall,
@@ -3206,12 +3370,18 @@ def always_on_note(root: Path) -> str:
         figures = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(figures)
         data = figures.figure_always_on(root)["data"]
+        # Inside the guard, not after it. The read was inside and the
+        # formatting was not, so a `data` missing either key escaped as a
+        # KeyError -- and `main()` answered the flow's mandated command
+        # with a traceback, which is the guarantee `run()`'s isolation
+        # exists to make. Two seats disagreed about whether this function
+        # was guarded; the probe settled it. [PR #247 review, M19]
+        return (
+            f"always-on surface: {data['repo_total']:,} chars here, "
+            f"{data['adopter_total']:,} from this practice for an adopter"
+        )
     except Exception as exc:  # noqa: BLE001 -- reported, never fatal
         return f"always-on surface: not derived ({type(exc).__name__}: {exc})"
-    return (
-        f"always-on surface: {data['repo_total']:,} chars here, "
-        f"{data['adopter_total']:,} from this practice for an adopter"
-    )
 
 
 def main() -> int:
