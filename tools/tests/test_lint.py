@@ -4,6 +4,7 @@ The evasion-form cases exist because the 2026-08-15 adversarial review
 showed the original regexes missed every relative, uppercase, and
 backslash form (findings M1/M2/M4/M5/M6 in docs/ledger.jsonl)."""
 
+import ast
 import json
 import re
 import subprocess
@@ -14,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import figures  # noqa: E402
 import lint
 import roster
 
@@ -4540,6 +4542,18 @@ BODY_STRIP_CASES = [
                      + "        return text" + NL
                      + '    end = text.find(chr(10) + MARKER, 3)' + NL
                      + "    return text[end + 4:]" + NL), True),
+    ("marker annotated at module scope",
+     'MARKER: str = "---"' + NL
+     + _strip_module('    if not text.startswith(MARKER):' + NL
+                     + "        return text" + NL
+                     + '    end = text.find(chr(10) + MARKER, 3)' + NL
+                     + "    return text[end + 4:]" + NL), True),
+    ("markers bound by a module tuple assignment",
+     'OPEN, CLOSE = "---", "---"' + NL
+     + _strip_module('    if not text.startswith(OPEN):' + NL
+                     + "        return text" + NL
+                     + '    end = text.find(chr(10) + CLOSE, 3)' + NL
+                     + "    return text[end + 4:]" + NL), True),
     ("bytes marker",
      'OPEN = b"---"' + NL
      + "def body(data):" + NL
@@ -4595,7 +4609,7 @@ BODY_STRIP_CASES = [
 
 @pytest.mark.parametrize(
     "label,source,caught",
-    [pytest.param(c[1], c[1], c[2], id=c[0].replace(" ", "-")) for c in BODY_STRIP_CASES],
+    [pytest.param(c[0], c[1], c[2], id=c[0].replace(" ", "-")) for c in BODY_STRIP_CASES],
 )
 def test_the_body_strip_predicate_per_spelling(tmp_path, label, source, caught):
     """One pin per branch of the predicate, in both polarities.
@@ -4608,9 +4622,14 @@ def test_the_body_strip_predicate_per_spelling(tmp_path, label, source, caught):
     """
     _zoned(tmp_path, "tools/measure.py", source)
     findings = lint.check_body_strip_owner(tmp_path)
-    assert bool(findings) is caught, findings
+    assert bool(findings) is caught, (label, findings)
     if caught:
+        # Both owners, not one. The red arrives at frontmatter-field readers
+        # too -- the predicate cannot always tell them from a body strip -- and
+        # a message naming only the strip sends them to a function that
+        # discards the fields they came for.
         assert "frontmatterless" in findings[0], findings[0]
+        assert "_frontmatter_fields" in findings[0], findings[0]
 
 
 def test_the_engine_that_owns_the_strip_is_not_reported(tmp_path):
@@ -4721,3 +4740,27 @@ def test_the_recorded_body_strip_set_is_pinned_to_its_exact_membership():
 def test_the_repository_itself_hand_rolls_no_strip():
     """The check on the real tree, which is the tree the rule is about."""
     assert lint.check_body_strip_owner(lint.ROOT) == []
+
+def test_the_scan_and_the_check_read_the_same_predicate(tmp_path):
+    """The instrument sizing the blind spot must not have one of its own.
+
+    `body_strip_scan` once ran its own scope loop and so was blind to module
+    scope, which the check reads -- so the figure that replaced a false count
+    read low for exactly the class the same batch had just added. Both now
+    call `lint.hand_rolled_strips`, and this pins that they agree on the case
+    that separated them.
+    """
+    module_scope_strip = ('RAW = open("x").read()' + NL
+                          + 'BODY = RAW.split("---", 2)[2]' + NL)
+    tree = ast.parse(module_scope_strip)
+    assert lint.hand_rolled_strips(tree) == [("<module>", 0)]
+
+    _zoned(tmp_path, "tools/measure.py", module_scope_strip)
+    assert len(lint.check_body_strip_owner(tmp_path)) == 1
+
+    scan = tmp_path / "tools" / "tests"
+    scan.mkdir(parents=True, exist_ok=True)
+    (scan / "test_fixture.py").write_text(module_scope_strip, encoding="utf-8")
+    assert lint.check_body_strip_owner(tmp_path) == lint.check_body_strip_owner(tmp_path)
+    hits = figures.body_strip_scan(tmp_path)
+    assert hits == ["tools/tests/test_fixture.py:0 <module>"], hits

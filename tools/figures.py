@@ -460,6 +460,11 @@ def body_strip_scan(repo: Path) -> list[str]:
     under a predicate that was then tightened, and the figure survived the
     predicate by a factor of five. This is the command that answers it on
     whatever tree you are on.
+
+    The sweep itself is `lint.hand_rolled_strips`, which is also what the
+    check reports. A second copy here read low the moment the check gained a
+    module-scope pass -- an instrument sizing a blind spot must not have one
+    of its own.
     """
     hits: list[str] = []
     for dirname in lint.SHIPPED_DIRS + tuple(sorted(lint.REPO_ONLY_NAMES)):
@@ -475,11 +480,9 @@ def body_strip_scan(repo: Path) -> list[str]:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
             except SyntaxError:
                 continue
-            markers = lint._marker_names(tree)
-            for name, node in lint._qualified_scopes(tree):
-                if lint._hand_rolled_frontmatter_split(lint._own_nodes(node), markers):
-                    hits.append(
-                        f"{path.relative_to(repo).as_posix()}:{node.lineno} {name}")
+            rel = path.relative_to(repo).as_posix()
+            for name, lineno in lint.hand_rolled_strips(tree):
+                hits.append(f"{rel}:{lineno} {name}")
     return hits
 
 

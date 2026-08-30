@@ -3399,13 +3399,24 @@ def _marker_names(tree: ast.Module) -> set[str]:
     """
     names: set[str] = set()
     for node in tree.body:
-        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+        # An annotated binding and a tuple binding are the same hoist wearing
+        # different syntax, and both are written in this repository.
+        if isinstance(node, ast.AnnAssign):
+            if (isinstance(node.value, ast.Constant) and _is_marker(node.value.value)
+                    and isinstance(node.target, ast.Name)):
+                names.add(node.target.id)
             continue
-        if not _is_marker(node.value.value):
+        if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            if isinstance(target, ast.Name):
-                names.add(target.id)
+            if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant):
+                if _is_marker(node.value.value):
+                    names.add(target.id)
+            elif isinstance(target, ast.Tuple) and isinstance(node.value, ast.Tuple):
+                for name, value in zip(target.elts, node.value.elts):
+                    if (isinstance(name, ast.Name) and isinstance(value, ast.Constant)
+                            and _is_marker(value.value)):
+                        names.add(name.id)
     return names
 
 
@@ -3459,16 +3470,29 @@ def _hand_rolled_frontmatter_split(
 ) -> bool:
     """Whether these nodes test for a marker and take the body below it.
 
-    Three properties together, and each one was a hole before it was there.
-    The marker and the slice must be *connected*, or every long function that
-    merely mentions a marker reads as a strip. The receiver is matched
+    Two properties are required of every hit and a third of one branch. The
+    marker and the slice must be *connected*, or every long function that
+    merely mentions a marker reads as a strip; and the receiver is matched
     structurally rather than by name, so an attribute or a chained call is not
-    a free pass. And the slice must be an unbounded tail, or the check reddens
-    the frontmatter-field readers it has no remedy for.
+    a free pass. On a slice of the *tested* text the third applies: it must be
+    an unbounded tail, which is what separates taking the body below the
+    frontmatter from reading the fields between the markers. **On a piece of a
+    marker split it does not** -- `split(m, 2)[2]` is an index rather than a
+    slice, so requiring a tail there would lose the cheapest wrong expression
+    there is. The cost of that asymmetry is stated plainly: a field read
+    spelled as `split(m, 2)[1]` is reported, and the finding message names the
+    lawful spelling so the reader has somewhere to go.
 
-    Out of reach at any price this check is worth: a regex strip, and `pop()`
-    on a split result. Named because a bound nobody wrote down is a bound the
-    next reader assumes away.
+    What this reaches is a marker -- literal, or a module-level name bound to
+    one -- tested or split, and a subscript, **within a single scope**. The
+    bound is that class, not a list of tricks. Outside it, and out of reach at
+    any price this check is worth: a marker test in one scope with the slice in
+    another; an algorithm that compares rather than splits, such as iterating
+    lines to the closing marker; a marker held on a class attribute; a regex
+    strip; `pop()` on a split result; a partition tail bound to a throwaway
+    name, which is the deliberate trade at the partition branch below; and
+    `list.index`, which no AST pass can tell from `str.index`. A bound nobody
+    writes down is a bound the next reader assumes away.
     """
     tested: set[str] = set()
     split_names: set[str] = set()
@@ -3539,6 +3563,29 @@ def _qualified_scopes(tree: ast.Module):
     yield from walk(tree, "")
 
 
+def hand_rolled_strips(tree: ast.Module) -> list[tuple[str, int]]:
+    """Every scope in a module that hand-rolls a frontmatter body strip.
+
+    The single owner of the per-file sweep. `check_body_strip_owner` reports
+    what this returns, and `tools/figures.py --body-strip-scan` sizes the
+    corpus that check skips with it. Two copies of this loop drifted the
+    moment a module-scope pass was added to one of them, and the figure that
+    sized the blind spot then read low -- which is the defect this check is
+    itself about, one layer down.
+
+    A `<module>` entry carries line 0: module scope has no line of its own.
+    """
+    markers = _marker_names(tree)
+    hits = [
+        (name, node.lineno)
+        for name, node in _qualified_scopes(tree)
+        if _hand_rolled_frontmatter_split(_own_nodes(node), markers)
+    ]
+    if _hand_rolled_frontmatter_split(_own_nodes(tree), markers):
+        hits.append(("<module>", 0))
+    return hits
+
+
 def check_body_strip_owner(root: Path) -> list[str]:
     """No module hand-rolls the cell-body strip the authoring engine ships.
 
@@ -3556,12 +3603,13 @@ def check_body_strip_owner(root: Path) -> list[str]:
     strip out of a `def` is the cheapest way to silence a check that visits
     only functions.
 
-    Test files are out of scope: they build frontmatter fixtures, and one of
-    this check's own tests hand-rolls a strip deliberately in order to measure
-    what it costs. `python tools/figures.py --body-strip-scan` reports what
-    this predicate finds in that excluded corpus on whatever tree you are on;
+    Test files are out of scope: they build frontmatter fixtures rather than
+    measure with them. `python tools/figures.py --body-strip-scan` reports what
+    this predicate finds in that excluded corpus on whatever tree you are on --
     that command, and not a number written here, is what a session revisiting
-    the exclusion runs.
+    the exclusion runs. Read its output with the predicate's asymmetry above in
+    mind: a hit is not by itself a hand-rolled strip, and the one this tree
+    reports is a field rewrite over a list of lines.
     """
     findings: list[str] = []
     for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
@@ -3583,25 +3631,20 @@ def check_body_strip_owner(root: Path) -> list[str]:
                 # for the three sibling AST checks. A second report of one
                 # broken file under a second name locates nothing new.
                 continue
-            markers = _marker_names(tree)
-            for name, node in _qualified_scopes(tree):
+            for name, lineno in hand_rolled_strips(tree):
                 if (rel, name) in BODY_STRIP_RECORDED:
                     continue
-                if _hand_rolled_frontmatter_split(_own_nodes(node), markers):
-                    findings.append(
-                        f"body-strip: {rel}:{node.lineno} {name}() splits a "
-                        f"frontmatter marker by hand -- the strip is "
-                        f"{BODY_STRIP_OWNER}'s `frontmatterless`, so a figure "
-                        f"cannot drift from the guard judging it"
-                    )
-            if (rel, "<module>") in BODY_STRIP_RECORDED:
-                continue
-            if _hand_rolled_frontmatter_split(_own_nodes(tree), markers):
+                where = f"{rel}:{lineno} {name}()" if name != "<module>" else (
+                    f"{rel} at module scope")
                 findings.append(
-                    f"body-strip: {rel} splits a frontmatter marker by hand at "
-                    f"module scope -- the strip is {BODY_STRIP_OWNER}'s "
+                    f"body-strip: {where} splits a frontmatter marker by hand "
+                    f"-- the body strip is {BODY_STRIP_OWNER}'s "
                     f"`frontmatterless`, so a figure cannot drift from the "
-                    f"guard judging it"
+                    f"guard judging it. Reading the frontmatter *fields* is a "
+                    f"different job this check cannot always tell apart: take "
+                    f"the bounded head off the tested text, as "
+                    f"tools/lint.py's `_frontmatter_fields` does, and this "
+                    f"check leaves it alone"
                 )
     return findings
 
