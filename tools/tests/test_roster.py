@@ -629,3 +629,82 @@ def test_the_ordinary_entry_directory_is_not_refused(tmp_path):
     assert roster.inside_roster(tmp_path, entry)
     assert roster.verify(tmp_path) == []
     assert roster.inside_roster(ROOT, ROOT / ".claude" / "skills" / "filing")
+
+
+def test_a_crlf_cell_keeps_the_newline_the_slice_used_to_drop(tmp_path):
+    """The defect, at the function.
+
+    `frontmatter()` took the block, its terminator and one byte. On a CRLF
+    source that byte is the carriage return inside the pair, so the newline
+    was dropped and `expected()` produced an entry with no blank line between
+    the terminator and the heading. [#234]
+    """
+    path = make_cell(tmp_path, "alpha")
+    lf_block = roster.frontmatter(path.read_bytes())
+    assert lf_block.endswith(b"---" + NL.encode())
+
+    crlf(path)
+    crlf_block = roster.frontmatter(path.read_bytes())
+    assert crlf_block.endswith(b"---" + b"\r" + NL.encode()), (
+        "the line ending is taken whole, not one byte of it"
+    )
+    assert crlf_block.replace(b"\r\n", b"\n") == lf_block, (
+        "line endings aside, a CRLF cell yields the block an LF cell yields"
+    )
+
+
+def test_the_lf_slice_is_byte_identical_to_what_it_always_was(tmp_path):
+    """The other polarity, and the boundary this change stated: every cell git
+    checks out is LF, and the repair must not move that path by a byte.
+    """
+    path = make_cell(tmp_path, "alpha")
+    data = path.read_bytes()
+    end = data.find(b"\n---", 3)
+    assert roster.frontmatter(data) == data[:end + len(b"\n---") + 1]
+
+
+def test_a_source_ending_at_its_terminator_still_has_no_newline_to_take(tmp_path):
+    """The part of the old documented bound that survives. There is nothing
+    after the terminator, so nothing is taken -- and the function must not
+    invent one, which would make it emit what no source held.
+    """
+    path = make_cell(tmp_path, "alpha")
+    path.write_bytes(b"---" + NL.encode() + b"name: alpha" + NL.encode() + b"---")
+    assert roster.frontmatter(path.read_bytes()) == (
+        b"---" + NL.encode() + b"name: alpha" + NL.encode() + b"---"
+    )
+
+
+def test_a_crlf_cell_no_longer_reds_a_tree_that_linux_agrees_with(tmp_path):
+    """Composition C end to end -- the cell rewritten CRLF *after* its entry
+    was generated, which is the shape that reached a commit.
+
+    Before: `verify` reported, `--write` converged to green locally, and the
+    entry it wrote differed in content from what an LF checkout produces, so
+    CI went red on a change with no diff its author could read. [#234]
+    """
+    cell = make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / roster.CELL_FILE
+    before = entry.read_bytes()
+
+    crlf(cell)
+    assert roster.verify(tmp_path) == [], "a cell's line endings are not drift"
+    roster.write(tmp_path)
+    assert roster.verify(tmp_path) == []
+    assert entry.read_bytes().replace(b"\r\n", b"\n") == before.replace(b"\r\n", b"\n"), (
+        "the tree the remedy leaves must be the tree a Linux checkout reads"
+    )
+
+
+def test_a_crlf_cell_with_genuine_drift_still_reports(tmp_path):
+    """The polarity the fix above must not buy: an edited description on a
+    CRLF cell is still drift, and still reported.
+    """
+    cell = make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    cell.write_bytes(
+        cell.read_bytes().replace(b"A fixture cell.", b"A different trigger.")
+    )
+    crlf(cell)
+    assert len(roster.verify(tmp_path)) == 1
