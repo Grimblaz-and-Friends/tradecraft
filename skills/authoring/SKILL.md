@@ -38,4 +38,4 @@ Changing prose that already governs something carries obligations writing new pr
 
 ## What a cell carries
 
-The description as the whole always-loaded triggering surface, depth leaving the body for `references/` on a disqualifier rather than a size, and self-containment with its one-owner rule, the reserved `` `<name>` cell `` form a guard answers for, and the charter's exemption in both directions, are in `references/cell-structure.md` — load it when creating or restructuring a cell, or writing or revising a description.
+The description as the whole always-loaded triggering surface, depth leaving the body for `references/` on a disqualifier rather than a size, and self-containment with its one-owner rule, the reserved `` `<name>` cell `` form a guard answers for, and the charter's exemption in both directions, are in `references/cell-structure.md` — load it when creating or restructuring a cell, writing or revising a description, or writing prose that names or relies on another cell.
