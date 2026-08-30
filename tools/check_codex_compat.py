@@ -19,6 +19,7 @@ Usage: python tools/check_codex_compat.py [--codex PATH] [--timeout-seconds N]
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import os
@@ -34,6 +35,19 @@ from typing import Callable, Mapping
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
+
+# The cell-body strip is the engine's, not this script's. The hand-rolled
+# `text.split("---", 2)[2]` that stood here kept the two newlines after the
+# frontmatter that the engine strips -- harmless where the result is only split
+# into paragraphs, and exactly the drift check_body_strip_owner now refuses;
+# tools/tests/test_lint.py::test_the_hand_rolled_strip_this_script_dropped_read_high
+# is what shows it. Loaded the way tools/figures.py loads it: repo-only code
+# importing shipped code, resolved from this file rather than the working directory.
+_ENGINE_SPEC = importlib.util.spec_from_file_location(
+    "authoring_figures", ROOT / "skills" / "authoring" / "scripts" / "figures.py"
+)
+engine = importlib.util.module_from_spec(_ENGINE_SPEC)
+_ENGINE_SPEC.loader.exec_module(engine)
 
 MANIFEST = ROOT / ".claude-plugin" / "plugin.json"
 DEFAULT_MODEL = "gpt-5.6-sol"
@@ -230,13 +244,9 @@ def _charter_evidence() -> dict[str, object]:
     except OSError as exc:
         raise CompatError(f"cannot read source charter {charter}: {exc}") from exc
 
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) != 3:
-            raise CompatError(f"source charter {charter} has incomplete frontmatter")
-        body = parts[2]
-    else:
-        body = text
+    body = engine.frontmatterless(text)
+    if text.startswith("---") and body == text:
+        raise CompatError(f"source charter {charter} has incomplete frontmatter")
 
     paragraphs = [
         _collapse_whitespace(block)

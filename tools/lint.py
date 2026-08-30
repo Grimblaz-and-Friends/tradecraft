@@ -144,6 +144,13 @@ Checks:
     source to a line feed before a docstring compiles -- a NUL is invisible
     there too, for its own reason, and check 14 is what reports that file.
 
+23. body strip: no module outside the authoring engine hand-rolls the strip
+    that takes a cell's body off its frontmatter. Three implementations were
+    plausible and the cheapest was wrong; the rule lived in a sibling
+    docstring, so a session going straight from the doctrine to code wrote
+    its own and everything stayed green (#190). Recorded exemptions are
+    (path, function) pairs and the suite pins that the set only shrinks.
+
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution and the ADRs beneath it) is not validated: it is history, not a
 live format (D-74). The prose guards skip the live append-only records too --
@@ -235,8 +242,10 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # on whatever tree you are on, and the headroom this comment used to state was
 # false one commit after the change that wrote it landed. Set so roughly one substantial rule
 # fits before something has to leave, not so the margin stays comfortable,
-# which is the failure mode. It is expected to be tight. The answer to a change
-# that wants more is an outflow.
+# which is the failure mode. That a ceiling met is a trigger rather than a wall --
+# tight is the designed state, and the answer to a change that wants more is an
+# outflow -- is stated in skills/authoring/SKILL.md, where a writer reads it. One
+# owner per sentence: this comment points at it rather than keeping a second copy.
 AGENTS_BUDGET_CHARS = 6_000
 # The charter is the half that ships, and an adopting repository directs every
 # session to load it before substantive work, so it needs the displacement
@@ -3353,6 +3362,135 @@ def run(root: Path) -> list[str]:
     return findings
 
 
+# The one lawful owner of the cell-body strip, and the frontmatter handling
+# recorded as lawful beside it. Recorded by (path, function) rather than by
+# file, so a module holding one lawful implementation does not thereby exempt
+# the next one written under it. The set only ever shrinks -- the suite pins
+# its membership -- because exemptions that can grow are how a guard becomes
+# a formality.
+BODY_STRIP_OWNER = "skills/authoring/scripts/figures.py"
+BODY_STRIP_RECORDED = {
+    # A guard that imported from the tree it audits could not report on a tree
+    # whose authoring cell is broken or absent, which is the tree this check is
+    # most needed on. tools/tests/test_repo_figures.py pins it against the
+    # engine's over the real cells, so the two cannot drift unnoticed.
+    ("tools/lint.py", "_frontmatterless"),
+    # Reads the fields inside the frontmatter, not the body below it, so the
+    # engine's strip is not what it wants. It matches this check's shape
+    # because both slice a "---"-tested string; that shape cannot tell the two
+    # apart, which is why this one is recorded rather than excluded by rule.
+    ("tools/lint.py", "_frontmatter_fields"),
+}
+
+
+def _marker_arg(call: ast.Call) -> bool:
+    """Whether any argument of a call carries a frontmatter marker."""
+    return any(
+        isinstance(child, ast.Constant)
+        and isinstance(child.value, str)
+        and "---" in child.value
+        for arg in call.args
+        for child in ast.walk(arg)
+    )
+
+
+def _hand_rolled_frontmatter_split(node: ast.AST) -> bool:
+    """Whether a function tests for a frontmatter marker and slices the tested text.
+
+    The marker and the slice have to be connected, or every long function that
+    merely mentions a marker somewhere reads as a strip -- which is what a
+    first, looser predicate did to the very script this check was written to
+    clear. So the subscript's base must be either the string a marker call was
+    made against, or the result of splitting on a marker. That reaches all
+    three plausible spellings: find-and-slice, split-and-index, and
+    split-into-a-name-then-index.
+    """
+    tested: set[str] = set()
+    split_names: set[str] = set()
+    sliced_calls: list[ast.Call] = []
+
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+            receiver = child.func.value
+            if not isinstance(receiver, ast.Name) or not _marker_arg(child):
+                continue
+            if child.func.attr in ("startswith", "find", "index", "rfind"):
+                tested.add(receiver.id)
+            elif child.func.attr in ("split", "rsplit", "partition", "rpartition"):
+                sliced_calls.append(child)
+        if isinstance(child, ast.Assign) and isinstance(child.value, ast.Call):
+            call = child.value
+            if (
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr in ("split", "rsplit", "partition", "rpartition")
+                and _marker_arg(call)
+            ):
+                for target in child.targets:
+                    if isinstance(target, ast.Name):
+                        split_names.add(target.id)
+
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Subscript):
+            continue
+        base = child.value
+        if isinstance(base, ast.Name) and base.id in (tested | split_names):
+            return True
+        if isinstance(base, ast.Call) and base in sliced_calls:
+            return True
+    return False
+
+
+def check_body_strip_owner(root: Path) -> list[str]:
+    """No module hand-rolls the cell-body strip the authoring engine ships.
+
+    "The character count of the body below the frontmatter" has three
+    plausible implementations here, and the cheapest is the wrong one: a strip
+    of your own passes the lint and the suite while measuring something other
+    than what the guards judge. A cold consumer on PR #186 reached the right
+    one only by opening a sibling tool's docstring, and said that a session
+    going straight from AGENTS.md to code would have written its own (#190).
+    The rule was enforced against the two implementations that already
+    existed and against a third by nothing -- and a third was in the tree:
+    tools/check_codex_compat.py kept the two newlines the engine strips.
+
+    Test files are out of scope. They build frontmatter fixtures rather than
+    strip one to measure, and every one of them matches this shape: scanned,
+    eleven test functions fire and none is an instance. That exclusion is the
+    check's one blind spot and is stated rather than widened away.
+    """
+    findings: list[str] = []
+    for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in _iter_files(base):
+            if path.suffix != ".py" or "__pycache__" in path.parts:
+                continue
+            if path.name.startswith("test_") or "tests" in path.parts:
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel == BODY_STRIP_OWNER:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+            except SyntaxError as exc:
+                findings.append(f"body-strip: {rel} does not parse ({exc})")
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if (rel, node.name) in BODY_STRIP_RECORDED:
+                    continue
+                if _hand_rolled_frontmatter_split(node):
+                    findings.append(
+                        f"body-strip: {rel}:{node.lineno} {node.name}() splits a "
+                        f"frontmatter marker by hand -- the strip is "
+                        f"{BODY_STRIP_OWNER}'s `frontmatterless`, so a figure "
+                        f"cannot drift from the guard judging it"
+                    )
+    return findings
+
+
 def check_project_roster(root: Path) -> list[str]:
     """Every cell has a `.claude/skills/` entry carrying its frontmatter.
 
@@ -3409,6 +3547,7 @@ CHECKS = (
     check_hollow_code_span,
     check_committed_carriage_return,
     check_marketplace_source,
+    check_body_strip_owner,
 )
 
 

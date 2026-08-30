@@ -689,6 +689,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_hollow_code_span",
     "check_committed_carriage_return",
     "check_marketplace_source",
+    "check_body_strip_owner",
 )
 
 
@@ -4472,3 +4473,131 @@ def test_hollow_code_span_caps_an_opening_fence_at_three_spaces(tmp_path):
         encoding="utf-8", newline="",
     )
     assert len(lint.check_hollow_code_span(tmp_path)) == 1
+
+
+# --- check_body_strip_owner (#190) ------------------------------------------
+#
+# The unlawful case is a strip written by hand; the lawful cases are the
+# engine that owns it, the two recorded exemptions, and -- the one that
+# actually bit -- an ordinary long function that merely mentions a marker.
+
+
+def _strip_module(spelling: str) -> str:
+    """A module whose one function strips frontmatter, in a given spelling."""
+    return ("def body(text):" + chr(10) + spelling)
+
+
+def test_a_hand_rolled_find_and_slice_strip_is_caught(tmp_path):
+    """The spelling both sanctioned implementations use, written a third time."""
+    _zoned(tmp_path, "tools/measure.py", _strip_module(
+        '    if not text.startswith("---"):' + chr(10)
+        + "        return text" + chr(10)
+        + '    end = text.find(chr(10) + "---", 3)' + chr(10)
+        + "    return text[end + 4:]" + chr(10)))
+    findings = lint.check_body_strip_owner(tmp_path)
+    assert len(findings) == 1, findings
+    assert "body()" in findings[0], findings[0]
+    assert "frontmatterless" in findings[0], findings[0]
+
+
+def test_the_hand_rolled_strip_this_script_dropped_read_high(tmp_path):
+    """The form that was live in tools/check_codex_compat.py, and its drift.
+
+    Named from that script's own comment, because a claim about what the
+    dropped code did needs something a reader can run. Two properties are
+    proven together: the guard catches the split-then-index spelling, and
+    that spelling returns a body two characters longer than the engine's --
+    the newlines after the frontmatter, which the engine strips.
+    """
+    _zoned(tmp_path, "tools/probe.py", _strip_module(
+        '    if text.startswith("---"):' + chr(10)
+        + '        parts = text.split("---", 2)' + chr(10)
+        + "        return parts[2]" + chr(10)
+        + "    return text" + chr(10)))
+    findings = lint.check_body_strip_owner(tmp_path)
+    assert len(findings) == 1, findings
+    assert "probe.py" in findings[0], findings[0]
+
+    cell = ("---" + chr(10) + "name: c" + chr(10) + "description: d" + chr(10)
+            + "---" + chr(10) + chr(10) + "# Body" + chr(10))
+    assert len(cell.split("---", 2)[2]) - len(lint._frontmatterless(cell)) == 2
+
+
+def test_a_function_that_only_mentions_a_marker_is_left_alone(tmp_path):
+    """The false positive a looser predicate produced, pinned as lawful.
+
+    A first version of this check asked only whether a function held a marker
+    constant and a subscript anywhere in it. That reddened the very script the
+    change had just converted to the engine: it still names the marker to
+    detect malformed frontmatter, and subscripts unrelated things further
+    down. A guard that fires on the compliant form teaches the reverse of its
+    rule.
+    """
+    _zoned(tmp_path, "tools/reader.py",
+           "def check(text, rows):" + chr(10)
+           + '    if text.startswith("---") and not text:' + chr(10)
+           + '        raise ValueError("incomplete frontmatter")' + chr(10)
+           + "    return rows[0]" + chr(10))
+    assert lint.check_body_strip_owner(tmp_path) == []
+
+
+def test_the_engine_that_owns_the_strip_is_not_reported(tmp_path):
+    """The owner defining it is the rule, not a breach of it."""
+    _zoned(tmp_path, lint.BODY_STRIP_OWNER, _strip_module(
+        '    if not text.startswith("---"):' + chr(10)
+        + "        return text" + chr(10)
+        + '    end = text.find(chr(10) + "---", 3)' + chr(10)
+        + "    return text[end + 4:]" + chr(10)))
+    assert lint.check_body_strip_owner(tmp_path) == []
+
+
+def test_a_recorded_exemption_covers_its_function_and_not_its_neighbour(tmp_path):
+    """Exemptions are (path, function), so one lawful strip exempts one function.
+
+    Recorded by file, a module holding a sanctioned implementation would
+    silently license every strip written under it afterwards -- which is the
+    module most likely to attract one.
+    """
+    _zoned(tmp_path, "tools/lint.py",
+           "def _frontmatterless(text):" + chr(10)
+           + '    if not text.startswith("---"):' + chr(10)
+           + "        return text" + chr(10)
+           + '    end = text.find(chr(10) + "---", 3)' + chr(10)
+           + "    return text[end + 4:]" + chr(10)
+           + chr(10)
+           + "def newcomer(text):" + chr(10)
+           + '    if not text.startswith("---"):' + chr(10)
+           + "        return text" + chr(10)
+           + '    end = text.find(chr(10) + "---", 3)' + chr(10)
+           + "    return text[end + 4:]" + chr(10))
+    findings = lint.check_body_strip_owner(tmp_path)
+    assert len(findings) == 1, findings
+    assert "newcomer()" in findings[0], findings[0]
+
+
+def test_a_strip_inside_a_test_file_is_out_of_scope(tmp_path):
+    """The stated blind spot, pinned so it stays deliberate rather than lost."""
+    _zoned(tmp_path, "tools/tests/test_thing.py", _strip_module(
+        '    if not text.startswith("---"):' + chr(10)
+        + "        return text" + chr(10)
+        + '    end = text.find(chr(10) + "---", 3)' + chr(10)
+        + "    return text[end + 4:]" + chr(10)))
+    assert lint.check_body_strip_owner(tmp_path) == []
+
+
+def test_the_recorded_body_strip_set_only_shrinks():
+    """Membership is pinned, so an exemption cannot be added to clear a red.
+
+    The same guarantee check_entry_references' recorded sets carry: a set a
+    change can grow is a set the next change grows instead of fixing what
+    reddened.
+    """
+    assert lint.BODY_STRIP_RECORDED == {
+        ("tools/lint.py", "_frontmatterless"),
+        ("tools/lint.py", "_frontmatter_fields"),
+    }
+
+
+def test_the_repository_itself_hand_rolls_no_strip():
+    """The check on the real tree, which is the tree the rule is about."""
+    assert lint.check_body_strip_owner(lint.ROOT) == []
