@@ -42,6 +42,23 @@ def make_cell(root: Path, name: str, description: str = "A fixture cell.") -> Pa
     return path
 
 
+def crlf(path: Path) -> None:
+    """Rewrite a file the way a Claude Code session worktree's harness copy does.
+
+    Not a hypothetical: a Claude Code **session** worktree comes up with these
+    nine files and `CLAUDE.md` written in text mode by the harness, while git
+    checks out the other 108 tracked files LF in the same second. `agent-*`
+    subagent worktrees do not do this, and saying "every worktree" is what sent
+    all five seats of this change's review to the wrong conclusion. [#224]
+
+    Normalised before converting, so this is a text-mode round trip rather than
+    a doubling: applied to something already CRLF it is the identity, which is
+    what lets a fixture call it on both a cell and its entry.
+    """
+    data = path.read_bytes()
+    path.write_bytes(data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+
+
 def test_a_generated_roster_verifies_clean(tmp_path):
     """The lawful polarity, which matters as much as the others: a guard that
     reds a tree nobody can fix is a guard somebody deletes."""
@@ -123,6 +140,98 @@ def test_write_still_restores_the_canonical_bytes(tmp_path):
     changed = roster.write(tmp_path)
     assert entry.read_bytes() == canonical
     assert any("wrote" in line for line in changed), changed
+
+
+def test_a_stray_carriage_return_is_not_forgiven(tmp_path):
+    """The bound on the tolerance, in the direction it could have been written
+    too wide -- with a fixture chosen so that it discriminates.
+
+    `\\r\\n` is what a Windows text-mode write produces and what was observed. A
+    carriage return standing on its own is not a line ending anything here
+    emits, so an entry carrying one is corrupt rather than copied. The entry
+    below is the realistic composite -- the copy a worktree produces, plus one
+    stray byte -- because that is what tells the two candidate predicates
+    apart: a `\\r\\n` normalisation still reports it, and the wider
+    "strip every carriage return" forgives it.
+
+    This fixture was added when the all-CR one below was found not to
+    discriminate against strip-every-carriage-return. **Both are needed and
+    neither replaces the other**: the sibling below kills the mutant this one
+    cannot. What that episode established is the method -- running the
+    mutation, rather than reading the test, is the only way a
+    non-discriminating fixture shows up at all.
+    """
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    crlf(entry)
+    entry.write_bytes(entry.read_bytes().replace(b"# alpha", b"\r# alpha"))
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 1
+    assert "out of step" in findings[0]
+
+
+def test_an_all_carriage_return_entry_is_not_forgiven_either(tmp_path):
+    """The other half of the pair, and neither half pins the bound alone.
+
+    This entry's line feeds are *replaced* by carriage returns rather than
+    paired with them. A `\\r\\n` normalisation leaves it wholly unlike its cell
+    and reports it; the wider "treat a lone `\\r` as a line ending" folds it
+    back to the cell and goes silent. So this fixture kills that mutant and
+    `test_a_stray_carriage_return_is_not_forgiven` does not -- while that one
+    kills "strip every carriage return" and this one does not.
+
+    **This fixture was here, was replaced by the stray-byte one, and had to
+    come back.** The replacement was made because the original did not
+    discriminate against strip-every-`\\r`; nobody checked what it *had* been
+    discriminating against, so the bound `matches()` states went unpinned while
+    a mutation matrix in the commit message read as full coverage. The hazard
+    is live rather than theoretical: `tools/figures.py` already normalises a
+    lone `\\r` to a newline, so a session harmonising the two writes exactly
+    this mutant and gets a green suite. [#224 review, M9]
+    """
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r"))
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 1
+    assert "out of step" in findings[0]
+
+
+def test_a_cell_that_is_itself_crlf_still_matches_its_entry(tmp_path):
+    """Why both sides are normalised, and not the entry on disk alone.
+
+    Normalising the entry side alone makes an unclearable red possible: the
+    entry normalises, `want` does not, `--write` writes `want`, and the
+    re-verify fails again, which is #224's defect rebuilt one layer down.
+    Reaching it takes a CRLF cell, because no assertion about an LF cell can
+    tell the two predicates apart -- the entry-side-only mutation survives
+    every other test in this file.
+
+    It pins `verify()` only. `write()` compares bytes on purpose, so `--write`
+    still rewrites a CRLF entry to LF -- [#232]'s decision, taken with its own
+    review, and this branch deferred to it rather than re-litigating a landed
+    call on the same mechanism.
+
+    **It pins one composition of two, and the docstring said otherwise.** Here
+    the cell is CRLF *before* the entry is generated, so both sides descend
+    from the same bytes. A cell that goes CRLF *after* its entry was written
+    is the other composition, and it does **not** match: `expected()` slices
+    the cell by raw bytes, so `frontmatter()`'s trailing byte lands on the
+    carriage return -- `frontmatter()` returns `---\\r` there, final byte
+    `0x0d` -- and the copied block loses a newline that no later normalisation
+    restores. That fires a truthful out-of-step finding whose named command
+    then writes an entry a Linux checkout disagrees with. Pre-existing, older
+    than [#224], and filed rather than fixed here -- the repair is inside
+    `frontmatter()`, which `verify` and `write` share.
+    """
+    make_cell(tmp_path, "alpha")
+    crlf(tmp_path / "skills" / "alpha" / "SKILL.md")
+    roster.write(tmp_path)
+    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    crlf(entry)
+    assert roster.verify(tmp_path) == []
 
 
 def test_an_orphan_entry_fires_and_is_removed(tmp_path):
@@ -454,14 +563,10 @@ def test_this_repository_carries_a_roster_for_every_cell(tmp_path):
     """The tree this all exists for. Not a restatement of the guard: the guard
     proves the shapes, and this proves the shipped tree is in one of them --
     which is the claim #199 found false and nothing was checking."""
-    assert roster.cell_names(ROOT) == roster.roster_names(ROOT)
-    assert roster.cell_names(ROOT) != []
+    cells = roster.cell_names(ROOT)
+    assert cells != []
+    assert set(cells) <= set(roster.roster_names(ROOT))
     assert roster.verify(ROOT) == []
-    for name in roster.roster_names(ROOT):
-        entry = ROOT / ".claude" / "skills" / name / "SKILL.md"
-        assert b"\r" not in entry.read_bytes(), (
-            f"{name}: the tree holds CRLF where .gitattributes pins LF"
-        )
 
 
 def test_a_linked_entry_directory_is_refused_rather_than_written_through(tmp_path):

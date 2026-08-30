@@ -149,10 +149,34 @@ def in_step(actual: bytes, want: bytes) -> bool:
     Everything else -- a description edited, a name changed, a body replaced
     -- still reports. [#229]
 
+    **The pin has a bound, and it is one character wide.** Git's `text=auto`
+    refuses to normalize any file holding a lone carriage return, so every CRLF
+    in such a file is committed verbatim. That does not make an entry carrying
+    one forgiven here -- this returns False and the finding fires, which two
+    tests pin in both polarities. What it reaches is the case where the *cell*
+    carries the lone carriage return, so `want` carries it too and the entry is
+    that cell's faithful copy: the two agree as text, and git commits the CRLF.
+    Measured over four compositions rather than reasoned, and filed. [#233]
+
+    **Which worktrees rewrite these files, since a wide answer is worse than
+    none.** A Claude Code **session** worktree comes up with ten files written
+    in text mode by the harness -- these nine entries and `CLAUDE.md` -- while
+    git checks out the other tracked files LF in the same second, which is how
+    the two writers were told apart. `agent-*` subagent worktrees do not do
+    this, and they are Claude Code worktrees too. `CLAUDE.md` is the durable
+    check: nothing here rewrites it, where `--write` erases the evidence under
+    `.claude/skills/` the moment anyone clears the red, so its line endings are
+    a fossil of how a worktree was made. Across one machine, 14 of 15 session
+    trees carried it CRLF against 0 of 16 agent trees. An earlier draft of this
+    said *every* Claude Code worktree, and all five seats of that change's
+    review -- every one in an `agent-*` tree -- checked, found LF, and reported
+    the cause as false. [#224]
+
     **This reaches the entry side, and the cell side is left as it is.** With
     the *cell* in CRLF, `expected()` has already lost a byte before this
     comparison sees anything -- `frontmatter()`'s own documented bound, where a
-    CRLF source ends the block at the bare `` -- so `verify` still reports,
+    CRLF source ends the block at the bare `
+` -- so `verify` still reports,
     and `--write` then converges to green having rewritten every entry. That is
     real and it is left standing: the repair belongs in `frontmatter()`, which
     other checks read, and the broken polarity is unobserved where the fixed one

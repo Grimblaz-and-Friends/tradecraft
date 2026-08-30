@@ -6,6 +6,7 @@ backslash form (findings M1/M2/M4/M5/M6 in docs/ledger.jsonl)."""
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import roster
 
 
 NL = chr(10)
+BS = chr(92)
 
 
 def _write_cell(skill: Path, body: str) -> None:
@@ -665,14 +667,26 @@ def test_a_references_pointer_must_resolve_against_its_own_file(tmp_path):
 # from `run` would make the test agree with itself, which is what let the list
 # say eight while `run` called ten, silently, from #156 until #169 found it.
 LINT_CHECKS_IN_ORDER = (
-    "check_zone_wall", "check_harness_tokens", "check_charter_cell",
-    "check_cell_frontmatter", "check_project_roster",
-    "check_sideways_deps", "check_cell_references",
-    "check_doctrine_citations", "check_doctrine_references",
-    "check_doctrine", "check_doctrine_callout", "check_review_index",
-    "check_decision_index", "check_entry_references",
-    "check_emitted_ascii", "check_docstring_not_piped",
-    "check_stdio_wired", "check_subprocess_streams", "check_marketplace_source",
+    "check_zone_wall",
+    "check_harness_tokens",
+    "check_charter_cell",
+    "check_cell_frontmatter",
+    "check_project_roster",
+    "check_sideways_deps",
+    "check_cell_references",
+    "check_doctrine_citations",
+    "check_doctrine_references",
+    "check_doctrine",
+    "check_doctrine_callout",
+    "check_review_index",
+    "check_decision_index",
+    "check_entry_references",
+    "check_emitted_ascii",
+    "check_docstring_not_piped",
+    "check_stdio_wired",
+    "check_subprocess_streams",
+    "check_docstring_control_chars",
+    "check_marketplace_source",
 )
 
 
@@ -3510,3 +3524,196 @@ def test_a_repeat_does_not_swallow_the_empty_string_finding(tmp_path, monkeypatc
     findings = lint.run(tmp_path)
     assert len(findings) == 2, findings
     assert all("must be a non-empty string" in f for f in findings), findings
+
+
+def test_docstring_control_chars_stays_quiet_on_a_lawful_tree(tmp_path):
+    """The polarity that matters as much as the other: a guard that reds prose
+    written correctly is a guard somebody deletes. A docstring naming a carriage
+    return by its escape, doubled, is this repository's convention and passes.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Names `" + BS*2 + "r` as text, indented" + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "ok.py").write_bytes(source.encode("utf-8"))
+    assert lint.check_docstring_control_chars(tmp_path) == []
+
+
+def test_docstring_control_chars_catches_the_escape_that_became_the_character(tmp_path):
+    """The defect, at the site it fired. One backslash in a non-raw docstring is
+    the character at runtime, and on disk it is one byte away from the lawful
+    form above -- which is why reading the source rather than the compiled value
+    would miss it.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Names `" + BS + "r` with one backslash." + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    assert chr(13) not in source, "the fixture is an escape, not a raw byte"
+    (tmp_path / "bad.py").write_bytes(source.encode("utf-8"))
+    findings = lint.check_docstring_control_chars(tmp_path)
+    assert len(findings) == 1
+    assert "bad.py" in findings[0]
+    assert "U+000D" in findings[0]
+
+
+def test_docstring_control_chars_reads_the_compiled_value_not_the_bytes(tmp_path):
+    """The distinguishing claim, pinned. The fixture above holds no carriage
+    return byte on disk and one in `__doc__`, which is the instance that
+    motivated this check and the reason a scan for carriage-return bytes does
+    not replace it: that scan reads the bytes and finds nothing.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Holds `" + BS + "r` as an escape." + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    path = tmp_path / "escaped.py"
+    path.write_bytes(source.encode("utf-8"))
+    assert chr(13).encode() not in path.read_bytes()
+    assert lint.check_docstring_control_chars(tmp_path) != []
+
+
+def test_docstring_control_chars_exempts_the_characters_prose_is_written_in(tmp_path):
+    """Line feeds and tabs are how prose is written, so forgiving them is the
+    check being usable rather than a hole: a multi-line indented docstring is
+    every docstring in this repository.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "First line." + chr(10) + chr(10) + chr(9) + "Indented." + chr(10) + "    " + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "prose.py").write_bytes(source.encode("utf-8"))
+    assert lint.check_docstring_control_chars(tmp_path) == []
+
+
+def test_docstring_control_chars_leaves_a_non_docstring_string_alone(tmp_path):
+    """Scope, stated by probe. A control character in an ordinary string is code
+    building a byte deliberately -- the sanctioned route -- and this check is
+    about prose a reader is handed, not about what code constructs.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    return " + chr(34) + "a" + chr(92) + "rb" + chr(34) + chr(10)
+    )
+    (tmp_path / "code.py").write_bytes(source.encode("utf-8"))
+    assert lint.check_docstring_control_chars(tmp_path) == []
+
+
+def test_this_repository_holds_no_control_character_in_any_docstring():
+    """The tree this exists for. PR #231 shipped four carriage returns in one
+    test's `__doc__` with clean bytes on disk and every guard green; this is
+    what would have caught them.
+    """
+    root = Path(__file__).resolve().parents[2]
+    assert lint.check_docstring_control_chars(root) == []
+
+
+def test_docstring_control_chars_reports_a_module_docstring_without_raising(tmp_path):
+    """The crash this guard shipped with, at the shape it teaches about.
+
+    `ast.Module` carries no `lineno`, and formatting it unguarded raised out of
+    `run()` -- so a control character in a *module* docstring answered the
+    mandated first step of the flow with a traceback and none of the other
+    checks' findings. `roster.write` records the same defect at [PR #210
+    review, M4]: a cell it cannot read is reported, never raised.
+    """
+    source = (
+        chr(34)*3 + "Names `" + BS + "r` in a module docstring." + chr(34)*3 + chr(10)
+        + "def f():" + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "mod.py").write_bytes(source.encode("utf-8"))
+    findings = lint.check_docstring_control_chars(tmp_path)
+    assert len(findings) == 1
+    assert "(module)" in findings[0]
+    assert "U+000D" in findings[0]
+
+
+@pytest.mark.parametrize("point, label", [(127, "U+007F"), (133, "U+0085")])
+def test_docstring_control_chars_reaches_del_and_the_c1_block(tmp_path, point, label):
+    """Scope, matched to what the rule says rather than to `point < 32`.
+
+    The stated rule is *control character*, and DEL and the C1 block are
+    control characters -- U+0085 is a line break to `str.splitlines()`, so it
+    mis-renders anything paginating a docstring. An earlier predicate exempted
+    both in fact while the registration banned them in words.
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Holds " + chr(point) + " here." + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "c1.py").write_bytes(source.encode("utf-8"))
+    findings = lint.check_docstring_control_chars(tmp_path)
+    assert len(findings) == 1
+    assert label in findings[0]
+
+
+def test_docstring_control_chars_reports_every_character_not_only_the_first(tmp_path):
+    """A guard reporting one offender per file sends a session back for a
+    second red it could have fixed in the same pass. An earlier version broke
+    out of the loop on the first character, with no wording saying so.
+
+    Both characters arrive as **escapes**, and the first draft of this fixture
+    wrote a raw carriage-return byte instead and saw only one finding: Python's
+    tokenizer folds a lone carriage return in source to a line feed, so it never
+    reaches the compiled value at all.
+
+    **That is true of the carriage return and of nothing else.** A raw vertical
+    tab, form feed, ESC, DEL or C1 byte on disk survives into the compiled value
+    and is reported. So the gap a byte-level scan would close is one character
+    wide, not the whole class -- which is worth stating precisely, because the
+    scan is filed on the strength of it (#233).
+    """
+    source = (
+        "def f():" + chr(10)
+        + "    " + chr(34)*3 + "Holds " + BS + "r and " + BS + "x0b." + chr(34)*3 + chr(10)
+        + "    return 1" + chr(10)
+    )
+    (tmp_path / "two.py").write_bytes(source.encode("utf-8"))
+    findings = lint.check_docstring_control_chars(tmp_path)
+    assert len(findings) == 2
+    assert {"U+000B", "U+000D"} == {f.split("holds ")[1][:6] for f in findings}
+
+
+def test_git_ignored_survives_a_non_ascii_path(tmp_path):
+    """The ignore filter feeds three checks, and nothing pinned it.
+
+    `text=True` alone encodes stdin with the locale codepage, so on Windows one
+    non-ASCII path anywhere raised `UnicodeEncodeError` inside subprocess's
+    writer thread -- where it is swallowed. stdin never closed, the call ran to
+    its full timeout, and the filter then returned empty: every check using it
+    silently scanned ignored trees after a minute's stall. The substrate cell's
+    stream rule, at a site three checks share.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_bytes(("skip" + chr(10)).encode("utf-8"))
+    (tmp_path / "skip").mkdir()
+    plain = tmp_path / "skip" / "plain.py"
+    plain.write_bytes(b"x = 1" + chr(10).encode())
+    # chr(20013) rather than the character: this file is read by a check that
+    # bans non-ASCII in non-docstring literals.
+    exotic = tmp_path / (chr(20013) + ".py")
+    exotic.write_bytes(b"y = 2" + chr(10).encode())
+    ignored = lint._git_ignored(tmp_path, [plain, exotic])
+    assert plain in ignored, (
+        "the ignored path must still be filtered when a non-ASCII path is present"
+    )
+    assert exotic not in ignored
+
+
+def test_git_ignored_filters_an_ordinary_tree(tmp_path):
+    """The other polarity: the lawful case still filters, so the fix above is
+    not the filter quietly turning itself off.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_bytes(("skip" + chr(10)).encode("utf-8"))
+    (tmp_path / "skip").mkdir()
+    hidden = tmp_path / "skip" / "a.py"; hidden.write_bytes(b"x = 1" + chr(10).encode())
+    shown = tmp_path / "b.py"; shown.write_bytes(b"y = 2" + chr(10).encode())
+    ignored = lint._git_ignored(tmp_path, [hidden, shown])
+    assert ignored == {hidden}

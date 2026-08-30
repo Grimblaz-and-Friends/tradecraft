@@ -116,6 +116,25 @@ All shipped files are scanned regardless of extension; binary content (NUL
 byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
 from any cwd — paths resolve from this file's own location.
 Exit 0 when clean, 1 with findings listed one per line.
+20. docstring control characters: no docstring's compiled value holds a
+    control character other than a line feed or a tab. A docstring is not raw,
+    so a backslash followed by r, written in one, is a carriage return at
+    runtime. Named in words rather than shown, because every attempt to write
+    that escape into this repository's prose produced the character instead --
+    including one in this sentence -- so the form that cannot be lost is the
+    one that spells it out. Named rather than counted, for the reason the
+    check's own docstring gives: the count was wrong the moment the next
+    instance landed. Read from the compiled value rather than the source bytes,
+    because the instance that motivated this had clean bytes on disk and four
+    carriage returns in `__doc__` [D-231].
+
+The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
+constitution) is not validated: it is history, not a live format (D-74).
+
+All shipped files are scanned regardless of extension; binary content (NUL
+byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
+from any cwd — paths resolve from this file's own location.
+Exit 0 when clean, 1 with findings listed one per line.
 """
 from __future__ import annotations
 
@@ -2063,6 +2082,92 @@ def check_charter_cell(root: Path) -> list[str]:
     return findings
 
 
+def check_docstring_control_chars(root: Path) -> list[str]:
+    """No docstring's compiled value holds a control character but LF or TAB.
+
+    A docstring is not raw, so `\\r` written in one **is** a carriage return at
+    runtime -- reaching `pydoc`, `help()`, `inspect.getdoc` and any tooltip,
+    where a bare CR makes a terminal overwrite the line it sat on. The prose
+    here names control characters constantly, because the practice's own rules
+    are about them, so the escape and the character are one keystroke apart and
+    the source looks identical either way.
+
+    **It fired repeatedly inside the one change that added it, and nothing
+    caught any of them** -- a committed decision-log row split by two control
+    bytes, a docstring carrying carriage returns after a repair turned its bytes
+    into escapes it never doubled, a code span that lost the character it named,
+    and this check's own registration sentence. Named rather than counted: the
+    stated count was wrong the moment the next instance landed, which is the
+    arithmetic `roster.verify` deleted rather than corrected a fourth time
+    [PR #210 cycle one, C1-F5]. [#233]
+
+    It reads the **compiled** value, not the source, which is the whole point:
+    the bytes on disk were clean in the second instance and the runtime value
+    was not. A scan for carriage-return bytes catches the first instance and
+    neither of the others.
+
+    LF and TAB are exempt because prose is written in lines and indented. Every
+    other `Cc` character is banned outright, and **there is no sanctioned escape
+    hatch here, unlike `check_emitted_ascii`'s.** That check's live tension is
+    `chr()` in *code*, which code can call; a docstring is a literal and calls
+    nothing, so `chr(13)` written in one is four characters of prose. An earlier
+    version of the finding message offered it anyway -- a remedy that cannot be
+    applied where the message names it, which is the shape `verify()` records as
+    "a fix that did not fix". Where the character itself is genuinely meant, it
+    belongs in code.
+    """
+    findings = []
+    candidates = [
+        path for path in _python_files(root)
+        if ".git" not in path.parts
+    ]
+    ignored = _git_ignored(root, candidates)
+    # Line feed and tab are how prose is written; every other Cc character
+    # is one. `Cc` rather than `point < 32` because DEL and the C1 block
+    # (U+007F-U+009F) are control characters too -- U+0085 is a line break
+    # to `str.splitlines()`, so it mis-renders anything paginating a
+    # docstring -- and the stated rule said "control character", not
+    # "below U+0020".
+    allowed = {10, 9}
+    for path in candidates:
+        if path in ignored:
+            continue
+        rel_file = path.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(path.read_bytes().decode("utf-8-sig"))
+        except (UnicodeDecodeError, SyntaxError):
+            # check_emitted_ascii walks the same files and reports both, so a
+            # second message here would be one defect stated twice.
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                     ast.AsyncFunctionDef)):
+                continue
+            doc = ast.get_docstring(node, clean=False)
+            if not doc:
+                continue
+            # `ast.Module` carries no `lineno`, and this used to format it
+            # unguarded: a control character in a *module* docstring -- which is
+            # exactly the shape this check teaches about -- raised out of
+            # `run()`, so the mandated first step of the flow answered with a
+            # traceback and none of the other checks' findings. The same defect
+            # `roster.write` records at [PR #210 review, M4], reinstated by the
+            # guard written to end a different one.
+            line = node.body[0].lineno
+            owner = getattr(node, "name", "module")
+            for point in sorted({ord(c) for c in doc} - allowed):
+                if unicodedata.category(chr(point)) != "Cc":
+                    continue
+                findings.append(
+                    f"docstring-control-char: {rel_file}:{line} "
+                    f"({owner}) holds U+{point:04X} in its docstring -- a "
+                    f"docstring is not raw, so an escape written there is the "
+                    f"character at runtime; double the backslash. A docstring "
+                    f"cannot build one, being a literal: where the character "
+                    f"itself is meant, it belongs in code and not in prose"
+                )
+    return findings
+
 def check_marketplace_source(root: Path) -> list[str]:
     """Keep the tradecraft source in the form both plugin runtimes accept."""
     manifest = root / ".claude-plugin" / "marketplace.json"
@@ -2195,7 +2300,13 @@ def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
         proc = subprocess.run(
             ["git", "check-ignore", "--stdin", "-z"],
             input="\0".join(str(path) for path in paths),
-            capture_output=True, text=True, cwd=root, timeout=60,
+            # `text=True` alone encodes stdin with the locale codepage, so one
+            # non-ASCII path anywhere collapses this filter for every check
+            # that uses it -- and not silently cheaply: the write raises in
+            # subprocess's writer thread, stdin never closes, and the call
+            # runs the full timeout before returning empty. Measured at 60s.
+            capture_output=True, text=True, encoding="utf-8",
+            cwd=root, timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
         return set()
@@ -2703,6 +2814,7 @@ def run(root: Path) -> list[str]:
         + check_docstring_not_piped(root)
         + check_stdio_wired(root)
         + check_subprocess_streams(root)
+        + check_docstring_control_chars(root)
         + check_marketplace_source(root)
     )
 
