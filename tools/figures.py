@@ -40,6 +40,7 @@ caller decisions neither script will default.
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import shlex
 import sys
@@ -449,6 +450,39 @@ def build_figures(root: Path, base: str | None,
     return figures
 
 
+def body_strip_scan(repo: Path) -> list[str]:
+    """What check_body_strip_owner's predicate finds in the corpus it skips.
+
+    That check excludes test files, and the exclusion is its one stated blind
+    spot. The size of that blind spot is a count over a corpus the repository
+    keeps writing into, so it is a query rather than a number: an earlier
+    version of the check stated it as a figure in its own docstring, measured
+    under a predicate that was then tightened, and the figure survived the
+    predicate by a factor of five. This is the command that answers it on
+    whatever tree you are on.
+    """
+    hits: list[str] = []
+    for dirname in lint.SHIPPED_DIRS + tuple(sorted(lint.REPO_ONLY_NAMES)):
+        base = repo / dirname
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            if not (path.name.startswith("test_") or "tests" in path.parts):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+            except SyntaxError:
+                continue
+            markers = lint._marker_names(tree)
+            for name, node in lint._qualified_scopes(tree):
+                if lint._hand_rolled_frontmatter_split(lint._own_nodes(node), markers):
+                    hits.append(
+                        f"{path.relative_to(repo).as_posix()}:{node.lineno} {name}")
+    return hits
+
+
 def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     argv = sys.argv[1:] if argv is None else argv
@@ -464,7 +498,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="the body budget --cell is measured against")
     parser.add_argument("--json", action="store_true",
                         help="emit JSON instead of markdown")
+    parser.add_argument("--body-strip-scan", action="store_true",
+                        help="list hand-rolled frontmatter strips in the test "
+                             "files check_body_strip_owner skips")
     args = parser.parse_args(argv)
+    if args.body_strip_scan:
+        hits = body_strip_scan(ROOT)
+        for hit in hits:
+            print(hit)
+        print(f"{len(hits)} hand-rolled strip(s) in the excluded test corpus")
+        return 0
     figures = build_figures(ROOT, args.base, args.cell, args.cell_budget)
     stamp = engine.tree_stamp(ROOT)
     command = ("python tools/figures.py " + shlex.join(argv)).rstrip()

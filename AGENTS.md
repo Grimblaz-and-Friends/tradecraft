@@ -29,7 +29,7 @@ The charter carries the routing map. Specific to here:
 
 - **Cell structure is the `authoring` cell's standard**, whose checkable subset the lint enforces here. Shared code lives only in `lib/`.
 - **A binding rule the practice exports** → the `charter` cell, within its own job. **A rule or mechanic only this repository needs** → this file, within its budget.
-- **A binding document under `docs/`** → a file there, reached by a pointer from this file; `docs/values.md` is the shape. [D-225]
+- **A binding document under `docs/`** → a file there, and a line here that binds rather than names it; `docs/values.md` is the shape. [D-225]
 - **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`; a decision entry lives at the path under Decisions below.
 
 The charter states the admission order; this file's budget is what makes it bite here. **Every edit of an always-on surface owes an outflow**, at the budget or nowhere near it — the `authoring` cell carries the three moves and what they may not do. [D-184]
