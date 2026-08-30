@@ -100,15 +100,31 @@ def _body(name: str) -> bytes:
 
 
 def frontmatter(data: bytes) -> bytes | None:
-    """The leading frontmatter block, its terminator, and the one byte after it.
+    """The leading frontmatter block, its terminator, and the line ending after it.
 
-    That byte is the trailing newline **on an LF source**, which is what
-    `.gitattributes` pins every file in this repository to. It is not a
-    property of the function: on a CRLF source the block ends at the bare
-    `\\r`, and on a file ending at its terminator there is no byte to take.
-    The bound is stated here because this is where a reader would look for it
-    before reusing the function on a source that pin does not cover. [PR #210
-    review, M19]
+    **The line ending, not one byte.** This used to take a single byte, which
+    is the trailing newline on an LF source and the bare carriage return on a
+    CRLF one -- so on a CRLF cell the newline was dropped and `expected()`
+    produced an entry with no blank line between the terminator and the
+    heading. The bound was documented on this function; its consequence was
+    documented nowhere [PR #210 review, M19], which is what let it stand. The
+    guard reported the cell out of step, truthfully; the session ran the
+    command the finding names; `--write` converged to green locally; and the
+    committed entry was a content change no diff on that machine could show,
+    which reddened Linux CI. A red on the flow's first mandated step, on a
+    change whose author has nothing to look at. [#234]
+
+    A source ending at its terminator with no newline at all still yields
+    none of one -- there is nothing to take -- and that is the part of the
+    old bound that survives.
+
+    **The block keeps the cell's own interior line endings, and that is
+    deliberate.** A CRLF cell still copies CRLF into the entry's frontmatter,
+    exactly as it always did. The index pin normalizes that away on the way
+    in and `in_step` compares as text, so the committed bytes are the same
+    wherever the generator last ran -- the property `write()`'s byte
+    discipline exists for. What was broken here was never the line ending
+    copied; it was the newline that was not.
 
     None when there is no frontmatter to copy. The caller reports that as a finding
     rather than writing an entry with no description: an entry whose
@@ -121,7 +137,12 @@ def frontmatter(data: bytes) -> bytes | None:
     end = data.find(_CLOSE, len(_OPEN))
     if end == -1:
         return None
-    return data[:end + len(_CLOSE) + 1]
+    stop = end + len(_CLOSE)
+    for ending in (b"\r\n", b"\n"):
+        if data[stop:stop + len(ending)] == ending:
+            stop += len(ending)
+            break
+    return data[:stop]
 
 
 def in_step(actual: bytes, want: bytes) -> bool:
@@ -172,16 +193,15 @@ def in_step(actual: bytes, want: bytes) -> bool:
     review -- every one in an `agent-*` tree -- checked, found LF, and reported
     the cause as false. [#224]
 
-    **This reaches the entry side, and the cell side is left as it is.** With
-    the *cell* in CRLF, `expected()` has already lost a byte before this
-    comparison sees anything -- `frontmatter()`'s own documented bound, where a
-    CRLF source ends the block at the bare `
-` -- so `verify` still reports,
-    and `--write` then converges to green having rewritten every entry. That is
-    real and it is left standing: the repair belongs in `frontmatter()`, which
-    other checks read, and the broken polarity is unobserved where the fixed one
-    is live -- 0 of 26 worktrees measured carry CRLF on a cell, 3 of 26 carry it
-    on an entry. Filed rather than fixed here. [PR #232 review, M10]
+    **Both sides are now covered, and they are covered in two places.** This
+    one reaches the entry side. The cell side was `expected()`'s: with the
+    *cell* in CRLF, `frontmatter()` lost a byte before this comparison saw
+    anything -- its slice took a single byte after the terminator, which on a
+    CRLF source is the carriage return rather than the newline -- so `verify`
+    reported, `--write` converged to green locally, and the entry it wrote
+    differed in content from what an LF checkout produces. Repaired at the
+    slice, where the bound was documented, rather than by normalizing in one
+    caller and leaving it live for the next. [#234]
 
     One consequence, accepted: `--write` still repairs a CRLF entry, and nothing
     now tells a session that. The alternative is a line from `verify` in the

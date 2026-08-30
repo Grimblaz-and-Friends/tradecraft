@@ -686,6 +686,8 @@ LINT_CHECKS_IN_ORDER = (
     "check_stdio_wired",
     "check_subprocess_streams",
     "check_docstring_control_chars",
+    "check_hollow_code_span",
+    "check_committed_carriage_return",
     "check_marketplace_source",
 )
 
@@ -697,12 +699,16 @@ def test_the_module_docstring_enumerates_every_check_run_calls():
     every rewording and be deleted within a release. It does not catch a wrong
     *description* inside an item; that is a separate class, and this change
     once carried an instance of it (check 5 and its implementation disagreed).
-    """
-    import inspect
 
-    called = re.findall(r"check_[a-z_]+", inspect.getsource(lint.run))
-    assert tuple(called) == LINT_CHECKS_IN_ORDER, (
-        "run() calls checks this list does not name, or in another order"
+    Read from `lint.CHECKS` rather than scraped out of `run()`'s source. The
+    chain became a tuple when the checks were isolated from one another
+    (#239), so the source no longer names them -- and the scrape was reading
+    prose as well as calls, which a docstring naming a sibling check would
+    have broken.
+    """
+    called = tuple(check.__name__ for check in lint.CHECKS)
+    assert called == LINT_CHECKS_IN_ORDER, (
+        "CHECKS names checks this list does not, or in another order"
     )
     numbered = re.findall(r"^\s*(\d+)\.\s", lint.__doc__, re.M)
     assert [int(n) for n in numbered] == list(
@@ -3633,6 +3639,18 @@ def test_docstring_control_chars_reports_a_module_docstring_without_raising(tmp_
     assert "U+000D" in findings[0]
 
 
+def test_emitted_ascii_omits_a_position_it_does_not_have(tmp_path):
+    """A `SyntaxError` from a raw NUL carries no line number, and the message
+    printed it as `:None` — a position that does not exist, in a module whose
+    convention is that `file:lineno` is searchable.
+    """
+    (tmp_path / "mod.py").write_bytes(b"x = 1" + bytes([0]) + b"2" + NL.encode())
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1
+    assert ":None" not in findings[0]
+    assert findings[0].startswith("emitted-ascii: mod.py does not parse")
+
+
 @pytest.mark.parametrize("point, label", [(127, "U+007F"), (133, "U+0085")])
 def test_docstring_control_chars_reaches_del_and_the_c1_block(tmp_path, point, label):
     """Scope, matched to what the rule says rather than to `point < 32`.
@@ -3717,3 +3735,740 @@ def test_git_ignored_filters_an_ordinary_tree(tmp_path):
     shown = tmp_path / "b.py"; shown.write_bytes(b"y = 2" + chr(10).encode())
     ignored = lint._git_ignored(tmp_path, [hidden, shown])
     assert ignored == {hidden}
+
+
+def _raising(message="simulated: any check that raises"):
+    """A check-shaped callable that raises, for the isolation tests below."""
+    def check(root):
+        raise AttributeError(message)
+    check.__name__ = "check_that_raises"
+    return check
+
+
+def test_a_raising_check_does_not_take_the_other_checks_findings_with_it(
+    tmp_path, monkeypatch
+):
+    """The defect: `run()` was one `+` chain, so any check that raised
+    discarded every finding computed before it and answered with a traceback.
+    A session running the flow's first mandated step could not tell a clean
+    tree from a filthy one. [#239]
+    """
+    make_clean_tree(tmp_path)
+    # A genuine finding from a real check, so there is something to lose.
+    _write_marketplace(tmp_path, {"source": "./"})
+    real = lint.run(tmp_path)
+    assert real, "the fixture must produce a finding for this test to mean anything"
+
+    monkeypatch.setattr(lint, "CHECKS", lint.CHECKS + (_raising(),))
+    findings = lint.run(tmp_path)
+
+    for finding in real:
+        assert finding in findings, "a raising check must not discard what the others found"
+    raised = [f for f in findings if f.startswith("check-raised:")]
+    assert len(raised) == 1
+    assert "check_that_raises" in raised[0]
+    assert "AttributeError" in raised[0]
+
+
+def test_a_raising_check_is_reported_rather_than_raised(tmp_path, monkeypatch):
+    """The other half: `run()` returns rather than propagating, on a tree
+    where nothing else has anything to say.
+    """
+    make_clean_tree(tmp_path)
+    assert lint.run(tmp_path) == []
+    monkeypatch.setattr(lint, "CHECKS", (_raising(),))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and findings[0].startswith("check-raised:")
+
+
+def test_a_raising_check_cannot_be_read_as_a_clean_tree(tmp_path, monkeypatch):
+    """Exit code, on a tree whose every other check is silent. A raising check
+    that exited 0 would relocate the defect rather than end it: the session
+    reads green and commits.
+    """
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "ROOT", tmp_path)
+    monkeypatch.setattr(lint, "CHECKS", (_raising(),))
+    assert lint.main() == 1
+
+
+def test_the_raised_finding_names_the_frame_and_claims_nothing_else(tmp_path, monkeypatch):
+    """The message states what was computed and no more.
+
+    It carries the check, the exception and the site -- without the site the
+    reader has an exception and nowhere to search, and the traceback that
+    carried one is exactly what isolating the check throws away. It must not
+    say the tree is clean, which is the trap `check_emitted_ascii`'s docstring
+    records: a guard asserting something it never computed.
+    """
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "CHECKS", (_raising("boom"),))
+    finding = lint.run(tmp_path)[0]
+    assert "test_lint.py:" in finding, "the finding names the frame that raised"
+    assert "(boom)" in finding, "the exception's own message survives"
+    assert "unchecked" in finding
+    assert "does not say the tree is clean" in finding
+
+
+def test_every_check_in_the_chain_is_reachable_by_name():
+    """`CHECKS` is the chain, and a check absent from it runs nowhere. The
+    tuple replaced a `+` expression where forgetting an entry was equally
+    silent, so the property is pinned rather than assumed.
+    """
+    assert len({c.__name__ for c in lint.CHECKS}) == len(lint.CHECKS)
+    for check in lint.CHECKS:
+        assert getattr(lint, check.__name__) is check
+
+
+def test_where_says_so_rather_than_inventing_a_frame():
+    """`_where` on an exception that was never raised has no traceback. It
+    says so; a guard that filled in a plausible file and line would be
+    stating something it never computed.
+    """
+    assert lint._where(ValueError("never raised")) == "no frame inside this repository"
+
+
+CR = chr(13)
+TICK = chr(96)
+
+
+def test_hollow_code_span_catches_the_character_that_went_missing(tmp_path):
+    """Instance 3's shape: a span written to show a character, with the
+    character gone. The sentence still reads as an explanation of a byte and
+    names no byte. [#233]
+    """
+    (tmp_path / "note.md").write_text(
+        "The block ends at the bare " + TICK + CR + TICK + ", so verify reports." + NL,
+        encoding="utf-8", newline="",
+    )
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1
+    assert "note.md:1" in findings[0]
+    assert "U+000D" in findings[0]
+
+
+def test_hollow_code_span_reads_across_the_one_line_break_a_span_may_hold(tmp_path):
+    """The live instance sat in a docstring where the lost character was a
+    line break, so the span crossed a source line. A single-line predicate
+    reports the doubled-backtick idiom and misses the only real defect in the
+    tree -- measured, which is why this is pinned.
+    """
+    (tmp_path / "mod.py").write_text(
+        "def f():" + NL
+        + '    """Ends at the bare ' + TICK + NL + TICK + " -- so it reports." + NL
+        + '    """' + NL,
+        encoding="utf-8", newline="",
+    )
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1 and "U+000A" in findings[0]
+
+
+def test_hollow_code_span_leaves_the_doubled_backtick_idiom_alone(tmp_path):
+    """The other polarity, and the one that decides the predicate.
+
+    Every false positive the strip-to-nothing form produced across this
+    repository was this idiom, which is prose about fences and lawful. Its
+    inner span is *exactly* empty; the defect's is not. A guard that reported
+    it would be refused within a release, which is the failure a guard
+    blocking lawful work always is.
+    """
+    (tmp_path / "note.md").write_text(
+        "Pin as " + TICK*2 + " " + TICK + "path" + TICK + " at " + TICK
+        + "<sha>" + TICK + " " + TICK*2 + " at authoring time." + NL,
+        encoding="utf-8", newline="",
+    )
+    assert lint.check_hollow_code_span(tmp_path) == []
+
+
+def test_hollow_code_span_leaves_ordinary_prose_alone(tmp_path):
+    """A span with content in it is what every lawful span is."""
+    (tmp_path / "note.md").write_text(
+        "Run " + TICK + "python tools/lint.py" + TICK + " before committing." + NL,
+        encoding="utf-8", newline="",
+    )
+    assert lint.check_hollow_code_span(tmp_path) == []
+
+
+def test_hollow_code_span_skips_a_fenced_block(tmp_path):
+    """A span inside a fence is being shown, not written -- the premise checks
+    5 and 6 already reason from, and the one a fixture demonstrating this
+    defect depends on.
+    """
+    (tmp_path / "note.md").write_text(
+        "The defect looks like this:" + NL + NL
+        + "```" + NL
+        + "ends at the bare " + TICK + CR + TICK + NL
+        + "```" + NL,
+        encoding="utf-8", newline="",
+    )
+    assert lint.check_hollow_code_span(tmp_path) == []
+
+
+def test_this_repository_holds_no_hollow_code_span():
+    """The tree this exists for. `tools/roster.py` carried one until the
+    change that added this guard; run against the diff base it reports that
+    line, and against this revision it is silent.
+    """
+    root = Path(__file__).resolve().parents[2]
+    assert lint.check_hollow_code_span(root) == []
+
+
+def _git_repo_with(tmp_path, name, data: bytes):
+    """A committed fixture repository carrying this repository's own
+    `.gitattributes`, so the normalisation under test is the real one.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    attributes = Path(__file__).resolve().parents[2] / ".gitattributes"
+    (tmp_path / ".gitattributes").write_bytes(attributes.read_bytes())
+    (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / name).write_bytes(data)
+    for args in (["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t",
+                                 "commit", "-qm", "fixture"]):
+        subprocess.run(["git", "-C", str(tmp_path)] + args, check=True,
+                       stdin=subprocess.DEVNULL, capture_output=True)
+    return tmp_path
+
+
+def test_committed_carriage_return_catches_the_byte_that_reached_a_commit(tmp_path):
+    """Instance 1: a decision-index row appended by a script whose escapes had
+    become control bytes. `text=auto` refuses to normalise a file holding a
+    lone carriage return, so every line ending in it committed verbatim and
+    the row rendered as a truncated row plus an orphan. [#233]
+    """
+    _git_repo_with(tmp_path, "index.md",
+                   ("a lone " + CR + " row" + NL + "next" + NL).encode("utf-8"))
+    findings = lint.check_committed_carriage_return(tmp_path)
+    assert len(findings) == 1
+    assert "index.md" in findings[0]
+
+
+def test_committed_carriage_return_leaves_a_crlf_working_copy_alone(tmp_path):
+    """The polarity that decides whether this guard is usable here at all.
+
+    A CRLF working copy is expected rather than a defect [D-186]: the pin
+    normalises it into the index, so nothing reaches the repository. A guard
+    reporting it would reinstate the unclearable red #224 was about.
+    """
+    _git_repo_with(tmp_path, "note.md",
+                   ("first" + CR + NL + "second" + CR + NL).encode("utf-8"))
+    assert lint.check_committed_carriage_return(tmp_path) == []
+
+
+def test_committed_carriage_return_leaves_a_genuine_binary_alone(tmp_path):
+    """A binary reports `i/-text` exactly as a lone-carriage-return file does.
+
+    A PNG's own file signature *is* a carriage return and a line feed, so
+    confirming the byte is not enough on its own: the first image committed
+    here would go red for its own header. Binary content is skipped by the NUL
+    rule this module applies everywhere, which is what makes the confirmation
+    safe rather than merely truthful.
+    """
+    png = bytes([137, 80, 78, 71, 13, 10, 26, 10]) + bytes([0, 0, 0, 13]) + b"IHDR"
+    _git_repo_with(tmp_path, "image.png", png)
+    assert lint.check_committed_carriage_return(tmp_path) == [], (
+        "a binary is skipped even though its signature holds a carriage return"
+    )
+
+
+def test_committed_carriage_return_still_reads_a_text_file_git_calls_binary(tmp_path):
+    """The other polarity of that skip, and the one that matters: git calls a
+    lone-carriage-return *text* file binary too, and that file is the whole
+    point. The NUL rule is what tells the two apart, not git's classification.
+    """
+    _git_repo_with(tmp_path, "index.md",
+                   ("row" + CR + "orphan" + NL).encode("utf-8"))
+    assert len(lint.check_committed_carriage_return(tmp_path)) == 1
+
+
+def test_committed_carriage_return_is_silent_where_git_cannot_answer(tmp_path):
+    """A tree with no git is not a tree with a finding, per `_git_ignored`'s
+    reason: these guards may only ever remove noise.
+    """
+    (tmp_path / "note.md").write_bytes(("a" + CR + "b" + NL).encode("utf-8"))
+    assert lint.check_committed_carriage_return(tmp_path) == []
+
+
+def test_this_repository_commits_no_carriage_return():
+    """The tree this exists for, and the state PR #231 restored it to."""
+    root = Path(__file__).resolve().parents[2]
+    assert lint.check_committed_carriage_return(root) == []
+
+
+def test_committed_carriage_return_reads_a_staged_file_with_no_commit_yet(tmp_path):
+    """`git ls-files --eol` classifies the index, so the confirming read has
+    to read the index too.
+
+    This spelled it `HEAD:<path>` first, which answers a different question: a
+    file staged and not yet committed has no HEAD copy, so the read failed and
+    the check went silent on precisely the file a session is about to commit.
+    In a repository with no commits at all it was silent on everything. Found
+    by building a tree that had neither, not by reading.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    attributes = Path(__file__).resolve().parents[2] / ".gitattributes"
+    (tmp_path / ".gitattributes").write_bytes(attributes.read_bytes())
+    (tmp_path / "index.md").write_bytes(("row" + CR + "orphan" + NL).encode("utf-8"))
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    findings = lint.check_committed_carriage_return(tmp_path)
+    assert len(findings) == 1 and "index.md" in findings[0]
+
+
+def _cell_with_hollow_span(root, char=CR):
+    """A cell whose *description* holds the defect, so the generated entry
+    copies it -- the frontmatter block is what `roster.write` copies.
+    """
+    cell = root / "skills" / "alpha"
+    cell.mkdir(parents=True)
+    (cell / "SKILL.md").write_bytes(
+        ("---" + NL + "name: alpha" + NL
+         + "description: Ends at the bare " + TICK + char + TICK + " here." + NL
+         + "---" + NL + NL + "# alpha" + NL + "Body." + NL).encode("utf-8")
+    )
+    roster.write(root)
+    return cell
+
+
+def test_a_cells_defect_is_reported_once_and_not_against_its_generated_copy(tmp_path):
+    """One edit, one finding.
+
+    The entry's frontmatter is the cell's byte for byte, so both files hold
+    the defect -- but the entry's finding names a file that says *do not edit
+    this one*, and a reader acting on it edits a generated file whose next
+    `--write` brings the defect back, which is a fix that does not fix.
+    """
+    _cell_with_hollow_span(tmp_path)
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].startswith("hollow-code-span: skills/alpha/SKILL.md")
+
+
+def test_a_hand_written_project_skill_in_the_roster_is_still_read(tmp_path):
+    """The other polarity, and the one that keeps the skip honest.
+
+    `.claude/skills/` is the runtime's documented home for a project's own
+    skills, so the directory is shared rather than owned. A file this
+    generator did not write is not its copy of anything, and skipping by
+    location rather than by the marker would silence a real defect in one --
+    the same reasoning `is_generated` already carries for the removal branch.
+    """
+    hand = tmp_path / ".claude" / "skills" / "mine"
+    hand.mkdir(parents=True)
+    (hand / "SKILL.md").write_bytes(
+        ("---" + NL + "name: mine" + NL + "description: d." + NL + "---" + NL + NL
+         + "Ends at the bare " + TICK + CR + TICK + "." + NL).encode("utf-8")
+    )
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1
+    assert ".claude/skills/mine/SKILL.md" in findings[0]
+
+
+# --- PR #247 review, round-one fix batch -------------------------------------
+
+
+def test_the_generated_entry_skip_reaches_only_the_roster_directory(tmp_path):
+    """M1: `roster.is_generated` answers by marker, and `tools/roster.py`
+    holds that marker's own literal -- so applying it to every path in the
+    repository switched both prose guards off for the file both of their
+    motivating instances came out of. The location is tested first now.
+    """
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    marker = roster.MARKER.decode("utf-8")
+    (tools / "roster.py").write_text(
+        chr(34)*3 + NL + "Writes " + marker + " into each entry." + NL
+        + "Ends at the bare " + TICK + CR + TICK + "." + NL + chr(34)*3 + NL,
+        encoding="utf-8", newline="",
+    )
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1, "a file is not a roster entry merely by quoting the marker"
+    assert findings[0].startswith("hollow-code-span: tools/roster.py")
+
+
+def test_this_repositorys_generator_is_still_read_by_the_prose_guards():
+    """The same property against the real tree rather than a fixture: the one
+    file whose prose is densest in control characters must be in scope.
+    """
+    root = Path(__file__).resolve().parents[2]
+    assert lint._is_generated_entry(root, "tools/roster.py") is False
+    assert lint._is_generated_entry(root, ".claude/skills/substrate/SKILL.md") is True
+
+
+def test_hollow_code_span_counts_the_line_in_the_text_it_matched(tmp_path):
+    """M3: the offset comes from the blanked text, so the count has to be
+    taken there too. Counting it in the original reported a line too early for
+    every file carrying a fence above the span -- eight of the eight such
+    files in this repository when the guard shipped.
+    """
+    (tmp_path / "note.md").write_text(
+        TICK*3 + NL + "a" + NL + "b" + NL + TICK*3 + NL
+        + "tail " + TICK + CR + TICK + "." + NL,
+        encoding="utf-8", newline="",
+    )
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1
+    assert "note.md:5" in findings[0], "the defect is on line 5, below a four-line fence"
+
+
+@pytest.mark.parametrize("label, body, want", [
+    ("a tilde line inside a backtick block does not close it",
+     TICK*3 + NL + "~~~" + NL + TICK*3 + NL, 1),
+    ("a triple-backtick fence shown inside a quadruple block is displayed prose",
+     TICK*4 + NL + TICK*3 + NL + "x " + TICK + CR + TICK + NL + TICK*3 + NL
+     + TICK*4 + NL, 0),
+    ("an opening fence may be indented up to three spaces",
+     "   " + TICK*3 + NL + "x" + NL + "   " + TICK*3 + NL, 1),
+])
+def test_hollow_code_span_closes_a_fence_only_on_its_own_marker(
+    tmp_path, label, body, want
+):
+    """M4: an unconditional toggle got all three of these wrong. The second is
+    the one that mattered most -- it drew a finding against lawful displayed
+    prose, the very construct `test_a_fence_closes_only_on_its_own_marker`
+    pins as lawful for checks 5 and 6.
+
+    Each case appends the same defect after the block, so `want` counts only
+    what the fence rule decides.
+    """
+    tail = "tail " + TICK + CR + TICK + "." + NL if want else "after." + NL
+    (tmp_path / "note.md").write_text(body + tail, encoding="utf-8", newline="")
+    assert len(lint.check_hollow_code_span(tmp_path)) == want, label
+
+
+def test_hollow_code_span_skips_a_span_holding_two_line_breaks(tmp_path):
+    """The exclusion had no test. CommonMark ends a code span at a blank
+    line, and in whitespace-only content two line breaks put one there.
+    """
+    (tmp_path / "note.md").write_text(
+        "a " + TICK + NL + NL + TICK + " b" + NL, encoding="utf-8", newline="",
+    )
+    assert lint.check_hollow_code_span(tmp_path) == []
+
+
+def test_hollow_code_span_honours_gitignore_at_its_own_call_site(tmp_path):
+    """The filter was unpinned where it is used, not where it is defined: a
+    regression dropping it would report findings inside a session's `.venv`.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("skip" + NL, encoding="utf-8", newline="")
+    (tmp_path / "skip").mkdir()
+    defect = "a " + TICK + CR + TICK + "." + NL
+    (tmp_path / "skip" / "hidden.md").write_text(defect, encoding="utf-8", newline="")
+    (tmp_path / "shown.md").write_text(defect, encoding="utf-8", newline="")
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1 and "shown.md" in findings[0]
+
+
+def test_read_text_answers_none_for_a_file_it_cannot_open(tmp_path):
+    """D1: unreadable is None, not an exception. With the read unguarded, one
+    vanished or locked file cost the calling check its entire territory and
+    named a frame inside the standard library.
+    """
+    assert lint._read_text(tmp_path / "not-there.md") is None
+
+
+def test_hollow_code_span_survives_a_file_that_vanishes_under_it(tmp_path):
+    """The same property through the check, which is where it is reached: the
+    walk collects paths and the read happens later.
+    """
+    (tmp_path / "gone.md").write_text("x" + NL, encoding="utf-8", newline="")
+    (tmp_path / "kept.md").write_text(
+        "a " + TICK + CR + TICK + "." + NL, encoding="utf-8", newline="",
+    )
+    real = lint._prose_files
+
+    def vanishing(root):
+        paths = list(real(root))
+        (tmp_path / "gone.md").unlink()
+        return paths
+
+    lint._prose_files = vanishing
+    try:
+        findings = lint.check_hollow_code_span(tmp_path)
+    finally:
+        lint._prose_files = real
+    assert len(findings) == 1 and "kept.md" in findings[0]
+
+
+def test_the_prose_guards_skip_the_records_doctrine_forbids_editing(tmp_path):
+    """M7: a finding must quote the line it names, so a review row about a
+    hollow span holds one. Reporting it is a red no lawful edit can clear --
+    the shape #224 was about, rebuilt by a guard.
+    """
+    defect = "row " + TICK + " " + TICK + "." + NL
+    for rel in ("docs/reviews.jsonl", "docs/recorded-findings.jsonl",
+                "docs/ledger.jsonl", "docs/architecture/adr/ADR-001.md"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(defect, encoding="utf-8", newline="")
+    (tmp_path / "docs" / "live.md").write_text(defect, encoding="utf-8", newline="")
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1, "only the file that is not a record is reported"
+    assert "docs/live.md" in findings[0]
+
+
+def test_committed_carriage_return_sees_the_working_tree(tmp_path):
+    """M2: `AGENTS.md` runs this command before staging and `persist.py`
+    refuses a pre-loaded index, so reading the index alone answered a question
+    about the previous commit. The guard could not fire until the run *after*
+    the bytes had landed.
+    """
+    _git_repo_with(tmp_path, "clean.md", ("ok" + NL).encode("utf-8"))
+    (tmp_path / "tracked.md").write_bytes(("row" + CR + "orphan" + NL).encode("utf-8"))
+    (tmp_path / "untracked.md").write_bytes(("new" + CR + "entry" + NL).encode("utf-8"))
+    findings = lint.check_committed_carriage_return(tmp_path)
+    assert len(findings) == 2, "the unstaged edit and the new file are both reported"
+    assert any("tracked.md" in f for f in findings)
+    assert any("untracked.md" in f for f in findings)
+
+
+def test_committed_carriage_return_reports_one_finding_per_file(tmp_path):
+    """A file whose index and working copies both hold the byte is one
+    defect. Reporting it twice is the shape the sibling guard's skip exists
+    to stop.
+    """
+    _git_repo_with(tmp_path, "both.md",
+                   ("a" + NL + "row" + CR + "x" + NL).encode("utf-8"))
+    findings = lint.check_committed_carriage_return(tmp_path)
+    assert len(findings) == 1
+    assert "both.md:2" in findings[0], "the position is named, not just the file"
+    assert "index copy holds one too" in findings[0]
+
+
+def test_committed_carriage_return_names_a_remedy_that_clears_it(tmp_path):
+    """M6: the message told the reader to rewrite a file whose working copy
+    was already clean, so following it left the finding standing word for
+    word. Staging is what clears that one, and the message now says so.
+    """
+    _git_repo_with(tmp_path, "note.md", ("row" + CR + "orphan" + NL).encode("utf-8"))
+    (tmp_path / "note.md").write_bytes(("row" + NL + "orphan" + NL).encode("utf-8"))
+    findings = lint.check_committed_carriage_return(tmp_path)
+    assert len(findings) == 1
+    assert "the working copy is already clean -- stage it" in findings[0]
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    assert lint.check_committed_carriage_return(tmp_path) == [], (
+        "the remedy the message names must clear the finding"
+    )
+
+
+def test_committed_carriage_return_leaves_a_binary_whose_nul_is_late(tmp_path):
+    """M5: a PDF's header is ASCII and its first NUL sits well past a
+    kilobyte, so the NUL rule alone does not reach it. This fixture holds
+    *no* lone carriage return -- only pairs -- and the old predicate reported
+    it with a message asserting a lone one it had never looked for.
+    """
+    pdf = ("%PDF-1.4" + CR + NL).encode("utf-8") + b"A" * 1200 \
+        + bytes([0]) * 8 + ("%%EOF" + NL).encode("utf-8")
+    _git_repo_with(tmp_path, "paper.pdf", pdf)
+    assert lint.check_committed_carriage_return(tmp_path) == []
+
+
+def test_committed_carriage_return_reads_no_blob_for_a_lawful_empty_file(tmp_path):
+    """An empty file and one with no trailing terminator both report `i/none`,
+    which is lawful. The predicate flagged them and paid a subprocess for
+    each, against a docstring saying nothing was read on a lawful tree.
+    """
+    _git_repo_with(tmp_path, "empty.txt", b"")
+    (tmp_path / "noeol.txt").write_bytes(b"text with no trailing newline")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    real = subprocess.run
+    spawned = []
+
+    def counting(args, **kwargs):
+        if isinstance(args, list) and args[:2] == ["git", "cat-file"]:
+            spawned.append(args[-1])
+        return real(args, **kwargs)
+
+    subprocess.run = counting
+    try:
+        assert lint.check_committed_carriage_return(tmp_path) == []
+    finally:
+        subprocess.run = real
+    assert spawned == [], "a lawful tree reads no blob"
+
+
+def test_where_names_the_innermost_frame_inside_this_repository():
+    """M8: the innermost frame is often inside the standard library, and a
+    bare basename there is unsearchable and reads as a repository path. The
+    actionable frame is the innermost one under ROOT.
+    """
+    try:
+        json.loads("{")
+    except ValueError as exc:
+        where = lint._where(exc)
+    assert where.startswith("tools/tests/test_lint.py:"), where
+
+
+def test_always_on_note_reports_rather_than_raising_on_a_bad_shape(tmp_path):
+    """M19: the read was inside the guard and the formatting was not, so a
+    `data` missing either key escaped as a KeyError and `main()` answered the
+    mandated command with a traceback.
+    """
+    module = tmp_path / "tools"
+    module.mkdir()
+    (module / "figures.py").write_text(
+        "def figure_always_on(root):" + NL
+        + "    return {'data': {'adopter_total': 1}}" + NL,
+        encoding="utf-8", newline="",
+    )
+    note = lint.always_on_note(tmp_path)
+    assert note.startswith("always-on surface: not derived (KeyError")
+
+
+def test_hollow_code_span_does_not_walk_the_git_directory(tmp_path):
+    """`_prose_files` is the first walk here to take the repository root
+    unfiltered, and `.git` is full of text git wrote: commit messages, the
+    config, the sample hooks. `_git_ignored` does not exclude it -- git does
+    not call its own directory ignored -- so the walk's own clause is the only
+    thing keeping it out, and nothing pinned that clause.
+    """
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    defect = "a " + TICK + CR + TICK + "." + NL
+    (git_dir / "COMMIT_EDITMSG").write_text(defect, encoding="utf-8", newline="")
+    (tmp_path / "shown.md").write_text(defect, encoding="utf-8", newline="")
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1 and "shown.md" in findings[0]
+
+
+# --- PR #247 review, post-fix cycle 1 ----------------------------------------
+
+
+def test_a_lone_carriage_return_in_a_live_record_is_still_reported(tmp_path):
+    """Post-fix 1: the two guards skip for different reasons, and one list
+    conflated them.
+
+    A hollow code span in a review row is intended content — a finding must
+    quote the line it names — so the prose guard skips it. A lone carriage
+    return there is not content at all: it is corruption of the row's own JSON,
+    and #233's motivating instance was a row appended by a script whose escapes
+    had become control bytes. Sharing one list withdrew the pre-commit catch
+    this change's own M2 remedy had just bought.
+    """
+    _git_repo_with(tmp_path, "docs/note.md", ("ok" + NL).encode("utf-8"))
+    for rel in ("docs/reviews.jsonl", "docs/recorded-findings.jsonl",
+                "docs/ledger.jsonl"):
+        (tmp_path / rel).write_bytes(("{" + chr(34) + "f" + chr(34) + ": "
+                                      + chr(34) + "row" + CR + "orphan"
+                                      + chr(34) + "}" + NL).encode("utf-8"))
+    reported = {f.split(":")[1].strip() for f
+                in lint.check_committed_carriage_return(tmp_path)}
+    assert "docs/reviews.jsonl" in reported
+    assert "docs/recorded-findings.jsonl" in reported
+    assert "docs/ledger.jsonl" not in reported, "the frozen archive stays skipped"
+
+
+def test_a_hollow_span_in_a_live_record_is_still_skipped(tmp_path):
+    """The other polarity of the same split, and the reason it exists: a
+    finding quoting a hollow span is what gets appended to these files, and
+    reporting it would red the lint over a record doctrine forbids repairing.
+    """
+    defect = "row " + TICK + " " + TICK + "." + NL
+    for rel in ("docs/reviews.jsonl", "docs/recorded-findings.jsonl",
+                "docs/ledger.jsonl", "docs/live.md"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(defect, encoding="utf-8", newline="")
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1 and "docs/live.md" in findings[0]
+
+
+def test_the_frozen_archive_is_what_both_guards_skip():
+    """The two populations, named apart. A new frozen path goes in one; a new
+    append-only record that is still written to goes in the other.
+
+    **The lists are not derived from `AGENTS.md`, and a sibling pin used to
+    imply they were.** Deriving them is the real remedy for a frozen path added
+    to the doctrine and omitted here, and it was priced as bigger than the
+    defect it closes; this pins what the lists hold instead, which is the
+    narrower true thing. [PR #247 review, post-fix R3]
+    """
+    assert lint._frozen("docs/architecture/adr/ADR-001.md")
+    assert lint._frozen("docs/ledger.jsonl")
+    assert lint._frozen("docs/seat-record.jsonl")
+    assert not lint._frozen("docs/reviews.jsonl"), "a live record is not frozen"
+    assert lint._unread_as_prose("docs/reviews.jsonl")
+    assert lint._unread_as_prose("docs/recorded-findings.jsonl")
+    assert not lint._unread_as_prose("docs/values.md")
+
+
+def test_committed_carriage_return_reads_the_index_copy_not_head(tmp_path):
+    """Post-fix 3: `git ls-files --eol` classifies the index, so the confirming
+    read must be of the index.
+
+    Spelled `HEAD:<path>` this loses the whole index-only population — a file
+    staged and then cleaned on disk, which is the case commit `9a9f221` was
+    written for. The earlier pin stopped covering it once the working-tree
+    population landed, because its fixture leaves the bytes on disk too.
+    """
+    _git_repo_with(tmp_path, "note.md", ("clean" + NL).encode("utf-8"))
+    staged = tmp_path / "staged.md"
+    staged.write_bytes(("row" + CR + "orphan" + NL).encode("utf-8"))
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    # the working copy is repaired; only the index still holds the byte
+    staged.write_bytes(("row" + NL + "orphan" + NL).encode("utf-8"))
+    findings = lint.check_committed_carriage_return(tmp_path)
+    assert len(findings) == 1
+    assert "staged.md" in findings[0] and "index copy" in findings[0]
+
+
+def test_committed_carriage_return_uses_gits_own_binary_window(tmp_path):
+    """Post-fix 4: this module skips binary content on a NUL in the first
+    kilobyte; git's own window is 8000 bytes. A PDF with CR-only line endings
+    and its first NUL between the two was classified `-text` by git and text by
+    the check, so it drew a finding whose only named remedy would corrupt it.
+    """
+    pdf = ("%PDF-1.4" + CR).encode("utf-8") + ("obj" + CR).encode("utf-8") * 300 \
+        + bytes([0]) * 8 + ("%%EOF" + NL).encode("utf-8")
+    assert bytes([0]) not in pdf[:1024], "the fixture's NUL is past the old window"
+    assert bytes([0]) in pdf[:lint.BINARY_WINDOW], "and inside git's"
+    _git_repo_with(tmp_path, "paper.pdf", pdf)
+    assert lint.check_committed_carriage_return(tmp_path) == []
+
+
+def test_the_carriage_return_remedy_does_not_assume_the_file_is_text(tmp_path):
+    """The same class, one construct on: the check cannot prove a flagged file
+    is text, so the remedy stops instructing a rewrite unconditionally.
+    """
+    _git_repo_with(tmp_path, "note.md", ("row" + CR + "orphan" + NL).encode("utf-8"))
+    finding = lint.check_committed_carriage_return(tmp_path)[0]
+    assert "if it is text, rewrite it with line feeds" in finding
+
+
+def test_emitted_ascii_reports_a_file_it_cannot_read(tmp_path, monkeypatch):
+    """Post-fix 5: `_read_text` learned to answer rather than raise, and these
+    two checks read bytes directly and did not. One locked or vanished file
+    took the whole check's territory with it.
+    """
+    (tmp_path / "mod.py").write_text("x = 1" + NL, encoding="utf-8", newline="")
+    real = Path.read_bytes
+
+    def denied(self, *args, **kwargs):
+        if self.name == "mod.py":
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    findings = lint.check_emitted_ascii(tmp_path)
+    assert len(findings) == 1
+    assert "could not be read" in findings[0] and "mod.py" in findings[0]
+    # and its sibling on the same walk stays silent rather than raising
+    assert lint.check_docstring_control_chars(tmp_path) == []
+
+
+def test_hollow_code_span_caps_an_opening_fence_at_three_spaces(tmp_path):
+    """Post-fix 7: the divergence the docstring says must be carried into the
+    unification was pinned by nothing, so it could be dropped in silence.
+
+    Four spaces makes an indented code block, not a fence — so the marker is
+    content, the text after it is ordinary prose, and a defect there reports.
+    """
+    (tmp_path / "note.md").write_text(
+        "intro" + NL + NL + "    " + TICK*3 + NL + "    code" + NL + NL
+        + "tail " + TICK + CR + TICK + "." + NL,
+        encoding="utf-8", newline="",
+    )
+    assert len(lint.check_hollow_code_span(tmp_path)) == 1
