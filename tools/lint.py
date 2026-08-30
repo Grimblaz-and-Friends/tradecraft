@@ -109,13 +109,6 @@ Checks:
     stdin, stdout and stderr, because on Windows an unnamed stream resolves
     through a std-handle table that can still name a closed handle.
 
-The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
-constitution) is not validated: it is history, not a live format (D-74).
-
-All shipped files are scanned regardless of extension; binary content (NUL
-byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
-from any cwd — paths resolve from this file's own location.
-Exit 0 when clean, 1 with findings listed one per line.
 20. docstring control characters: no docstring's compiled value holds a
     control character other than a line feed or a tab. A docstring is not raw,
     so a backslash followed by r, written in one, is a carriage return at
@@ -135,6 +128,11 @@ All shipped files are scanned regardless of extension; binary content (NUL
 byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
 from any cwd — paths resolve from this file's own location.
 Exit 0 when clean, 1 with findings listed one per line.
+
+A check that raises is reported as a finding naming it, and every other
+check still reports: the chain isolates them one at a time, so the one
+command the flow mandates before a commit never answers with a traceback
+and never discards what the checks before it found (#239).
 """
 from __future__ import annotations
 
@@ -145,6 +143,7 @@ import json
 import re
 import subprocess
 import sys
+import traceback
 import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -2794,29 +2793,73 @@ def check_subprocess_streams(root: Path) -> list[str]:
     return findings
 
 
+def _where(exc: BaseException) -> str:
+    """The innermost frame of a raised check, as `file:line`.
+
+    Computed from the traceback rather than guessed. Without it the finding
+    names an exception and no site -- `AttributeError: 'Module' object has no
+    attribute 'lineno'` is the real one this happened with, and it appears
+    nowhere a reader could search for. The exception's own message is not
+    enough to find the line that raised it, and the traceback that carried it
+    is exactly what isolating the check throws away.
+
+    Unknown when there is no traceback, which is stated rather than filled in.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return "unknown"
+    frame = frames[-1]
+    try:
+        where = Path(frame.filename).resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        where = Path(frame.filename).name
+    return f"{where}:{frame.lineno}"
+
+
 def run(root: Path) -> list[str]:
-    return (
-        check_zone_wall(root)
-        + check_harness_tokens(root)
-        + check_charter_cell(root)
-        + check_cell_frontmatter(root)
-        + check_project_roster(root)
-        + check_sideways_deps(root)
-        + check_cell_references(root)
-        + check_doctrine_citations(root)
-        + check_doctrine_references(root)
-        + check_doctrine(root)
-        + check_doctrine_callout(root)
-        + check_review_index(root)
-        + check_decision_index(root)
-        + check_entry_references(root)
-        + check_emitted_ascii(root)
-        + check_docstring_not_piped(root)
-        + check_stdio_wired(root)
-        + check_subprocess_streams(root)
-        + check_docstring_control_chars(root)
-        + check_marketplace_source(root)
-    )
+    """Every check, each isolated, findings in report order.
+
+    **A check that raises is reported, never raised.** This used to be one `+`
+    chain over every check, so an exception in any one of them propagated out
+    of `main()` to the console -- after the checks before it had already
+    computed their findings, which were discarded unprinted. The one command
+    the flow mandates between an edit and a commit then answered with a
+    traceback naming an internal helper instead of a list naming the tree, and
+    a session had no way to tell a clean tree from a filthy one.
+
+    Observed live: a check formatted `node.lineno` on an `ast.Module`, which
+    has none, and took nineteen other checks' findings with it. Fixing that one
+    trigger left the chain as it was. The same defect `roster.write` records at
+    [PR #210 review, M4], with the same remedy and the same reason: reporting
+    keeps the remaining work going and leaves the reader what the other checks
+    would have given them. [#239]
+
+    **The finding claims only what was computed.** It names the check, the
+    exception and the frame that raised -- and says the check's territory went
+    unchecked, which is the honest statement. It does not say the rest of the
+    tree is clean, and it does not guess what the check would have found: that
+    is the trap `check_emitted_ascii`'s docstring records, a guard's message
+    asserting something it never computed. A session met a lawful fixture
+    there, was told a false thing about it, and reasoned correctly from the
+    falsehood.
+
+    The finding is a finding like any other, so the exit code is non-zero even
+    when nothing else reported. A raising check that exited 0 would be read as
+    a clean tree, which is the failure this exists to end rather than relocate.
+    """
+    findings: list[str] = []
+    for check in CHECKS:
+        try:
+            findings.extend(check(root))
+        except Exception as exc:  # noqa: BLE001 -- reported, never raised
+            findings.append(
+                f"check-raised: {check.__name__} raised "
+                f"{type(exc).__name__} at {_where(exc)} ({exc}) -- that check "
+                f"reported nothing, so what it covers is unchecked and this "
+                f"run does not say the tree is clean. Every other check's "
+                f"findings stand and are listed with this one"
+            )
+    return findings
 
 
 def check_project_roster(root: Path) -> list[str]:
@@ -2848,6 +2891,32 @@ def check_project_roster(root: Path) -> list[str]:
     what the check reads.
     """
     return roster.verify(root)
+
+
+# Every check, in report order. A list rather than an expression because
+# `run()` calls them one at a time to isolate them; see its docstring.
+CHECKS = (
+    check_zone_wall,
+    check_harness_tokens,
+    check_charter_cell,
+    check_cell_frontmatter,
+    check_project_roster,
+    check_sideways_deps,
+    check_cell_references,
+    check_doctrine_citations,
+    check_doctrine_references,
+    check_doctrine,
+    check_doctrine_callout,
+    check_review_index,
+    check_decision_index,
+    check_entry_references,
+    check_emitted_ascii,
+    check_docstring_not_piped,
+    check_stdio_wired,
+    check_subprocess_streams,
+    check_docstring_control_chars,
+    check_marketplace_source,
+)
 
 
 def always_on_note(root: Path) -> str:

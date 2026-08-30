@@ -697,12 +697,16 @@ def test_the_module_docstring_enumerates_every_check_run_calls():
     every rewording and be deleted within a release. It does not catch a wrong
     *description* inside an item; that is a separate class, and this change
     once carried an instance of it (check 5 and its implementation disagreed).
-    """
-    import inspect
 
-    called = re.findall(r"check_[a-z_]+", inspect.getsource(lint.run))
-    assert tuple(called) == LINT_CHECKS_IN_ORDER, (
-        "run() calls checks this list does not name, or in another order"
+    Read from `lint.CHECKS` rather than scraped out of `run()`'s source. The
+    chain became a tuple when the checks were isolated from one another
+    (#239), so the source no longer names them -- and the scrape was reading
+    prose as well as calls, which a docstring naming a sibling check would
+    have broken.
+    """
+    called = tuple(check.__name__ for check in lint.CHECKS)
+    assert called == LINT_CHECKS_IN_ORDER, (
+        "CHECKS names checks this list does not, or in another order"
     )
     numbered = re.findall(r"^\s*(\d+)\.\s", lint.__doc__, re.M)
     assert [int(n) for n in numbered] == list(
@@ -3717,3 +3721,94 @@ def test_git_ignored_filters_an_ordinary_tree(tmp_path):
     shown = tmp_path / "b.py"; shown.write_bytes(b"y = 2" + chr(10).encode())
     ignored = lint._git_ignored(tmp_path, [hidden, shown])
     assert ignored == {hidden}
+
+
+def _raising(message="simulated: any check that raises"):
+    """A check-shaped callable that raises, for the isolation tests below."""
+    def check(root):
+        raise AttributeError(message)
+    check.__name__ = "check_that_raises"
+    return check
+
+
+def test_a_raising_check_does_not_take_the_other_checks_findings_with_it(
+    tmp_path, monkeypatch
+):
+    """The defect: `run()` was one `+` chain, so any check that raised
+    discarded every finding computed before it and answered with a traceback.
+    A session running the flow's first mandated step could not tell a clean
+    tree from a filthy one. [#239]
+    """
+    make_clean_tree(tmp_path)
+    # A genuine finding from a real check, so there is something to lose.
+    _write_marketplace(tmp_path, {"source": "./"})
+    real = lint.run(tmp_path)
+    assert real, "the fixture must produce a finding for this test to mean anything"
+
+    monkeypatch.setattr(lint, "CHECKS", lint.CHECKS + (_raising(),))
+    findings = lint.run(tmp_path)
+
+    for finding in real:
+        assert finding in findings, "a raising check must not discard what the others found"
+    raised = [f for f in findings if f.startswith("check-raised:")]
+    assert len(raised) == 1
+    assert "check_that_raises" in raised[0]
+    assert "AttributeError" in raised[0]
+
+
+def test_a_raising_check_is_reported_rather_than_raised(tmp_path, monkeypatch):
+    """The other half: `run()` returns rather than propagating, on a tree
+    where nothing else has anything to say.
+    """
+    make_clean_tree(tmp_path)
+    assert lint.run(tmp_path) == []
+    monkeypatch.setattr(lint, "CHECKS", (_raising(),))
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1 and findings[0].startswith("check-raised:")
+
+
+def test_a_raising_check_cannot_be_read_as_a_clean_tree(tmp_path, monkeypatch):
+    """Exit code, on a tree whose every other check is silent. A raising check
+    that exited 0 would relocate the defect rather than end it: the session
+    reads green and commits.
+    """
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "ROOT", tmp_path)
+    monkeypatch.setattr(lint, "CHECKS", (_raising(),))
+    assert lint.main() == 1
+
+
+def test_the_raised_finding_names_the_frame_and_claims_nothing_else(tmp_path, monkeypatch):
+    """The message states what was computed and no more.
+
+    It carries the check, the exception and the site -- without the site the
+    reader has an exception and nowhere to search, and the traceback that
+    carried one is exactly what isolating the check throws away. It must not
+    say the tree is clean, which is the trap `check_emitted_ascii`'s docstring
+    records: a guard asserting something it never computed.
+    """
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "CHECKS", (_raising("boom"),))
+    finding = lint.run(tmp_path)[0]
+    assert "test_lint.py:" in finding, "the finding names the frame that raised"
+    assert "(boom)" in finding, "the exception's own message survives"
+    assert "unchecked" in finding
+    assert "does not say the tree is clean" in finding
+
+
+def test_every_check_in_the_chain_is_reachable_by_name():
+    """`CHECKS` is the chain, and a check absent from it runs nowhere. The
+    tuple replaced a `+` expression where forgetting an entry was equally
+    silent, so the property is pinned rather than assumed.
+    """
+    assert len({c.__name__ for c in lint.CHECKS}) == len(lint.CHECKS)
+    for check in lint.CHECKS:
+        assert getattr(lint, check.__name__) is check
+
+
+def test_where_states_unknown_rather_than_inventing_a_frame():
+    """`_where` on an exception that was never raised has no traceback. It
+    says so; a guard that filled in a plausible file and line would be
+    stating something it never computed.
+    """
+    assert lint._where(ValueError("never raised")) == "unknown"
