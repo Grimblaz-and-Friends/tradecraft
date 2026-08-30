@@ -2375,7 +2375,14 @@ def check_committed_carriage_return(root: Path) -> list[str]:
         # records. On a lawful tree nothing is flagged and neither read runs.
         try:
             blob = subprocess.run(
-                ["git", "cat-file", "-p", f"HEAD:{rel_file}"],
+                # `:<path>` is the *index* copy, which is what `ls-files
+                # --eol` classified. `HEAD:<path>` was the first spelling and
+                # answers a different question: a file staged and not yet
+                # committed has no HEAD copy, so the read failed and the check
+                # went silent on exactly the file a session is about to
+                # commit -- and silent again in a repository with no commits
+                # at all. Found by building a fixture tree that had neither.
+                ["git", "cat-file", "-p", f":{rel_file}"],
                 stdin=subprocess.DEVNULL,
                 capture_output=True, cwd=root, timeout=60,
             )

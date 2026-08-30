@@ -3979,3 +3979,23 @@ def test_this_repository_commits_no_carriage_return():
     """The tree this exists for, and the state PR #231 restored it to."""
     root = Path(__file__).resolve().parents[2]
     assert lint.check_committed_carriage_return(root) == []
+
+
+def test_committed_carriage_return_reads_a_staged_file_with_no_commit_yet(tmp_path):
+    """`git ls-files --eol` classifies the index, so the confirming read has
+    to read the index too.
+
+    This spelled it `HEAD:<path>` first, which answers a different question: a
+    file staged and not yet committed has no HEAD copy, so the read failed and
+    the check went silent on precisely the file a session is about to commit.
+    In a repository with no commits at all it was silent on everything. Found
+    by building a tree that had neither, not by reading.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    attributes = Path(__file__).resolve().parents[2] / ".gitattributes"
+    (tmp_path / ".gitattributes").write_bytes(attributes.read_bytes())
+    (tmp_path / "index.md").write_bytes(("row" + CR + "orphan" + NL).encode("utf-8"))
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    findings = lint.check_committed_carriage_return(tmp_path)
+    assert len(findings) == 1 and "index.md" in findings[0]
