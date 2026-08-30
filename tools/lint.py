@@ -2084,11 +2084,14 @@ def check_docstring_control_chars(root: Path) -> list[str]:
     are about them, so the escape and the character are one keystroke apart and
     the source looks identical either way.
 
-    **This fired three times in one change and nothing caught any of them.** In
-    PR #231: two literal control bytes reached a committed decision-log row and
-    split a markdown table; a new test's docstring carried four carriage
-    returns after a repair converted its bytes into escapes it never doubled;
-    and a code span lost the character it named. [#233]
+    **It fired repeatedly inside the one change that added it, and nothing
+    caught any of them** -- a committed decision-log row split by two control
+    bytes, a docstring carrying carriage returns after a repair turned its bytes
+    into escapes it never doubled, a code span that lost the character it named,
+    and this check's own registration sentence. Named rather than counted: the
+    stated count was wrong the moment the next instance landed, which is the
+    arithmetic `roster.verify` deleted rather than corrected a fourth time
+    [PR #210 cycle one, C1-F5]. [#233]
 
     It reads the **compiled** value, not the source, which is the whole point:
     the bytes on disk were clean in the second instance and the runtime value
@@ -2117,7 +2120,7 @@ def check_docstring_control_chars(root: Path) -> list[str]:
     # to `str.splitlines()`, so it mis-renders anything paginating a
     # docstring -- and the stated rule said "control character", not
     # "below U+0020".
-    allowed = {ord(chr(10)), ord(chr(9))}
+    allowed = {10, 9}
     for path in candidates:
         if path in ignored:
             continue
@@ -2142,7 +2145,7 @@ def check_docstring_control_chars(root: Path) -> list[str]:
             # traceback and none of the other checks' findings. The same defect
             # `roster.write` records at [PR #210 review, M4], reinstated by the
             # guard written to end a different one.
-            line = getattr(node, "lineno", 1)
+            line = node.body[0].lineno
             owner = getattr(node, "name", "module")
             for point in sorted({ord(c) for c in doc} - allowed):
                 if unicodedata.category(chr(point)) != "Cc":
@@ -2290,7 +2293,13 @@ def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
         proc = subprocess.run(
             ["git", "check-ignore", "--stdin", "-z"],
             input="\0".join(str(path) for path in paths),
-            capture_output=True, text=True, cwd=root, timeout=60,
+            # `text=True` alone encodes stdin with the locale codepage, so one
+            # non-ASCII path anywhere collapses this filter for every check
+            # that uses it -- silently, because the UnicodeEncodeError is
+            # raised in subprocess's writer thread and swallowed. The substrate
+            # cell's stream rule, at a site three checks share.
+            capture_output=True, text=True, encoding="utf-8",
+            cwd=root, timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
         return set()

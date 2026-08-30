@@ -3297,8 +3297,13 @@ def test_docstring_control_chars_reports_every_character_not_only_the_first(tmp_
     Both characters arrive as **escapes**, and the first draft of this fixture
     wrote a raw carriage-return byte instead and saw only one finding: Python's
     tokenizer folds a lone carriage return in source to a line feed, so it never
-    reaches the compiled value at all. That is why this check cannot see a raw
-    control byte on disk, and why a byte-level scan is not subsumed by it.
+    reaches the compiled value at all.
+
+    **That is true of the carriage return and of nothing else.** A raw vertical
+    tab, form feed, ESC, DEL or C1 byte on disk survives into the compiled value
+    and is reported. So the gap a byte-level scan would close is one character
+    wide, not the whole class -- which is worth stating precisely, because the
+    scan is filed on the strength of it (#233).
     """
     source = (
         "def f():" + chr(10)
