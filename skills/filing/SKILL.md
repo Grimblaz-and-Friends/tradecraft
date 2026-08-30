@@ -30,11 +30,14 @@ gh issue list --repo OWNER/REPO --state all --limit 1000 --search "post-fix"
 
 **The defect's own words are the board's, not yours.** The other two are printed on the artifact in front of you; this one guesses what somebody else called the same thing. Lift it from the material — the rule being breached, the term a decision entry used — rather than coining it, because a coined phrase is queried against a board that could never have contained it.
 
-Three outcomes, each lawful:
+Four outcomes, each lawful:
 
 - **Extend** an **open** issue — a comment, not a new number. A closed match is a tie, never a home. **Extend only where a ruling that closes the host would dispose of your defect too** — read its comments as well as its body, since an issue is re-scoped where it is discussed. Otherwise it is a tie, and extending buries your defect under a disposal that never reaches it.
-- **File new with named ties** — the relationship goes on the record at birth instead of being reconstructed at ranking time: [#94](https://github.com/Grimblaz-and-Friends/tradecraft/issues/94) and [#95](https://github.com/Grimblaz-and-Friends/tradecraft/issues/95) were two lawful filings against one sentence whose pairing had to be reconstructed when they were merged into a single PR later, because neither of them named the other.
+- **File new with named ties** — the relationship goes on the record at birth instead of being reconstructed at ranking time.
+- **File one issue carrying the batch** — where one pass surfaced several defects that one change would fix, they land as one number rather than several cross-tied ones: each defect with its own evidence, the shared probes stated once, and pickup dispositioning them item by item. [#151](https://github.com/Grimblaz-and-Friends/tradecraft/issues/151) and [#152](https://github.com/Grimblaz-and-Friends/tradecraft/issues/152) are the shape. [#94](https://github.com/Grimblaz-and-Friends/tradecraft/issues/94) and [#95](https://github.com/Grimblaz-and-Friends/tradecraft/issues/95) are the cost of the alternative — two lawful filings against one sentence, merged into a single PR later, whose pairing had to be reconstructed because neither of them named the other.
 - **File standalone** — nothing turned up that earns a tie.
+
+**The batch test is the change, not the surface: would one change fix these?** A shared file neither decides it nor is required — [#233](https://github.com/Grimblaz-and-Friends/tradecraft/issues/233), [#234](https://github.com/Grimblaz-and-Friends/tradecraft/issues/234) and [#235](https://github.com/Grimblaz-and-Friends/tradecraft/issues/235) came out of one review, each naming the other two; #233 and #234 name different files and landed in one PR, #235 named a third and landed alone. By this test they were one batch and one standalone: two numbers for two changes rather than three. Where the answer is no, it is separate work and takes a tie.
 
 An extending comment carries the same list and meets the same floor; its tie is the issue it lands on.
 
@@ -68,6 +71,8 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 **Record what happened; do not decide what to do.** The line is not how much a filing carries but which kind of thing it carries. Evidence — a file and line, a quoted sentence, a count, an incident that occurred — survives however far the vocabulary moves, *provided it is written as an observation anyone can re-run rather than as a citation into vocabulary that can retire*. Design — options, remedy shapes, names for structures — is written in today's vocabulary and decays with it. [#38](https://github.com/Grimblaz-and-Friends/tradecraft/issues/38) is the exhibit for both halves and for the proviso: its frame was dead vocabulary before anyone opened it, and the observation underneath survived only because its successor could restate it against an authority that still existed.
 
 **Where the evidence is itself a rule, the rule's own sentence is the observation.** Quote it with its location: the quote survives the file moving, where the location alone is the citation the proviso warns about. Which rule is breached is evidence; what replaces it is design, and stays out.
+
+**Where the defect can be demonstrated, the demonstration is the evidence** — the probe command and its output, not a sentence reporting what running it shows. A reproduction cannot be misread, survives the vocabulary moving around it, and hands the pickup its first acceptance criterion. Prose is the fallback rather than the default, and it is the right form for what has no failing run: a want, an idea, and a breached rule, whose own sentence is the observation above.
 
 **The floor:** carry enough evidence that a session picking the work up can confirm the problem is real without redoing the discovery that found it.
 
