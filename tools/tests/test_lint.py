@@ -4207,22 +4207,6 @@ def test_the_prose_guards_skip_the_records_doctrine_forbids_editing(tmp_path):
     assert "docs/live.md" in findings[0]
 
 
-def test_the_skip_lists_hold_the_paths_the_doctrine_names(tmp_path):
-    """The membership this repository depends on, pinned by name.
-
-    **It does not derive the lists from `AGENTS.md`, and the docstring used to
-    imply it did.** Deriving them is the real remedy for a frozen path added to
-    the doctrine and omitted here, and it was priced as bigger than the defect;
-    this pins what the lists hold instead, which is the narrower true thing.
-    [PR #247 review, post-fix R3]
-    """
-    assert lint._frozen("docs/architecture/adr/ADR-001.md")
-    assert lint._frozen("docs/ledger.jsonl")
-    assert lint._frozen("docs/seat-record.jsonl")
-    assert lint._unread_as_prose("docs/recorded-findings.jsonl")
-    assert not lint._unread_as_prose("docs/values.md")
-
-
 def test_committed_carriage_return_sees_the_working_tree(tmp_path):
     """M2: `AGENTS.md` runs this command before staging and `persist.py`
     refuses a pre-loaded index, so reading the index alone answered a question
@@ -4394,11 +4378,19 @@ def test_a_hollow_span_in_a_live_record_is_still_skipped(tmp_path):
 def test_the_frozen_archive_is_what_both_guards_skip():
     """The two populations, named apart. A new frozen path goes in one; a new
     append-only record that is still written to goes in the other.
+
+    **The lists are not derived from `AGENTS.md`, and a sibling pin used to
+    imply they were.** Deriving them is the real remedy for a frozen path added
+    to the doctrine and omitted here, and it was priced as bigger than the
+    defect it closes; this pins what the lists hold instead, which is the
+    narrower true thing. [PR #247 review, post-fix R3]
     """
     assert lint._frozen("docs/architecture/adr/ADR-001.md")
     assert lint._frozen("docs/ledger.jsonl")
+    assert lint._frozen("docs/seat-record.jsonl")
     assert not lint._frozen("docs/reviews.jsonl"), "a live record is not frozen"
     assert lint._unread_as_prose("docs/reviews.jsonl")
+    assert lint._unread_as_prose("docs/recorded-findings.jsonl")
     assert not lint._unread_as_prose("docs/values.md")
 
 
