@@ -4,6 +4,7 @@ The evasion-form cases exist because the 2026-08-15 adversarial review
 showed the original regexes missed every relative, uppercase, and
 backslash form (findings M1/M2/M4/M5/M6 in docs/ledger.jsonl)."""
 
+import ast
 import json
 import re
 import subprocess
@@ -14,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import figures  # noqa: E402
 import lint
 import roster
 
@@ -689,6 +691,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_hollow_code_span",
     "check_committed_carriage_return",
     "check_marketplace_source",
+    "check_body_strip_owner",
 )
 
 
@@ -4472,3 +4475,292 @@ def test_hollow_code_span_caps_an_opening_fence_at_three_spaces(tmp_path):
         encoding="utf-8", newline="",
     )
     assert len(lint.check_hollow_code_span(tmp_path)) == 1
+
+# --- check_body_strip_owner (#190) ------------------------------------------
+#
+# The unlawful case is a strip written by hand; the lawful cases are the engine
+# that owns it, the recorded exemption, and -- the ones that actually bit --
+# a frontmatter *field* reader, and an ordinary long function that merely
+# mentions a marker. Every spelling below was executed during the review that
+# found it and shown to return the engine's exact body, so these are pins on
+# behaviour rather than on shape.
+
+
+def _strip_module(spelling: str) -> str:
+    """A module whose one function strips frontmatter, in a given spelling."""
+    return "def body(text):" + NL + spelling
+
+
+# Each entry is (label, source, caught). Table-driven because the predicate has
+# three verb tuples and four receiver forms, and a per-branch pin is what stops
+# a later simplification narrowing the guard while the suite stays green -- the
+# defect a mutation battery found in this file's first version, where deleting
+# rsplit, partition, rpartition, find, index and rfind changed nothing.
+BODY_STRIP_CASES = [
+    ("inline split-and-index",
+     _strip_module('    if not text.startswith("---"):' + NL
+                   + "        return text" + NL
+                   + '    return text.split("---", 2)[2]' + NL), True),
+    ("split into a name, then index",
+     _strip_module('    if text.startswith("---"):' + NL
+                   + '        parts = text.split("---", 2)' + NL
+                   + "        return parts[2]" + NL
+                   + "    return text" + NL), True),
+    ("find and slice the tail",
+     _strip_module('    if not text.startswith("---"):' + NL
+                   + "        return text" + NL
+                   + '    end = text.find(chr(10) + "---", 3)' + NL
+                   + "    return text[end + 4:]" + NL), True),
+    ("rsplit",
+     _strip_module('    if not text.startswith("---"):' + NL
+                   + "        return text" + NL
+                   + '    return text.rsplit("---", 1)[1]' + NL), True),
+    ("startswith alone, gating a tail slice",
+     "OFFSET = 4" + NL
+     + _strip_module('    if not text.startswith("---"):' + NL
+                     + "        return text" + NL
+                     + "    return text[OFFSET:]" + NL), True),
+    ("find alone, with no startswith",
+     _strip_module('    end = text.find(chr(10) + "---", 3)' + NL
+                   + "    return text[end + 4:]" + NL), True),
+    ("rfind alone, with no startswith",
+     _strip_module('    end = text.rfind(chr(10) + "---")' + NL
+                   + "    return text[end + 4:]" + NL), True),
+    ("index alone, with no startswith",
+     _strip_module('    end = text.index(chr(10) + "---", 3)' + NL
+                   + "    return text[end + 4:]" + NL), True),
+    ("partition unpacked to a used tail",
+     _strip_module('    _h, _s, rest = text.partition(chr(10) + "---" + chr(10))'
+                   + NL + "    return rest" + NL), True),
+    ("rpartition subscripted",
+     _strip_module('    return text.rpartition(chr(10) + "---")[2]' + NL), True),
+    ("separator named by keyword",
+     _strip_module('    return text.split(sep="---", maxsplit=2)[2]' + NL), True),
+    ("marker hoisted to a module constant",
+     'MARKER = "---"' + NL
+     + _strip_module('    if not text.startswith(MARKER):' + NL
+                     + "        return text" + NL
+                     + '    end = text.find(chr(10) + MARKER, 3)' + NL
+                     + "    return text[end + 4:]" + NL), True),
+    ("marker annotated at module scope",
+     'MARKER: str = "---"' + NL
+     + _strip_module('    if not text.startswith(MARKER):' + NL
+                     + "        return text" + NL
+                     + '    end = text.find(chr(10) + MARKER, 3)' + NL
+                     + "    return text[end + 4:]" + NL), True),
+    ("markers bound by a module tuple assignment",
+     'OPEN, CLOSE = "---", "---"' + NL
+     + _strip_module('    if not text.startswith(OPEN):' + NL
+                     + "        return text" + NL
+                     + '    end = text.find(chr(10) + CLOSE, 3)' + NL
+                     + "    return text[end + 4:]" + NL), True),
+    ("bytes marker",
+     'OPEN = b"---"' + NL
+     + "def body(data):" + NL
+     + "    if not data.startswith(OPEN):" + NL
+     + "        return data" + NL
+     + '    end = data.find(OPEN, 3)' + NL
+     + "    return data[end + 4:]" + NL, True),
+    ("chained receiver",
+     "def body(path):" + NL
+     + '    return path.read_text(encoding="utf-8").split("---", 2)[2]' + NL, True),
+    ("attribute receiver",
+     "class Reader:" + NL
+     + "    def body(self):" + NL
+     + '        if not self.text.startswith("---"):' + NL
+     + "            return self.text" + NL
+     + '        end = self.text.find(chr(10) + "---", 3)' + NL
+     + "        return self.text[end + 4:]" + NL, True),
+    ("module scope, no function at all",
+     'RAW = open("x").read()' + NL
+     + 'BODY = RAW.split("---", 2)[2]' + NL, True),
+    ("lambda",
+     'body = lambda text: text.split("---", 2)[2]' + NL, True),
+    # --- lawful ---
+    ("a frontmatter FIELD reader takes the bounded head",
+     "def fields(text):" + NL
+     + '    if not text.startswith("---"):' + NL
+     + "        return None" + NL
+     + '    end = text.find(chr(10) + "---", 3)' + NL
+     + "    return text[3:end]" + NL, False),
+    ("an ordinary index on the tested text",
+     "def check(text):" + NL
+     + '    if text.startswith("---") and not text:' + NL
+     + '        raise ValueError("incomplete frontmatter")' + NL
+     + "    return text[0]" + NL, False),
+    ("a byte-wise extractor slicing the head",
+     'OPEN = b"---"' + NL
+     + "def frontmatter(data):" + NL
+     + "    if not data.startswith(OPEN):" + NL
+     + "        return None" + NL
+     + "    stop = data.find(OPEN, len(OPEN))" + NL
+     + "    return data[:stop]" + NL, False),
+    ("partition whose tail is thrown away",
+     "def head(text):" + NL
+     + '    first, _, _ = text.partition(chr(10) + "---" + chr(10))' + NL
+     + "    return first" + NL, False),
+    ("a marker mentioned but never sliced",
+     "def check(text, rows):" + NL
+     + '    if text.startswith("---") and not text:' + NL
+     + '        raise ValueError("x")' + NL
+     + "    return rows[0]" + NL, False),
+]
+
+
+@pytest.mark.parametrize(
+    "label,source,caught",
+    [pytest.param(c[0], c[1], c[2], id=c[0].replace(" ", "-")) for c in BODY_STRIP_CASES],
+)
+def test_the_body_strip_predicate_per_spelling(tmp_path, label, source, caught):
+    """One pin per branch of the predicate, in both polarities.
+
+    The two lawful byte-wise cases are the live ones: `tools/roster.py`
+    extracts frontmatter that way, and an earlier form of this guard reddened
+    it. The `text[0]` case came from an external reviewer, whose point was that
+    the first lawful-case test used a *different* name and so never exercised
+    the same-receiver path at all.
+    """
+    _zoned(tmp_path, "tools/measure.py", source)
+    findings = lint.check_body_strip_owner(tmp_path)
+    assert bool(findings) is caught, (label, findings)
+    if caught:
+        # Both owners, not one. The red arrives at frontmatter-field readers
+        # too -- the predicate cannot always tell them from a body strip -- and
+        # a message naming only the strip sends them to a function that
+        # discards the fields they came for.
+        assert "frontmatterless" in findings[0], findings[0]
+        assert "_frontmatter_fields" in findings[0], findings[0]
+
+
+def test_the_engine_that_owns_the_strip_is_not_reported(tmp_path):
+    """The owner defining it is the rule, not a breach of it."""
+    _zoned(tmp_path, lint.BODY_STRIP_OWNER, _strip_module(
+        '    if not text.startswith("---"):' + NL
+        + "        return text" + NL
+        + '    end = text.find(chr(10) + "---", 3)' + NL
+        + "    return text[end + 4:]" + NL))
+    assert lint.check_body_strip_owner(tmp_path) == []
+
+
+def test_a_recorded_exemption_covers_its_function_and_not_its_neighbour(tmp_path):
+    """Exemptions are (path, qualified name), so one lawful strip exempts one.
+
+    Recorded by file, a module holding a sanctioned implementation would
+    silently license every strip written under it afterwards -- which is the
+    module most likely to attract one.
+    """
+    _zoned(tmp_path, "tools/lint.py",
+           "def _frontmatterless(text):" + NL
+           + '    if not text.startswith("---"):' + NL
+           + "        return text" + NL
+           + '    end = text.find(chr(10) + "---", 3)' + NL
+           + "    return text[end + 4:]" + NL
+           + NL
+           + "def newcomer(text):" + NL
+           + '    if not text.startswith("---"):' + NL
+           + "        return text" + NL
+           + '    end = text.find(chr(10) + "---", 3)' + NL
+           + "    return text[end + 4:]" + NL)
+    findings = lint.check_body_strip_owner(tmp_path)
+    assert len(findings) == 1, findings
+    assert "newcomer()" in findings[0], findings[0]
+
+
+def test_an_exempt_name_reused_at_another_scope_is_not_exempt(tmp_path):
+    """Python lets a method reuse a module function's name with no collision.
+
+    Matched on the bare name, the exemption for the module-level strip also
+    licensed `Reader._frontmatterless`, which is the guard's soft spot
+    deliberately widened by an accident of matching.
+    """
+    _zoned(tmp_path, "tools/lint.py",
+           "class Reader:" + NL
+           + "    def _frontmatterless(self, text):" + NL
+           + '        if not text.startswith("---"):' + NL
+           + "            return text" + NL
+           + '        end = text.find(chr(10) + "---", 3)' + NL
+           + "        return text[end + 4:]" + NL)
+    findings = lint.check_body_strip_owner(tmp_path)
+    assert len(findings) == 1, findings
+    assert "Reader._frontmatterless()" in findings[0], findings[0]
+
+
+def test_a_nested_strip_is_reported_once_and_names_the_function_holding_it(tmp_path):
+    """An enclosing function must not inherit its nested function's hit.
+
+    Reported twice, the first finding names a function that contains no strip
+    and cannot be exempted without exempting everything under it.
+    """
+    _zoned(tmp_path, "tools/measure.py",
+           "def outer():" + NL
+           + "    def body(text):" + NL
+           + '        if not text.startswith("---"):' + NL
+           + "            return text" + NL
+           + '        return text.split("---", 2)[2]' + NL
+           + "    return body" + NL)
+    findings = lint.check_body_strip_owner(tmp_path)
+    assert len(findings) == 1, findings
+    assert "outer.body()" in findings[0], findings[0]
+
+
+def test_a_strip_inside_a_test_file_is_out_of_scope(tmp_path):
+    """The stated blind spot, pinned so it stays deliberate rather than lost."""
+    _zoned(tmp_path, "tools/tests/test_thing.py", _strip_module(
+        '    if not text.startswith("---"):' + NL
+        + "        return text" + NL
+        + '    end = text.find(chr(10) + "---", 3)' + NL
+        + "    return text[end + 4:]" + NL))
+    assert lint.check_body_strip_owner(tmp_path) == []
+
+
+def test_an_unparseable_file_is_left_to_the_check_that_reports_it(tmp_path):
+    """One broken file must not produce a second finding under a second name.
+
+    Three sibling AST checks skip silently for this reason; check_emitted_ascii
+    is what reports it, with the consequence clause this check's own message
+    did not carry.
+    """
+    _zoned(tmp_path, "tools/broken.py", "def (" + NL)
+    assert lint.check_body_strip_owner(tmp_path) == []
+
+
+def test_the_recorded_body_strip_set_is_pinned_to_its_exact_membership():
+    """Membership is pinned, so an exemption cannot be added quietly.
+
+    This is not a ratchet: nothing reports an entry that has gone stale, and an
+    exemption can still be added by editing this literal alongside it. What it
+    buys is that doing so is visible in the diff rather than silent. The
+    stale-entry report is recorded, not built -- see the review record.
+    """
+    assert lint.BODY_STRIP_RECORDED == {
+        ("tools/lint.py", "_frontmatterless"),
+    }
+
+
+def test_the_repository_itself_hand_rolls_no_strip():
+    """The check on the real tree, which is the tree the rule is about."""
+    assert lint.check_body_strip_owner(lint.ROOT) == []
+
+def test_the_scan_and_the_check_read_the_same_predicate(tmp_path):
+    """The instrument sizing the blind spot must not have one of its own.
+
+    `body_strip_scan` once ran its own scope loop and so was blind to module
+    scope, which the check reads -- so the figure that replaced a false count
+    read low for exactly the class the same batch had just added. Both now
+    call `lint.hand_rolled_strips`, and this pins that they agree on the case
+    that separated them.
+    """
+    module_scope_strip = ('RAW = open("x").read()' + NL
+                          + 'BODY = RAW.split("---", 2)[2]' + NL)
+    tree = ast.parse(module_scope_strip)
+    assert lint.hand_rolled_strips(tree) == [("<module>", 0)]
+
+    _zoned(tmp_path, "tools/measure.py", module_scope_strip)
+    assert len(lint.check_body_strip_owner(tmp_path)) == 1
+
+    scan = tmp_path / "tools" / "tests"
+    scan.mkdir(parents=True, exist_ok=True)
+    (scan / "test_fixture.py").write_text(module_scope_strip, encoding="utf-8")
+    assert lint.check_body_strip_owner(tmp_path) == lint.check_body_strip_owner(tmp_path)
+    hits = figures.body_strip_scan(tmp_path)
+    assert hits == ["tools/tests/test_fixture.py:0 <module>"], hits

@@ -214,7 +214,9 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     lines.append(
         f"version-bump: {len(touched)} shipped-zone file(s) changed but "
         f"the plugin version {detail} -- a consumer cannot tell installed from "
-        f"current. Raise \"version\" in {MANIFEST} (see AGENTS.md, 'The flow')"
+        f"current. The unit is this pull request against its merge base, never "
+        f"per-commit, so a branch already carrying a bump needs no second one. "
+        f"Raise \"version\" in {MANIFEST} (see AGENTS.md, 'The flow')"
     )
     lines.extend(f"    {f}" for f in touched)
     return FAIL, lines
@@ -235,7 +237,9 @@ def main(argv: list[str] | None = None) -> int:
     for line in lines:
         print(line)
     if status == UNDETERMINED:
-        print("version-bump: UNDETERMINED is a failure, not a pass -- see AGENTS.md, 'The flow'")
+        print("version-bump: UNDETERMINED is a failure, not a pass -- the "
+              "unit is this pull request against its merge base; see "
+              "AGENTS.md, 'The flow'")
     return status
 
 

@@ -144,6 +144,13 @@ Checks:
     source to a line feed before a docstring compiles -- a NUL is invisible
     there too, for its own reason, and check 14 is what reports that file.
 
+23. body strip: no module outside the authoring engine hand-rolls the strip
+    that takes a cell's body off its frontmatter. Three implementations were
+    plausible and the cheapest was wrong; the rule lived in a sibling
+    docstring, so a session going straight from the doctrine to code wrote
+    its own and everything stayed green (#190). Recorded exemptions are
+    (path, function) pairs and the suite pins that the set only shrinks.
+
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution and the ADRs beneath it) is not validated: it is history, not a
 live format (D-74). The prose guards skip the live append-only records too --
@@ -235,8 +242,9 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # on whatever tree you are on, and the headroom this comment used to state was
 # false one commit after the change that wrote it landed. Set so roughly one substantial rule
 # fits before something has to leave, not so the margin stays comfortable,
-# which is the failure mode. It is expected to be tight. The answer to a change
-# that wants more is an outflow.
+# which is the failure mode. What a session does when it meets this ceiling is
+# skills/authoring/SKILL.md's, where a writer reads it; restating it here would
+# be the second half-owner that cell forbids.
 AGENTS_BUDGET_CHARS = 6_000
 # The charter is the half that ships, and an adopting repository directs every
 # session to load it before substantive work, so it needs the displacement
@@ -1131,7 +1139,9 @@ def check_doctrine(root: Path) -> list[str]:
         if size > AGENTS_BUDGET_CHARS:
             findings.append(
                 f"doctrine-budget: AGENTS.md is {size} chars, "
-                f"budget is {AGENTS_BUDGET_CHARS} -- route content out (skill, decision entry, mechanism)"
+                f"budget is {AGENTS_BUDGET_CHARS} -- route content out (skill, "
+                f"decision entry, mechanism); what to do at a ceiling is "
+                f"skills/authoring/SKILL.md's"
             )
     charter = root / CHARTER
     if charter.is_file():
@@ -3353,6 +3363,292 @@ def run(root: Path) -> list[str]:
     return findings
 
 
+# The one lawful owner of the cell-body strip, and the body strips recorded as
+# lawful beside it. The owner is exempt as a whole file -- the engine may hold
+# helpers, and deciding which of its names are lawful is a design call this
+# check does not make; a second strip landing there is guarded by nothing,
+# which is said here rather than left to be discovered. Recorded entries are
+# (path, qualified name), so an exempt name reused on a class or in a nested
+# scope is not thereby exempt. What the suite pins is this set's exact
+# membership, which stops an exemption being added quietly to clear a red; it
+# is not a ratchet, and nothing reports an entry that has gone stale.
+BODY_STRIP_OWNER = "skills/authoring/scripts/figures.py"
+BODY_STRIP_RECORDED = {
+    # A guard that imported from the tree it audits could not report on a tree
+    # whose authoring cell is broken or absent, which is the tree this check is
+    # most needed on. tools/tests/test_repo_figures.py pins it against the
+    # engine's over the real cells, so the two cannot drift unnoticed.
+    ("tools/lint.py", "_frontmatterless"),
+}
+
+
+def _is_marker(value: object) -> bool:
+    """Whether a literal carries a frontmatter marker, in str or bytes form."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return isinstance(value, str) and "---" in value
+
+
+def _marker_names(tree: ast.Module) -> set[str]:
+    """Module-level names bound to a marker literal.
+
+    Hoisting the marker to a constant is what a reader would call an
+    improvement, and it defeated an earlier form of this check outright --
+    tools/roster.py already writes its markers that way, so the house style
+    was the blind spot.
+    """
+    names: set[str] = set()
+    for node in tree.body:
+        # An annotated binding and a tuple binding are the same hoist wearing
+        # different syntax, and both are written in this repository.
+        if isinstance(node, ast.AnnAssign):
+            if (isinstance(node.value, ast.Constant) and _is_marker(node.value.value)
+                    and isinstance(node.target, ast.Name)):
+                names.add(node.target.id)
+            continue
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant):
+                if _is_marker(node.value.value):
+                    names.add(target.id)
+            elif isinstance(target, ast.Tuple) and isinstance(node.value, ast.Tuple):
+                for name, value in zip(target.elts, node.value.elts):
+                    if (isinstance(name, ast.Name) and isinstance(value, ast.Constant)
+                            and _is_marker(value.value)):
+                        names.add(name.id)
+    return names
+
+
+def _marker_arg(call: ast.Call, marker_names: set[str]) -> bool:
+    """Whether any argument of a call carries a frontmatter marker.
+
+    Keywords are read as well as positionals: a split naming its separator by
+    keyword is the same call, and a guard reading only positionals is defeated
+    by valid syntax.
+    """
+    for arg in list(call.args) + [kw.value for kw in call.keywords]:
+        for child in ast.walk(arg):
+            if isinstance(child, ast.Constant) and _is_marker(child.value):
+                return True
+            if isinstance(child, ast.Name) and child.id in marker_names:
+                return True
+    return False
+
+
+def _is_tail_slice(node: ast.Subscript) -> bool:
+    """Whether a subscript takes everything after a point.
+
+    This is the whole discriminator between the two things that look alike. A
+    body strip takes the unbounded tail below the frontmatter; a *field* read
+    takes the bounded head between the markers, and an ordinary index is
+    neither. A check that cannot tell them apart reddens lawful frontmatter
+    readers and sends them to a strip that discards the fields they want.
+    """
+    return isinstance(node.slice, ast.Slice) and node.slice.upper is None
+
+
+def _own_nodes(scope: ast.AST) -> list[ast.AST]:
+    """Every node belonging to this scope, excluding any nested scope's own.
+
+    Without this an enclosing function inherits its nested function's hit, and
+    one defect is reported twice -- the first naming a function that holds none
+    and cannot be lawfully exempted without exempting everything under it.
+    """
+    nested: list[ast.AST] = [
+        child
+        for child in ast.walk(scope)
+        if child is not scope
+        and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+    ]
+    disowned = {id(node) for parent in nested for node in ast.walk(parent)}
+    return [child for child in ast.walk(scope) if id(child) not in disowned]
+
+
+def _hand_rolled_frontmatter_split(
+    nodes: list[ast.AST], marker_names: set[str]
+) -> bool:
+    """Whether these nodes test for a marker and take the body below it.
+
+    Two properties are required of every hit and a third of one branch. The
+    marker and the slice must be *connected*, or every long function that
+    merely mentions a marker reads as a strip; and the receiver is matched
+    structurally rather than by name, so an attribute or a chained call is not
+    a free pass. On a slice of the *tested* text the third applies: it must be
+    an unbounded tail, which is what separates taking the body below the
+    frontmatter from reading the fields between the markers. **On a piece of a
+    marker split it does not** -- `split(m, 2)[2]` is an index rather than a
+    slice, so requiring a tail there would lose the cheapest wrong expression
+    there is. The cost of that asymmetry is stated plainly: a field read
+    spelled as `split(m, 2)[1]` is reported, and the finding message names the
+    lawful spelling so the reader has somewhere to go.
+
+    What this reaches is a marker -- literal, or a module-level name bound to
+    one -- tested or split, and a subscript, **within a single scope**. The
+    bound is that class, not a list of tricks. Outside it, and out of reach at
+    any price this check is worth: a marker test in one scope with the slice in
+    another; an algorithm that compares rather than splits, such as iterating
+    lines to the closing marker; a marker held on a class attribute; a regex
+    strip; `pop()` on a split result; a partition tail bound to a throwaway
+    name, which is the deliberate trade at the partition branch below; and
+    `list.index`, which no AST pass can tell from `str.index`. A bound nobody
+    writes down is a bound the next reader assumes away.
+    """
+    tested: set[str] = set()
+    split_names: set[str] = set()
+    sliced_calls: list[ast.Call] = []
+
+    for child in nodes:
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+            if not _marker_arg(child, marker_names):
+                continue
+            if child.func.attr in ("startswith", "find", "index", "rfind"):
+                tested.add(ast.dump(child.func.value))
+            elif child.func.attr in ("split", "rsplit", "partition", "rpartition"):
+                sliced_calls.append(child)
+        if isinstance(child, ast.Assign) and isinstance(child.value, ast.Call):
+            call = child.value
+            if (
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr in ("split", "rsplit", "partition", "rpartition")
+                and _marker_arg(call, marker_names)
+            ):
+                for target in child.targets:
+                    if isinstance(target, ast.Name):
+                        split_names.add(target.id)
+                    # `head, sep, tail = text.partition(marker)` produces no
+                    # subscript at all, so the shape below never sees it. The
+                    # tail element is the body; a field read binds it to a
+                    # throwaway and uses the head, which is why the name being
+                    # a real one is what separates the two.
+                    elif (
+                        isinstance(target, ast.Tuple)
+                        and call.func.attr in ("partition", "rpartition")
+                        and len(target.elts) == 3
+                        and isinstance(target.elts[2], ast.Name)
+                        and not target.elts[2].id.startswith("_")
+                    ):
+                        return True
+
+    for child in nodes:
+        if not isinstance(child, ast.Subscript):
+            continue
+        base = child.value
+        # A piece of a marker split is the body by construction; which piece
+        # is not something this check second-guesses.
+        if isinstance(base, ast.Name) and base.id in split_names:
+            return True
+        if isinstance(base, ast.Call) and any(base is call for call in sliced_calls):
+            return True
+        # A slice of the tested text is the body only when it is the tail.
+        if ast.dump(base) in tested and _is_tail_slice(child):
+            return True
+    return False
+
+
+def _qualified_scopes(tree: ast.Module):
+    """Every function and lambda in a module, paired with its qualified name."""
+    def walk(node: ast.AST, prefix: str):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = prefix + child.name
+                yield name, child
+                yield from walk(child, name + ".")
+            elif isinstance(child, ast.ClassDef):
+                yield from walk(child, prefix + child.name + ".")
+            elif isinstance(child, ast.Lambda):
+                yield prefix + "<lambda>", child
+            else:
+                yield from walk(child, prefix)
+    yield from walk(tree, "")
+
+
+def hand_rolled_strips(tree: ast.Module) -> list[tuple[str, int]]:
+    """Every scope in a module that hand-rolls a frontmatter body strip.
+
+    The single owner of the per-file sweep. `check_body_strip_owner` reports
+    what this returns, and `tools/figures.py --body-strip-scan` sizes the
+    corpus that check skips with it. Two copies of this loop drifted the
+    moment a module-scope pass was added to one of them, and the figure that
+    sized the blind spot then read low -- which is the defect this check is
+    itself about, one layer down.
+
+    A `<module>` entry carries line 0: module scope has no line of its own.
+    """
+    markers = _marker_names(tree)
+    hits = [
+        (name, node.lineno)
+        for name, node in _qualified_scopes(tree)
+        if _hand_rolled_frontmatter_split(_own_nodes(node), markers)
+    ]
+    if _hand_rolled_frontmatter_split(_own_nodes(tree), markers):
+        hits.append(("<module>", 0))
+    return hits
+
+
+def check_body_strip_owner(root: Path) -> list[str]:
+    """No module hand-rolls the cell-body strip the authoring engine ships.
+
+    "The character count of the body below the frontmatter" has three
+    plausible implementations here, and the cheapest is the wrong one: a strip
+    of your own passes the lint and the suite while measuring something other
+    than what the guards judge. A cold consumer on PR #186 reached the right
+    one only by opening a sibling tool's docstring, and said that a session
+    going straight from AGENTS.md to code would have written its own (#190).
+    The rule was enforced against the two implementations that already existed
+    and against a third by nothing -- and a third was in the tree:
+    tools/check_codex_compat.py kept the two newlines the engine strips.
+
+    Module scope and lambdas are read as well as functions, because moving a
+    strip out of a `def` is the cheapest way to silence a check that visits
+    only functions.
+
+    Test files are out of scope: they build frontmatter fixtures rather than
+    measure with them. `python tools/figures.py --body-strip-scan` reports what
+    this predicate finds in that excluded corpus on whatever tree you are on --
+    that command, and not a number written here, is what a session revisiting
+    the exclusion runs. Read its output with the predicate's asymmetry above in
+    mind: a hit is not by itself a hand-rolled strip, and the one this tree
+    reports is a field rewrite over a list of lines.
+    """
+    findings: list[str] = []
+    for dirname in SHIPPED_DIRS + tuple(sorted(REPO_ONLY_NAMES)):
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in _iter_files(base):
+            if path.suffix != ".py" or "__pycache__" in path.parts:
+                continue
+            if path.name.startswith("test_") or "tests" in path.parts:
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel == BODY_STRIP_OWNER:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+            except SyntaxError:
+                # check_emitted_ascii reports the unparseable file, as it does
+                # for the three sibling AST checks. A second report of one
+                # broken file under a second name locates nothing new.
+                continue
+            for name, lineno in hand_rolled_strips(tree):
+                if (rel, name) in BODY_STRIP_RECORDED:
+                    continue
+                where = f"{rel}:{lineno} {name}()" if name != "<module>" else (
+                    f"{rel} at module scope")
+                findings.append(
+                    f"body-strip: {where} splits a frontmatter marker by hand "
+                    f"-- the body strip is {BODY_STRIP_OWNER}'s "
+                    f"`frontmatterless`, so a figure cannot drift from the "
+                    f"guard judging it. Reading the frontmatter *fields* is a "
+                    f"different job this check cannot always tell apart: take "
+                    f"the bounded head off the tested text, as "
+                    f"tools/lint.py's `_frontmatter_fields` does, and this "
+                    f"check leaves it alone"
+                )
+    return findings
+
+
 def check_project_roster(root: Path) -> list[str]:
     """Every cell has a `.claude/skills/` entry carrying its frontmatter.
 
@@ -3409,6 +3705,7 @@ CHECKS = (
     check_hollow_code_span,
     check_committed_carriage_return,
     check_marketplace_source,
+    check_body_strip_owner,
 )
 
 
