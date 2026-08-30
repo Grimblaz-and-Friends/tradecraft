@@ -6,6 +6,7 @@ backslash form (findings M1/M2/M4/M5/M6 in docs/ledger.jsonl)."""
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -3314,3 +3315,42 @@ def test_docstring_control_chars_reports_every_character_not_only_the_first(tmp_
     findings = lint.check_docstring_control_chars(tmp_path)
     assert len(findings) == 2
     assert {"U+000B", "U+000D"} == {f.split("holds ")[1][:6] for f in findings}
+
+
+def test_git_ignored_survives_a_non_ascii_path(tmp_path):
+    """The ignore filter feeds three checks, and nothing pinned it.
+
+    `text=True` alone encodes stdin with the locale codepage, so on Windows one
+    non-ASCII path anywhere raised `UnicodeEncodeError` inside subprocess's
+    writer thread -- where it is swallowed. stdin never closed, the call ran to
+    its full timeout, and the filter then returned empty: every check using it
+    silently scanned ignored trees after a minute's stall. The substrate cell's
+    stream rule, at a site three checks share.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_bytes(("skip" + chr(10)).encode("utf-8"))
+    (tmp_path / "skip").mkdir()
+    plain = tmp_path / "skip" / "plain.py"
+    plain.write_bytes(b"x = 1" + chr(10).encode())
+    # chr(20013) rather than the character: this file is read by a check that
+    # bans non-ASCII in non-docstring literals.
+    exotic = tmp_path / (chr(20013) + ".py")
+    exotic.write_bytes(b"y = 2" + chr(10).encode())
+    ignored = lint._git_ignored(tmp_path, [plain, exotic])
+    assert plain in ignored, (
+        "the ignored path must still be filtered when a non-ASCII path is present"
+    )
+    assert exotic not in ignored
+
+
+def test_git_ignored_filters_an_ordinary_tree(tmp_path):
+    """The other polarity: the lawful case still filters, so the fix above is
+    not the filter quietly turning itself off.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_bytes(("skip" + chr(10)).encode("utf-8"))
+    (tmp_path / "skip").mkdir()
+    hidden = tmp_path / "skip" / "a.py"; hidden.write_bytes(b"x = 1" + chr(10).encode())
+    shown = tmp_path / "b.py"; shown.write_bytes(b"y = 2" + chr(10).encode())
+    ignored = lint._git_ignored(tmp_path, [hidden, shown])
+    assert ignored == {hidden}

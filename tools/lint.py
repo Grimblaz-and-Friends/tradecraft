@@ -113,10 +113,12 @@ Checks:
 19. docstring control characters: no docstring's compiled value holds a
     control character other than a line feed or a tab. A docstring is not raw,
     so a backslash followed by r, written in one, is a carriage return at
-    runtime. Named in words rather than shown: four attempts to write that
-    escape into this repository's prose produced the character instead, one of
-    them in this sentence, so the form that cannot be lost is the one that
-    spells it out. Read from the compiled value rather than the source bytes,
+    runtime. Named in words rather than shown, because every attempt to write
+    that escape into this repository's prose produced the character instead --
+    including one in this sentence -- so the form that cannot be lost is the
+    one that spells it out. Named rather than counted, for the reason the
+    check's own docstring gives: the count was wrong the moment the next
+    instance landed. Read from the compiled value rather than the source bytes,
     because the instance that motivated this had clean bytes on disk and four
     carriage returns in `__doc__` [D-231].
 

@@ -203,15 +203,25 @@ def matches(entry: bytes, want: bytes) -> bool:
     lives and the next one starts over. Reporting it was therefore a finding
     with no lawful response, on a tree nobody had touched. [#224]
 
-    **"Normally" is doing work, and the bound is real.** Git's `text=auto`
-    refuses to normalise **any file holding a lone carriage return** -- one
-    bare `\\r` anywhere disables the conversion for that whole file, and every
-    CRLF in it is committed verbatim. An entry in that composition is forgiven
-    here and recorded by git, where the byte comparison this replaced fired
-    and `--write` repaired it. Found the hard way: this change's own first
-    draft put two control bytes into its decision-log row, the only CR-bearing
-    blob in the repository, past a lint that has no carriage-return check. The
-    guard for that class is filed, not built here.
+    **"Normally" is doing work, and the bound is real -- but narrower than a
+    first draft of this paragraph said.** Git's `text=auto` refuses to normalise
+    **any file holding a lone carriage return**: one bare carriage return
+    anywhere disables the conversion for that whole file, and every CRLF in it
+    is committed verbatim.
+
+    That does **not** mean an entry carrying one is forgiven here. It is not --
+    this returns False and the finding fires, which is ruling 3's whole point
+    and what two tests pin. The exposed composition is the one where the
+    **cell** carries the lone carriage return, so `want` carries it too and the
+    entry is that cell's faithful copy: the two then agree as text and git
+    commits the CRLF verbatim. Filed, not closed here.
+
+    Found the hard way: this change's own first draft put two control bytes
+    into its decision-log row, the only CR-bearing blob in the repository, past
+    a lint that then had no carriage-return check of any kind. This change
+    added **check 19** for the half a byte scan cannot see -- a control
+    character in a docstring's compiled value -- and the committed-byte half is
+    still filed rather than built.
 
     **Both sides are normalised, not only the entry.** `want` is built from a
     cell git checks out LF, so today only the entry side arrives CRLF from the
