@@ -2244,6 +2244,26 @@ def _unfenced_text(text: str) -> str:
     return "\n".join(out)
 
 
+def _is_generated_entry(root: Path, rel_file: str) -> bool:
+    """Whether this path is a roster entry `tools/roster.py` wrote.
+
+    A generated entry's frontmatter is its cell's, byte for byte, so a defect
+    in one prose guard's territory is reported twice for a single edit -- once
+    against the cell, once against the copy. The copy's finding is the useless
+    half: the file it names says *do not edit this one*, so a reader acting on
+    it edits a generated file and the defect comes back on the next `--write`.
+    That is the shape `roster.verify` records as "a fix that did not fix".
+
+    Nothing hides behind this. Check 17 holds the entry in step with its cell,
+    and a lone carriage return is not among what its comparison forgives, so a
+    copy that diverged from the cell is already a finding there. A *hand-written*
+    project skill under the same directory is not this generator's and is not
+    skipped -- `is_generated` reads the marker out of the file rather than
+    inferring from the location, which is shared by design.
+    """
+    return roster.is_generated(root / rel_file)
+
+
 def check_hollow_code_span(root: Path) -> list[str]:
     """No inline code span holds nothing but whitespace.
 
@@ -2282,7 +2302,7 @@ def check_hollow_code_span(root: Path) -> list[str]:
         if path in ignored:
             continue
         rel_file = path.relative_to(root).as_posix()
-        if rel_file in FROZEN:
+        if rel_file in FROZEN or _is_generated_entry(root, rel_file):
             continue
         text = _read_text(path)
         if text is None:
@@ -2359,6 +2379,8 @@ def check_committed_carriage_return(root: Path) -> list[str]:
         fields, _, rel_file = row.partition(chr(9))
         index_eol = fields.split()[0]
         if index_eol == "i/lf" or rel_file in FROZEN:
+            continue
+        if _is_generated_entry(root, rel_file):
             continue
         flagged.append((rel_file, index_eol))
     findings = []

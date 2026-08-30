@@ -3999,3 +3999,53 @@ def test_committed_carriage_return_reads_a_staged_file_with_no_commit_yet(tmp_pa
                    stdin=subprocess.DEVNULL, capture_output=True)
     findings = lint.check_committed_carriage_return(tmp_path)
     assert len(findings) == 1 and "index.md" in findings[0]
+
+
+def _cell_with_hollow_span(root, char=CR):
+    """A cell whose *description* holds the defect, so the generated entry
+    copies it -- the frontmatter block is what `roster.write` copies.
+    """
+    cell = root / "skills" / "alpha"
+    cell.mkdir(parents=True)
+    (cell / "SKILL.md").write_bytes(
+        ("---" + NL + "name: alpha" + NL
+         + "description: Ends at the bare " + TICK + char + TICK + " here." + NL
+         + "---" + NL + NL + "# alpha" + NL + "Body." + NL).encode("utf-8")
+    )
+    roster.write(root)
+    return cell
+
+
+def test_a_cells_defect_is_reported_once_and_not_against_its_generated_copy(tmp_path):
+    """One edit, one finding.
+
+    The entry's frontmatter is the cell's byte for byte, so both files hold
+    the defect -- but the entry's finding names a file that says *do not edit
+    this one*, and a reader acting on it edits a generated file whose next
+    `--write` brings the defect back. That is the shape `roster.verify`
+    records as "a fix that did not fix".
+    """
+    _cell_with_hollow_span(tmp_path)
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].startswith("hollow-code-span: skills/alpha/SKILL.md")
+
+
+def test_a_hand_written_project_skill_in_the_roster_is_still_read(tmp_path):
+    """The other polarity, and the one that keeps the skip honest.
+
+    `.claude/skills/` is the runtime's documented home for a project's own
+    skills, so the directory is shared rather than owned. A file this
+    generator did not write is not its copy of anything, and skipping by
+    location rather than by the marker would silence a real defect in one --
+    the same reasoning `is_generated` already carries for the removal branch.
+    """
+    hand = tmp_path / ".claude" / "skills" / "mine"
+    hand.mkdir(parents=True)
+    (hand / "SKILL.md").write_bytes(
+        ("---" + NL + "name: mine" + NL + "description: d." + NL + "---" + NL + NL
+         + "Ends at the bare " + TICK + CR + TICK + "." + NL).encode("utf-8")
+    )
+    findings = lint.check_hollow_code_span(tmp_path)
+    assert len(findings) == 1
+    assert ".claude/skills/mine/SKILL.md" in findings[0]
