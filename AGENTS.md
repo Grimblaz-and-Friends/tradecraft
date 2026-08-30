@@ -12,7 +12,7 @@
 
 ## The ceremony moments, here
 
-- **Convergence.** The settled pre-implementation artifact is posted as a comment on its issue (file one if none exists). The session records the affirmation on the issue, naming that comment, before the first commit; from there the owner is next needed at PR review. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR; when in doubt, ask the cheap question.
+- **Convergence.** The settled pre-implementation artifact is posted as a comment on its issue (file one if none exists). The session records the affirmation on the issue, naming that comment, before the first commit; from there the owner is next needed at PR review. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR.
 - **Release.** `ci.yml` flags any PR touching this file, `CLAUDE.md`, or the `charter` cell for the owner's specific review. [D-81]
 
 ## The flow
@@ -35,7 +35,7 @@ The charter states the admission order; this file's budget is what makes it bite
 
 ## Decisions
 
-`docs/architecture/decisions/D-<PR#>-YYYY-MM-DD-<slug>.md`, written in the PR that lands a choice a future session would otherwise re-derive or unknowingly undo; frozen on landing but for a reference whose target moved, bounded in the log's README. A rule or skill line may cite its decision (`[D-N]`).
+`docs/architecture/decisions/D-<PR#>-YYYY-MM-DD-<slug>.md`, written in the PR that lands a choice a future session would otherwise re-derive or unknowingly undo; frozen on landing but for the two narrow repairs bounded in the log's README. A rule or skill line may cite its decision (`[D-N]`).
 
 ## Records are exhaust
 
