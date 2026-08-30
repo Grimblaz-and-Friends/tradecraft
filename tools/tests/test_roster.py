@@ -91,54 +91,55 @@ def test_an_entry_out_of_step_fires(tmp_path):
     assert roster.verify(tmp_path) == []
 
 
-def test_an_entry_that_differs_only_in_line_endings_is_not_a_finding(tmp_path):
-    """The tree a session actually starts work in.
+def test_an_entry_rewritten_to_crlf_is_still_in_step(tmp_path):
+    """The condition [D-186] rules is expected here, which this guard was the
+    one place calling a defect.
 
-    Before #224 this was a finding per cell on a tree nobody had touched, and
-    the session had no way to tell it from a red it had caused. The difference
-    reaches no commit -- `.gitattributes` normalises the entry to LF on the way
-    into the index -- and no command clears it durably, because the CRLF is
-    written by a copy no command here performs.
+    A Claude Code worktree arrived with every `.claude/skills/` entry rewritten
+    in text mode, and `python tools/lint.py` reported every cell out of step
+    against a tree git considered clean -- before the session had changed
+    anything. Reading the working copy as bytes is what did that; nothing the
+    guard claims needs it, because `.gitattributes` pins the index to LF and a
+    drift that is only line endings cannot reach a commit. [#229]
     """
     make_cell(tmp_path, "alpha")
-    make_cell(tmp_path, "beta")
     roster.write(tmp_path)
     entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
-    crlf(entry)
-    assert b"\r\n" in entry.read_bytes(), "the fixture must model the copy"
+    entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r\n"))
+    assert b"\r\n" in entry.read_bytes()
     assert roster.verify(tmp_path) == []
 
 
-def test_a_crlf_entry_that_has_actually_drifted_still_fires(tmp_path):
-    """The other polarity, and the one that says what the tolerance costs.
+def test_crlf_does_not_hide_a_real_drift(tmp_path):
+    """The other polarity, and the one that would make the fix a deletion.
 
-    Line endings are the whole of what `matches()` forgives. An entry whose
-    description has moved on is still the stale trigger this guard exists for,
-    and arriving CRLF must not launder it -- which is the failure a
-    normalisation reached for carelessly would introduce.
-    """
+    A guard that stopped reporting because it stopped comparing would pass this
+    too. The entry here carries CRLF *and* a description its cell no longer
+    has, which is the whole triggering surface out of date."""
     make_cell(tmp_path, "alpha", "The first description.")
     roster.write(tmp_path)
-    make_cell(tmp_path, "alpha", "A different description entirely.")
     entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
-    crlf(entry)
+    entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r\n"))
+    make_cell(tmp_path, "alpha", "A different description entirely.")
     findings = roster.verify(tmp_path)
-    assert len(findings) == 1
+    assert len(findings) == 1, findings
     assert "out of step" in findings[0]
 
 
-def test_write_leaves_a_crlf_entry_alone_rather_than_rewriting_it(tmp_path):
-    """`--write` is the command every repairable finding names, so what it says
-    on this tree is what a session believes about it. Rewriting nine entries
-    that git will not record is the churn #224 records: it reported work done,
-    left no trace, and the next worktree started over."""
+def test_write_still_restores_the_canonical_bytes(tmp_path):
+    """`verify` tolerates the rewrite; `--write` repairs it.
+
+    Two questions, two answers -- and this pins the second, because a `write()`
+    that had followed `verify` into normalizing would leave a CRLF entry on
+    disk with nothing left in the repository able to say so."""
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
     entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
-    crlf(entry)
-    before = entry.read_bytes()
-    assert roster.write(tmp_path) == []
-    assert entry.read_bytes() == before
+    canonical = entry.read_bytes()
+    entry.write_bytes(canonical.replace(b"\n", b"\r\n"))
+    changed = roster.write(tmp_path)
+    assert entry.read_bytes() == canonical
+    assert any("wrote" in line for line in changed), changed
 
 
 def test_a_stray_carriage_return_is_not_forgiven(tmp_path):
@@ -208,6 +209,11 @@ def test_a_cell_that_is_itself_crlf_still_matches_its_entry(tmp_path):
     tell the two predicates apart -- the entry-side-only mutation survives
     every other test in this file.
 
+    It pins `verify()` only. `write()` compares bytes on purpose, so `--write`
+    still rewrites a CRLF entry to LF -- [#232]'s decision, taken with its own
+    review, and this branch deferred to it rather than re-litigating a landed
+    call on the same mechanism.
+
     **It pins one composition of two, and the docstring said otherwise.** Here
     the cell is CRLF *before* the entry is generated, so both sides descend
     from the same bytes. A cell that goes CRLF *after* its entry was written
@@ -226,7 +232,6 @@ def test_a_cell_that_is_itself_crlf_still_matches_its_entry(tmp_path):
     entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
     crlf(entry)
     assert roster.verify(tmp_path) == []
-    assert roster.write(tmp_path) == []
 
 
 def test_an_orphan_entry_fires_and_is_removed(tmp_path):
@@ -521,18 +526,10 @@ def test_the_generator_introduces_no_carriage_return_of_its_own(tmp_path):
     An LF cell must produce an LF entry on every platform. A text-mode write
     would turn each line feed into a carriage return pair on Windows and not
     on Linux, so the same tree would hold different bytes depending on where
-    the generator last ran. The copied frontmatter carries the source's own
-    line endings by construction, which is what `.gitattributes` pins to LF
-    here; what this pins is that nothing downstream of the read adds any.
-
-    **This is the only guard on the write half**, since the tree-level test
-    stopped asserting the entries are LF on disk -- so read what it does not
-    say. It said "and this file is compared byte for byte on every lint run"
-    at `e99f261`, `81a4b1f` and `56d71ff` -- the first of those is where it
-    became false -- which is an argument for deleting this test, and the
-    argument is wrong: what the write half buys is
-    one byte sequence from one generator on every platform, and the comparison
-    relaxing has no bearing on it.
+    the generator last ran -- and this file is compared byte for byte on every
+    lint run. The copied frontmatter carries the source's own line endings by
+    construction, which is what `.gitattributes` pins to LF here; what this
+    pins is that nothing downstream of the read adds any.
     """
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
@@ -565,33 +562,7 @@ def test_the_guard_asks_the_generator_rather_than_recomputing(tmp_path):
 def test_this_repository_carries_a_roster_for_every_cell(tmp_path):
     """The tree this all exists for. Not a restatement of the guard: the guard
     proves the shapes, and this proves the shipped tree is in one of them --
-    which is the claim #199 found false and nothing was checking.
-
-    **It no longer asserts the entries are LF on disk**, which is false in a
-    session worktree here and put a second red in front of a session that had
-    changed nothing -- the suite failing beside the lint, from the one cause,
-    and neither of them nameable as its own doing. It is *true* in an `agent-*`
-    subagent worktree, which is why the assertion cannot come back on the
-    strength of one tree reading LF: the property it tests belongs to whatever
-    wrote the tree, and both answers are lawful. That assertion was
-    also the wrong instrument for what it wanted: what the generator writes is
-    pinned deterministically in tmp_path by
-    `test_the_generator_introduces_no_carriage_return_of_its_own`, where it
-    cannot be moved by whatever copied the tree afterwards. [#224]
-
-    **It asks that every cell has an entry, not that nothing else is there.**
-    The equality it used to assert made a *lawful* tree red: `.claude/skills/`
-    is the runtime's documented home for a project's own skills, and `MARKER`
-    exists precisely to leave a hand-written one alone: `verify()` draws no
-    finding at a **hand-written** name that is no cell. So writing one put the
-    suite in the red while the lint stayed green, which is this issue's own
-    defect shape at a second site. The qualifier is the whole of it -- a
-    *generated* entry at a name that is no cell is an orphan and still fires,
-    which an earlier draft of this paragraph asserted away in a universal its
-    own closing sentence contradicted. Found by a cold session that was asked to
-    add a project skill and did exactly what the material tells it to. A
-    generated entry whose cell is gone is still caught, by `verify()` below.
-    """
+    which is the claim #199 found false and nothing was checking."""
     cells = roster.cell_names(ROOT)
     assert cells != []
     assert set(cells) <= set(roster.roster_names(ROOT))
@@ -632,7 +603,7 @@ def test_a_linked_entry_directory_is_refused_rather_than_written_through(tmp_pat
             pytest.skip("this platform will not create a directory link")
         made = subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(entry), str(outside)],
-            capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
         )
         if made.returncode != 0:
             pytest.skip(f"no directory link available: {made.stdout}{made.stderr}")

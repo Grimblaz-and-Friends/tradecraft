@@ -426,7 +426,7 @@ def git_tree(tmp_path):
     def git(*args):
         return subprocess.run(
             ["git", "-C", str(tmp_path), *args],
-            check=True, capture_output=True, text=True,
+            check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True,
             env={"GIT_CONFIG_GLOBAL": str(tmp_path / "nonexistent"),
                  "GIT_CONFIG_SYSTEM": str(tmp_path / "nonexistent"),
                  "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",

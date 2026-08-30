@@ -13,7 +13,8 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "persist.py"
 
 
 def run(cmd, cwd):
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    return subprocess.run(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True)
 
 
 def persist(cwd, *args):

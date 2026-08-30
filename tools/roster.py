@@ -25,41 +25,18 @@ second place, and every cell edit into two diffs, to save that hop -- the sum
 over every cell at `8a0c71e` of the file's decoded characters less the block
 `frontmatter()` returns.
 
-**Written as bytes, compared as text.** The write half is the substrate cell's
-third text-mode rule: a text-mode write would turn every line feed into a
-carriage return pair on Windows and not on Linux, so the same tree would hold
-different bytes depending on where this last ran. That half is unchanged and
-guarded by a test of its own.
+**Written as bytes**, per the substrate cell's third text-mode rule: a
+text-mode write would turn every line feed into a carriage return pair on
+Windows and not on Linux, so the same tree would hold different bytes
+depending on where this last ran. The copied frontmatter carries the cell's
+own line endings by construction; `.gitattributes` pins those to LF on every
+platform, so what this writes is the same everywhere.
 
-The read half cannot be the same, because **the line endings these files carry
-on disk are not this repository's to set.** `.gitattributes` pins the checkout
-to LF, and git honours it -- but not every file in a worktree arrives through
-git. A Claude Code **session** worktree comes up with ten files written in text
-mode by the harness: these nine entries and `CLAUDE.md`. The other 108 tracked
-files are checked out LF in the same second, `.gitattributes` among them, which
-is how the two writers were told apart.
-
-**Which worktrees, precisely, because the wide version is worse than useless.**
-Session worktrees do this; `agent-*` subagent worktrees do not, and they are
-Claude Code worktrees too. An earlier version of this paragraph said *every*
-Claude Code worktree, and all five seats of this change's own review -- every
-one of them running in an `agent-*` tree -- checked, found LF, and reported the
-cause recorded here as false.
-
-**`CLAUDE.md` is the cheap check, and the only durable one.** Nothing in this
-repository ever rewrites it, where `--write` erases the evidence under
-`.claude/skills/` the moment anyone clears the red; so its line endings are a
-fossil of how a worktree was made. Across the owner's machine: 14 of 15 session
-trees CRLF, 0 of 16 `agent-*` trees, source checkout LF.
-
-    python -c "print(open('CLAUDE.md','rb').read())"
-
-So a session starting work in such a worktree met a finding per cell before
-touching anything, could not tell that red from one it had caused, and could
-not clear it durably: `--write` rewrote the entries LF, git recorded nothing
-because the index already held LF, and the next worktree started red again
-(#224). `matches()` below is where that is answered, and it says why the
-comparison may not be tightened back.
+**Read as bytes and compared line endings aside**, which is a separate
+question with a separate answer -- see `in_step`. The write is what keeps the
+tree canonical; the comparison has to survive a working copy some other tool
+rewrote, and reading that rewrite as drift is what took the lint red in a
+worktree nobody had touched. [#229]
 
 Usage:  python tools/roster.py [--write]
 
@@ -147,6 +124,74 @@ def frontmatter(data: bytes) -> bytes | None:
     return data[:end + len(_CLOSE) + 1]
 
 
+def in_step(actual: bytes, want: bytes) -> bool:
+    """Whether an entry carries what its cell carries, line endings aside.
+
+    **The comparison normalizes CRLF; the write does not.** Those are two
+    different questions and this repository has already answered the second:
+    `write()` emits bytes so the committed tree holds one set of them
+    everywhere, and `.gitattributes` pins the index to LF on every platform.
+    What that pin does not pin is the working copy, where a text-mode writer
+    outside this repository can turn every line feed into a carriage return
+    pair -- the condition [D-186] rules is expected here rather than a defect.
+
+    Read as bytes, this guard was the one place calling that condition a
+    defect. A Claude Code worktree whose `.claude/skills/` entries had been
+    rewritten in text mode on creation reported every cell out of step, and
+    took `python tools/lint.py` red, against a tree git considered clean and
+    a commit whose bytes were untouched -- before the session had changed
+    anything. Reproduced in this repository at `8b080c8`; `git worktree add`
+    from the same commit gives LF on both sides and a clean lint, so the
+    rewrite is not git's.
+
+    A drift that is *only* line endings cannot reach a commit through that
+    pin, so nothing this guard actually claims is given up by ignoring one.
+    Everything else -- a description edited, a name changed, a body replaced
+    -- still reports. [#229]
+
+    **The pin has a bound, and it is one character wide.** Git's `text=auto`
+    refuses to normalize any file holding a lone carriage return, so every CRLF
+    in such a file is committed verbatim. That does not make an entry carrying
+    one forgiven here -- this returns False and the finding fires, which two
+    tests pin in both polarities. What it reaches is the case where the *cell*
+    carries the lone carriage return, so `want` carries it too and the entry is
+    that cell's faithful copy: the two agree as text, and git commits the CRLF.
+    Measured over four compositions rather than reasoned, and filed. [#233]
+
+    **Which worktrees rewrite these files, since a wide answer is worse than
+    none.** A Claude Code **session** worktree comes up with ten files written
+    in text mode by the harness -- these nine entries and `CLAUDE.md` -- while
+    git checks out the other tracked files LF in the same second, which is how
+    the two writers were told apart. `agent-*` subagent worktrees do not do
+    this, and they are Claude Code worktrees too. `CLAUDE.md` is the durable
+    check: nothing here rewrites it, where `--write` erases the evidence under
+    `.claude/skills/` the moment anyone clears the red, so its line endings are
+    a fossil of how a worktree was made. Across one machine, 14 of 15 session
+    trees carried it CRLF against 0 of 16 agent trees. An earlier draft of this
+    said *every* Claude Code worktree, and all five seats of that change's
+    review -- every one in an `agent-*` tree -- checked, found LF, and reported
+    the cause as false. [#224]
+
+    **This reaches the entry side, and the cell side is left as it is.** With
+    the *cell* in CRLF, `expected()` has already lost a byte before this
+    comparison sees anything -- `frontmatter()`'s own documented bound, where a
+    CRLF source ends the block at the bare `
+` -- so `verify` still reports,
+    and `--write` then converges to green having rewritten every entry. That is
+    real and it is left standing: the repair belongs in `frontmatter()`, which
+    other checks read, and the broken polarity is unobserved where the fixed one
+    is live -- 0 of 26 worktrees measured carry CRLF on a cell, 3 of 26 carry it
+    on an entry. Filed rather than fixed here. [PR #232 review, M10]
+
+    One consequence, accepted: `--write` still repairs a CRLF entry, and nothing
+    now tells a session that. The alternative is a line from `verify` in the
+    condition this exists to stop reporting, which reinstates the noise. The
+    remedy is here instead, where a session asking why its tree looks modified
+    will be reading. [PR #232 review, M20]
+    """
+    return actual.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n")
+
+
 def cell_names(root: Path) -> list[str]:
     """Every cell a runtime would load from the shipped zone, sorted."""
     directory = root / CELLS
@@ -185,80 +230,6 @@ def expected(root: Path, name: str) -> bytes:
             f"{CELLS}/{name}/{CELL_FILE} has no parseable frontmatter to copy"
         )
     return block + _body(name)
-
-
-def matches(entry: bytes, want: bytes) -> bool:
-    """Whether an entry on disk is the one `expected()` describes.
-
-    **Text identity, not byte identity, and the difference is exactly the line
-    endings.** Everything else is compared as it always was: a changed
-    description, a reordered field, a stray character, a truncated block all
-    still differ here.
-
-    The warrant is that a newline difference at this site is **normally
-    invisible to the repository and cannot be repaired in the tree it appears
-    in.** `.gitattributes` normalises the entry to LF on the way into the
-    index; and the CRLF is written by a copy no command here performs, so
-    re-running the writer clears the working tree for as long as that tree
-    lives and the next one starts over. Reporting it was therefore a finding
-    with no lawful response, on a tree nobody had touched. [#224]
-
-    **"Normally" is doing work, and the bound is real -- but narrower than a
-    first draft of this paragraph said.** Git's `text=auto` refuses to normalise
-    **any file holding a lone carriage return**: one bare carriage return
-    anywhere disables the conversion for that whole file, and every CRLF in it
-    is committed verbatim.
-
-    That does **not** mean an entry carrying one is forgiven here. It is not --
-    this returns False and the finding fires, which is ruling 3's whole point
-    and what two tests pin. The exposed composition is the one where the
-    **cell** carries the lone carriage return, so `want` carries it too and the
-    entry is that cell's faithful copy: the two then agree as text and git
-    commits the CRLF verbatim. Filed, not closed here.
-
-    Found the hard way: this change's own first draft put two control bytes
-    into its decision-log row, the only CR-bearing blob in the repository, past
-    a lint that then had no carriage-return check of any kind. This change
-    added **check 19** for the half a byte scan cannot see -- a control
-    character in a docstring's compiled value -- and the committed-byte half is
-    still filed rather than built.
-
-    **Both sides are normalised, not only the entry.** `want` is built from a
-    cell git checks out LF, so today only the entry side arrives CRLF from the
-    harness copy -- a cell can still reach that state through a Windows
-    text-mode write, which `AGENTS.md` calls normal. Normalising one side
-    would make an unclearable red possible the moment a cell arrived CRLF too,
-    where the symmetric form stays self-consistent whatever either side
-    carries. The cost of the symmetry is nothing; the cost of the asymmetry is
-    a red that `--write` cannot clear.
-
-    **`\\r\\n` only, never a lone `\\r`.** That pair is what a Windows
-    text-mode write produces and what was observed; a bare carriage return is
-    not a line ending anything here emits, and treating it as one would
-    silently accept a corrupted entry. It takes **two** fixtures to pin, and
-    the tests carry both: a stray `\\r` inside an otherwise-CRLF entry kills
-    "strip every carriage return", an all-CR entry kills "treat a lone `\\r` as
-    a line ending", and either alone leaves the other mutant alive.
-
-    **This is the only site that compares one of these files**, which is the
-    whole of the exposure #224 asked about. Two call sites read one at all:
-    this one, and the local `read` inside `figure_always_on` in
-    `tools/figures.py`, which decodes with universal newlines and counts
-    characters. Re-derive that rather than trusting it -- run `python
-    tools/lint.py` on whatever tree you are on, under an intercept wrapping
-    every route to opening a file, bucketing each hit by whether the resolved
-    path is under `.claude/skills/`, and printing the frame and the path. D-231
-    carries the command and why it is recorded instead of its answer: two
-    drafts of this paragraph named readers that turned out to read **cells**
-    under `skills/`, because a census that prints only a count cannot tell the
-    two apart.
-
-    `_normalized_chars` in `skills/authoring/scripts/figures.py` reaches for
-    the same move for the same stated reason and is worth reading for it. It
-    is live code on a path this repository runs constantly -- it does not
-    reach a roster **entry**, which is the only claim made about it here.
-    """
-    return entry.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n")
 
 
 def inside_roster(root: Path, entry: Path) -> bool:
@@ -311,24 +282,14 @@ def verify(root: Path) -> list[str]:
     regeneration branch go on destroying hand-written content after the
     removal branch stopped. [PR #210 cycle one, C1-F2/C1-F3]
 
-    Each shape below says what its own message names, and they are named
-    rather than counted: a stated count of these has been wrong three times
-    running, each time in the sentence written to correct the one before, so
-    the arithmetic is gone rather than corrected a fourth time. [PR #210 cycle
-    one, C1-F5; cycle two, C2-F1]
+    Each shape below says what its own message names. There is no count here:
+    a stated count of these has been wrong three times running, each time in
+    the sentence written to correct the one before, so the arithmetic is gone
+    rather than corrected a fourth time. [PR #210 cycle two, C2-F1]
 
-    - **outside the roster** -- an entry directory whose real location
-      resolves out of `.claude/skills/`, so writing there would land outside
-      this repository. Names no command: only a person can remove the link.
     - **missing** -- a cell with no entry. Names `--write`.
     - **out of step** -- a cell whose entry this script wrote and the cell has
-      since moved on. Names `--write`. Judged by `matches()`, so an entry
-      differing from its cell in line endings alone is not this shape and not
-      any other: no command clears that difference durably, so reporting it
-      named a fix that did not fix. **A CRLF *cell* is a different matter** --
-      `expected()` slices it by raw bytes before `matches()` ever sees it, so
-      the block it copies loses a newline and this shape fires truthfully on a
-      document that really does differ. See `frontmatter()` for the bound.
+      since moved on. Names `--write`.
     - **orphan** -- an entry this script wrote whose cell is gone. Names
       `--write`.
     - **collision** -- a cell's name taken by a file this script did not
@@ -338,10 +299,7 @@ def verify(root: Path) -> list[str]:
       frontmatter is what loads, so the cell's real description does not,
       which is a silent criterion-1 failure.
     - **unparseable frontmatter** -- a cell `--write` cannot copy. Names no
-      command; the cell's frontmatter is what has to change. The same branch
-      catches a cell that cannot be **read** at all -- a permission failure, a
-      broken link on the `skills/` side -- and carries the OS error with it,
-      so read the error before taking the frontmatter advice.
+      command; the cell's frontmatter is what has to change.
     - **no cell at all** -- nothing under `skills/` to compare against. Names
       no command, for the reason #198 gives about a sibling guard: no cell
       found is indistinguishable from every cell lawful.
@@ -356,6 +314,10 @@ def verify(root: Path) -> list[str]:
     could never clear on a lawful tree. A directory there holding no
     `SKILL.md` is likewise silent; `write()` reports residue at the moment it
     creates it, which is where that report is useful.
+
+    Named rather than counted on purpose: a stated count of shapes has now
+    been wrong twice, and the second time in the sentence written to fix the
+    first. [PR #210 cycle one, C1-F5]
     """
     findings = []
     cells = cell_names(root)
@@ -383,7 +345,7 @@ def verify(root: Path) -> list[str]:
                 f"run `python tools/roster.py --write`"
             )
             continue
-        if matches(target.read_bytes(), want):
+        if in_step(target.read_bytes(), want):
             continue
         if is_generated(target):
             findings.append(
@@ -447,7 +409,12 @@ def write(root: Path) -> list[str]:
             )
             continue
         if target.is_file():
-            if matches(target.read_bytes(), want):
+            # Byte-exact here where `verify` is not: this branch decides
+            # whether to rewrite, and rewriting an entry a text-mode tool
+            # turned to CRLF restores the canonical bytes -- which is a
+            # remedy worth offering, not noise. `verify` decides whether the
+            # tree is lawful, and by `in_step` that entry already is.
+            if target.read_bytes() == want:
                 continue
             # Ownership is checked here too, not only on removal. This branch
             # went on overwriting whatever sat at a cell's name after the

@@ -74,7 +74,8 @@ PYTEST_SUMMARY = re.compile(
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, check=False
+        ["git", "-C", str(repo), *args],
+        stdin=subprocess.DEVNULL, capture_output=True, check=False,
     )
 
 
@@ -120,7 +121,8 @@ def figure_tests(repo: Path, paths: list[str]) -> dict:
     command = f"python -m pytest {' '.join(paths)} -q"
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", *paths, "-q"],
-        cwd=str(repo), capture_output=True, check=False,
+        cwd=str(repo), stdin=subprocess.DEVNULL, capture_output=True,
+        check=False,
     )
     summary = parse_pytest_summary(_decoded(proc.stdout))
     # A red suite is reported verbatim — hiding it would be worse than the
