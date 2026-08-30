@@ -20,7 +20,7 @@ Irreducible rationale stays prose for a reason that is not taste: the decision, 
 
 ## 2. The marker is lawful under the test the repoint already passes
 
-The log's existing permission is licensed as one edit that changes no claim [D-135]. A correction plainly changes a claim, so the clause could have read as breaking the freeze. It does not, because of how the shape divides the work: **the in-place `[corrected]` marker changes no claim, and the appended Erratum block — which is new text, not an edit — carries the change.** Claim-neutrality, not byte-immutability, is already this log's test.
+The log's existing permission is licensed as one edit that changes no claim [D-135]. A correction plainly changes a claim, so the clause could have read as breaking the freeze. It does not, because of how the shape divides the work: **the in-place `[corrected — see Erratum]` marker changes no claim, and the appended Erratum block — which is new text, not an edit — carries the change.** Claim-neutrality, not byte-immutability, is already this log's test.
 
 The owner ruled the shape against two alternatives. A footer-only block leaves the reader who believes the wrong sentence and acts on it never reaching the correction, which is the harm being fixed. Striking in place rewrites the body, and an entry accumulating strikes stops reading as what was decided at the time.
 
