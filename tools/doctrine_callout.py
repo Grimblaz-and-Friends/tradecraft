@@ -301,7 +301,7 @@ PRICED = (
 
 
 def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
-    """The size of what every session reads, where the owner is when he merges.
+    """The size of what a session reads, per runtime, where the owner merges.
 
     A budget only bites where somebody sees it, and this one has always been
     read after the fact -- in a write-up, by a session that had already decided
@@ -337,24 +337,35 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
     except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
         return f"_Always-on surface: not derived ({type(exc).__name__}: {exc})._"
     return (
-        f"Always-on surface: **{data['repo_total']:,}** chars here"
-        f"{figures.divergence(data)}{movement}, "
-        f"**{data['adopter_total']:,}** from this practice for an adopter -- "
+        f"Always-on surface here, per runtime: **{figures.by_runtime(data)}**"
+        f"{movement}. **{data['adopter_total']:,}** from this practice for an "
+        f"adopter. Against their ceilings: "
         + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
-        # `here`, never `cells`/`roster`: the total this sentence opens with is
-        # built from the rosters THIS repository loads, one directory per
-        # runtime, and the adopter's roster under `skills/` is a different set.
-        # Printing the second as the breakdown of the first decomposed to a
-        # number the sentence did not state -- invisible while they agree, and
-        # wrong exactly on the trees where the roster guard is red, which this
-        # job posts on because it carries no `needs:` on `lint-and-test`. Same
+        + "."
+        # `by_runtime`, never `cells`/`roster`: the totals this sentence opens
+        # with are built from what THIS repository's runtimes load, and the
+        # adopter's roster under `skills/` is a different set. Printing the
+        # second as the breakdown of the first decomposed to a number the
+        # sentence did not state -- invisible while they agree, and wrong
+        # exactly on the trees where the roster guard is red, which this job
+        # posts on because it carries no `needs:` on `lint-and-test`. Same
         # class as the two-file sum this line once rendered against one file's
         # budget. [PR #210 review, M1]
         #
-        # Both renderers are the figure's, not copies: this sentence and
-        # `figure_always_on` would otherwise be two wordings of one
-        # decomposition, and the owner reads this one at the moment he merges.
-        + f", {figures.here_rosters(data)}."
+        # **The ceilings are listed apart from the decomposition, and that is
+        # the repair for a second instance of the same class.** A single `+`
+        # chain summed to whichever runtime happened to be long while the
+        # sentence stated another's total, and CLAUDE.md sat in it for a
+        # runtime that does not read the file. `by_runtime` composes each
+        # total from its own terms; this clause prices files against budgets,
+        # which is a different question and now looks like one. [PR #278
+        # review, M13]
+        #
+        # **Every renderer of these figures is the figure's own**, and there
+        # are three of them -- this one, `figure_always_on`'s value, and
+        # `tools/lint.py`'s `always_on_note`. An earlier comment here said
+        # there were two, in the commit that shipped the third as a
+        # hand-written copy. [PR #278 review, F5]
     )
 
 
@@ -373,6 +384,14 @@ def _always_on_delta(figures, root: Path, base: str | None) -> str:
 
     The base is named because it is the actionable half: the failure is
     essentially always that the object is not in this clone.
+
+    **One movement per runtime.** A single delta off `repo_total` inherited
+    that scalar's bound: growth in one runtime's surface alone moved nothing,
+    so a change that raised what every Claude Code session here loads could
+    book `+0` against the ceiling the outflow rule defends. A runtime the base
+    does not know is named as new rather than counted from zero silently --
+    which is the shape this change itself has, Codex having loaded no roster
+    at the base. [PR #278 review, M22]
     """
     if not base:
         return ""
@@ -380,8 +399,18 @@ def _always_on_delta(figures, root: Path, base: str | None) -> str:
         before = figures.always_on_at(root, base)
     except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
         return f" (movement not derived: {type(exc).__name__} reading {base})"
-    change = figures.figure_always_on(root)["data"]["repo_total"] - before
-    return f" ({change:+,} this PR)"
+    now = figures.figure_always_on(root)["data"]["here"]
+    moves = []
+    for row in now:
+        was = before.get(row["runtime"])
+        if was is None:
+            moves.append(f"{row['runtime']} new at {row['total']:,}")
+        else:
+            moves.append(f"{row['runtime']} {row['total'] - was:+,}")
+    for runtime in before:
+        if not any(row["runtime"] == runtime for row in now):
+            moves.append(f"{runtime} no longer loaded")
+    return " (" + ", ".join(moves) + " this PR)"
 
 
 def _body_from(files: str, base: str | None = None) -> str:

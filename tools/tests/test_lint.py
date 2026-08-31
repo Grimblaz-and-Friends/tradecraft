@@ -885,8 +885,19 @@ def test_the_lint_reports_the_always_on_total(capsys):
     """
     lint.main()
     out = capsys.readouterr().out
-    assert "always-on surface:" in out
+    assert "always-on surface here, per runtime:" in out
     assert "for an adopter" in out and "not derived" not in out
+    # **Every runtime is named, and its own total is beside its name.** This
+    # asserted only that the substring was present, so it stayed green while
+    # the line printed one scalar that was some other runtime's -- the state
+    # every seat of PR #278's panel and the external pass reported, on a tree
+    # with zero findings. The number reaching the session doing the editing
+    # has to be that session's. [PR #278 review, M1]
+    for surface in roster.SURFACES:
+        assert surface.runtime in out, (
+            f"{surface.runtime} reads this line and is not named on it")
+    assert out.count("= doctrine ") == len(roster.SURFACES), (
+        "one decomposed total per runtime, so a reader can take its own")
 
 
 def test_an_underivable_figure_does_not_fail_the_lint(tmp_path, monkeypatch):
@@ -4317,7 +4328,12 @@ def test_always_on_note_reports_rather_than_raising_on_a_bad_shape(tmp_path):
         encoding="utf-8", newline="",
     )
     note = lint.always_on_note(tmp_path)
-    assert note.startswith("always-on surface: not derived (KeyError")
+    assert note.startswith("always-on surface: not derived (")
+    # The shape now fails on the renderer rather than on a key, because the
+    # line asks the figure to render its own rows rather than reaching into
+    # them. Either way it is reported and never raised, which is what M19
+    # bought and what this pins.
+    assert "not derived" in note and "Traceback" not in note
 
 
 def test_hollow_code_span_does_not_walk_the_git_directory(tmp_path):

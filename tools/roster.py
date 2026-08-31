@@ -29,10 +29,15 @@ other is exactly how #199's remedy left Codex out for as long as it did. [#258]
 **The entry is a pointer, not a copy.** A session that invokes a cell by name
 here reaches the pointer and reads the cell, one hop -- exercised by cold
 sessions that invoked a cell from its entry, followed the pointer, and applied
-the cell. Copying whole bodies would put **78,931 characters** of prose into a
-second place, and every cell edit into two diffs, to save that hop -- the sum
-over every cell at `8a0c71e` of the file's decoded characters less the block
-`frontmatter()` returns.
+the cell. Copying whole bodies would put **78,931 characters** of prose into
+*each* further place, and every cell edit into as many diffs as there are
+surfaces plus one, to save that hop -- the sum over every cell at `8a0c71e` of
+the file's decoded characters less the block `frontmatter()` returns. **The sum
+is pinned at that commit; the multiplier is not, and moves with `SURFACES`** --
+with the surfaces this file writes today, 157,862 characters and three diffs.
+The sentence said "a second place" and "two diffs" for as long as there were
+two surfaces, understating the argument it exists to make by half. [PR #278
+review, M10]
 
 **Written as bytes**, per the substrate cell's third text-mode rule: a
 text-mode write would turn every line feed into a carriage return pair on
@@ -90,17 +95,34 @@ class Surface(NamedTuple):
     file learns which runtime that file exists for. Naming it beats a
     universal for the reason [PR #210 review, M10] gives: the sentence that
     claimed every session was reached asserted a fix Codex had not received.
+
+    **`doctrine` is the always-on prose that runtime loads, and this generator
+    never reads it.** It is here because a `Surface` is the whole of what one
+    runtime loads in this repository, and the alternative was a second table
+    somewhere else keyed by a runtime's name -- two definitions of one fact,
+    which drift the moment either is edited. `tools/figures.py` is its
+    consumer. The two runtimes differ: both read `AGENTS.md`, and only Claude
+    Code reads `CLAUDE.md`, which is a pointer to it -- the doctrine says so
+    itself, and a figure that charged every runtime for both reported the two
+    as loading the same amount when they do not. Raised by the external
+    reviewer on PR #278 and found by no seat.
     """
 
     directory: str
     runtime: str
+    doctrine: tuple[str, ...]
 
 
 # In the order a reader meets them: the one #199 bought, then the one #258
-# bought. Everything below loops over this, so a third runtime is one row.
+# bought. Everything below loops over this, so a third runtime is one row --
+# **except the four prose sites that name the pair by hand**, which are this
+# file's module docstring, `main()`'s argparse description, and `tools/lint.py`'s
+# check 17 registry line and `check_project_roster` docstring. Deriving those
+# from here was priced and declined for a row nobody has asked for. [PR #278
+# review, M11]
 SURFACES = (
-    Surface(".claude/skills", "Claude Code"),
-    Surface(".agents/skills", "Codex"),
+    Surface(".claude/skills", "Claude Code", ("AGENTS.md", "CLAUDE.md")),
+    Surface(".agents/skills", "Codex", ("AGENTS.md",)),
 )
 
 # For callers that need the directories alone -- `tools/lint.py` asks whether a
@@ -109,9 +131,10 @@ SURFACES = (
 # other.
 ROSTER_DIRS = tuple(surface.directory for surface in SURFACES)
 
-# What marks a file as this generator's to remove. `.claude/skills/<name>/` is
-# the runtime's documented home for a project's own skills -- the very property
-# this script depends on -- so the directory is shared, not owned. Without this
+# What marks a file as this generator's to remove. Every surface directory is
+# its own runtime's documented home for a project's own skills -- the very
+# property this script depends on -- so each of them is shared, not owned, and
+# the ownership discipline below is owed on every one rather than on the first. Without this
 # marker the orphan branch's stated remedy unlinked whatever it found there: a
 # hand-written project skill, untracked, with no prompt and exit 0, and the lint
 # then green over the remains. Found at high in PR #210's review by three seats
@@ -231,7 +254,10 @@ def in_step(actual: bytes, want: bytes) -> bool:
 
     **Which worktrees rewrite these files, since a wide answer is worse than
     none.** A Claude Code **session** worktree comes up with ten files written
-    in text mode by the harness -- these nine entries and `CLAUDE.md` -- while
+    in text mode by the harness -- the nine entries under `.claude/skills/` and
+    `CLAUDE.md`; the measurement predates the second surface and says nothing
+    about it, and PR #278's seats each report the same nine rewritten and none
+    of the others [PR #278 review, F9] -- while
     git checks out the other tracked files LF in the same second, which is how
     the two writers were told apart. `agent-*` subagent worktrees do not do
     this, and they are Claude Code worktrees too. `CLAUDE.md` is the durable
@@ -322,10 +348,35 @@ def inside_roster(root: Path, entry: Path, surface: Surface) -> bool:
     the external reviewer against `is_symlink`; the containment check is the
     part that survives contact with this platform.
 
+    **The surface directory itself is tested, not only the entries under it.**
+    Resolving the base and then asking whether the entry resolves under it
+    answers yes whenever the *base* is the link, because both sides resolve
+    through it -- so a junction at `.agents/skills` passed containment in both
+    of its branches. Pointed at a directory outside the repository, `--write`
+    wrote nine entries there, reported paths the files did not go to, and
+    exited 0 with the lint green. Pointed at the other surface, it wrote nine
+    and then reported nine permanent findings against the surface the session
+    had not touched, whose only named remedy was the command that produced
+    them -- the mandated gate red with no reachable answer. That second branch
+    needs two surfaces for one to be linked to the other, so it was
+    unreachable before this repository had them. [PR #278 review, M12]
+
+    So the base is compared to where it was declared to be. The ordinary tree
+    passes; a junctioned surface fails; and **a repository that itself lives
+    under a junctioned path still passes**, which is the trap in this check
+    and the reason the declared side is `root.resolve() / directory` rather
+    than the raw `root / directory`: on such a tree the surface genuinely
+    resolves elsewhere, and comparing against the unresolved root would red
+    every lawful entry on it. A surface that does not exist yet resolves
+    lexically to its declared path and so passes, which is what lets `write()`
+    create it.
+
     Scoped to the roster side. A link under `skills/` is not checked here: this
     script only ever reads a cell, and reading through one escapes nothing.
     """
     base = (root / surface.directory).resolve()
+    if base != root.resolve() / surface.directory:
+        return False
     try:
         return entry.resolve().is_relative_to(base)
     except (OSError, ValueError):
@@ -356,12 +407,17 @@ def verify(root: Path) -> list[str]:
     let the regeneration branch go on destroying hand-written content after
     the removal branch stopped. [PR #210 cycle one, C1-F2/C1-F3]
 
-    **Every shape below is per surface**, and each message names the directory
-    it found. One condition on one surface draws one finding; the same cell
-    stale in both draws one for each, because they are two files and repairing
-    one leaves the other loading a superseded trigger to the other runtime.
-    The one exception is unparseable frontmatter, which is a defect in the
-    cell rather than in any copy of it and is reported once. [#258]
+    **A shape that is about a surface is reported per surface**, and its
+    message names both the directory it found and the runtime that reads it.
+    One condition on one surface draws one finding; the same cell stale in
+    both draws one for each, because they are two files and repairing one
+    leaves the other serving a superseded trigger to the other runtime.
+    **The shapes that are about a cell rather than a surface are reported once
+    and name neither** -- unparseable frontmatter, and no cell at all. Which
+    group a shape is in is stated on the shape below; no count of either group
+    is stated anywhere, for the reason the paragraph after them gives about
+    counting these shapes at all. An earlier draft of this paragraph said "the
+    one exception" and there were two. [#258] [PR #278 review, M7]
 
     Each shape below says what its own message names. There is no count here:
     a stated count of these has been wrong three times running, each time in
@@ -413,8 +469,10 @@ def verify(root: Path) -> list[str]:
             if not inside_roster(root, target.parent, surface):
                 findings.append(
                     f"roster: {where}/{name}/ resolves outside {where}/, so "
-                    f"writing there would land outside this repository -- no "
-                    f"command repairs this; remove the link"
+                    f"writing there would land outside this repository and "
+                    f"the `{name}` cell's description reaches no "
+                    f"{surface.runtime} session here -- no command repairs "
+                    f"this; remove the link"
                 )
                 continue
             try:
@@ -440,7 +498,8 @@ def verify(root: Path) -> list[str]:
             if is_generated(target):
                 findings.append(
                     f"roster: {where}/{name}/{CELL_FILE} is out of step with "
-                    f"{CELLS}/{name}/{CELL_FILE} -- run "
+                    f"{CELLS}/{name}/{CELL_FILE}, so every {surface.runtime} "
+                    f"session here reads the superseded trigger -- run "
                     f"`python tools/roster.py --write`"
                 )
             else:
@@ -458,7 +517,8 @@ def verify(root: Path) -> list[str]:
             if is_generated(root / where / name / CELL_FILE):
                 findings.append(
                     f"roster: {where}/{name}/{CELL_FILE} names no cell under "
-                    f"{CELLS}/ -- run `python tools/roster.py --write`"
+                    f"{CELLS}/, so every {surface.runtime} session here loads "
+                    f"a retired trigger -- run `python tools/roster.py --write`"
                 )
     if not cells:
         findings.append(
@@ -493,7 +553,13 @@ def write(root: Path) -> list[str]:
             try:
                 want = expected(root, name, surface)
             except (ValueError, OSError) as exc:
-                changed.append(f"skipped {CELLS}/{name}/{CELL_FILE}: {exc}")
+                # Once per cell, as `verify` reports it. A cell nothing can
+                # copy is one file to fix however many surfaces are owed a
+                # copy of it, and this loop said so once per surface while
+                # the rule it mirrors said once. [PR #278 review, M8]
+                line = f"skipped {CELLS}/{name}/{CELL_FILE}: {exc}"
+                if line not in changed:
+                    changed.append(line)
                 continue
             target = root / where / name / CELL_FILE
             if not inside_roster(root, target.parent, surface):

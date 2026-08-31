@@ -207,10 +207,17 @@ def is_roster_path(directory: str):
     a figure that assumed the equality it is meant to report would be the
     defect #199 records, where the roster was counted here and loaded nowhere.
 
-    **Made per surface rather than widened to accept any of them.** A single
-    predicate matching both directories would let one surface's entries be
-    counted into the other's total, which is that same defect one layer down:
-    the number would stay put while a runtime stopped loading anything. [#258]
+    **What this predicate actually does is bound the depth**, and it is made
+    per surface only so it can. Both callers scope the listing before it runs
+    -- `figure_always_on` globs one directory, `always_on_at` runs `ls-tree`
+    under one prefix -- so a path from one surface is never offered to the
+    other's predicate, and a widened predicate could not cross-count if it
+    tried. An earlier version of this paragraph said it could; the claim was
+    false, and it was stated as one of the design's load-bearing reasons.
+    Probed by substituting a widened predicate into both callers: every number
+    identical, on this tree and on a divergent one. The live work is the depth
+    clause in `always_on_at`, where `ls-tree -r` returns paths deeper than
+    `<directory>/<cell>/SKILL.md`. [PR #278 review, M6]
     """
     head = directory.split("/")
     depth = len(head) + 2
@@ -226,10 +233,19 @@ def is_roster_path(directory: str):
 def _roster(read, paths: list[str]) -> tuple[int, int]:
     """Name plus description over a set of cell files: (chars, files read).
 
-    Both audiences load a roster; they load it from different directories, so
+    Every audience loads a roster; they load it from different directories, so
     the arithmetic is shared and the input is not. An adopter's comes from the
-    plugin's `skills/`; a session working in this repository loads only what
-    `.claude/skills/` holds, which is what #199 found reported and never read.
+    plugin's `skills/`; a session working in this repository loads what the
+    directory for **its own runtime** holds, one per runtime, which is what
+    #199 found reported and never read and #258 found reported for one runtime
+    only.
+
+    **It counts every `SKILL.md` on the surface, not only the generated
+    entries**, because that is what the runtime loads: a project skill written
+    by hand at a name that is no cell is lawful there, `check_project_roster`
+    says nothing about it, and it is always-on prose all the same. The caller's
+    label has to say so; calling this "the roster" and counting more than the
+    roster is what [PR #278 review, M20] found.
     """
     chars = files = 0
     for path in paths:
@@ -279,16 +295,22 @@ def _always_on(read, cell_paths: list[str],
     the surface directories themselves, so deleting one moves the number
     rather than leaving it to assert what the tree stopped doing.
 
-    **There is no single always-on total here any more, because the quantity
-    is per runtime**: this repository loads one roster directory per runtime
-    and neither reaches the other's. So `here` carries a row per surface and
-    `repo_total` is **the smallest of them**. On a tree the roster guard
-    passes, every row holds the same number and the scalar is every runtime's.
-    Where they diverge, the scalar is the one that cannot overstate what some
-    session here reads, and the rows beside it say which runtime is short --
-    so a reader cannot take the number and miss the divergence. Reporting the
-    largest instead would have shown this change's own arrival as no movement
-    at all, the base having loaded nothing into Codex. [#258]
+    **There is no single always-on total here, because the quantity is per
+    runtime**: this repository loads one roster directory per runtime, neither
+    reaches the other's, and the two do not even read the same doctrine files.
+    So `here` carries a row per surface and every surface a reader meets
+    prints those rows.
+
+    `repo_total` survives as the one scalar a delta can be taken against, and
+    is **the smallest** row: it cannot overstate what some session here reads,
+    and reporting the largest would have shown this change's own arrival as no
+    movement at all, the base having loaded nothing into Codex. **Nothing
+    renders it alone.** An earlier draft argued that a scalar was safe because
+    rows would be printed beside it and the rows would agree on any lawful
+    tree. Both halves were false: one of the three renderers printed no rows,
+    and the rows disagree on trees the guard passes -- a lawful hand-written
+    project skill under one surface is loaded, counted, and reported by
+    nothing. Probed, both. [#258] [PR #278 review, M1, M21]
     """
     charter = 0
     for path in cell_paths:
@@ -311,12 +333,19 @@ def _always_on(read, cell_paths: list[str],
     here = []
     for surface in roster.SURFACES:
         chars, entries = _roster(read, roster_paths.get(surface.directory, []))
+        # The doctrine files are this runtime's, not every runtime's: both
+        # read AGENTS.md and only Claude Code reads CLAUDE.md, which is a
+        # pointer to it. Charging every row for both made the two rows equal
+        # on a healthy tree and so suppressed exactly the divergence these
+        # rows exist to show. [PR #278 external pass]
+        doctrine = sum(len(read(path) or "") for path in surface.doctrine)
         here.append({
             "runtime": surface.runtime,
             "directory": surface.directory,
+            "doctrine": doctrine,
             "roster": chars,
             "entries": entries,
-            "total": agents + pointer + charter + chars,
+            "total": doctrine + charter + chars,
         })
     return {
         # `doctrine` is the sum the total is built from; `agents` and
@@ -332,49 +361,43 @@ def _always_on(read, cell_paths: list[str],
         # show the tree where they stopped agreeing.
         "roster": adopter_roster, "cells": cells,
         "here": here,
+        # Kept as the one scalar a delta can be taken against, and defined as
+        # the smallest so it cannot overstate what some session here reads.
+        # **Nothing renders it alone any more.** Every surface a reader meets
+        # prints the rows, because the quantity is per runtime and a scalar
+        # standing for it was read as one runtime's number by whichever
+        # session happened to be in the other. [PR #278 review, M1]
         "repo_total": min(row["total"] for row in here),
         "adopter_total": adopter,
     }
 
 
-def here_rosters(data: dict) -> str:
-    """The roster term of the total, one clause per runtime.
+def by_runtime(data: dict) -> str:
+    """Every runtime's total, decomposed into the terms that compose *it*.
 
-    Named per runtime rather than summed or collapsed to one clause: on a tree
-    the guard passes they hold the same number, and the point of printing both
-    is the tree where they stopped. [#258]
+    **Unconditional, and one chain per runtime.** Two things this replaced
+    were wrong in the same way. A clause that printed the rows only when they
+    disagreed left the surfaces that render this number saying `N chars here`
+    on a tree where N was some other runtime's; and a single `+` chain beside
+    a single total summed to whichever runtime happened to be long, so the
+    sentence was right or wrong according to which surface was short. Both are
+    the same defect -- one decomposition standing for a quantity that has one
+    value per runtime. [PR #278 review, M1, M13, M19, M21]
+
+    Each chain sums to the total it is printed against, which is the property
+    `test_the_callout_line_decomposes_its_own_total` checks, and which no
+    single chain could have. The roster term says which directory it counted
+    rather than calling itself the roster: it counts every `SKILL.md` the
+    runtime loads from that directory, and a hand-written project skill there
+    is lawful, loaded, and not the roster's. [PR #278 review, M20]
     """
-    rows = data["here"]
-    first = rows[0]
-    same = all((row["entries"], row["roster"])
-               == (first["entries"], first["roster"]) for row in rows)
-    if same:
-        runtimes = " and ".join(row["runtime"] for row in rows)
-        return (f"{first['entries']} roster name/description "
-                f"{first['roster']:,}, the same in {runtimes}")
-    # The same phrase per runtime rather than a compressed list, so the term
-    # reads identically whichever form the sentence is in and one reader can
-    # decompose the total either way.
-    return ", ".join(
-        f"{row['entries']} {row['runtime']} roster name/description "
-        f"{row['roster']:,}"
-        for row in rows
+    return "; ".join(
+        f"{row['runtime']} {row['total']:,} = doctrine {row['doctrine']:,}"
+        f" + charter body {data['charter']:,}"
+        f" + {row['entries']} name/description from {row['directory']}/"
+        f" {row['roster']:,}"
+        for row in data["here"]
     )
-
-
-def divergence(data: dict) -> str:
-    """Said only when the runtimes disagree, and silent when they do not.
-
-    A clause on every run would price a lawful tree in two identical numbers,
-    which reads as an accident and trains a reader to skip it -- so it fires
-    exactly where the scalar beside it is not every runtime's. [#258]
-    """
-    totals = {row["total"] for row in data["here"]}
-    if len(totals) < 2:
-        return ""
-    return " (least of " + ", ".join(
-        f"{row['runtime']} {row['total']:,}" for row in data["here"]
-    ) + ")"
 
 
 def figure_always_on(root: Path) -> dict:
@@ -402,11 +425,9 @@ def figure_always_on(root: Path) -> dict:
     return {
         "name": "always-on surface",
         "value": (
-            f"{data['repo_total']:,} chars here{divergence(data)}, "
-            f"{data['adopter_total']:,} from this practice for an adopter "
-            f"-- doctrine {data['doctrine']:,} + charter body {data['charter']:,} + "
-            f"{here_rosters(data)}; "
-            f"an adopter's {data['cells']} cell name/description {data['roster']:,}"
+            f"{by_runtime(data)}; an adopter {data['adopter_total']:,} = "
+            f"charter body {data['charter']:,} + {data['cells']} cell "
+            f"name/description {data['roster']:,}"
         ),
         "basis": (
             "decoded UTF-8 characters; AGENTS.md and CLAUDE.md whole, the "
@@ -414,18 +435,21 @@ def figure_always_on(root: Path) -> dict:
             "description as check_cell_frontmatter reads them; an adopter's "
             "total omits both doctrine files, which reach a plugin cache as "
             "inert files and are never loaded, and counts only what this "
-            "practice contributes to their always-on surface; the roster is "
-            "read from the directory each audience loads it from -- skills/ "
-            "for an adopter, who installs the plugin, and one directory per "
-            "runtime here, where nothing installs it, the total here being "
-            "the smallest any runtime loads; working tree"
+            "practice contributes to their always-on surface; here there is "
+            "one total per runtime rather than one for the repository, each "
+            "built from the doctrine files and the skills directory that "
+            "runtime loads -- both read AGENTS.md, only Claude Code reads "
+            "CLAUDE.md, and a name/description term counts every SKILL.md on "
+            "that surface including a hand-written project skill; an "
+            "adopter's is read from skills/, which is what installing the "
+            "plugin gives them; working tree"
         ),
         "data": data,
     }
 
 
-def always_on_at(root: Path, ref: str) -> int:
-    """The repo-side always-on total at another revision, for a delta.
+def always_on_at(root: Path, ref: str) -> dict[str, int]:
+    """Each runtime's always-on total at another revision, for a delta.
 
     Reads blobs rather than checking anything out, so it is safe to call from
     a working tree somebody is using. Raises rather than guessing when the ref
@@ -434,6 +458,14 @@ def always_on_at(root: Path, ref: str) -> int:
 
     The composition it applies is the working tree's, from `_always_on`, so
     the two halves of a delta cannot drift apart.
+
+    **Runtime to total, not one scalar.** A single number here made the delta
+    inherit `repo_total`'s bound: growth in one runtime's surface alone moved
+    no scalar, so a change that raised what every Claude Code session loads
+    could book `+0` and never trip the outflow rule. Keyed by runtime rather
+    than positional, so a caller cannot line two revisions' rows up wrongly
+    when `SURFACES` is reordered. A runtime absent from either side is
+    reported by the caller rather than silently dropped. [PR #278 review, M22]
     """
     import subprocess
 
@@ -462,13 +494,14 @@ def always_on_at(root: Path, ref: str) -> int:
         ).stdout.split()
         return [p for p in out if predicate(p)]
 
-    return _always_on(
+    data = _always_on(
         read,
         listing("skills/", is_cell_path),
         {surface.directory: listing(surface.directory + "/",
                                     is_roster_path(surface.directory))
          for surface in roster.SURFACES},
-    )["repo_total"]
+    )
+    return {row["runtime"]: row["total"] for row in data["here"]}
 
 
 def figure_charter(root: Path) -> dict:

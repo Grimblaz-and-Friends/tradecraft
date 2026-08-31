@@ -755,8 +755,11 @@ def test_every_surface_gets_an_entry_and_one_short_still_reports(tmp_path):
     """The defect #258 found, at the shape it would come back in.
 
     A generator that wrote the first surface and stopped is exactly the state
-    this repository was in for eleven weeks: one runtime holding every
-    description, the other holding none, and nothing saying so. So the pin is
+    this repository was in before #258: one runtime holding every description,
+    the other holding none, and nothing saying so. (A draft of this docstring
+    put a duration on that state and the duration was wrong by twenty-five
+    times; the shape is what this pins, and `tools/lint.py` carries the
+    derivation. [PR #278 review, M5]) So the pin is
     not that `write()` produces entries -- it is that a tree with one surface
     complete and the other empty is a **finding**, one per cell that is short.
     """
@@ -825,3 +828,28 @@ def test_ownership_holds_on_every_surface_not_just_the_first(tmp_path):
     assert entry_of(tmp_path, CODEX, "spikes").read_bytes() == mine, (
         "write() overwrote a hand-written file on the second surface"
     )
+
+
+def test_write_reports_an_unparseable_cell_once_not_once_per_surface(tmp_path):
+    """The rule `verify` states, held on the command a reader actually runs.
+
+    `verify` dedups this line with the reason beside it -- a second copy of an
+    unrepairable line asks a reader to fix the same file twice -- and the
+    identical `try`/`except` in `write()` had no dedup, so `--write` said it
+    twice and a reader could believe two cells were broken. [PR #278 review,
+    M8]
+    """
+    make_cell(tmp_path, "alpha")
+    (tmp_path / "skills" / "alpha" / "SKILL.md").write_bytes(
+        b"# no frontmatter" + NL.encode() )
+
+    skipped = [line for line in roster.write(tmp_path) if "skipped" in line]
+    assert len(skipped) == 1, skipped
+    assert "alpha" in skipped[0]
+
+    remaining = [f for f in roster.verify(tmp_path) if "parseable" in f]
+    assert len(remaining) == 1, (
+        "the guard and the command must report this cell the same number of "
+        "times, which is once"
+    )
+
