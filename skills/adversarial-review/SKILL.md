@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: Adversarial review of an artifact against its stated purpose — a differentiated panel (or a single cold pass for routine changes), an evidence-bound defense that prices each remedy, a terminal stage that weighs value against price, and executable post-fix re-validation. Use when a change is ready for review, when deciding review depth for an artifact, or when deciding whether another pass is worth running; not for choosing what to build, and not for committing and pushing the fixes afterward.
+description: Adversarial review of an artifact against its stated purpose — a differentiated panel (or a single cold pass for routine changes), an evidence-bound defense, a terminal ruling on every finding, and executable post-fix re-validation. Use when a change is ready for review, when deciding review depth for an artifact, when reconciling what an automated reviewer posted on a pull request or what a review tool you invoked returned, or when deciding whether another pass is worth running; not for choosing what to build, and not for committing and pushing the fixes afterward.
 ---
 
 # adversarial-review
