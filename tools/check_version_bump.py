@@ -157,11 +157,19 @@ def _parse_semver(raw: object) -> tuple[int, ...] | None:
     gate admitted a value the cast could not take and the guard died with a
     traceback whose exit code 1 reads as FAIL -- the wrong one of three
     outcomes.
+
+    And `isascii` beside it, because matching the cast is not enough: `int()`
+    accepts an Arabic-Indic digit that no consumer reading a version string
+    can, and the guard PASSed such a bump while printing it as the ASCII
+    version it is not -- `shown` is rebuilt from the parsed ints, so the report
+    named a version the manifest did not contain. A false pass is the one
+    outcome this guard exists to refuse, and this was the only one anywhere in
+    its review.
     """
     if not isinstance(raw, str):
         return None
     parts = raw.split(".")
-    if len(parts) != 3 or not all(p.isdecimal() for p in parts):
+    if len(parts) != 3 or not all(p.isascii() and p.isdecimal() for p in parts):
         return None
     return tuple(int(p) for p in parts)
 
@@ -223,9 +231,17 @@ def _is_remote_tracking(ref: str) -> bool:
     and a raw sha cannot move, so the freshness note is a no-op on the first
     and false on the second -- and both reached it verbatim, which trains a
     reader to discount the clause on the one path where it is load-bearing.
+
+    Resolved to a full ref name rather than concatenated onto `refs/remotes/`.
+    The first attempt did the latter, so `refs/remotes/origin/main` -- a lawful
+    spelling of the same ref, and the spelling `skills/persist-changes` uses
+    for its own refs -- became `refs/remotes/refs/remotes/origin/main`, never
+    resolved, and silently lost the disclosure on exactly the stale-read path
+    the disclosure exists for. A clause that vanishes where it is load-bearing
+    is the same defect as one that fires where it is not.
     """
-    code, _, _ = _git("rev-parse", "--verify", f"refs/remotes/{ref}")
-    return code == 0
+    code, full, _ = _git("rev-parse", "--symbolic-full-name", ref)
+    return code == 0 and full.strip().startswith("refs/remotes/")
 
 
 def _shown_ref(ref: str) -> str:
@@ -310,11 +326,18 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         # Gated on the base side being readable, and that gate is the whole of
         # what the owner affirmed. The disclosed widening of exit 2 was "a
         # broken manifest as the only change" -- the CURRENT side. An
-        # unreadable BASE is a different case and the commonest instance of it
-        # is a manifest that is simply new: an adopting repository's first pull
-        # request, where the base will never grow the file and no branch-side
-        # act can clear the red. Nothing to compare against is not a question
-        # the guard failed to answer.
+        # unreadable BASE is a different case, most often a manifest that is
+        # simply new, and nothing to compare against is not a question the
+        # guard failed to answer.
+        #
+        # **This gate reaches only the manifest-alone case**, which is what it
+        # was ruled to restore. A pull request adding the manifest ALONGSIDE
+        # other shipped files -- the shape an adoption actually takes -- makes
+        # `touched` non-empty and still exits 2 from the base version read
+        # below, with a trailer naming an act nobody can perform. That is
+        # inherited rather than introduced (it exits 2 before this change too)
+        # and is recorded, not fixed: the remedy decides what "did the version
+        # rise" means with nothing on one side, which is a design call.
         data, err = manifest(None)
         if data is None:
             return UNDETERMINED, [
@@ -398,23 +421,37 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     detail = (f"is unchanged at {shown[1]}" if new == old
               else f"went BACKWARDS, {shown[0]} -> {shown[1]}")
     # The unit sentence is true only while the merge base has not moved. Where
-    # it has, the branch's earlier bump was absorbed by the base and a second
-    # one is exactly what is owed -- and that is the state this guard's own
-    # collision remedy ("bring the base in, raise again") walks a session
-    # through, as well as the state CI evaluates on a merge ref. Printed
-    # unconditionally, the justification contradicted the imperative beside it.
+    # it has, the base has published a version this branch has not risen above
+    # -- and that is the state this guard's own collision remedy ("bring the
+    # base in, raise again") walks a session through, as well as the state CI
+    # evaluates on a merge ref. Printed unconditionally, the justification
+    # contradicted the imperative beside it.
+    #
+    # **The target is always a bound to clear, never a number already in the
+    # file.** The first attempt at this sentence named `shown[1]` here, which
+    # is the version the same line has just reported as wrong: the guard's
+    # most-printed message told a session to raise the version to the version
+    # it already had, and to "raise" a decrement to the decremented value. An
+    # act that changes nothing is worse than no act named, because a consumer
+    # performs it -- both experience sessions established that they do -- and
+    # comes back to the identical red.
     if tip == base:
         unit = (
             "The unit is this pull request against its merge base, never "
             "per-commit, so a branch already carrying a bump needs no second "
             "one. "
         )
-        target = f"{shown[1]}"
+        target = f"past {shown[0]}"
     else:
+        # NOT "a bump this branch already made has been absorbed": reaching
+        # here means the version did not rise above the merge base at all, so
+        # the commonest branch in this state never bumped, and telling it
+        # otherwise sends it hunting through its own history. That clause was
+        # the same defect this block was rewritten to remove, reintroduced in
+        # the sibling arm.
         unit = (
             f"The merge base has moved: {seen} is at {tip[:7]} carrying "
-            f"{shown[2]}, so a bump this branch already made has been absorbed "
-            f"and a further one is owed. "
+            f"{shown[2]}, which this branch has not risen above. "
         )
         target = f"past {shown[2]}"
     # The manifest is not accused of being its own justification. It is here

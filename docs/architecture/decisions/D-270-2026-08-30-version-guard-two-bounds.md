@@ -41,11 +41,13 @@
 
 **A manifest edit the guard cannot read on the *current* side is UNDETERMINED, and only that side.** This widens exit 2 to one case that passed before — a broken manifest as the only change, shipped zone otherwise clean — which is what the affirmed artifact disclosed and what the session decided and reported rather than asking. It follows the script's own doctrine, *"anything this script cannot establish, it says out loud and exits non-zero"*.
 
-The first draft read **both** sides unconditionally, which widened exit 2 much further than that and in a direction nobody affirmed. The commonest instance of an unreadable *base* manifest is a manifest that is simply new: an adopting repository's first pull request, where the base will never grow the file and **no act on the branch can clear the red** — a hard failure with no named remedy on the one pull request every adopting session must ship, in a guard whose stated audience includes them. Nothing to compare against is not a question the guard failed to answer, so the base side is gated out. That regression was the only behavioural defect this change introduced, and it was found by the review rather than by the change.
+The first draft read **both** sides unconditionally, which widened exit 2 much further than that and in a direction nobody affirmed. The commonest instance of an unreadable *base* manifest is a manifest that is simply new, where the base will never grow the file and **no act on the branch can clear the red**. Nothing to compare against is not a question the guard failed to answer, so the base side is gated out. That regression was the only behavioural defect this change introduced, and it was found by the review rather than by the change.
+
+**The gate reaches the manifest-alone case and no further, which the first draft of this paragraph overstated.** It said the fix covered *an adopting repository's first pull request*. It does not: a pull request adding the manifest **alongside the skills being adopted** — the shape an adoption actually takes — makes the touched set non-empty and still exits 2, from the base *version* read rather than the field comparison, with a trailer naming an act nobody can perform. That red is **inherited**: it returns exit 2 at the pre-change revision, at this change's first draft, and here. It is recorded rather than fixed, because the only remedy decides what *did the version rise* means with nothing on one side, which is a design call outside this change's affirmed boundary. The post-fix look caught the overstatement at five sites, this one among them.
 
 **The int cast is pinned in both directions**, and carries a docstring saying what it is load-bearing for. A decade-crossing bump is a bump; a decade-crossing decrement is still a decrement. The same mutant fails one closed and the other open, which is why one test is not enough.
 
-**And the gate in front of that cast had to agree with it.** `isdigit` accepts characters `int()` refuses — the superscript two among them — so a manifest could pass the gate and kill the guard with an uncaught `ValueError` whose process exit code **1** reads as FAIL, the wrong one of three outcomes. `isdecimal` is the predicate that matches the cast. The same class sat one function away: `_manifest_at` called `read_text` unguarded, so a manifest that is not UTF-8, or that cannot be read at all, escaped as a traceback rather than the UNDETERMINED the script promises. Three independent findings of one class — this review's `operational` seat at the semver gate, and both external reviewers at the read — closed together.
+**And the gate in front of that cast had to agree with it.** `isdigit` accepts characters `int()` refuses — the superscript two among them — so a manifest could pass the gate and kill the guard with an uncaught `ValueError` whose process exit code **1** reads as FAIL, the wrong one of three outcomes. `isdecimal` is the predicate that matches the cast — with `isascii` beside it, because matching the cast is not enough. `int()` accepts an Arabic-Indic digit that no consumer reading a version string can, and the guard passed such a bump while printing it as the ASCII version it is not, the report being rebuilt from the parsed ints. That was the only false pass anywhere in this change's review, and it is the outcome the guard exists to refuse. (`isdecimal` still admits one input the cast refuses — a version part longer than 4300 digits, which raises rather than returning `None`. Dropped rather than fixed: the remedy obliges a pin built on that fixture, for a state no consumer, probe or record can reach.) The same class sat one function away: `_manifest_at` called `read_text` unguarded, so a manifest that is not UTF-8, or that cannot be read at all, escaped as a traceback rather than the UNDETERMINED the script promises. Three independent findings of one class — this review's `operational` seat at the semver gate, and both external reviewers at the read — closed together.
 
 ## What was rejected
 
@@ -57,28 +59,34 @@ The first draft read **both** sides unconditionally, which widened exit 2 much f
 
 ## Evidence
 
-Both polarities probed for every pin, by mutating `tools/check_version_bump.py` in place and running `tools/tests/test_check_version_bump.py` against each mutant. **Fourteen mutants and two controls, re-derived on the tree this entry lands in** — the first draft's table was measured before a fix that changed one of its rows and never re-derived, which its own review caught and which is the reason the procedure is written out above rather than left as "the four mutants".
+Both polarities probed for every pin, by mutating `tools/check_version_bump.py` in place and running `tools/tests/test_check_version_bump.py` against each mutant. **Eighteen mutants and two controls, re-derived on the tree this entry lands in** — twice, because the review's first fix batch changed rows and the table was not re-derived the first time, which is the defect that let its one wrong cell stand.
 
 | Mutant | Tests that go red |
 | --- | --- |
-| *control:* unmutated | none — `54 passed` |
-| *control:* `check()` returns PASS immediately | 48 — the harness reaches the code |
+| *control:* unmutated | none — `58 passed` |
+| *control:* `check()` returns PASS immediately | 52 — the harness reaches the code |
 | the tip bound removed (`new > old` alone) | 5 |
 | the tip read removed entirely | 8 |
 | the wholesale manifest exemption restored | 7 |
 | `_parse_semver` returns `tuple(parts)` | 2 — both decade pins |
-| the `isdigit` gate restored in front of the `int` cast | 1 |
+| the `isdigit` gate restored in front of the cast | 2 |
+| the `isascii` half of the gate dropped | 1 |
 | `read_text` left unguarded in `_manifest_at` | 1 |
 | the `isinstance(data, dict)` check dropped | 1 |
 | the base-side readability gate dropped | 1 |
-| the freshness note never printed | 2 |
+| the freshness note never printed | 3 |
 | the freshness note always printed | 3 |
+| `_is_remote_tracking` testing by string concatenation | 1 |
 | the unit sentence printed unconditionally | 1 |
+| the no-bump target set to the current version | 2 |
+| the moved arm claiming an absorbed bump | 1 |
 | the collision sentence printed unconditionally | 1 |
 | `_shown_ref` never abbreviating | 1 |
 | the "shipped zone untouched" wording restored | 1 |
 
-No mutant survived. The two controls are what make the rest of the column mean anything: an unmutated run reds nothing, and a guard that returns PASS unconditionally reds 48 of 54 — so the harness demonstrably reaches the code, which a green column alone could not establish. Every run clears every `__pycache__` and invokes `python -B ... -p no:cacheprovider`; without that a size-preserving mutation can report a false SURVIVES, which is [#142](https://github.com/Grimblaz-and-Friends/tradecraft/issues/142) and which this repository has already published once.
+No mutant survived. The two controls are what make the rest of the column mean anything: an unmutated run reds nothing, and a guard that returns PASS unconditionally reds 52 of 58 — so the harness demonstrably reaches the code, which a green column alone could not establish. Every run clears every `__pycache__` and invokes `python -B ... -p no:cacheprovider`; without that a size-preserving mutation can report a false SURVIVES, which is [#142](https://github.com/Grimblaz-and-Friends/tradecraft/issues/142) and which this repository has already published once.
+
+**The last five rows are the review's own repairs, and four of them are repairs of the first fix batch.** That batch closed a class — a message printing a justification its own imperative contradicts — and reintroduced it twice while doing so: the no-bump FAIL began naming the *current* version as the version to raise to, and its moved-base arm began telling a branch that never bumped that a bump of its own had been absorbed. Both were unpinned, which is why the batch's suite stayed green through them; the mutants above are what now hold them. The lesson worth carrying past this entry is narrower than "review your fixes": a fix that rewrites a message inherits every claim the message makes, and the pin that covered the old claim does not cover the new one unless it was written to.
 
 **A defect the mutants found that no reader had.** An early form of the base-side gate reddened 23 tests with a `KeyError` rather than a behaviour change: the field comparison reached its base manifest out of the read-memo, which only the gate's own call had populated. The outcome was correct and the coupling invisible, so a later edit to that gate would have produced a crash rather than a wrong answer. The value is now bound where it is read.
 

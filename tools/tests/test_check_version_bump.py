@@ -188,10 +188,17 @@ def test_absent_manifest_is_undetermined(repo):
 def _base_moves_to(repo: Path, version: str) -> None:
     """Land a shipped-zone change plus `version` on `main`, behind the branch.
 
-    Reproduces the three-revision shape every recorded instance of #110 has:
-    the branch forked at one version, `main` has since published another, and
-    the branch has not merged it in -- so its merge base still predates the
-    collision and reports clean."""
+    Reproduces the moved-tip shape, which is four of the six instances #110
+    records: the branch forked at one version, `main` has since published
+    another, and the branch has not merged it in -- so its merge base still
+    predates the collision and reports clean. The other two (#113, #155) are
+    concurrent open pull requests off a base that never moved, which this
+    fixture cannot express and which no bound reading HEAD and the base ref
+    can see; that residue is #279.
+
+    Said here as well as eleven lines below because the first correction of
+    this file's census landed on the test's docstring and stopped short of the
+    builder's, leaving the two contradicting each other."""
     _run(repo, "checkout", "-q", "main")
     (repo / "skills" / "b.md").write_text("landed on main" + chr(10), encoding="utf-8")
     _manifest(repo, version)
@@ -476,7 +483,13 @@ def test_the_no_bump_failure_names_the_moved_tip_it_already_read(repo):
     moved and which has not bumped yet was told only "raise the version", took
     the obvious next number, and hit the collision message on the second run.
     It also asserted that a branch already carrying a bump needs no second one
-    -- false in exactly this state, and the sentence CI prints on a merge ref."""
+    -- false in exactly this state, and the sentence CI prints on a merge ref.
+
+    The replacement clause is pinned too, and that is this pin's second life:
+    the first version of it asserted only the ABSENCE of the old sentence, so
+    the clause that replaced it was free to be equally false. It said a bump
+    this branch already made had been absorbed -- to a branch, in this very
+    fixture, that never bumped at all."""
     _base_moves_to(repo, "1.1.0")
     (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
     _commit(repo, "skill edit, no bump")
@@ -486,6 +499,9 @@ def test_the_no_bump_failure_names_the_moved_tip_it_already_read(repo):
     assert "1.1.0" in lines[0]                       # what the tip carries
     assert "needs no second one" not in lines[0]
     assert "past 1.1.0" in lines[0]                  # the target, not just "raise"
+    # This branch made no bump; the message may not say it did.
+    assert "already made" not in lines[0]
+    assert "has not risen above" in lines[0]
 
 
 def test_the_unit_sentence_survives_where_it_is_true(repo):
@@ -556,10 +572,17 @@ def test_an_absent_base_manifest_is_not_a_failure_to_answer(repo):
     """An adopting repository's first pull request adds the manifest, so the
     base does not have one -- and no act on the branch can ever give it one.
 
-    Round one read both sides unconditionally and returned exit 2 there, which
-    is a red with no remedy on the one pull request every adopting session must
-    ship. The widening the owner affirmed was a broken manifest on the CURRENT
-    side; this case was never disclosed and is withdrawn."""
+    Round one read both sides unconditionally and returned exit 2 there. The
+    widening the owner affirmed was a broken manifest on the CURRENT side; this
+    case was never disclosed and is withdrawn.
+
+    **What this pins is the manifest-alone case, and only that.** A pull
+    request adding the manifest alongside the skills being adopted -- the shape
+    an adoption actually takes -- makes `touched` non-empty and still exits 2
+    from the base version read. That red is inherited (it exits 2 before this
+    change too) and recorded rather than fixed; this docstring said "the one
+    pull request every adopting session must ship" while pinning the narrower
+    half, which is the overstatement the post-fix look caught."""
     _run(repo, "checkout", "-q", "main")
     (repo / ".claude-plugin" / "plugin.json").unlink()
     _commit(repo, "a base with no manifest")
@@ -614,6 +637,72 @@ def test_a_version_whose_digits_int_cannot_take_is_undetermined(repo):
     _manifest(repo, "1.0." + superscript_two)
     (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
     _commit(repo, "a version int() cannot take")
+    status, lines = cvb.check("main")
+    assert status == UNDETERMINED, lines
+    assert "not a three-part numeric semver" in lines[0]
+
+
+# --- the target is a bound to clear, never a number already in the file ---
+
+def test_the_no_bump_failure_names_a_target_above_the_current_version(repo):
+    """The guard's most-printed message, and the one that told a session to
+    raise the version to the version it already had.
+
+    An earlier form named the current version as the target, so a consumer that
+    performed the act -- which both experience sessions established consumers
+    do -- set the version to what it already was and came back to the identical
+    red. This arm was the one the moved-base pin did not cover, so correcting
+    it left the whole suite green."""
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _commit(repo, "skill edit, no bump, base unmoved")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    assert "is unchanged at 1.0.0" in lines[0]
+    assert "past 1.0.0" in lines[0]
+    assert "to 1.0.0 " not in lines[0], "the target may not be the current version"
+
+
+def test_a_decrement_is_not_told_to_raise_to_the_decremented_value(repo):
+    """The same defect's sharper face: the message reported the version had
+    gone BACKWARDS and then named the backwards value as what to raise to."""
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "0.9.0")
+    _commit(repo, "skill edit + decrement")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    assert "BACKWARDS, 1.0.0 -> 0.9.0" in lines[0]
+    assert "past 1.0.0" in lines[0]
+    assert "to 0.9.0 " not in lines[0], "the target may not be the decremented value"
+
+
+def test_a_fully_qualified_remote_ref_still_discloses_its_freshness(repo):
+    """`refs/remotes/origin/main` is a lawful spelling of the same ref, and the
+    spelling this repository's own persist script uses for its refs.
+
+    The predicate was a string-prefix concatenation, so this spelling became
+    `refs/remotes/refs/remotes/origin/main`, never resolved, and the freshness
+    disclosure vanished -- on the stale-read path the disclosure exists for."""
+    _with_remote(repo)
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + bump")
+    for spelling in ("origin/main", "refs/remotes/origin/main"):
+        status, lines = cvb.check(spelling)
+        assert status == PASS, (spelling, lines)
+        assert "only as fresh as your last fetch" in lines[0], spelling
+
+
+def test_a_non_ascii_digit_is_not_a_version(repo):
+    """The only false PASS the review found anywhere.
+
+    `int()` accepts an Arabic-Indic digit and no consumer reading a version
+    string does, so the guard passed the bump -- and printed it as the ASCII
+    version it is not, because the report is rebuilt from the parsed ints. The
+    PASS line was byte-identical to a lawful ASCII bump's."""
+    arabic_indic_three = chr(0x0663)
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.0." + arabic_indic_three)
+    _commit(repo, "skill edit + a bump no consumer can read")
     status, lines = cvb.check("main")
     assert status == UNDETERMINED, lines
     assert "not a three-part numeric semver" in lines[0]
