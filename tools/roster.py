@@ -119,8 +119,12 @@ class Surface(NamedTuple):
 # editing. **They are not counted here**, because a count of them was stated
 # once and was wrong by at least four in the same commit that stated it, in a
 # file whose own `verify()` records that a stated count of its shapes has been
-# wrong twice running. `grep -rn "Claude Code" tools/ | grep -i codex` finds
-# them; at the time of writing they include this file's module docstring,
+# wrong twice running. **No command finds them either** -- the first attempt
+# named a line-based `grep` for the two runtime names, and three of the sites
+# carry neither name: check 17's registry line names only the two directories,
+# and `tools/figures.py`'s comment and its emitted `basis` string say "both
+# read AGENTS.md and only Claude Code reads CLAUDE.md". At the time of writing
+# they include this file's module docstring,
 # `Surface`'s docstring, `main()`'s argparse description, `tools/lint.py`'s
 # check 17 registry line and `check_project_roster` docstring, two sites in
 # `tools/figures.py` -- one of them emitted output -- and a comment in
@@ -352,6 +356,19 @@ def surface_is_where_it_says(root: Path, surface: Surface) -> bool:
 
     It is also the right granularity: one link is one condition, and it drew a
     finding per cell.
+
+    **What this answers is whether the directory resolves where it was
+    declared, not whether that directory is a link**, and the message has to
+    say the weaker thing. The link can sit at any component of the path: a
+    junction at `.claude` pointing into a shared dotfiles directory is an
+    ordinary arrangement, and under it `.claude/skills` is neither a link nor
+    extant, so a message naming it as the link to remove sends a reader to a
+    path they cannot act on. That is this function's own defect one level
+    further up, and the first fix for it shipped carrying it. The message also
+    stops claiming nothing loads: a junction is transparent to a runtime, so
+    the descriptions behind one are read normally and what is actually true is
+    that nothing there is this repository's to keep in step.
+    [PR #278 review, P1, P2]
     """
     return (root / surface.directory).resolve() == (
         root.resolve() / surface.directory)
@@ -493,11 +510,11 @@ def verify(root: Path) -> list[str]:
             # Once for the surface, naming the surface -- the only path a
             # reader can act on. [PR #278 review, F2]
             findings.append(
-                f"roster: {where} is a link, so it resolves somewhere other "
-                f"than {where} and writing an entry would land there instead "
-                f"-- every cell's description reaches no {surface.runtime} "
-                f"session here; no command repairs this, remove the link at "
-                f"{where}"
+                f"roster: something on the path to {where} is a link, so "
+                f"{where} resolves somewhere other than {where} and writing "
+                f"an entry would land there instead -- no {surface.runtime} "
+                f"entry here is this repository's to keep in step; no command "
+                f"repairs this, remove the link on the path to {where}"
             )
             continue
         for name in cells:
@@ -586,8 +603,9 @@ def write(root: Path) -> list[str]:
     for surface in SURFACES:
         where = surface.directory
         if not surface_is_where_it_says(root, surface):
-            changed.append(f"left {where}: it is a link, so it resolves "
-                           f"somewhere other than {where}")
+            changed.append(
+                f"left {where}: something on the path to it is a link, so it "
+                f"resolves somewhere other than {where}")
             continue
         for name in cells:
             try:

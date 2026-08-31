@@ -920,9 +920,11 @@ def test_a_linked_surface_directory_is_refused_and_nothing_is_written_through_it
         "one link is one condition; it used to draw a finding per cell")
     assert "--write" not in findings[0]
     assert findings[0].count(CODEX.directory) >= 1 and "/alpha" not in findings[0], (
-        "the message must name the surface directory that IS the link and no "
-        "path under it -- naming the entries sends a reader hunting a link at "
-        "paths that are not links and often do not exist"
+        "the message must name the surface directory whose resolution moved, "
+        "and no path under it -- naming the entries sends a reader hunting a "
+        "link at paths that are not links and often do not exist. It must not "
+        "call that directory the link either: the link can sit at any "
+        "component of the path above it"
     )
 
     lines = roster.write(tmp_path)
@@ -977,8 +979,6 @@ def test_an_ordinary_surface_and_a_repository_under_a_link_are_both_lawful(tmp_p
     make_cell(tmp_path, "alpha")
     real = tmp_path / "real"
     real.mkdir()
-    for surface in roster.SURFACES:
-        (real / "skills" / "alpha").mkdir(parents=True, exist_ok=True)
     import shutil
     shutil.copytree(tmp_path / "skills", real / "skills", dirs_exist_ok=True)
     roster.write(real)

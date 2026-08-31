@@ -353,9 +353,11 @@ def _always_on(read, cell_paths: list[str],
         # pricing their sum against either one states a ceiling that does not
         # exist. `doctrine` is their sum and **no total is built from it** --
         # each row is built from `row["doctrine"]`, the files *that* runtime
-        # reads, which is not the same set. It survives for the callers that
-        # want the pair summed and is not a term in any total. [PR #278
-        # review, F8]
+        # reads, which is not the same set. **It has no caller but the test
+        # that asserts it** and is kept so that assertion has something to
+        # hold; a replacement for this comment said it survived "for the
+        # callers that want the pair summed", and there are none.
+        # [PR #278 review, F8, P7]
         "doctrine": agents + pointer, "agents": agents, "pointer": pointer,
         "charter": charter,
         # `roster` is the adopter's, from the plugin's cells; `here` is this
