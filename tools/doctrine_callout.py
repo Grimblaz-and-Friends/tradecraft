@@ -337,19 +337,24 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
     except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
         return f"_Always-on surface: not derived ({type(exc).__name__}: {exc})._"
     return (
-        f"Always-on surface: **{data['repo_total']:,}** chars here{movement}, "
+        f"Always-on surface: **{data['repo_total']:,}** chars here"
+        f"{figures.divergence(data)}{movement}, "
         f"**{data['adopter_total']:,}** from this practice for an adopter -- "
         + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
-        # `entries`/`roster_here`, never `cells`/`roster`: the total this
-        # sentence opens with is built from the roster THIS repository loads,
-        # under `.claude/skills/`, and the adopter's roster under `skills/` is
-        # a different set. Printing the second as the breakdown of the first
-        # decomposed to a number the sentence did not state -- invisible while
-        # the two agree, and wrong exactly on the trees where the roster guard
-        # is red, which this job posts on because it carries no `needs:` on
-        # `lint-and-test`. Same class as the two-file sum this line once
-        # rendered against one file's budget. [PR #210 review, M1]
-        + f", {data['entries']} roster name/description {data['roster_here']:,}."
+        # `here`, never `cells`/`roster`: the total this sentence opens with is
+        # built from the rosters THIS repository loads, one directory per
+        # runtime, and the adopter's roster under `skills/` is a different set.
+        # Printing the second as the breakdown of the first decomposed to a
+        # number the sentence did not state -- invisible while they agree, and
+        # wrong exactly on the trees where the roster guard is red, which this
+        # job posts on because it carries no `needs:` on `lint-and-test`. Same
+        # class as the two-file sum this line once rendered against one file's
+        # budget. [PR #210 review, M1]
+        #
+        # Both renderers are the figure's, not copies: this sentence and
+        # `figure_always_on` would otherwise be two wordings of one
+        # decomposition, and the owner reads this one at the moment he merges.
+        + f", {figures.here_rosters(data)}."
     )
 
 

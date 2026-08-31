@@ -437,6 +437,10 @@ def test_the_callout_line_decomposes_its_own_total(tmp_path, monkeypatch):
     tell the two readers apart. The fix shipped unpinned and reverting it left
     the whole suite green -- the same shape as the mutation that survived in
     `always_on_at`, in the batch that closed it. [PR #210 cycle one, C1-F4]
+
+    The same fixture now also has the two **runtimes** disagreeing, the entry
+    being removed from one surface and left on the other, so the sentence is
+    rendered in its divergent form here rather than its agreeing one. [#258]
     """
     import shutil
 
@@ -478,8 +482,16 @@ def test_the_callout_line_decomposes_its_own_total(tmp_path, monkeypatch):
     # rather than fail when the term reverts to the adopter's, and a crash
     # reports a missing regex where the defect is a number that does not add
     # up.
-    roster_term = int(re.search(r"(\d+) (?:roster|cell) name/description (\d+)",
-                                flat).group(2))
+    #
+    # **The smallest of the printed roster terms**, because the total the
+    # sentence states is the smallest any runtime here loads and this fixture
+    # is deliberately a tree where the runtimes disagree. Taking the first
+    # would pass or fail on the order the surfaces happen to render in, which
+    # is not what this pins. [#258]
+    roster_terms = [int(n) for n in
+                    re.findall(r"(?:roster|cell) name/description (\d+)", flat)]
+    assert roster_terms, f"no roster term printed at all: {line}"
+    roster_term = min(roster_terms)
     assert sum(terms) + roster_term == stated_total, (
         "the callout's printed terms sum to "
         f"{sum(terms) + roster_term}, not the {stated_total} it states: {line}"

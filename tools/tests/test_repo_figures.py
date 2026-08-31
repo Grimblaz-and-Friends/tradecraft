@@ -328,9 +328,11 @@ def test_the_two_audiences_are_not_the_same_set():
     # composition the moment it does not. The two rosters are read from two
     # directories; an identity that cannot tell them apart is the assumption
     # #199 found standing in for a measurement.
-    assert data["repo_total"] == (
-        data["doctrine"] + data["charter"] + data["roster_here"]
-    )
+    for row in data["here"]:
+        assert row["total"] == (
+            data["doctrine"] + data["charter"] + row["roster"]
+        ), f"{row['runtime']}'s total is not built from the roster it loads"
+    assert data["repo_total"] == min(row["total"] for row in data["here"])
     assert data["doctrine"] > 0, "the doctrine files are part of the repo total"
     assert data["adopter_total"] < data["repo_total"]
 
@@ -344,6 +346,12 @@ def test_the_repo_side_reads_the_roster_it_actually_loads(tmp_path):
     session. Removing an entry must move the repo total and leave the
     adopter's alone -- if it moves neither, the figure is asserting the
     surface rather than reading it.
+
+    **Removed from one surface only**, which is the discrimination the second
+    runtime added: an entry deleted from `.claude/skills/` and left standing
+    under `.agents/skills/` must still move the number, because one runtime
+    here has stopped loading it. A figure reading either directory for both
+    would report no change. [#258]
     """
     surface(tmp_path)
     make_cell = tmp_path / "skills" / "extra"
@@ -359,7 +367,13 @@ def test_the_repo_side_reads_the_roster_it_actually_loads(tmp_path):
         len("extra") + len("Trigger.")
     )
     assert after["adopter_total"] == before["adopter_total"]
-    assert after["entries"] == before["entries"] - 1
+    claude, codex = after["here"]
+    assert claude["entries"] == before["here"][0]["entries"] - 1
+    assert codex["entries"] == before["here"][1]["entries"], (
+        "the surface that kept its entry must not move with the one that "
+        "lost it"
+    )
+    assert claude["total"] < codex["total"]
     assert after["cells"] == before["cells"]
 
 
@@ -446,11 +460,11 @@ def surface(root, agents="a" * 100, pointer="b" * 40, charter_body="Body."):
     (cell / "SKILL.md").write_text(
         "---" + NL + "name: charter" + NL + "description: Desc." + NL + "---" + NL
         + NL + charter_body + NL, encoding="utf-8")
-    # The repo side reads its roster from `.claude/skills/`, which is the
-    # directory a session working here actually loads. A fixture with cells and
-    # no roster models the tree #199 found, not a lawful one -- and the
-    # equality these tests pin would then hold over a surface neither reader
-    # counts.
+    # The repo side reads its roster from the directory each runtime here
+    # actually loads -- `.claude/skills/` and `.agents/skills/`, one per
+    # runtime. A fixture with cells and no roster models the tree #199 found,
+    # not a lawful one -- and the equality these tests pin would then hold
+    # over a surface no reader counts.
     roster.write(root)
 
 

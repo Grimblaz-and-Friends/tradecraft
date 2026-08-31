@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The project roster: make this repository's own cell descriptions load (issue #199).
+"""The project roster: make this repository's own cell descriptions load (issues #199, #258).
 
 A cell's `description` is the whole of its triggering surface and is always
 loaded -- for an adopter, who installs the plugin. Not here. This repository
@@ -10,12 +10,21 @@ consumers on PR #194 never reached a rule whose trigger lives in one, and two
 of them wrote a rule violation into a commit message and a PR body as a direct
 result.
 
-Claude Code loads a project's own skills from `.claude/skills/<name>/SKILL.md`
-with no install, no settings edit, and no command run. So that is where this
-writes: one entry per cell, carrying the cell's frontmatter byte for byte --
-which is the part that must load -- over a body that names this generator and
+Each runtime loads a project's own skills from exactly one directory, with no
+install, no settings edit, and no command run: Claude Code from
+`.claude/skills/<name>/SKILL.md`, Codex from `.agents/skills/<name>/SKILL.md`.
+So those are where this writes: one entry per cell per surface, carrying the
+cell's frontmatter byte for byte -- which is the part that must load -- over a
+body that names this generator, names the runtime that copy exists for, and
 points at the cell itself. The prose keeps one owner; only the triggering
-surface is reproduced, and a guard holds the two in step.
+surface is reproduced, and a guard holds them all in step.
+
+**Neither directory reaches the other runtime**, which is why there are two
+rather than one shared with a link. Probed in both directions on a tree
+holding both: a Codex session returned the `.agents/skills` entry and not the
+`.claude/skills` one; a Claude Code session returned the second and reported
+the first as not available to it. Fixing one runtime and reasoning about the
+other is exactly how #199's remedy left Codex out for as long as it did. [#258]
 
 **The entry is a pointer, not a copy.** A session that invokes a cell by name
 here reaches the pointer and reads the cell, one hop -- exercised by cold
@@ -40,7 +49,7 @@ worktree nobody had touched. [#229]
 
 Usage:  python tools/roster.py [--write]
 
-    0  the roster matches the cells -- with --write, it did and now does
+    0  every surface matches the cells -- with --write, it did and now does
     1  a finding remains. `--write` re-verifies after writing and reports
        what it could not repair, so its exit code answers whether the tree
        is lawful rather than whether the loop ran: a cell whose frontmatter
@@ -52,6 +61,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -62,8 +72,42 @@ sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
 CELLS = "skills"
-ROSTER = ".claude/skills"
 CELL_FILE = "SKILL.md"
+
+
+class Surface(NamedTuple):
+    """One directory a session working in this repository loads descriptions from.
+
+    **A surface is a runtime, not a preference.** Each runtime documents one
+    place it discovers a project's own skills and reads no other, which two
+    probes established rather than assumed: a Codex session in a tree holding
+    both directories returned the entry under `.agents/skills` and not the one
+    under `.claude/skills`; a Claude Code session in the same tree returned the
+    second and answered that the first was not available to it. So neither
+    directory can serve both, and the split is symmetric. [#258]
+
+    `runtime` is written into the entry itself, where a session opening one
+    file learns which runtime that file exists for. Naming it beats a
+    universal for the reason [PR #210 review, M10] gives: the sentence that
+    claimed every session was reached asserted a fix Codex had not received.
+    """
+
+    directory: str
+    runtime: str
+
+
+# In the order a reader meets them: the one #199 bought, then the one #258
+# bought. Everything below loops over this, so a third runtime is one row.
+SURFACES = (
+    Surface(".claude/skills", "Claude Code"),
+    Surface(".agents/skills", "Codex"),
+)
+
+# For callers that need the directories alone -- `tools/lint.py` asks whether a
+# path is a generated entry before running a prose guard over it. Derived
+# rather than written twice, so a surface cannot be added to one and not the
+# other.
+ROSTER_DIRS = tuple(surface.directory for surface in SURFACES)
 
 # What marks a file as this generator's to remove. `.claude/skills/<name>/` is
 # the runtime's documented home for a project's own skills -- the very property
@@ -80,20 +124,26 @@ _OPEN = b"---"
 _CLOSE = b"\n---"
 
 
-def _body(name: str) -> bytes:
+def _body(name: str, surface: Surface) -> bytes:
     """What sits under the copied frontmatter.
 
     Everything a session opening this file needs in order not to edit it: that
     it is generated, what generates it, and where the cell actually is. That is
     the whole of criterion 6 -- a reader learns it from this file alone, with
     nothing else loaded.
+
+    **It names the runtime this copy exists for**, so the two copies are not
+    interchangeable prose sitting in two places. A session that opens the one
+    under `.agents/skills/` while working in Claude Code learns from the file
+    itself that it is looking at the other runtime's surface, rather than at a
+    stray duplicate worth deleting. [#258]
     """
     return (
         f"\n# {name}\n"
         f"\nGenerated by `tools/roster.py` from `{CELLS}/{name}/{CELL_FILE}`, which is"
         f" the `{name}` cell and carries all of it. Read that file now.\n"
         f"\nDo not edit this one: it is the cell's frontmatter copied so that its"
-        f" description loads in every Claude Code session working in this"
+        f" description loads in every {surface.runtime} session working in this"
         f" repository, and `check_project_roster` fails the lint when the two"
         f" fall out of step.\n"
     ).encode("utf-8")
@@ -223,9 +273,9 @@ def cell_names(root: Path) -> list[str]:
     )
 
 
-def roster_names(root: Path) -> list[str]:
-    """Every entry the roster currently holds, sorted."""
-    directory = root / ROSTER
+def roster_names(root: Path, surface: Surface) -> list[str]:
+    """Every entry one surface currently holds, sorted."""
+    directory = root / surface.directory
     if not directory.is_dir():
         return []
     return sorted(
@@ -234,13 +284,17 @@ def roster_names(root: Path) -> list[str]:
     )
 
 
-def expected(root: Path, name: str) -> bytes:
-    """The bytes this cell's roster entry must hold.
+def expected(root: Path, name: str, surface: Surface) -> bytes:
+    """The bytes this cell's entry on this surface must hold.
 
     One definition, two callers -- the writer and the guard. They were never
     two, and this is why: a guard computing its own expectation is a second
     definition, and the two drift the moment either is edited. `_always_on` in
     `tools/figures.py` carries the same lesson from the same repository.
+
+    **The frontmatter is the same on every surface and the body is not.** What
+    has to load is one cell's block copied once per surface; what says why the
+    file is there names the runtime that reads it.
     """
     source = root / CELLS / name / CELL_FILE
     data = source.read_bytes()
@@ -249,11 +303,11 @@ def expected(root: Path, name: str) -> bytes:
         raise ValueError(
             f"{CELLS}/{name}/{CELL_FILE} has no parseable frontmatter to copy"
         )
-    return block + _body(name)
+    return block + _body(name, surface)
 
 
-def inside_roster(root: Path, entry: Path) -> bool:
-    """Whether an entry's real location is still under the roster directory.
+def inside_roster(root: Path, entry: Path, surface: Surface) -> bool:
+    """Whether an entry's real location is still under its own surface directory.
 
     `write()` creates directories and files, so a link in the middle of the
     path sends both outside the repository: with `.claude/skills/alpha` linked
@@ -271,7 +325,7 @@ def inside_roster(root: Path, entry: Path) -> bool:
     Scoped to the roster side. A link under `skills/` is not checked here: this
     script only ever reads a cell, and reading through one escapes nothing.
     """
-    base = (root / ROSTER).resolve()
+    base = (root / surface.directory).resolve()
     try:
         return entry.resolve().is_relative_to(base)
     except (OSError, ValueError):
@@ -296,18 +350,27 @@ def verify(root: Path) -> list[str]:
     """Findings, by shape rather than by count.
 
     **What the roster owns is exactly two things: a name that is a cell, and a
-    file carrying `MARKER`.** Everything else under `.claude/skills/` belongs
-    to whoever put it there. Ownership is checked on **every path that touches
-    a file**, not only on removal -- checking it on one path is what let the
-    regeneration branch go on destroying hand-written content after the
-    removal branch stopped. [PR #210 cycle one, C1-F2/C1-F3]
+    file carrying `MARKER`.** Everything else under a surface directory
+    belongs to whoever put it there. Ownership is checked on **every path that
+    touches a file**, not only on removal -- checking it on one path is what
+    let the regeneration branch go on destroying hand-written content after
+    the removal branch stopped. [PR #210 cycle one, C1-F2/C1-F3]
+
+    **Every shape below is per surface**, and each message names the directory
+    it found. One condition on one surface draws one finding; the same cell
+    stale in both draws one for each, because they are two files and repairing
+    one leaves the other loading a superseded trigger to the other runtime.
+    The one exception is unparseable frontmatter, which is a defect in the
+    cell rather than in any copy of it and is reported once. [#258]
 
     Each shape below says what its own message names. There is no count here:
     a stated count of these has been wrong three times running, each time in
     the sentence written to correct the one before, so the arithmetic is gone
     rather than corrected a fourth time. [PR #210 cycle two, C2-F1]
 
-    - **missing** -- a cell with no entry. Names `--write`.
+    - **missing** -- a cell with no entry on a surface, which is the runtime
+      that surface serves loading nothing for it. Names `--write` and the
+      runtime.
     - **out of step** -- a cell whose entry this script wrote and the cell has
       since moved on. Names `--write`.
     - **orphan** -- an entry this script wrote whose cell is gone. Names
@@ -318,8 +381,9 @@ def verify(root: Path) -> list[str]:
       overwritten, and reported rather than ignored: the hand-written
       frontmatter is what loads, so the cell's real description does not,
       which is a silent criterion-1 failure.
-    - **unparseable frontmatter** -- a cell `--write` cannot copy. Names no
-      command; the cell's frontmatter is what has to change.
+    - **unparseable frontmatter** -- a cell `--write` cannot copy anywhere.
+      Names no command and no surface; the cell's frontmatter is what has to
+      change, and it is one file however many copies of it are owed.
     - **no cell at all** -- nothing under `skills/` to compare against. Names
       no command, for the reason #198 gives about a sibling guard: no cell
       found is indistinguishable from every cell lawful.
@@ -330,8 +394,9 @@ def verify(root: Path) -> list[str]:
 
     And one condition that is not a finding at all: **a foreign entry at a
     name that is not a cell**, which is a project skill somebody wrote in the
-    runtime's documented place for one. Policing it produced a red the lint
-    could never clear on a lawful tree. A directory there holding no
+    runtime's documented place for one -- true of both directories, each
+    being its own runtime's documented place. Policing it produced a red the
+    lint could never clear on a lawful tree. A directory there holding no
     `SKILL.md` is likewise silent; `write()` reports residue at the moment it
     creates it, which is where that report is useful.
 
@@ -341,54 +406,60 @@ def verify(root: Path) -> list[str]:
     """
     findings = []
     cells = cell_names(root)
-    for name in cells:
-        target = root / ROSTER / name / CELL_FILE
-        if not inside_roster(root, target.parent):
-            findings.append(
-                f"roster: {ROSTER}/{name}/ resolves outside {ROSTER}/, so "
-                f"writing there would land outside this repository -- no "
-                f"command repairs this; remove the link"
-            )
-            continue
-        try:
-            want = expected(root, name)
-        except (ValueError, OSError) as exc:
-            findings.append(
-                f"roster: {name}: {exc} -- no command repairs this; fix the "
-                f"cell's frontmatter"
-            )
-            continue
-        if not target.is_file():
-            findings.append(
-                f"roster: {ROSTER}/{name}/{CELL_FILE} is missing, so the "
-                f"`{name}` cell's description loads in no session here -- "
-                f"run `python tools/roster.py --write`"
-            )
-            continue
-        if in_step(target.read_bytes(), want):
-            continue
-        if is_generated(target):
-            findings.append(
-                f"roster: {ROSTER}/{name}/{CELL_FILE} is out of step with "
-                f"{CELLS}/{name}/{CELL_FILE} -- run "
-                f"`python tools/roster.py --write`"
-            )
-        else:
-            findings.append(
-                f"roster: {ROSTER}/{name}/{CELL_FILE} was not written by "
-                f"tools/roster.py and holds the name of the `{name}` cell, so "
-                f"that cell's description loads in no session here and nothing "
-                f"will overwrite yours -- move your file out of {ROSTER}/, "
-                f"then run `python tools/roster.py --write`"
-            )
-    for name in roster_names(root):
-        if name in cells:
-            continue
-        if is_generated(root / ROSTER / name / CELL_FILE):
-            findings.append(
-                f"roster: {ROSTER}/{name}/{CELL_FILE} names no cell under "
-                f"{CELLS}/ -- run `python tools/roster.py --write`"
-            )
+    for surface in SURFACES:
+        where = surface.directory
+        for name in cells:
+            target = root / where / name / CELL_FILE
+            if not inside_roster(root, target.parent, surface):
+                findings.append(
+                    f"roster: {where}/{name}/ resolves outside {where}/, so "
+                    f"writing there would land outside this repository -- no "
+                    f"command repairs this; remove the link"
+                )
+                continue
+            try:
+                want = expected(root, name, surface)
+            except (ValueError, OSError) as exc:
+                # Once per cell, not once per surface. The cell's frontmatter
+                # is what has to change, so a second copy of an unrepairable
+                # line asks a reader to fix the same file twice.
+                line = (f"roster: {name}: {exc} -- no command repairs this; "
+                        f"fix the cell's frontmatter")
+                if line not in findings:
+                    findings.append(line)
+                continue
+            if not target.is_file():
+                findings.append(
+                    f"roster: {where}/{name}/{CELL_FILE} is missing, so the "
+                    f"`{name}` cell's description loads in no {surface.runtime} "
+                    f"session here -- run `python tools/roster.py --write`"
+                )
+                continue
+            if in_step(target.read_bytes(), want):
+                continue
+            if is_generated(target):
+                findings.append(
+                    f"roster: {where}/{name}/{CELL_FILE} is out of step with "
+                    f"{CELLS}/{name}/{CELL_FILE} -- run "
+                    f"`python tools/roster.py --write`"
+                )
+            else:
+                findings.append(
+                    f"roster: {where}/{name}/{CELL_FILE} was not written by "
+                    f"tools/roster.py and holds the name of the `{name}` cell, "
+                    f"so that cell's description loads in no {surface.runtime} "
+                    f"session here and nothing will overwrite yours -- move "
+                    f"your file out of {where}/, then run "
+                    f"`python tools/roster.py --write`"
+                )
+        for name in roster_names(root, surface):
+            if name in cells:
+                continue
+            if is_generated(root / where / name / CELL_FILE):
+                findings.append(
+                    f"roster: {where}/{name}/{CELL_FILE} names no cell under "
+                    f"{CELLS}/ -- run `python tools/roster.py --write`"
+                )
     if not cells:
         findings.append(
             f"roster: no cell found under {CELLS}/, so nothing was compared "
@@ -416,58 +487,62 @@ def write(root: Path) -> list[str]:
     """
     changed = []
     cells = cell_names(root)
-    for name in cells:
-        try:
-            want = expected(root, name)
-        except (ValueError, OSError) as exc:
-            changed.append(f"skipped {CELLS}/{name}/{CELL_FILE}: {exc}")
-            continue
-        target = root / ROSTER / name / CELL_FILE
-        if not inside_roster(root, target.parent):
-            changed.append(
-                f"left {ROSTER}/{name}/: resolves outside {ROSTER}/"
-            )
-            continue
-        if target.is_file():
-            # Byte-exact here where `verify` is not: this branch decides
-            # whether to rewrite, and rewriting an entry a text-mode tool
-            # turned to CRLF restores the canonical bytes -- which is a
-            # remedy worth offering, not noise. `verify` decides whether the
-            # tree is lawful, and by `in_step` that entry already is.
-            if target.read_bytes() == want:
+    for surface in SURFACES:
+        where = surface.directory
+        for name in cells:
+            try:
+                want = expected(root, name, surface)
+            except (ValueError, OSError) as exc:
+                changed.append(f"skipped {CELLS}/{name}/{CELL_FILE}: {exc}")
                 continue
-            # Ownership is checked here too, not only on removal. This branch
-            # went on overwriting whatever sat at a cell's name after the
-            # removal branch stopped deleting orphans -- the same irreversible
-            # loss of untracked, hand-written content, reported as `wrote` and
-            # exiting 0. [PR #210 cycle one, C1-F2]
-            if not is_generated(target):
+            target = root / where / name / CELL_FILE
+            if not inside_roster(root, target.parent, surface):
                 changed.append(
-                    f"left {ROSTER}/{name}/{CELL_FILE}: not written by this "
-                    f"script, and it holds the `{name}` cell's name"
+                    f"left {where}/{name}/: resolves outside {where}/"
                 )
                 continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(want)
-        changed.append(f"wrote {ROSTER}/{name}/{CELL_FILE}")
-    for name in roster_names(root):
-        if name in cells:
-            continue
-        entry = root / ROSTER / name
-        if not is_generated(entry / CELL_FILE):
-            changed.append(
-                f"left {ROSTER}/{name}/{CELL_FILE}: not written by this script"
-            )
-            continue
-        (entry / CELL_FILE).unlink()
-        changed.append(f"removed {ROSTER}/{name}/{CELL_FILE}")
-        residue = sorted(p.name for p in entry.iterdir())
-        if residue:
-            changed.append(
-                f"left {ROSTER}/{name}/ holding {', '.join(residue)}"
-            )
-        else:
-            entry.rmdir()
+            if target.is_file():
+                # Byte-exact here where `verify` is not: this branch decides
+                # whether to rewrite, and rewriting an entry a text-mode tool
+                # turned to CRLF restores the canonical bytes -- which is a
+                # remedy worth offering, not noise. `verify` decides whether
+                # the tree is lawful, and by `in_step` that entry already is.
+                if target.read_bytes() == want:
+                    continue
+                # Ownership is checked here too, not only on removal. This
+                # branch went on overwriting whatever sat at a cell's name
+                # after the removal branch stopped deleting orphans -- the
+                # same irreversible loss of untracked, hand-written content,
+                # reported as `wrote` and exiting 0. [PR #210 cycle one,
+                # C1-F2]
+                if not is_generated(target):
+                    changed.append(
+                        f"left {where}/{name}/{CELL_FILE}: not written by "
+                        f"this script, and it holds the `{name}` cell's name"
+                    )
+                    continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(want)
+            changed.append(f"wrote {where}/{name}/{CELL_FILE}")
+        for name in roster_names(root, surface):
+            if name in cells:
+                continue
+            entry = root / where / name
+            if not is_generated(entry / CELL_FILE):
+                changed.append(
+                    f"left {where}/{name}/{CELL_FILE}: not written by this "
+                    f"script"
+                )
+                continue
+            (entry / CELL_FILE).unlink()
+            changed.append(f"removed {where}/{name}/{CELL_FILE}")
+            residue = sorted(item.name for item in entry.iterdir())
+            if residue:
+                changed.append(
+                    f"left {where}/{name}/ holding {', '.join(residue)}"
+                )
+            else:
+                entry.rmdir()
     return changed
 
 
@@ -475,7 +550,7 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(
         prog="roster.py",
-        description="Generate or verify the project roster under .claude/skills, which is what makes this repository's own cell descriptions load.",
+        description="Generate or verify the project roster under .claude/skills and .agents/skills, which is what makes this repository's own cell descriptions load in Claude Code and in Codex.",
     )
     parser.add_argument(
         "--write", action="store_true",

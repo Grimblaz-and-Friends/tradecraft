@@ -88,21 +88,23 @@ Checks:
     the import binding, a local no-op with the right name would satisfy the
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
-17. project roster: every cell has an entry under .claude/skills/ carrying its
-    frontmatter byte for byte, and no entry THIS GENERATOR WROTE names a cell
-    that is gone. A file it did not write is not its business: at a name that
-    is no cell it draws no finding at all, because that is a project skill in
-    the runtime's documented place for one; at a cell's name it is reported
-    and never overwritten. The qualifier is load-bearing and was missing --
-    an experience session read this line, concluded a hand-written entry was
-    a finding, and had to open roster.py to find it was not. That
-    directory is the only surface a Claude Code session working in THIS
-    repository loads a description from -- the plugin is never installed here
-    -- so without it every trigger routed to a description reaches every
-    adopter and misses us (#199). Codex is not reached by it and reads cells by
-    opening files, which is why the scope is named rather than left universal.
-    The expectation is tools/roster.py's own, never recomputed here: a guard
-    holding a second definition drifts from the writer it judges.
+17. project roster: every cell has an entry under .claude/skills/ AND under
+    .agents/skills/ carrying its frontmatter byte for byte, and no entry THIS
+    GENERATOR WROTE names a cell that is gone. A file it did not write is not
+    its business: at a name that is no cell it draws no finding at all,
+    because that is a project skill in the runtime's documented place for one;
+    at a cell's name it is reported and never overwritten. The qualifier is
+    load-bearing and was missing -- an experience session read this line,
+    concluded a hand-written entry was a finding, and had to open roster.py to
+    find it was not. Those two directories are the whole of what a session
+    working in THIS repository loads a description from -- one per runtime,
+    the plugin never being installed here -- so without them every trigger
+    routed to a description reaches every adopter and misses us (#199, #258).
+    Each finding names the runtime it belongs to, because neither directory
+    reaches the other's runtime and a session repairing one has not repaired
+    the other. The expectation is tools/roster.py's own, never recomputed
+    here: a guard holding a second definition drifts from the writer it
+    judges.
 18. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
 19. subprocess streams: a launch redirects nothing, or names all three of
@@ -2390,16 +2392,22 @@ def _is_generated_entry(root: Path, rel_file: str) -> bool:
     returned nothing. Every seat of this change's review found it
     independently [PR #247 review, M1].
 
-    The marker is still read, and is what decides it inside that directory:
-    `.claude/skills/` is the runtime's documented home for a project's own
+    The marker is still read, and is what decides it inside those
+    directories: each is its own runtime's documented home for a project's own
     skills, so a hand-written one there is nobody's copy and is still read.
+
+    **Every surface the generator writes**, asked of `roster.ROSTER_DIRS`
+    rather than listed here. A second directory that this predicate did not
+    know about would report each description defect once more per copy, which
+    is the doubling the whole exemption exists to stop. [#258]
 
     Nothing hides behind this. Check 17 holds every entry in step with its
     cell, and a lone carriage return is not among what its comparison
     forgives, so a copy that diverged from its cell is already a finding
     there.
     """
-    if not rel_file.startswith(roster.ROSTER + "/"):
+    if not any(rel_file.startswith(directory + "/")
+               for directory in roster.ROSTER_DIRS):
         return False
     return roster.is_generated(root / rel_file)
 
@@ -3652,21 +3660,25 @@ def check_body_strip_owner(root: Path) -> list[str]:
 
 
 def check_project_roster(root: Path) -> list[str]:
-    """Every cell has a `.claude/skills/` entry carrying its frontmatter.
+    """Every cell has an entry on every surface, carrying its frontmatter.
 
-    That directory is the whole of what a **Claude Code** session working in
-    this repository loads a description from. An adopter installs the plugin
-    and receives the roster from it; this repository never installs itself, so
-    before #199 no session here held any cell's name or description, and every
-    trigger routed to a description over several changes reached every consumer
-    and missed us. `tools/roster.py` carries the mechanism and the evidence.
+    There is one surface per runtime, and between them they are the whole of
+    what a session working in this repository loads a description from:
+    `.claude/skills/` for Claude Code, `.agents/skills/` for Codex. An adopter
+    installs the plugin and receives the roster from it; this repository never
+    installs itself, so before #199 no session here held any cell's name or
+    description, and every trigger routed to a description over several
+    changes reached every consumer and missed us. `tools/roster.py` carries
+    the mechanism and the evidence.
 
-    **Codex is outside that scope and stays outside it.** It is not documented
-    to load this directory, so a Codex session here reaches a cell by opening
-    the file, exactly as it did before. The runtime is named rather than left
-    to a universal because this repository's doctrine states its audience as
-    every runtime, and a sentence claiming every session would have asserted a
-    fix Codex never received. [PR #210 review, M10]
+    **Codex was outside that scope and is now inside it.** [PR #210 review,
+    M10] required the runtime be named rather than left to a universal,
+    because a sentence claiming every session would have asserted a fix Codex
+    never received -- and for eleven weeks that named exclusion was the whole
+    of what this repository contributed to the runtime its doctrine calls
+    canonical. The rule survives the fix: each finding still names its
+    runtime, because the two directories reach one runtime each and a session
+    that repaired one has not repaired the other. [#258]
 
     The expectation is the generator's, asked for rather than recomputed. A
     guard that computes its own copy of what a writer produces is a second
