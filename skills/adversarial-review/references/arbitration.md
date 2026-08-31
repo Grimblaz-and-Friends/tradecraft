@@ -18,7 +18,7 @@
 
 **A finding whose sites fall on both sides of the test takes one ruling in two tranches** — the determined part fixed, the rest handed on, each named — rather than one disposition forced onto the whole. One ruling per finding still holds; what divides is the remedy, not the ruling.
 
-**The third limb is the owner's by construction** — affirming the pre-implementation artifact is what made this change's boundary theirs. It is deliberately not a size threshold: the smallest change can be the one that decides the most.
+**The third limb is the owner's when the brief they affirmed reaches the boundary** — what that brief put out of scope is theirs; what only the artifact's own reading excluded is the session's, and a finding crossing it is a fix. It is deliberately not a size threshold: the smallest change can be the one that decides the most.
 
 **A remedy that adds weight argues that weight.** Where the only available remedy is more prose on a governing surface, **record** beats **fix** unless the consequence earns the words — a review leaves the artifact no larger than its answer requires.
 

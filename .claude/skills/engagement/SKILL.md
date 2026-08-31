@@ -1,6 +1,6 @@
 ---
 name: engagement
-description: How a session and the owner work together — which decisions are the owner's and which the session's, the plain brief that opens every surface they enter and binds where they affirmed it, and the pre-implementation artifact a cold seat settles against that brief. Use when deciding whether a call is the owner's or your own, when putting a decision to them, when reporting a call you made, when writing a pre-implementation artifact, when delivering a review's outcome to them, or when handing work back after they have been away; not for writing skills or governing documents, and not for how a review is run.
+description: How a session and the owner work together — which decisions are the owner's and which the session's, the plain brief that opens every surface they enter and binds where they affirmed it, and the pre-implementation artifact a cold seat settles against that brief. Use when deciding what a change is for, when deciding whether a call is the owner's or your own, when putting a decision to them, when reporting a call you made, when writing a pre-implementation artifact, when delivering a review's outcome to them, or when handing work back after they have been away; not for writing skills or governing documents, and not for how a review is run.
 ---
 
 # engagement

@@ -340,6 +340,8 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         f"Always-on surface: **{data['repo_total']:,}** chars here{movement}, "
         f"**{data['adopter_total']:,}** from this practice for an adopter -- "
         + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
+        + " -- AGENTS.md and the charter body are measured against ceilings raised"
+        + " temporarily under the owner approval on issue #260, restored when it lands"
         # `entries`/`roster_here`, never `cells`/`roster`: the total this
         # sentence opens with is built from the roster THIS repository loads,
         # under `.claude/skills/`, and the adopter's roster under `skills/` is

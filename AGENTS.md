@@ -12,7 +12,7 @@
 
 ## The ceremony moments, here
 
-- **Convergence.** The artifact's brief is posted as a comment on its issue (file one if none exists) and the affirmation recorded on the issue naming that comment; the artifact reading it is posted once a cold seat has settled it, before the first commit; from there the owner is next needed at PR review. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR.
+- **Convergence.** The brief is posted as a comment on the work's issue (file one if none exists) and the affirmation recorded on the issue naming that comment; the artifact reading it is posted once a cold seat has settled it, before the first commit; from there the owner is next needed at PR review. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR.
 - **Release.** `ci.yml` flags any PR touching this file, `CLAUDE.md`, or the `charter` cell for the owner's specific review. [D-81]
 
 ## The flow

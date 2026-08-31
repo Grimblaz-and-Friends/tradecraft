@@ -252,7 +252,11 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # condition has become permanent by forgetting. The new value is the size
 # this change measured plus the margin the prior constant carried, so it
 # is still a ceiling above a measured body rather than headroom to grow
-# into. No outflow was discharged for the edits under it, by the same
+# into. The basis is the next hundred above the body this change measured --
+# stated because a session restoring it applies what is written here, and an
+# unexecutable basis returns a different number than the one it replaces. An
+# earlier wording claimed 'the margin the prior constant carried', which
+# reproduces neither landed value. No outflow was discharged for the edits under it, by the same
 # approval and for the reason recorded there: the three relocation moves
 # are what #260 exists to stop, and the fourth needs per-rule evidence
 # that is #260's own deferred disposition. Find every change to this
@@ -266,10 +270,11 @@ AGENTS_BUDGET_CHARS = 6_100
 # `python tools/figures.py` prices against this constant on whatever tree you
 # are on. The margin is smaller than
 # the doctrine's because the charter is not audited here -- its prose was
-# left untouched deliberately, so the ceiling is the only pressure it gets.
+# left untouched for several cycles, though the change that raised this
+# constant edited it; the ceiling is most of the pressure it gets.
 # TEMPORARILY RAISED with AGENTS_BUDGET_CHARS above, under the same owner
-# approval and the same expiry at #260. Same basis: measured body plus the
-# margin the prior constant carried.
+# approval and the same expiry at #260. Same basis: the next hundred above
+# the body this change measured.
 CHARTER_BUDGET_CHARS = 5_800
 POINTER_BUDGET_CHARS = 500
 # A cell body whose budget is enforced rather than remembered. `authoring`'s
