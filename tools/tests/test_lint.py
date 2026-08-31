@@ -2441,8 +2441,8 @@ def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
         "AGENTS_BUDGET_CHARS was raised to 6_100 temporarily, under the owner "
         "approval recorded on issue #260, and is restored or replaced when that "
         "issue lands. If you are landing #260, move this pin with it, and "
-        "delete the #260 note in tools/doctrine_callout.py's _always_on_line, "
-        "which no test reaches."
+        "delete the #260 note inside _always_on_line in "
+        "tools/doctrine_callout.py -- no test reaches that note."
     )
     assert lint.POINTER_BUDGET_CHARS == 500
 
@@ -2503,8 +2503,8 @@ def test_the_declared_charter_budget_is_the_one_these_tests_pin():
         "CHARTER_BUDGET_CHARS was raised to 5_800 temporarily, under the owner "
         "approval recorded on issue #260, and is restored or replaced when that "
         "issue lands. If you are landing #260, move this pin with it, and "
-        "delete the #260 note in tools/doctrine_callout.py's _always_on_line, "
-        "which no test reaches."
+        "delete the #260 note inside _always_on_line in "
+        "tools/doctrine_callout.py -- no test reaches that note."
     )
 
 

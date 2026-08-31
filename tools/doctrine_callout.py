@@ -355,7 +355,7 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         # after the whole enumeration so no priced term dangles off it as an
         # appositive of the note rather than of the surface. [PR #280 review, M5]
         + " AGENTS.md and the charter body are priced against ceilings raised"
-        + " temporarily under the owner approval on issue #260."
+        + " temporarily under the owner approval on issue #260, restored when it lands."
     )
 
 

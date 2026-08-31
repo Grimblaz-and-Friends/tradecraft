@@ -250,11 +250,10 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # and that issue carries the approval, its scope and its expiry. Whoever
 # lands #260 restores or replaces this value; a raise that outlives its
 # condition has become permanent by forgetting. The new value is the next
-# hundred above the body this change measured -- stated because a session
-# restoring it applies what is written here, and an unexecutable basis
-# returns a different number than the one it replaces, so it
-# is still a ceiling above a measured body rather than headroom to grow
-# into. No outflow was discharged for the edits under it, by the same
+# hundred above the body this change measured, so it is still a ceiling above
+# a measured body rather than headroom to grow into. That basis is stated
+# because a session restoring it applies what is written here, and an
+# unexecutable basis returns a different number than the one it replaces. No outflow was discharged for the edits under it, by the same
 # approval and for the reason recorded there: the three relocation moves
 # are what #260 exists to stop, and the fourth needs per-rule evidence
 # that is #260's own deferred disposition. Find every change to this
