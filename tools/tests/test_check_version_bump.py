@@ -33,11 +33,17 @@ def _run(repo: Path, *args: str) -> None:
                    stdin=subprocess.DEVNULL, capture_output=True, text=True)
 
 
-def _manifest(repo: Path, version: str) -> None:
+def _manifest(repo: Path, version: str, description: str = "d") -> None:
+    """`description` is a parameter because it is the subject of one test.
+
+    The real manifest carries consumer-facing copy beside the version, and a
+    fixture holding only `name` and `version` cannot exercise the field the
+    wholesale exemption was letting through."""
     d = repo / ".claude-plugin"
     d.mkdir(exist_ok=True)
-    (d / "plugin.json").write_text(json.dumps({"name": "t", "version": version}),
-                                   encoding="utf-8")
+    (d / "plugin.json").write_text(
+        json.dumps({"name": "t", "version": version, "description": description}),
+        encoding="utf-8")
 
 
 @pytest.fixture
@@ -159,6 +165,183 @@ def test_absent_manifest_is_undetermined(repo):
     _commit(repo, "manifest gone")
     status, lines = cvb.check("main")
     assert status == UNDETERMINED and "absent" in lines[0]
+
+
+# --- two bounds: the merge base AND the base ref's tip (#110) ---
+
+def _base_moves_to(repo: Path, version: str) -> None:
+    """Land a shipped-zone change plus `version` on `main`, behind the branch.
+
+    Reproduces the three-revision shape every recorded instance of #110 has:
+    the branch forked at one version, `main` has since published another, and
+    the branch has not merged it in -- so its merge base still predates the
+    collision and reports clean."""
+    _run(repo, "checkout", "-q", "main")
+    (repo / "skills" / "b.md").write_text("landed on main" + chr(10), encoding="utf-8")
+    _manifest(repo, version)
+    _commit(repo, "a sibling change lands on main")
+    _run(repo, "checkout", "-q", "work")
+
+
+def test_a_version_already_taken_on_the_base_tip_is_refused(repo):
+    """PR #107's shape, and #119's, #155's and #262's: merge base 1.0.0, main
+    1.1.0, branch 1.1.0. The branch did raise the version it forked from, so the
+    merge base alone reports a clean bump and exits 0 -- five recorded times,
+    each caught by hand at the merge button after a review had been paid for."""
+    _base_moves_to(repo, "1.1.0")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + a bump onto a taken version")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    assert "ALREADY CARRIES 1.1.0" in lines[0]
+    assert any("skills/a.md" in line for line in lines)
+
+
+def test_the_taken_version_message_says_what_to_do_next(repo):
+    """A guard that only says no costs the session a search. This one names the
+    act -- bring the base in, raise the version again -- and discloses that its
+    answer is only as fresh as the last fetch, which is the one thing a session
+    cannot see from the output."""
+    _base_moves_to(repo, "1.1.0")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + a bump onto a taken version")
+    status, lines = cvb.check("main")
+    assert status == FAIL
+    assert "Bring main into this branch" in lines[0]
+    assert "raise " + chr(34) + "version" + chr(34) in lines[0]
+    assert "only as fresh as your last fetch" in lines[0]
+
+
+def test_a_bump_past_the_moved_tip_still_passes(repo):
+    """The lawful-work polarity, and the one that matters most: a branch whose
+    base moved and which bumps past what the base now carries is doing exactly
+    the right thing. A bound that blocked this would make the guard unusable
+    the moment `main` moved."""
+    _base_moves_to(repo, "1.1.0")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.2.0")
+    _commit(repo, "skill edit + a bump past the moved tip")
+    status, lines = cvb.check("main")
+    assert status == PASS, lines
+    assert "1.0.0 -> 1.2.0" in lines[0]
+    assert "carrying 1.1.0" in lines[0]   # the moved tip is disclosed, not silent
+
+
+def test_a_branch_level_with_its_base_is_unaffected(repo):
+    """The second bound is a no-op when the base has not moved -- which is the
+    common case, and the one every other test in this file runs in. Pinned so
+    the tip read cannot start changing the ordinary answer.
+
+    Unlike its siblings this does **not** go red against the pre-fix guard: the
+    pre-fix guard had no tip clause to print, so the absence it asserts held
+    there too. It is a regression pin on the quiet case, not a discriminator,
+    and saying so is the standard `test_unreadable_base_version_is_undetermined`
+    set in this file."""
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + bump")
+    status, lines = cvb.check("main")
+    assert status == PASS, lines
+    assert "has since moved" not in lines[0]
+
+
+def test_an_unreadable_base_tip_version_is_undetermined(repo):
+    """The tip is a third revision the guard now depends on, so it is a third
+    site that must refuse to answer rather than fall through to a pass. Distinct
+    from the merge-base site: `main` is broken only in the commit the branch
+    never forked from."""
+    _run(repo, "checkout", "-q", "main")
+    (repo / ".claude-plugin" / "plugin.json").write_text("{broken", encoding="utf-8")
+    _commit(repo, "break the manifest on main, after the fork")
+    _run(repo, "checkout", "-q", "work")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + bump")
+    status, lines = cvb.check("main")
+    assert status == UNDETERMINED, lines
+    assert "base tip version unreadable" in lines[0]
+
+
+# --- the manifest exemption is a field, not a file (#20) ---
+
+def test_a_description_edit_alone_is_a_shipped_change(repo):
+    """`description` is consumer-facing copy. Excluding the whole manifest let
+    it change at an unchanged version, so a consumer saw new copy and had no
+    signal that installed and current differed. The circularity that earned the
+    exemption reaches `version` and nothing else."""
+    _manifest(repo, "1.0.0", description="new consumer-facing copy")
+    _commit(repo, "description only")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    assert any(".claude-plugin/plugin.json" in line for line in lines)
+
+
+def test_a_description_edit_with_a_bump_passes(repo):
+    """The other polarity: the copy edit is lawful, it just has to be versioned
+    like any other shipped change.
+
+    The named manifest is what makes this discriminate. A PASS alone is what the
+    pre-fix guard returned too -- by calling the zone untouched, which is the
+    defect. Asserting the file is counted separates the right answer from the
+    right answer for the wrong reason."""
+    _manifest(repo, "1.1.0", description="new consumer-facing copy")
+    _commit(repo, "description + bump")
+    status, lines = cvb.check("main")
+    assert status == PASS, lines
+    assert ".claude-plugin/plugin.json" in lines[0]
+
+
+def test_an_unreadable_manifest_edit_is_undetermined_not_a_pass(repo):
+    """The field comparison reads two revisions, and a read it cannot make is
+    the guard's own doctrine: say so and exit non-zero. Without this the
+    manifest edit would fall through to "untouched" -- a false pass introduced
+    by the very change that closed one."""
+    (repo / ".claude-plugin" / "plugin.json").write_text("{not json", encoding="utf-8")
+    _commit(repo, "break the manifest, and nothing else")
+    status, lines = cvb.check("main")
+    assert status == UNDETERMINED, lines
+    assert "current manifest unreadable" in lines[0] and "not valid JSON" in lines[0]
+
+
+# --- the decade boundary, which no fixture distinguished (#33) ---
+
+def _base_at(repo: Path, version: str) -> None:
+    """Put `version` on `main` and re-cut the branch from it."""
+    _run(repo, "checkout", "-q", "main")
+    _manifest(repo, version)
+    _commit(repo, "set the base version")
+    _run(repo, "checkout", "-q", "-B", "work", "main")
+
+
+def test_a_minor_bump_across_a_decade_boundary_is_a_bump(repo):
+    """0.9.0 -> 0.10.0 was this repository's first decade-crossing bump, and
+    every existing fixture (1.0.0 -> 1.1.0, 1.0.0 -> 0.9.0) survives a lexical
+    comparison unchanged. Mutate `_parse_semver` to `return tuple(parts)` and
+    "10" < "9": this lawful bump is refused, CI turns red, and the whole suite
+    plus the lint stay green -- which is what left the int cast unpinned."""
+    _base_at(repo, "0.9.0")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "0.10.0")
+    _commit(repo, "skill edit + decade-crossing bump")
+    status, lines = cvb.check("main")
+    assert status == PASS, lines
+    assert "0.9.0 -> 0.10.0" in lines[0]
+
+
+def test_a_decrement_across_a_decade_boundary_is_not_a_bump(repo):
+    """The neighbouring half, and the one that fails OPEN under the same
+    mutant: lexically "0.9.0" > "0.10.0", so a real decrement reads as a rise
+    and ships. Its sibling above catches the mutant by going red; this one
+    catches it by refusing to go green."""
+    _base_at(repo, "0.10.0")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "0.9.0")
+    _commit(repo, "skill edit + decade-crossing decrement")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    assert "BACKWARDS, 0.10.0 -> 0.9.0" in lines[0]
 
 
 # --- main()'s exit path, which the withdrawn guard never tested ---

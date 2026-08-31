@@ -13,10 +13,20 @@ local run answers "would this be lawful if I committed everything right now",
 which is deliberately *not* the same question CI answers: CI checks out clean,
 sees only commits, and will differ from a dirty local run in both directions.
 
+**Two bounds, not one.** The new version must exceed the version at the merge
+base *and* the version at the base ref's own tip. The merge base alone answers
+"did this branch raise the version it started from", which is not the question
+a consumer has: a branch cut before another change landed bumps onto a version
+`main` already carries and reads clean, and stays clean right up to the merge
+button. That went wrong five recorded times (#110). The tip is what makes the
+answer about the version rather than about this branch's history.
+
 Three outcomes, not two — and the third is why this exists at all:
 
     0  pass          shipped zone untouched, or touched and the version rose
-    1  fail          shipped zone touched and the version did not rise
+                      past both bounds
+    1  fail          shipped zone touched and the version did not rise, or rose
+                      onto one the base ref already carries
     2  undetermined  the question could not be answered
 
 **Undetermined is a failure.** The withdrawn predecessor went silent whenever
@@ -44,9 +54,16 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
 MANIFEST = ".claude-plugin/plugin.json"
-# ADR-004's shipped zone. The manifest itself is excluded: bumping the version
-# is what this guard demands, so counting it as a shipped-zone change would make
-# every bump its own justification.
+# The manifest field whose edit cannot count as a shipped-zone change, because
+# raising it is what this guard demands and counting it would make every bump
+# its own justification. The exemption is this FIELD and not the file: the
+# manifest also carries `name` and `description`, which are consumer-facing
+# copy, and excluding the whole file let changed copy ship at an unchanged
+# version (#20). The circularity argument reaches one key; it was spending the
+# whole file.
+EXEMPT_FIELD = "version"
+# ADR-004's shipped zone. `.claude-plugin/` is in it; the manifest's exemption
+# is applied per-field below rather than by dropping the path here.
 SHIPPED = (
     "skills/", "lib/", "commands/", "agents/", "hooks/", ".claude-plugin/",
 )
@@ -88,13 +105,22 @@ def _paths(out: str) -> list[str]:
     return [f for f in out.split(NUL) if f]
 
 
-def _resolve_base(explicit: str | None) -> tuple[str | None, str]:
-    """Return (merge-base sha, reason). A None sha means undetermined."""
+def _resolve_base(explicit: str | None) -> tuple[str | None, str, str, str]:
+    """Return (merge-base sha, tip sha, ref name, reason).
+
+    A None merge-base means undetermined. The tip is returned because it is the
+    second bound: the ref as it stands now, not where this branch forked from
+    it. The earlier version resolved a merge base and dropped the ref, so an
+    explicit `--base <sha>` naming a moved tip was silently re-derived back to
+    the fork point — probed on PR #107 and found to still pass. Honouring the
+    ref means honouring both readings of it.
+    """
     candidates = [explicit] if explicit else ["origin/main", "main"]
     tried = []
     for ref in candidates:
-        code, _, _ = _git("rev-parse", "--verify", f"{ref}^{{commit}}")
-        if code != 0:
+        code, tip, _ = _git("rev-parse", "--verify", f"{ref}^{{commit}}")
+        tip = tip.strip()
+        if code != 0 or not tip:
             tried.append(f"{ref} does not resolve")
             continue
         code, sha, _ = _git("merge-base", "HEAD", ref)
@@ -102,11 +128,20 @@ def _resolve_base(explicit: str | None) -> tuple[str | None, str]:
         if code != 0 or not sha:
             tried.append(f"no merge base between HEAD and {ref}")
             continue
-        return sha, f"merge base with {ref} is {sha[:7]}"
-    return None, "; ".join(tried) or "no base ref given"
+        return sha, tip, ref, f"merge base with {ref} is {sha[:7]}"
+    return None, "", "", "; ".join(tried) or "no base ref given"
 
 
 def _parse_semver(raw: object) -> tuple[int, ...] | None:
+    """Three numeric parts, as ints.
+
+    The int cast is the whole comparison. A tuple of strings compares
+    lexically, so `"10" < "9"` and the guard inverts on any bump across a
+    decade boundary — accepting a decrement and rejecting a rise, both while
+    every other check reports green. `0.9.0 -> 0.10.0` was this repository's
+    first such bump and no fixture distinguished the two readings (#33); two
+    now do.
+    """
     if not isinstance(raw, str):
         return None
     parts = raw.split(".")
@@ -115,8 +150,14 @@ def _parse_semver(raw: object) -> tuple[int, ...] | None:
     return tuple(int(p) for p in parts)
 
 
-def _version_at(ref: str | None) -> tuple[tuple[int, ...] | None, str]:
-    """Version at a ref, or in the working tree when ref is None."""
+def _manifest_at(ref: str | None) -> tuple[dict | None, str]:
+    """The parsed manifest at a ref, or in the working tree when ref is None.
+
+    Split out from the version read because two callers now want different
+    parts of the same blob — the version, and every other field — and reading
+    it twice per revision would let those two answers disagree about which
+    bytes they came from.
+    """
     if ref is None:
         path = ROOT / MANIFEST
         if not path.is_file():
@@ -127,18 +168,30 @@ def _version_at(ref: str | None) -> tuple[tuple[int, ...] | None, str]:
         if code != 0:
             return None, f"{MANIFEST} is absent at {ref[:7]}"
     try:
-        raw = json.loads(text).get("version")
+        data = json.loads(text)
     except json.JSONDecodeError as exc:
         return None, f"{MANIFEST} is not valid JSON ({exc.msg})"
+    if not isinstance(data, dict):
+        return None, f"{MANIFEST} is not a JSON object"
+    return data, ""
+
+
+def _semver_of(data: dict) -> tuple[tuple[int, ...] | None, str]:
+    raw = data.get(EXEMPT_FIELD)
     parsed = _parse_semver(raw)
     if parsed is None:
         return None, f"version {raw!r} is not a three-part numeric semver"
     return parsed, ""
 
 
+def _carried_fields(data: dict) -> dict:
+    """Everything the manifest says to a consumer except the version itself."""
+    return {k: v for k, v in data.items() if k != EXEMPT_FIELD}
+
+
 def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     lines: list[str] = []
-    base, why = _resolve_base(base_ref)
+    base, tip, ref_name, why = _resolve_base(base_ref)
     if base is None:
         return UNDETERMINED, [f"version-bump: cannot determine a base -- {why}"]
 
@@ -187,18 +240,58 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         f for f in changed
         if any(f.startswith(p) for p in SHIPPED) and f != MANIFEST
     })
+
+    # One read per revision, shared by the field comparison below and the
+    # version comparison after it. Two reads could disagree about which bytes
+    # they answered from, which is the one thing a guard may not do.
+    read: dict[str | None, tuple[dict | None, str]] = {}
+
+    def manifest(rev: str | None) -> tuple[dict | None, str]:
+        if rev not in read:
+            read[rev] = _manifest_at(rev)
+        return read[rev]
+
+    def version(rev: str | None) -> tuple[tuple[int, ...] | None, str]:
+        data, err = manifest(rev)
+        return (None, err) if data is None else _semver_of(data)
+
+    # The manifest is not exempt as a file, only as a field: an edit that
+    # changes `name` or `description` and nothing else is changed consumer copy
+    # and counts, while a bump alone still does not. Read only when the manifest
+    # is actually in the change set, so the untouched case adds no git calls and
+    # keeps the outcome it has today.
+    if MANIFEST in changed:
+        for rev, label in ((base, "base"), (None, "current")):
+            data, err = manifest(rev)
+            if data is None:
+                return UNDETERMINED, [
+                    f"version-bump: {label} manifest unreadable -- {err}"
+                ]
+        if _carried_fields(read[base][0]) != _carried_fields(read[None][0]):
+            touched = sorted([*touched, MANIFEST])
+
     if not touched:
         return PASS, [f"version-bump: shipped zone untouched ({why})"]
 
-    old, old_err = _version_at(base)
-    new, new_err = _version_at(None)
+    old, old_err = version(base)
+    new, new_err = version(None)
     if old is None:
         return UNDETERMINED, [f"version-bump: base version unreadable -- {old_err}"]
     if new is None:
         return UNDETERMINED, [f"version-bump: current version unreadable -- {new_err}"]
+    top, top_err = version(tip)
+    if top is None:
+        return UNDETERMINED, [
+            f"version-bump: base tip version unreadable -- {top_err}"
+        ]
 
-    shown = ".".join(map(str, old)), ".".join(map(str, new))
-    if new > old:
+    shown = ".".join(map(str, old)), ".".join(map(str, new)), ".".join(map(str, top))
+    # The tip is worth saying only when it is not the merge base; when the base
+    # has not moved the two bounds are one fact and printing it twice reads as
+    # two.
+    where = why if tip == base else (
+        f"{why}, and {ref_name} has since moved to {tip[:7]} carrying {shown[2]}")
+    if new > old and new > top:
         # The names, not just the count. A session that edited only
         # repo-only files still sees a shipped-zone count here -- the unit is
         # the PR against its merge base, not this commit -- and a bare number
@@ -206,9 +299,26 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         lines.append(
             f"version-bump: {len(touched)} shipped-zone file(s) changed "
             f"({', '.join(sorted(touched))}), "
-            f"version {shown[0]} -> {shown[1]} ({why})"
+            f"version {shown[0]} -> {shown[1]} ({where})"
         )
         return PASS, lines
+    if new > old:
+        # Raised, but onto a number the base ref already published. The merge
+        # base cannot see this and neither could this guard until #110: the
+        # branch did raise the version it forked from, so the only reading that
+        # catches it is the one that asks what the ref carries now.
+        lines.append(
+            f"version-bump: {len(touched)} shipped-zone file(s) changed and the "
+            f"version rose to {shown[1]}, but {ref_name} ALREADY CARRIES "
+            f"{shown[2]} at its tip {tip[:7]} -- a consumer cannot tell "
+            f"installed from current, and this branch's merge base {base[:7]} "
+            f"predates it. The bound is the base ref's tip as well as the merge "
+            f"base. Bring {ref_name} into this branch and raise \"version\" in "
+            f"{MANIFEST} again (see AGENTS.md, 'The flow'). Note that "
+            f"{ref_name} is only as fresh as your last fetch"
+        )
+        lines.extend(f"    {f}" for f in touched)
+        return FAIL, lines
     detail = (f"is unchanged at {shown[1]}" if new == old
               else f"went BACKWARDS, {shown[0]} -> {shown[1]}")
     lines.append(
@@ -226,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(
         description=
-        "Refuse a pull request whose shipped-zone files changed without a plugin version bump. Three outcomes: PASS, FAIL, and UNDETERMINED when the base cannot be resolved -- UNDETERMINED is a failure, not a pass.",
+        "Refuse a pull request whose shipped-zone files changed without a plugin version bump. The version must exceed both the base ref's merge base and its tip, so a bump onto a version the base ref already carries is refused. Three outcomes: PASS, FAIL, and UNDETERMINED when the base cannot be resolved -- UNDETERMINED is a failure, not a pass.",
         # The outcome table is the point of --help; the default formatter
         # collapses it into one run-on line.
         formatter_class=argparse.RawDescriptionHelpFormatter,
