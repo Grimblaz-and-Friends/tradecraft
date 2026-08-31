@@ -820,7 +820,7 @@ DOCTRINE_CITATION = re.compile(r"\[D-(\d+)\]")
 
 
 def check_doctrine_citations(root: Path) -> list[str]:
-    """Every [D-N] the doctrine writes names a decision entry that exists.
+    r"""Every [D-N] the doctrine writes names a decision entry that exists.
 
     check_entry_references resolves what the decision log itself writes, and
     stops there -- so a marker in the always-on surface resolved to nothing and
@@ -831,14 +831,16 @@ def check_doctrine_citations(root: Path) -> list[str]:
     deleted on the next renumbering, on the surface every session reads first.
 
     Scoped to the doctrine files by decision, not by the shipped cells being
-    clean: they carry eighteen `[D-N]` markers, and D-173 priced exactly that
+    clean: they carry the `[D-N]` markers
+    `git grep -oE "\[D-[0-9]+\]" -- 'skills/**/*.md'` counts on whatever tree
+    you are on, and D-173 priced exactly that
     cost rather than arguing it away, on the ground that the party who would
     unknowingly undo the ruling is looking at the cell and not at the log. An
     adopter cannot resolve any of them -- they receive the cells and not the
     decision log -- so widening this guard would either mean stripping reasons
     the practice deliberately kept, or a permanent exemption list. That is the
     owner's call to reopen, not a repair a guard should make on its own; until
-    he does, the eighteen are lawful and out of reach here.
+    he does, those markers are lawful and out of reach here.
 
     (The zone wall is not what puts them out of reach, whatever the shape of
     the argument suggests: a `[D-N]` marker is not a path and violates no
