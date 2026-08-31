@@ -322,29 +322,36 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     # and counts, while a bump alone still does not. Read only when the manifest
     # is actually in the change set, so the untouched case adds no git calls and
     # keeps the outcome it has today.
-    if MANIFEST in changed and (base_manifest := manifest(base)[0]) is not None:
-        # Gated on the base side being readable, and that gate is the whole of
-        # what the owner affirmed. The disclosed widening of exit 2 was "a
-        # broken manifest as the only change" -- the CURRENT side. An
-        # unreadable BASE is a different case, most often a manifest that is
-        # simply new, and nothing to compare against is not a question the
-        # guard failed to answer.
-        #
-        # **This gate reaches only the manifest-alone case**, which is what it
-        # was ruled to restore. A pull request adding the manifest ALONGSIDE
-        # other shipped files -- the shape an adoption actually takes -- makes
-        # `touched` non-empty and still exits 2 from the base version read
-        # below, with a trailer naming an act nobody can perform. That is
-        # inherited rather than introduced (it exits 2 before this change too)
-        # and is recorded, not fixed: the remedy decides what "did the version
-        # rise" means with nothing on one side, which is a design call.
+    if MANIFEST in changed:
+        # The current side is read whenever the manifest changed, full stop --
+        # that is the widening the owner affirmed, "a broken manifest as the
+        # only change". An earlier form of this block gated this read on the
+        # BASE side being readable too, so a branch adding an unreadable
+        # manifest to a base that has none was told the zone was untouched:
+        # a PASS asserting something about a file nothing had parsed. Found by
+        # the external pass on the final tree, after three internal stages had
+        # not.
         data, err = manifest(None)
         if data is None:
             return UNDETERMINED, [
                 f"version-bump: current manifest unreadable -- {err}. "
                 f"Fix {MANIFEST} so it parses, then re-run"
             ]
-        if _carried_fields(base_manifest) != _carried_fields(data):
+        # Only the COMPARISON needs both sides, and that is where the base-side
+        # gate belongs. With nothing at the base there is nothing to compare
+        # against, which is not a question the guard failed to answer, so it
+        # declines to count the manifest rather than refusing to answer at all.
+        #
+        # This reaches the manifest-alone case and no further. A pull request
+        # adding the manifest ALONGSIDE other shipped files -- the shape an
+        # adoption actually takes -- makes `touched` non-empty and still exits 2
+        # from the base version read below, with a trailer naming an act nobody
+        # can perform. Inherited rather than introduced, and recorded rather
+        # than fixed: that remedy decides what "did the version rise" means with
+        # nothing on one side, which is a design call.
+        base_manifest = manifest(base)[0]
+        if (base_manifest is not None
+                and _carried_fields(base_manifest) != _carried_fields(data)):
             touched = sorted([*touched, MANIFEST])
 
     if not touched:

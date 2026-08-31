@@ -269,16 +269,25 @@ def test_a_branch_level_with_its_base_is_unaffected(repo):
     the tip read cannot start changing the ordinary answer.
 
     Unlike its siblings this does **not** go red against the pre-fix guard: the
-    pre-fix guard had no tip clause to print, so the absence it asserts held
-    there too. It is a regression pin on the quiet case, not a discriminator,
-    and saying so is the standard `test_unreadable_base_version_is_undetermined`
-    set in this file."""
+    pre-fix guard had no tip clause to print, so what it asserts held there too.
+    It is a regression pin on the quiet case, not a discriminator, and saying so
+    is the standard `test_unreadable_base_version_is_undetermined` set in this
+    file.
+
+    **It asserted a dead string for two commits.** The wording it named --
+    `has since moved` -- was the guard's until the review's first fix batch
+    rewrote this block, and the assertion was left pointing at text no revision
+    since can produce, so it could not fail in any state while a decision entry
+    credited it with holding this path. It now names the clause the guard
+    actually prints, and denies the one it must not, so it reds in both
+    directions."""
     (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
     _manifest(repo, "1.1.0")
     _commit(repo, "skill edit + bump")
     status, lines = cvb.check("main")
     assert status == PASS, lines
-    assert "has since moved" not in lines[0]
+    assert "which is also main's tip" in lines[0]
+    assert "carrying" not in lines[0]
 
 
 def test_an_unreadable_base_tip_version_is_undetermined(repo):
@@ -388,7 +397,13 @@ def _with_remote(repo: Path) -> Path:
     upstream after you branched, which is also exactly when your
     remote-tracking ref is out of date."""
     origin = repo.parent / (repo.name + "-origin")
-    _run(repo, "init", "--bare", "-q", str(origin))
+    # `-b main`, because `init.defaultBranch` is ambient: under the stock
+    # `master` the bare repo's HEAD points at a branch this fixture never
+    # creates, the clone comes up on `master`, and the push dies with `src
+    # refspec main does not match any` -- a red on a test this change added,
+    # reading as a guard defect and caused by the machine's git config. CI has
+    # never run on this fixture, which is how it survived to the closing stage.
+    _run(repo, "init", "--bare", "-q", "-b", "main", str(origin))
     _run(repo, "remote", "add", "origin", str(origin))
     _run(repo, "push", "-q", "origin", "main")
     _run(repo, "fetch", "-q", "origin")
@@ -591,6 +606,30 @@ def test_an_absent_base_manifest_is_not_a_failure_to_answer(repo):
     _commit(repo, "adopt the plugin: add the manifest")
     status, lines = cvb.check("main")
     assert status == PASS, lines
+
+
+def test_an_unreadable_manifest_added_to_a_base_that_has_none_is_undetermined(repo):
+    """The current side is read whenever the manifest changed, even where the
+    base has no manifest to compare against.
+
+    Found by the external pass on the final tree, after three internal stages
+    had not. The gate that withdrew the undisclosed base-side widening reached
+    one step too far: it gated the CURRENT-side read as well, so a branch adding
+    an unreadable manifest to a base that has none was told the zone was
+    untouched -- a claim about a file nothing had parsed, and the exact case the
+    affirmed artifact disclosed as exit 2. Its sibling below is the same read on
+    a base that does have one; this is the half the gate silenced."""
+    _run(repo, "checkout", "-q", "main")
+    (repo / ".claude-plugin" / "plugin.json").unlink()
+    _commit(repo, "a base with no manifest")
+    _run(repo, "checkout", "-q", "-b", "adopt", "main")
+    (repo / ".claude-plugin").mkdir(exist_ok=True)
+    (repo / ".claude-plugin" / "plugin.json").write_text("{not json", encoding="utf-8")
+    _commit(repo, "adopt the plugin with a manifest that does not parse")
+    status, lines = cvb.check("main")
+    assert status == UNDETERMINED, lines
+    assert "current manifest unreadable" in lines[0]
+    assert "so it parses, then re-run" in lines[0]
 
 
 def test_an_unreadable_current_manifest_names_the_act(repo):
