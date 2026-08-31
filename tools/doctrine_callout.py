@@ -340,8 +340,6 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         f"Always-on surface: **{data['repo_total']:,}** chars here{movement}, "
         f"**{data['adopter_total']:,}** from this practice for an adopter -- "
         + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
-        + " -- AGENTS.md and the charter body are measured against ceilings raised"
-        + " temporarily under the owner approval on issue #260, restored when it lands"
         # `entries`/`roster_here`, never `cells`/`roster`: the total this
         # sentence opens with is built from the roster THIS repository loads,
         # under `.claude/skills/`, and the adopter's roster under `skills/` is
@@ -352,6 +350,12 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         # `lint-and-test`. Same class as the two-file sum this line once
         # rendered against one file's budget. [PR #210 review, M1]
         + f", {data['entries']} roster name/description {data['roster_here']:,}."
+        # The two doc ceilings above are raised temporarily on the owner approval
+        # recorded at issue #260 and are restored when it lands; the note sits
+        # after the whole enumeration so no priced term dangles off it as an
+        # appositive of the note rather than of the surface. [PR #280 review, M5]
+        + " AGENTS.md and the charter body are priced against ceilings raised"
+        + " temporarily under the owner approval on issue #260."
     )
 
 

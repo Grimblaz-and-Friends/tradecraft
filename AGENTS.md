@@ -12,12 +12,12 @@
 
 ## The ceremony moments, here
 
-- **Convergence.** The brief is posted as a comment on the work's issue (file one if none exists) and the affirmation recorded on the issue naming that comment; the artifact reading it is posted once a cold seat has settled it, before the first commit; from there the owner is next needed at PR review. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR.
+- **Convergence.** The brief is posted as a comment on the work's issue (file one if none exists) and the affirmation recorded on the issue naming that comment; the artifact reading it is posted once settled, before the first commit; from there the owner is next needed at PR review. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR.
 - **Release.** `ci.yml` flags any PR touching this file, `CLAUDE.md`, or the `charter` cell for the owner's specific review. [D-81]
 
 ## The flow
 
-Branch first (`main` refuses direct pushes) → settle the brief, then the artifact against a cold interpretation check → build → `python tools/lint.py` and `python tools/check_version_bump.py` → commit → publish the branch, open the PR, run the experience session the change bought or record the one line declining it, run the review, reconcile external reviewer comments — in that order, without being asked; on a change that has a PR, running the review is a check, never a question. A batch rewriting what the material instructs buys one more, or the line declining it. [D-178] The PR body states `Closes #N`, or one line saying it closes none and why. A shipped-zone change bumps the plugin version.
+Branch first (`main` refuses direct pushes) → settle the brief, then the artifact against a cold check or a recorded truncation → build → `python tools/lint.py` and `python tools/check_version_bump.py` → commit → publish the branch, open the PR, run the experience session the change bought or record the one line declining it, run the review, reconcile external reviewer comments — in that order, without being asked; on a change that has a PR, running the review is a check, never a question. A batch rewriting what the material instructs buys one more, or the line declining it. [D-178] The PR body states `Closes #N`, or one line saying it closes none and why. A shipped-zone change bumps the plugin version.
 
 ## Review, here
 

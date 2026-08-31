@@ -249,14 +249,12 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # both always-on ceilings until #260 -- the always-on redesign -- lands,
 # and that issue carries the approval, its scope and its expiry. Whoever
 # lands #260 restores or replaces this value; a raise that outlives its
-# condition has become permanent by forgetting. The new value is the size
-# this change measured plus the margin the prior constant carried, so it
+# condition has become permanent by forgetting. The new value is the next
+# hundred above the body this change measured -- stated because a session
+# restoring it applies what is written here, and an unexecutable basis
+# returns a different number than the one it replaces, so it
 # is still a ceiling above a measured body rather than headroom to grow
-# into. The basis is the next hundred above the body this change measured --
-# stated because a session restoring it applies what is written here, and an
-# unexecutable basis returns a different number than the one it replaces. An
-# earlier wording claimed 'the margin the prior constant carried', which
-# reproduces neither landed value. No outflow was discharged for the edits under it, by the same
+# into. No outflow was discharged for the edits under it, by the same
 # approval and for the reason recorded there: the three relocation moves
 # are what #260 exists to stop, and the fourth needs per-rule evidence
 # that is #260's own deferred disposition. Find every change to this
