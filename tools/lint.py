@@ -245,7 +245,20 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # which is the failure mode. What a session does when it meets this ceiling is
 # skills/authoring/SKILL.md's, where a writer reads it; restating it here would
 # be the second half-owner that cell forbids.
-AGENTS_BUDGET_CHARS = 6_000
+# TEMPORARILY RAISED, and not a ratchet. The owner approved exceeding
+# both always-on ceilings until #260 -- the always-on redesign -- lands,
+# and that issue carries the approval, its scope and its expiry. Whoever
+# lands #260 restores or replaces this value; a raise that outlives its
+# condition has become permanent by forgetting. The new value is the size
+# this change measured plus the margin the prior constant carried, so it
+# is still a ceiling above a measured body rather than headroom to grow
+# into. No outflow was discharged for the edits under it, by the same
+# approval and for the reason recorded there: the three relocation moves
+# are what #260 exists to stop, and the fourth needs per-rule evidence
+# that is #260's own deferred disposition. Find every change to this
+# constant with `git log -G "AGENTS_BUDGET_CHARS = " -- tools/lint.py`;
+# `-S` reports only a changed occurrence count and misses a changed value.
+AGENTS_BUDGET_CHARS = 6_100
 # The charter is the half that ships, and an adopting repository directs every
 # session to load it before substantive work, so it needs the displacement
 # pressure more than this repo's own file does, not less.
@@ -254,7 +267,10 @@ AGENTS_BUDGET_CHARS = 6_000
 # are on. The margin is smaller than
 # the doctrine's because the charter is not audited here -- its prose was
 # left untouched deliberately, so the ceiling is the only pressure it gets.
-CHARTER_BUDGET_CHARS = 5_600
+# TEMPORARILY RAISED with AGENTS_BUDGET_CHARS above, under the same owner
+# approval and the same expiry at #260. Same basis: measured body plus the
+# margin the prior constant carried.
+CHARTER_BUDGET_CHARS = 5_800
 POINTER_BUDGET_CHARS = 500
 # A cell body whose budget is enforced rather than remembered. `authoring`'s
 # cap was stated in #169 as that change's own evidence that depth-shedding is

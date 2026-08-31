@@ -2437,7 +2437,7 @@ def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
     arms below, so a change to either is a deliberate act with a red suite
     behind it.
     """
-    assert lint.AGENTS_BUDGET_CHARS == 6_000
+    assert lint.AGENTS_BUDGET_CHARS == 6_100
     assert lint.POINTER_BUDGET_CHARS == 500
 
 
@@ -2493,7 +2493,7 @@ def test_the_declared_charter_budget_is_the_one_these_tests_pin():
     """The rule stated just above, applied to the constant the fix that
     stated it left deriving its bound from itself.
     """
-    assert lint.CHARTER_BUDGET_CHARS == 5_600
+    assert lint.CHARTER_BUDGET_CHARS == 5_800
 
 
 def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):

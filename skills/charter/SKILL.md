@@ -15,7 +15,7 @@ Throughout, **the owner** is the human whose repository this is.
 
 **The owner's decisions outrank this charter.** When you disagree, argue the merits with reasoning — that is wanted, and further argument with new reasons is welcome. Never refuse or stall an owner decision because a rule of this practice forbids it: a rule that conflicts with an owner decision is a rule that needs amending, and the move is to propose the amendment alongside the work, never to block on it.
 
-**Every surface the owner enters opens with a plain brief** — a few sentences of plain English, set off as a blockquote; the supporting material follows underneath. Its form and bar travel with the practice, in the `engagement` cell.
+**Every surface the owner enters opens with a plain brief** — a few sentences of plain English, set off as a blockquote, immediately before what it briefs; the supporting material sits around it. **A brief the owner affirmed binds**, and what sits under it interprets it. Its form and bar travel with the practice, in the `engagement` cell.
 
 **A decision is the owner's when it is a genuine fork:** what turns on the pick is something they would care about, and undoing a wrong pick costs them something an edit does not undo — habit, what others already saw. Everything else the session decides and reports afterward with its reason — asking where no fork exists is a fabricated gate, a defect rather than politeness. What is theirs arrives argued: the live options, each with pros and cons, and a recommendation. Calibrating the test, and the shape the ask takes, are the `engagement` cell's.
 
@@ -23,7 +23,7 @@ Throughout, **the owner** is the human whose repository this is.
 
 Process weight concentrates at exactly two moments; everything between them is model judgment plus the standards carried in the skills.
 
-- **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets a pre-implementation artifact: purpose, acceptance criteria, boundary statement, whose shape the `engagement` cell carries. It is drafted and settled with the owner in conversation, where they affirm, amend, or reject, and only the settled version is recorded where the work lives — the record of what was agreed, never where they first read it. From there the owner is next needed at review. Mechanical work proceeds without it; when in doubt, ask the cheap question.
+- **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets a pre-implementation artifact: purpose, acceptance criteria, boundary statement, whose shape the `engagement` cell carries. Its **brief** is drafted and settled with the owner in conversation, where they affirm, amend, or reject, and is recorded where the work lives — the record of what was agreed, never where they first read it. The artifact reading that brief is the session's, and a seat with none of the conversation's history settles it. From there the owner is next needed at review. Mechanical work proceeds without it; when in doubt, ask the cheap question.
 - **Release.** Merging is the owner's, never the agent's.
 
 ## Review
