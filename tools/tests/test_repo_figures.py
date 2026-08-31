@@ -403,12 +403,18 @@ def test_the_repo_side_reads_the_roster_it_actually_loads(tmp_path):
     assert after["cells"] == before["cells"]
 
 
-def test_the_repo_total_counts_both_doctrine_files(tmp_path):
-    """CLAUDE.md is always-on here and has its own budget because it is.
+def test_the_doctrine_key_sums_both_files(tmp_path):
+    """`doctrine` is AGENTS.md plus CLAUDE.md, and it is not a row's term.
 
-    Omitting it meant a rule could move from AGENTS.md into it and the total
-    would report a reduction while nothing left the surface -- the failure
-    routing.md's closing paragraph names, reachable within the file's closing paragraph.
+    **Renamed to what it asserts.** It was called
+    `test_the_repo_total_counts_both_doctrine_files` and claimed to stop a
+    rule moving from AGENTS.md into CLAUDE.md and reporting a reduction while
+    nothing left the surface. It never touched `repo_total`, and since the
+    totals went per runtime that claim is not even the right one to want:
+    Codex does not read CLAUDE.md, so such a move genuinely does leave the
+    Codex surface and the smallest row falling is an honest report. What is
+    left is the narrow true thing -- the summed key is both files -- asserted
+    under a name that says so. [PR #278 review, F8]
     """
     (tmp_path / "AGENTS.md").write_text("a" * 100, encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_text("b" * 40, encoding="utf-8")

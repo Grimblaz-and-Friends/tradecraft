@@ -853,3 +853,148 @@ def test_write_reports_an_unparseable_cell_once_not_once_per_surface(tmp_path):
         "times, which is once"
     )
 
+
+def _link_dir(link, target):
+    """Make `link` a directory link to `target`, or say why the platform will not.
+
+    The same fallback the entry-level pin uses: Windows refuses an
+    unprivileged symlink and grants a junction, which is exactly why
+    `inside_roster` cannot be `is_symlink()`. Returns None on success and a
+    reason to skip otherwise, so a caller never mistakes an absent link for a
+    guard that fired.
+    """
+    import os
+    import subprocess
+
+    link.parent.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return None
+    except (OSError, NotImplementedError, AttributeError):
+        if os.name != "nt":
+            return "this platform will not create a directory link"
+    made = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+    )
+    if made.returncode != 0:
+        return f"no directory link available: {made.stdout}{made.stderr}"
+    return None
+
+
+def test_a_linked_surface_directory_is_refused_and_nothing_is_written_through_it(tmp_path):
+    """The link at the surface *root*, which the entry-level pin cannot reach.
+
+    Resolving the base and then asking whether the entry resolves under it
+    answers yes whenever the **base** is the link, because both sides resolve
+    through it. Two branches, both reproduced before the guard existed:
+    pointed outside the repository, `--write` wrote an entry per cell there,
+    reported paths the files did not go to, and exited 0 with the lint green;
+    pointed at the other surface, it wrote and then reported a permanent
+    finding per cell against the surface the session had not touched, whose
+    only named remedy was the command that produced them. The second needs two
+    surfaces for one to be linked to the other and was unreachable before this
+    repository had them.
+
+    **The guard that closes this was landed with no pin at all.** Deleting its
+    two lines left the whole suite byte-identical to control, so the next edit
+    near `inside_roster` would silently restore writing outside the repository
+    at exit 0. Found by the post-fix look. [PR #278 review, F1]
+
+    The target sits **inside `tmp_path`**: pytest's own cleanup walks this
+    directory, and a junction pointing anywhere else is how a test deletes
+    something it does not own.
+    """
+    make_cell(tmp_path, "alpha")
+    outside = tmp_path / "not-the-repository"
+    skip = _link_dir(tmp_path / CODEX.directory, outside)
+    if skip:
+        pytest.skip(skip)
+
+    assert not roster.inside_roster(
+        tmp_path, tmp_path / CODEX.directory / "alpha", CODEX)
+
+    findings = [f for f in roster.verify(tmp_path) if "is a link" in f]
+    assert len(findings) == 1, (
+        "one link is one condition; it used to draw a finding per cell")
+    assert "--write" not in findings[0]
+    assert findings[0].count(CODEX.directory) >= 1 and "/alpha" not in findings[0], (
+        "the message must name the surface directory that IS the link and no "
+        "path under it -- naming the entries sends a reader hunting a link at "
+        "paths that are not links and often do not exist"
+    )
+
+    lines = roster.write(tmp_path)
+    assert any("is a link" in line for line in lines)
+    assert list(outside.rglob(roster.CELL_FILE)) == [], (
+        "write() followed the link and created files outside the repository"
+    )
+    assert [f for f in roster.verify(tmp_path) if "is a link" in f], (
+        "the condition must not go quiet after --write"
+    )
+
+
+def test_a_surface_linked_to_the_other_surface_does_not_red_the_other_one(tmp_path):
+    """The second branch, and the one two surfaces made reachable.
+
+    Before the guard, linking `.agents/skills` at `.claude/skills` left
+    `--write` writing an entry per cell and then reporting a permanent finding
+    per cell **against `.claude/skills`** -- the surface the session had not
+    touched -- with `python tools/roster.py --write` named as the remedy for a
+    state that command had just produced. What this pins is that the finding
+    now lands on the linked surface and the innocent one stays clean.
+    """
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    linked = tmp_path / CODEX.directory
+    import shutil
+    shutil.rmtree(linked)
+    skip = _link_dir(linked, tmp_path / CLAUDE.directory)
+    if skip:
+        pytest.skip(skip)
+
+    findings = roster.verify(tmp_path)
+    assert [f for f in findings if "is a link" in f], findings
+    assert not [f for f in findings if CLAUDE.directory in f], (
+        "the surface that is not the link must not be reported -- before the "
+        "guard, --write reported every cell against the innocent surface and "
+        "named as the remedy the command that had just produced that state"
+    )
+
+
+def test_an_ordinary_surface_and_a_repository_under_a_link_are_both_lawful(tmp_path):
+    """Both lawful polarities, and the second is the trap in this remedy.
+
+    A containment check comparing the resolved surface against the *unresolved*
+    root reds every entry on a repository that itself lives under a link --
+    which is an ordinary way to reach a checkout and has nothing to do with the
+    defect. Comparing against `root.resolve() / directory` passes it, because
+    on such a tree the surface genuinely resolves elsewhere and is still where
+    it was declared to be. A guard that blocks lawful work fails as hard as one
+    that passes unlawful work. [PR #278 review, F1]
+    """
+    make_cell(tmp_path, "alpha")
+    real = tmp_path / "real"
+    real.mkdir()
+    for surface in roster.SURFACES:
+        (real / "skills" / "alpha").mkdir(parents=True, exist_ok=True)
+    import shutil
+    shutil.copytree(tmp_path / "skills", real / "skills", dirs_exist_ok=True)
+    roster.write(real)
+    for surface in roster.SURFACES:
+        assert roster.inside_roster(
+            real, real / surface.directory / "alpha", surface)
+    assert roster.verify(real) == []
+
+    viewed = tmp_path / "viewed"
+    skip = _link_dir(viewed, real)
+    if skip:
+        pytest.skip(skip)
+    for surface in roster.SURFACES:
+        assert roster.inside_roster(
+            viewed, viewed / surface.directory / "alpha", surface), (
+            f"a repository reached through a link reds {surface.directory}"
+        )
+    assert roster.verify(viewed) == []
+

@@ -96,9 +96,10 @@ Checks:
     at a cell's name it is reported and never overwritten. The qualifier is
     load-bearing and was missing -- an experience session read this line,
     concluded a hand-written entry was a finding, and had to open roster.py to
-    find it was not. Those two directories are the whole of what THIS repository's own tree
-    contributes to what a session here loads -- one per runtime, nothing here
-    installing the plugin. A locally installed copy of the published plugin
+    find it was not. Those two directories are the whole of what a session working in
+    THIS repository loads a **description** from -- one per runtime, nothing
+    here installing the plugin. They are not the whole of its always-on
+    surface, which the doctrine files and the charter body dominate. A locally installed copy of the published plugin
     adds its own descriptions on top, which no figure derived from this tree
     can see and none claims to; that gap is conceded rather than closed, and
     it is how a session here can be offered one cell twice, once from this
@@ -3689,12 +3690,12 @@ def check_project_roster(root: Path) -> list[str]:
     because a sentence claiming every session would have asserted a fix Codex
     never received -- and while it stood, that named exclusion was the whole
     of what this repository contributed to the runtime its doctrine calls
-    canonical. **No duration is stated here.** A draft said eleven weeks; the
-    sentence landed at `5eea69b` on 2026-08-27 and was removed at `8e816e9` on
-    2026-08-30, so the true figure is three days -- and eleven weeks is five
-    times the age this repository had reached. `git log -S "Codex is outside
-    that scope" -- tools/lint.py` is the derivation, and the number is left to
-    it rather than restated a second time. [PR #278 review, M5] The rule survives the fix, narrowed to
+    canonical. **How long it stood is left to its derivation** --
+    `git log -S "Codex is outside that scope" -- tools/lint.py` -- rather than
+    stated here, where a comment beside code freezes and the figure rule gives
+    it the command and the tree and never the output. A draft stated a
+    duration and it was wrong by twenty-five times, which is what a figure
+    written once and never re-derived does. [PR #278 review, M5, F7] The rule survives the fix, narrowed to
     what the messages do: a finding **about a surface** names its runtime as
     well as its directory, because the two directories reach one runtime each
     and a session that repaired one has not repaired the other. A finding

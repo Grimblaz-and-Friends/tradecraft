@@ -348,10 +348,14 @@ def _always_on(read, cell_paths: list[str],
             "total": doctrine + charter + chars,
         })
     return {
-        # `doctrine` is the sum the total is built from; `agents` and
-        # `pointer` are the two files it is made of, kept apart because they
-        # are governed by two different ceilings and a consumer that prices
-        # the sum against either one states a ceiling that does not exist.
+        # `agents` and `pointer` are the two doctrine files, kept apart
+        # because they are governed by two different ceilings and a consumer
+        # pricing their sum against either one states a ceiling that does not
+        # exist. `doctrine` is their sum and **no total is built from it** --
+        # each row is built from `row["doctrine"]`, the files *that* runtime
+        # reads, which is not the same set. It survives for the callers that
+        # want the pair summed and is not a term in any total. [PR #278
+        # review, F8]
         "doctrine": agents + pointer, "agents": agents, "pointer": pointer,
         "charter": charter,
         # `roster` is the adopter's, from the plugin's cells; `here` is this
@@ -437,12 +441,13 @@ def figure_always_on(root: Path) -> dict:
             "inert files and are never loaded, and counts only what this "
             "practice contributes to their always-on surface; here there is "
             "one total per runtime rather than one for the repository, each "
-            "built from the doctrine files and the skills directory that "
-            "runtime loads -- both read AGENTS.md, only Claude Code reads "
-            "CLAUDE.md, and a name/description term counts every SKILL.md on "
-            "that surface including a hand-written project skill; an "
-            "adopter's is read from skills/, which is what installing the "
-            "plugin gives them; working tree"
+            "built from the doctrine files that runtime reads, the charter "
+            "body, and the skills directory that runtime loads -- both read "
+            "AGENTS.md and only Claude Code reads CLAUDE.md, while the "
+            "charter is charged to every runtime, and a name/description term "
+            "counts every SKILL.md on that surface including a hand-written "
+            "project skill; an adopter's is read from skills/, which is what "
+            "installing the plugin gives them; working tree"
         ),
         "data": data,
     }
@@ -464,8 +469,16 @@ def always_on_at(root: Path, ref: str) -> dict[str, int]:
     no scalar, so a change that raised what every Claude Code session loads
     could book `+0` and never trip the outflow rule. Keyed by runtime rather
     than positional, so a caller cannot line two revisions' rows up wrongly
-    when `SURFACES` is reordered. A runtime absent from either side is
-    reported by the caller rather than silently dropped. [PR #278 review, M22]
+    when `SURFACES` is reordered. [PR #278 review, M22]
+
+    **The keys are the working tree's, on every base**, because the rows come
+    from the working tree's `SURFACES` however old the revision is. So a
+    runtime this repository did not have at the base reads as a total rather
+    than as an absence: at `f9924e3`, the first commit, holding no `AGENTS.md`
+    and no `skills/` at all, this returns zero for every runtime. Reading the
+    base revision's own `SURFACES` instead is a design change and is not taken
+    here; what is corrected is the claim that a caller is told about a missing
+    runtime, which it never is. [PR #278 review, F6]
     """
     import subprocess
 

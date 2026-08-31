@@ -388,10 +388,17 @@ def _always_on_delta(figures, root: Path, base: str | None) -> str:
     **One movement per runtime.** A single delta off `repo_total` inherited
     that scalar's bound: growth in one runtime's surface alone moved nothing,
     so a change that raised what every Claude Code session here loads could
-    book `+0` against the ceiling the outflow rule defends. A runtime the base
-    does not know is named as new rather than counted from zero silently --
-    which is the shape this change itself has, Codex having loaded no roster
-    at the base. [PR #278 review, M22]
+    book `+0` against the ceiling the outflow rule defends. [PR #278 review,
+    M22]
+
+    **A runtime is never missing from either side**, because `always_on_at`
+    keys its rows off the working tree's `SURFACES` on every base -- so the
+    change that introduced a second runtime here books it as `Codex +5,039`
+    against a base row of its own, not as an arrival. The two branches below
+    are unreachable by construction and are kept as the honest answer if that
+    keying is ever made base-derived; a draft of this paragraph claimed they
+    described this very change, and the callout it renders disproves it.
+    [PR #278 review, F6]
     """
     if not base:
         return ""
@@ -402,6 +409,8 @@ def _always_on_delta(figures, root: Path, base: str | None) -> str:
     now = figures.figure_always_on(root)["data"]["here"]
     moves = []
     for row in now:
+        # Unreachable while `always_on_at` keys off the working tree's
+        # SURFACES, which it does; see this function's docstring.
         was = before.get(row["runtime"])
         if was is None:
             moves.append(f"{row['runtime']} new at {row['total']:,}")

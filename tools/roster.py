@@ -114,12 +114,18 @@ class Surface(NamedTuple):
 
 
 # In the order a reader meets them: the one #199 bought, then the one #258
-# bought. Everything below loops over this, so a third runtime is one row --
-# **except the four prose sites that name the pair by hand**, which are this
-# file's module docstring, `main()`'s argparse description, and `tools/lint.py`'s
-# check 17 registry line and `check_project_roster` docstring. Deriving those
-# from here was priced and declined for a row nobody has asked for. [PR #278
-# review, M11]
+# bought. Everything below loops over this, so a third runtime is one row of
+# code -- and a number of prose sites name the pair by hand and would each need
+# editing. **They are not counted here**, because a count of them was stated
+# once and was wrong by at least four in the same commit that stated it, in a
+# file whose own `verify()` records that a stated count of its shapes has been
+# wrong twice running. `grep -rn "Claude Code" tools/ | grep -i codex` finds
+# them; at the time of writing they include this file's module docstring,
+# `Surface`'s docstring, `main()`'s argparse description, `tools/lint.py`'s
+# check 17 registry line and `check_project_roster` docstring, two sites in
+# `tools/figures.py` -- one of them emitted output -- and a comment in
+# `tools/tests/test_repo_figures.py`. Deriving them from here was priced and
+# declined for a row nobody has asked for. [PR #278 review, M11, F5]
 SURFACES = (
     Surface(".claude/skills", "Claude Code", ("AGENTS.md", "CLAUDE.md")),
     Surface(".agents/skills", "Codex", ("AGENTS.md",)),
@@ -332,6 +338,25 @@ def expected(root: Path, name: str, surface: Surface) -> bytes:
     return block + _body(name, surface)
 
 
+def surface_is_where_it_says(root: Path, surface: Surface) -> bool:
+    """Whether the surface directory itself is still where it was declared.
+
+    Split out from `inside_roster` because the two conditions need different
+    messages and the wrong one shipped for both: with the *base* linked, every
+    entry under it reports `resolves outside` and names a path that is not a
+    link and often does not exist, under a remedy -- *remove the link* -- that
+    no named path can execute. A reader inspects each named directory, finds
+    no link at any of them, and holds a red gate with nothing to act on, which
+    is the second of the two failure modes the containment check was added to
+    close, restated one level up. [PR #278 review, F2]
+
+    It is also the right granularity: one link is one condition, and it drew a
+    finding per cell.
+    """
+    return (root / surface.directory).resolve() == (
+        root.resolve() / surface.directory)
+
+
 def inside_roster(root: Path, entry: Path, surface: Surface) -> bool:
     """Whether an entry's real location is still under its own surface directory.
 
@@ -375,7 +400,7 @@ def inside_roster(root: Path, entry: Path, surface: Surface) -> bool:
     script only ever reads a cell, and reading through one escapes nothing.
     """
     base = (root / surface.directory).resolve()
-    if base != root.resolve() / surface.directory:
+    if not surface_is_where_it_says(root, surface):
         return False
     try:
         return entry.resolve().is_relative_to(base)
@@ -464,15 +489,26 @@ def verify(root: Path) -> list[str]:
     cells = cell_names(root)
     for surface in SURFACES:
         where = surface.directory
+        if not surface_is_where_it_says(root, surface):
+            # Once for the surface, naming the surface -- the only path a
+            # reader can act on. [PR #278 review, F2]
+            findings.append(
+                f"roster: {where} is a link, so it resolves somewhere other "
+                f"than {where} and writing an entry would land there instead "
+                f"-- every cell's description reaches no {surface.runtime} "
+                f"session here; no command repairs this, remove the link at "
+                f"{where}"
+            )
+            continue
         for name in cells:
             target = root / where / name / CELL_FILE
             if not inside_roster(root, target.parent, surface):
                 findings.append(
-                    f"roster: {where}/{name}/ resolves outside {where}/, so "
-                    f"writing there would land outside this repository and "
-                    f"the `{name}` cell's description reaches no "
-                    f"{surface.runtime} session here -- no command repairs "
-                    f"this; remove the link"
+                    f"roster: {where}/{name}/ is a link, so it resolves "
+                    f"outside {where}/ and writing there would land outside "
+                    f"this repository -- the `{name}` cell's description "
+                    f"reaches no {surface.runtime} session here; no command "
+                    f"repairs this, remove the link at {where}/{name}/"
                 )
                 continue
             try:
@@ -549,6 +585,10 @@ def write(root: Path) -> list[str]:
     cells = cell_names(root)
     for surface in SURFACES:
         where = surface.directory
+        if not surface_is_where_it_says(root, surface):
+            changed.append(f"left {where}: it is a link, so it resolves "
+                           f"somewhere other than {where}")
+            continue
         for name in cells:
             try:
                 want = expected(root, name, surface)
@@ -564,7 +604,8 @@ def write(root: Path) -> list[str]:
             target = root / where / name / CELL_FILE
             if not inside_roster(root, target.parent, surface):
                 changed.append(
-                    f"left {where}/{name}/: resolves outside {where}/"
+                    f"left {where}/{name}/: it is a link, so it resolves "
+                    f"outside {where}/"
                 )
                 continue
             if target.is_file():
