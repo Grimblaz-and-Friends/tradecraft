@@ -88,21 +88,30 @@ Checks:
     the import binding, a local no-op with the right name would satisfy the
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
-17. project roster: every cell has an entry under .claude/skills/ carrying its
-    frontmatter byte for byte, and no entry THIS GENERATOR WROTE names a cell
-    that is gone. A file it did not write is not its business: at a name that
-    is no cell it draws no finding at all, because that is a project skill in
-    the runtime's documented place for one; at a cell's name it is reported
-    and never overwritten. The qualifier is load-bearing and was missing --
-    an experience session read this line, concluded a hand-written entry was
-    a finding, and had to open roster.py to find it was not. That
-    directory is the only surface a Claude Code session working in THIS
-    repository loads a description from -- the plugin is never installed here
-    -- so without it every trigger routed to a description reaches every
-    adopter and misses us (#199). Codex is not reached by it and reads cells by
-    opening files, which is why the scope is named rather than left universal.
-    The expectation is tools/roster.py's own, never recomputed here: a guard
-    holding a second definition drifts from the writer it judges.
+17. project roster: every cell has an entry under .claude/skills/ AND under
+    .agents/skills/ carrying its frontmatter byte for byte, and no entry THIS
+    GENERATOR WROTE names a cell that is gone. A file it did not write is not
+    its business: at a name that is no cell it draws no finding at all,
+    because that is a project skill in the runtime's documented place for one;
+    at a cell's name it is reported and never overwritten. The qualifier is
+    load-bearing and was missing -- an experience session read this line,
+    concluded a hand-written entry was a finding, and had to open roster.py to
+    find it was not. Those two directories are the whole of what a session
+    working in THIS repository loads a **description** from -- one per
+    runtime, nothing here installing the plugin. They are not the whole of
+    its always-on surface, which the doctrine files and the charter body
+    dominate. A locally installed copy of the published plugin
+    adds its own descriptions on top, which no figure derived from this tree
+    can see and none claims to; that gap is conceded rather than closed, and
+    it is how a session here can be offered one cell twice, once from this
+    tree and once from a release -- so without them every trigger
+    routed to a description reaches every adopter and misses us (#199, #258).
+    A finding about a surface names both the directory it found and the
+    runtime that reads it, because neither directory reaches the other's
+    runtime and a session repairing one has not repaired the other; a finding
+    about a cell rather than a surface names neither and is reported once. The expectation is tools/roster.py's own, never recomputed
+    here: a guard holding a second definition drifts from the writer it
+    judges.
 18. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
 19. subprocess streams: a launch redirects nothing, or names all three of
@@ -411,7 +420,15 @@ ENTRY_PATH = re.compile(r"`([\w.-]+(?:[\\/][\w.-]+)+(?::\d+)?)`")
 # repair that reds CI.
 #
 # #199 tracked one subtree of it -- `.claude/skills`, the generated roster --
-# and that did not change this. The reason is about the rest: a session can
+# and that did not change this.
+#
+# `.agents` is out too, and for a different reason, because the one above does
+# not reach it: that tree is **fully tracked**, so it gives one answer per
+# commit and the two-answers defect is not in play. It stays out because
+# admitting it would be a root one directory deep -- `.agents` holds nothing
+# but `skills/` -- which is the shape rejected just above for the roster
+# alone, and because no reference here resolves through it.
+# [PR #278 review, M25] The reason is about the rest: a session can
 # still drop `.claude/agents` or `.claude/commands` into a working tree, so
 # admitting `.claude` as a root would reinstate the two-answers defect for
 # every path under it that is not the roster. Admitting the roster alone would
@@ -2390,16 +2407,22 @@ def _is_generated_entry(root: Path, rel_file: str) -> bool:
     returned nothing. Every seat of this change's review found it
     independently [PR #247 review, M1].
 
-    The marker is still read, and is what decides it inside that directory:
-    `.claude/skills/` is the runtime's documented home for a project's own
+    The marker is still read, and is what decides it inside those
+    directories: each is its own runtime's documented home for a project's own
     skills, so a hand-written one there is nobody's copy and is still read.
+
+    **Every surface the generator writes**, asked of `roster.ROSTER_DIRS`
+    rather than listed here. A second directory that this predicate did not
+    know about would report each description defect once more per copy, which
+    is the doubling the whole exemption exists to stop. [#258]
 
     Nothing hides behind this. Check 17 holds every entry in step with its
     cell, and a lone carriage return is not among what its comparison
     forgives, so a copy that diverged from its cell is already a finding
     there.
     """
-    if not rel_file.startswith(roster.ROSTER + "/"):
+    if not any(rel_file.startswith(directory + "/")
+               for directory in roster.ROSTER_DIRS):
         return False
     return roster.is_generated(root / rel_file)
 
@@ -3652,21 +3675,39 @@ def check_body_strip_owner(root: Path) -> list[str]:
 
 
 def check_project_roster(root: Path) -> list[str]:
-    """Every cell has a `.claude/skills/` entry carrying its frontmatter.
+    """Every cell has an entry on every surface, carrying its frontmatter.
 
-    That directory is the whole of what a **Claude Code** session working in
-    this repository loads a description from. An adopter installs the plugin
-    and receives the roster from it; this repository never installs itself, so
-    before #199 no session here held any cell's name or description, and every
-    trigger routed to a description over several changes reached every consumer
-    and missed us. `tools/roster.py` carries the mechanism and the evidence.
+    There is one surface per runtime, and between them they are the whole of
+    what a session working in this repository loads a description from:
+    `.claude/skills/` for Claude Code, `.agents/skills/` for Codex. An adopter
+    installs the plugin and receives the roster from it; this repository never
+    installs itself, so before #199 no session here held any cell's name or
+    description, and every trigger routed to a description over several
+    changes reached every consumer and missed us. `tools/roster.py` carries
+    the mechanism and the evidence.
 
-    **Codex is outside that scope and stays outside it.** It is not documented
-    to load this directory, so a Codex session here reaches a cell by opening
-    the file, exactly as it did before. The runtime is named rather than left
-    to a universal because this repository's doctrine states its audience as
-    every runtime, and a sentence claiming every session would have asserted a
-    fix Codex never received. [PR #210 review, M10]
+    **Codex was outside that scope and is now inside it.** [PR #210 review,
+    M10] required the runtime be named rather than left to a universal,
+    because a sentence claiming every session would have asserted a fix Codex
+    never received -- and while it stood, that named exclusion was the whole
+    of what this repository contributed to the runtime its doctrine calls
+    canonical. **How long it stood is left to its derivation** --
+    `git log -S "Codex is outside
+    that scope" -- tools/lint.py` -- rather than stated here, where a comment
+    beside code freezes and the figure rule gives it the command and the tree
+    and never the output. A draft stated a duration and the duration was
+    wrong. **The quoted string is wrapped on purpose**: unwrapped, this file
+    holds its own search term, and the command then reports the commit that
+    unwrapped it as though the sentence had moved there.
+    [PR #278 review, M5, F7, P4, P5] The rule survives the fix, narrowed to
+    what the messages do: a finding **about a surface** names its runtime as
+    well as its directory, because the two directories reach one runtime each
+    and a session that repaired one has not repaired the other. A finding
+    about a **cell** -- frontmatter that will not parse, no cell at all --
+    names no surface and is reported once, the cell being one file however
+    many copies of it are owed. An earlier draft claimed the runtime
+    universally while three of the shapes named only a directory.
+    [#258] [PR #278 review, M2]
 
     The expectation is the generator's, asked for rather than recomputed. A
     guard that computes its own copy of what a writer produces is a second
@@ -3726,6 +3767,20 @@ def always_on_note(root: Path) -> str:
     that session's answer, and it costs no always-on characters, owes no
     outflow, and adds no sentence anybody has to read.
 
+    **It prints every runtime's total, not one scalar**, and the renderer is
+    the figure's own rather than a fourth wording of it. This was the third
+    place `repo_total` was rendered and the only one that did not learn the
+    term had been redefined to the smallest row: on a tree the roster guard
+    passes -- a lawful hand-written project skill under one surface is enough
+    -- it handed the session that ran the flow's first mandated step a number
+    that was some other runtime's, understated, with nothing saying so. Found
+    by every seat of PR #278's panel and by the external pass, at the one
+    surface the criterion's own audience reads. **No runtime detection is owed
+    or wanted**: this cannot ask which runtime it is under, `check_harness_tokens`
+    exists because a form binding in one runtime and not the other forks the
+    practice, and this runs in CI where neither is present. It names every row
+    and lets the reader take its own. [PR #278 review, M1]
+
     Never fatal. A figure that will not derive is stated and moves on; a clean
     tree does not go red because a number was unavailable.
     """
@@ -3743,7 +3798,8 @@ def always_on_note(root: Path) -> str:
         # exists to make. Two seats disagreed about whether this function
         # was guarded; the probe settled it. [PR #247 review, M19]
         return (
-            f"always-on surface: {data['repo_total']:,} chars here, "
+            f"always-on surface here, per runtime: "
+            f"{figures.by_runtime(data)}; "
             f"{data['adopter_total']:,} from this practice for an adopter"
         )
     except Exception as exc:  # noqa: BLE001 -- reported, never fatal

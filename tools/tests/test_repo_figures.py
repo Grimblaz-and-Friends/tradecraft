@@ -328,11 +328,24 @@ def test_the_two_audiences_are_not_the_same_set():
     # composition the moment it does not. The two rosters are read from two
     # directories; an identity that cannot tell them apart is the assumption
     # #199 found standing in for a measurement.
-    assert data["repo_total"] == (
-        data["doctrine"] + data["charter"] + data["roster_here"]
-    )
-    assert data["doctrine"] > 0, "the doctrine files are part of the repo total"
+    for row in data["here"]:
+        assert row["total"] == (
+            row["doctrine"] + data["charter"] + row["roster"]
+        ), f"{row['runtime']}'s total is not built from what it loads"
+        assert row["doctrine"] > 0, "a runtime reads at least one doctrine file"
+    assert data["repo_total"] == min(row["total"] for row in data["here"])
     assert data["adopter_total"] < data["repo_total"]
+
+    # The runtimes do not read the same doctrine files, so the rows are not
+    # interchangeable and a figure charging every row for every file reports
+    # them as loading the same amount when they do not. Claude Code reads
+    # CLAUDE.md and Codex does not; this is the assertion that fails on the
+    # composition this repository shipped before the external pass caught it.
+    # [PR #278 external pass]
+    doctrines = {row["runtime"]: row["doctrine"] for row in data["here"]}
+    assert doctrines["Claude Code"] - doctrines["Codex"] == data["pointer"], (
+        "the Claude-facing pointer is charged to every runtime, or to none"
+    )
 
 
 def test_the_repo_side_reads_the_roster_it_actually_loads(tmp_path):
@@ -344,6 +357,12 @@ def test_the_repo_side_reads_the_roster_it_actually_loads(tmp_path):
     session. Removing an entry must move the repo total and leave the
     adopter's alone -- if it moves neither, the figure is asserting the
     surface rather than reading it.
+
+    **Removed from one surface only**, which is the discrimination the second
+    runtime added: an entry deleted from `.claude/skills/` and left standing
+    under `.agents/skills/` must still move the number, because one runtime
+    here has stopped loading it. A figure reading either directory for both
+    would report no change. [#258]
     """
     surface(tmp_path)
     make_cell = tmp_path / "skills" / "extra"
@@ -355,20 +374,47 @@ def test_the_repo_side_reads_the_roster_it_actually_loads(tmp_path):
     before = repo_figures.figure_always_on(tmp_path)["data"]
     (tmp_path / ".claude" / "skills" / "extra" / "SKILL.md").unlink()
     after = repo_figures.figure_always_on(tmp_path)["data"]
-    assert before["repo_total"] - after["repo_total"] == (
+    # **The row, not the scalar.** `repo_total` is the smallest row, so an
+    # entry removed from a surface that is not already the smallest moves no
+    # scalar at all -- which is why nothing renders the scalar alone, and why
+    # a pin written against it would pass on a mutation that stopped reading
+    # this directory. [PR #278 review, M1, M22]
+    moved = {row["directory"]: row for row in after["here"]}
+    stood = {row["directory"]: row for row in before["here"]}
+    gone = roster.SURFACES[0].directory
+    assert stood[gone]["total"] - moved[gone]["total"] == (
         len("extra") + len("Trigger.")
     )
     assert after["adopter_total"] == before["adopter_total"]
-    assert after["entries"] == before["entries"] - 1
+    # Keyed by directory rather than by position: each row already carries
+    # the directory it was read from, and binding the assertion to
+    # `roster.SURFACES` ordering makes it fail for a reason unrelated to what
+    # it pins. Raised by the external reviewer on PR #278.
+    rows = {row["directory"]: row for row in after["here"]}
+    was = {row["directory"]: row for row in before["here"]}
+    edited, kept = roster.SURFACES[0].directory, roster.SURFACES[1].directory
+    assert rows[edited]["entries"] == was[edited]["entries"] - 1
+    assert rows[kept]["entries"] == was[kept]["entries"], (
+        "the surface that kept its entry must not move with the one that "
+        "lost it"
+    )
+    assert rows[edited]["roster"] < was[edited]["roster"]
+    assert rows[kept]["roster"] == was[kept]["roster"]
     assert after["cells"] == before["cells"]
 
 
-def test_the_repo_total_counts_both_doctrine_files(tmp_path):
-    """CLAUDE.md is always-on here and has its own budget because it is.
+def test_the_doctrine_key_sums_both_files(tmp_path):
+    """`doctrine` is AGENTS.md plus CLAUDE.md, and it is not a row's term.
 
-    Omitting it meant a rule could move from AGENTS.md into it and the total
-    would report a reduction while nothing left the surface -- the failure
-    routing.md's closing paragraph names, reachable within the file's closing paragraph.
+    **Renamed to what it asserts.** It was called
+    `test_the_repo_total_counts_both_doctrine_files` and claimed to stop a
+    rule moving from AGENTS.md into CLAUDE.md and reporting a reduction while
+    nothing left the surface. It never touched `repo_total`, and since the
+    totals went per runtime that claim is not even the right one to want:
+    Codex does not read CLAUDE.md, so such a move genuinely does leave the
+    Codex surface and the smallest row falling is an honest report. What is
+    left is the narrow true thing -- the summed key is both files -- asserted
+    under a name that says so. [PR #278 review, F8]
     """
     (tmp_path / "AGENTS.md").write_text("a" * 100, encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_text("b" * 40, encoding="utf-8")
@@ -446,11 +492,11 @@ def surface(root, agents="a" * 100, pointer="b" * 40, charter_body="Body."):
     (cell / "SKILL.md").write_text(
         "---" + NL + "name: charter" + NL + "description: Desc." + NL + "---" + NL
         + NL + charter_body + NL, encoding="utf-8")
-    # The repo side reads its roster from `.claude/skills/`, which is the
-    # directory a session working here actually loads. A fixture with cells and
-    # no roster models the tree #199 found, not a lawful one -- and the
-    # equality these tests pin would then hold over a surface neither reader
-    # counts.
+    # The repo side reads its roster from the directory each runtime here
+    # actually loads -- `.claude/skills/` and `.agents/skills/`, one per
+    # runtime. A fixture with cells and no roster models the tree #199 found,
+    # not a lawful one -- and the equality these tests pin would then hold
+    # over a surface no reader counts.
     roster.write(root)
 
 
@@ -467,8 +513,10 @@ def test_the_base_side_reproduces_the_working_tree_figure(tmp_path):
     git("add", "-A")
     git("commit", "-qm", "base")
     head = git("rev-parse", "HEAD")
-    assert repo_figures.always_on_at(tmp_path, head) == (
-        repo_figures.figure_always_on(tmp_path)["data"]["repo_total"])
+    assert repo_figures.always_on_at(tmp_path, head) == {
+        row["runtime"]: row["total"]
+        for row in repo_figures.figure_always_on(tmp_path)["data"]["here"]
+    }
 
 
 def test_the_base_side_reads_the_roster_from_the_directory_it_loads(tmp_path):
@@ -507,8 +555,9 @@ def test_the_base_side_reads_the_roster_from_the_directory_it_loads(tmp_path):
     git("commit", "-qm", "roster entry gone, cell kept")
     after = git("rev-parse", "HEAD")
 
-    assert repo_figures.always_on_at(tmp_path, before) - (
-        repo_figures.always_on_at(tmp_path, after)
+    runtime = roster.SURFACES[0].runtime
+    assert repo_figures.always_on_at(tmp_path, before)[runtime] - (
+        repo_figures.always_on_at(tmp_path, after)[runtime]
     ) == len("extra") + len("Trigger."), (
         "always_on_at read the roster from skills/, where the cell still is, "
         "rather than from .claude/skills/, where the entry was removed"
@@ -525,9 +574,16 @@ def test_the_base_side_counts_both_doctrine_files(tmp_path):
     git("commit", "-qm", "base")
     head = git("rev-parse", "HEAD")
     charter = (tmp_path / "skills" / "charter" / "SKILL.md").read_text(encoding="utf-8")
-    expected = (100 + 40 + len("charter") + len("Desc.")
-                + len(lint._frontmatterless(charter)))
-    assert repo_figures.always_on_at(tmp_path, head) == expected
+    body = len(lint._frontmatterless(charter))
+    roster_chars = len("charter") + len("Desc.")
+    # Per runtime, because the two do not read the same doctrine files: both
+    # read AGENTS.md at 100 and only Claude Code reads CLAUDE.md at 40. A
+    # single expectation could be satisfied by charging one runtime for the
+    # other's files, which is what this pins against.
+    assert repo_figures.always_on_at(tmp_path, head) == {
+        "Claude Code": 100 + 40 + body + roster_chars,
+        "Codex": 100 + body + roster_chars,
+    }
 
 
 def test_growth_and_shrink_carry_their_own_sign(tmp_path):
@@ -541,13 +597,16 @@ def test_growth_and_shrink_carry_their_own_sign(tmp_path):
     base = git("rev-parse", "HEAD")
     before = repo_figures.always_on_at(tmp_path, base)
 
+    # Every runtime moves, because AGENTS.md is the one doctrine file both
+    # read. Asserted per runtime rather than on the scalar: a delta taken off
+    # the smallest row alone cannot see growth confined to one surface.
     (tmp_path / "AGENTS.md").write_text("a" * 150, encoding="utf-8")
-    grown = repo_figures.figure_always_on(tmp_path)["data"]["repo_total"]
-    assert grown - before == 50
+    grown = repo_figures.figure_always_on(tmp_path)["data"]["here"]
+    assert all(row["total"] - before[row["runtime"]] == 50 for row in grown)
 
     (tmp_path / "AGENTS.md").write_text("a" * 70, encoding="utf-8")
-    shrunk = repo_figures.figure_always_on(tmp_path)["data"]["repo_total"]
-    assert shrunk - before == -30
+    shrunk = repo_figures.figure_always_on(tmp_path)["data"]["here"]
+    assert all(row["total"] - before[row["runtime"]] == -30 for row in shrunk)
 
 
 def test_the_rendered_delta_says_which_way_the_surface_moved(tmp_path):
@@ -566,11 +625,50 @@ def test_the_rendered_delta_says_which_way_the_surface_moved(tmp_path):
     git("commit", "-qm", "base")
     base = git("rev-parse", "HEAD")
 
+    # One movement per runtime, with its sign, because the quantity has one
+    # value per runtime. AGENTS.md is the doctrine file every runtime reads,
+    # so every row moves together here; the surface-confined case, which the
+    # old single delta could not see at all, is the sibling below.
     (tmp_path / "AGENTS.md").write_text("a" * 150, encoding="utf-8")
-    assert dc._always_on_delta(repo_figures, tmp_path, base) == " (+50 this PR)"
+    assert dc._always_on_delta(repo_figures, tmp_path, base) == (
+        " (Claude Code +50, Codex +50 this PR)")
 
     (tmp_path / "AGENTS.md").write_text("a" * 70, encoding="utf-8")
-    assert dc._always_on_delta(repo_figures, tmp_path, base) == " (-30 this PR)"
+    assert dc._always_on_delta(repo_figures, tmp_path, base) == (
+        " (Claude Code -30, Codex -30 this PR)")
+
+
+def test_growth_confined_to_one_surface_is_still_reported(tmp_path):
+    """The bound the single scalar had, closed at the renderer.
+
+    A delta taken off `repo_total` is a delta off the *smallest* row, so
+    growth on any other surface moved nothing and a change that raised what
+    every Claude Code session here loads could book `+0` -- never tripping the
+    outflow rule that number exists to defend. Pinned on the surface that is
+    not the smallest, which is the only fixture that can tell the two
+    renderings apart. [PR #278 review, M22]
+    """
+    import doctrine_callout as dc
+
+    git = git_tree(tmp_path)
+    surface(tmp_path)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+
+    # A project skill somebody wrote by hand, at a name that is no cell: check
+    # 17 reports nothing about it, and it is always-on prose all the same.
+    mine = tmp_path / roster.SURFACES[0].directory / "repo-helper"
+    mine.mkdir(parents=True)
+    (mine / "SKILL.md").write_bytes(
+        ("---" + NL + "name: repo-helper" + NL + "description: Mine." + NL
+         + "---" + NL + NL + "Body." + NL).encode("utf-8"))
+
+    grew = len("repo-helper") + len("Mine.")
+    assert dc._always_on_delta(repo_figures, tmp_path, base) == (
+        f" (Claude Code +{grew}, Codex +0 this PR)"), (
+        "growth confined to one runtime's surface is invisible to the delta"
+    )
 
 
 def test_a_nested_skill_file_is_not_a_cell(tmp_path):
@@ -597,7 +695,9 @@ def test_a_nested_skill_file_is_not_a_cell(tmp_path):
     data = repo_figures.figure_always_on(tmp_path)["data"]
     assert data["cells"] == 1
     assert data["roster"] == len("charter") + len("Desc.")
-    assert repo_figures.always_on_at(tmp_path, head) == data["repo_total"]
+    assert repo_figures.always_on_at(tmp_path, head) == {
+        row["runtime"]: row["total"] for row in data["here"]
+    }
 
 
 # Every figure `build_figures` emits unconditionally, in call order. Literal
@@ -726,3 +826,116 @@ def test_the_ceilings_are_read_from_the_guards_constants(monkeypatch):
     assert f"AGENTS.md {data['agents']:,} of 4,242" in body
     # and only that one moved
     assert f"CLAUDE.md {data['pointer']:,} of {lint.POINTER_BUDGET_CHARS:,}" in body
+
+
+# --- the per-runtime rendering, which nothing named before ---------------
+#
+# Three mutants survived the whole suite when this figure was reviewed: the
+# scalar taken as the first row rather than the smallest, the divergence
+# clause silenced, and the roster clause forced into a claim of sameness.
+# One cause: every divergence fixture in the file shortened the FIRST
+# surface, so "smallest" and "first" could not be told apart, and no test in
+# the repository named the renderers at all. [PR #278 review, M3, D1]
+
+def _diverging(tmp_path, short_surface):
+    """A tree where exactly one named surface is short a cell's entry."""
+    surface(tmp_path)
+    extra = tmp_path / "skills" / "extra"
+    extra.mkdir(parents=True)
+    (extra / "SKILL.md").write_bytes(
+        ("---" + NL + "name: extra" + NL + "description: Trigger." + NL + "---"
+         + NL + NL + "Body." + NL).encode("utf-8"))
+    roster.write(tmp_path)
+    (tmp_path / short_surface.directory / "extra" / "SKILL.md").unlink()
+    return repo_figures.figure_always_on(tmp_path)["data"]
+
+
+def test_the_scalar_is_the_smallest_row_and_not_the_first(tmp_path):
+    """Shortening the SECOND surface is the only fixture that discriminates.
+
+    Every fixture here used to shorten the first, so `min` and `here[0]`
+    agreed in all of them and the mutant that swapped them survived. Under it
+    this repository's own arrival would have booked no movement at all, the
+    base having loaded nothing into Codex -- which is the reading the design
+    rejected.
+    """
+    data = _diverging(tmp_path, roster.SURFACES[1])
+    rows = {row["directory"]: row["total"] for row in data["here"]}
+    first, second = (s.directory for s in roster.SURFACES[:2])
+    assert rows[second] < rows[first], "the fixture does not diverge"
+    assert data["repo_total"] == rows[second]
+    assert data["repo_total"] != rows[first], (
+        "the scalar is the first row rather than the smallest"
+    )
+
+
+def test_every_runtime_is_named_and_its_chain_composes(tmp_path):
+    """The renderer, on a tree where the runtimes disagree.
+
+    Silencing it, or collapsing it to one clause claiming the runtimes agree,
+    both left the suite green -- and the second shipped a false sentence onto
+    the merge surface, which posts on exactly the trees where the guard is
+    red. Each chain must sum to the total it is printed against, which is a
+    property no single chain standing for every runtime could have.
+    """
+    data = _diverging(tmp_path, roster.SURFACES[1])
+    rendered = repo_figures.by_runtime(data)
+    for row in data["here"]:
+        assert row["runtime"] in rendered, f"{row['runtime']} is not named"
+        assert f"{row['total']:,}" in rendered, (
+            f"{row['runtime']}'s own total is not rendered")
+        assert row["directory"] in rendered, (
+            "the name/description term does not say which directory it counted"
+        )
+    assert "the same" not in rendered, (
+        "a tree where the runtimes disagree is rendered as agreement"
+    )
+    chains = rendered.split("; ")
+    assert len(chains) == len(data["here"])
+    for chain, row in zip(chains, data["here"]):
+        terms = [int(part.replace(",", "").split()[-1])
+                 for part in chain.split(" = ")[1].split(" + ")]
+        assert sum(terms) == row["total"], (
+            f"{row['runtime']}'s chain sums to {sum(terms)}, not {row['total']}"
+        )
+
+
+def test_the_runtimes_are_still_named_when_they_agree(tmp_path):
+    """The lawful polarity: a renderer that only spoke on divergence is what
+    let a scalar stand for a per-runtime quantity in three places."""
+    surface(tmp_path)
+    roster.write(tmp_path)
+    data = repo_figures.figure_always_on(tmp_path)["data"]
+    rendered = repo_figures.by_runtime(data)
+    for row in data["here"]:
+        assert row["runtime"] in rendered
+        assert f"{row['total']:,}" in rendered
+
+
+def test_the_surface_literals_are_what_each_runtime_reads(tmp_path):
+    """A wrong directory name is invisible to every other test in the suite.
+
+    Renaming the Codex surface to a directory Codex does not read left the
+    whole suite green, the lint green and the roster guard green -- the
+    repository back in #199 for that runtime with nothing able to say so. The
+    suite catches a *missing* surface and could not catch a *wrong* one.
+
+    The comment above `SURFACES` warns against a fixture holding its own copy
+    of a directory name, and this is its inverse: the warning is about a
+    fixture going on testing a surface the generator has stopped writing, and
+    this pin exists to notice the generator writing a name no runtime reads.
+    A genuine rename must edit this line, which is the point of it.
+    [PR #278 review, M14]
+    """
+    assert [(s.directory, s.runtime) for s in roster.SURFACES] == [
+        (".claude/skills", "Claude Code"),
+        (".agents/skills", "Codex"),
+    ]
+    assert roster.ROSTER_DIRS == (".claude/skills", ".agents/skills")
+    # Which doctrine files each runtime reads is the other half of a row, and
+    # charging every runtime for every file made the rows falsely equal.
+    assert {s.runtime: s.doctrine for s in roster.SURFACES} == {
+        "Claude Code": ("AGENTS.md", "CLAUDE.md"),
+        "Codex": ("AGENTS.md",),
+    }
+

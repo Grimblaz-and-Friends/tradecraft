@@ -437,6 +437,10 @@ def test_the_callout_line_decomposes_its_own_total(tmp_path, monkeypatch):
     tell the two readers apart. The fix shipped unpinned and reverting it left
     the whole suite green -- the same shape as the mutation that survived in
     `always_on_at`, in the batch that closed it. [PR #210 cycle one, C1-F4]
+
+    The same fixture now also has the two **runtimes** disagreeing, the entry
+    being removed from one surface and left on the other, so the sentence is
+    rendered in its divergent form here rather than its agreeing one. [#258]
     """
     import shutil
 
@@ -471,19 +475,32 @@ def test_the_callout_line_decomposes_its_own_total(tmp_path, monkeypatch):
     line = dc._always_on_line()
 
     flat = line.replace(",", "")
-    stated_total = int(re.search(r"\*\*(\d+)\*\* chars here", flat).group(1))
-    terms = [int(n) for n in re.findall(r"(\d+) of \d+", flat)]
-    # Deliberately label-agnostic: the pin is on the arithmetic, not on the
-    # wording. Keying it to `roster name/description` would make it crash
-    # rather than fail when the term reverts to the adopter's, and a crash
-    # reports a missing regex where the defect is a number that does not add
-    # up.
-    roster_term = int(re.search(r"(\d+) (?:roster|cell) name/description (\d+)",
-                                flat).group(2))
-    assert sum(terms) + roster_term == stated_total, (
-        "the callout's printed terms sum to "
-        f"{sum(terms) + roster_term}, not the {stated_total} it states: {line}"
-    )
+    # **One chain per runtime, and each must sum to the total it is printed
+    # against.** The old shape was one `+` chain beside one scalar, and it
+    # summed to whichever runtime happened to be long while the sentence
+    # stated another's total -- so the sentence was right or wrong according
+    # to which surface was short, and this test compensated by taking
+    # `min(roster_terms)`, encoding exactly the knowledge the sentence
+    # withheld from its reader. Nothing is compensated for here: every chain
+    # is checked against its own stated total, which is a property no single
+    # chain could have had. [PR #278 review, M13]
+    chains = re.findall(r"([A-Za-z][A-Za-z ]*?) (\d+) = ([^;*]+)", flat)
+    assert len(chains) >= 2, f"one chain per runtime was not rendered: {line}"
+    for runtime, stated, chain in chains:
+        # The last number of each addend is its value; an addend may also
+        # carry a count ("9 name/description from ... 5,039"), and summing
+        # every integer in the chain would add the count to the total.
+        terms = [int(re.findall(r"(\d+)", part)[-1])
+                 for part in chain.split(" + ")]
+        assert sum(terms) == int(stated), (
+            f"{runtime}'s printed terms sum to {sum(terms)}, not the "
+            f"{stated} it states: {line}"
+        )
+
+    # The runtimes are named, and the divergent tree renders both rather than
+    # collapsing to a claim of sameness.
+    runtimes = {runtime.strip() for runtime, _, _ in chains}
+    assert "Claude Code" in runtimes and "Codex" in runtimes, runtimes
 
 
 def test_the_callout_carries_the_always_on_size(tmp_path, monkeypatch):
@@ -494,7 +511,7 @@ def test_the_callout_carries_the_always_on_size(tmp_path, monkeypatch):
     drops a number is one nobody can trust the rest of.
     """
     body = dc._body(["AGENTS.md"])
-    assert "Always-on surface:" in body
+    assert "Always-on surface here, per runtime:" in body
     assert "for an adopter" in body
 
     # Patching the module attribute now reaches the function, because root
@@ -519,14 +536,14 @@ def test_the_delta_survives_the_path_ci_actually_takes(gh):
     """
     stub = gh(["AGENTS.md"])
     dc.run("79", None, base="HEAD~1")
-    assert re.search(r"chars here \([-+][\d,]+ this PR\)", stub.posted_body())
+    assert re.search(r"\((?:[A-Za-z][A-Za-z ]*[-+][\d,]+, )*[A-Za-z][A-Za-z ]*[-+][\d,]+ this PR\)", stub.posted_body())
 
 
 def test_main_threads_its_base_argument_through(gh):
     """The outermost seam: CI invokes `main`, not `run`."""
     stub = gh(["AGENTS.md"])
     dc.main(["--pr", "79", "--base", "HEAD~1"])
-    assert re.search(r"chars here \([-+][\d,]+ this PR\)", stub.posted_body())
+    assert re.search(r"\((?:[A-Za-z][A-Za-z ]*[-+][\d,]+, )*[A-Za-z][A-Za-z ]*[-+][\d,]+ this PR\)", stub.posted_body())
 
 
 def test_no_base_still_posts_a_callout_without_a_delta(gh):
@@ -535,7 +552,7 @@ def test_no_base_still_posts_a_callout_without_a_delta(gh):
     stub = gh(["AGENTS.md"])
     dc.run("79", None)
     body = stub.posted_body()
-    assert "Always-on surface:" in body and "this PR)" not in body
+    assert "Always-on surface here, per runtime:" in body and "this PR)" not in body
 
 
 def test_the_delta_renders_its_sign_and_states_a_base_it_cannot_read():
@@ -556,5 +573,5 @@ def test_the_delta_renders_its_sign_and_states_a_base_it_cannot_read():
     # Shape only. The *direction* is pinned in test_repo_figures.py against a
     # tree whose movement is known -- this assertion matched either sign, and
     # stayed green when every delta was inverted.
-    assert re.search(r"chars here \([-+][\d,]+ this PR\)", measured), measured
+    assert re.search(r"\((?:[A-Za-z][A-Za-z ]*[-+][\d,]+, )*[A-Za-z][A-Za-z ]*[-+][\d,]+ this PR\)", measured), measured
     assert "movement not derived" in unreadable and "0" * 40 in unreadable
