@@ -23,6 +23,17 @@ import roster  # noqa: E402
 
 NL = chr(10)
 
+# The surfaces by runtime, for fixtures that touch one of them by name. Taken
+# from the generator rather than spelled here: a fixture holding its own copy
+# of a directory name goes on testing a surface the generator has stopped
+# writing.
+CLAUDE, CODEX = roster.SURFACES
+
+
+def entry_of(root: Path, surface: roster.Surface, name: str) -> Path:
+    """One cell's entry on one surface."""
+    return root / surface.directory / name / roster.CELL_FILE
+
 
 def make_cell(root: Path, name: str, description: str = "A fixture cell.") -> Path:
     """One cell under skills/, with frontmatter a runtime can parse.
@@ -68,13 +79,20 @@ def test_a_generated_roster_verifies_clean(tmp_path):
     assert roster.verify(tmp_path) == []
 
 
-def test_a_missing_entry_fires(tmp_path):
-    """The defect itself: a cell whose description loads in no session here."""
+def test_a_missing_entry_fires_once_per_runtime(tmp_path):
+    """The defect itself: a cell whose description loads in no session here.
+
+    One finding per surface, and each names its own runtime. Collapsing them
+    would tell a session that repaired one directory that it was done, which
+    is #199's defect with the runtimes swapped. [#258]
+    """
     make_cell(tmp_path, "alpha")
     findings = roster.verify(tmp_path)
-    assert len(findings) == 1
-    assert ".claude/skills/alpha/SKILL.md is missing" in findings[0]
-    assert "tools/roster.py --write" in findings[0]
+    assert len(findings) == len(roster.SURFACES)
+    for surface, finding in zip(roster.SURFACES, findings):
+        assert f"{surface.directory}/alpha/SKILL.md is missing" in finding
+        assert surface.runtime in finding
+        assert "tools/roster.py --write" in finding
 
 
 def test_an_entry_out_of_step_fires(tmp_path):
@@ -85,8 +103,8 @@ def test_an_entry_out_of_step_fires(tmp_path):
     roster.write(tmp_path)
     make_cell(tmp_path, "alpha", "A different description entirely.")
     findings = roster.verify(tmp_path)
-    assert len(findings) == 1
-    assert "out of step" in findings[0]
+    assert len(findings) == len(roster.SURFACES)
+    assert all("out of step" in finding for finding in findings)
     roster.write(tmp_path)
     assert roster.verify(tmp_path) == []
 
@@ -104,7 +122,7 @@ def test_an_entry_rewritten_to_crlf_is_still_in_step(tmp_path):
     """
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry = entry_of(tmp_path, CLAUDE, "alpha")
     entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r\n"))
     assert b"\r\n" in entry.read_bytes()
     assert roster.verify(tmp_path) == []
@@ -118,12 +136,15 @@ def test_crlf_does_not_hide_a_real_drift(tmp_path):
     has, which is the whole triggering surface out of date."""
     make_cell(tmp_path, "alpha", "The first description.")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry = entry_of(tmp_path, CLAUDE, "alpha")
     entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r\n"))
     make_cell(tmp_path, "alpha", "A different description entirely.")
     findings = roster.verify(tmp_path)
-    assert len(findings) == 1, findings
-    assert "out of step" in findings[0]
+    assert len(findings) == len(roster.SURFACES), findings
+    assert all("out of step" in finding for finding in findings)
+    assert any(CLAUDE.directory in finding for finding in findings), (
+        "the CRLF entry is the one this pins, and it must still report"
+    )
 
 
 def test_write_still_restores_the_canonical_bytes(tmp_path):
@@ -134,7 +155,7 @@ def test_write_still_restores_the_canonical_bytes(tmp_path):
     disk with nothing left in the repository able to say so."""
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry = entry_of(tmp_path, CLAUDE, "alpha")
     canonical = entry.read_bytes()
     entry.write_bytes(canonical.replace(b"\n", b"\r\n"))
     changed = roster.write(tmp_path)
@@ -163,7 +184,7 @@ def test_a_stray_carriage_return_is_not_forgiven(tmp_path):
     """
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry = entry_of(tmp_path, CLAUDE, "alpha")
     crlf(entry)
     entry.write_bytes(entry.read_bytes().replace(b"# alpha", b"\r# alpha"))
     findings = roster.verify(tmp_path)
@@ -192,7 +213,7 @@ def test_an_all_carriage_return_entry_is_not_forgiven_either(tmp_path):
     """
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry = entry_of(tmp_path, CLAUDE, "alpha")
     entry.write_bytes(entry.read_bytes().replace(b"\n", b"\r"))
     findings = roster.verify(tmp_path)
     assert len(findings) == 1
@@ -228,7 +249,7 @@ def test_a_cell_that_is_itself_crlf_still_matches_its_entry(tmp_path):
     make_cell(tmp_path, "alpha")
     crlf(tmp_path / "skills" / "alpha" / "SKILL.md")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry = entry_of(tmp_path, CLAUDE, "alpha")
     crlf(entry)
     assert roster.verify(tmp_path) == []
 
@@ -242,11 +263,12 @@ def test_an_orphan_entry_fires_and_is_removed(tmp_path):
     roster.write(tmp_path)
     (tmp_path / "skills" / "beta" / "SKILL.md").unlink()
     findings = roster.verify(tmp_path)
-    assert len(findings) == 1
-    assert "names no cell" in findings[0]
+    assert len(findings) == len(roster.SURFACES)
+    assert all("names no cell" in finding for finding in findings)
     roster.write(tmp_path)
     assert roster.verify(tmp_path) == []
-    assert not (tmp_path / ".claude" / "skills" / "beta").exists()
+    for surface in roster.SURFACES:
+        assert not (tmp_path / surface.directory / "beta").exists()
 
 
 def test_a_hand_written_project_skill_is_never_removed(tmp_path):
@@ -261,7 +283,7 @@ def test_a_hand_written_project_skill_is_never_removed(tmp_path):
     """
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    helper = tmp_path / ".claude" / "skills" / "repo-helper"
+    helper = tmp_path / CLAUDE.directory / "repo-helper"
     helper.mkdir(parents=True)
     (helper / "SKILL.md").write_bytes(
         ("---" + NL + "name: repo-helper" + NL
@@ -293,7 +315,7 @@ def test_a_hand_written_file_at_a_cells_name_is_reported_not_overwritten(tmp_pat
     """
     make_cell(tmp_path, "spikes")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "spikes" / "SKILL.md"
+    entry = entry_of(tmp_path, CLAUDE, "spikes")
     entry.write_bytes(
         ("---" + NL + "name: spikes" + NL + "description: Mine, by hand." + NL
          + "---" + NL + NL + "Irreplaceable, untracked." + NL).encode("utf-8")
@@ -320,7 +342,8 @@ def test_a_generated_orphan_is_still_removed(tmp_path):
     roster.write(tmp_path)
     (tmp_path / "skills" / "beta" / "SKILL.md").unlink()
     roster.write(tmp_path)
-    assert not (tmp_path / ".claude" / "skills" / "beta").exists()
+    for surface in roster.SURFACES:
+        assert not (tmp_path / surface.directory / "beta").exists()
     assert roster.verify(tmp_path) == []
 
 
@@ -337,7 +360,7 @@ def test_residue_left_by_a_removal_is_reported_when_it_is_created(tmp_path):
     make_cell(tmp_path, "alpha")
     make_cell(tmp_path, "beta")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "beta"
+    entry = tmp_path / CLAUDE.directory / "beta"
     (entry / "references").mkdir()
     (entry / "references" / "notes.md").write_bytes(b"depth\n")
     (tmp_path / "skills" / "beta" / "SKILL.md").unlink()
@@ -355,7 +378,7 @@ def test_deleting_one_entry_reports_one_finding_not_two(tmp_path):
     """
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    (tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md").unlink()
+    entry_of(tmp_path, CLAUDE, "alpha").unlink()
     findings = roster.verify(tmp_path)
     assert len(findings) == 1
     assert "is missing" in findings[0]
@@ -377,19 +400,24 @@ def test_write_reports_an_unreadable_cell_and_finishes_the_rest(tmp_path):
     broken = tmp_path / "skills" / "mm-broken"
     broken.mkdir()
     (broken / "SKILL.md").write_bytes(b"# no frontmatter\n")
-    orphan = tmp_path / ".claude" / "skills" / "gone"
+    orphan = tmp_path / CLAUDE.directory / "gone"
     orphan.mkdir(parents=True)
-    (orphan / "SKILL.md").write_bytes(roster.expected(tmp_path, "alpha"))
+    (orphan / "SKILL.md").write_bytes(roster.expected(tmp_path, "alpha", CLAUDE))
 
     lines = roster.write(tmp_path)
 
     assert any("skipped" in line and "mm-broken" in line for line in lines)
-    for name in ("alpha", "zeta"):
-        entry = (tmp_path / ".claude" / "skills" / name / "SKILL.md").read_bytes()
-        assert b"Edited after generation" in entry, f"{name} was not regenerated"
+    for surface in roster.SURFACES:
+        for name in ("alpha", "zeta"):
+            entry = entry_of(tmp_path, surface, name).read_bytes()
+            assert b"Edited after generation" in entry, (
+                f"{name} was not regenerated on {surface.directory}")
     assert not orphan.exists(), "the removal loop was never reached"
     remaining = roster.verify(tmp_path)
-    assert len(remaining) == 1 and "no parseable frontmatter" in remaining[0]
+    assert len(remaining) == 1 and "no parseable frontmatter" in remaining[0], (
+        "a cell nothing can copy is one defect in one file, not one per "
+        "surface owed a copy"
+    )
 
 
 def test_every_shape_the_docstring_names_behaves_as_it_says(tmp_path):
@@ -403,32 +431,37 @@ def test_every_shape_the_docstring_names_behaves_as_it_says(tmp_path):
     that could not fail on the thing it was named for. That masking is why the
     stated count survived two corrections. [PR #210 cycle two, C2-F1]
     """
-    # Silent: a foreign entry at a name that is no cell.
+    # Silent: a foreign entry at a name that is no cell -- on every surface,
+    # each being its own runtime's documented place for a project skill.
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    foreign = tmp_path / ".claude" / "skills" / "mine"
-    foreign.mkdir(parents=True)
-    (foreign / "SKILL.md").write_bytes(b"---\nname: mine\ndescription: d\n---\n\nx\n")
+    for surface in roster.SURFACES:
+        foreign = tmp_path / surface.directory / "mine"
+        foreign.mkdir(parents=True)
+        (foreign / "SKILL.md").write_bytes(
+            b"---\nname: mine\ndescription: d\n---\n\nx\n")
     assert roster.verify(tmp_path) == []
-    (foreign / "SKILL.md").unlink()
-    foreign.rmdir()
+    for surface in roster.SURFACES:
+        foreign = tmp_path / surface.directory / "mine"
+        (foreign / "SKILL.md").unlink()
+        foreign.rmdir()
 
     # Names --write: missing, out of step, generated orphan.
-    (tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md").unlink()
+    entry_of(tmp_path, CLAUDE, "alpha").unlink()
     assert all("--write" in f for f in roster.verify(tmp_path))
     roster.write(tmp_path)
     make_cell(tmp_path, "alpha", "Moved on since generation.")
     assert all("--write" in f for f in roster.verify(tmp_path))
     roster.write(tmp_path)
-    orphan = tmp_path / ".claude" / "skills" / "gone"
+    orphan = tmp_path / CLAUDE.directory / "gone"
     orphan.mkdir(parents=True)
-    (orphan / "SKILL.md").write_bytes(roster.expected(tmp_path, "alpha"))
+    (orphan / "SKILL.md").write_bytes(roster.expected(tmp_path, "alpha", CLAUDE))
     assert all("--write" in f for f in roster.verify(tmp_path))
     roster.write(tmp_path)
 
     # Collision: names the move first and --write second, both over the whole
     # message. Asserted against the full string, not a prefix of it.
-    entry = tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md"
+    entry = entry_of(tmp_path, CLAUDE, "alpha")
     entry.write_bytes(b"---\nname: alpha\ndescription: mine\n---\n\nhand-written\n")
     collision = roster.verify(tmp_path)
     assert len(collision) == 1
@@ -482,7 +515,7 @@ def test_the_entry_copies_the_frontmatter_byte_for_byte(tmp_path):
     the trigger, and the two would then fire on different things."""
     source = make_cell(tmp_path, "alpha", "Use when the fixture is exercised.")
     roster.write(tmp_path)
-    entry = (tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md").read_bytes()
+    entry = entry_of(tmp_path, CLAUDE, "alpha").read_bytes()
     block = roster.frontmatter(source.read_bytes())
     assert entry.startswith(block)
     assert lint._frontmatter_fields(entry.decode("utf-8")) == (
@@ -496,8 +529,7 @@ def test_the_entry_names_its_generator_and_its_source(tmp_path):
     loaded, which is the only state it can count on."""
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    text = (tmp_path / ".claude" / "skills" / "alpha" / "SKILL.md").read_text(
-        encoding="utf-8")
+    text = entry_of(tmp_path, CLAUDE, "alpha").read_text(encoding="utf-8")
     assert "tools/roster.py" in text
     assert "skills/alpha/SKILL.md" in text
     assert "Do not edit this one" in text
@@ -515,8 +547,9 @@ def test_a_cell_whose_frontmatter_will_not_parse_is_a_finding(tmp_path):
     findings = roster.verify(tmp_path)
     assert len(findings) == 1
     assert "no parseable frontmatter" in findings[0]
-    with pytest.raises(ValueError):
-        roster.expected(tmp_path, "alpha")
+    for surface in roster.SURFACES:
+        with pytest.raises(ValueError):
+            roster.expected(tmp_path, "alpha", surface)
 
 
 def test_the_generator_introduces_no_carriage_return_of_its_own(tmp_path):
@@ -564,7 +597,11 @@ def test_this_repository_carries_a_roster_for_every_cell(tmp_path):
     which is the claim #199 found false and nothing was checking."""
     cells = roster.cell_names(ROOT)
     assert cells != []
-    assert set(cells) <= set(roster.roster_names(ROOT))
+    for surface in roster.SURFACES:
+        assert set(cells) <= set(roster.roster_names(ROOT, surface)), (
+            f"a cell has no entry under {surface.directory}, so its "
+            f"description loads in no {surface.runtime} session here"
+        )
     assert roster.verify(ROOT) == []
 
 
@@ -589,7 +626,7 @@ def test_a_linked_entry_directory_is_refused_rather_than_written_through(tmp_pat
     make_cell(tmp_path, "alpha")
     outside = tmp_path / "outside"
     outside.mkdir()
-    entry = tmp_path / ".claude" / "skills" / "alpha"
+    entry = tmp_path / CLAUDE.directory / "alpha"
     entry.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.symlink(outside, entry, target_is_directory=True)
@@ -607,9 +644,12 @@ def test_a_linked_entry_directory_is_refused_rather_than_written_through(tmp_pat
         if made.returncode != 0:
             pytest.skip(f"no directory link available: {made.stdout}{made.stderr}")
 
-    assert not roster.inside_roster(tmp_path, entry)
+    assert not roster.inside_roster(tmp_path, entry, CLAUDE)
     findings = [f for f in roster.verify(tmp_path) if "resolves outside" in f]
-    assert len(findings) == 1
+    assert len(findings) == 1, (
+        "the link is on one surface, so it is one finding -- the other "
+        "surface reports its own missing entry, not this"
+    )
     assert "--write" not in findings[0]
 
     lines = roster.write(tmp_path)
@@ -624,10 +664,12 @@ def test_the_ordinary_entry_directory_is_not_refused(tmp_path):
     is every entry on every tree this guard actually runs against."""
     make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "alpha"
-    assert roster.inside_roster(tmp_path, entry)
+    for surface in roster.SURFACES:
+        entry = tmp_path / surface.directory / "alpha"
+        assert roster.inside_roster(tmp_path, entry, surface)
+        assert roster.inside_roster(
+            ROOT, ROOT / surface.directory / "filing", surface)
     assert roster.verify(tmp_path) == []
-    assert roster.inside_roster(ROOT, ROOT / ".claude" / "skills" / "filing")
 
 
 def test_a_crlf_cell_keeps_the_newline_the_slice_used_to_drop(tmp_path):
@@ -684,7 +726,7 @@ def test_a_crlf_cell_no_longer_reds_a_tree_that_linux_agrees_with(tmp_path):
     """
     cell = make_cell(tmp_path, "alpha")
     roster.write(tmp_path)
-    entry = tmp_path / ".claude" / "skills" / "alpha" / roster.CELL_FILE
+    entry = entry_of(tmp_path, CLAUDE, "alpha")
     before = entry.read_bytes()
 
     crlf(cell)
@@ -706,4 +748,253 @@ def test_a_crlf_cell_with_genuine_drift_still_reports(tmp_path):
         cell.read_bytes().replace(b"A fixture cell.", b"A different trigger.")
     )
     crlf(cell)
-    assert len(roster.verify(tmp_path)) == 1
+    assert len(roster.verify(tmp_path)) == len(roster.SURFACES)
+
+
+def test_every_surface_gets_an_entry_and_one_short_still_reports(tmp_path):
+    """The defect #258 found, at the shape it would come back in.
+
+    A generator that wrote the first surface and stopped is exactly the state
+    this repository was in before #258: one runtime holding every description,
+    the other holding none, and nothing saying so. (A draft of this docstring
+    put a duration on that state and the duration was wrong by twenty-five
+    times; the shape is what this pins, and `tools/lint.py` carries the
+    derivation. [PR #278 review, M5]) So the pin is
+    not that `write()` produces entries -- it is that a tree with one surface
+    complete and the other empty is a **finding**, one per cell that is short.
+    """
+    make_cell(tmp_path, "alpha")
+    make_cell(tmp_path, "beta")
+    roster.write(tmp_path)
+    for surface in roster.SURFACES:
+        for name in ("alpha", "beta"):
+            assert entry_of(tmp_path, surface, name).is_file(), (
+                f"{name} has no entry under {surface.directory}")
+
+    for name in ("alpha", "beta"):
+        entry_of(tmp_path, CODEX, name).unlink()
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 2, findings
+    assert all(CODEX.directory in finding and CODEX.runtime in finding
+               for finding in findings)
+    assert not any(CLAUDE.directory in finding for finding in findings), (
+        "the surface that is complete must not report"
+    )
+
+
+def test_the_surfaces_share_a_frontmatter_and_name_their_own_runtimes(tmp_path):
+    """What loads is one cell's block; what explains the file is per runtime.
+
+    The frontmatter must be identical because it is the triggering surface and
+    two wordings of one trigger fire on different things. The body must not be,
+    because a session opening the copy it is not served by needs to learn that
+    from the file rather than conclude it is a stray duplicate.
+    """
+    source = make_cell(tmp_path, "alpha", "Use when the fixture is exercised.")
+    roster.write(tmp_path)
+    block = roster.frontmatter(source.read_bytes())
+    bodies = {}
+    for surface in roster.SURFACES:
+        data = entry_of(tmp_path, surface, "alpha").read_bytes()
+        assert data.startswith(block), (
+            f"{surface.directory} does not carry the cell's frontmatter")
+        bodies[surface.runtime] = data[len(block):]
+        assert surface.runtime.encode("utf-8") in data
+    assert len(set(bodies.values())) == len(roster.SURFACES), (
+        "the copies name no runtime, or all name the same one"
+    )
+
+
+def test_ownership_holds_on_every_surface_not_just_the_first(tmp_path):
+    """The regeneration branch's own recorded failure, one axis further out.
+
+    Checking ownership on one path is what let hand-written content go on
+    being destroyed after the removal branch stopped [PR #210 cycle one,
+    C1-F2/C1-F3]. A second surface is a second set of those paths, and a loop
+    that checked the marker on the first directory only would report `wrote`
+    and take the file with it.
+    """
+    make_cell(tmp_path, "spikes")
+    roster.write(tmp_path)
+    mine = b"---\nname: spikes\ndescription: Mine, by hand.\n---\n\nKeep me.\n"
+    entry_of(tmp_path, CODEX, "spikes").write_bytes(mine)
+
+    findings = roster.verify(tmp_path)
+    assert len(findings) == 1
+    assert CODEX.directory in findings[0]
+    assert "was not written by tools/roster.py" in findings[0]
+
+    roster.write(tmp_path)
+    assert entry_of(tmp_path, CODEX, "spikes").read_bytes() == mine, (
+        "write() overwrote a hand-written file on the second surface"
+    )
+
+
+def test_write_reports_an_unparseable_cell_once_not_once_per_surface(tmp_path):
+    """The rule `verify` states, held on the command a reader actually runs.
+
+    `verify` dedups this line with the reason beside it -- a second copy of an
+    unrepairable line asks a reader to fix the same file twice -- and the
+    identical `try`/`except` in `write()` had no dedup, so `--write` said it
+    twice and a reader could believe two cells were broken. [PR #278 review,
+    M8]
+    """
+    make_cell(tmp_path, "alpha")
+    (tmp_path / "skills" / "alpha" / "SKILL.md").write_bytes(
+        b"# no frontmatter" + NL.encode() )
+
+    skipped = [line for line in roster.write(tmp_path) if "skipped" in line]
+    assert len(skipped) == 1, skipped
+    assert "alpha" in skipped[0]
+
+    remaining = [f for f in roster.verify(tmp_path) if "parseable" in f]
+    assert len(remaining) == 1, (
+        "the guard and the command must report this cell the same number of "
+        "times, which is once"
+    )
+
+
+def _link_dir(link, target):
+    """Make `link` a directory link to `target`, or say why the platform will not.
+
+    The same fallback the entry-level pin uses: Windows refuses an
+    unprivileged symlink and grants a junction, which is exactly why
+    `inside_roster` cannot be `is_symlink()`. Returns None on success and a
+    reason to skip otherwise, so a caller never mistakes an absent link for a
+    guard that fired.
+    """
+    import os
+    import subprocess
+
+    link.parent.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return None
+    except (OSError, NotImplementedError, AttributeError):
+        if os.name != "nt":
+            return "this platform will not create a directory link"
+    made = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+    )
+    if made.returncode != 0:
+        return f"no directory link available: {made.stdout}{made.stderr}"
+    return None
+
+
+def test_a_linked_surface_directory_is_refused_and_nothing_is_written_through_it(tmp_path):
+    """The link at the surface *root*, which the entry-level pin cannot reach.
+
+    Resolving the base and then asking whether the entry resolves under it
+    answers yes whenever the **base** is the link, because both sides resolve
+    through it. Two branches, both reproduced before the guard existed:
+    pointed outside the repository, `--write` wrote an entry per cell there,
+    reported paths the files did not go to, and exited 0 with the lint green;
+    pointed at the other surface, it wrote and then reported a permanent
+    finding per cell against the surface the session had not touched, whose
+    only named remedy was the command that produced them. The second needs two
+    surfaces for one to be linked to the other and was unreachable before this
+    repository had them.
+
+    **The guard that closes this was landed with no pin at all.** Deleting its
+    two lines left the whole suite byte-identical to control, so the next edit
+    near `inside_roster` would silently restore writing outside the repository
+    at exit 0. Found by the post-fix look. [PR #278 review, F1]
+
+    The target sits **inside `tmp_path`**: pytest's own cleanup walks this
+    directory, and a junction pointing anywhere else is how a test deletes
+    something it does not own.
+    """
+    make_cell(tmp_path, "alpha")
+    outside = tmp_path / "not-the-repository"
+    skip = _link_dir(tmp_path / CODEX.directory, outside)
+    if skip:
+        pytest.skip(skip)
+
+    assert not roster.inside_roster(
+        tmp_path, tmp_path / CODEX.directory / "alpha", CODEX)
+
+    findings = [f for f in roster.verify(tmp_path) if "is a link" in f]
+    assert len(findings) == 1, (
+        "one link is one condition; it used to draw a finding per cell")
+    assert "--write" not in findings[0]
+    assert findings[0].count(CODEX.directory) >= 1 and "/alpha" not in findings[0], (
+        "the message must name the surface directory whose resolution moved, "
+        "and no path under it -- naming the entries sends a reader hunting a "
+        "link at paths that are not links and often do not exist. It must not "
+        "call that directory the link either: the link can sit at any "
+        "component of the path above it"
+    )
+
+    lines = roster.write(tmp_path)
+    assert any("is a link" in line for line in lines)
+    assert list(outside.rglob(roster.CELL_FILE)) == [], (
+        "write() followed the link and created files outside the repository"
+    )
+    assert [f for f in roster.verify(tmp_path) if "is a link" in f], (
+        "the condition must not go quiet after --write"
+    )
+
+
+def test_a_surface_linked_to_the_other_surface_does_not_red_the_other_one(tmp_path):
+    """The second branch, and the one two surfaces made reachable.
+
+    Before the guard, linking `.agents/skills` at `.claude/skills` left
+    `--write` writing an entry per cell and then reporting a permanent finding
+    per cell **against `.claude/skills`** -- the surface the session had not
+    touched -- with `python tools/roster.py --write` named as the remedy for a
+    state that command had just produced. What this pins is that the finding
+    now lands on the linked surface and the innocent one stays clean.
+    """
+    make_cell(tmp_path, "alpha")
+    roster.write(tmp_path)
+    linked = tmp_path / CODEX.directory
+    import shutil
+    shutil.rmtree(linked)
+    skip = _link_dir(linked, tmp_path / CLAUDE.directory)
+    if skip:
+        pytest.skip(skip)
+
+    findings = roster.verify(tmp_path)
+    assert [f for f in findings if "is a link" in f], findings
+    assert not [f for f in findings if CLAUDE.directory in f], (
+        "the surface that is not the link must not be reported -- before the "
+        "guard, --write reported every cell against the innocent surface and "
+        "named as the remedy the command that had just produced that state"
+    )
+
+
+def test_an_ordinary_surface_and_a_repository_under_a_link_are_both_lawful(tmp_path):
+    """Both lawful polarities, and the second is the trap in this remedy.
+
+    A containment check comparing the resolved surface against the *unresolved*
+    root reds every entry on a repository that itself lives under a link --
+    which is an ordinary way to reach a checkout and has nothing to do with the
+    defect. Comparing against `root.resolve() / directory` passes it, because
+    on such a tree the surface genuinely resolves elsewhere and is still where
+    it was declared to be. A guard that blocks lawful work fails as hard as one
+    that passes unlawful work. [PR #278 review, F1]
+    """
+    make_cell(tmp_path, "alpha")
+    real = tmp_path / "real"
+    real.mkdir()
+    import shutil
+    shutil.copytree(tmp_path / "skills", real / "skills", dirs_exist_ok=True)
+    roster.write(real)
+    for surface in roster.SURFACES:
+        assert roster.inside_roster(
+            real, real / surface.directory / "alpha", surface)
+    assert roster.verify(real) == []
+
+    viewed = tmp_path / "viewed"
+    skip = _link_dir(viewed, real)
+    if skip:
+        pytest.skip(skip)
+    for surface in roster.SURFACES:
+        assert roster.inside_roster(
+            viewed, viewed / surface.directory / "alpha", surface), (
+            f"a repository reached through a link reds {surface.directory}"
+        )
+    assert roster.verify(viewed) == []
+
