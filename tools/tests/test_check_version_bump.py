@@ -11,6 +11,14 @@ claim. It is now held by `test_git_failure_is_undetermined_not_a_pass`, which
 enumerates the sites, so the sentence cannot drift from the code again. The
 count is deliberately not restated as a number: the external pass on PR #9
 collapsed two sites into one, and a number here would have gone stale again.
+
+**And it drifted anyway, on PR #270**, which added exit-2 sites and edited this
+file without extending the enumeration — so the sentence was false a second
+time, in the change that touched it. Found by mutation rather than by reading:
+a sentinel narrowed to the new arm survived with the suite fully green, where
+the unnarrowed one reddens three. The lesson the second failure teaches that
+the first did not is that "enumerates the sites" is a claim about a test, and a
+test only enumerates what a mutation shows it reaches.
 """
 from __future__ import annotations
 
@@ -100,11 +108,19 @@ def test_version_decrement_is_not_a_bump(repo):
 
 def test_bump_alone_is_not_a_shipped_change(repo):
     """The manifest is excluded from the shipped set, or every bump would
-    justify itself."""
+    justify itself.
+
+    The wording is pinned as well as the outcome. Once the exemption narrowed
+    to the `version` field, saying "shipped zone untouched" of a run whose
+    author had just edited the manifest asserted the very thing the change
+    stopped being true -- and it is the line a consumer sees most often when it
+    touches that file."""
     _manifest(repo, "1.1.0")
     _commit(repo, "bump only")
     status, lines = cvb.check("main")
-    assert status == PASS and "untouched" in lines[0]
+    assert status == PASS
+    assert "no shipped-zone change to version" in lines[0]
+    assert "untouched" not in lines[0]
 
 
 def test_multi_commit_branch_is_measured_as_a_whole(repo):
@@ -184,10 +200,17 @@ def _base_moves_to(repo: Path, version: str) -> None:
 
 
 def test_a_version_already_taken_on_the_base_tip_is_refused(repo):
-    """PR #107's shape, and #119's, #155's and #262's: merge base 1.0.0, main
-    1.1.0, branch 1.1.0. The branch did raise the version it forked from, so the
-    merge base alone reports a clean bump and exits 0 -- five recorded times,
-    each caught by hand at the merge button after a review had been paid for."""
+    """The moved-tip shape, which issue #110 records four times: #107, #119,
+    the 0.29.0 collision routed from #122, and #262. Merge base 1.0.0, main
+    1.1.0, branch 1.1.0 -- the branch did raise the version it forked from, so
+    the merge base alone reports a clean bump and exits 0.
+
+    #110's other two instances (#113, #155) are NOT this shape: both are
+    concurrent open pull requests off a base that had not moved, which no bound
+    reading only HEAD and the base ref can see. They are cited nowhere in this
+    fixture. Nor was each caught at the merge button -- #107's was caught by a
+    defense mid-review, #113's by a round-one seat, #262's while resolving
+    merge conflicts; only #119's was literally at the button."""
     _base_moves_to(repo, "1.1.0")
     (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
     _manifest(repo, "1.1.0")
@@ -211,7 +234,11 @@ def test_the_taken_version_message_says_what_to_do_next(repo):
     assert status == FAIL
     assert "Bring main into this branch" in lines[0]
     assert "raise " + chr(34) + "version" + chr(34) in lines[0]
-    assert "only as fresh as your last fetch" in lines[0]
+    # And NOT the freshness note: `main` here is a local branch, which has no
+    # fetch relationship to go stale. Pointing a session at a fetch it cannot
+    # perform trains it to discount the clause on the one path where the clause
+    # is load-bearing.
+    assert "fresh as your last fetch" not in lines[0]
 
 
 def test_a_bump_past_the_moved_tip_still_passes(repo):
@@ -342,6 +369,254 @@ def test_a_decrement_across_a_decade_boundary_is_not_a_bump(repo):
     status, lines = cvb.check("main")
     assert status == FAIL, lines
     assert "BACKWARDS, 0.10.0 -> 0.9.0" in lines[0]
+
+
+# --- the second bound is only as good as the ref behind it (#110 round one) ---
+
+def _with_remote(repo: Path) -> Path:
+    """Give `repo` a real `origin` it can fall behind.
+
+    A local branch cannot go stale, so no fixture built on one can exercise the
+    state that produces the defect this guard exists for: the sibling landed
+    upstream after you branched, which is also exactly when your
+    remote-tracking ref is out of date."""
+    origin = repo.parent / (repo.name + "-origin")
+    _run(repo, "init", "--bare", "-q", str(origin))
+    _run(repo, "remote", "add", "origin", str(origin))
+    _run(repo, "push", "-q", "origin", "main")
+    _run(repo, "fetch", "-q", "origin")
+    return origin
+
+
+def _upstream_takes(repo: Path, origin: Path, version: str) -> None:
+    """Land a shipped-zone change plus `version` on origin/main, from a clone
+    that is not this working tree -- so `repo` only learns of it by fetching."""
+    other = repo.parent / (repo.name + "-other")
+    _run(repo, "clone", "-q", str(origin), str(other))
+    _run(other, "config", "user.email", "t@example.com")
+    _run(other, "config", "user.name", "t")
+    (other / "skills").mkdir(exist_ok=True)
+    (other / "skills" / "sibling.md").write_text("landed" + chr(10), encoding="utf-8")
+    _manifest(other, version)
+    _run(other, "add", "-A")
+    _run(other, "commit", "-qm", "a sibling lands upstream")
+    _run(other, "push", "-q", "origin", "main")
+
+
+def test_a_pass_names_the_tip_it_consulted_and_its_freshness(repo):
+    """The disclosure has to be on the PASS, because the PASS is the answer the
+    stale ref corrupts.
+
+    Round one of this change put the freshness note only on the FAIL -- the
+    path taken when the ref was fresh enough to catch the collision. On the
+    path that matters the ref is stale, `tip == base`, the moved-tip clause is
+    suppressed, and the false PASS is textually identical to a true one. A
+    session cannot act on a warning printed only when the warning was
+    unnecessary."""
+    origin = _with_remote(repo)
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + bump")
+    status, lines = cvb.check("origin/main")
+    assert status == PASS, lines
+    assert "origin/main" in lines[0]
+    assert "only as fresh as your last fetch" in lines[0]
+
+
+def test_the_freshness_note_is_absent_for_a_local_base(repo):
+    """The other polarity, and the reason the note is conditional at all: a
+    local branch does not go stale, so the note would be a no-op the reader
+    learns to skip."""
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + bump")
+    status, lines = cvb.check("main")
+    assert status == PASS, lines
+    assert "fresh as your last fetch" not in lines[0]
+
+
+def test_a_stale_remote_ref_still_discloses_what_it_read(repo):
+    """The live #110 shape, end to end: the sibling landed upstream, this clone
+    has not fetched, and the guard passes -- because it cannot see what it was
+    not told. What it can do, and now does, is say which revision it read, so a
+    session holding a green has something to check."""
+    origin = _with_remote(repo)
+    _upstream_takes(repo, origin, "1.1.0")          # upstream moves...
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")                        # ...and we take the same number
+    _commit(repo, "skill edit + bump onto a number upstream already took")
+    status, lines = cvb.check("origin/main")        # no fetch in between
+    assert status == PASS, lines                    # honestly blind, and says so
+    assert "only as fresh as your last fetch" in lines[0]
+    _run(repo, "fetch", "-q", "origin")             # the act the note names
+    status, lines = cvb.check("origin/main")
+    assert status == FAIL, lines
+    assert "ALREADY CARRIES 1.1.0" in lines[0]
+
+
+def test_a_version_behind_the_moved_tip_is_not_called_a_collision(repo):
+    """`new < top` reaches the same branch as `new == top` and is a different
+    fault. Telling a session that main ALREADY CARRIES 1.1.0 when main is at
+    1.2.0 and nobody carries 1.1.0 hands the reader who verifies -- the
+    documented behaviour -- a claim they falsify in one look."""
+    _base_moves_to(repo, "1.2.0")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + a bump that lands behind the base")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    assert "already past it at 1.2.0" in lines[0]
+    assert "ALREADY CARRIES" not in lines[0]
+
+
+def test_the_no_bump_failure_names_the_moved_tip_it_already_read(repo):
+    """Round one spent two guard cycles on information it held in the first.
+
+    `top` is read before either message is composed, so a branch whose base has
+    moved and which has not bumped yet was told only "raise the version", took
+    the obvious next number, and hit the collision message on the second run.
+    It also asserted that a branch already carrying a bump needs no second one
+    -- false in exactly this state, and the sentence CI prints on a merge ref."""
+    _base_moves_to(repo, "1.1.0")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _commit(repo, "skill edit, no bump")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    assert "The merge base has moved" in lines[0]
+    assert "1.1.0" in lines[0]                       # what the tip carries
+    assert "needs no second one" not in lines[0]
+    assert "past 1.1.0" in lines[0]                  # the target, not just "raise"
+
+
+def test_the_unit_sentence_survives_where_it_is_true(repo):
+    """The other polarity of the same conditional: with the base unmoved, a
+    branch already carrying a bump really does need no second one, and that
+    sentence is what stops a multi-commit branch bumping once per commit."""
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _commit(repo, "skill edit, no bump")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    assert "needs no second one" in lines[0]
+    assert "merge base has moved" not in lines[0]
+
+
+def test_the_manifest_failure_says_why_the_manifest_counts(repo):
+    """The narrowed exemption reached its consumer only through the source.
+
+    Without this the message names the manifest as a changed shipped file and
+    prescribes editing that same file -- which reads as the circularity the
+    exemption exists to prevent, to a reader holding the rule as it stood until
+    this change."""
+    _manifest(repo, "1.0.0", description="new consumer-facing copy")
+    _commit(repo, "description only")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    assert "field other than" in lines[0] and "version" in lines[0]
+    assert "raising the version alone never counts" in lines[0]
+
+
+def test_an_explicit_sha_is_shown_as_a_sha_not_repeated_whole(repo):
+    """A 40-character sha interpolated three times buried the act, and the
+    freshness clause is meaningless for a revision that cannot move."""
+    _base_moves_to(repo, "1.1.0")
+    tip = subprocess.run(["git", "-C", str(repo), "rev-parse", "main"],
+                         stdin=subprocess.DEVNULL, capture_output=True,
+                         text=True, check=True).stdout.strip()
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + bump onto a taken version")
+    status, lines = cvb.check(tip)
+    assert status == FAIL, lines
+    assert tip not in lines[0], "the full sha should not be repeated whole"
+    assert tip[:7] in lines[0]
+    assert "fresh as your last fetch" not in lines[0]
+
+
+def test_a_merge_commit_head_is_the_shape_ci_evaluates(repo):
+    """CI checks out `refs/pull/N/merge`, so its HEAD is the branch already
+    merged into the base and `merge-base(HEAD, base) == base tip`. Nothing
+    pinned that shape, which is the one the guard's only automatic caller
+    actually runs against."""
+    _base_moves_to(repo, "1.1.0")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + bump onto a taken version")
+    _run(repo, "merge", "-q", "main", "-m", "merge base into branch")
+    status, lines = cvb.check("main")
+    assert status == FAIL, lines
+    # On a merged HEAD the two bounds coincide, so the first one catches it and
+    # the message is the no-bump one -- which must therefore be honest here.
+    assert "is unchanged at 1.1.0" in lines[0]
+    assert "needs no second one" in lines[0]
+
+
+# --- every exit-2 site, including the ones round one added ---
+
+def test_an_absent_base_manifest_is_not_a_failure_to_answer(repo):
+    """An adopting repository's first pull request adds the manifest, so the
+    base does not have one -- and no act on the branch can ever give it one.
+
+    Round one read both sides unconditionally and returned exit 2 there, which
+    is a red with no remedy on the one pull request every adopting session must
+    ship. The widening the owner affirmed was a broken manifest on the CURRENT
+    side; this case was never disclosed and is withdrawn."""
+    _run(repo, "checkout", "-q", "main")
+    (repo / ".claude-plugin" / "plugin.json").unlink()
+    _commit(repo, "a base with no manifest")
+    _run(repo, "checkout", "-q", "-b", "adopt", "main")
+    _manifest(repo, "0.1.0")
+    _commit(repo, "adopt the plugin: add the manifest")
+    status, lines = cvb.check("main")
+    assert status == PASS, lines
+
+
+def test_an_unreadable_current_manifest_names_the_act(repo):
+    """The affirmed half of the widening, with the remedy the ruling required
+    of every message this change touched."""
+    (repo / ".claude-plugin" / "plugin.json").write_text("{not json", encoding="utf-8")
+    _commit(repo, "break the manifest, and nothing else")
+    status, lines = cvb.check("main")
+    assert status == UNDETERMINED, lines
+    assert "current manifest unreadable" in lines[0]
+    assert "so it parses, then re-run" in lines[0]
+
+
+def test_a_manifest_that_is_not_utf8_is_undetermined(repo):
+    """`read_text` raised before `_manifest_at` could return its error tuple, so
+    the guard died with a traceback whose exit code 1 reads as FAIL -- the
+    wrong one of three outcomes. Found independently by both external
+    reviewers on this pull request."""
+    (repo / ".claude-plugin" / "plugin.json").write_bytes(
+        b'{"name": "t", "version": "1.0.0", "description": "\xff\xfe"}')
+    _commit(repo, "a manifest that is not utf-8")
+    status, lines = cvb.check("main")
+    assert status == UNDETERMINED, lines
+    assert "not valid UTF-8" in lines[0]
+
+
+def test_a_manifest_that_is_not_an_object_is_undetermined(repo):
+    """The branch that silently repaired a pre-existing crash and was pinned by
+    nothing: dropping the isinstance check restored an uncaught AttributeError
+    with all forty tests green."""
+    (repo / ".claude-plugin" / "plugin.json").write_text("[1, 2, 3]", encoding="utf-8")
+    _commit(repo, "a manifest that is a list")
+    status, lines = cvb.check("main")
+    assert status == UNDETERMINED, lines
+    assert "not a JSON object" in lines[0]
+
+
+def test_a_version_whose_digits_int_cannot_take_is_undetermined(repo):
+    """`isdigit` and `int` disagree. The superscript two passes the gate and
+    fails the cast, so the guard raised instead of answering -- in the function
+    whose docstring this change rewrote to say the cast is the whole
+    comparison."""
+    superscript_two = chr(0xB2)
+    _manifest(repo, "1.0." + superscript_two)
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _commit(repo, "a version int() cannot take")
+    status, lines = cvb.check("main")
+    assert status == UNDETERMINED, lines
+    assert "not a three-part numeric semver" in lines[0]
 
 
 # --- main()'s exit path, which the withdrawn guard never tested ---

@@ -18,8 +18,13 @@ base *and* the version at the base ref's own tip. The merge base alone answers
 "did this branch raise the version it started from", which is not the question
 a consumer has: a branch cut before another change landed bumps onto a version
 `main` already carries and reads clean, and stays clean right up to the merge
-button. That went wrong five recorded times (#110). The tip is what makes the
-answer about the version rather than about this branch's history.
+button. Issue #110 records six instances; four are that shape and this bound
+closes them at the moment the version is picked. The other two (#113, #155) are
+concurrent open pull requests off a base that has not moved, where no bound
+reading only HEAD and the base ref can see the collision -- this bound reaches
+them only once the sibling lands, which is still earlier than the merge button
+where their record says the cost was paid. The tip is what makes the answer
+about the version rather than about this branch's history.
 
 Three outcomes, not two — and the third is why this exists at all:
 
@@ -61,6 +66,11 @@ MANIFEST = ".claude-plugin/plugin.json"
 # copy, and excluding the whole file let changed copy ship at an unchanged
 # version (#20). The circularity argument reaches one key; it was spending the
 # whole file.
+#
+# It names two things on purpose, and they must stay the same key: the field
+# the carried-fields comparison excludes, and the field the semver is read
+# from. Splitting them into two constants would create two values obliged to
+# remain equal, which is the worse failure.
 EXEMPT_FIELD = "version"
 # ADR-004's shipped zone. `.claude-plugin/` is in it; the manifest's exemption
 # is applied per-field below rather than by dropping the path here.
@@ -141,11 +151,17 @@ def _parse_semver(raw: object) -> tuple[int, ...] | None:
     every other check reports green. `0.9.0 -> 0.10.0` was this repository's
     first such bump and no fixture distinguished the two readings (#33); two
     now do.
+
+    `isdecimal`, not `isdigit`: the two disagree on characters like the
+    superscript two, which `isdigit` accepts and `int()` then refuses, so the
+    gate admitted a value the cast could not take and the guard died with a
+    traceback whose exit code 1 reads as FAIL -- the wrong one of three
+    outcomes.
     """
     if not isinstance(raw, str):
         return None
     parts = raw.split(".")
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+    if len(parts) != 3 or not all(p.isdecimal() for p in parts):
         return None
     return tuple(int(p) for p in parts)
 
@@ -162,7 +178,18 @@ def _manifest_at(ref: str | None) -> tuple[dict | None, str]:
         path = ROOT / MANIFEST
         if not path.is_file():
             return None, f"{MANIFEST} is absent from the working tree"
-        text = path.read_text(encoding="utf-8")
+        # A manifest that is not UTF-8, or that cannot be read at all, is a
+        # question this guard cannot answer -- which its own doctrine says to
+        # state out loud and exit non-zero. Uncaught, both escaped as a
+        # traceback whose exit code 1 reads as FAIL. Found independently by
+        # two external reviewers and by this review's own `operational` seat,
+        # the third at the neighbouring site in `_parse_semver`.
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return None, f"{MANIFEST} is not valid UTF-8"
+        except OSError as exc:
+            return None, f"{MANIFEST} could not be read ({exc.strerror})"
     else:
         code, text, _ = _git("show", f"{ref}:{MANIFEST}")
         if code != 0:
@@ -189,18 +216,37 @@ def _carried_fields(data: dict) -> dict:
     return {k: v for k, v in data.items() if k != EXEMPT_FIELD}
 
 
+def _is_remote_tracking(ref: str) -> bool:
+    """Does this ref go stale from not fetching?
+
+    Only a remote-tracking ref does. A local branch has no fetch relationship
+    and a raw sha cannot move, so the freshness note is a no-op on the first
+    and false on the second -- and both reached it verbatim, which trains a
+    reader to discount the clause on the one path where it is load-bearing.
+    """
+    code, _, _ = _git("rev-parse", "--verify", f"refs/remotes/{ref}")
+    return code == 0
+
+
+def _shown_ref(ref: str) -> str:
+    """A ref as a reader should see it: a sha abbreviated, a name left alone."""
+    return ref[:7] if len(ref) == 40 and all(
+        c in "0123456789abcdef" for c in ref) else ref
+
+
 def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     lines: list[str] = []
     base, tip, ref_name, why = _resolve_base(base_ref)
     if base is None:
         return UNDETERMINED, [f"version-bump: cannot determine a base -- {why}"]
 
-    # Two independent mechanisms give the moved-base answer, and either alone
-    # suffices: `base` is resolved to a merge base above, AND `...` re-derives
-    # one here. Verified by mutation — replacing the merge-base resolution with
-    # the ref tip keeps every test green, because `...` rescues it. Redundant on
-    # purpose; the withdrawn predecessor had neither and went silent on exactly
-    # this state, which every merge into the base produces.
+    # One mechanism gives the moved-base answer, not two: `base` is resolved to
+    # a merge base above, and the diff below is two-dot against it. An earlier
+    # comment here claimed `...` re-derived a merge base as a redundant second
+    # mechanism; no `...` has ever appeared in this function, and the paragraph
+    # four lines down says so explicitly, so the block contradicted itself and
+    # credited the guard with a redundancy it does not have. Inherited from
+    # before this change and removed here rather than carried forward.
     # Two-dot: base vs the PROJECTED tree (HEAD plus every uncommitted change),
     # not base...HEAD unioned with the tree diffs. Unioning two name-lists cannot
     # represent cancellation — an uncommitted edit reversing a committed one
@@ -260,18 +306,28 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
     # and counts, while a bump alone still does not. Read only when the manifest
     # is actually in the change set, so the untouched case adds no git calls and
     # keeps the outcome it has today.
-    if MANIFEST in changed:
-        for rev, label in ((base, "base"), (None, "current")):
-            data, err = manifest(rev)
-            if data is None:
-                return UNDETERMINED, [
-                    f"version-bump: {label} manifest unreadable -- {err}"
-                ]
-        if _carried_fields(read[base][0]) != _carried_fields(read[None][0]):
+    if MANIFEST in changed and (base_manifest := manifest(base)[0]) is not None:
+        # Gated on the base side being readable, and that gate is the whole of
+        # what the owner affirmed. The disclosed widening of exit 2 was "a
+        # broken manifest as the only change" -- the CURRENT side. An
+        # unreadable BASE is a different case and the commonest instance of it
+        # is a manifest that is simply new: an adopting repository's first pull
+        # request, where the base will never grow the file and no branch-side
+        # act can clear the red. Nothing to compare against is not a question
+        # the guard failed to answer.
+        data, err = manifest(None)
+        if data is None:
+            return UNDETERMINED, [
+                f"version-bump: current manifest unreadable -- {err}. "
+                f"Fix {MANIFEST} so it parses, then re-run"
+            ]
+        if _carried_fields(base_manifest) != _carried_fields(data):
             touched = sorted([*touched, MANIFEST])
 
     if not touched:
-        return PASS, [f"version-bump: shipped zone untouched ({why})"]
+        note = ("no shipped-zone change to version"
+                if MANIFEST in changed else "shipped zone untouched")
+        return PASS, [f"version-bump: {note} ({why})"]
 
     old, old_err = version(base)
     new, new_err = version(None)
@@ -286,11 +342,20 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         ]
 
     shown = ".".join(map(str, old)), ".".join(map(str, new)), ".".join(map(str, top))
-    # The tip is worth saying only when it is not the merge base; when the base
-    # has not moved the two bounds are one fact and printing it twice reads as
-    # two.
-    where = why if tip == base else (
-        f"{why}, and {ref_name} has since moved to {tip[:7]} carrying {shown[2]}")
+    seen = _shown_ref(ref_name)
+    stale_note = (
+        f". Read at {seen} {tip[:7]}, which is only as fresh as your last fetch"
+        if _is_remote_tracking(ref_name) else "")
+    # Every PASS that consulted the second bound says which revision it
+    # consulted, and a remote-tracking one says its answer is only as fresh as
+    # the fetch behind it. The disclosure used to live on the FAIL path alone,
+    # which is the path where the ref was NOT stale: an unfetched clone gets
+    # `tip == base`, the moved-tip clause is suppressed, and the PASS over a
+    # live collision reads exactly like a clean one. A session cannot fetch on
+    # a warning it never sees.
+    where = (f"{why}, and {seen} is at {tip[:7]} carrying {shown[2]}"
+             if tip != base else
+             f"{why}, which is also {seen}'s tip")
     if new > old and new > top:
         # The names, not just the count. A session that edited only
         # repo-only files still sees a shipped-zone count here -- the unit is
@@ -299,34 +364,71 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         lines.append(
             f"version-bump: {len(touched)} shipped-zone file(s) changed "
             f"({', '.join(sorted(touched))}), "
-            f"version {shown[0]} -> {shown[1]} ({where})"
+            f"version {shown[0]} -> {shown[1]} ({where}{stale_note})"
         )
         return PASS, lines
     if new > old:
-        # Raised, but onto a number the base ref already published. The merge
-        # base cannot see this and neither could this guard until #110: the
-        # branch did raise the version it forked from, so the only reading that
+        # Raised, but not past what the base ref now publishes. The merge base
+        # cannot see this and neither could this guard until #110: the branch
+        # did raise the version it forked from, so the only reading that
         # catches it is the one that asks what the ref carries now.
+        #
+        # Two arithmetic cases reach here, and they are different faults. Equal
+        # is a collision, where a consumer genuinely cannot tell installed from
+        # current. BELOW is not a collision at all -- nobody carries this
+        # number -- and saying so of a version 0.22.0 beside a tip at 0.23.0
+        # hands a reader who checks a claim they can falsify in one look.
+        collision = (
+            f"{seen} ALREADY CARRIES {shown[2]} at its tip {tip[:7]}, so a "
+            f"consumer could not tell installed from current"
+            if new == top else
+            f"{seen} is already past it at {shown[2]} (tip {tip[:7]}), so this "
+            f"version would land behind the base"
+        )
         lines.append(
             f"version-bump: {len(touched)} shipped-zone file(s) changed and the "
-            f"version rose to {shown[1]}, but {ref_name} ALREADY CARRIES "
-            f"{shown[2]} at its tip {tip[:7]} -- a consumer cannot tell "
-            f"installed from current, and this branch's merge base {base[:7]} "
-            f"predates it. The bound is the base ref's tip as well as the merge "
-            f"base. Bring {ref_name} into this branch and raise \"version\" in "
-            f"{MANIFEST} again (see AGENTS.md, 'The flow'). Note that "
-            f"{ref_name} is only as fresh as your last fetch"
+            f"version rose to {shown[1]}, but {collision} -- and this branch's "
+            f"merge base {base[:7]} predates that tip. The bound is the base "
+            f"ref's tip as well as the merge base. Bring {seen} into this "
+            f"branch and raise \"version\" in {MANIFEST} again (see AGENTS.md, "
+            f"'The flow'){stale_note}"
         )
         lines.extend(f"    {f}" for f in touched)
         return FAIL, lines
     detail = (f"is unchanged at {shown[1]}" if new == old
               else f"went BACKWARDS, {shown[0]} -> {shown[1]}")
+    # The unit sentence is true only while the merge base has not moved. Where
+    # it has, the branch's earlier bump was absorbed by the base and a second
+    # one is exactly what is owed -- and that is the state this guard's own
+    # collision remedy ("bring the base in, raise again") walks a session
+    # through, as well as the state CI evaluates on a merge ref. Printed
+    # unconditionally, the justification contradicted the imperative beside it.
+    if tip == base:
+        unit = (
+            "The unit is this pull request against its merge base, never "
+            "per-commit, so a branch already carrying a bump needs no second "
+            "one. "
+        )
+        target = f"{shown[1]}"
+    else:
+        unit = (
+            f"The merge base has moved: {seen} is at {tip[:7]} carrying "
+            f"{shown[2]}, so a bump this branch already made has been absorbed "
+            f"and a further one is owed. "
+        )
+        target = f"past {shown[2]}"
+    # The manifest is not accused of being its own justification. It is here
+    # because a field other than the version changed, and nothing else in the
+    # output says the exemption is a field rather than the file.
+    why_manifest = (
+        f" {MANIFEST} counts because a field other than \"{EXEMPT_FIELD}\" "
+        f"changed in it; raising the version alone never counts."
+        if MANIFEST in touched else "")
     lines.append(
         f"version-bump: {len(touched)} shipped-zone file(s) changed but "
         f"the plugin version {detail} -- a consumer cannot tell installed from "
-        f"current. The unit is this pull request against its merge base, never "
-        f"per-commit, so a branch already carrying a bump needs no second one. "
-        f"Raise \"version\" in {MANIFEST} (see AGENTS.md, 'The flow')"
+        f"current. {unit}Raise \"version\" in {MANIFEST} to {target} (see "
+        f"AGENTS.md, 'The flow').{why_manifest}"
     )
     lines.extend(f"    {f}" for f in touched)
     return FAIL, lines
@@ -336,10 +438,23 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(
         description=
-        "Refuse a pull request whose shipped-zone files changed without a plugin version bump. The version must exceed both the base ref's merge base and its tip, so a bump onto a version the base ref already carries is refused. Three outcomes: PASS, FAIL, and UNDETERMINED when the base cannot be resolved -- UNDETERMINED is a failure, not a pass.",
-        # The outcome table is the point of --help; the default formatter
-        # collapses it into one run-on line.
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        "Refuse a pull request whose shipped-zone files changed without a plugin version bump. The version must exceed the version at BOTH the base ref's merge base and the base ref's tip, so a bump onto a version the base ref already carries is refused.",
+        # The three outcomes are what a caller needs from --help and the
+        # description is prose, so the default formatter is right: it wraps to
+        # the terminal, which the raw formatter does not. An earlier comment
+        # here justified the raw formatter by an outcome table that has never
+        # been passed to argparse -- so the formatter produced exactly the
+        # run-on line the comment said it avoided, and the tail of the
+        # description ran off the right edge.
+        epilog=
+        "Exit 0 PASS: the shipped zone is untouched, or it changed and the "
+        "version rose past both bounds. "
+        "Exit 1 FAIL: the shipped zone changed and the version did not rise "
+        "past both bounds. "
+        "Exit 2 UNDETERMINED: the question could not be answered -- the base "
+        "ref would not resolve, git would not answer, or a manifest the guard "
+        "had to read did not parse. UNDETERMINED is a failure, not a pass. "
+        "The base ref is only as fresh as your last fetch.",
     )
     parser.add_argument("--base", default=None, help="base ref (default: origin/main, then main)")
     args = parser.parse_args(argv)
@@ -347,9 +462,15 @@ def main(argv: list[str] | None = None) -> int:
     for line in lines:
         print(line)
     if status == UNDETERMINED:
+        # Names an act. The old trailer cited AGENTS.md's "The flow", which
+        # says nothing about undetermined answers, base resolution or the
+        # second bound -- so a session that followed the citation to find out
+        # what to do found no corroboration and had to guess.
         print("version-bump: UNDETERMINED is a failure, not a pass -- the "
-              "unit is this pull request against its merge base; see "
-              "AGENTS.md, 'The flow'")
+              "guard could not establish the answer and will not guess. Fix "
+              "what the line above names (fetch or name a base ref that "
+              "resolves, or repair the manifest it could not read), then "
+              "re-run; do not commit on an undetermined answer")
     return status
 
 
