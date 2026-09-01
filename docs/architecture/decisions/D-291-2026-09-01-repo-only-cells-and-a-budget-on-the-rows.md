@@ -1,4 +1,4 @@
-# D-291 — Repo-only cells, and one ceiling on the always-on rows in place of two on the files
+# D-291: Repo-only cells, and one ceiling on the always-on rows in place of two on the files
 
 ## The condition
 
