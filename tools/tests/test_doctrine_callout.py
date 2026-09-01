@@ -127,6 +127,16 @@ REPORT = {"id": 4242, "author": "Grimblaz",
     # and a false callout trains the owner to ignore the true one.
     (["docs/AGENTS.md"], []),
     (["tools/lint.py/AGENTS.md"], []),
+    # A repo-only cell's body reaches the owner: the material the doctrine
+    # used to carry lives there now, so without the prefix the widening
+    # that keeps his merge-time read could be deleted with a green suite --
+    # which is what the review found, on the one regression this change
+    # could have shipped invisibly. [#291]
+    (["docs/cells/landing/SKILL.md"], ["docs/cells/landing/SKILL.md"]),
+    (["docs/cells/landing/references/depth.md"],
+     ["docs/cells/landing/references/depth.md"]),
+    # The prefix boundary: a sibling whose name merely starts the same way.
+    (["docs/cellsfoo/x.md"], []),
     ([], []),
 ])
 def test_touched_doctrine(paths, expected):
@@ -484,7 +494,11 @@ def test_the_callout_line_decomposes_its_own_total(tmp_path, monkeypatch):
     # withheld from its reader. Nothing is compensated for here: every chain
     # is checked against its own stated total, which is a property no single
     # chain could have had. [PR #278 review, M13]
-    chains = re.findall(r"([A-Za-z][A-Za-z ]*?) (\d+) = ([^;*]+)", flat)
+    # `of {budget}` sits between the total and the chain now that each row is
+    # priced against the ceiling that governs it [#291]; without it in the
+    # pattern the capture took the literal "of" as the stated total and this
+    # compared a chain against a budget.
+    chains = re.findall(r"([A-Za-z][A-Za-z ]*?) (\d+) of \d+ = ([^;*]+)", flat)
     assert len(chains) >= 2, f"one chain per runtime was not rendered: {line}"
     for runtime, stated, chain in chains:
         # The last number of each addend is its value; an addend may also

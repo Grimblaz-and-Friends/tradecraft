@@ -278,17 +278,6 @@ def test_doctrine_import_fires_on_a_backticked_mention(tmp_path):
     assert len(findings) == 1
 
 
-def test_doctrine_budget_fires_when_the_charter_bloats(tmp_path):
-    """The charter needs the displacement pressure more than AGENTS.md does:
-    an adopting repository loads it before every session's substantive work."""
-    make_clean_tree(tmp_path)
-    (tmp_path / "skills" / "charter" / "SKILL.md").write_text(
-        "x" * (lint.CHARTER_BUDGET_CHARS + 1), encoding="utf-8"
-    )
-    findings = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
-    assert len(findings) == 1 and "charter" in findings[0]
-
-
 def test_sideways_deps_reaches_the_charter(tmp_path):
     """A skill named by path from `charter/` does not resolve once installed --
     the skills live in a plugin cache, not at `skills/` beside the reader."""
@@ -692,6 +681,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_committed_carriage_return",
     "check_marketplace_source",
     "check_body_strip_owner",
+    "check_always_on_budget",
 )
 
 
@@ -1116,16 +1106,6 @@ def test_the_exempt_cell_name_is_the_one_these_tests_pin():
 
 
 # --- doctrine --------------------------------------------------------------
-
-def test_doctrine_budget_fires_when_agents_md_bloats(tmp_path):
-    make_clean_tree(tmp_path)
-    (tmp_path / "AGENTS.md").write_text(
-        "@skills/charter/SKILL.md" + chr(10) + "x" * (lint.AGENTS_BUDGET_CHARS + 1),
-        encoding="utf-8",
-    )
-    findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "doctrine-budget" in findings[0]
-
 
 def test_missing_agents_md_is_a_finding(tmp_path):
     make_clean_tree(tmp_path)
@@ -2321,28 +2301,6 @@ def test_frontmatter_stripper_produces_the_expected_body(document, expected):
     assert lint._frontmatterless(document) == expected
 
 
-def test_the_budget_measures_the_body_and_not_the_file(tmp_path):
-    """A description edit must not eat the rules' headroom.
-
-    The rule is asserted in a decision entry that freezes on landing, and until
-    now nothing pinned it: reverting the budget to measure the whole file left
-    the suite green, because the existing budget test writes a cell with no
-    frontmatter and so never enters the stripping branch.
-    """
-    make_clean_tree(tmp_path)
-    charter = tmp_path / "skills" / "charter" / "SKILL.md"
-    body = "x" * (lint.CHARTER_BUDGET_CHARS - 10)
-    charter.write_text(
-        "---" + NL + "name: charter" + NL
-        + "description: " + "d" * 400 + NL + "---" + NL + NL + body + NL,
-        encoding="utf-8",
-    )
-    # The file is over budget; the body is under it. Only a guard measuring the
-    # body stays quiet here.
-    assert len(charter.read_text(encoding="utf-8")) > lint.CHARTER_BUDGET_CHARS
-    assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []
-
-
 def _set_description(root: Path, value: str) -> None:
     """Rewrite the charter cell's description, leaving everything else alone."""
     cell = root / "skills" / "charter" / "SKILL.md"
@@ -2448,13 +2406,17 @@ def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
     arms below, so a change to either is a deliberate act with a red suite
     behind it.
     """
-    assert lint.AGENTS_BUDGET_CHARS == 6_100, (
-        "AGENTS_BUDGET_CHARS was raised to 6_100 temporarily, under the owner "
-        "approval recorded on issue #260, and is restored or replaced when that "
-        "issue lands. If you are landing #260, move this pin with it, and "
-        "delete the #260 note inside _always_on_line in "
-        "tools/doctrine_callout.py -- no test reaches that note."
+    assert lint.ALWAYS_ON_ROW_BUDGET_CHARS == 16_345, (
+        "ALWAYS_ON_ROW_BUDGET_CHARS is the larger always-on row plus one unit, "
+        "and the unit is what a rule costs in the shape this repository makes "
+        "rules take -- the median cell's name plus description, to the next "
+        "hundred. It is not a rounder number chosen for comfort: headroom and "
+        "the largest tolerated relocation are the same quantity, so raising "
+        "this admits a larger relocate-then-refill by the same amount. Both "
+        "directions have a behavioural arm below; a raise is caught by "
+        "test_raising_the_row_budget_admits_a_relocation_it_should_refuse."
     )
+    assert lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS == 11_508
     assert lint.POINTER_BUDGET_CHARS == 500
 
 
@@ -2504,19 +2466,6 @@ def test_the_declared_cell_body_budgets_are_the_ones_these_tests_pin():
         "skills/adversarial-review/SKILL.md": 9_000,
         "skills/authoring/SKILL.md": 7_359,
     }
-
-
-def test_the_declared_charter_budget_is_the_one_these_tests_pin():
-    """The rule stated just above, applied to the constant the fix that
-    stated it left deriving its bound from itself.
-    """
-    assert lint.CHARTER_BUDGET_CHARS == 5_800, (
-        "CHARTER_BUDGET_CHARS was raised to 5_800 temporarily, under the owner "
-        "approval recorded on issue #260, and is restored or replaced when that "
-        "issue lands. If you are landing #260, move this pin with it, and "
-        "delete the #260 note inside _always_on_line in "
-        "tools/doctrine_callout.py -- no test reaches that note."
-    )
 
 
 def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):
@@ -4792,3 +4741,367 @@ def test_the_scan_and_the_check_read_the_same_predicate(tmp_path):
     assert lint.check_body_strip_owner(tmp_path) == lint.check_body_strip_owner(tmp_path)
     hits = figures.body_strip_scan(tmp_path)
     assert hits == ["tools/tests/test_fixture.py:0 <module>"], hits
+
+
+def test_the_always_on_row_budget_is_enforced_in_both_polarities(tmp_path,
+                                                                 monkeypatch):
+    """The ceiling the two per-file ones became, on the tree it governs.
+
+    Both arms run against this repository rather than a fixture, because the
+    quantity is composed from this repository's own doctrine files and its two
+    generated roster surfaces -- a synthetic tree has no always-on rows to
+    measure, which is the same reason the guard gates on this file's presence.
+
+    The lawful arm is half the pin: a tree at its budget must pass, or the
+    ceiling is a ratchet nobody can land a change through.
+    """
+    assert lint.check_always_on_budget(lint.ROOT) == []
+    monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", 1_000)
+    findings = lint.check_always_on_budget(lint.ROOT)
+    assert findings, "a row far past its budget reported nothing"
+    assert all(f.startswith("always-on-budget:") for f in findings), findings
+    assert any("Claude Code" in f for f in findings), findings
+    assert any("Codex" in f for f in findings), findings
+
+
+def test_the_adopter_total_is_budgeted_separately(tmp_path, monkeypatch):
+    """The adopter surface is not a runtime row and does not share its ceiling.
+
+    It counts the charter body and the shipped roster and neither doctrine
+    file, so a change can move a row without moving it -- which is why it is a
+    constant of its own rather than a third row under the same one.
+    """
+    monkeypatch.setattr(lint, "ALWAYS_ON_ADOPTER_BUDGET_CHARS", 1_000)
+    findings = lint.check_always_on_budget(lint.ROOT)
+    assert any("adopter total" in f for f in findings), findings
+    assert not any("Claude Code" in f for f in findings), (
+        "the row budget fired on a change to the adopter constant alone", findings
+    )
+
+
+def test_the_budget_reds_rather_than_passing_when_the_figure_is_gone(tmp_path):
+    """A ceiling that stops applying when its input breaks is not a ceiling.
+
+    `always_on_note` swallows every exception and returns a string, which is
+    right for a note printed beside the findings and wrong here. #134 records
+    the shape this arm exists to keep closed: a guard reading its own input's
+    absence as clean makes deleting the input the cheapest route past it.
+    """
+    make_clean_tree(tmp_path)
+    (tmp_path / "tools").mkdir(exist_ok=True)
+    (tmp_path / "tools" / "lint.py").write_text("# the guard\n", encoding="utf-8")
+    findings = lint.check_always_on_budget(tmp_path)
+    assert findings, "no figures.py beside the guard reported nothing"
+    assert "not derived" in findings[0], findings
+
+
+def test_a_tree_without_this_guard_is_not_budgeted(tmp_path):
+    """The other polarity of the gate above: a fixture is not this repository.
+
+    Every synthetic tree the suite builds writes part of `tools/` without
+    writing this file, and reporting there would red all of them for having no
+    always-on surface to measure.
+    """
+    make_clean_tree(tmp_path)
+    assert not (tmp_path / "tools" / "lint.py").is_file()
+    assert lint.check_always_on_budget(tmp_path) == []
+
+
+# --- what the automated reviewers found on PR #291, pinned ------------------
+
+def test_an_incomplete_figure_is_not_a_passing_budget(monkeypatch):
+    """An empty `here` walks the row loop zero times and applies no ceiling.
+
+    Raised by an automated reviewer against the first draft of the budget
+    check, and it was right: the loop was the only thing standing between a
+    malformed figure and a silent pass, which is exactly what `always_on_note`
+    was rejected for. [#291]
+    """
+    import types
+
+    def _figure(payload):
+        module = types.SimpleNamespace(
+            figure_always_on=lambda root: {"data": payload})
+        return lambda name, path: types.SimpleNamespace(
+            loader=types.SimpleNamespace(exec_module=lambda m: None)), module
+
+    for payload, expect in (
+        ({"here": [], "adopter_total": 1}, "no row for"),
+        ({"here": [{"runtime": "Codex", "total": 1}], "adopter_total": 1},
+         "no row for Claude Code"),
+        ({"here": [{"runtime": r.runtime, "total": 1} for r in lint.roster.SURFACES],
+          "adopter_total": None}, "adopter total is not a number"),
+    ):
+        findings = _budget_over(monkeypatch, payload)
+        assert findings, f"{payload} reported nothing"
+        assert expect in findings[0], findings
+
+
+def _budget_over(monkeypatch, payload):
+    """Run the budget check against a supplied figure payload."""
+    import importlib.util
+    import types
+    module = types.SimpleNamespace(figure_always_on=lambda root: {"data": payload})
+
+    class _Spec:
+        loader = types.SimpleNamespace(exec_module=staticmethod(lambda m: None))
+
+    monkeypatch.setattr(importlib.util, "spec_from_file_location",
+                        lambda name, path: _Spec())
+    monkeypatch.setattr(importlib.util, "module_from_spec", lambda spec: module)
+    return lint.check_always_on_budget(lint.ROOT)
+
+
+def _budgetable_tree(root: Path) -> None:
+    """A fixture tree `check_always_on_budget` will actually measure.
+
+    The guard gates on this file's own presence, so a tree without
+    `tools/lint.py` is silent by design -- which is right for the fixtures
+    every other test builds and wrong for this one. Written rather than
+    monkeypatched because the pin is about what the guard measures on a tree,
+    and a patched `ROOT` would pin the patch. [#291]
+    """
+    make_clean_tree(root)
+    (root / "tools").mkdir(exist_ok=True)
+    (root / "tools" / "lint.py").write_text("# the guard" + NL, encoding="utf-8")
+
+
+@pytest.mark.parametrize("surface", [s.directory for s in roster.SURFACES])
+@pytest.mark.parametrize("spelling,marker", [
+    ("block", "description: >-" + NL + "  "),
+    ("plain", "description: A short first line." + NL + "  "),
+])
+def test_an_unmeasurable_description_cannot_hide_from_the_row_budget(
+        tmp_path, surface, spelling, marker):
+    """A description the runtime loads whole and this reader measures in part.
+
+    Two spellings, because closing one was not closing the class: the first
+    fix rejected `>` and `|` and its own docstring claimed "whichever way it
+    is spelled", while a plain scalar continued on indented lines walked
+    straight through. Probed at the time on this repository -- thousands of
+    characters charged as tens, and the always-on row *falling* while the
+    surface grew. Both surfaces, because the guard loops over them and one
+    arm was previously unexercised. [#291]
+
+    Off the live tree: this pin used to write into the repository's own
+    `.claude/skills/`, so an interrupted run left residue that redded the
+    flow's mandated pre-commit step against a file nobody wrote.
+    """
+    _budgetable_tree(tmp_path)
+    cell = tmp_path / surface / "hidden"
+    cell.mkdir(parents=True)
+    (cell / "SKILL.md").write_text(
+        "---" + NL + "name: hidden" + NL + marker + ("x" * 4000) + NL
+        + "---" + NL + NL + "# hidden" + NL, encoding="utf-8")
+    findings = lint.check_always_on_budget(tmp_path)
+    assert findings, f"a {spelling} description of 4,000 chars reported nothing"
+    assert any("Write the description on one line" in f for f in findings), findings
+
+    # The lawful arm: a one-line description on the same tree draws no
+    # description finding. Not `== []`: the fixture carries no
+    # `tools/figures.py`, so the row arithmetic reports it cannot derive --
+    # which is that branch's own pin, not this one's.
+    (cell / "SKILL.md").write_text(
+        "---" + NL + "name: hidden" + NL + "description: One line." + NL
+        + "---" + NL + NL + "# hidden" + NL, encoding="utf-8")
+    assert not [f for f in lint.check_always_on_budget(tmp_path)
+                if "description" in f]
+
+
+def test_raising_the_row_budget_admits_a_relocation_it_should_refuse(tmp_path):
+    """The direction budget pressure actually pushes, which nothing caught.
+
+    Mutating the constant *upward* redded exactly one test -- the literal pin
+    -- while the both-polarities arm monkeypatched the constant downward and
+    its lawful arm was true for every budget at or above the measured row. So
+    the assertion message claiming two behavioural arms was false for the
+    raise. This is the arm that makes it true: the headroom is the largest
+    relocation the budget tolerates, so a raise is not free, and a test that
+    only checks a lowering cannot say so. [#291]
+    """
+    over = lint.ALWAYS_ON_ROW_BUDGET_CHARS - _largest_row() + 1
+    assert over > 0, "the tree already exceeds its own budget"
+    assert over <= 1_000, (
+        "the headroom exceeds one unit, so the budget admits a relocation "
+        f"larger than a cell costs: {over} chars of room"
+    )
+
+
+def _largest_row() -> int:
+    """The binding always-on row on the live tree, via the guard's own figure."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "repo_figures_pin", lint.ROOT / "tools" / "figures.py")
+    figures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(figures)
+    data = figures.figure_always_on(lint.ROOT)["data"]
+    return max(row["total"] for row in data["here"])
+
+
+def _repo_cell(root: Path, name: str, body: str) -> Path:
+    """A repo-only cell in a fixture tree, frontmatter and all."""
+    cell_dir = root / lint.REPO_CELLS / name
+    cell_dir.mkdir(parents=True, exist_ok=True)
+    (cell_dir / "SKILL.md").write_text(
+        "---" + NL + f"name: {name}" + NL
+        + f"description: The {name} cell. Use when testing." + NL
+        + "---" + NL + NL + f"# {name}" + NL + body + NL,
+        encoding="utf-8")
+    return cell_dir
+
+
+def test_one_repo_only_cell_may_not_name_another_by_path(tmp_path):
+    """The mesh ban read the name form and not the path form.
+
+    The fence landed on `` `records` cell `` and left
+    `docs/cells/records/SKILL.md` unguarded, so the shape it bans could be
+    built through the spelling it did not read. Raised by an automated
+    reviewer on PR #291. The lawful arm is a cell naming its own depth by
+    path, which must stay silent.
+    """
+    make_clean_tree(tmp_path)
+    _repo_cell(tmp_path, "records", "Depth.")
+    _repo_cell(tmp_path, "siting",
+               "See `" + lint.REPO_CELLS + "/records/SKILL.md` for the log.")
+    roster.write(tmp_path)
+    findings = [f for f in lint.check_sideways_deps(tmp_path) if "records" in f]
+    assert findings, "a path-form reference between repo-only cells reported nothing"
+    assert "by path" in findings[0], findings
+
+    _repo_cell(tmp_path, "siting",
+               "Depth is in `" + lint.REPO_CELLS + "/siting/references/x.md`.")
+    assert not [f for f in lint.check_sideways_deps(tmp_path) if "siting" in f], (
+        "a cell naming its own depth by path was reported as sideways"
+    )
+
+
+def test_a_repo_only_cell_resolves_its_own_references_directory(tmp_path):
+    """A cell sheds depth into `references/`, and that link is cell-relative.
+
+    The widened doctrine scan resolved it from the repository root, so the one
+    lawful way a repo-only cell sheds depth reported as a dead link -- the
+    guard forbidding what the cell exists to allow. Both polarities, because
+    the fix must not swallow a genuinely dead link. Raised by an automated
+    reviewer on PR #291.
+    """
+    make_clean_tree(tmp_path)
+    cell_dir = _repo_cell(tmp_path, "landing", "Depth is in `references/detail.md`.")
+    (cell_dir / "references").mkdir()
+    (cell_dir / "references" / "detail.md").write_text("Depth." + NL, encoding="utf-8")
+    roster.write(tmp_path)
+    assert not [f for f in lint.check_doctrine_references(tmp_path)
+                if "detail.md" in f], "a lawful cell-local link was reported dead"
+
+    _repo_cell(tmp_path, "landing", "Depth is in `references/missing.md`.")
+    assert [f for f in lint.check_doctrine_references(tmp_path)
+            if "missing.md" in f], "a genuinely dead cell-local link went unreported"
+
+
+def test_a_directory_without_a_cell_file_is_not_a_cell(tmp_path):
+    """`docs/cells/ghost/` resolved for the guard and loaded in no runtime.
+
+    A reference is meant to be followable; one that satisfies the checker and
+    nothing else is the failure the reference form exists to prevent. Raised by
+    an automated reviewer on PR #291.
+    """
+    make_clean_tree(tmp_path)
+    (tmp_path / lint.REPO_CELLS / "ghost").mkdir(parents=True)
+    _repo_cell(tmp_path, "siting", "The `ghost` cell has it.")
+    roster.write(tmp_path)
+    findings = [f for f in lint.check_cell_references(tmp_path) if "ghost" in f]
+    assert findings, "a directory with no SKILL.md satisfied a cell reference"
+
+
+def test_only_the_two_sanctioned_imports_are_lawful_in_the_doctrine(tmp_path):
+    """An import is not a line, it is the file it names.
+
+    The row budget measures the doctrine files; the runtime inlines whatever
+    they `@`-import. Probed on this repository: one added import line moved the
+    row 17 characters while the session loaded 5,482 more, with the lint clean
+    -- so the move the ceiling exists to refuse was a one-liner, and the
+    guard's own message said it was not. Both polarities, because a guard that
+    refuses the charter import would break every tree. [#291]
+    """
+    make_clean_tree(tmp_path)
+    assert not [f for f in lint.check_doctrine(tmp_path) if "doctrine-import" in f]
+
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + NL + "@docs/values.md" + NL, encoding="utf-8")
+    findings = [f for f in lint.check_doctrine(tmp_path) if "doctrine-import" in f]
+    assert findings, "an unsanctioned import in AGENTS.md reported nothing"
+    assert "@docs/values.md" in findings[0], findings
+
+    # The pointer file, on the same tree: an import lawful in AGENTS.md is not
+    # lawful here, because CLAUDE.md's whole job is to import AGENTS.md.
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      .replace(NL + "@docs/values.md" + NL, NL), encoding="utf-8")
+    pointer = tmp_path / "CLAUDE.md"
+    pointer.write_text(pointer.read_text(encoding="utf-8")
+                       + NL + "@skills/charter/SKILL.md" + NL, encoding="utf-8")
+    assert [f for f in lint.check_doctrine(tmp_path) if "doctrine-import" in f], (
+        "an import lawful in AGENTS.md is not lawful in the pointer file"
+    )
+
+
+def test_a_repo_only_cell_carries_its_citations_and_paths_at_depth(tmp_path):
+    """The scan reaches where this repository tells authors to put depth.
+
+    `cell-structure.md` sanctions shedding into `references/`, so a scan
+    stopping at `SKILL.md` is silent in the one place the material directs
+    depth to. Identical prose redded one directory up and passed one directory
+    down. Both polarities: a resolving citation and a live path stay silent.
+    [#291]
+    """
+    make_clean_tree(tmp_path)
+    make_entry(tmp_path, 42)
+    cell = _repo_cell(tmp_path, "records", "Depth.")
+    (cell / "references").mkdir()
+    depth = cell / "references" / "detail.md"
+    depth.write_text("As decided in [D-42], see `docs/values.md`." + NL,
+                     encoding="utf-8")
+    (tmp_path / "docs" / "values.md").write_text("Ranking." + NL, encoding="utf-8")
+    roster.write(tmp_path)
+    assert not [f for f in lint.check_doctrine_citations(tmp_path) if "detail" in f]
+    assert not [f for f in lint.check_doctrine_references(tmp_path) if "detail" in f]
+
+    depth.write_text("As decided in [D-9999], see `docs/gone.md`." + NL,
+                     encoding="utf-8")
+    assert [f for f in lint.check_doctrine_citations(tmp_path) if "detail" in f], (
+        "a dangling citation in a cell's own depth reported nothing"
+    )
+    assert [f for f in lint.check_doctrine_references(tmp_path) if "detail" in f], (
+        "a dead repo path in a cell's own depth reported nothing"
+    )
+
+
+def test_the_always_on_figure_measures_characters_and_not_bytes(tmp_path):
+    """CRLF is what keeps the two apart, and this repository expects CRLF.
+
+    The pins holding this were deleted with the per-file ceilings they tested,
+    and their fixture constants and explanatory comment survived as dead code.
+    Mutating `figure_always_on`'s reader to `read_bytes().decode()` then left
+    the whole suite green. On the Windows leg that regression overstates every
+    row by one character per line against a headroom of one cell, turning a
+    lawful tree red on one leg of the matrix only. [#291]
+    """
+    import importlib.util
+
+    _budgetable_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    body = agents.read_text(encoding="utf-8")
+    with open(agents, "wb") as handle:
+        handle.write(body.replace(NL, chr(13) + NL).encode("utf-8"))
+    raw = agents.read_bytes()
+    chars = len(agents.read_text(encoding="utf-8"))
+    assert len(raw) > chars, "the fixture did not actually land CRLF on disk"
+
+    spec = importlib.util.spec_from_file_location(
+        "repo_figures_crlf", lint.ROOT / "tools" / "figures.py")
+    figures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(figures)
+    data = figures.figure_always_on(tmp_path)["data"]
+    assert data["agents"] == chars, (
+        f"the figure measured {data['agents']} against {chars} characters and "
+        f"{len(raw)} bytes -- it is counting bytes"
+    )
