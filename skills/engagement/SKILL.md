@@ -77,7 +77,7 @@ The owner's attention concentrates at two moments and the stretch between them r
 
 **Waiting for a decision the owner has not made is not the stalling the charter forbids.** That rule bars refusing or stalling a decision they *have* made; a brief they have not yet seen is not one, and neither is a directive of theirs that no brief has yet read back — obeying it is what the drafting does, and the decision still owed is on the reading.
 
-**Waiting is not idling.** Everything the affirmation would unlock except the work itself stays available: draft the brief to the point where it could lock, test the premises that could invalidate it, and post it on the work's issue **labelled a draft**, marking which sentences are the session's restatement rather than the owner's own words. That is not the locking post above — the brief still locks and is posted as its own comment when they return and settle it — and the label is what keeps the two apart. Then hand back in the form above.
+**Waiting is not idling.** Everything the affirmation would unlock except the work itself stays available: draft the brief to the point where it could lock, test the premises that could invalidate it, and post it on the work's issue **labelled a draft**, marking which sentences are the session's restatement rather than the owner's own words. That is not the locking post above, and the label is what keeps the two apart. Then hand back in the form above.
 
 **A question arising inside the stretch takes three tests, in this order, the first match governing.**
 
