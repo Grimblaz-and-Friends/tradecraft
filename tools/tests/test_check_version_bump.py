@@ -1027,8 +1027,22 @@ def test_a_runtime_path_the_repo_did_not_write_survives_capture(repo, monkeypatc
 # a repo-only cell, and the string stayed behind pointing at a file where the
 # word no longer appears -- read by exactly the session that forgot the bump.
 # Nothing caught it, because no test compared the citation against the tree.
-# These two do: the first pins the path and its heading, the second pins that
-# the FAIL branches actually carry it. [#304]
+#
+# Two tests, and they pin different things: the first pins that the citation is
+# TRUE OF THE TREE, the second that EVERY FAIL branch carries it. Neither
+# substitutes for the other -- the first passes while a branch silently drops
+# the citation, the second passes while every branch cites a file that does not
+# exist. Both were needed: an earlier version of the second test reached only
+# the unchanged-version branch, and dropping the citation from the collision
+# branch alone left the suite green.
+#
+# **A session adding a third FAIL branch extends the list below.** That is not
+# housekeeping. This module's own docstring records the same class twice --
+# PR #9 collapsed two sites into one, PR #270 added sites without extending the
+# enumeration -- and its stated lesson is that a test only enumerates what a
+# mutation shows it reaches. The version of this test that shipped in the first
+# round of #304 was the third instance, in the file documenting the first two.
+# Prove any new branch with a mutation that drops its citation. [#304]
 def test_flow_citation_names_a_path_that_carries_the_flow():
     root = Path(__file__).resolve().parent.parent.parent
     rel = cvb.FLOW_CITATION.split(",")[0]
@@ -1038,18 +1052,39 @@ def test_flow_citation_names_a_path_that_carries_the_flow():
         "the citation was left behind by a move"
     )
     body = target.read_text(encoding="utf-8")
-    assert "The flow" in body, (
+    # The heading, not a bare substring: the message below says "heading", and
+    # a loose match would pass on incidental prose mentioning the flow.
+    assert "## The flow" in body, (
         f"FLOW_CITATION sends a session to {rel!r} for 'The flow', and that "
         "heading is not there"
     )
 
 
-def test_the_fail_branches_carry_the_flow_citation(repo):
+def _fail_lines_unchanged_version(repo):
+    """The FAIL branch for a shipped-zone change with no bump."""
     (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
     _commit(repo, "skill edit")
-    status, lines = cvb.check("main")
+    return cvb.check("main")
+
+
+def _fail_lines_version_already_taken(repo):
+    """The FAIL branch for a bump onto a version the base tip already ships --
+    the branch an earlier version of this test did not reach."""
+    _base_moves_to(repo, "1.1.0")
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _manifest(repo, "1.1.0")
+    _commit(repo, "skill edit + a bump onto a taken version")
+    return cvb.check("main")
+
+
+@pytest.mark.parametrize("arrange", [
+    _fail_lines_unchanged_version,
+    _fail_lines_version_already_taken,
+])
+def test_every_fail_branch_carries_the_flow_citation(repo, arrange):
+    status, lines = arrange(repo)
     assert status == FAIL
     assert any(cvb.FLOW_CITATION in line for line in lines), (
-        "the unchanged-version FAIL dropped the citation telling a session "
-        f"where to look; got {lines!r}"
+        f"{arrange.__name__} dropped the citation telling a session where to "
+        f"look; got {lines!r}"
     )
