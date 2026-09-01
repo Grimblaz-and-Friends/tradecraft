@@ -24,7 +24,7 @@ Throughout, **the owner** is the human whose repository this is.
 Process weight concentrates at exactly two moments; everything between them is model judgment plus the standards carried in the skills.
 
 - **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets a pre-implementation artifact: purpose, acceptance criteria, boundary statement, whose shape the `engagement` cell carries. The **brief** is drafted and settled with the owner in conversation, where they affirm, amend, or reject, and is recorded where the work lives — the record of what was agreed, never where they first read it. The artifact reading that brief is the session's, and a seat with none of the conversation's history settles it. From the affirmation the owner is next needed at release. Mechanical work proceeds without it; when in doubt of that, ask the cheap question.
-- **Release.** Merging is the owner's, never the agent's.
+- **Release.** Merging is the owner's, never the agent's. **Before a change merges, one that altered what someone using the result can do owes a use of that result** — or one line saying why none happened, which discharges it as fully; the `experience-session` cell carries both.
 
 ## Review
 
@@ -41,4 +41,4 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 
 **Decisions inform, never bind.** A prior decision is superseded by reading it, not obeyed — it is never a citation against change, because if current behavior is wrong, the original reasoning probably was too.
 
-**Admitting a new requirement**, which the `authoring` cell carries in full: cheapest reliable material first — a platform or CI mechanism, then skill prose (an existing cell, or a new one where no cell fits: the burden sits on cramming, never on creating), then a rule in the always-on surface, which is the last resort, for what must bind before any context loads. Owner-stated requirements are admitted, not argued — counter-argument is welcome, per Authority above; what is refused is stalling on one. Agent-proposed rules need an incident from real work or the owner's specific approval of that rule — **a review finding about governing prose is not an incident.**
+**Admitting a new requirement** runs an order from the cheapest reliable material to the most expensive, ending at the always-on surface; the `authoring` cell carries it. Owner-stated requirements are admitted, not argued — counter-argument is welcome, per Authority above; what is refused is stalling on one. Agent-proposed rules need an incident from real work or the owner's specific approval of that rule — **a review finding about governing prose is not an incident.**
