@@ -1,0 +1,57 @@
+# D-300: The work has two halves with the affirmation as the boundary; nothing substitutes for it, one thing stops the far side, and one restraint governs what may be performed there
+
+**Status:** Accepted 2026-09-01 (PR #300)
+
+## Context
+
+[#286](https://github.com/Grimblaz-and-Friends/tradecraft/issues/286) recorded an asymmetry four lines wide in `skills/engagement/SKILL.md`: the unobtainable cold check had a fully specified escape — a recorded truncation that settles the artifact — and the unobtainable *affirmation*, which is the gate that actually binds, had nothing. Two experience sessions on [PR #280](https://github.com/Grimblaz-and-Friends/tradecraft/pull/280) hit it independently, on `933fded` and on `99447cb`; both reasoned by analogy from the escape next door and invented a way to proceed without the owner, and their inventions differed. Neither knew of the other.
+
+The filing left five things to pickup, all of them turning on what an unaffirmed brief licenses — which is a question about the owner's own involvement, and so not the session's.
+
+The owner ruled it differently than the filing anticipated. Asked to choose among three licences, he rejected all three: *"I intend to always be involved in the stages before approval is given to implement … There is no scenario where they proceed without me. proceeding without me applies for stages from implementation start until ready for merge."* Then, shown a draft escape clause, he reframed the change: *"I don't see any description of what gets my attention and what needs to complete without stopping when I'm not around … we need to come down much more clearly so that it's obvious what gets each treatment."*
+
+That reframing is the change. The failure both consumers had was not a missing escape; it was being unable to tell which side of the boundary they stood on. The charter already said process weight concentrates at exactly two moments, but **no surface assigned the stages to a side** — the doctrine's flow sentence gave an order, the charter named two ceremonies, and `engagement` stated the stretch's far end and never its near one.
+
+## Decision
+
+**1. The map is stated, with every stage assigned.** Three bands, in `engagement`: the owner's up to and including the affirmation; the unattended stretch from there to a change ready for merge, which the same sentence defines as a pull request whose review has run and closed with every finding dispositioned, external comments reconciled and the report posted; the owner's again at release. Filing sits outside all three.
+
+**2. Nothing substitutes for the affirmation, and the cold check's truncation does not extend to it.** The reason is what stops the analogy being redrawn, and both recorded incidents are it being drawn: *that check judges the session's own reading, which the session owns and can be accountable for leaving unjudged; the affirmation is the owner's term, which the session does not own and cannot supply for them.* A truncated verdict leaves a reading nobody checked; a truncated affirmation would leave a term nobody agreed. One route, not two — slow and unreachable get the same answer, because neither licenses proceeding. Waiting for a decision the owner has not made is also distinguished from the stalling the charter forbids, which bars refusing a decision they *have* made; both consumers read that clause as licence.
+
+**3. Three ordered tests, and exactly one stop.** A question arising inside the stretch: does answering it change what the change is for — the work stops; does the brief or the map settle it — settled the same way; otherwise the session decides and reports, and where this cell makes the matter the owner's, that report is an argued ask they rule at release rather than a settled call. The hatch at the old `:64` — *"anything that genuinely needs them before then arrives as an argued decision"* — is deleted, which is this change's largest meaning change and is what the owner's third ruling closed.
+
+**4. One restraint, governing what may be *performed* rather than what stops.** An act whose effect the branch cannot take back is withheld for the owner's ruling at release. An act the map or the affirmed brief already accounts for is exempt — a stage by being assigned, filing by being placed outside the bands — but **the exemption covers performing an accounted-for act at the cost the change warrants and reaches no further**: not the increment beyond warrant, and not an irreversible side-act taken inside it. Where the work cannot continue without a withheld act, the brief no longer covers what the change requires and the first test's stop applies.
+
+**5. Both always-on surfaces carried the wrong near end and both are repaired.** The charter's *"From there the owner is next needed at review"* — "there" being the settled artifact — placed the artifact and its cold seat outside the stretch, which ruling 2 overturned, and "at review" resolved against the charter's own § Review, which sits inside it. It becomes *"From the affirmation the owner is next needed at release."* The doctrine's matching clause is **deleted** rather than reworded: once the charter states the rule correctly the clause carried nothing repo-specific, and two surfaces carrying one sentence identical but for case is what `AGENTS.md`'s own division of labour and `routing.md` both forbid.
+
+This repairs the recorded finding *"skills/charter/SKILL.md and skills/engagement/SKILL.md — when the owner's absence begins"*, which quotes the exact charter sentence. **The affordability argument is the reason it was excluded for two revisions and should not have been**: three recorded rows price charter clauses as unaffordable, and all three price *adding* a 60–100 character qualifying clause to a charter at its ceiling. This substitutes one sentence for another. A recorded finding is weaker than a decision, and pricing a fix from rows that priced a different remedy is how a cheap repair looked impossible.
+
+## Two departures from the owner's rulings, in opposite directions
+
+Named here because a reader owed one is owed both.
+
+- **The restraint applies on every branch**, where the ruling scoped it to a matter the cell makes the owner's. The case it protects is a matter *misread as the session's* — a material spend taken for tool choice, reported as a settled call, money gone — where a branch-scoped restraint does nothing.
+- **The exemption permits a class of act the ruling withheld**: the stages the map accounts for, several of which no edit at review takes back. Without it the restraint halts the stretch at pushing and opening the pull request — a failure caught three times in drafting, twice by seats reading a stop and once arriving from the opposite direction.
+
+## The outflow
+
+Owed on the always-on edit and **discharged by a refusal, with its candidate named**. The look ran over what already sits on the surface, which is the subject `routing.md` names; an earlier draft reasoned about what the change *adds*, which that file expressly forbids as reading the obligation as a matched cost.
+
+The candidate: `AGENTS.md`'s CRLF paragraph, whose standard-side home is `skills/substrate/references/text-mode.md`. It stays, because it is the repo-specific **application** of that standard — it turns on this repository's `.gitattributes`, the local ` M` symptom, and cites [D-186] — and `routing.md` puts the standard in the cell and the application here.
+
+**The `AGENTS.md` deletion is not claimed as the move.** Routing a rule between two artifacts of one always-on surface is, in `routing.md`'s words, *"the same cost under a different heading."* An earlier draft claimed it and was wrong.
+
+## What was rejected, and why
+
+- **All three licences #286 offered for an unaffirmed brief** — build fully, build but not merge, build only the owner's own words. Each was a route to proceed without him; he rejected the class.
+- **Approval-to-implement landing after the settled artifact** rather than at the affirmation. Put with pros and cons; the owner took the affirmation, which is what the material already said and what leaves the cold seat as the only check the artifact needs.
+- **Four attempts to write a rule for which matters are the owner's inside the stretch.** A coined predicate that missed a material spend; the cell's calibration list copied, which routed deleting a file inside the branch away from the session the same division assigns it to; the list pointed at, which gave two overlapping lists and no precedence rule; and the fork test routed through, which re-decided a name as the session's against the list's flat ruling. **The design needs none of them**: the third test routes both classes the same way and differs only in the report's form, so misreading which is which costs one argued paragraph rather than a halt.
+- **[#118](https://github.com/Grimblaz-and-Friends/tradecraft/issues/118), studied and declined in the same conversation.** The predecessor's worth-it check has one transferable part, the falsifier, and this practice already asks it: the brief's lock condition cannot be satisfied without asking what would invalidate the brief, `spikes` takes a premise that cannot be consulted, and `AGENTS.md` routes the unrunnable half to `docs/values.md`. The [study is on that issue](https://github.com/Grimblaz-and-Friends/tradecraft/issues/118#issuecomment-5488053825).
+
+## Known limits, stated rather than glossed
+
+**"What the change warrants" is a judgment with no stated bar.** It is bounded in the safe direction — the default is *perform*, so an unsure session under-withholds rather than halting — and probed in both directions by the artifact's criteria. The condition to watch: a session withholding a stage it should have run, or spending well past warrant and reporting it as a settled call.
+
+**The charter's *"when in doubt, ask the cheap question"* survives four words from the rewritten sentence.** It is scoped by its semicolon join to whether the work is mechanical, a near-side judgment, so it does not contradict the new near end — but #286's whole evidence is sessions reasoning by analogy from a neighbouring clause, and this is the neighbouring clause. The settling seat named it as the one thing it would most want put to a cold seat.
+
+**The convergence cost is on the record and produced three board items.** Seventeen revisions, sixteen adverse cold verdicts, roughly 685,000 subagent tokens for a change of one section and four small edits. Rounds 1–5 found defects that would have shipped; rounds 6–16 were four rewrites of one clause on a question that was the owner's. That analysis is [#296](https://github.com/Grimblaz-and-Friends/tradecraft/issues/296) (the cold seat can only pass or fail, and nothing bounds re-runs), [#297](https://github.com/Grimblaz-and-Friends/tradecraft/issues/297) (an artifact under repeated check accumulates provenance aimed at its checker), and a [second incident](https://github.com/Grimblaz-and-Friends/tradecraft/issues/290#issuecomment-5489029938) on #290 establishing that its repeated-verdict trigger needs two remedies rather than one.
