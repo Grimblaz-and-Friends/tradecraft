@@ -4,7 +4,11 @@
 
 @skills/charter/SKILL.md
 
-**Read `skills/charter/SKILL.md` now, before acting** — the line above imports it where the runtime supports imports, and Codex has none, so the instruction is what carries it there. It carries the binding half of this practice — authority and which decisions are the owner's, the two ceremony moments, review, and where content goes — and it is what this repository ships to anyone who adopts the practice. This file adds only what is specific to here. Where the two touch, the charter states the rule and this file states how it is done in this repository.
+**Read `skills/charter/SKILL.md` now, before acting** — the line above imports it where the runtime supports imports, and Codex has none, so the instruction is what carries it there. It carries the binding half of this practice — authority and which decisions are the owner's, the two ceremony moments, review, and where content goes — and it is what this repository ships to anyone who adopts the practice. This file adds only what must bind before a cell fires; the cells below carry the rest, and where this file and the charter touch, the charter states the rule.
+
+## Worth doing
+
+**When the worth-it question outruns the evidence, argue it against `docs/values.md`, by number** — the ranking of what this practice values, the owner's alone to amend. It is here rather than in a cell because a session deciding whether work is worth doing has, at that moment, loaded nothing. [D-225]
 
 ## The ceremony moments, here
 
@@ -15,6 +19,10 @@
 
 **Shipped (`skills/`, `lib/`, `commands/`, `agents/`, `hooks/`, `.claude-plugin/`) never references repo-only (`docs/`, `tools/`, `.github/`), and the wall runs one way** — repo-only code and prose may reference shipped, which is how every tool here reaches `lib/` and how a repo-only cell names the cell owning a standard it applies. This is here rather than behind a pointer because a session can breach it in its first edit, before any cell fires.
 
+## What this tree does that will look like a defect
+
+**CRLF on disk here is expected, not a defect** — a text-mode write produces it, `.gitattributes` normalises it in, and the committed bytes are unaffected. The symptom is ` M` from `git status` against an empty diff; notice it and move on. It is here rather than in a cell because the moment it must be found is mid-task, when a session notices CRLF and has no reason to go looking. [D-186]
+
 ## The rest of this repository's mechanics
 
-Three repo-only cells carry them, loaded on demand in both runtimes and never shipped to an adopter: the `landing` cell for taking a change from a branch to a pull request, the `records` cell for this repository's append-only records and decision log, and the `siting` cell for where content goes here and what this tree assumes.
+Repo-only cells under `docs/cells/` carry them, loaded on demand in both runtimes and never loaded by an adopter: the `landing` cell for taking a change from a branch to a pull request, the `records` cell for this repository's append-only records and decision log, and the `siting` cell for where content goes here and what this tree assumes.

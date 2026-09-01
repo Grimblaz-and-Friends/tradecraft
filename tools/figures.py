@@ -26,8 +26,10 @@ Always emitted, in this order:
 
   1. figure_tests -- the suite, over tools/tests and skills
   2. figure_always_on -- the always-on rows, per runtime, and the adopter
-     total; each row itemises its members, so what used to be a doc row for
-     AGENTS.md and a cell row for the charter body is readable there. Neither
+     total; each row is priced against its ceiling and broken into the terms
+     that compose it -- the doctrine term being AGENTS.md plus, for the
+     runtime that reads it, CLAUDE.md, so a per-file figure for either is
+     not rendered. Neither
      has a ceiling of its own any more: what is enforced is the row (#260)
   3. figure_census -- the decision log
 
@@ -401,9 +403,18 @@ def by_runtime(data: dict) -> str:
     rather than calling itself the roster: it counts every `SKILL.md` the
     runtime loads from that directory, and a hand-written project skill there
     is lawful, loaded, and not the roster's. [PR #278 review, M20]
+
+    **Each row is priced against the ceiling that governs it.** A budget only
+    bites where somebody sees it, and for one change this rendered two rows at
+    98.3% of a ceiling that appeared on no surface a session or the owner
+    reads, while pricing an 11-character pointer at 2% of its own. Before the
+    ceilings moved, the same line carried `AGENTS.md N of M` and
+    `charter body N of M`; the replacement carried the sizes and dropped the
+    bound. [#291]
     """
     return "; ".join(
-        f"{row['runtime']} {row['total']:,} = doctrine {row['doctrine']:,}"
+        f"{row['runtime']} {row['total']:,} of "
+        f"{lint.ALWAYS_ON_ROW_BUDGET_CHARS:,} = doctrine {row['doctrine']:,}"
         f" + charter body {data['charter']:,}"
         f" + {row['entries']} name/description from {row['directory']}/"
         f" {row['roster']:,}"
@@ -436,7 +447,8 @@ def figure_always_on(root: Path) -> dict:
     return {
         "name": "always-on surface",
         "value": (
-            f"{by_runtime(data)}; an adopter {data['adopter_total']:,} = "
+            f"{by_runtime(data)}; an adopter {data['adopter_total']:,} of "
+            f"{lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,} = "
             f"charter body {data['charter']:,} + {data['cells']} cell "
             f"name/description {data['roster']:,}"
         ),

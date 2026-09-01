@@ -1,6 +1,6 @@
 ---
 name: landing
-description: This repository's own procedure for taking a change from a fresh branch to an open pull request — the order the steps run in, the guards that must pass before a commit, what the pull request body states, and when the plugin version is bumped. Use when a change here is ready to build, validate, commit or publish, when opening a pull request for one, or when deciding what a change owes before it is proposed; not for how a review is run once the pull request exists, not for what a change is for, and not for appending to a record afterwards.
+description: This repository's own procedure for taking a change from a fresh branch to an open pull request — the order the steps run in, the guards that must pass before a commit, what the pull request body states, and when the plugin version is bumped. Use when a change here is ready to build, validate, commit or publish, when opening or returning to its pull request, or when deciding what a change still owes; not for how a review reaches its findings, and not for what a change is for.
 ---
 
 # landing

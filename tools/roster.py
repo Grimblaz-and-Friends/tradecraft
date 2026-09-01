@@ -680,7 +680,8 @@ def write(root: Path) -> list[str]:
                 # copy is one file to fix however many surfaces are owed a
                 # copy of it, and this loop said so once per surface while
                 # the rule it mirrors said once. [PR #278 review, M8]
-                line = f"skipped {CELLS}/{name}/{CELL_FILE}: {exc}"
+                owner = cell_sources(root).get(name, CELLS)
+                line = f"skipped {owner}/{name}/{CELL_FILE}: {exc}"
                 if line not in changed:
                     changed.append(line)
                 continue

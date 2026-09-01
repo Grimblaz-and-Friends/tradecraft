@@ -7,16 +7,19 @@ Checks:
      (docs/, tools/, .github/) by any path form — rooted, relative (../ or ./),
      backslashed, or case-shifted. Full web URLs are lawful: they resolve for
      consumers; repo paths do not.
-  2. harness tokens: no shipped file names a harness-specific
+  2. harness tokens: no shipped file, and no repo-only cell, names a
+     harness-specific
      path token (${CLAUDE_PLUGIN_ROOT} and kin). Not because they fail --
      Claude Code substitutes them into a skill's body -- but because Codex does
      not, so any such contract binds in one runtime and is dead in the other.
   3. charter cell: the shipped charter exists, has a body, and carries no depth
      files whose binding prose an adopting repository would fail to load.
-  4. cell frontmatter: every skill declares a name and a description the
+  4. cell frontmatter: every cell under either source declares a name and a description the
      runtime can parse, each within its field budget. A cell whose description
      is absent or malformed silently never fires.
-  5. sideways deps: no skill may reference another skill — by path (rooted or
+  5. sideways deps: no cell may reference another cell -- except the
+     charter, and except a repo-only cell naming a shipped one, which is
+     the wall's lawful direction — by path (rooted or
      relative) or by the name form `<name>` cell — and lib/ and hooks/ may
      reference no skill (deps point down otherwise). The
      charter is exempt in the name form only and as a target from anywhere,
@@ -53,7 +56,8 @@ Checks:
      green while the identical break inside an entry fired. Scoped to
      the doctrine files: docs/*.md needs resolver work, not a path-list
      edit, because references there resolve relative to their file.
-  9. doctrine: AGENTS.md exists and stays within budget; CLAUDE.md exists and
+  9. doctrine: AGENTS.md exists, imports the charter and imports nothing
+     else, and CLAUDE.md stays a bare pointer; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
@@ -266,35 +270,45 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # lets the larger runtime grow unbudgeted, and figures.py's own `_always_on`
 # records that nothing renders that scalar alone.
 #
-# **The value is the larger row this change measured plus headroom, and the
-# headroom is deliberate rather than residual.** The band it sits in: at least
-# one substantial rule, so admitting a rule does not require finding an
-# eviction first -- the unit AGENTS_BUDGET_CHARS named and never sized, whose
-# one instantiation is the headroom it was set with at `81fb1d9`, derivable by
-# measuring `git show 81fb1d9:AGENTS.md` against the ceiling
-# `git show 81fb1d9:tools/lint.py` sets there -- and at most what this change
-# removed from the rows, so the reduction is banked as headroom rather than
-# re-ratcheted away and the budget does not become no budget. `python
-# tools/figures.py` prices both rows against these constants on whatever tree
-# you are on. What a session does when it meets this ceiling is
-# skills/authoring/SKILL.md's, where a writer reads it.
+# **The value is the larger row this change measured plus one unit, and the
+# unit is what a rule costs in the shape this repository makes rules take.**
+# Not the headroom `AGENTS_BUDGET_CHARS` happened to carry at `81fb1d9`: that
+# measured a paragraph in a file which, after this change, no longer receives
+# paragraphs. A rule now joins an existing cell's body -- costing nothing
+# always-on -- or, where no cell fits, arrives as a new cell, whose whole
+# always-on cost is its name plus its description. Derive it with `python
+# tools/figures.py`, which reports every cell's name and description; the unit
+# is the median of those, taken to the next hundred. At 253 the previous value
+# was smaller than **every** cell in this repository, so the home the routing
+# map names for a repo-specific rule could not be used a second time without an
+# eviction -- which inverts the charter's *the burden sits on cramming, never
+# on creating*. Found by a five-seat review and ruled by the owner. [#291]
 #
-# This replaces the two per-file ceilings that were temporarily raised under
-# the owner approval on issue #260; that approval's condition is discharged
-# here. Find every change to these with
-# `git log -G "ALWAYS_ON_ROW_BUDGET_CHARS = " -- tools/lint.py` -- `-S` reports
-# a changed occurrence count and is blind to a changed value.
-# The larger row this change measured, plus the unit exactly. Exactly, not
-# generously: criterion 7 requires a rule of one unit to be admissible and
-# criterion 2 requires a block larger than one unit not to be, and only
-# headroom equal to the unit satisfies both. A rounder, roomier number admits
-# the move criterion 2 forbids.
-ALWAYS_ON_ROW_BUDGET_CHARS = 15_274
-# The adopter surface is the charter body plus the roster this practice ships,
-# and this change touches neither -- it is flat by construction, so this is the
-# total measured plus the same unit rather than a reduction being banked.
-# Lowering it is the roster redesign's, not this change's.
-ALWAYS_ON_ADOPTER_BUDGET_CHARS = 11_161
+# **The trade this number makes, stated because it is not obvious.** Headroom
+# and the largest tolerated relocation are the same quantity: the budget
+# refuses a move-then-refill of block S exactly when S exceeds the headroom,
+# and admits an addition A exactly when A fits it. So raising the unit to admit
+# a cell widens, by the same amount, the relocation the budget exists to
+# refuse. There is no value that separates them; a mechanism that did would
+# have to price the two moves apart, which is the shape
+# `CELL_BODY_BUDGET_CHARS`' comment argues for and this constant does not have.
+#
+# This replaces the two per-file ceilings raised under the owner approval on
+# issue #260; that approval's condition is discharged here. Find every change
+# with `git log -G "ALWAYS_ON_ROW_BUDGET_CHARS = " -- tools/lint.py` -- `-S`
+# reports a changed occurrence count and is blind to a changed value.
+ALWAYS_ON_ROW_BUDGET_CHARS = 16_345
+# The adopter surface is the charter body plus the roster this practice ships.
+# This change touches neither, so this is the total measured plus the same
+# unit rather than a reduction being banked. Lowering it is the roster
+# redesign's, not this change's.
+#
+# **The charter body has no ceiling of its own any more; it is a member of
+# every row and of this total.** So a session growing the charter and a session
+# growing a description draw on one pool and neither can read the headroom as
+# solely theirs -- which is the point, and is why the figure reports the
+# members beside each total. [#291]
+ALWAYS_ON_ADOPTER_BUDGET_CHARS = 11_508
 POINTER_BUDGET_CHARS = 500
 # A cell body whose budget is enforced rather than remembered. `authoring`'s
 # cap was stated in #169 as that change's own evidence that depth-shedding is
@@ -821,8 +835,14 @@ def check_sideways_deps(root: Path) -> list[str]:
             # None: none of these is a skill, so any skill path is sideways.
             scan.append((base, None, False))
 
+    repo_cell_names = set(roster.names_under(root, REPO_CELLS))
+
     def _is_repo_cell(name: str) -> bool:
-        return (root / REPO_CELLS / name).is_dir()
+        # The generator's predicate, not a bare directory test: a directory is
+        # not a cell until it holds the file that loads. `check_cell_references`
+        # already agrees with the generator; this was the second definition of
+        # one fact, and the two disagreed on a half-created cell. [#291]
+        return name in repo_cell_names
 
     for base, own, own_is_repo in scan:
         for path in _iter_files(base):
@@ -927,7 +947,16 @@ def _doctrine_scan_paths(root: Path) -> list[Path]:
     paths = [root / name for name in ("AGENTS.md", "CLAUDE.md")]
     cells = root / REPO_CELLS
     if cells.is_dir():
-        paths += sorted(cells.glob("*/SKILL.md"))
+            # **Depth included, because this change sanctions it.** A repo-only
+        # cell sheds into `references/` exactly as a shipped one does, and a
+        # dangling `[D-N]` or dead repo path there reads as authority that
+        # resolves and does not -- the harm this scan exists to prevent, in
+        # the one place the material tells authors to put depth. Probed [#291]:
+        # identical prose redded in `SKILL.md` and was silent one directory
+        # down. The shipped cells stay out for the adopter-resolution reason
+        # `check_doctrine_citations` gives, which does not reach repo-only
+        # depth: nothing under `docs/` is resolved by a consumer at all.
+        paths += sorted(cells.glob("**/*.md"))
     return paths
 
 
@@ -1337,6 +1366,32 @@ def check_doctrine(root: Path) -> list[str]:
                 f"doctrine-import: AGENTS.md imports '{CHARTER_IMPORT}', "
                 "which does not exist"
             )
+
+    # **An import is not a line, it is the file it names.** The row budget
+    # measures the doctrine files themselves; the runtime inlines whatever they
+    # `@`-import. Probed [#291]: `@docs/values.md` in AGENTS.md moved the row 17
+    # characters while the session loaded 5,482 more, with the lint clean -- so
+    # the one move the ceiling exists to refuse was available as a one-liner,
+    # and the guard's own message told the author it was not. Refusing the
+    # construct is the cheapest material that holds it: resolving imports into
+    # the figure would oblige `always_on_at` to resolve them at an arbitrary
+    # ref too, or the two halves of every delta measure different surfaces.
+    for name, allowed in (("AGENTS.md", {CHARTER_IMPORT}),
+                          ("CLAUDE.md", {"@AGENTS.md"})):
+        doc = root / name
+        if not doc.is_file():
+            continue
+        for lineno, line in enumerate(_unfenced(doc.read_text(
+                encoding="utf-8", errors="replace")), 1):
+            stripped = line.strip()
+            if stripped.startswith("@") and stripped not in allowed:
+                findings.append(
+                    f"doctrine-import: {name} imports '{stripped}', which the "
+                    f"runtime inlines whole while the always-on figure charges "
+                    f"the line -- so it spends the row budget at a fraction of "
+                    f"what a session loads. The lawful imports here are "
+                    f"{', '.join(sorted(allowed))}"
+                )
 
     pointer = root / "CLAUDE.md"
     if not pointer.is_file():
@@ -2128,7 +2183,17 @@ def check_cell_frontmatter(root: Path) -> list[str]:
         if not cell.is_file():
             continue
         rel = cell.relative_to(root).as_posix()
-        fields = _frontmatter_fields(_read_text(cell) or "")
+        text = _read_text(cell) or ""
+        for key in continued_keys(text):
+            findings.append(
+                f"cell-frontmatter: {rel}'s {key} continues onto an indented "
+                f"line, so a parser reads one value and this repository reads "
+                f"the first line -- the description is charged to the always-on "
+                f"surface at a fraction of what it costs, and a hazard below "
+                f"the first line is invisible to the parse check. Write the "
+                f"value on one line"
+            )
+        fields = _frontmatter_fields(text)
         if fields is None:
             findings.append(
                 f"cell-frontmatter: {rel} has no frontmatter block -- the "
@@ -2171,6 +2236,56 @@ def check_cell_frontmatter(root: Path) -> list[str]:
                 f"'{skill_dir.name}/' -- the runtime addresses it by one of them"
             )
     return findings
+
+
+def continued_keys(text: str) -> list[str]:
+    """Keys whose value continues onto a following, more-indented line.
+
+    **This reader takes one line per key, and YAML does not.** A plain scalar
+    continued on indented lines is one value to a parser and one line to the
+    loop below, which skips any line starting with whitespace. That gap costs
+    two guarantees at once, so it is detected once here and both callers ask.
+
+    **What it costs the budget** [#291]: the runtime loads the whole value and
+    `_roster` charges the first line. Probed on this repository -- a 4,007
+    character description measured as 58, and the always-on row *fell* 533
+    while ~3,950 always-on characters were added, with the lint and the roster
+    both clean. **What it costs the cell**: `_plain_scalar_hazard` inspects
+    what this returns, so a hazard on a continuation line is invisible -- a
+    frontmatter block PyYAML raises `ScannerError` on shipped through the whole
+    gate green, and the runtime's answer to unparseable is to load the cell
+    with empty metadata, silently, which is the failure check 4 exists to
+    catch.
+
+    Rejecting the construct rather than parsing it, on the ground check 4
+    already gives for not taking a YAML dependency to buy an approximation of
+    the real oracle -- and because a value nobody here can measure is one
+    nobody can budget, which is true of every spelling and not only the block
+    markers `>` and `|`.
+    """
+    block = _frontmatter_block(text)
+    if block is None:
+        return []
+    continued, last_key = [], None
+    for line in block.splitlines():
+        if not line.strip():
+            last_key = None
+            continue
+        if line[:1].isspace():
+            if last_key is not None and last_key not in continued:
+                continued.append(last_key)
+            continue
+        key, sep, _ = line.partition(":")
+        last_key = key.strip() if sep and key.strip() else None
+    return continued
+
+
+def _frontmatter_block(text: str) -> str | None:
+    """The frontmatter's own lines, opener and terminator excluded."""
+    if not text.startswith("---"):
+        return None
+    end = text.find(chr(10) + "---", 3)
+    return None if end == -1 else text[3:end]
 
 
 def _frontmatter_fields(text: str) -> dict[str, str] | None:
@@ -3879,14 +3994,14 @@ def _unmeasurable_descriptions(root: Path) -> list[str]:
     cell in this practice writes -- but a *hand-written* project skill on a
     roster surface is somebody else's file, and YAML lets it write
     `description: >-` with the value indented beneath. The runtime loads the
-    whole block; this reader sees the two-character token. Probed: a 20,000
-    character description measured as nine and left the row budget green.
+    whole block; this reader sees the two-character token. Probed: a description of thousands of characters measured as the marker
+    alone and left the row budget green; the shipped pin reproduces it.
 
     Rejecting the construct rather than parsing it, for the reason
     `check_cell_frontmatter` already gives about not taking a YAML dependency
     to buy an approximation of the real oracle -- and because a description
     nobody can measure is one nobody can budget, whichever way it is spelled.
-    [#260]
+    [#260] [#291]
     """
     findings = []
     for surface in roster.SURFACES:
@@ -3898,7 +4013,15 @@ def _unmeasurable_descriptions(root: Path) -> list[str]:
             if text is None or not text.startswith("---"):
                 continue
             rel = cell.relative_to(root).as_posix()
-            for line in _frontmatterless_header(text).splitlines():
+            if "description" in continued_keys(text):
+                findings.append(
+                    f"always-on-budget: {rel}'s description continues onto an "
+                    f"indented line, which the runtime loads whole and this "
+                    f"repository measures as the first line -- so it is "
+                    f"charged to the {surface.runtime} row at a fraction of "
+                    f"what it costs. Write the description on one line"
+                )
+            for line in (_frontmatter_block(text) or "").splitlines():
                 key, sep, value = line.partition(":")
                 if sep and key.strip() == "description":
                     if value.strip().startswith((">", "|")):
@@ -3911,12 +4034,6 @@ def _unmeasurable_descriptions(root: Path) -> list[str]:
                             f"description on one line"
                         )
     return findings
-
-
-def _frontmatterless_header(text: str) -> str:
-    """The frontmatter block's own lines, terminator excluded."""
-    end = text.find("\n---", 3)
-    return text[3:end] if end != -1 else ""
 
 
 def check_always_on_budget(root: Path) -> list[str]:
@@ -3954,6 +4071,13 @@ def check_always_on_budget(root: Path) -> list[str]:
     # repository reaches the branch below and reds. Probed both ways. [#260]
     if not (root / "tools" / "lint.py").is_file():
         return findings
+    # **Before the figure, not after it.** A description this repository cannot
+    # measure is a finding whether or not the figure derives -- it is a fact
+    # about the file, not about the arithmetic -- and putting it behind the
+    # derivation meant a tree with no `tools/figures.py` reported the
+    # derivation failure and nothing about the descriptions it also could not
+    # have measured. [#291]
+    findings += _unmeasurable_descriptions(root)
     try:
         spec = importlib.util.spec_from_file_location(
             "repo_figures_budget", root / "tools" / "figures.py"
@@ -3964,7 +4088,7 @@ def check_always_on_budget(root: Path) -> list[str]:
         rows = data["here"]
         adopter = data["adopter_total"]
     except Exception as exc:  # noqa: BLE001 -- a ceiling with no input is a finding
-        return [
+        return findings + [
             f"always-on-budget: not derived ({type(exc).__name__}: {exc}), so "
             f"the always-on ceiling applied to nothing on this run -- fix "
             f"tools/figures.py; no budget passes by being unmeasurable"
@@ -3977,19 +4101,18 @@ def check_always_on_budget(root: Path) -> list[str]:
     want = {surface.runtime for surface in roster.SURFACES}
     got = {row.get("runtime") for row in rows if isinstance(row, dict)}
     if want - got:
-        return [
+        return findings + [
             f"always-on-budget: the figure reported no row for "
             f"{', '.join(sorted(want - got))}, so that runtime's surface was "
             f"not measured and no ceiling applied to it -- fix "
             f"tools/figures.py; no budget passes by being unmeasurable"
         ]
     if not isinstance(adopter, int):
-        return [
+        return findings + [
             f"always-on-budget: the figure's adopter total is not a number "
             f"({adopter!r}), so no ceiling applied to it -- fix "
             f"tools/figures.py; no budget passes by being unmeasurable"
         ]
-    findings += _unmeasurable_descriptions(root)
     for row in rows:
         if row["total"] > ALWAYS_ON_ROW_BUDGET_CHARS:
             findings.append(
@@ -3997,8 +4120,12 @@ def check_always_on_budget(root: Path) -> list[str]:
                 f"{row['total']} chars, budget is "
                 f"{ALWAYS_ON_ROW_BUDGET_CHARS} -- this is the whole surface "
                 f"that runtime loads before acting, so moving prose to "
-                f"another always-on file will not clear it; route content to "
-                f"a cell body, or delete it. What to do at a ceiling is "
+                f"another always-on file will not clear it. A body over "
+                f"budget sheds to a cell body or to references/; a "
+                f"*description* over budget can do neither without ceasing "
+                f"to be a trigger, so it is answered by retiring a cell, "
+                f"merging two, or raising this ceiling as a recorded "
+                f"decision. What to do at a ceiling is "
                 f"skills/authoring/SKILL.md's"
             )
     if adopter > ALWAYS_ON_ADOPTER_BUDGET_CHARS:

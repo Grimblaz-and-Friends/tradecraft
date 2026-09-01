@@ -2406,16 +2406,17 @@ def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
     arms below, so a change to either is a deliberate act with a red suite
     behind it.
     """
-    assert lint.ALWAYS_ON_ROW_BUDGET_CHARS == 15_274, (
-        "ALWAYS_ON_ROW_BUDGET_CHARS is the larger always-on row this change "
-        "measured plus one substantial rule, and the headroom is exactly one "
-        "unit rather than a rounder number: a wider margin admits the "
-        "AGENTS.md-to-CLAUDE.md move the row budget exists to refuse, and a "
-        "narrower one refuses the rule admission the ceiling exists to allow. "
-        "Moving it is a deliberate act, and the two behavioural arms below "
-        "are what say which direction broke."
+    assert lint.ALWAYS_ON_ROW_BUDGET_CHARS == 16_345, (
+        "ALWAYS_ON_ROW_BUDGET_CHARS is the larger always-on row plus one unit, "
+        "and the unit is what a rule costs in the shape this repository makes "
+        "rules take -- the median cell's name plus description, to the next "
+        "hundred. It is not a rounder number chosen for comfort: headroom and "
+        "the largest tolerated relocation are the same quantity, so raising "
+        "this admits a larger relocate-then-refill by the same amount. Both "
+        "directions have a behavioural arm below; a raise is caught by "
+        "test_raising_the_row_budget_admits_a_relocation_it_should_refuse."
     )
-    assert lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS == 11_161
+    assert lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS == 11_508
     assert lint.POINTER_BUDGET_CHARS == 500
 
 
@@ -4851,29 +4852,90 @@ def _budget_over(monkeypatch, payload):
     return lint.check_always_on_budget(lint.ROOT)
 
 
-def test_a_block_scalar_description_cannot_hide_from_the_row_budget(tmp_path):
-    """The runtime loads the block; this repository's reader sees the marker.
+def _budgetable_tree(root: Path) -> None:
+    """A fixture tree `check_always_on_budget` will actually measure.
 
-    Probed before the fix at 20,000 characters measured as nine, with the row
-    budget and the whole lint green -- an always-loaded value of any size, past
-    a ceiling written to bound exactly that. Raised by an automated reviewer on
-    PR #291 and reproduced here so the hole cannot reopen quietly.
+    The guard gates on this file's own presence, so a tree without
+    `tools/lint.py` is silent by design -- which is right for the fixtures
+    every other test builds and wrong for this one. Written rather than
+    monkeypatched because the pin is about what the guard measures on a tree,
+    and a patched `ROOT` would pin the patch. [#291]
     """
-    surface = lint.ROOT / lint.roster.SURFACES[0].directory / "blockscalar"
-    surface.mkdir(parents=True, exist_ok=True)
-    cell = surface / "SKILL.md"
-    try:
-        cell.write_text(
-            "---" + NL + "name: blockscalar" + NL + "description: >-" + NL
-            + ("  " + "x" * 200 + NL) * 100 + "---" + NL,
-            encoding="utf-8")
-        findings = lint.check_always_on_budget(lint.ROOT)
-        assert any("block scalar" in f for f in findings), findings
-    finally:
-        cell.unlink(missing_ok=True)
-        surface.rmdir()
-    # The lawful arm: with it gone the surface is inside budget again.
-    assert lint.check_always_on_budget(lint.ROOT) == []
+    make_clean_tree(root)
+    (root / "tools").mkdir(exist_ok=True)
+    (root / "tools" / "lint.py").write_text("# the guard" + NL, encoding="utf-8")
+
+
+@pytest.mark.parametrize("surface", [s.directory for s in roster.SURFACES])
+@pytest.mark.parametrize("spelling,marker", [
+    ("block", "description: >-" + NL + "  "),
+    ("plain", "description: A short first line." + NL + "  "),
+])
+def test_an_unmeasurable_description_cannot_hide_from_the_row_budget(
+        tmp_path, surface, spelling, marker):
+    """A description the runtime loads whole and this reader measures in part.
+
+    Two spellings, because closing one was not closing the class: the first
+    fix rejected `>` and `|` and its own docstring claimed "whichever way it
+    is spelled", while a plain scalar continued on indented lines walked
+    straight through. Probed at the time on this repository -- thousands of
+    characters charged as tens, and the always-on row *falling* while the
+    surface grew. Both surfaces, because the guard loops over them and one
+    arm was previously unexercised. [#291]
+
+    Off the live tree: this pin used to write into the repository's own
+    `.claude/skills/`, so an interrupted run left residue that redded the
+    flow's mandated pre-commit step against a file nobody wrote.
+    """
+    _budgetable_tree(tmp_path)
+    cell = tmp_path / surface / "hidden"
+    cell.mkdir(parents=True)
+    (cell / "SKILL.md").write_text(
+        "---" + NL + "name: hidden" + NL + marker + ("x" * 4000) + NL
+        + "---" + NL + NL + "# hidden" + NL, encoding="utf-8")
+    findings = lint.check_always_on_budget(tmp_path)
+    assert findings, f"a {spelling} description of 4,000 chars reported nothing"
+    assert any("Write the description on one line" in f for f in findings), findings
+
+    # The lawful arm: a one-line description on the same tree draws no
+    # description finding. Not `== []`: the fixture carries no
+    # `tools/figures.py`, so the row arithmetic reports it cannot derive --
+    # which is that branch's own pin, not this one's.
+    (cell / "SKILL.md").write_text(
+        "---" + NL + "name: hidden" + NL + "description: One line." + NL
+        + "---" + NL + NL + "# hidden" + NL, encoding="utf-8")
+    assert not [f for f in lint.check_always_on_budget(tmp_path)
+                if "description" in f]
+
+
+def test_raising_the_row_budget_admits_a_relocation_it_should_refuse(tmp_path):
+    """The direction budget pressure actually pushes, which nothing caught.
+
+    Mutating the constant *upward* redded exactly one test -- the literal pin
+    -- while the both-polarities arm monkeypatched the constant downward and
+    its lawful arm was true for every budget at or above the measured row. So
+    the assertion message claiming two behavioural arms was false for the
+    raise. This is the arm that makes it true: the headroom is the largest
+    relocation the budget tolerates, so a raise is not free, and a test that
+    only checks a lowering cannot say so. [#291]
+    """
+    over = lint.ALWAYS_ON_ROW_BUDGET_CHARS - _largest_row() + 1
+    assert over > 0, "the tree already exceeds its own budget"
+    assert over <= 1_000, (
+        "the headroom exceeds one unit, so the budget admits a relocation "
+        f"larger than a cell costs: {over} chars of room"
+    )
+
+
+def _largest_row() -> int:
+    """The binding always-on row on the live tree, via the guard's own figure."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "repo_figures_pin", lint.ROOT / "tools" / "figures.py")
+    figures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(figures)
+    data = figures.figure_always_on(lint.ROOT)["data"]
+    return max(row["total"] for row in data["here"])
 
 
 def _repo_cell(root: Path, name: str, body: str) -> Path:
@@ -4948,3 +5010,98 @@ def test_a_directory_without_a_cell_file_is_not_a_cell(tmp_path):
     roster.write(tmp_path)
     findings = [f for f in lint.check_cell_references(tmp_path) if "ghost" in f]
     assert findings, "a directory with no SKILL.md satisfied a cell reference"
+
+
+def test_only_the_two_sanctioned_imports_are_lawful_in_the_doctrine(tmp_path):
+    """An import is not a line, it is the file it names.
+
+    The row budget measures the doctrine files; the runtime inlines whatever
+    they `@`-import. Probed on this repository: one added import line moved the
+    row 17 characters while the session loaded 5,482 more, with the lint clean
+    -- so the move the ceiling exists to refuse was a one-liner, and the
+    guard's own message said it was not. Both polarities, because a guard that
+    refuses the charter import would break every tree. [#291]
+    """
+    make_clean_tree(tmp_path)
+    assert not [f for f in lint.check_doctrine(tmp_path) if "doctrine-import" in f]
+
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      + NL + "@docs/values.md" + NL, encoding="utf-8")
+    findings = [f for f in lint.check_doctrine(tmp_path) if "doctrine-import" in f]
+    assert findings, "an unsanctioned import in AGENTS.md reported nothing"
+    assert "@docs/values.md" in findings[0], findings
+
+    # The pointer file, on the same tree: an import lawful in AGENTS.md is not
+    # lawful here, because CLAUDE.md's whole job is to import AGENTS.md.
+    agents.write_text(agents.read_text(encoding="utf-8")
+                      .replace(NL + "@docs/values.md" + NL, NL), encoding="utf-8")
+    pointer = tmp_path / "CLAUDE.md"
+    pointer.write_text(pointer.read_text(encoding="utf-8")
+                       + NL + "@skills/charter/SKILL.md" + NL, encoding="utf-8")
+    assert [f for f in lint.check_doctrine(tmp_path) if "doctrine-import" in f], (
+        "an import lawful in AGENTS.md is not lawful in the pointer file"
+    )
+
+
+def test_a_repo_only_cell_carries_its_citations_and_paths_at_depth(tmp_path):
+    """The scan reaches where this repository tells authors to put depth.
+
+    `cell-structure.md` sanctions shedding into `references/`, so a scan
+    stopping at `SKILL.md` is silent in the one place the material directs
+    depth to. Identical prose redded one directory up and passed one directory
+    down. Both polarities: a resolving citation and a live path stay silent.
+    [#291]
+    """
+    make_clean_tree(tmp_path)
+    make_entry(tmp_path, 42)
+    cell = _repo_cell(tmp_path, "records", "Depth.")
+    (cell / "references").mkdir()
+    depth = cell / "references" / "detail.md"
+    depth.write_text("As decided in [D-42], see `docs/values.md`." + NL,
+                     encoding="utf-8")
+    (tmp_path / "docs" / "values.md").write_text("Ranking." + NL, encoding="utf-8")
+    roster.write(tmp_path)
+    assert not [f for f in lint.check_doctrine_citations(tmp_path) if "detail" in f]
+    assert not [f for f in lint.check_doctrine_references(tmp_path) if "detail" in f]
+
+    depth.write_text("As decided in [D-9999], see `docs/gone.md`." + NL,
+                     encoding="utf-8")
+    assert [f for f in lint.check_doctrine_citations(tmp_path) if "detail" in f], (
+        "a dangling citation in a cell's own depth reported nothing"
+    )
+    assert [f for f in lint.check_doctrine_references(tmp_path) if "detail" in f], (
+        "a dead repo path in a cell's own depth reported nothing"
+    )
+
+
+def test_the_always_on_figure_measures_characters_and_not_bytes(tmp_path):
+    """CRLF is what keeps the two apart, and this repository expects CRLF.
+
+    The pins holding this were deleted with the per-file ceilings they tested,
+    and their fixture constants and explanatory comment survived as dead code.
+    Mutating `figure_always_on`'s reader to `read_bytes().decode()` then left
+    the whole suite green. On the Windows leg that regression overstates every
+    row by one character per line against a headroom of one cell, turning a
+    lawful tree red on one leg of the matrix only. [#291]
+    """
+    import importlib.util
+
+    _budgetable_tree(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    body = agents.read_text(encoding="utf-8")
+    with open(agents, "wb") as handle:
+        handle.write(body.replace(NL, chr(13) + NL).encode("utf-8"))
+    raw = agents.read_bytes()
+    chars = len(agents.read_text(encoding="utf-8"))
+    assert len(raw) > chars, "the fixture did not actually land CRLF on disk"
+
+    spec = importlib.util.spec_from_file_location(
+        "repo_figures_crlf", lint.ROOT / "tools" / "figures.py")
+    figures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(figures)
+    data = figures.figure_always_on(tmp_path)["data"]
+    assert data["agents"] == chars, (
+        f"the figure measured {data['agents']} against {chars} characters and "
+        f"{len(raw)} bytes -- it is counting bytes"
+    )

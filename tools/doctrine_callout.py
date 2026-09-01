@@ -312,9 +312,14 @@ def _edit_label(pr: str, repo: str | None, *, add: bool) -> None:
 # not exist. Module level so a test can name the binding rather than infer it
 # from a rendered string: the label carries the ceiling, so reordering rows is
 # harmless and substituting one size for another is not.
-# Only CLAUDE.md keeps a ceiling of its own: it bounds a pointer file's shape
-# rather than a share of the always-on surface, so nothing about it was priced
-# by the two ceilings this change replaced. AGENTS.md and the charter body are
+# **CLAUDE.md is priced here and the rows are priced by `by_runtime`.** It is a
+# member of the Claude Code row -- the row's doctrine term is AGENTS.md plus
+# this file -- and it also keeps a bound of its own, because that bound is on a
+# pointer file's *shape* rather than on its share of the surface, and it is the
+# thing capping an AGENTS.md-to-CLAUDE.md relocation. An earlier wording said
+# it was "not a share of the always-on surface", which is false, and left
+# criterion 10's "no surviving per-file ceiling" reported satisfied on it.
+# [#291] AGENTS.md and the charter body are
 # now members of the always-on rows, which the row line beside this prices, and
 # a row per member here would reassert the ceilings that priced a move between
 # them as a saving. [#260]
@@ -362,8 +367,9 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         return f"_Always-on surface: not derived ({type(exc).__name__}: {exc})._"
     return (
         f"Always-on surface here, per runtime: **{figures.by_runtime(data)}**"
-        f"{movement}. **{data['adopter_total']:,}** from this practice for an "
-        f"adopter. Against their ceilings: "
+        f"{movement}. **{data['adopter_total']:,} of "
+        f"{figures.lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,}** from this practice "
+        f"for an adopter. Against their ceilings: "
         + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
         + "."
         # `by_runtime`, never `cells`/`roster`: the totals this sentence opens

@@ -1,6 +1,6 @@
 ---
 name: landing
-description: This repository's own procedure for taking a change from a fresh branch to an open pull request — the order the steps run in, the guards that must pass before a commit, what the pull request body states, and when the plugin version is bumped. Use when a change here is ready to build, validate, commit or publish, when opening a pull request for one, or when deciding what a change owes before it is proposed; not for how a review is run once the pull request exists, not for what a change is for, and not for appending to a record afterwards.
+description: This repository's own procedure for taking a change from a fresh branch to an open pull request — the order the steps run in, the guards that must pass before a commit, what the pull request body states, and when the plugin version is bumped. Use when a change here is ready to build, validate, commit or publish, when opening or returning to its pull request, or when deciding what a change still owes; not for how a review reaches its findings, and not for what a change is for.
 ---
 
 # landing
@@ -11,7 +11,7 @@ description: This repository's own procedure for taking a change from a fresh br
 
 Branch first (`main` refuses direct pushes) → settle the brief, then the artifact against a cold check or a recorded truncation → build → `python tools/lint.py` and `python tools/check_version_bump.py` → commit → publish the branch, open the PR, run the experience session the change bought or record the one line declining it, run the review, reconcile external reviewer comments — in that order, without being asked; on a change that has a PR, running the review is a check, never a question. A batch rewriting what the material instructs buys one more, or the line declining it. [D-178]
 
-**Where the flow starts depends on the change.** Mechanical work has no brief and no artifact to settle and starts at *build*; which work is mechanical is the doctrine's Convergence bullet, which is loaded in every session already. Stated as a pointer rather than a copy because the exemption has one owner — and stated at all because the chain above opens on the brief, so a session doing a typo reaches this cell and meets a first step that does not apply to it.
+**Where the flow starts depends on the change.** Mechanical work has no brief and no artifact to settle, so it branches and then goes straight to *build*; the branch is never skipped, `main` refusing direct pushes; which work is mechanical is the doctrine's Convergence bullet, which is loaded in every session already. Stated as a pointer rather than a copy because the exemption has one owner — and stated at all because the chain above opens on the brief, so a session doing a typo reaches this cell and meets a first step that does not apply to it.
 
 ## What the pull request owes
 
