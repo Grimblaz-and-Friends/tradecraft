@@ -536,6 +536,93 @@ def always_on_at(root: Path, ref: str) -> dict[str, int]:
     return {row["runtime"]: row["total"] for row in data["here"]}
 
 
+def cell_budgets(rel_path: str) -> list[tuple[str, int]]:
+    """Every budget that governs one cell's body, named, or an empty list.
+
+    **`CELL_BODY_BUDGET_CHARS` is not the only budget in view**, and treating
+    it as though it were is how a report comes to say "no budget" about a cell
+    that is capped. The charter's body is a term in every always-on row and in
+    the adopter total, so `check_always_on_budget` reds on it at the same
+    command `check_doctrine` runs at -- it is enforced today while absent from
+    that map. A cold seat settling this change's artifact caught the row that
+    would have claimed otherwise. [#302]
+
+    Returns pairs rather than one number because the charter has two, and the
+    binding one is the smaller-headroom adopter total rather than the row a
+    reader reaches first.
+    """
+    own = lint.CELL_BODY_BUDGET_CHARS.get(rel_path)
+    if own is not None:
+        return [("body", own)]
+    if rel_path == lint.CHARTER:
+        return [("always-on row", lint.ALWAYS_ON_ROW_BUDGET_CHARS),
+                ("adopter total", lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS)]
+    return []
+
+
+def figure_cell_bodies(root: Path) -> dict:
+    """Every cell body of every roster source, largest first.
+
+    **Derived from the roster rather than from a list.** `check_doctrine`
+    iterates `CELL_BODY_BUDGET_CHARS`, so a cell absent from that map is sized
+    by nothing at either command this repository's landing procedure mandates.
+    Reading `roster.SOURCES` rather than naming the source directories here is
+    what keeps a third source, added later, from being silently unmeasured --
+    the same list-shaped failure one level up. [#302]
+
+    **The number is the body**, `lint._frontmatterless`'s own length, never the
+    cell total: the total is a different figure with its own function in this
+    module, and printing it beside a body budget forks the figure from the
+    guard that enforces it.
+    """
+    rows = []
+    for name, source in roster.cell_sources(root).items():
+        rel = f"{source}/{name}/{roster.CELL_FILE}"
+        text = (root / rel).read_text(encoding="utf-8", errors="replace")
+        rows.append({
+            "name": name,
+            "source": source,
+            "path": rel,
+            "body": len(lint._frontmatterless(text)),
+            "budgets": cell_budgets(rel),
+        })
+    rows.sort(key=lambda row: (-row["body"], row["name"]))
+    return {"data": {"rows": rows}}
+
+
+def cell_body_block(data: dict) -> str:
+    """The rows as text, one per line, in the order the figure put them.
+
+    Rows rather than one dense line because the ordering is the finding: it is
+    what makes "budgeted" and "large" having come apart legible without the
+    reader enumerating anything, and an ordering is only legible as rows.
+
+    **Nothing evaluative.** No marker, threshold or word ranking a cell as
+    large -- that would be a number invented for a cell nobody has argued
+    about, which is the edge this change was affirmed not to cross. The
+    largest-first ordering is not such a marker: it orders every row alike and
+    singles out none.
+    """
+    width = max((len(row["name"]) for row in data["rows"]), default=0)
+    lines = []
+    for row in data["rows"]:
+        budgets = row["budgets"]
+        if not budgets:
+            against = "no budget"
+        elif len(budgets) == 1:
+            against = f"of {budgets[0][1]:,}"
+        else:
+            # **Shared, and no per-cell headroom stated.** These budgets price
+            # the doctrine files, this body and every description together, so
+            # a bare "of 16,345" beside a body of 5,851 would read as ten
+            # thousand characters of room where the shared headroom is a few
+            # hundred -- the same defect as "no budget", one step gentler.
+            named = ", ".join(f"{label} {value:,}" for label, value in budgets)
+            against = f"shared with {named}"
+        lines.append(f"  {row['name']:<{width}}  {row['body']:>7,}  {against}")
+    return chr(10).join(lines)
+
+
 def build_figures(root: Path, base: str | None,
                   cell: str | None = None, budget: int | None = None) -> list[dict]:
     figures = [

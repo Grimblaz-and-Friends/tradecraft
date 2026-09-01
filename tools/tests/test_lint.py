@@ -5105,3 +5105,192 @@ def test_the_always_on_figure_measures_characters_and_not_bytes(tmp_path):
         f"the figure measured {data['agents']} against {chars} characters and "
         f"{len(raw)} bytes -- it is counting bytes"
     )
+
+
+# --- the cell-body report: every cell sized at the mandated checkpoint (#302) -
+
+
+def _derivable_tree(root: Path) -> None:
+    """A fixture tree where `tools/figures.py` actually derives.
+
+    `cell_body_note` loads `root/tools/figures.py` by path, and that file
+    reaches `lint`, `winio` and the shipped engine -- so the fixture carries
+    the real machinery. A stub would pin the test's own arithmetic instead of
+    the derivation, which is the thing under test.
+    """
+    import shutil
+
+    repo = Path(__file__).resolve().parents[2]
+    shutil.copytree(repo / "tools", root / "tools",
+                    ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    shutil.copytree(repo / "lib", root / "lib",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(repo / "skills" / "authoring" / "scripts",
+                    root / "skills" / "authoring" / "scripts",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+
+
+def _shipped_cell(root: Path, name: str, body: str) -> Path:
+    """A shipped cell in a fixture tree, frontmatter and all."""
+    cell = root / "skills" / name
+    cell.mkdir(parents=True, exist_ok=True)
+    (cell / "SKILL.md").write_text(
+        "---" + NL + f"name: {name}" + NL
+        + f"description: The {name} cell. Use when testing." + NL
+        + "---" + NL + NL + f"# {name}" + NL + body + NL,
+        encoding="utf-8")
+    return cell
+
+
+def _rows(note: str) -> list[tuple[str, int, str]]:
+    """Name, body and budget phrase for each row of a rendered report."""
+    found = []
+    for line in note.splitlines():
+        match = re.match(r"^  (\S+)\s+([\d,]+)  (.+)$", line)
+        if match:
+            found.append((match[1], int(match[2].replace(",", "")), match[3]))
+    return found
+
+
+def test_the_report_sizes_every_cell_of_both_roster_sources(tmp_path):
+    """Criterion 1 and 2: the map is not the cells, and neither is one source.
+
+    `check_doctrine` iterates `CELL_BODY_BUDGET_CHARS`, so before this a cell
+    absent from it was sized by nothing at either mandated command. A
+    shipped-only report would be the hand-written carve-out this change exists
+    to avoid, so a repo-only cell is in the fixture and in the assertion.
+    """
+    _derivable_tree(tmp_path)
+    _shipped_cell(tmp_path, "alpha", "Shipped body, a little longer than beta's.")
+    _repo_cell(tmp_path, "beta", "Repo-only body.")
+
+    note = lint.cell_body_note(tmp_path)
+    names = [name for name, _, _ in _rows(note)]
+    assert "alpha" in names, note
+    assert "beta" in names, "a repo-only cell went unsized"
+
+    for name, body, _ in _rows(note):
+        source = roster.cell_sources(tmp_path)[name]
+        text = (tmp_path / source / name / roster.CELL_FILE).read_text(encoding="utf-8")
+        assert body == len(lint._frontmatterless(text)), (
+            f"{name}'s row is not the body the guard measures")
+
+
+def test_the_report_is_ordered_by_body_descending(tmp_path):
+    """Criterion 3, as a total property rather than a fixture.
+
+    Three cold seats each found a fresh wrong ordering -- by name, by source,
+    by budget status -- that the previous fixture admitted. The set of wrong
+    orderings a fixture must trap is not closed; the right ordering is one
+    condition over the output, so that is what this asserts, here and on the
+    repository itself.
+    """
+    _derivable_tree(tmp_path)
+    # Names, sources and sizes deliberately disagree: were the report ordered
+    # by any of the three, this fixture would catch it.
+    _shipped_cell(tmp_path, "zulu", "z" * 400)
+    _shipped_cell(tmp_path, "alpha", "a" * 100)
+    _repo_cell(tmp_path, "mike", "m" * 800)
+
+    for tree in (tmp_path, lint.ROOT):
+        bodies = [body for _, body, _ in _rows(lint.cell_body_note(tree))]
+        assert bodies, tree
+        assert bodies == sorted(bodies, reverse=True), (
+            f"a row on {tree} is smaller than one beneath it: {bodies}")
+
+
+def test_a_cell_added_to_either_source_is_sized_without_editing_a_list(tmp_path):
+    """Criterion 4. The enumeration reads the roster, not a literal pair."""
+    _derivable_tree(tmp_path)
+    _shipped_cell(tmp_path, "alpha", "Body.")
+    before = [name for name, _, _ in _rows(lint.cell_body_note(tmp_path))]
+    assert "later" not in before
+
+    _repo_cell(tmp_path, "later", "Added after the first run.")
+    after = [name for name, _, _ in _rows(lint.cell_body_note(tmp_path))]
+    assert "later" in after, "a new cell needed a list edited to be sized"
+
+
+def test_the_report_says_so_when_it_cannot_derive(tmp_path):
+    """Criterion 5, first direction.
+
+    A report that vanishes when its input breaks tells the reader nothing and
+    reads exactly like a tree with nothing to report. `always_on_note` states
+    what it could not derive and moves on; this copies it.
+    """
+    _shipped_cell(tmp_path, "alpha", "Body.")
+    assert not (tmp_path / "tools" / "figures.py").is_file()
+
+    note = lint.cell_body_note(tmp_path)
+    assert "not derived" in note, note
+    assert not _rows(note), "rows were rendered from a tree that cannot derive"
+
+
+def test_a_tree_with_no_cells_says_so_rather_than_going_silent(tmp_path):
+    """Criterion 5, second direction.
+
+    Nothing to report is not a failure to derive, and silence would say
+    neither -- so each state produces its own text.
+    """
+    _derivable_tree(tmp_path)
+    note = lint.cell_body_note(tmp_path)
+    assert "no cells" in note, note
+    assert "not derived" not in note, "an empty tree reported a derivation failure"
+
+
+def test_the_charter_row_names_both_budgets_that_bind_it(tmp_path):
+    """Criterion 1's charter clause, which a cold seat caught ratified.
+
+    The charter's body is a term in every always-on row and in the adopter
+    total, so `check_always_on_budget` reds on it at the same command -- it is
+    enforced today while absent from `CELL_BODY_BUDGET_CHARS`. A row reading
+    `no budget` would be false, and would be false about the half of the brief
+    that promises to say which cells have no limit. Both constants are named
+    because the binding one is the adopter total, which a reader reaches
+    second.
+    """
+    assert lint.CHARTER not in lint.CELL_BODY_BUDGET_CHARS, (
+        "the charter row must come from the other guard, not a smuggled entry")
+
+    rows = {name: against for name, _, against in _rows(lint.cell_body_note(lint.ROOT))}
+    assert "charter" in rows, "the charter was not sized at all"
+    against = rows["charter"]
+    assert "no budget" not in against, "the charter reported as uncapped, and it is not"
+    assert f"{lint.ALWAYS_ON_ROW_BUDGET_CHARS:,}" in against, against
+    assert f"{lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,}" in against, (
+        "the binding budget of the two went unnamed")
+    assert "shared" in against, "a shared budget stated as though it were the cell's own"
+
+
+def test_the_reported_number_is_the_body_and_not_the_cell_total(tmp_path):
+    """Criterion 1's number clause.
+
+    `figure_cell_total` is the neighbouring function in the module this report
+    is hosted in, and printing it beside a body budget forks the figure from
+    the guard that enforces it.
+    """
+    _derivable_tree(tmp_path)
+    cell = _shipped_cell(tmp_path, "alpha", "Short body.")
+    (cell / "references").mkdir()
+    (cell / "references" / "detail.md").write_text("d" * 5000, encoding="utf-8")
+
+    body = dict((name, size) for name, size, _ in
+                _rows(lint.cell_body_note(tmp_path)))["alpha"]
+    text = (cell / "SKILL.md").read_text(encoding="utf-8")
+    assert body == len(lint._frontmatterless(text))
+    assert body < 5000, "the row carried the cell total rather than the body"
+
+
+def test_the_report_carries_nothing_evaluative(tmp_path):
+    """Criterion 6's marker clause, as a shape over every row.
+
+    A threshold, highlight or word ranking a cell as large is a number
+    invented for a cell nobody has argued about -- the edge the affirmed brief
+    set. Asserting the row shape forbids the whole class rather than a list of
+    words somebody thought of.
+    """
+    lawful = re.compile(r"^  \S+\s+[\d,]+  (no budget|of [\d,]+|shared with [^!]+)$")
+    block = lint.cell_body_note(lint.ROOT).splitlines()[1:]
+    assert block
+    for line in block:
+        assert lawful.match(line), f"row carries something beyond size and budget: {line!r}"
