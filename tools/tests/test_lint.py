@@ -278,17 +278,6 @@ def test_doctrine_import_fires_on_a_backticked_mention(tmp_path):
     assert len(findings) == 1
 
 
-def test_doctrine_budget_fires_when_the_charter_bloats(tmp_path):
-    """The charter needs the displacement pressure more than AGENTS.md does:
-    an adopting repository loads it before every session's substantive work."""
-    make_clean_tree(tmp_path)
-    (tmp_path / "skills" / "charter" / "SKILL.md").write_text(
-        "x" * (lint.CHARTER_BUDGET_CHARS + 1), encoding="utf-8"
-    )
-    findings = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
-    assert len(findings) == 1 and "charter" in findings[0]
-
-
 def test_sideways_deps_reaches_the_charter(tmp_path):
     """A skill named by path from `charter/` does not resolve once installed --
     the skills live in a plugin cache, not at `skills/` beside the reader."""
@@ -692,6 +681,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_committed_carriage_return",
     "check_marketplace_source",
     "check_body_strip_owner",
+    "check_always_on_budget",
 )
 
 
@@ -1116,16 +1106,6 @@ def test_the_exempt_cell_name_is_the_one_these_tests_pin():
 
 
 # --- doctrine --------------------------------------------------------------
-
-def test_doctrine_budget_fires_when_agents_md_bloats(tmp_path):
-    make_clean_tree(tmp_path)
-    (tmp_path / "AGENTS.md").write_text(
-        "@skills/charter/SKILL.md" + chr(10) + "x" * (lint.AGENTS_BUDGET_CHARS + 1),
-        encoding="utf-8",
-    )
-    findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "doctrine-budget" in findings[0]
-
 
 def test_missing_agents_md_is_a_finding(tmp_path):
     make_clean_tree(tmp_path)
@@ -2321,28 +2301,6 @@ def test_frontmatter_stripper_produces_the_expected_body(document, expected):
     assert lint._frontmatterless(document) == expected
 
 
-def test_the_budget_measures_the_body_and_not_the_file(tmp_path):
-    """A description edit must not eat the rules' headroom.
-
-    The rule is asserted in a decision entry that freezes on landing, and until
-    now nothing pinned it: reverting the budget to measure the whole file left
-    the suite green, because the existing budget test writes a cell with no
-    frontmatter and so never enters the stripping branch.
-    """
-    make_clean_tree(tmp_path)
-    charter = tmp_path / "skills" / "charter" / "SKILL.md"
-    body = "x" * (lint.CHARTER_BUDGET_CHARS - 10)
-    charter.write_text(
-        "---" + NL + "name: charter" + NL
-        + "description: " + "d" * 400 + NL + "---" + NL + NL + body + NL,
-        encoding="utf-8",
-    )
-    # The file is over budget; the body is under it. Only a guard measuring the
-    # body stays quiet here.
-    assert len(charter.read_text(encoding="utf-8")) > lint.CHARTER_BUDGET_CHARS
-    assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []
-
-
 def _set_description(root: Path, value: str) -> None:
     """Rewrite the charter cell's description, leaving everything else alone."""
     cell = root / "skills" / "charter" / "SKILL.md"
@@ -2448,13 +2406,16 @@ def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
     arms below, so a change to either is a deliberate act with a red suite
     behind it.
     """
-    assert lint.AGENTS_BUDGET_CHARS == 6_100, (
-        "AGENTS_BUDGET_CHARS was raised to 6_100 temporarily, under the owner "
-        "approval recorded on issue #260, and is restored or replaced when that "
-        "issue lands. If you are landing #260, move this pin with it, and "
-        "delete the #260 note inside _always_on_line in "
-        "tools/doctrine_callout.py -- no test reaches that note."
+    assert lint.ALWAYS_ON_ROW_BUDGET_CHARS == 15_274, (
+        "ALWAYS_ON_ROW_BUDGET_CHARS is the larger always-on row this change "
+        "measured plus one substantial rule, and the headroom is exactly one "
+        "unit rather than a rounder number: a wider margin admits the "
+        "AGENTS.md-to-CLAUDE.md move the row budget exists to refuse, and a "
+        "narrower one refuses the rule admission the ceiling exists to allow. "
+        "Moving it is a deliberate act, and the two behavioural arms below "
+        "are what say which direction broke."
     )
+    assert lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS == 11_161
     assert lint.POINTER_BUDGET_CHARS == 500
 
 
@@ -2504,19 +2465,6 @@ def test_the_declared_cell_body_budgets_are_the_ones_these_tests_pin():
         "skills/adversarial-review/SKILL.md": 9_000,
         "skills/authoring/SKILL.md": 7_359,
     }
-
-
-def test_the_declared_charter_budget_is_the_one_these_tests_pin():
-    """The rule stated just above, applied to the constant the fix that
-    stated it left deriving its bound from itself.
-    """
-    assert lint.CHARTER_BUDGET_CHARS == 5_800, (
-        "CHARTER_BUDGET_CHARS was raised to 5_800 temporarily, under the owner "
-        "approval recorded on issue #260, and is restored or replaced when that "
-        "issue lands. If you are landing #260, move this pin with it, and "
-        "delete the #260 note inside _always_on_line in "
-        "tools/doctrine_callout.py -- no test reaches that note."
-    )
 
 
 def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):
@@ -4792,3 +4740,67 @@ def test_the_scan_and_the_check_read_the_same_predicate(tmp_path):
     assert lint.check_body_strip_owner(tmp_path) == lint.check_body_strip_owner(tmp_path)
     hits = figures.body_strip_scan(tmp_path)
     assert hits == ["tools/tests/test_fixture.py:0 <module>"], hits
+
+
+def test_the_always_on_row_budget_is_enforced_in_both_polarities(tmp_path,
+                                                                 monkeypatch):
+    """The ceiling the two per-file ones became, on the tree it governs.
+
+    Both arms run against this repository rather than a fixture, because the
+    quantity is composed from this repository's own doctrine files and its two
+    generated roster surfaces -- a synthetic tree has no always-on rows to
+    measure, which is the same reason the guard gates on this file's presence.
+
+    The lawful arm is half the pin: a tree at its budget must pass, or the
+    ceiling is a ratchet nobody can land a change through.
+    """
+    assert lint.check_always_on_budget(lint.ROOT) == []
+    monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", 1_000)
+    findings = lint.check_always_on_budget(lint.ROOT)
+    assert findings, "a row far past its budget reported nothing"
+    assert all(f.startswith("always-on-budget:") for f in findings), findings
+    assert any("Claude Code" in f for f in findings), findings
+    assert any("Codex" in f for f in findings), findings
+
+
+def test_the_adopter_total_is_budgeted_separately(tmp_path, monkeypatch):
+    """The adopter surface is not a runtime row and does not share its ceiling.
+
+    It counts the charter body and the shipped roster and neither doctrine
+    file, so a change can move a row without moving it -- which is why it is a
+    constant of its own rather than a third row under the same one.
+    """
+    monkeypatch.setattr(lint, "ALWAYS_ON_ADOPTER_BUDGET_CHARS", 1_000)
+    findings = lint.check_always_on_budget(lint.ROOT)
+    assert any("adopter total" in f for f in findings), findings
+    assert not any("Claude Code" in f for f in findings), (
+        "the row budget fired on a change to the adopter constant alone", findings
+    )
+
+
+def test_the_budget_reds_rather_than_passing_when_the_figure_is_gone(tmp_path):
+    """A ceiling that stops applying when its input breaks is not a ceiling.
+
+    `always_on_note` swallows every exception and returns a string, which is
+    right for a note printed beside the findings and wrong here. #134 records
+    the shape this arm exists to keep closed: a guard reading its own input's
+    absence as clean makes deleting the input the cheapest route past it.
+    """
+    make_clean_tree(tmp_path)
+    (tmp_path / "tools").mkdir(exist_ok=True)
+    (tmp_path / "tools" / "lint.py").write_text("# the guard\n", encoding="utf-8")
+    findings = lint.check_always_on_budget(tmp_path)
+    assert findings, "no figures.py beside the guard reported nothing"
+    assert "not derived" in findings[0], findings
+
+
+def test_a_tree_without_this_guard_is_not_budgeted(tmp_path):
+    """The other polarity of the gate above: a fixture is not this repository.
+
+    Every synthetic tree the suite builds writes part of `tools/` without
+    writing this file, and reporting there would red all of them for having no
+    always-on surface to measure.
+    """
+    make_clean_tree(tmp_path)
+    assert not (tmp_path / "tools" / "lint.py").is_file()
+    assert lint.check_always_on_budget(tmp_path) == []

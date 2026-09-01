@@ -49,6 +49,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import roster  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # Shared with the shipped zone, which is the lawful direction: repo-only
@@ -62,7 +65,15 @@ from winio import utf8_stdio  # noqa: E402
 # not a widening: it holds the half of the doctrine that moved out of
 # `AGENTS.md`, and it also ships to consumers, so omitting it would shrink
 # the owner's read at the moment the material became more consequential.
+# **The repo-only cells are in here because the material moved, not because
+# the gate widened.** The flow, this repository's records rules and its
+# content-routing map used to live in AGENTS.md and reached the owner through
+# this list every time a PR touched them. Moving them under `docs/cells/`
+# without adding them here would have taken a PR rewriting the flow out of his
+# merge-time read silently, while the Release bullet went on describing the
+# wider read -- a narrower gate arriving with nothing saying so. [#260]
 DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md", "skills/charter/SKILL.md")
+DOCTRINE_PREFIXES = (roster.REPO_CELLS + "/",)
 
 LABEL = "doctrine"
 LABEL_COLOR = "5319e7"
@@ -173,7 +184,16 @@ def touched_doctrine(paths: list[str]) -> list[str]:
     that did not exist for it.
     """
     changed = set(paths)
-    return [p for p in DOCTRINE_PATHS if p in changed]
+    exact = [p for p in DOCTRINE_PATHS if p in changed]
+    # **Prefix, not exact, for the repo-only cells**, because their names are
+    # not a fixed list the way the three files are: a cell is added by making a
+    # directory, and a gate keyed to names enumerated here would silently miss
+    # the next one. Sorted so the callout reads the same twice.
+    under = sorted(
+        path for path in changed
+        if any(path.startswith(prefix) for prefix in DOCTRINE_PREFIXES)
+    )
+    return exact + under
 
 
 def changed_paths(pr: str, repo: str | None) -> list[str]:
@@ -292,11 +312,15 @@ def _edit_label(pr: str, repo: str | None, *, add: bool) -> None:
 # not exist. Module level so a test can name the binding rather than infer it
 # from a rendered string: the label carries the ceiling, so reordering rows is
 # harmless and substituting one size for another is not.
+# Only CLAUDE.md keeps a ceiling of its own: it bounds a pointer file's shape
+# rather than a share of the always-on surface, so nothing about it was priced
+# by the two ceilings this change replaced. AGENTS.md and the charter body are
+# now members of the always-on rows, which the row line beside this prices, and
+# a row per member here would reassert the ceilings that priced a move between
+# them as a saving. [#260]
 PRICED = (
     # label,          lint constant,            figure_always_on data key
-    ("AGENTS.md",     "AGENTS_BUDGET_CHARS",    "agents"),
     ("CLAUDE.md",     "POINTER_BUDGET_CHARS",   "pointer"),
-    ("charter body",  "CHARTER_BUDGET_CHARS",   "charter"),
 )
 
 
@@ -367,16 +391,13 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         # there were two, in the commit that shipped the third as a
         # hand-written copy. [PR #278 review, F5]
         #
-        # The two doc ceilings priced above are raised temporarily on the owner
-        # approval recorded at issue #260 and are restored when it lands. The
-        # note sits after the whole enumeration, so no priced term dangles off
-        # it as an appositive of the note rather than of the surface, and it
-        # carries the expiry because this is the surface the owner reads at
-        # merge -- a raise that outlives its condition becomes permanent by
-        # forgetting, and the two budget pins in tools/tests/test_lint.py name
-        # this note as the third site to delete. [PR #280 review, M5, F4]
-        + " AGENTS.md and the charter body are priced against ceilings raised"
-        + " temporarily under the owner approval on issue #260, restored when it lands."
+        # The temporary-ceiling note that sat here is gone with the ceilings
+        # it described: the owner approval recorded at issue #260 raised
+        # AGENTS.md's and the charter body's per-file budgets, and landing
+        # that issue replaced both with a ceiling on the always-on rows
+        # themselves. Nothing here is raised under an approval any more, so a
+        # note saying so would be the raise outliving its condition in the one
+        # surface written to prevent exactly that. [PR #280 review, M5, F4]
     )
 
 

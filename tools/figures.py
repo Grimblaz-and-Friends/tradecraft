@@ -25,10 +25,11 @@ Usage:  python tools/figures.py [--base REF] [--cell PATH --cell-budget N]
 Always emitted, in this order:
 
   1. figure_tests -- the suite, over tools/tests and skills
-  2. figure_doc -- AGENTS.md against its ceiling
-  3. figure_charter -- the charter's body against its ceiling
-  4. figure_always_on -- the always-on total, for both audiences
-  5. figure_census -- the decision log
+  2. figure_always_on -- the always-on rows, per runtime, and the adopter
+     total; each row itemises its members, so what used to be a doc row for
+     AGENTS.md and a cell row for the charter body is readable there. Neither
+     has a ceiling of its own any more: what is enforced is the row (#260)
+  3. figure_census -- the decision log
 
 With --base, figure_delta adds the governing-prose delta (AGENTS.md, CLAUDE.md,
 and the .md files under skills/) against that ref. With --cell, figure_cell,
@@ -519,28 +520,17 @@ def always_on_at(root: Path, ref: str) -> dict[str, int]:
     return {row["runtime"]: row["total"] for row in data["here"]}
 
 
-def figure_charter(root: Path) -> dict:
-    """The charter's body against the one cell budget a guard here enforces.
-
-    The measurement is the engine's -- a cell body is a general shape, not a
-    repo-bound one, and reimplementing it here is how a figure drifts from the
-    guard judging it. What is repo-bound is the budget and the fact that
-    something enforces it, which is what this adds.
-    """
-    figure = engine.figure_cell(root, lint.CHARTER, lint.CHARTER_BUDGET_CHARS)
-    figure["basis"] += (
-        " -- here tools/lint.py's own constant, so the figure cannot drift "
-        "from what check_doctrine enforces"
-    )
-    return figure
-
-
 def build_figures(root: Path, base: str | None,
                   cell: str | None = None, budget: int | None = None) -> list[dict]:
     figures = [
         engine.figure_tests(root, SUITE_PATHS),
-        engine.figure_doc(root, DOC, lint.AGENTS_BUDGET_CHARS),
-        figure_charter(root),
+        # **No per-file rows for AGENTS.md or the charter body.** Both are
+        # members of the always-on rows and neither has a ceiling of its own
+        # any more, and the engine's doc and cell figures render a budget and
+        # a headroom because that is what they are for. The always-on figure
+        # below already itemises every member of every row, so nothing a
+        # reader had is lost -- what goes is the pair of ceilings that priced
+        # a move between two members as a saving. [#260]
         figure_always_on(root),
         figure_census(root),
     ]
