@@ -40,6 +40,8 @@ This edits an always-on surface, so it owes an outflow. The charter's admission 
 
 `skills/experience-session/SKILL.md`'s frontmatter gains the third trigger limb and the fix-batch clause that widened with it in D-295, so the always-on triggering surface and the body stop disagreeing about when the cell fires. Nothing mechanical holds that agreement — D-295 §5 records that a body contradicting its own description lints clean — so it is held by this change and by the review, not by a guard.
 
+**And it sheds *"and you want to know what use will hit"*.** That clause gated the obligation on appetite: the body says a change *buys* a session, so a session that had already concluded it needed none read the always-on trigger as not firing and never reached the decline rule — #294's own incident one surface up. Pre-existing text, in scope because a defect this change did not undertake is still a defect in the tree it produces. Deleting a condition on firing widens what the description triggers on, and that is the intent: it returns the description to the body's own test.
+
 ## 4. What was rejected
 
 - **A third ceremony bullet.** It would contradict the charter's own "exactly two moments" four lines above it.
