@@ -4804,3 +4804,147 @@ def test_a_tree_without_this_guard_is_not_budgeted(tmp_path):
     make_clean_tree(tmp_path)
     assert not (tmp_path / "tools" / "lint.py").is_file()
     assert lint.check_always_on_budget(tmp_path) == []
+
+
+# --- what the automated reviewers found on PR #291, pinned ------------------
+
+def test_an_incomplete_figure_is_not_a_passing_budget(monkeypatch):
+    """An empty `here` walks the row loop zero times and applies no ceiling.
+
+    Raised by an automated reviewer against the first draft of the budget
+    check, and it was right: the loop was the only thing standing between a
+    malformed figure and a silent pass, which is exactly what `always_on_note`
+    was rejected for. [#291]
+    """
+    import types
+
+    def _figure(payload):
+        module = types.SimpleNamespace(
+            figure_always_on=lambda root: {"data": payload})
+        return lambda name, path: types.SimpleNamespace(
+            loader=types.SimpleNamespace(exec_module=lambda m: None)), module
+
+    for payload, expect in (
+        ({"here": [], "adopter_total": 1}, "no row for"),
+        ({"here": [{"runtime": "Codex", "total": 1}], "adopter_total": 1},
+         "no row for Claude Code"),
+        ({"here": [{"runtime": r.runtime, "total": 1} for r in lint.roster.SURFACES],
+          "adopter_total": None}, "adopter total is not a number"),
+    ):
+        findings = _budget_over(monkeypatch, payload)
+        assert findings, f"{payload} reported nothing"
+        assert expect in findings[0], findings
+
+
+def _budget_over(monkeypatch, payload):
+    """Run the budget check against a supplied figure payload."""
+    import importlib.util
+    import types
+    module = types.SimpleNamespace(figure_always_on=lambda root: {"data": payload})
+
+    class _Spec:
+        loader = types.SimpleNamespace(exec_module=staticmethod(lambda m: None))
+
+    monkeypatch.setattr(importlib.util, "spec_from_file_location",
+                        lambda name, path: _Spec())
+    monkeypatch.setattr(importlib.util, "module_from_spec", lambda spec: module)
+    return lint.check_always_on_budget(lint.ROOT)
+
+
+def test_a_block_scalar_description_cannot_hide_from_the_row_budget(tmp_path):
+    """The runtime loads the block; this repository's reader sees the marker.
+
+    Probed before the fix at 20,000 characters measured as nine, with the row
+    budget and the whole lint green -- an always-loaded value of any size, past
+    a ceiling written to bound exactly that. Raised by an automated reviewer on
+    PR #291 and reproduced here so the hole cannot reopen quietly.
+    """
+    surface = lint.ROOT / lint.roster.SURFACES[0].directory / "blockscalar"
+    surface.mkdir(parents=True, exist_ok=True)
+    cell = surface / "SKILL.md"
+    try:
+        cell.write_text(
+            "---" + NL + "name: blockscalar" + NL + "description: >-" + NL
+            + ("  " + "x" * 200 + NL) * 100 + "---" + NL,
+            encoding="utf-8")
+        findings = lint.check_always_on_budget(lint.ROOT)
+        assert any("block scalar" in f for f in findings), findings
+    finally:
+        cell.unlink(missing_ok=True)
+        surface.rmdir()
+    # The lawful arm: with it gone the surface is inside budget again.
+    assert lint.check_always_on_budget(lint.ROOT) == []
+
+
+def _repo_cell(root: Path, name: str, body: str) -> Path:
+    """A repo-only cell in a fixture tree, frontmatter and all."""
+    cell_dir = root / lint.REPO_CELLS / name
+    cell_dir.mkdir(parents=True, exist_ok=True)
+    (cell_dir / "SKILL.md").write_text(
+        "---" + NL + f"name: {name}" + NL
+        + f"description: The {name} cell. Use when testing." + NL
+        + "---" + NL + NL + f"# {name}" + NL + body + NL,
+        encoding="utf-8")
+    return cell_dir
+
+
+def test_one_repo_only_cell_may_not_name_another_by_path(tmp_path):
+    """The mesh ban read the name form and not the path form.
+
+    The fence landed on `` `records` cell `` and left
+    `docs/cells/records/SKILL.md` unguarded, so the shape it bans could be
+    built through the spelling it did not read. Raised by an automated
+    reviewer on PR #291. The lawful arm is a cell naming its own depth by
+    path, which must stay silent.
+    """
+    make_clean_tree(tmp_path)
+    _repo_cell(tmp_path, "records", "Depth.")
+    _repo_cell(tmp_path, "siting",
+               "See `" + lint.REPO_CELLS + "/records/SKILL.md` for the log.")
+    roster.write(tmp_path)
+    findings = [f for f in lint.check_sideways_deps(tmp_path) if "records" in f]
+    assert findings, "a path-form reference between repo-only cells reported nothing"
+    assert "by path" in findings[0], findings
+
+    _repo_cell(tmp_path, "siting",
+               "Depth is in `" + lint.REPO_CELLS + "/siting/references/x.md`.")
+    assert not [f for f in lint.check_sideways_deps(tmp_path) if "siting" in f], (
+        "a cell naming its own depth by path was reported as sideways"
+    )
+
+
+def test_a_repo_only_cell_resolves_its_own_references_directory(tmp_path):
+    """A cell sheds depth into `references/`, and that link is cell-relative.
+
+    The widened doctrine scan resolved it from the repository root, so the one
+    lawful way a repo-only cell sheds depth reported as a dead link -- the
+    guard forbidding what the cell exists to allow. Both polarities, because
+    the fix must not swallow a genuinely dead link. Raised by an automated
+    reviewer on PR #291.
+    """
+    make_clean_tree(tmp_path)
+    cell_dir = _repo_cell(tmp_path, "landing", "Depth is in `references/detail.md`.")
+    (cell_dir / "references").mkdir()
+    (cell_dir / "references" / "detail.md").write_text("Depth." + NL, encoding="utf-8")
+    roster.write(tmp_path)
+    assert not [f for f in lint.check_doctrine_references(tmp_path)
+                if "detail.md" in f], "a lawful cell-local link was reported dead"
+
+    _repo_cell(tmp_path, "landing", "Depth is in `references/missing.md`.")
+    assert [f for f in lint.check_doctrine_references(tmp_path)
+            if "missing.md" in f], "a genuinely dead cell-local link went unreported"
+
+
+def test_a_directory_without_a_cell_file_is_not_a_cell(tmp_path):
+    """`docs/cells/ghost/` resolved for the guard and loaded in no runtime.
+
+    A reference is meant to be followable; one that satisfies the checker and
+    nothing else is the failure the reference form exists to prevent. Raised by
+    an automated reviewer on PR #291.
+    """
+    make_clean_tree(tmp_path)
+    (tmp_path / lint.REPO_CELLS / "ghost").mkdir(parents=True)
+    _repo_cell(tmp_path, "siting", "The `ghost` cell has it.")
+    roster.write(tmp_path)
+    findings = [f for f in lint.check_cell_references(tmp_path) if "ghost" in f]
+    assert findings, "a directory with no SKILL.md satisfied a cell reference"
