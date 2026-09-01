@@ -1,6 +1,6 @@
 ---
 name: authoring
-description: How to create and revise this practice's prose — the purpose header every governing document carries, which home each kind of content takes, what a cell owes the roster it joins, and the writing standards that keep it lean. Use when writing, restructuring or revising a skill or governing document, including a description alone or what sheds behind a pointer; when deciding where content belongs or editing an always-on surface; or when a write-up states derived figures or describes current behaviour; not for how code is written, though where such a rule belongs is here; not for reviewing finished content, and not for a pre-implementation artifact.
+description: How to create and revise this practice's prose — the purpose header every governing document carries, which home each kind of content takes, what a cell owes the roster it joins, and the writing standards that keep it lean. Use when writing, restructuring or revising a skill or governing document, including a description alone or what sheds behind a pointer; when deciding where content belongs or editing an always-on surface; or when a write-up, a pre-implementation artifact included, states derived figures or describes current behaviour; not for how code is written, though where such a rule belongs is here; not for reviewing finished content, and not for deciding what a change is for.
 ---
 
 # authoring

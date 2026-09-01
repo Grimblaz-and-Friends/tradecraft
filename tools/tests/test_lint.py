@@ -2448,7 +2448,13 @@ def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
     arms below, so a change to either is a deliberate act with a red suite
     behind it.
     """
-    assert lint.AGENTS_BUDGET_CHARS == 6_000
+    assert lint.AGENTS_BUDGET_CHARS == 6_100, (
+        "AGENTS_BUDGET_CHARS was raised to 6_100 temporarily, under the owner "
+        "approval recorded on issue #260, and is restored or replaced when that "
+        "issue lands. If you are landing #260, move this pin with it, and "
+        "delete the #260 note inside _always_on_line in "
+        "tools/doctrine_callout.py -- no test reaches that note."
+    )
     assert lint.POINTER_BUDGET_CHARS == 500
 
 
@@ -2504,7 +2510,13 @@ def test_the_declared_charter_budget_is_the_one_these_tests_pin():
     """The rule stated just above, applied to the constant the fix that
     stated it left deriving its bound from itself.
     """
-    assert lint.CHARTER_BUDGET_CHARS == 5_600
+    assert lint.CHARTER_BUDGET_CHARS == 5_800, (
+        "CHARTER_BUDGET_CHARS was raised to 5_800 temporarily, under the owner "
+        "approval recorded on issue #260, and is restored or replaced when that "
+        "issue lands. If you are landing #260, move this pin with it, and "
+        "delete the #260 note inside _always_on_line in "
+        "tools/doctrine_callout.py -- no test reaches that note."
+    )
 
 
 def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):

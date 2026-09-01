@@ -366,6 +366,17 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
         # `tools/lint.py`'s `always_on_note`. An earlier comment here said
         # there were two, in the commit that shipped the third as a
         # hand-written copy. [PR #278 review, F5]
+        #
+        # The two doc ceilings priced above are raised temporarily on the owner
+        # approval recorded at issue #260 and are restored when it lands. The
+        # note sits after the whole enumeration, so no priced term dangles off
+        # it as an appositive of the note rather than of the surface, and it
+        # carries the expiry because this is the surface the owner reads at
+        # merge -- a raise that outlives its condition becomes permanent by
+        # forgetting, and the two budget pins in tools/tests/test_lint.py name
+        # this note as the third site to delete. [PR #280 review, M5, F4]
+        + " AGENTS.md and the charter body are priced against ceilings raised"
+        + " temporarily under the owner approval on issue #260, restored when it lands."
     )
 
 
