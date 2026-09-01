@@ -1,7 +1,5 @@
 # D-291 — Repo-only cells, and one ceiling on the always-on rows in place of two on the files
 
-**Purpose:** record why this repository's own procedure moved out of the always-on doctrine into cells under `docs/cells/`, why the two per-file ceilings were replaced by a ceiling on the rows a session actually loads, and what was rejected on the way. **Audience:** a session changing the cell sources, the always-on budget, or any of the guards that follow the material. **Success:** a reader can tell which parts were measured, which were chosen, and what the alternatives cost.
-
 ## The condition
 
 A rule only this repository needs had two lawful homes: `AGENTS.md`, always-on and budgeted, or a file under `docs/` plus a binding line in `AGENTS.md`, which still spends an always-on line. A shipped cell could not hold one — a shipped cell ships to every adopter, and `AGENTS.md` already ruled that repo-specific application stays in this repository's own doctrine. So repo-specific procedure was always-on **by construction** rather than by anyone choosing it, and the outflow's second move in `skills/authoring/references/routing.md` — *a rule that binds only inside one activity moves to that activity's cell* — had no destination for any of it.

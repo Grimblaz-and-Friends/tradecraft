@@ -72,7 +72,11 @@ POINTER = "CLAUDE.md"
 # predates the charter becoming a cell has to see the old path on the base
 # side, or the move reads as a reduction. It matches nothing in a current
 # working tree, which is why it looks like a leftover.
-PROSE_PATHS = ["AGENTS.md", "CLAUDE.md", "charter", "skills"]
+# `docs/cells` is here because governing prose now lives there too. Left
+# out, the delta reported this repository's own split as a large reduction
+# while the governing corpus had grown -- the sign reversed, in the figure
+# a review and an outflow read as evidence. [#260]
+PROSE_PATHS = ["AGENTS.md", "CLAUDE.md", "charter", "skills", "docs/cells"]
 PROSE_SUFFIXES = [".md"]
 
 

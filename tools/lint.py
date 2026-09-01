@@ -348,6 +348,15 @@ CHARTER_CELL = "charter"
 
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
 ROOTED_SKILL = re.compile(r"skills[\\/]([\w-]+)[\\/]", re.IGNORECASE)
+# The same reference in the repo-only tree. The name form was fenced when the
+# second source landed and the path form was not, so one repo-only cell could
+# name another as a path and build exactly the mesh the name-form fence bans.
+# Written from the generator's constant so a moved source directory moves this
+# with it. [#260]
+ROOTED_REPO_CELL = re.compile(
+    re.escape(roster.REPO_CELLS).replace("/", r"[\\/]") + r"[\\/]([\w-]+)[\\/]",
+    re.IGNORECASE,
+)
 # The name form of a cell reference: `engagement` cell. A skill is reached by
 # invoking it by name, not by opening a file, so this -- not a path -- is the
 # form the prose uses; defining it is also what makes name-form coupling
@@ -858,6 +867,18 @@ def check_sideways_deps(root: Path) -> list[str]:
                             f"skill '{target}'" + _origin(own, base)
                         )
             for lineno, line in enumerate(text.splitlines(), 1):
+                for match in ROOTED_REPO_CELL.finditer(line):
+                    target = match.group(1)
+                    if not _is_repo_cell(target):
+                        continue
+                    if own is not None and target.lower() == own.lower():
+                        continue
+                    findings.append(
+                        f"sideways-dep: {rel_file}:{lineno} names the "
+                        f"repo-only cell '{target}' by path" + _origin(own, base)
+                        + " -- a cell is reached by name, and only the charter "
+                        f"may be named across cells"
+                    )
                 for match in ROOTED_SKILL.finditer(line):
                     # Same lawful-case guards as the zone wall's rooted branch:
                     # web URLs resolve for consumers, relative forms belong to
@@ -997,6 +1018,16 @@ def check_doctrine_references(root: Path) -> list[str]:
             for ref, form, _pinned in _entry_refs(line):
                 if _doctrine_ref_resolves(root, ref):
                     continue
+                # **A cell's own depth resolves against the cell, not the
+                # root.** `references/x.md` inside a repo-only cell is the
+                # ordinary cell-local form every shipped cell uses, and
+                # resolving it from the repository root reports the one lawful
+                # way a repo-only cell sheds depth as a broken link -- which
+                # would leave a cell unable to have a `references/` directory
+                # at all. The doctrine files keep root resolution, having no
+                # directory of their own to resolve against. [#260]
+                if (path.parent / ref).is_file():
+                    continue
                 findings.append(
                     f"doctrine-reference: {name}:{lineno} {form} '{ref}' "
                     f"resolves to nothing. The doctrine is editable, so "
@@ -1047,8 +1078,13 @@ def check_cell_references(root: Path) -> list[str]:
     findings = []
 
     def _names(source: str) -> set:
-        base = root / source
-        return {p.name for p in base.iterdir() if p.is_dir()} if base.is_dir() else set()
+        # **A directory is not a cell until it holds the file that loads.** An
+        # abandoned or half-renamed `docs/cells/ghost/` would otherwise satisfy
+        # a `` `ghost` cell `` reference here while the roster skips it and no
+        # runtime can load it -- a reference that resolves for the guard and
+        # for nobody else. The generator's own predicate is the one this must
+        # agree with, so it is the one used.
+        return set(roster.names_under(root, source))
 
     # **Two known sets, because the wall runs one way.** A repo-only cell may
     # name a shipped cell -- that is the lawful direction, the same one that
@@ -3835,6 +3871,54 @@ def check_project_roster(root: Path) -> list[str]:
 
 # Every check, in report order. A tuple rather than an expression because
 # `run()` calls them one at a time to isolate them; see its docstring.
+def _unmeasurable_descriptions(root: Path) -> list[str]:
+    """Every counted description is one this repository can actually measure.
+
+    **The ceiling is only as good as the number it is applied to.** The
+    frontmatter reader here takes `key: value` on one line, which is what every
+    cell in this practice writes -- but a *hand-written* project skill on a
+    roster surface is somebody else's file, and YAML lets it write
+    `description: >-` with the value indented beneath. The runtime loads the
+    whole block; this reader sees the two-character token. Probed: a 20,000
+    character description measured as nine and left the row budget green.
+
+    Rejecting the construct rather than parsing it, for the reason
+    `check_cell_frontmatter` already gives about not taking a YAML dependency
+    to buy an approximation of the real oracle -- and because a description
+    nobody can measure is one nobody can budget, whichever way it is spelled.
+    [#260]
+    """
+    findings = []
+    for surface in roster.SURFACES:
+        base = root / surface.directory
+        if not base.is_dir():
+            continue
+        for cell in sorted(base.glob("*/SKILL.md")):
+            text = _read_text(cell)
+            if text is None or not text.startswith("---"):
+                continue
+            rel = cell.relative_to(root).as_posix()
+            for line in _frontmatterless_header(text).splitlines():
+                key, sep, value = line.partition(":")
+                if sep and key.strip() == "description":
+                    if value.strip().startswith((">", "|")):
+                        findings.append(
+                            f"always-on-budget: {rel}'s description is a YAML "
+                            f"block scalar, which the runtime loads whole and "
+                            f"this repository measures as the marker alone -- "
+                            f"so it is charged to the {surface.runtime} row at "
+                            f"a fraction of what it costs. Write the "
+                            f"description on one line"
+                        )
+    return findings
+
+
+def _frontmatterless_header(text: str) -> str:
+    """The frontmatter block's own lines, terminator excluded."""
+    end = text.find("\n---", 3)
+    return text[3:end] if end != -1 else ""
+
+
 def check_always_on_budget(root: Path) -> list[str]:
     """Every per-runtime always-on row, and the adopter total, inside budget.
 
@@ -3885,6 +3969,27 @@ def check_always_on_budget(root: Path) -> list[str]:
             f"the always-on ceiling applied to nothing on this run -- fix "
             f"tools/figures.py; no budget passes by being unmeasurable"
         ]
+    # **An incomplete figure is not a passing one.** An empty or short `here`
+    # list would walk the loop below zero times and apply no ceiling at all,
+    # which is the same silent pass the note above was rejected for. The
+    # expected set is the generator's surfaces, so a runtime added there and
+    # missed here reports rather than going unbudgeted.
+    want = {surface.runtime for surface in roster.SURFACES}
+    got = {row.get("runtime") for row in rows if isinstance(row, dict)}
+    if want - got:
+        return [
+            f"always-on-budget: the figure reported no row for "
+            f"{', '.join(sorted(want - got))}, so that runtime's surface was "
+            f"not measured and no ceiling applied to it -- fix "
+            f"tools/figures.py; no budget passes by being unmeasurable"
+        ]
+    if not isinstance(adopter, int):
+        return [
+            f"always-on-budget: the figure's adopter total is not a number "
+            f"({adopter!r}), so no ceiling applied to it -- fix "
+            f"tools/figures.py; no budget passes by being unmeasurable"
+        ]
+    findings += _unmeasurable_descriptions(root)
     for row in rows:
         if row["total"] > ALWAYS_ON_ROW_BUDGET_CHARS:
             findings.append(
