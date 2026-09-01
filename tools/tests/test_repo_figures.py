@@ -48,30 +48,11 @@ def make_doctrine_root(tmp_path, agents_bytes):
 # change moves the fixtures with it and the pins stay a pure equality check.
 # Each b"x\r\n" line is 3 bytes and 2 characters under the guard's
 # universal-newline read — CRLF is what keeps bytes and characters apart.
-BUDGET = lint.AGENTS_BUDGET_CHARS
+BUDGET = lint.ALWAYS_ON_ROW_BUDGET_CHARS
 OVER_LINES = BUDGET // 2 + 4      # 2 * OVER_LINES chars: over budget
 UNDER_LINES = BUDGET // 2 - 1     # 2 * UNDER_LINES chars: under in chars...
 assert 3 * UNDER_LINES > BUDGET   # ...while over in bytes, for any real budget
 
-
-def test_over_budget_chars_equal_the_guards_reported_size(tmp_path):
-    root = make_doctrine_root(tmp_path, b"x\r\n" * OVER_LINES)
-    findings = [f for f in lint.check_doctrine(root) if "doctrine-budget" in f]
-    assert len(findings) == 1
-    guard_size = int(re.search(r"is (\d+) chars", findings[0]).group(1))
-    fig = repo_figures.engine.figure_doc(root, "AGENTS.md", BUDGET)
-    assert fig["data"]["chars"] == guard_size == 2 * OVER_LINES
-    assert fig["data"]["headroom"] == BUDGET - guard_size
-
-
-def test_under_budget_in_chars_over_in_bytes_agrees_with_the_guard(tmp_path):
-    root = make_doctrine_root(tmp_path, b"x\r\n" * UNDER_LINES)
-    assert not [f for f in lint.check_doctrine(root) if "doctrine-budget" in f]
-    fig = repo_figures.engine.figure_doc(root, "AGENTS.md", BUDGET)
-    assert fig["data"]["headroom"] == BUDGET - 2 * UNDER_LINES > 0
-
-
-# --- the census is check_entry_references' resolution, sets emptied ---------
 
 def make_decisions_root(tmp_path):
     directory = tmp_path / "docs" / "architecture" / "decisions"
@@ -133,13 +114,17 @@ def stub_suite(monkeypatch):
     )
 
 
-def test_wrapper_emits_suite_doc_and_census(tmp_path, monkeypatch, capsys):
+def test_wrapper_emits_suite_always_on_and_census(tmp_path, monkeypatch, capsys):
     stub_suite(monkeypatch)
     assert repo_figures.main([]) == 0
     out = capsys.readouterr().out
     assert "999 passed" in out
     assert "stub over tools/tests skills" in out
-    assert f"of {lint.AGENTS_BUDGET_CHARS:,} chars" in out  # the guard's budget
+    # The always-on rows, which is where a budget is now stated. The per-doc
+    # rows this used to assert are gone with the per-file ceilings: neither
+    # AGENTS.md nor the charter body has one, and the engine's doc and cell
+    # figures render a budget because that is what they are for. [#260]
+    assert "always-on surface" in out
     assert "decision-log census" in out
     assert "prose delta" not in out  # no base given, no delta invented
 
@@ -246,8 +231,6 @@ def test_a_cell_budget_disagreeing_with_the_guard_is_refused(tmp_path, monkeypat
     # Everything build_figures emits before the cell figures needs a full tree;
     # this test is about the budget check and nothing else.
     monkeypatch.setattr(repo_figures.engine, "figure_tests", stub)
-    monkeypatch.setattr(repo_figures.engine, "figure_doc", stub)
-    monkeypatch.setattr(repo_figures, "figure_charter", stub)
     monkeypatch.setattr(repo_figures, "figure_always_on", stub)
     monkeypatch.setattr(repo_figures, "figure_census", stub)
     monkeypatch.setattr(repo_figures, "figure_cell_description", stub)
@@ -285,20 +268,6 @@ def test_a_cell_figure_is_never_invented_and_never_defaults_its_budget(tmp_path,
     else:
         raise AssertionError("--cell without a budget must refuse, not default")
 
-
-def test_the_charter_budget_comes_from_the_guard(monkeypatch):
-    """The one coupling the batch that rewrote this docstring left unpinned.
-
-    It is the figure with the highest certification load -- emitted into every
-    write-up, and the only one asserting a budget a guard actually enforces --
-    so a literal here would be the exact drift D-141 exists to prevent, and it
-    survived mutation with the whole suite green.
-    """
-    monkeypatch.setattr(lint, "CHARTER_BUDGET_CHARS", 4321)
-    assert repo_figures.figure_charter(ROOT)["data"]["budget"] == 4321
-
-
-# --- the always-on figure, the one number the merge comment carries -----------
 
 def test_the_always_on_figure_is_emitted_at_all(tmp_path, monkeypatch):
     """Deleting the call from build_figures left the suite green.
@@ -706,7 +675,7 @@ def test_a_nested_skill_file_is_not_a_cell(tmp_path):
 # claiming eight checks while run() called ten; this file's docstring is the
 # contract for what a write-up gets by default and nothing held it to that.
 FIGURES_ALWAYS_EMITTED = (
-    "figure_tests", "figure_doc", "figure_charter",
+    "figure_tests",
     "figure_always_on", "figure_census",
 )
 FIGURES_ON_DEMAND = ("figure_delta", "figure_cell", "figure_cell_total",
@@ -746,8 +715,7 @@ def test_the_always_emitted_figures_are_what_a_default_run_produces(tmp_path,
     figures = repo_figures.build_figures(tmp_path, None)
     assert len(figures) == len(FIGURES_ALWAYS_EMITTED)
     assert [f["name"] for f in figures] == [
-        "suite", "doc `AGENTS.md`", "doc `skills/charter/SKILL.md` (body)",
-        "always-on surface", "decision-log census",
+        "suite", "always-on surface", "decision-log census",
     ]
 
 
@@ -765,9 +733,7 @@ def test_the_always_emitted_figures_are_what_a_default_run_produces(tmp_path,
 # Literal on purpose, like the lint's check list: derived from `dc.PRICED`,
 # the test would agree with itself.
 PRICED_PAIRS = (
-    ("AGENTS.md", "AGENTS_BUDGET_CHARS", "agents"),
     ("CLAUDE.md", "POINTER_BUDGET_CHARS", "pointer"),
-    ("charter body", "CHARTER_BUDGET_CHARS", "charter"),
 )
 
 
@@ -812,7 +778,7 @@ def test_the_ceilings_are_read_from_the_guards_constants(monkeypatch):
     """The other polarity, and the one that keeps these pins honest.
 
     The sizes move whenever the doctrine is edited, so a pin asserting
-    `AGENTS.md 5,747 of 6,000` would go red on every lawful edit -- a guard
+    `CLAUDE.md 11 of 500` would go red on every lawful edit -- a guard
     blocking lawful work on the very surface this change exists to make
     editable. Moving the guard's own constant and watching the rendered
     ceiling follow proves the render reads the guard rather than a literal,
@@ -820,12 +786,10 @@ def test_the_ceilings_are_read_from_the_guards_constants(monkeypatch):
     """
     import doctrine_callout as dc
 
-    monkeypatch.setattr(lint, "AGENTS_BUDGET_CHARS", 4_242)
+    monkeypatch.setattr(lint, "POINTER_BUDGET_CHARS", 4_242)
     data = repo_figures.figure_always_on(ROOT)["data"]
     body = dc._body(["AGENTS.md"])
-    assert f"AGENTS.md {data['agents']:,} of 4,242" in body
-    # and only that one moved
-    assert f"CLAUDE.md {data['pointer']:,} of {lint.POINTER_BUDGET_CHARS:,}" in body
+    assert f"CLAUDE.md {data['pointer']:,} of 4,242" in body
 
 
 # --- the per-runtime rendering, which nothing named before ---------------

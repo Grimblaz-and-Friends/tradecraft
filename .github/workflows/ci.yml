@@ -50,7 +50,9 @@ jobs:
           python -m pytest tools/tests skills -q
 
   # The owner reads the doctrine diff himself before merging -- AGENTS.md,
-  # CLAUDE.md, or the shipped charter. CODEOWNERS was
+  # CLAUDE.md, the shipped charter, or any repo-only cell under docs/cells/,
+  # which carry the mechanics that used to sit in AGENTS.md and reached him
+  # through this job every time a PR touched them. CODEOWNERS was
   # the first mechanism for that and cannot be: it fires by requesting a review,
   # and GitHub never requests one from a pull request's own author — which today
   # every PR here has (#79). This is the callout that reaches him. One runner:
