@@ -1,4 +1,4 @@
-# D-307: A commissioned probe stops at its datum, its isolation leaves nothing, and the two bounds land in the files that already own them
+# D-307: A commissioned probe stops at its datum, and every bound on it is the dispatcher's to impose
 
 **Status:** Accepted 2026-09-01 (PR #307)
 
@@ -10,37 +10,40 @@ A review's defense needed to settle one behavioural question and commissioned fi
 
 The evidence standards that commission these probes — *a behavior claim is a hypothesis until a probe answers it*, and *a defense contesting behavior commissions the probe rather than arguing it* — name the obligation and bound nothing about it. The cost is therefore incurred by the rule working as written.
 
-## 1. The change carries two standards, not one
+## 1. The change carries two standards, and both land in `spikes`
 
-The first reading treated this as one rule and hunted for a single home; a cold seat rejected that artifact, and the finding that restructured it was that the disposal half duplicated a standard `skills/adversarial-review/references/dispatch.md` already owned. The [adverse verdict and its dispositions](https://github.com/Grimblaz-and-Friends/tradecraft/issues/305#issuecomment-5497385400) are on the issue; the [settled reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/305#issuecomment-5497377804) splits them:
+The first reading treated this as one rule and hunted for a single home; a cold seat rejected that artifact, and the finding that restructured it was that the disposal half duplicated a standard `skills/adversarial-review/references/dispatch.md` already owned. The [adverse verdict and its dispositions](https://github.com/Grimblaz-and-Friends/tradecraft/issues/305#issuecomment-5497385400) are on the issue. The split it produced holds:
 
-- **S1, the stopping bound** — how a docket stops without telling the seat what is measured. This is measurement design, and nothing in the tree owned it. It lands in `skills/spikes/SKILL.md`, whose cold-seat A/B section is the instrument these probes were reaching for.
-- **S2, what a dispatched recipient may not leave** — and the fact underneath it, that a recipient does not know it is in an experiment and can infer no bound, so the dispatcher states it. This is dispatch design, and `dispatch.md` already owned it in a weaker form.
+- **S1, the stopping bound** — how a docket stops without telling the seat what is measured. Measurement design; nothing in the tree owned it. It lands as a fifth property in the cold-seat A/B list.
+- **S2, what a dispatched recipient may not leave** — and the fact underneath it, that a recipient does not know it is in an experiment and can infer no bound, so the dispatcher states it.
 
-The distinguishing fact is load-bearing rather than decorative: the disposal rule already in `spikes` binds a session that knows it is spiking, and S2 binds one that does not.
+**S2 is not a new disposal rule.** `spikes` already forbids leaving anything (*"what is forbidden is leaving it"*) and already prescribes a detached worktree and its deletion. What was missing was **scope**: every one of those sentences binds a session that knows it is spiking, and the cost is spent by seats who by design know nothing. So S2 is one paragraph extending the bounds already in the cell to the seats a spike dispatches, plus the single bound they have no other source for — that they dispatch nothing of their own.
 
-## 2. S2 strengthens the incumbent sentence in place rather than adding a second copy
+## 2. S2 was first placed in `dispatch.md`, and the review moved it back
 
-`dispatch.md` already read *"Seats that mutate the tree get their own worktree and write boundary there."* **The incident complied with it and the harm happened anyway** — every probe took a worktree. A plain worktree carries a branch, and the branches were cut from the change under review rather than from a named base, so `git diff --name-only origin/main...chore/setup-python-v7` names seven files where that probe's job touched one.
+That placement is recorded because it was wrong on evidence rather than on argument, and the evidence is the reason the rule now reads as it does.
 
-The sentence now also requires the dispatch to say the worktree is **detached and cut from the tree under test**, that **nothing may leave it**, and that the recipient **dispatches nothing of its own**.
+`dispatch.md` already owned recipient isolation in a weaker form — *"Seats that mutate the tree get their own worktree and write boundary there."* **The incident complied with that sentence and the harm happened anyway**: every probe took a worktree, a plain worktree carries a branch, and the branches were cut from the change under review, so `git diff --name-only origin/main...chore/setup-python-v7` names seven files where that probe's job touched one. Strengthening it in place looked like the move.
 
-**The isolation outlives the recipient's first return**, and that clause comes from this change's own conduct rather than from the incident: the session building it removed a cold seat's worktree while that seat was still resumable, and the seat woke mid-verification to find its tree gone. Its measurements predated the removal so no finding moved, but the rule as first drafted would have licensed the mistake.
+**The change's own experience session falsified it.** A cold consumer commissioned six probes, executed S1 unprompted after reaching `spikes` by its always-loaded description alone, and never opened `dispatch.md` — by no route at all. All four review seats reached the same finding independently: the only pointer to that file advertises it by three items of assignment-assembly machinery, which the widened `Loaded when` line then carved that very audience out of. Two external reviewers converged on the strengthened paragraph from the other side, reporting that its *"seats that mutate the tree"* gate never opens for a probe stopped before it executes, so none of the three obligations reached it.
+
+**The terminal ruling put the site to the owner** as the affirmed option's own boundary, recommending the move; `dispatch.md` is restored to its base text, and the strengthening it would have gained is not carried here — a plain worktree's branch remains a live hazard for mutating review seats, and that residue is this change's to name, not to fix.
 
 ## 3. Why neither cell points at the other
 
 `skills/authoring/references/cell-structure.md` holds that a shared standard gets one owning cell while the other carries none of it, because two half-owners kept in agreement by hand is the mechanism by which they drift. Naming a sibling cell couples the two so they must move together thereafter.
 
-The mechanical half was probed in both polarities before the home was chosen, by substituting each candidate form into the commissioning sentence and running `python tools/lint.py`: the reserved backticked-name-plus-cell form returns a `sideways-dep` finding, and the plain-word form returns none. **The plain-word pointer is therefore available and still wrong** — an unlawful coupling spelled to evade the detector. A first draft argued the home from unavailability, and the cold seat falsified that reason against the draft's own reproduced probe. Splitting by ownership is what makes the question moot.
+The mechanical half was probed in both polarities, by substituting each candidate form into the commissioning sentence and running `python tools/lint.py`: the reserved backticked-name-plus-cell form returns a `sideways-dep` finding, and the plain-word form returns none. **The plain-word pointer is therefore available and still wrong** — an unlawful coupling spelled to evade the detector. A first draft argued the home from unavailability, and a cold seat falsified that reason against the draft's own reproduced probe.
 
-## 4. The affirmed landing named the evidence standard; S2 landed in the same cell's dispatch contract
+With both standards in one cell the question is moot, which is the second thing the relocation bought.
 
-The affirmed option read *"the evidence standard that commissions them plus the `spikes` cold-seat section."* S1 landed as affirmed. S2 did not, for two reasons, and this was the session's call reported on the issue rather than taken silently:
+## 4. The routing rests on a description, and that is now measured rather than assumed
 
-- The obligation is about **what a dispatch says**, which is that file's whole subject and the file a probe dispatcher has open. `skills/adversarial-review/SKILL.md` routes to it on an unqualified phrase, so the route reaches a probe dispatcher and not only a review role.
-- The evidence standard's body sits within a dozen characters of `CELL_BODY_BUDGET_CHARS`, so an addition there buys shedding elsewhere for no gain. **A ceiling is a trigger rather than a wall, so this corroborates the choice and does not decide it** — the first reason is what decides it.
+Nothing in the commissioning sentence says the word *spike*. The routing therefore rests on the `spikes` description firing at the moment a stage contests a behaviour claim — it names *a review thesis still disputed after a round of review* resting on *behavior no run you can consult has exercised*.
 
-`dispatch.md`'s `Loaded when` line gains the audience the new sentence serves, described by which rules apply rather than by position, because a positional count goes stale when paragraphs move.
+That was the artifact's stated main risk, and the experience session settled it the other way: the consumer reached the cell through the description alone, with nothing else pointing there. The risk that materialised was the opposite one — the half placed behind a pointer, not the half left to the description.
+
+**A ceiling did not decide any of this.** `python tools/figures.py --cell skills/adversarial-review/SKILL.md --cell-budget 9000` and `python tools/figures.py --cell skills/spikes/SKILL.md --cell-budget N` state the two bodies on the tree they run on; the second takes a caller's budget because `spikes` has no row in `CELL_BODY_BUDGET_CHARS`, deliberately. This change grows `spikes` and measures it rather than only the cell it did not grow — that omission was a review finding. **Whether `spikes` should carry a budget row is left open and filed**, because a number for a cell nobody has argued about would be a ruling on its size arriving as a side effect of a change about probes.
 
 ## 5. The plan-stop's limit is written into the rule rather than assumed away
 
@@ -53,7 +56,8 @@ The premise behind S1 — that a plan-stop bounds a probe without leading it —
 - **One general rule for every cold dispatch this practice makes**, which would have closed [#289](https://github.com/Grimblaz-and-Friends/tradecraft/issues/289) in the same change. Put to the owner as Fork 1 and **ruled narrow**: the stopping point genuinely differs per instrument — a review seat's coincides with its job, an experience-session consumer is supposed to do real work — so the shared rule is thin and each cell still needs its specific, which is net growth for little.
 - **Splitting the leftovers into their own issue.** Put as Fork 2 and **ruled in scope**: the harms were observed, and `spikes` already carried a disposal rule, so this extends a standard rather than opening a subject.
 - **A pointer from the commissioning sentence to the owning cell** (§3) — available in the plain-word form and unlawful in both.
-- **Restating the isolation rule inside `spikes`** (§1) — the first draft's shape, and the two-half-owners situation its own reasoning forbade.
+- **Restating the isolation rule inside `spikes`** — the first draft's shape. What landed is not that: it extends the cell's existing bounds to dispatched seats rather than repeating them.
+- **Buying the routing at the pointer instead of moving the rule** (§2) — the cell body it sits in has too little headroom to hold a real gloss extension, and it rests on a hypothesis no probe supports.
 - **Adding a guard.** The bound is judgment expressed in dispatch text, which nothing in this tree retains. The spike report carries it instead, on the practice's own standard preferring a rule whose compliance shows on an artifact its reader is already producing.
 
 ## Outflow
