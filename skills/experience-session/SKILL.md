@@ -1,6 +1,6 @@
 ---
 name: experience-session
-description: A chartered, time-boxed use of a built result as its consumer would use it, reported in a session note — the instrument that finds what only use finds. Use when a change to a skill's behaviour or a mechanism's surface has been built and you want to know what use will hit, and again once a review's fix batch has rewritten what that material instructs, before the review closes. Not for judging an artifact's reasoning, prose, or evidence — that is a review; not for testing a load-bearing premise before you assert it — that is a spike; not for anything a reader could settle by reading.
+description: A chartered, time-boxed use of a built result as its consumer would use it, reported in a session note — the instrument that finds what only use finds. Use when a change to a skill's behaviour, a mechanism's surface, or what a consumer can do with the running result has been built, and again once a review's fix batch has rewritten what that material instructs or changed what someone using the result can do, before the review closes. Not for judging an artifact's reasoning, prose, or evidence — that is a review; not for testing a load-bearing premise before you assert it — that is a spike; not for anything a reader could settle by reading.
 ---
 
 # experience-session
