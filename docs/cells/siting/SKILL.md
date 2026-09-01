@@ -12,7 +12,7 @@ description: Where a piece of content goes in this repository and what the local
 The charter carries the routing map. Specific to here:
 
 - **Cell structure is the `authoring` cell's standard**, whose checkable subset the lint enforces here. Shared code lives only in `lib/`.
-- **A binding rule the practice exports** → the `charter` cell, within its own job. **A rule or mechanic only this repository needs** → a repo-only cell under `docs/cells/`, whose description loads and whose body does not; the always-on doctrine carries only what must bind before any cell fires.
+- **A binding rule the practice exports** → the `charter` cell, within its own job. **A rule or mechanic only this repository needs** → a repo-only cell under `docs/cells/`, whose description loads and whose body does not; the always-on doctrine carries only what must bind before any cell fires. [D-291]
 - **A binding document under `docs/`** → a file there, and a line in the doctrine that binds rather than names it; `docs/values.md` is the shape. [D-225]
 - **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`; a decision entry lives at the path and under the freeze this repository's records material gives.
 
