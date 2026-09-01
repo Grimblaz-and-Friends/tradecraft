@@ -1021,3 +1021,35 @@ def test_a_runtime_path_the_repo_did_not_write_survives_capture(repo, monkeypatc
     out = streams["stdout"][0].getvalue().decode("utf-8")
     for name in (e_acute, cjk):
         assert name in out, f"the report never printed the path carrying {name!r}"
+
+# The guard's FAIL text tells a session where the procedure it enforces lives.
+# That citation named AGENTS.md's "The flow" until #291 moved the section into
+# a repo-only cell, and the string stayed behind pointing at a file where the
+# word no longer appears -- read by exactly the session that forgot the bump.
+# Nothing caught it, because no test compared the citation against the tree.
+# These two do: the first pins the path and its heading, the second pins that
+# the FAIL branches actually carry it. [#304]
+def test_flow_citation_names_a_path_that_carries_the_flow():
+    root = Path(__file__).resolve().parent.parent.parent
+    rel = cvb.FLOW_CITATION.split(",")[0]
+    target = root / rel
+    assert target.is_file(), (
+        f"FLOW_CITATION names {rel!r}, which is not a file in this tree -- "
+        "the citation was left behind by a move"
+    )
+    body = target.read_text(encoding="utf-8")
+    assert "The flow" in body, (
+        f"FLOW_CITATION sends a session to {rel!r} for 'The flow', and that "
+        "heading is not there"
+    )
+
+
+def test_the_fail_branches_carry_the_flow_citation(repo):
+    (repo / "skills" / "a.md").write_text("changed" + chr(10), encoding="utf-8")
+    _commit(repo, "skill edit")
+    status, lines = cvb.check("main")
+    assert status == FAIL
+    assert any(cvb.FLOW_CITATION in line for line in lines), (
+        "the unchanged-version FAIL dropped the citation telling a session "
+        f"where to look; got {lines!r}"
+    )

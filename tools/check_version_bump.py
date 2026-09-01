@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A PR touching the shipped zone bumps the plugin version (doctrine, "The flow").
+"""A PR touching the shipped zone bumps the plugin version (the `landing` cell's "The flow").
 
 Measured as **the pull request against its merge base**, never per-commit: this
 repo squash-merges, so the PR is the commit that lands, and a per-commit reading
@@ -59,6 +59,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
 MANIFEST = ".claude-plugin/plugin.json"
+# Where the procedure this guard enforces actually lives. It cited
+# AGENTS.md's "The flow" until #291 moved that section into a repo-only cell
+# and left the citation behind, so a session that forgot the bump -- exactly
+# the population that reads this message -- followed it to a file where the
+# word does not appear. A test pins the string against the tree so the next
+# move takes it along. [#304]
+FLOW_CITATION = "docs/cells/landing/SKILL.md, 'The flow'"
 # The manifest field whose edit cannot count as a shipped-zone change, because
 # raising it is what this guard demands and counting it would make every bump
 # its own justification. The exemption is this FIELD and not the file: the
@@ -420,8 +427,8 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
             f"version rose to {shown[1]}, but {collision} -- and this branch's "
             f"merge base {base[:7]} predates that tip. The bound is the base "
             f"ref's tip as well as the merge base. Bring {seen} into this "
-            f"branch and raise \"version\" in {MANIFEST} again (see AGENTS.md, "
-            f"'The flow'){stale_note}"
+            f"branch and raise \"version\" in {MANIFEST} again (see "
+            f"{FLOW_CITATION}){stale_note}"
         )
         lines.extend(f"    {f}" for f in touched)
         return FAIL, lines
@@ -472,7 +479,7 @@ def check(base_ref: str | None = None) -> tuple[int, list[str]]:
         f"version-bump: {len(touched)} shipped-zone file(s) changed but "
         f"the plugin version {detail} -- a consumer cannot tell installed from "
         f"current. {unit}Raise \"version\" in {MANIFEST} to {target} (see "
-        f"AGENTS.md, 'The flow').{why_manifest}"
+        f"{FLOW_CITATION}).{why_manifest}"
     )
     lines.extend(f"    {f}" for f in touched)
     return FAIL, lines
