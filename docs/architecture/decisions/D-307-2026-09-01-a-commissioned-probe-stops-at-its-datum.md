@@ -27,7 +27,7 @@ That placement is recorded because it was wrong on evidence rather than on argum
 
 **The change's own experience session falsified it.** A cold consumer commissioned six probes, executed S1 unprompted after reaching `spikes` by its always-loaded description alone, and never opened `dispatch.md` — by no route at all. All four review seats reached the same finding independently: the only pointer to that file advertises it by three items of assignment-assembly machinery, which the widened `Loaded when` line then carved that very audience out of. Two external reviewers converged on the strengthened paragraph from the other side, reporting that its *"seats that mutate the tree"* gate never opens for a probe stopped before it executes, so none of the three obligations reached it.
 
-**The terminal ruling put the site to the owner** as the affirmed option's own boundary, recommending the move; `dispatch.md` is restored to its base text, and the strengthening it would have gained is not carried here — a plain worktree's branch remains a live hazard for mutating review seats, and that residue is this change's to name, not to fix.
+**The terminal ruling put the site to the owner** as the affirmed option's own boundary, recommending the move; `dispatch.md` is restored to its base text, and the strengthening it would have gained is not carried here. A plain worktree's branch remains a live hazard for mutating review seats — that population is not spikes, does not read that cell, and keeps both the original sentence and the original gap. Filed as [#311](https://github.com/Grimblaz-and-Friends/tradecraft/issues/311) rather than merely named.
 
 ## 3. Why neither cell points at the other
 
@@ -43,7 +43,7 @@ Nothing in the commissioning sentence says the word *spike*. The routing therefo
 
 That was the artifact's stated main risk, and the experience session settled it the other way: the consumer reached the cell through the description alone, with nothing else pointing there. The risk that materialised was the opposite one — the half placed behind a pointer, not the half left to the description.
 
-**A ceiling did not decide any of this.** `python tools/figures.py --cell skills/adversarial-review/SKILL.md --cell-budget 9000` and `python tools/figures.py --cell skills/spikes/SKILL.md --cell-budget N` state the two bodies on the tree they run on; the second takes a caller's budget because `spikes` has no row in `CELL_BODY_BUDGET_CHARS`, deliberately. This change grows `spikes` and measures it rather than only the cell it did not grow — that omission was a review finding. **Whether `spikes` should carry a budget row is left open and filed**, because a number for a cell nobody has argued about would be a ruling on its size arriving as a side effect of a change about probes.
+**A ceiling did not decide any of this.** `python tools/figures.py --cell skills/adversarial-review/SKILL.md --cell-budget 9000` and `python tools/figures.py --cell skills/spikes/SKILL.md --cell-budget N` state the two bodies on the tree they run on; the second takes a caller's budget because `spikes` has no row in `CELL_BODY_BUDGET_CHARS`, deliberately. This change grows `spikes` and measures it rather than only the cell it did not grow — that omission was a review finding. **Whether `spikes` should carry a budget row is left open**, appended to [#302](https://github.com/Grimblaz-and-Friends/tradecraft/issues/302) — already open on the same question for another cell — because a number for a cell nobody has argued about would be a ruling on its size arriving as a side effect of a change about probes. The review reached that question by way of a superlative that is false: `spikes` is not the largest cell body in the tree, and the command above run across `skills/*/SKILL.md` is what shows it. What is true is narrower — this change takes `spikes` past the one cell body anything caps. A `wiring-falsifier` seat, the terminal ruling and the dispatching session each carried the superlative unchecked, in a review whose own standards say load hides in superlatives and to check those first.
 
 ## 5. The plan-stop's limit is written into the rule rather than assumed away
 
@@ -59,6 +59,14 @@ The premise behind S1 — that a plan-stop bounds a probe without leading it —
 - **Restating the isolation rule inside `spikes`** — the first draft's shape. What landed is not that: it extends the cell's existing bounds to dispatched seats rather than repeating them.
 - **Buying the routing at the pointer instead of moving the rule** (§2) — the cell body it sits in has too little headroom to hold a real gloss extension, and it rests on a hypothesis no probe supports.
 - **Adding a guard.** The bound is judgment expressed in dispatch text, which nothing in this tree retains. The spike report carries it instead, on the practice's own standard preferring a rule whose compliance shows on an artifact its reader is already producing.
+
+## What this change does not do
+
+- **[#289](https://github.com/Grimblaz-and-Friends/tradecraft/issues/289) stays open** — Fork 1 was ruled narrow, and the experience-session dispatch is a different sentence in a different cell.
+- **Mutating review seats keep the unstated worktree base** — [#311](https://github.com/Grimblaz-and-Friends/tradecraft/issues/311).
+- **The stop is described as a fork where four of four cold seats composed it** — [#310](https://github.com/Grimblaz-and-Friends/tradecraft/issues/310), from this change's own M6 spike, ruled `record` by the review rather than fixed.
+- **`spikes` crosses the only capped cell body and nothing measures it** — appended to [#302](https://github.com/Grimblaz-and-Friends/tradecraft/issues/302), which is already open on that question for another cell.
+- **The stale-injected-doctrine hazard is untouched** — [#284](https://github.com/Grimblaz-and-Friends/tradecraft/issues/284). This change's settled artifact recorded it as unfiled; that was wrong, and the board search this change ran at filing time is what found it. The artifact is frozen, so the correction lives here.
 
 ## Outflow
 
