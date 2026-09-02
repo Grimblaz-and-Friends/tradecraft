@@ -25,4 +25,4 @@
 
 ## The rest of this repository's mechanics
 
-Repo-only cells under `docs/cells/` carry them, loaded on demand in both runtimes and never loaded by an adopter: `board`, `landing`, `records`, `siting`. Every cell's own description loads in every session here and states what it covers, so the names route on their own and a gloss here would be a second copy to keep in step.
+Repo-only cells under `docs/cells/` carry them, loaded on demand in both runtimes and never loaded by an adopter: `board`, `landing`, `records`, `siting`. Every cell's own description loads in every session here and states what it covers, so the names route on their own. [D-327]

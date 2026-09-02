@@ -60,7 +60,7 @@ def test_parse_plan_round_trips_through_format_plan():
     "bad, because",
     [
         (line(1) + TAB + "extra", "wrong field count"),
-        (TAB.join(["#1", "Front", "-", "Queued"]), "issue is not a bare number"),
+        (TAB.join(["12a", "Front", "-", "Queued"]), "issue is not a bare number"),
         (TAB.join(["1", "Nowhere", "-", "Queued"]), "unknown band"),
         (TAB.join(["1", "Front", "-", "Shipped"]), "unknown status"),
         (plan_text(line(7), line(7)), "the same issue twice"),
@@ -277,3 +277,228 @@ def test_unavailable_is_every_status_but_queued():
     """The reading rule and this set are one thing; a second copy is how they drift."""
     assert q.UNAVAILABLE == frozenset(q.STATUSES) - {"Queued"}
     assert "Queued" not in q.UNAVAILABLE
+
+
+# ------------------------------------------------------ the bundle charset
+
+
+@pytest.mark.parametrize("bundle", ["PR G - decision-log", "Post-#260 redraw",
+                                    "Front 3 - PR J seat/dispatch hygiene", "-", "Figures"])
+def test_parse_plan_accepts_the_bundle_names_the_board_actually_carries(bundle):
+    """The lawful polarity, drawn from the live board rather than invented."""
+    assert q.parse_plan(plan_text(line(1, "Front", bundle)))[0].bundle == bundle
+
+
+@pytest.mark.parametrize("bundle", ['PR "G"', "A" + chr(92), "X},{name:" + chr(34) + "INJECTED", ""])
+def test_parse_plan_refuses_a_bundle_that_would_not_survive_the_wire(bundle):
+    """options_payload escapes by stripping quotes, so these reach GraphQL malformed.
+
+    A quote creates a differently-named option that set_field then cannot find
+    -- after every position move has landed. Refused at parse time, which is
+    also what makes --dry-run catch it.
+    """
+    with pytest.raises(q.BoardError) as caught:
+        q.parse_plan(plan_text(line(1, "Front", bundle)))
+    assert "bundle" in str(caught.value)
+
+
+# ------------------------------------------------- settle's own defaults
+
+
+def test_settle_uses_its_module_defaults_when_the_caller_names_none():
+    """The constants are the contract; every other test passes them explicitly.
+
+    A zeroed SETTLE_TIMEOUT_S turns every ordinary lag into a halt, which is
+    the failure the whole reconcile/settle split exists to prevent, and it
+    would not have reddened anything.
+    """
+    assert q.SETTLE_TIMEOUT_S >= 30, "a short bound makes an ordinary lag a halt"
+    assert q.SETTLE_INTERVAL_S > 0, "a zero interval busy-spins GitHub"
+    slept = []
+    reads = iter([[1], [1, 2]])
+    got = q.settle(lambda: next(reads), [1, 2], sleep=slept.append, clock=lambda: 0.0)
+    assert got == [1, 2]
+    assert slept == [q.SETTLE_INTERVAL_S], "polled at the module's own interval"
+
+
+def test_settle_names_missing_and_extra_the_right_way_round():
+    """The halt message is the operator's only diagnostic, and one has read it.
+
+    Swapping the two used to leave the suite green while telling the operator
+    the read carries something it should not, when in fact it lacks something
+    it should.
+    """
+    ticks = iter([0.0, 99.0])
+    with pytest.raises(q.BoardError) as caught:
+        q.settle(lambda: [1, 9], [1, 2], timeout_s=10, interval_s=1,
+                 sleep=lambda _: None, clock=lambda: next(ticks))
+    message = str(caught.value)
+    missing_at = message.index("missing from it")
+    extra_at = message.index("unexpected in it")
+    assert missing_at < message.index("[2]") < extra_at, \
+        "2 is absent from the read, so it is the missing one"
+    assert message.index("[9]") > extra_at, "9 is present unexpectedly, so it is the extra one"
+
+
+# ------------------------------------------- the plan header is guidance
+
+
+def test_format_plan_header_advertises_the_vocabularies_the_parser_enforces():
+    """The header is the only guidance the human editing a plan file gets.
+
+    parse_plan discards comment lines, so the round-trip test cannot see it and
+    it advertised whatever it liked.
+    """
+    header = [ln for ln in q.format_plan([q.Row(1, "Front", "-", "Queued")]).splitlines()
+              if ln.startswith("#")]
+    blob = NL.join(header)
+    for band in q.BANDS:
+        assert band in blob, "header omits a band the parser accepts: " + band
+    for status in q.STATUSES:
+        assert status in blob, "header omits a status the parser accepts: " + status
+    assert q.EMPTY in blob
+
+
+# --------------------------------------------------- the wire, faked once
+
+
+class FakeWire:
+    """Records queries and returns canned payloads, so the wire paths get a test.
+
+    Nineteen functions in this module talk to GitHub and nothing outside a
+    session running the cell ever calls them, so before this they were covered
+    by nothing at all. One fake reaches read_notes, ensure_options and _pages.
+    """
+
+    def __init__(self, payloads):
+        self.payloads, self.queries = list(payloads), []
+
+    def __call__(self, query, **variables):
+        self.queries.append((query, variables))
+        return self.payloads.pop(0)
+
+
+def board_without_network(fields=None):
+    board = object.__new__(q.Board)
+    board.project_id = "PVT_test"
+    board.fields = fields or {}
+    return board
+
+
+def test_read_notes_asks_for_the_newest_and_does_not_reverse(monkeypatch):
+    """statusUpdates is newest-first, so `last:N` would return the N OLDEST.
+
+    Under the old form this command served the seed note forever from the
+    second refresh on -- the failure the command was added to end.
+    """
+    wire = FakeWire([{"node": {"statusUpdates": {"nodes": [
+        {"createdAt": "2026-09-03", "body": "newest"},
+        {"createdAt": "2026-09-02", "body": "older"},
+    ]}}}])
+    monkeypatch.setattr(q, "gql", wire)
+    notes = board_without_network().read_notes(2)
+    query = wire.queries[0][0]
+    assert "first:" in query and "last:" not in query, "last:N slices the oldest"
+    assert "direction:DESC" in query, "the ordering is stated rather than inherited"
+    assert [n["body"] for n in notes] == ["newest", "older"]
+
+
+def test_ensure_options_sends_existing_options_with_their_ids_and_appearance(monkeypatch):
+    """The call site, not just the renderer.
+
+    Dropping the ids here is what wiped this board's whole Bundle column once,
+    with a successful-looking write and no error -- and the renderer's own test
+    could not see it, because the renderer was never the thing that decided.
+    """
+    wire = FakeWire([{"updateProjectV2Field": {"projectV2Field": {"id": "F"}}},
+                     {"node": {"fields": {"nodes": []}}}])
+    monkeypatch.setattr(q, "gql", wire)
+    board = board_without_network({"Bundle": {"id": "F", "options": {
+        "Figures": {"id": "opt_fig", "name": "Figures", "color": "BLUE", "description": "d"},
+    }}})
+    q.ensure_options(board, "Bundle", ["Figures", "Records"])
+    payload = wire.queries[0][0]
+    assert 'id:"opt_fig"' in payload, "the existing option keeps its identity"
+    assert "color:BLUE" in payload and 'description:"d"' in payload, \
+        "and keeps what the owner set in the project UI"
+    assert 'name:"Records"' in payload and payload.count("id:") == 1
+
+
+def test_ensure_options_writes_nothing_when_every_option_exists(monkeypatch):
+    """The lawful polarity: each option-list write is a chance to clear the field."""
+    wire = FakeWire([])
+    monkeypatch.setattr(q, "gql", wire)
+    board = board_without_network({"Bundle": {"id": "F", "options": {
+        "Figures": {"id": "opt_fig", "name": "Figures", "color": "GRAY", "description": ""},
+    }}})
+    q.ensure_options(board, "Bundle", ["Figures", "Figures"])
+    assert wire.queries == []
+
+
+def test_pages_follows_the_cursor_past_the_first_page(monkeypatch):
+    """The items connection caps at 100 and this board has never reached it.
+
+    So the cursor branch has never executed anywhere, including in production.
+    """
+    wire = FakeWire([
+        {"node": {"items": {"pageInfo": {"hasNextPage": True, "endCursor": "CUR1"},
+                            "nodes": [{"content": {"number": 1}}]}}},
+        {"node": {"items": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"content": {"number": 2}}]}}},
+    ])
+    monkeypatch.setattr(q, "gql", wire)
+    nodes = board_without_network()._pages("", "content{... on Issue{number}}")
+    assert [n["content"]["number"] for n in nodes] == [1, 2]
+    assert "after:null" in wire.queries[0][0]
+    assert 'after:"CUR1"' in wire.queries[1][0], "the second page is asked for by cursor"
+
+
+def test_init_refuses_when_a_board_with_that_title_already_exists(monkeypatch):
+    """init used to create unconditionally, manufacturing the one condition
+    pick_project refuses -- and pick_project's own message is what sent callers there."""
+    monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": q.BOARD_TITLE}])
+    with pytest.raises(q.BoardError) as caught:
+        q.cmd_init()
+    assert "already exists" in str(caught.value)
+    assert "Nothing was created" in str(caught.value)
+
+
+def test_init_proceeds_when_no_board_carries_that_title(monkeypatch):
+    """The lawful polarity: a guard that blocks the first run fails as hard."""
+    monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": "something else"}])
+    calls = []
+    monkeypatch.setattr(q, "gql", lambda query, **kw: calls.append(query) or _init_payload(query))
+    assert q.cmd_init() == 0
+    assert any("createProjectV2" in c for c in calls), "it got past the guard and created"
+
+
+def _init_payload(query):
+    if "organization(login:$l){id}" in query:
+        return {"organization": {"id": "O"}}
+    if "createProjectV2" in query:
+        return {"createProjectV2": {"projectV2": {"id": "P", "number": 9}}}
+    if "repository(owner:$o,name:$r)" in query:
+        return {"repository": {"id": "R"}}
+    if "linkProjectV2ToRepository" in query:
+        return {"linkProjectV2ToRepository": {"clientMutationId": None}}
+    if "createProjectV2Field" in query:
+        return {"createProjectV2Field": {"projectV2Field": {"id": "F"}}}
+    if "fields(first:50)" in query:
+        return {"node": {"fields": {"nodes": [{"id": "S", "name": "Status"}]}}}
+    return {"updateProjectV2Field": {"projectV2Field": {"id": "S"}}}
+
+
+# ------------------------------------------------------- the reading rule
+
+
+def test_is_available_excludes_the_four_states_and_an_unset_one():
+    """The rule the whole board turns on, including the case sync creates.
+
+    Between a sync and the apply that ranks them, every newly added item
+    carries no status at all. Counting that as available is the same defect the
+    Standing refusal exists to stop, reached by a route no plan passes through.
+    """
+    assert q.is_available(q.Row(1, "Front", "-", "Queued")) is True
+    for status in sorted(q.UNAVAILABLE):
+        assert q.is_available(q.Row(1, "Front", "-", status)) is False, status
+    assert q.is_available(q.Row(1, "Front", "-", q.EMPTY)) is False,         "an item sync just added is unranked, not available"

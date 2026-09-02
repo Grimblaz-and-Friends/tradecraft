@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import subprocess
 import sys
@@ -90,6 +91,16 @@ SETTLE_TIMEOUT_S = 60.0
 SETTLE_INTERVAL_S = 2.0
 
 EMPTY = "-"
+
+# What a bundle name may contain. `options_payload` interpolates it into a
+# GraphQL string with only a quote-strip for escaping, so a quote silently
+# creates a differently-named option that `set_field` then fails to find --
+# after every position move has already landed -- and a backslash or a brace
+# malforms the query outright. Validated at parse time, before any mutation,
+# which is also what makes `--dry-run` catch it. The live board's names all
+# pass: "PR G - decision-log", "Post-#260 redraw", "Front 3 - PR J
+# seat/dispatch hygiene".
+BUNDLE_CHARS = re.compile(r"^[A-Za-z0-9 #/_.()-]+$")
 
 
 class BoardError(Exception):
@@ -154,8 +165,14 @@ def parse_plan(text: str) -> list[Row]:
                 f"and would offer this as the answer. Give it a status that excludes it "
                 f"({sorted(UNAVAILABLE)}), or put it in a band that does not claim otherwise"
             )
+        if not BUNDLE_CHARS.match(bundle):
+            raise BoardError(
+                f"line {lineno}: bundle {bundle!r} is empty or holds a character that does not "
+                f"survive being sent to GitHub. Use letters, digits, spaces and any of "
+                f"#/_.()- , or {EMPTY!r} for standalone"
+            )
         seen.add(issue)
-        rows.append(Row(issue, band, EMPTY if bundle == EMPTY else bundle, status))
+        rows.append(Row(issue, band, bundle, status))
     if not rows:
         raise BoardError("plan is empty")
     return rows
@@ -217,6 +234,19 @@ def settle(read_ordered, target: list[int], *, timeout_s: float = SETTLE_TIMEOUT
                 "No ordering was written."
             )
         sleep(interval_s)
+
+
+
+def is_available(row: Row) -> bool:
+    """The reading rule, in one place: can this item be picked up?
+
+    An unset status is excluded as well as the four that take an item out of
+    contention. `sync` adds items without writing any field, so between a sync
+    and the apply that ranks them every new item carries EMPTY -- unranked, not
+    available. It is excluded here rather than added to UNAVAILABLE, which
+    would put "-" into the remedy list `parse_plan` prints at a reader.
+    """
+    return row.status not in UNAVAILABLE and row.status != EMPTY
 
 
 def moves_for(current: list[int], target: list[int]) -> list[tuple[int, int | None]]:
@@ -314,7 +344,13 @@ def gh(args: list[str]) -> str:
 def gql(query: str, **variables: object) -> dict:
     args = ["api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
-        args += ["-F", f"{key}={value}"]
+        # -f, never -F. `gh api -F` applies magic type conversion: a value
+        # starting with "@" is read as a filename, and {owner}/{repo}/{branch}
+        # are expanded from the cwd's repository. A refresh note beginning "@",
+        # or quoting a command template, would be rewritten before landing on an
+        # append-only surface. Every variable here is String! or ID!, so none
+        # needs typing.
+        args += ["-f", f"{key}={value}"]
     data = json.loads(gh(args))
     if "errors" in data:
         raise BoardError(f"graphql: {json.dumps(data['errors'])[:400]}")
@@ -333,6 +369,28 @@ def open_issues() -> dict[int, str]:
         "--limit", "1000", "--json", "number,id",
     ])
     return {item["number"]: item["id"] for item in json.loads(raw)}
+
+
+def org_projects() -> list[dict]:
+    """Every project the owner holds, paged.
+
+    Unpaged, a lookup past the first page reports the board missing -- and
+    `pick_project`'s not-found message tells the caller to run `init`, which
+    would create a duplicate and brick every command. The page bound and the
+    existence check have to hold together or neither does.
+    """
+    nodes: list[dict] = []
+    cursor = "null"
+    while True:
+        data = gql(
+            "query($l:String!){organization(login:$l){projectsV2(first:100,after:%s)"
+            "{pageInfo{hasNextPage endCursor} nodes{id title}}}}" % cursor,
+            l=OWNER,
+        )["organization"]["projectsV2"]
+        nodes.extend(n for n in data["nodes"] if n)
+        if not data["pageInfo"]["hasNextPage"]:
+            return nodes
+        cursor = '"%s"' % data["pageInfo"]["endCursor"]
 
 
 def pick_project(nodes: list[dict], title: str) -> str:
@@ -369,29 +427,25 @@ class Board:
     """
 
     def __init__(self) -> None:
-        found = gql(
-            'query($l:String!){organization(login:$l){id '
-            'projectsV2(first:50){nodes{id title}}}}',
-            l=OWNER,
-        )["organization"]
-        self.owner_id = found["id"]
+        found = {"projectsV2": {"nodes": org_projects()}}
         self.project_id = pick_project(found["projectsV2"]["nodes"], BOARD_TITLE)
         self.fields = self._read_fields()
 
     def _read_fields(self) -> dict[str, dict]:
         nodes = gql(
             'query($p:ID!){node(id:$p){... on ProjectV2{fields(first:50){nodes{'
-            '... on ProjectV2SingleSelectField{id name options{id name}}}}}}}',
+            '... on ProjectV2SingleSelectField{id name options{id name color description}}}}}}}',
             p=self.project_id,
         )["node"]["fields"]["nodes"]
         return {
-            n["name"]: {"id": n["id"], "options": {o["name"]: o["id"] for o in n["options"]}}
+            n["name"]: {"id": n["id"], "options": {o["name"]: o for o in n["options"]}}
             for n in nodes
             if n and n.get("name")
         }
 
-    # The items connection refuses more than 100 per page, and this board passed
-    # 80 the day it was seeded, so paging is load-bearing rather than defensive.
+    # The items connection refuses more than 100 per page. This board seeded at
+    # 84, so the cursor branch below has never executed -- paging is here
+    # against a board that outgrows one page, not because one has.
     PAGE = 100
 
     def _pages(self, order_by: str, selection: str) -> list[dict]:
@@ -483,7 +537,7 @@ class Board:
             'mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){updateProjectV2ItemFieldValue('
             "input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$v}})"
             "{projectV2Item{id}}}",
-            p=self.project_id, i=item_id, f=spec["id"], v=option,
+            p=self.project_id, i=item_id, f=spec["id"], v=option["id"],
         )
 
     def read_notes(self, limit: int) -> list[dict]:
@@ -491,15 +545,22 @@ class Board:
 
         A session inheriting the board reads the last note to inherit the
         reasoning behind the order it is looking at -- which is the whole
-        point of keeping the notes, and needs a way in that is not raw
-        GraphQL.
+        point of keeping the notes.
+
+        `first`, never `last`, and the ordering is stated rather than assumed.
+        `statusUpdates` declares `orderBy: {field: CREATED_AT, direction:
+        DESC}`, so Relay's `last: N` slices the tail of a newest-first list --
+        the N *oldest* notes. Three notes posted in sequence to a scratch board
+        returned NOTE-ONE for `last:1` and NOTE-THREE for `first:1`. Under the
+        old form this command silently served the seed note forever.
         """
         nodes = gql(
-            "query($p:ID!){node(id:$p){... on ProjectV2{statusUpdates(last:%d)"
+            "query($p:ID!){node(id:$p){... on ProjectV2{statusUpdates(first:%d,"
+            "orderBy:{field:CREATED_AT,direction:DESC})"
             "{nodes{createdAt body}}}}}" % max(1, min(limit, 50)),
             p=self.project_id,
         )["node"]["statusUpdates"]["nodes"]
-        return list(reversed([n for n in nodes if n]))
+        return [n for n in nodes if n]
 
     def post_note(self, body: str) -> str:
         return gql(
@@ -510,6 +571,18 @@ class Board:
 
 
 def cmd_init() -> int:
+    # Refuse rather than create a second board. `createProjectV2` is happy to
+    # make a duplicate title, and `pick_project` then refuses every command
+    # until someone deletes a project by hand -- while its own not-found
+    # message is what sends a caller here. The check that would have caught it
+    # already exists; init just never called it.
+    existing = [n for n in org_projects() if n.get("title") == BOARD_TITLE]
+    if existing:
+        raise BoardError(
+            f"a project titled {BOARD_TITLE!r} already exists under {OWNER}. init creates a "
+            "second one, which leaves the title ambiguous and every command refusing. "
+            "Nothing was created"
+        )
     owner_id = gql('query($l:String!){organization(login:$l){id}}', l=OWNER)["organization"]["id"]
     project = gql(
         'mutation($o:ID!,$t:String!){createProjectV2(input:{ownerId:$o,title:$t})'
@@ -572,8 +645,9 @@ def options_payload(existing: list[dict], new_names: list[str]) -> str:
     value that referenced them is gone.
     """
     parts = [
-        '{id:"%s",name:"%s",color:GRAY,description:""}'
-        % (o["id"], o["name"].replace('"', ""))
+        '{id:"%s",name:"%s",color:%s,description:"%s"}'
+        % (o["id"], o["name"].replace('"', ""),
+           o.get("color") or "GRAY", (o.get("description") or "").replace('"', ""))
         for o in existing
     ]
     parts += ['{name:"%s",color:GRAY,description:""}' % n.replace('"', "") for n in new_names]
@@ -590,7 +664,7 @@ def ensure_options(board: "Board", field: str, values: list[str]) -> None:
     missing = [v for v in dict.fromkeys(values) if v not in spec["options"]]
     if not missing:
         return
-    existing = [{"id": oid, "name": name} for name, oid in spec["options"].items()]
+    existing = list(spec["options"].values())
     gql(
         "mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:[%s]})"
         "{projectV2Field{... on ProjectV2SingleSelectField{id}}}}"
@@ -624,13 +698,20 @@ def cmd_sync(dry_run: bool) -> int:
     print(f"to archive: {to_archive or 'none'}", flush=True)
     if dry_run:
         return 0
+    # Resolved before the adds, because the adds are what make the ordered read
+    # short. Reading afterwards can miss an archive target, skip it silently,
+    # and leave settle waiting out its whole bound on an item nobody will
+    # remove. A target is on the board already by construction, so this read
+    # always has it.
+    by_issue = {i["issue"]: i["item_id"] for i in board.ordered()} if to_archive else {}
     for number in to_add:
         board.add(node_ids[number])
-    if to_archive:
-        by_issue = {i["issue"]: i["item_id"] for i in board.ordered()}
-        for number in to_archive:
-            if number in by_issue:
-                board.archive(by_issue[number])
+    for number in to_archive:
+        if number in by_issue:
+            board.archive(by_issue[number])
+        else:
+            print(f"warning: #{number} is due for archiving and was not on the read; "
+                  "it stays on the board and the next sync will remove it")
     settled = settle(lambda: [i["issue"] for i in board.ordered()], target)
     print(f"settled: ordered read carries all {len(settled)} items", flush=True)
     return 0
@@ -639,7 +720,14 @@ def cmd_sync(dry_run: bool) -> int:
 def cmd_apply(plan_path: Path, dry_run: bool) -> int:
     plan = parse_plan(plan_path.read_text(encoding="utf-8"))
     board = Board()
-    before = board.rows()
+    # One ordered read, not two. The second one used to be taken separately for
+    # its item ids, so the guards were computed against one read and the writes
+    # addressed another -- and an item archived between them yields a raw
+    # KeyError partway through a half-applied board. Keeping the read once
+    # removes that divergence and halves this command's API cost.
+    current = board.ordered()
+    before = [Row(i["issue"], i["band"], i["bundle"], i["status"]) for i in current]
+    by_issue = {i["issue"]: i for i in current}
     on_board = {r.issue for r in before}
     unknown = [r.issue for r in plan if r.issue not in on_board]
     if unknown:
@@ -654,13 +742,12 @@ def cmd_apply(plan_path: Path, dry_run: bool) -> int:
 
     target = [r.issue for r in plan]
     moves = moves_for([r.issue for r in before], target)
-    by_issue = {i["issue"]: i for i in board.ordered()}
-    current = {r.issue: r for r in before}
+    was = {r.issue: r for r in before}
     relabels = [
         (r, name)
         for r in plan
         for name in ("Band", "Bundle", "Status")
-        if getattr(current[r.issue], name.lower()) != getattr(r, name.lower())
+        if getattr(was[r.issue], name.lower()) != getattr(r, name.lower())
     ]
     print(f"moves: {len(moves)}   relabels: {len(relabels)}")
     if not dry_run:
@@ -701,13 +788,13 @@ def cmd_next(count: int) -> int:
     for item in json.loads(raw):
         titles[item["number"]] = item["title"]
 
-    available = [r for r in rows if r.status not in UNAVAILABLE]
+    available = [r for r in rows if is_available(r)]
     if not available:
         print("nothing on the board is available: every item is in progress, in flight, "
               "blocked or deferred")
         return 0
     held = [r for r in rows if r.status in UNAVAILABLE][:count]
-    first, rest = available[0], available[1:count]
+    first, rest = available[0], available[1:count + 1]
     print(f"next: #{first.issue}  {titles.get(first.issue, '(title unavailable)')}")
     print(f"      band {first.band} | bundle {first.bundle} | {first.status}")
     if rest:
