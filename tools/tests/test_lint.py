@@ -5239,7 +5239,7 @@ def test_a_tree_with_no_cells_says_so_rather_than_going_silent(tmp_path):
     assert "not derived" not in note, "an empty tree reported a derivation failure"
 
 
-def test_the_charter_row_names_both_budgets_that_bind_it(tmp_path):
+def test_the_charter_row_names_both_budgets_that_bind_it():
     """Criterion 1's charter clause, which a cold seat caught ratified.
 
     The charter's body is a term in every always-on row and in the adopter
@@ -5275,8 +5275,8 @@ def test_the_reported_number_is_the_body_and_not_the_cell_total(tmp_path):
     (cell / "references").mkdir()
     (cell / "references" / "detail.md").write_text("d" * 5000, encoding="utf-8")
 
-    body = dict((name, size) for name, size, _ in
-                _rows(lint.cell_body_note(tmp_path)))["alpha"]
+    body = {name: size for name, size, _
+            in _rows(lint.cell_body_note(tmp_path))}["alpha"]
     text = (cell / "SKILL.md").read_text(encoding="utf-8")
     assert body == len(lint._frontmatterless(text))
     assert body < 5000, "the row carried the cell total rather than the body"
