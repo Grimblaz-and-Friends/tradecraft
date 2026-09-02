@@ -14,8 +14,14 @@ The board is a GitHub Projects v2 project titled `tradecraft board`, linked to t
 **The answer is the first item that is not `In progress`, `In flight`, `Blocked` or `Deferred`.** Position alone is not the answer and never was: the top of the board is usually something already being worked. A consumer that reads position 1 and stops has read the board wrong.
 
 ```
-python tools/board.py show
+python tools/board.py next     # the answer, with its title and what is behind it
+python tools/board.py show     # the whole board, in order, as a plan file
+python tools/board.py notes    # the last refresh notes, newest first
 ```
+
+`next` applies the rule for you. `show` prints the plan format -- bare issue numbers, no titles -- because it round-trips into `apply`; `show --plan FILE` writes that file and prints nothing else.
+
+**Read the last note before you act on the order.** The board carries the conclusion; the note carries the reasoning that produced it, and the deltas that say which parts of the order are fresh judgment rather than inherited. A session that reads the order alone re-derives what the previous one already worked out.
 
 `Band` records where in the board's own shape an item sits — `Standing`, `Front`, `Bundles`, `Review-set`, `Tail`. It is not availability and must not be read as one. `Bundle` names the prospective single change an issue belongs to, so a session can see what one pull request would close together without reading any prose. `Status` is availability, and `In flight` is corroborated by the built-in read-only `Linked pull requests` field rather than asserted.
 
@@ -27,6 +33,8 @@ Run a refresh when the board moved — an issue filed or closed, a pull request 
 
 **Two jobs that look alike and must not be merged.** *Reconciling* asks whether the board holds the open set. *Settling* asks whether the ordered read has caught up with the board. They return opposite answers about the same newly added issue — reconcile says place it, settle says wait for it — so a single membership comparison cannot do both, and only settling may stop the run.
 
+If the board does not exist yet, `python tools/board.py init` creates it and its fields once. It is safe only before the board has items: it rewrites the provisioned `Status` field's options wholesale, which would clear that column on a board already carrying values.
+
 ```
 python tools/board.py sync                  # reconcile, then settle
 python tools/board.py show --plan plan.tsv  # current state, one issue per line
@@ -36,11 +44,11 @@ python tools/board.py apply --plan plan.tsv
 python tools/board.py note --body note.md
 ```
 
-**The target membership always comes from `gh issue list`, never from the board.** The board's ordered connection returns a short list and a matching short `totalCount` together for several seconds after any write, so it cannot be asked whether it is complete — the count goes stale in lockstep with the list. A refresh that trusted it would rank an incomplete set and report success. `sync` halts rather than proceeding if the ordered read never catches up, and names what never appeared.
+**The target membership always comes from `gh issue list`, never from the board.** The board's ordered connection returns a short list and a matching short `totalCount` together for several seconds after any write, so it cannot be asked whether it is complete — the count goes stale in lockstep with the list. A refresh that trusted it would rank an incomplete set and report success. `sync` halts rather than proceeding if the ordered read never catches up, and names what never appeared. **The remedy is to run `sync` again** -- the adds it already made stand, and adding an item already present is a no-op, so a second pass costs nothing and usually settles.
 
 ## What the refresh note owes its reader
 
-The note is posted as a project status update, dated and kept. It is what the owner actually reads, so it carries what a board cannot:
+The note is posted as a project status update, dated and kept, and read back with `notes`. It is what the owner actually reads, so it carries what a board cannot:
 
 - **The deltas** — what moved, what arrived, what closed, each with its one-line reason. Not a restatement of the board. **A refresh that changed nothing says so**, in one line.
 - **The watch-items** — what the board as a whole is trending toward, which no single item shows. Rate of arrival against rate of closure, and any single item whose settling would reshape everything behind it.

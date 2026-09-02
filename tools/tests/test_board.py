@@ -189,13 +189,19 @@ def test_diff_state_sees_a_move_that_changed_no_field():
 
 
 def test_the_seeded_vocabularies_are_what_the_plan_validates_against():
-    """The parser and the board must not drift apart on what a value may be."""
+    """The parser and the board must not drift apart on what a value may be.
+
+    Statuses are paired off-by-one against bands so that `Standing` never
+    draws `Queued`, which the trap rule below refuses -- the pairing here is
+    arbitrary and only has to exercise every value once.
+    """
+    statuses = q.STATUSES[1:] + q.STATUSES[:1]
     rows_ = q.parse_plan(plan_text(*(
         line(i, band, "-", status)
-        for i, (band, status) in enumerate(zip(q.BANDS, q.STATUSES), start=1)
+        for i, (band, status) in enumerate(zip(q.BANDS, statuses), start=1)
     )))
     assert [r.band for r in rows_] == q.BANDS
-    assert [r.status for r in rows_] == q.STATUSES
+    assert sorted({r.status for r in rows_}) == sorted(set(q.STATUSES))
 
 
 # ----------------------------------------------------- single-select options
@@ -241,3 +247,33 @@ def test_pick_project_names_what_is_there_when_nothing_matches():
     with pytest.raises(q.BoardError) as caught:
         q.pick_project([{"id": "a", "title": "other"}], "missing")
     assert "other" in str(caught.value), "says what titles exist, so the caller can point at one"
+
+
+# ------------------------------------------------- the Standing/Queued trap
+
+
+def test_parse_plan_refuses_a_standing_item_that_is_available():
+    """The trap a trial run walked into.
+
+    The reading rule is positional over Status and cannot see Band, so a
+    Queued item in the Standing band silently becomes the board's answer. A
+    consumer placed two and the board confidently offered work nobody ranked.
+    """
+    with pytest.raises(q.BoardError) as caught:
+        q.parse_plan(plan_text(line(220, "Standing", "-", "Queued")))
+    message = str(caught.value)
+    assert "Standing" in message and "220" in message
+    assert "In progress" in message, "says what statuses would resolve it"
+
+
+@pytest.mark.parametrize("status", sorted(q.UNAVAILABLE))
+def test_parse_plan_accepts_a_standing_item_that_is_out_of_contention(status):
+    """The lawful polarity: Standing is fine for anything genuinely not available."""
+    rows = q.parse_plan(plan_text(line(83, "Standing", "-", status)))
+    assert rows[0].status == status
+
+
+def test_unavailable_is_every_status_but_queued():
+    """The reading rule and this set are one thing; a second copy is how they drift."""
+    assert q.UNAVAILABLE == frozenset(q.STATUSES) - {"Queued"}
+    assert "Queued" not in q.UNAVAILABLE

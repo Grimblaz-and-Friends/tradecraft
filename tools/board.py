@@ -13,26 +13,35 @@ board. They return opposite answers about the same newly added issue --
 reconcile says place it, settle says wait for it -- so they are separate steps
 with separate failure behaviour, and only settling may halt.
 
-The read that must not lag is the one without `orderBy`. This is an observed
-behaviour, not a deduction: `ProjectV2.items` declares a `defaultValue` of
-`{field: POSITION, direction: ASC}` for `orderBy`, so passing it explicitly
-should be identical to omitting it, and observably is not -- immediately after
-an add, the ordered read returns a short list *and* a matching short
-`totalCount`, while the same query with `orderBy` omitted returns the full
-membership. A short read is therefore undetectable from the connection's own
-count, which is why the target membership always comes from `gh issue list`
-and never from the board.
+Neither read of the board is authoritative, and the target membership always
+comes from `gh issue list` for that reason. The ordered read is the worse of
+the two: after a write it returns a short list *and* a matching short
+`totalCount`, so its incompleteness is undetectable from the connection's own
+count. The unordered read was observed carrying the full membership at a
+moment the ordered one was short -- which is why step 1 uses it, and is an
+observed run rather than a deduction, since `ProjectV2.items` declares a
+`defaultValue` of `{field: POSITION, direction: ASC}` for `orderBy` and the
+two queries should therefore be identical. But it lags too: a trial run's
+second pass read 78 of 86 items from it. **So the run order is not safe
+because any read is trusted.** It is safe because step 2 is idempotent --
+`addProjectV2ItemById` on an item already present is a no-op, so a stale
+step-1 read costs a redundant add and never a duplicate -- and because step 3
+is the gate that everything downstream waits on.
 
 Usage:  python tools/board.py show   [--plan PATH]
         python tools/board.py sync   [--dry-run]
         python tools/board.py apply  --plan PATH [--dry-run]
         python tools/board.py note   --body PATH
+        python tools/board.py next
+        python tools/board.py notes  [--limit N]
         python tools/board.py init
 
+  next   the answer: the first item not already being worked, with its title
   show   read the board and write the current state as a plan file
   sync   steps 1-3: reconcile membership against the open set, then settle
   apply  step 4: order and label the board from a plan file
   note   step 5: post the refresh note as a project status update
+  notes  read the refresh notes back, newest first
   init   create the board and its fields, once
 """
 from __future__ import annotations
@@ -60,6 +69,19 @@ BOARD_TITLE = os.environ.get("TRADECRAFT_BOARD_TITLE", "tradecraft board")
 
 BANDS = ["Standing", "Front", "Bundles", "Review-set", "Tail"]
 STATUSES = ["Queued", "In progress", "In flight", "Blocked", "Deferred"]
+
+# The statuses that take an item out of contention. The answer to "what next"
+# is the first item carrying none of them, so this set and that rule are one
+# thing and are defined once -- a second copy is how the two drift apart.
+UNAVAILABLE = frozenset(STATUSES[1:])
+
+# `Standing` means an item is not in contention, which is a claim about
+# availability -- and availability is Status's job, not Band's. The pair
+# Standing + Queued asserts both at once, and the reading rule cannot see Band,
+# so such a row silently BECOMES the answer. A trial run placed two of them at
+# positions 1 and 2 and the board confidently offered work its author had not
+# ranked at all. Refused at the plan rather than documented.
+STANDING = "Standing"
 
 # How long the ordered read is given to catch up with the board's membership,
 # and how often it is asked. Exceeding the bound is a loud halt: nothing writes
@@ -125,6 +147,13 @@ def parse_plan(text: str) -> list[Row]:
             raise BoardError(f"line {lineno}: unknown band {band!r}; known: {BANDS}")
         if status not in STATUSES:
             raise BoardError(f"line {lineno}: unknown status {status!r}; known: {STATUSES}")
+        if band == STANDING and status not in UNAVAILABLE:
+            raise BoardError(
+                f"line {lineno}: #{issue} is in the {STANDING!r} band with status {status!r}. "
+                f"{STANDING} says an item is not in contention; the reading rule cannot see Band "
+                f"and would offer this as the answer. Give it a status that excludes it "
+                f"({sorted(UNAVAILABLE)}), or put it in a band that does not claim otherwise"
+            )
         seen.add(issue)
         rows.append(Row(issue, band, EMPTY if bundle == EMPTY else bundle, status))
     if not rows:
@@ -381,7 +410,12 @@ class Board:
             cursor = '"%s"' % data["pageInfo"]["endCursor"]
 
     def members(self) -> list[int]:
-        """Membership, from the read WITHOUT orderBy -- the one that does not lag."""
+        """Membership, from the read WITHOUT orderBy -- the less stale of the two.
+
+        Not authoritative: it has been seen short as well. What makes acting
+        on it safe is that its only consumer is the add/archive decision, and
+        adding an item already present is a no-op.
+        """
         nodes = self._pages("", "content{... on Issue{number}}")
         return sorted(n["content"]["number"] for n in nodes if n.get("content"))
 
@@ -451,6 +485,21 @@ class Board:
             "{projectV2Item{id}}}",
             p=self.project_id, i=item_id, f=spec["id"], v=option,
         )
+
+    def read_notes(self, limit: int) -> list[dict]:
+        """The refresh notes, newest first.
+
+        A session inheriting the board reads the last note to inherit the
+        reasoning behind the order it is looking at -- which is the whole
+        point of keeping the notes, and needs a way in that is not raw
+        GraphQL.
+        """
+        nodes = gql(
+            "query($p:ID!){node(id:$p){... on ProjectV2{statusUpdates(last:%d)"
+            "{nodes{createdAt body}}}}}" % max(1, min(limit, 50)),
+            p=self.project_id,
+        )["node"]["statusUpdates"]["nodes"]
+        return list(reversed([n for n in nodes if n]))
 
     def post_note(self, body: str) -> str:
         return gql(
@@ -567,9 +616,12 @@ def cmd_sync(dry_run: bool) -> int:
     node_ids = open_issues()
     target = sorted(node_ids)
     to_add, to_archive = reconcile(members, target)
+    # Flushed because the halt below is raised through stderr, and a caller
+    # merging the two streams otherwise sees the failure printed before the
+    # summary that explains it -- which reads as though the adds never ran.
     print(f"board: {len(members)}   open: {len(target)}")
     print(f"to add:     {to_add or 'none'}")
-    print(f"to archive: {to_archive or 'none'}")
+    print(f"to archive: {to_archive or 'none'}", flush=True)
     if dry_run:
         return 0
     for number in to_add:
@@ -580,7 +632,7 @@ def cmd_sync(dry_run: bool) -> int:
             if number in by_issue:
                 board.archive(by_issue[number])
     settled = settle(lambda: [i["issue"] for i in board.ordered()], target)
-    print(f"settled: ordered read carries all {len(settled)} items")
+    print(f"settled: ordered read carries all {len(settled)} items", flush=True)
     return 0
 
 
@@ -632,6 +684,57 @@ def cmd_apply(plan_path: Path, dry_run: bool) -> int:
 
 
 
+def cmd_next(count: int) -> int:
+    """Print the answer, so no reader has to re-derive the rule that finds it.
+
+    The rule is one line and every consumer would otherwise apply it by hand
+    against a column of bare issue numbers -- a trial run reported that reading
+    the board still cost a second query just to learn what the answer was
+    about.
+    """
+    rows = Board().rows()
+    titles = {}
+    raw = gh([
+        "issue", "list", "--repo", f"{OWNER}/{REPO}", "--state", "open",
+        "--limit", "1000", "--json", "number,title",
+    ])
+    for item in json.loads(raw):
+        titles[item["number"]] = item["title"]
+
+    available = [r for r in rows if r.status not in UNAVAILABLE]
+    if not available:
+        print("nothing on the board is available: every item is in progress, in flight, "
+              "blocked or deferred")
+        return 0
+    held = [r for r in rows if r.status in UNAVAILABLE][:count]
+    first, rest = available[0], available[1:count]
+    print(f"next: #{first.issue}  {titles.get(first.issue, '(title unavailable)')}")
+    print(f"      band {first.band} | bundle {first.bundle} | {first.status}")
+    if rest:
+        print()
+        print("behind it:")
+        for r in rest:
+            print(f"  #{r.issue}  {titles.get(r.issue, '')[:66]}")
+    if held:
+        print()
+        print("not in contention:")
+        for r in held:
+            print(f"  #{r.issue}  [{r.status}]  {titles.get(r.issue, '')[:56]}")
+    return 0
+
+
+def cmd_notes(limit: int) -> int:
+    notes = Board().read_notes(limit)
+    if not notes:
+        print("no refresh notes yet")
+        return 0
+    for note in notes:
+        print(f"--- {note['createdAt']} " + "-" * 40)
+        print(note["body"].rstrip())
+        print()
+    return 0
+
+
 def cmd_note(body_path: Path) -> int:
     created = Board().post_note(body_path.read_text(encoding="utf-8"))
     print(f"status update posted at {created}")
@@ -642,8 +745,12 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("show", "sync", "apply", "note", "init"):
+    for name in ("next", "show", "sync", "apply", "note", "notes", "init"):
         p = sub.add_parser(name)
+        if name == "notes":
+            p.add_argument("--limit", type=int, default=3)
+        if name == "next":
+            p.add_argument("--count", type=int, default=5)
         if name in ("show", "apply"):
             p.add_argument("--plan", type=Path, required=(name == "apply"))
         if name == "note":
@@ -655,12 +762,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             return cmd_init()
+        if args.command == "next":
+            return cmd_next(args.count)
         if args.command == "show":
             return cmd_show(args.plan)
         if args.command == "sync":
             return cmd_sync(args.dry_run)
         if args.command == "apply":
             return cmd_apply(args.plan, args.dry_run)
+        if args.command == "notes":
+            return cmd_notes(args.limit)
         return cmd_note(args.body)
     except BoardError as exc:
         print(f"board: {exc}", file=sys.stderr)

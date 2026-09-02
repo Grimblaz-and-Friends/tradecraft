@@ -18,7 +18,9 @@ An earlier draft merged them into one membership comparison that halted on any m
 
 The target membership therefore always comes from `gh issue list`, never from the board. This is the same defect the hand-ranking hit from the other direction — its closing line claimed 65 open placed where it placed 81 — and it is why the reconciliation is written against an external authority rather than a self-report.
 
-The read *without* `orderBy` returned the full membership at the moment the ordered one was short. That is an observed run and not a deduction: `ProjectV2.items` declares a `defaultValue` of `{field: POSITION, direction: ASC}` for `orderBy`, so the two queries should be identical and observably are not. An implementer who reads the schema and "corrects" the unordered read to pass `orderBy` explicitly reintroduces the staleness into the one read that must not have it.
+The read *without* `orderBy` returned the full membership at the moment the ordered one was short. That is an observed run and not a deduction: `ProjectV2.items` declares a `defaultValue` of `{field: POSITION, direction: ASC}` for `orderBy`, so the two queries should be identical and observably are not. An implementer who reads the schema and "corrects" the unordered read to pass `orderBy` explicitly makes the worse read the only read.
+
+**But the unordered read is not fresh either, and the design does not rest on its being so.** A trial run's second pass read 78 of 86 items from it. What makes acting on a stale step-1 read safe is that its only consumer is the add/archive decision and `addProjectV2ItemById` is idempotent — a redundant add, never a duplicate — and that settling is the gate everything downstream waits on. Reading either board query as authoritative is the misreading; the external issue list is the authority and the idempotence is the tolerance.
 
 ## A single-select option re-sent without its id clears the field
 
