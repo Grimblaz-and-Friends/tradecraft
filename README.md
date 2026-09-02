@@ -57,11 +57,12 @@ editing the marketplace entry by hand. A commit `sha` pins *plugin* sources, not
 marketplace sources, and this plugin's source is a relative path, so `sha` does
 not apply to it at all.
 
-**Updating.** `claude plugin update` names the plugin and takes `--scope`, which
-defaults to `user`, so an install made with `--scope project` above needs that
-flag here too. Its own `--help` states that a restart is required to apply the
-update, so a session that keeps running after one is still on the copy it
-started with ([D-317](docs/architecture/decisions/D-317-2026-09-01-the-installed-version-check-is-declined.md)).
+**Updating.** `claude plugin update tradecraft@tradecraft --scope project`
+matches an install made with `--scope project` above — the plugin operand is
+required, and the flag is not optional, the command defaulting to `user` scope.
+Its own `--help` states that a restart is required to apply the update, so a
+session that keeps running after one is still on the copy it started with
+([D-317](docs/architecture/decisions/D-317-2026-09-01-the-installed-version-check-is-declined.md)).
 
 ## Adopt it in a repository
 
