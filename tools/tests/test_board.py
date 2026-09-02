@@ -453,14 +453,6 @@ def test_pages_follows_the_cursor_past_the_first_page(monkeypatch):
     assert 'after:"CUR1"' in wire.queries[1][0], "the second page is asked for by cursor"
 
 
-def test_init_refuses_when_a_board_with_that_title_already_exists(monkeypatch):
-    """init used to create unconditionally, manufacturing the one condition
-    pick_project refuses -- and pick_project's own message is what sent callers there."""
-    monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": q.BOARD_TITLE}])
-    with pytest.raises(q.BoardError) as caught:
-        q.cmd_init()
-    assert "already exists" in str(caught.value)
-    assert "Nothing was created" in str(caught.value)
 
 
 def test_init_proceeds_when_no_board_carries_that_title(monkeypatch):
@@ -502,3 +494,124 @@ def test_is_available_excludes_the_four_states_and_an_unset_one():
     for status in sorted(q.UNAVAILABLE):
         assert q.is_available(q.Row(1, "Front", "-", status)) is False, status
     assert q.is_available(q.Row(1, "Front", "-", q.EMPTY)) is False,         "an item sync just added is unranked, not available"
+
+
+# ------------------------------------------- what cycle one's look found
+
+
+def no_wire(monkeypatch):
+    """Make any wire call a test failure rather than a real GitHub request.
+
+    A test that patches only the lookup relies on the production guard to stop
+    the request -- so the single mutation it exists to catch is the one that
+    lets it through. The first version of the init test did exactly that, and
+    running that mutant created a real project on the org, provisioned its
+    fields and overwrote the Status options.
+    """
+    def refuse(query, **variables):
+        raise AssertionError("this test reached the network: " + query[:90])
+    monkeypatch.setattr(q, "gql", refuse)
+
+
+def test_init_refuses_when_a_board_with_that_title_already_exists(monkeypatch):
+    """init used to create unconditionally, manufacturing the one condition
+    pick_project refuses -- and pick_project's own message is what sent callers there."""
+    no_wire(monkeypatch)
+    monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": q.BOARD_TITLE}])
+    with pytest.raises(q.BoardError) as caught:
+        q.cmd_init()
+    assert "already exists" in str(caught.value)
+    assert "Nothing was created" in str(caught.value)
+
+
+def test_option_color_falls_back_rather_than_emitting_a_bad_enum():
+    """The colour is interpolated as a bare enum, so a bad one is a syntax error.
+
+    It comes off the live board, where a person set it in the project UI.
+    """
+    assert q.option_color({"color": "BLUE"}) == "BLUE"
+    assert q.option_color({"color": "blue"}) == "BLUE"
+    assert q.option_color({"color": "chartreuse"}) == "GRAY"
+    assert q.option_color({}) == "GRAY"
+    assert q.option_color({"color": None}) == "GRAY"
+
+
+@pytest.mark.parametrize("raw, safe", [
+    ('a"b', "ab"),
+    ("a" + chr(92) + "b", "ab"),
+    ("a" + chr(10) + "b", "ab"),
+    (None, ""),
+    ("plain text", "plain text"),
+])
+def test_option_text_strips_what_would_malform_the_query(raw, safe):
+    """Descriptions never pass through parse_plan, so the bundle charset never sees them."""
+    assert q.option_text(raw) == safe
+
+
+def test_options_payload_never_emits_an_unquoted_stray(monkeypatch):
+    """The whole payload, over a hostile existing option, stays well formed."""
+    payload = q.options_payload(
+        [{"id": "o1", "name": 'PR "G"', "color": "not-a-colour",
+          "description": 'x"y' + chr(92) + chr(10)}],
+        ["Records"],
+    )
+    # A property, not a count: every quote opens or closes a value, so they
+    # pair, and nothing that would end a string early survives.
+    assert payload.count('"') % 2 == 0, payload
+    # The EXISTING option's colour, not the new one's -- the new option always
+    # emits GRAY, so asserting on the payload as a whole passes while a bad
+    # colour rides through on the option that came off the live board.
+    existing_chunk = payload.split("},{")[0]
+    assert "color:GRAY" in existing_chunk, existing_chunk
+    assert "not-a-colour" not in payload
+    assert chr(92) not in payload and chr(10) not in payload
+    for field in ("name", "description"):
+        for chunk in payload.split(field + ':"')[1:]:
+            assert chunk.split('"')[0].isprintable(), payload
+
+
+def test_org_projects_follows_the_cursor_past_the_first_page(monkeypatch):
+    """The second paging loop the fix batch added, and did not test.
+
+    It runs on every command, via Board.__init__, and a truncated scan defeats
+    init's duplicate guard silently -- which re-manufactures the duplicate that
+    guard exists to prevent.
+    """
+    wire = FakeWire([
+        {"organization": {"projectsV2": {"pageInfo": {"hasNextPage": True, "endCursor": "C1"},
+                                         "nodes": [{"id": "a", "title": "one"}]}}},
+        {"organization": {"projectsV2": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                                         "nodes": [{"id": "b", "title": "two"}]}}},
+    ])
+    monkeypatch.setattr(q, "gql", wire)
+    assert [n["title"] for n in q.org_projects()] == ["one", "two"]
+    assert "after:null" in wire.queries[0][0]
+    assert 'after:"C1"' in wire.queries[1][0]
+
+
+def test_next_says_unranked_rather_than_in_flight_when_nothing_is_placed(capsys, monkeypatch):
+    """The state init+sync leaves, which is the first thing an adopter reaches.
+
+    The old message told the operator every item was being worked, when in fact
+    none had been placed -- and the remedy it implied was not the right one.
+    """
+    rows = [q.Row(n, q.EMPTY, q.EMPTY, q.EMPTY) for n in (1, 2, 3)]
+    monkeypatch.setattr(q.Board, "__init__", lambda self: None)
+    monkeypatch.setattr(q.Board, "rows", lambda self: rows)
+    monkeypatch.setattr(q, "gh", lambda args: "[]")
+    assert q.cmd_next(5) == 0
+    out = capsys.readouterr().out
+    assert "unranked" in out and "3 of 3" in out
+    assert "in progress" not in out.split("unranked")[0]
+
+
+def test_next_still_reports_a_genuinely_saturated_board(capsys, monkeypatch):
+    """The lawful polarity: when every item really is being worked, say so."""
+    rows = [q.Row(1, "Front", "-", "In progress"), q.Row(2, "Front", "-", "Blocked")]
+    monkeypatch.setattr(q.Board, "__init__", lambda self: None)
+    monkeypatch.setattr(q.Board, "rows", lambda self: rows)
+    monkeypatch.setattr(q, "gh", lambda args: "[]")
+    assert q.cmd_next(5) == 0
+    out = capsys.readouterr().out
+    assert "in progress, in flight, blocked or deferred" in out
+    assert "unranked" not in out

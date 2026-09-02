@@ -646,12 +646,37 @@ def options_payload(existing: list[dict], new_names: list[str]) -> str:
     """
     parts = [
         '{id:"%s",name:"%s",color:%s,description:"%s"}'
-        % (o["id"], o["name"].replace('"', ""),
-           o.get("color") or "GRAY", (o.get("description") or "").replace('"', ""))
+        % (o["id"], o["name"].replace('"', ""), option_color(o), option_text(o.get("description")))
         for o in existing
     ]
     parts += ['{name:"%s",color:GRAY,description:""}' % n.replace('"', "") for n in new_names]
     return ",".join(parts)
+
+
+# The colours GitHub accepts for a single-select option. Interpolated into the
+# query as a bare enum, so an unrecognised value is a syntax error rather than a
+# rejected argument -- and the value comes off the live board, where a person
+# set it in the project UI.
+OPTION_COLORS = frozenset(
+    "GRAY RED ORANGE YELLOW GREEN BLUE PURPLE PINK".split()
+)
+
+
+def option_color(option: dict) -> str:
+    colour = (option.get("color") or "").upper()
+    return colour if colour in OPTION_COLORS else "GRAY"
+
+
+def option_text(value: str | None) -> str:
+    """An option description, made safe to interpolate into a GraphQL string.
+
+    Descriptions come off the live board rather than through `parse_plan`, so
+    the charset that guards a bundle name never sees them. A quote or a
+    backslash here malforms the query on the one write this module calls
+    silently destructive.
+    """
+    text = (value or "").replace("\\", "").replace('"', "")
+    return "".join(ch for ch in text if ch >= " ")
 
 
 def ensure_options(board: "Board", field: str, values: list[str]) -> None:
@@ -701,8 +726,8 @@ def cmd_sync(dry_run: bool) -> int:
     # Resolved before the adds, because the adds are what make the ordered read
     # short. Reading afterwards can miss an archive target, skip it silently,
     # and leave settle waiting out its whole bound on an item nobody will
-    # remove. A target is on the board already by construction, so this read
-    # always has it.
+    # remove. A target is on the board before this runs, so this read normally
+    # has it -- normally, not always, which is what the else branch is for.
     by_issue = {i["issue"]: i["item_id"] for i in board.ordered()} if to_archive else {}
     for number in to_add:
         board.add(node_ids[number])
@@ -710,8 +735,12 @@ def cmd_sync(dry_run: bool) -> int:
         if number in by_issue:
             board.archive(by_issue[number])
         else:
-            print(f"warning: #{number} is due for archiving and was not on the read; "
-                  "it stays on the board and the next sync will remove it")
+            # Not benign, and saying so is the point: the item stays on the
+            # board while its issue is closed, so it is absent from the target
+            # and settle below cannot converge. This run will halt on it.
+            print(f"warning: #{number} is due for archiving and was not on the read, so it "
+                  "could not be removed. This run will halt at the settle step because of it; "
+                  "run sync again and the next read will carry it", flush=True)
     settled = settle(lambda: [i["issue"] for i in board.ordered()], target)
     print(f"settled: ordered read carries all {len(settled)} items", flush=True)
     return 0
@@ -790,8 +819,14 @@ def cmd_next(count: int) -> int:
 
     available = [r for r in rows if is_available(r)]
     if not available:
-        print("nothing on the board is available: every item is in progress, in flight, "
-              "blocked or deferred")
+        unplaced = sum(1 for r in rows if r.status == EMPTY)
+        if unplaced:
+            print(f"nothing on the board is available: {unplaced} of {len(rows)} items have no "
+                  "status yet, so they are unranked rather than available. Run apply with a plan "
+                  "that places them")
+        else:
+            print("nothing on the board is available: every item is in progress, in flight, "
+                  "blocked or deferred")
         return 0
     held = [r for r in rows if r.status in UNAVAILABLE][:count]
     first, rest = available[0], available[1:count + 1]

@@ -1,10 +1,10 @@
-# D-327: The board's two reads are different objects, and three GitHub behaviours are load-bearing rather than incidental
+# D-327: The board's two reads are different objects, and four GitHub behaviours are load-bearing rather than incidental
 
 **Status:** Accepted 2026-09-02 (PR #327)
 
 ## The condition
 
-The answer to *what should I pick up next* was produced by hand and lost with the conversation that produced it — [#83](https://github.com/Grimblaz-and-Friends/tradecraft/issues/83) records two such rankings in two days, each sound, each gone. The board this landed is the standing home for that answer. What follows is what a future session would otherwise re-derive by breaking it, and each of the three behaviours below was found by running the API rather than by reading its schema.
+The answer to *what should I pick up next* was produced by hand and lost with the conversation that produced it — [#83](https://github.com/Grimblaz-and-Friends/tradecraft/issues/83) records two such rankings in two days, each sound, each gone. The board this landed is the standing home for that answer. What follows is what a future session would otherwise re-derive by breaking it, and each of the four behaviours below was found by running the API rather than by reading its schema.
 
 ## Reconciling and settling are two jobs, and only one may halt
 
@@ -30,9 +30,15 @@ The seed lost all of its `Bundle` values to this before it was found, and found 
 
 **Rejected as a consequence: single-select option order as a second ordering primitive.** Ranking bundles by reordering the `Bundle` field's options is expressible and would have been cheaper per move than walking item positions. It was rejected because it makes every rank change a wholesale option rewrite — the destructive write above, on the hot path — and leaves two notions of order to reconcile. Item position is the sole ordering primitive.
 
+## `statusUpdates(last:N)` returns the OLDEST notes
+
+The connection declares `orderBy: {field: CREATED_AT, direction: DESC}`, so Relay's `last: N` slices the tail of a newest-first list — the N *oldest* updates. Settled by run rather than by schema: three notes posted in sequence to a scratch project returned `NOTE-ONE` for `last:1` and `NOTE-THREE` for `first:1`.
+
+This mattered because the command that reads the notes back exists to stop the board's reasoning evaporating between sessions. Under `last:N` it would have served the seed note forever from the second refresh onward — the failure it was added to end, reintroduced in a form harder to notice than the absence had been, and invisible while the board held one note. `read_notes` asks for `first:N` and **states the ordering rather than inheriting it**, because a default that is right today is not a claim the next reader can check.
+
 ## `Band` is the ranking's shape; `Status` is availability
 
-These look redundant and are not, and collapsing them is the second undo worth naming. **`Band`** records where in the ranking's own stratification an item sits. **`Status`** records whether it can be picked up. A cold seat caught the artifact building the first and not the second, on evidence that settles it: at seed, positions 1 and 2 are `#83` (`In progress`) and `#138` (`Deferred`), while the ranking's own answer to *what next* is further down. **A consumer that reads position 1 gets the wrong answer**, and a consumer that reads `Band` gets it too — the hand-ranking's `Standing` group held four items of mixed availability, of which the board carries two — `#83` in progress and `#138` deferred. The rule is the first item not marked `In progress`, `In flight`, `Blocked` or `Deferred`.
+These look redundant and are not, and collapsing them is the second undo worth naming. **`Band`** records where in the ranking's own stratification an item sits. **`Status`** records whether it can be picked up. A cold seat caught the artifact building the first and not the second, on evidence that settles it: at seed, positions 1 and 2 are `#83` (`In progress`) and `#138` (`Deferred`), while the ranking's own answer to *what next* is further down. **A consumer that reads position 1 gets the wrong answer**, and a consumer that reads `Band` gets it too — the hand-ranking's `Standing` group held four items of mixed availability, of which the board carries two — `#83` in progress and `#138` deferred. The rule is the first item not marked `In progress`, `In flight`, `Blocked` or `Deferred`, **and not blank** — `sync` adds items without writing any field, so between a sync and the apply that ranks them every new item carries no status at all, and counting that as available is the same defect through a route no plan passes.
 
 **`In flight` is asserted, not corroborated.** The settled artifact said the built-in read-only `Linked pull requests` field would corroborate it, so that the one state changing without anyone touching the board would maintain itself. It does not: the transport reads only single-select values, no subcommand surfaces the field, and `Status` is hand-written from the plan like every other value. The cell tells a refresher to read that column; making the transport read it is left open, and the sentence is corrected here rather than left standing as a description of something built.
 
