@@ -7,7 +7,7 @@ description: This repository's ranked board and the standing answer to what to p
 
 **Purpose:** keep a standing, honest answer to *what should I pick up next* between conversations, so the judgment that produced it is inherited rather than re-rolled. **Audience:** any session here reading the board for its next piece of work, or refreshing it after the board moved. **Success:** a session can read the answer off the board without ranking anything; a refresh moves what changed and says what it moved and why; and no refresh ever writes an ordering from a read it could not confirm was complete.
 
-The board is a GitHub Projects v2 project titled `tradecraft board`, linked to this repository. `tools/board.py` is its transport: it does everything that is not judgment, so judgment is what your context is spent on. Reading it needs the `project` scope on `gh`.
+The board is a GitHub Projects v2 project titled `tradecraft board`, linked to this repository. `tools/board.py` is its transport: it does everything that is not judgment, so judgment is what your context is spent on. Reading it needs the `project` scope on `gh`. The title is the only handle the transport has, so `TRADECRAFT_BOARD_TITLE` points it at a different board -- a scratch one for a trial run -- and two projects sharing a title is refused rather than guessed at.
 
 ## Reading it
 

@@ -219,3 +219,25 @@ def test_options_payload_creating_a_field_sends_no_ids():
     payload = q.options_payload([], q.BANDS)
     assert "id:" not in payload
     assert all(f'name:"{band}"' in payload for band in q.BANDS)
+
+
+# ------------------------------------------------------------ project lookup
+
+
+def test_pick_project_finds_the_one_with_the_title():
+    nodes = [{"id": "a", "title": "other"}, {"id": "b", "title": "tradecraft board"}]
+    assert q.pick_project(nodes, "tradecraft board") == "b"
+
+
+def test_pick_project_refuses_a_duplicate_title_rather_than_guessing():
+    """Guessing would write an ordering into a board the caller did not mean."""
+    nodes = [{"id": "a", "title": "dup"}, {"id": "b", "title": "dup"}]
+    with pytest.raises(q.BoardError) as caught:
+        q.pick_project(nodes, "dup")
+    assert "2 projects" in str(caught.value)
+
+
+def test_pick_project_names_what_is_there_when_nothing_matches():
+    with pytest.raises(q.BoardError) as caught:
+        q.pick_project([{"id": "a", "title": "other"}], "missing")
+    assert "other" in str(caught.value), "says what titles exist, so the caller can point at one"

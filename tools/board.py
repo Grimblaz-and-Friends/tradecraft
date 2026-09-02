@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -47,9 +48,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
-OWNER = "Grimblaz-and-Friends"
-REPO = "tradecraft"
-BOARD_TITLE = "tradecraft board"
+OWNER = os.environ.get("TRADECRAFT_BOARD_OWNER", "Grimblaz-and-Friends")
+REPO = os.environ.get("TRADECRAFT_BOARD_REPO", "tradecraft")
+
+# Overridable so the transport can be pointed at a board that is not the live
+# one -- a scratch board for a trial run, or a second repository's. The title
+# is the only handle: the project is found by matching it, so two projects
+# sharing a title under one owner is the ambiguity this also lets a caller
+# avoid.
+BOARD_TITLE = os.environ.get("TRADECRAFT_BOARD_TITLE", "tradecraft board")
 
 BANDS = ["Standing", "Front", "Bundles", "Review-set", "Tail"]
 STATUSES = ["Queued", "In progress", "In flight", "Blocked", "Deferred"]
@@ -299,6 +306,29 @@ def open_issues() -> dict[int, str]:
     return {item["number"]: item["id"] for item in json.loads(raw)}
 
 
+def pick_project(nodes: list[dict], title: str) -> str:
+    """The project id for `title`, or a BoardError naming what went wrong.
+
+    Two projects sharing a title is the case worth refusing rather than
+    guessing at: picking the first would write an ordering into whichever the
+    API happened to list first, and the caller would see a plausible-looking
+    board that is not the one they meant.
+    """
+    match = [n for n in nodes if n.get("title") == title]
+    if not match:
+        seen = sorted(n.get("title", "") for n in nodes)
+        raise BoardError(
+            f"no project titled {title!r}. Run 'python tools/board.py init', "
+            f"or set TRADECRAFT_BOARD_TITLE to one of: {seen or 'none found'}"
+        )
+    if len(match) > 1:
+        raise BoardError(
+            f"{len(match)} projects are titled {title!r}; the title is the only handle this "
+            "has, so rename all but one or point TRADECRAFT_BOARD_TITLE at a distinct title"
+        )
+    return match[0]["id"]
+
+
 class Board:
     """The project, its fields, and the reads and writes the run order needs."""
 
@@ -316,12 +346,7 @@ class Board:
             l=OWNER,
         )["organization"]
         self.owner_id = found["id"]
-        match = [p for p in found["projectsV2"]["nodes"] if p["title"] == BOARD_TITLE]
-        if not match:
-            raise BoardError(
-                f"no project titled {BOARD_TITLE!r} under {OWNER}. Run: python tools/board.py init"
-            )
-        self.project_id = match[0]["id"]
+        self.project_id = pick_project(found["projectsV2"]["nodes"], BOARD_TITLE)
         self.fields = self._read_fields()
 
     def _read_fields(self) -> dict[str, dict]:
