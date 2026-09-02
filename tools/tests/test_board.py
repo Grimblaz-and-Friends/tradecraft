@@ -502,15 +502,26 @@ def test_is_available_excludes_the_four_states_and_an_unset_one():
 def no_wire(monkeypatch):
     """Make any wire call a test failure rather than a real GitHub request.
 
-    A test that patches only the lookup relies on the production guard to stop
-    the request -- so the single mutation it exists to catch is the one that
-    lets it through. The first version of the init test did exactly that, and
-    running that mutant created a real project on the org, provisioned its
-    fields and overwrote the Status options.
+    Pins the primitive, not the wrapper. `gql` is a convenience over `gh`, and
+    `gh` is the only thing that transmits, so a fence on `gql` alone leaves
+    every `gh`-routed path open -- which is the same hole one layer down as
+    the defect this helper was written to close, and a review proved it by
+    mutating one command onto the `gh` route and watching a real request go
+    out and come back. `subprocess.run` is pinned as well, so a future call
+    site that reaches neither wrapper still cannot transmit.
     """
-    def refuse(query, **variables):
-        raise AssertionError("this test reached the network: " + query[:90])
-    monkeypatch.setattr(q, "gql", refuse)
+    def refuse_gql(query, **variables):
+        raise AssertionError("this test reached the network via gql: " + query[:90])
+
+    def refuse_gh(args):
+        raise AssertionError("this test reached the network via gh: " + " ".join(args)[:90])
+
+    def refuse_subprocess(*args, **kwargs):
+        raise AssertionError("this test reached the network via subprocess: " + str(args)[:90])
+
+    monkeypatch.setattr(q, "gql", refuse_gql)
+    monkeypatch.setattr(q, "gh", refuse_gh)
+    monkeypatch.setattr(q.subprocess, "run", refuse_subprocess)
 
 
 def test_init_refuses_when_a_board_with_that_title_already_exists(monkeypatch):
@@ -615,3 +626,49 @@ def test_next_still_reports_a_genuinely_saturated_board(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "in progress, in flight, blocked or deferred" in out
     assert "unranked" not in out
+
+
+def test_no_wire_fences_gh_and_subprocess_not_only_gql(monkeypatch):
+    """The fence's own both-polarities probe.
+
+    A fence that stops `gql` and lets `gh` through looks identical from a green
+    suite, and every `gql` call reaches GitHub through `gh`. Each route is
+    provoked separately, because pinning one and assuming the others is exactly
+    the mistake this replaced.
+    """
+    no_wire(monkeypatch)
+    with pytest.raises(AssertionError, match="via gql"):
+        q.gql("query{x}")
+    with pytest.raises(AssertionError, match="via gh"):
+        q.gh(["api", "graphql"])
+    with pytest.raises(AssertionError, match="via subprocess"):
+        q.subprocess.run(["gh", "api"])
+
+
+def test_open_issues_cannot_transmit_under_the_fence(monkeypatch):
+    """A gh-routed call site, not a gql-routed one -- the route F-1 left open."""
+    no_wire(monkeypatch)
+    with pytest.raises(AssertionError, match="via gh"):
+        q.open_issues()
+
+
+def test_next_reports_an_empty_board_as_empty(capsys, monkeypatch):
+    """Neither saturated nor unranked: the state init leaves before the first sync."""
+    monkeypatch.setattr(q.Board, "__init__", lambda self: None)
+    monkeypatch.setattr(q.Board, "rows", lambda self: [])
+    monkeypatch.setattr(q, "gh", lambda args: "[]")
+    assert q.cmd_next(5) == 0
+    out = capsys.readouterr().out
+    assert "no items at all" in out
+    assert "in progress" not in out and "unranked" not in out
+
+
+def test_options_payload_sanitises_the_name_as_well_as_the_description():
+    """Both come off the live board; only one used to be guarded."""
+    payload = q.options_payload(
+        [{"id": "o1", "name": "PR" + chr(92) + "G" + chr(10), "color": "BLUE",
+          "description": "d"}],
+        ["New" + chr(92) + "Name"],
+    )
+    assert chr(92) not in payload and chr(10) not in payload
+    assert payload.count('"') % 2 == 0, payload

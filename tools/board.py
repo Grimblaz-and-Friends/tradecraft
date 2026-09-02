@@ -646,10 +646,10 @@ def options_payload(existing: list[dict], new_names: list[str]) -> str:
     """
     parts = [
         '{id:"%s",name:"%s",color:%s,description:"%s"}'
-        % (o["id"], o["name"].replace('"', ""), option_color(o), option_text(o.get("description")))
+        % (o["id"], option_text(o["name"]), option_color(o), option_text(o.get("description")))
         for o in existing
     ]
-    parts += ['{name:"%s",color:GRAY,description:""}' % n.replace('"', "") for n in new_names]
+    parts += ['{name:"%s",color:GRAY,description:""}' % option_text(n) for n in new_names]
     return ",".join(parts)
 
 
@@ -668,12 +668,13 @@ def option_color(option: dict) -> str:
 
 
 def option_text(value: str | None) -> str:
-    """An option description, made safe to interpolate into a GraphQL string.
+    """Option text, made safe to interpolate into a GraphQL string.
 
-    Descriptions come off the live board rather than through `parse_plan`, so
-    the charset that guards a bundle name never sees them. A quote or a
-    backslash here malforms the query on the one write this module calls
-    silently destructive.
+    Names as well as descriptions: both come off the live board rather than
+    through `parse_plan`, so the charset that guards a bundle name never sees
+    either. A backslash escapes the closing quote and the string runs on; a
+    quote or a newline ends it early. This is the one write the module calls
+    silently destructive, so nothing reaches it unsanitised.
     """
     text = (value or "").replace("\\", "").replace('"', "")
     return "".join(ch for ch in text if ch >= " ")
@@ -735,12 +736,15 @@ def cmd_sync(dry_run: bool) -> int:
         if number in by_issue:
             board.archive(by_issue[number])
         else:
-            # Not benign, and saying so is the point: the item stays on the
-            # board while its issue is closed, so it is absent from the target
-            # and settle below cannot converge. This run will halt on it.
-            print(f"warning: #{number} is due for archiving and was not on the read, so it "
-                  "could not be removed. This run will halt at the settle step because of it; "
-                  "run sync again and the next read will carry it", flush=True)
+            # Deliberately claims nothing about what settle then does. The item
+            # was missed BECAUSE the ordered read lacked it, and a read that
+            # stays stale the same way matches the target exactly and settles
+            # green -- so asserting a halt here made the run contradict itself
+            # three lines later and exit 0 over a board still carrying a closed
+            # issue.
+            print(f"warning: #{number} is due for archiving and was not on the read, so it was "
+                  "NOT removed and the board still carries it. Run sync again -- this run's "
+                  "result does not tell you whether it worked", flush=True)
     settled = settle(lambda: [i["issue"] for i in board.ordered()], target)
     print(f"settled: ordered read carries all {len(settled)} items", flush=True)
     return 0
@@ -820,7 +824,9 @@ def cmd_next(count: int) -> int:
     available = [r for r in rows if is_available(r)]
     if not available:
         unplaced = sum(1 for r in rows if r.status == EMPTY)
-        if unplaced:
+        if not rows:
+            print("the board holds no items at all. Run sync to place the open issues on it")
+        elif unplaced:
             print(f"nothing on the board is available: {unplaced} of {len(rows)} items have no "
                   "status yet, so they are unranked rather than available. Run apply with a plan "
                   "that places them")
