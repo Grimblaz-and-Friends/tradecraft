@@ -22,6 +22,12 @@ The obvious remedy is a check comparing the installed plugin version against the
 
 **4. The version is a poor handle anyway.** A consumer comparing versions must already have fetched something to compare against, which is most of the work the comparison was meant to prompt.
 
+### The comparison already exists where it has a consumer
+
+`tools/check_codex_compat.py`, `_assert_plugin`, reads the version from `.claude-plugin/plugin.json`, calls `codex plugin list --json`, and raises when the two disagree: *"installed tradecraft version is {actual!r}; this tree is {expected_version!r}"*. So the comparison this decision declines is already written and already running — as a **precondition assertion for a probe**, which is the one context where it answers a question somebody is asking: the probe is about to test the installed plugin, so whether the install matches the tree decides whether the probe is measuring what it claims.
+
+That is the distinction the decline turns on. A precondition has a caller who needs the answer at that moment. A background staleness warning has no caller at all, which is reason 1 restated from the other side. **This was surfaced by the change's own experience session** — the seat sent to decide the proposal cold found the existing code unprompted, and named it as the shape worth having.
+
 ## What ships instead, and why it is this small
 
 `README.md` gains two sentences beside its Pinning paragraph. It gains **only** two, because the larger claim was probed and failed.
