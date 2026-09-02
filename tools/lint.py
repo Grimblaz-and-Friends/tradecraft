@@ -4222,12 +4222,52 @@ def always_on_note(root: Path) -> str:
         return f"always-on surface: not derived ({type(exc).__name__}: {exc})"
 
 
+def cell_body_note(root: Path) -> str:
+    """Every cell body, where a session sees it before it writes.
+
+    **The map is not the cells.** `check_doctrine` iterates
+    `CELL_BODY_BUDGET_CHARS`, so a cell absent from it was sized by nothing at
+    either command the landing procedure mandates -- save the charter, whose
+    body is a term in every always-on row and was already printed there -- and the cells absent from
+    it had become the large ones, with the governed bodies neither the
+    largest nor near it. Reporting a size asserts no number, which is why this
+    is a note and not a ceiling: the map is sparse on purpose, because a number
+    chosen for a cell nobody has argued about would be a ruling arriving as a
+    constant, and this change was affirmed not to make one. [#302]
+
+    **Never fatal, and never silent.** It reports rather than reds, copying
+    `always_on_note` above -- which states a figure it cannot derive and moves
+    on. The two states a reader must be able to tell apart are *nothing to
+    report*, which a tree with no cells is, and *could not derive*, which a
+    broken input is; silence would say neither, so each produces text.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "repo_figures_bodies", root / "tools" / "figures.py"
+        )
+        figures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(figures)
+        rows = figures.cell_body_rows(root)
+        # Inside the guard, for the reason always_on_note records: a `data`
+        # missing its key escaping as a KeyError answers the flow's mandated
+        # command with a traceback.
+        if not rows:
+            return "cell bodies here: no cells on either roster source"
+        return (
+            "cell bodies here, largest first:"
+            + chr(10) + figures.cell_body_block(rows)
+        )
+    except Exception as exc:  # noqa: BLE001 -- reported, never fatal
+        return f"cell bodies: not derived ({type(exc).__name__}: {exc})"
+
+
 def main() -> int:
     utf8_stdio()
     findings = run(ROOT)
     for finding in findings:
         print(finding)
     print(always_on_note(ROOT))
+    print(cell_body_note(ROOT))
     print(f"lint: {len(findings)} finding(s)")
     return 1 if findings else 0
 

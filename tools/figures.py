@@ -536,6 +536,110 @@ def always_on_at(root: Path, ref: str) -> dict[str, int]:
     return {row["runtime"]: row["total"] for row in data["here"]}
 
 
+def cell_budgets(rel_path: str) -> list[tuple[str, int]]:
+    """Every budget that governs one cell's body, named, or an empty list.
+
+    **`CELL_BODY_BUDGET_CHARS` is not the only budget in view**, and treating
+    it as though it were is how a report comes to say "no budget" about a cell
+    that is capped. The charter's body is a term in every always-on row and in
+    the adopter total, so `check_always_on_budget` reds on it at the same
+    command `check_doctrine` runs at -- it is enforced today while absent from
+    that map. A cold seat settling this change's artifact caught the row that
+    would have claimed otherwise. [#302]
+
+    Returns pairs rather than one number because the charter has two, and the
+    binding one is the smaller-headroom adopter total rather than the row a
+    reader reaches first.
+    """
+    own = lint.CELL_BODY_BUDGET_CHARS.get(rel_path)
+    if own is not None:
+        return [("body", own)]
+    if rel_path == lint.CHARTER:
+        return [("always-on row", lint.ALWAYS_ON_ROW_BUDGET_CHARS),
+                ("adopter total", lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS)]
+    return []
+
+
+def cell_body_rows(root: Path) -> list[dict]:
+    """Every cell body of every roster source, largest first.
+
+    **Not named `figure_*`, and not one.** Every `figure_` function here is
+    enumerated in this module's docstring and emitted by `build_figures`; this
+    one is neither, being rendered by `tools/lint.py` at the checkout's own
+    checkpoint. A `figure_`-prefixed function outside both lists reinstates the
+    class `test_the_module_docstring_enumerates_every_figure_always_emitted`
+    exists to prevent, one name over. [#302]
+
+    **Derived from the roster rather than from a list.** `check_doctrine`
+    iterates `CELL_BODY_BUDGET_CHARS`, so a cell absent from that map is sized
+    by nothing at either command this repository's landing procedure mandates.
+    Reading `roster.SOURCES` rather than naming the source directories here is
+    what keeps a third source, added later, from being silently unmeasured --
+    the same list-shaped failure one level up. [#302]
+
+    **The number is the body**, `lint._frontmatterless`'s own length, never the
+    cell total: the total is a different figure with its own function in this
+    module, and printing it beside a body budget forks the figure from the
+    guard that enforces it.
+    """
+    rows = []
+    for name, source in roster.cell_sources(root).items():
+        rel = f"{source}/{name}/{roster.CELL_FILE}"
+        text = (root / rel).read_text(encoding="utf-8", errors="replace")
+        rows.append({
+            "name": name,
+            "source": source,
+            "path": rel,
+            "body": len(lint._frontmatterless(text)),
+            "budgets": cell_budgets(rel),
+        })
+    rows.sort(key=lambda row: (-row["body"], row["name"]))
+    return rows
+
+
+def cell_body_block(rows: list[dict]) -> str:
+    """The rows as text, one per line, in the order the figure put them.
+
+    Rows rather than one dense line because the ordering is the finding: it is
+    what makes "budgeted" and "large" having come apart legible without the
+    reader enumerating anything, and an ordering is only legible as rows.
+
+    **Nothing evaluative.** No marker, threshold or word ranking a cell as
+    large -- that would be a number invented for a cell nobody has argued
+    about, which is the edge this change was affirmed not to cross. The
+    largest-first ordering is not such a marker: it orders every row alike and
+    singles out none.
+    """
+    width = max((len(row["name"]) for row in rows), default=0)
+    lines = []
+    for row in rows:
+        budgets = row["budgets"]
+        if not budgets:
+            # **"no body budget", not "no budget".** Every cell carries an
+            # enforced *description* ceiling, and two sit within tens of
+            # characters of it; a bare "no budget" beside a body number was
+            # read as covering the cell. One word scopes it to the number it
+            # sits next to. [#302]
+            against = "no body budget"
+        elif len(budgets) == 1:
+            # **Headroom, because that is the unit every recorded use argues
+            # in.** `8,988 of 9,000` is twelve characters of room and reads as
+            # comfortable among five-figure neighbours; this is otherwise the
+            # only body-against-ceiling surface here that omits the difference.
+            # Both terms are guard-backed, so no number is invented. [#302]
+            against = f"of {budgets[0][1]:,}, headroom {budgets[0][1] - row['body']:,}"
+        else:
+            # **Shared, and no per-cell headroom stated.** These budgets price
+            # the doctrine files, this body and every description together, so
+            # a bare "of 16,345" beside a body of 5,851 would read as ten
+            # thousand characters of room where the shared headroom is a few
+            # hundred -- the same defect as "no budget", one step gentler.
+            named = ", ".join(f"{label} {value:,}" for label, value in budgets)
+            against = f"shared with {named}"
+        lines.append(f"  {row['name']:<{width}}  {row['body']:>7,}  {against}")
+    return chr(10).join(lines)
+
+
 def build_figures(root: Path, base: str | None,
                   cell: str | None = None, budget: int | None = None) -> list[dict]:
     figures = [
