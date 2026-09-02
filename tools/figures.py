@@ -560,8 +560,15 @@ def cell_budgets(rel_path: str) -> list[tuple[str, int]]:
     return []
 
 
-def figure_cell_bodies(root: Path) -> dict:
+def cell_body_rows(root: Path) -> list[dict]:
     """Every cell body of every roster source, largest first.
+
+    **Not named `figure_*`, and not one.** Every `figure_` function here is
+    enumerated in this module's docstring and emitted by `build_figures`; this
+    one is neither, being rendered by `tools/lint.py` at the checkout's own
+    checkpoint. A `figure_`-prefixed function outside both lists reinstates the
+    class `test_the_module_docstring_enumerates_every_figure_always_emitted`
+    exists to prevent, one name over. [#302]
 
     **Derived from the roster rather than from a list.** `check_doctrine`
     iterates `CELL_BODY_BUDGET_CHARS`, so a cell absent from that map is sized
@@ -587,10 +594,10 @@ def figure_cell_bodies(root: Path) -> dict:
             "budgets": cell_budgets(rel),
         })
     rows.sort(key=lambda row: (-row["body"], row["name"]))
-    return {"data": {"rows": rows}}
+    return rows
 
 
-def cell_body_block(data: dict) -> str:
+def cell_body_block(rows: list[dict]) -> str:
     """The rows as text, one per line, in the order the figure put them.
 
     Rows rather than one dense line because the ordering is the finding: it is
@@ -603,14 +610,24 @@ def cell_body_block(data: dict) -> str:
     largest-first ordering is not such a marker: it orders every row alike and
     singles out none.
     """
-    width = max((len(row["name"]) for row in data["rows"]), default=0)
+    width = max((len(row["name"]) for row in rows), default=0)
     lines = []
-    for row in data["rows"]:
+    for row in rows:
         budgets = row["budgets"]
         if not budgets:
-            against = "no budget"
+            # **"no body budget", not "no budget".** Every cell carries an
+            # enforced *description* ceiling, and two sit within tens of
+            # characters of it; a bare "no budget" beside a body number was
+            # read as covering the cell. One word scopes it to the number it
+            # sits next to. [#302]
+            against = "no body budget"
         elif len(budgets) == 1:
-            against = f"of {budgets[0][1]:,}"
+            # **Headroom, because that is the unit every recorded use argues
+            # in.** `8,988 of 9,000` is twelve characters of room and reads as
+            # comfortable among five-figure neighbours; this is otherwise the
+            # only body-against-ceiling surface here that omits the difference.
+            # Both terms are guard-backed, so no number is invented. [#302]
+            against = f"of {budgets[0][1]:,}, headroom {budgets[0][1] - row['body']:,}"
         else:
             # **Shared, and no per-cell headroom stated.** These budgets price
             # the doctrine files, this body and every description together, so

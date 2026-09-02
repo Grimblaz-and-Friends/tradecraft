@@ -5156,7 +5156,8 @@ def test_the_report_sizes_every_cell_of_both_roster_sources(tmp_path):
     """Criterion 1 and 2: the map is not the cells, and neither is one source.
 
     `check_doctrine` iterates `CELL_BODY_BUDGET_CHARS`, so before this a cell
-    absent from it was sized by nothing at either mandated command. A
+    absent from it was sized by nothing at either mandated command, the
+    charter excepted. A
     shipped-only report would be the hand-written carve-out this change exists
     to avoid, so a repo-only cell is in the fixture and in the assertion.
     """
@@ -5281,16 +5282,100 @@ def test_the_reported_number_is_the_body_and_not_the_cell_total(tmp_path):
     assert body < 5000, "the row carried the cell total rather than the body"
 
 
-def test_the_report_carries_nothing_evaluative(tmp_path):
-    """Criterion 6's marker clause, as a shape over every row.
+def test_the_report_carries_nothing_evaluative():
+    """Criterion 6's marker clause, as a shape over every row and the header.
 
-    A threshold, highlight or word ranking a cell as large is a number
-    invented for a cell nobody has argued about -- the edge the affirmed brief
-    set. Asserting the row shape forbids the whole class rather than a list of
-    words somebody thought of.
+    The first version of this pin was beatable three ways and a review found
+    all three: a marker in the header, which it sliced away; a marker inside
+    the name field, which `\\S+` accepted; and free text on the `shared with`
+    tail, where `[^!]+` excluded only the exclamation mark it had been probed
+    with. The middle one is the one that mattered -- `engagement-LARGE` keyed
+    to an invented 10,000-character threshold rendered green, which is
+    criterion 6's falsifier almost verbatim. Every field is bounded now and
+    the header is asserted whole rather than discarded. [#302]
+
+    Nothing guards the characters of a cell name, so a cell named outside
+    `[a-z][a-z0-9-]*` reds this pin rather than the report. That is the safe
+    direction and it is deliberate.
     """
-    lawful = re.compile(r"^  \S+\s+[\d,]+  (no budget|of [\d,]+|shared with [^!]+)$")
-    block = lint.cell_body_note(lint.ROOT).splitlines()[1:]
-    assert block
-    for line in block:
+    lawful = re.compile(
+        r"^  [a-z][a-z0-9-]*\s+[\d,]+  ("
+        r"no body budget"
+        r"|of [\d,]+, headroom -?[\d,]+"
+        r"|shared with always-on row [\d,]+, adopter total [\d,]+"
+        r")$")
+    lines = lint.cell_body_note(lint.ROOT).splitlines()
+    assert lines[0] == "cell bodies here, largest first:", lines[0]
+    assert len(lines) > 1
+    for line in lines[1:]:
         assert lawful.match(line), f"row carries something beyond size and budget: {line!r}"
+
+
+def test_the_lint_prints_every_cell_body_at_the_mandated_command(capsys):
+    """Criterion 1, against the command it names and the tree it names.
+
+    Every other pin here calls `cell_body_note` directly and every fixture
+    tree carries cells of a few dozen characters, so three separate mutations
+    left the whole suite green: deleting the `print` from `main()` (the block
+    vanishes from the mandated command); returning a budget a thousand over
+    the guard's; and returning `None` for every budget, which prints
+    `no body budget` against both genuinely capped cells -- the exact false row
+    a cold seat blocked this change's artifact over. The pin thirteen lines
+    from the omission records the same incident for the always-on line: *"This
+    asserted only that the substring was present, so it stayed green while the
+    line printed one scalar that was some other runtime's."* [#302]
+
+    **The expectation is derived from the guard's own constants, never from
+    `figures.cell_budgets`** -- reading the renderer's source of truth would
+    make this tautological, which is the one way to write it wrong.
+    """
+    lint.main()
+    out = capsys.readouterr().out
+    assert "cell bodies here, largest first:" in out, out
+
+    expected = {}
+    for name, source in roster.cell_sources(lint.ROOT).items():
+        rel = f"{source}/{name}/{roster.CELL_FILE}"
+        body = len(lint._frontmatterless(
+            (lint.ROOT / rel).read_text(encoding="utf-8", errors="replace")))
+        own = lint.CELL_BODY_BUDGET_CHARS.get(rel)
+        if own is not None:
+            against = f"of {own:,}, headroom {own - body:,}"
+        elif rel == lint.CHARTER:
+            against = (f"shared with always-on row "
+                       f"{lint.ALWAYS_ON_ROW_BUDGET_CHARS:,}, adopter total "
+                       f"{lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,}")
+        else:
+            against = "no body budget"
+        expected[name] = (body, against)
+
+    printed = {name: (body, against) for name, body, against in _rows(out)}
+    assert set(printed) == set(expected), (
+        f"missing {set(expected) - set(printed)}, extra {set(printed) - set(expected)}")
+    for name, (body, against) in expected.items():
+        assert printed[name][0] == body, f"{name}: printed {printed[name][0]}, body is {body}"
+        assert printed[name][1] == against, f"{name}: printed {printed[name][1]!r}"
+
+
+def test_the_report_reports_rather_than_raising_on_a_bad_shape(tmp_path):
+    """`cell_body_note`'s own comment cites the pin it did not write.
+
+    That comment points at `always_on_note`'s recorded incident -- the read
+    inside the guard and the formatting outside it, so a malformed payload
+    escaped as a KeyError and `main()` answered the mandated command with a
+    traceback. The hazard is identical here and nothing held it; the defense
+    stage of this change's review originated the finding. [#302]
+    """
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "figures.py").write_text(
+        "def cell_body_rows(root):" + NL
+        + "    return [{'name': 'alpha'}]" + NL
+        + "def cell_body_block(rows):" + NL
+        + "    return rows[0]['body']" + NL,
+        encoding="utf-8")
+
+    note = lint.cell_body_note(tmp_path)
+    assert "not derived" in note, note
+    assert "KeyError" in note, note
+
+

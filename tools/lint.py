@@ -4227,8 +4227,9 @@ def cell_body_note(root: Path) -> str:
 
     **The map is not the cells.** `check_doctrine` iterates
     `CELL_BODY_BUDGET_CHARS`, so a cell absent from it was sized by nothing at
-    either command the landing procedure mandates -- and the cells absent from
-    it had become the large ones, with the two capped bodies neither the
+    either command the landing procedure mandates -- save the charter, whose
+    body is a term in every always-on row and was already printed there -- and the cells absent from
+    it had become the large ones, with the governed bodies neither the
     largest nor near it. Reporting a size asserts no number, which is why this
     is a note and not a ceiling: the map is sparse on purpose, because a number
     chosen for a cell nobody has argued about would be a ruling arriving as a
@@ -4246,15 +4247,15 @@ def cell_body_note(root: Path) -> str:
         )
         figures = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(figures)
-        data = figures.figure_cell_bodies(root)["data"]
+        rows = figures.cell_body_rows(root)
         # Inside the guard, for the reason always_on_note records: a `data`
         # missing its key escaping as a KeyError answers the flow's mandated
         # command with a traceback.
-        if not data["rows"]:
+        if not rows:
             return "cell bodies here: no cells on either roster source"
         return (
             "cell bodies here, largest first:"
-            + chr(10) + figures.cell_body_block(data)
+            + chr(10) + figures.cell_body_block(rows)
         )
     except Exception as exc:  # noqa: BLE001 -- reported, never fatal
         return f"cell bodies: not derived ({type(exc).__name__}: {exc})"

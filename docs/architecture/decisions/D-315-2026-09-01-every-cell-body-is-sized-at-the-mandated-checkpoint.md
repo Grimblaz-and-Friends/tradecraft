@@ -1,10 +1,12 @@
 # D-315: Every cell body is sized at the checkpoint the flow already mandates, and nothing is capped
 
+**Status:** Accepted 2026-09-01 (PR #315)
+
 ## The condition
 
-`check_doctrine` iterates `CELL_BODY_BUDGET_CHARS`, not the cells. A cell absent from that map was sized by **nothing**, at either command `docs/cells/landing/SKILL.md` mandates before a commit — and the cells absent from it had become the large ones. On the tree this landed against, the two capped bodies stood fifth and seventh; the largest unbudgeted body was more than twice the larger cap.
+`check_doctrine` iterates `CELL_BODY_BUDGET_CHARS`, not the cells. A cell absent from that map was sized by nothing at either command `docs/cells/landing/SKILL.md` mandates before a commit — **with one exception, and it is this entry's own headline**: `skills/charter/SKILL.md`'s body is a term in every always-on row, and the merge base already printed `charter body 5,851` at that very command. The unqualified form of this sentence is what a cold seat rejected in the artifact, and it survived into four restatements after the code had been repaired — and the cells absent from it had become the large ones. On the tree this landed against, the three governed bodies stood fifth, sixth and seventh — two under `CELL_BODY_BUDGET_CHARS`, the charter's under the always-on ceilings — and the largest unbudgeted body was more than twice the larger *body* cap.
 
-That is [#302](https://github.com/Grimblaz-and-Friends/tradecraft/issues/302), which recorded a second instance from [#307](https://github.com/Grimblaz-and-Friends/tradecraft/issues/307)'s review: a change deterred from a measured body and permitted at an unmeasured one, arguing size from the capped cell's headroom while larger uncapped cells stood above it. "Budgeted" and "large" had come apart entirely.
+That is [#302](https://github.com/Grimblaz-and-Friends/tradecraft/issues/302), which recorded a second instance from [#307](https://github.com/Grimblaz-and-Friends/tradecraft/pull/307)'s review: a change that reached past the only capped body it was weighing, with larger uncapped cells standing above both. **Narrowed deliberately** — D-307 §4 says *"No ceiling decided the placement, though one is named among the grounds for rejecting the alternative"*, and the wider reading was already amended out of this change's own artifact. "Budgeted" and "large" had come apart entirely.
 
 ## The decision
 
