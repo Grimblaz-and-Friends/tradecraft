@@ -1,6 +1,6 @@
 # The cold seat that settles the artifact
 
-**Loaded when** you are running the cold interpretation check on a pre-implementation artifact — writing the dispatch, reading a verdict back, or deciding what a revision after one costs. A seat working a dispatch it was handed does not need it; everything that reaches the seat reaches it in the dispatch, so the sections below are ordered to be written into one front to back.
+**Loaded when** you are running the cold interpretation check on a pre-implementation artifact — writing the dispatch, reading a verdict back, or deciding what a revision after one costs. A seat working a dispatch it was handed does not need it; everything that reaches the seat reaches it in the dispatch, and the sections below name which of their content is dispatch content.
 
 ## Cold, here
 
@@ -14,7 +14,7 @@
 
 **So the seat does not read the work's issue thread.** That is what the withholding costs and it is paid deliberately; the verdict section below states what the seat judges a closed fork against instead, since the ordinary statement of that defect is keyed to an issue the seat cannot see.
 
-**The working root, and the revision the seat confirms before anything else.** The artifact is judged on whether its reading holds against the tree, so the tree has to be reachable: what the dispatch bounds is what aims the seat's attention, never what it may read. Where the tree has no commit to name — one built for a run of its own commonly has no history at all — the dispatch says so and asks the seat to report what it finds instead, rather than sending an instruction no seat can satisfy.
+**The working root, and the commit the seat confirms before anything else.** The artifact is judged on whether its reading holds against the tree, so the tree has to be reachable: what the dispatch bounds is what aims the seat's attention, never what it may read. Where the tree has no commit to name — one built for a run of its own commonly has no history at all — the dispatch says so and asks the seat to report what it finds instead, rather than sending an instruction no seat can satisfy.
 
 **That root should be isolated — its copy of the text under judgement the change's own — and the dispatch states outright that any always-on text reaching the seat from elsewhere is not its governing text.** A fresh dispatch commonly starts against the repository default rather than the branch the work is on, so a seat judging an artifact about a rule change reads the rule the change replaces and rules against it. Naming the root is not enough on its own: the stale text arrives beside it, and the statement is what lets a recipient reject it.
 
@@ -26,7 +26,7 @@
 
 ## The three verdicts
 
-The verdict **names the text it judged** — the sha256 and byte count it was given, and the revision it confirmed — so a later reader knows what it covers. An adverse one **names the points it fails on**: the claim, criterion or choice, one line each, not the prose of the finding.
+The verdict **names the text it judged** — the sha256 and byte count it was given, and the commit it confirmed, or what it found where the tree had none — so a later reader knows what it covers. An adverse one **names the points it fails on**: the claim, criterion or choice, one line each, not the prose of the finding.
 
 - **would** — the reading would achieve the brief. This is the one that settles the artifact.
 - **would not** — it would not, on the points named. Settles nothing: a transcribed no is the question answered against you.
@@ -38,15 +38,13 @@ The verdict **names the text it judged** — the sha256 and byte count it was gi
 
 **Where the fork is one that could have made the brief wrong, the brief is amended instead, and the artifact is settled again against it** — a fresh dispatch, because the reading was judged against a term that has since changed.
 
-Without this verdict a seat that has correctly found an unsettleable question has no move but to fail the artifact again, and it will keep doing so however the sentence is rewritten. That is the loop this exists to end.
-
 ## What bounds the re-runs
 
 **No count.** A count is crude, and worse than crude: it licenses shipping an unsettled artifact at round N. Two things bound the loop instead, and this file says so plainly so a session does not go looking for a number.
 
 **The repeated-point rule the cell body states**, whose third response is the fork above — read it there, with its decision citation, rather than twice.
 
-**A revision that neither changes nor adds a claim does not buy a fresh reading.** The verdict named the text it judged; where a revision touches nothing that verdict turned on **and introduces nothing it did not cover**, the session states what it changed and which claim of the verdict's it did not touch, and proceeds. **Adding is reached as surely as changing** — a new acceptance criterion or a new boundary alters no existing claim, so a carve-out keyed to change alone would let an unjudged criterion into a settled artifact under the verdict's own hash. Replacing the draft label with the settlement block is the paradigm, that label existing after a verdict rather than before it; **the block names the verdict, the text it judged and the revision that discharged it, and nothing else** — the round's history goes where the table below sends it.
+**A revision that neither changes nor adds a claim does not buy a fresh reading.** The verdict named the text it judged; where a revision touches nothing that verdict turned on **and introduces nothing it did not cover**, the session states what it changed and which claim of the verdict's it did not touch, and proceeds. **Adding is reached as surely as changing** — a new acceptance criterion or a new boundary alters no existing claim, so a carve-out keyed to change alone would let an unjudged criterion into a settled artifact under the verdict's own hash. Replacing the draft label with the settlement block is the paradigm, that label existing after a verdict rather than before it; **the block names the verdict, the text it judged, and what settled the artifact on the route it took** — the revision discharging a `not settleable`, or what was tried and went unjudged where the check could not be got at all, or nothing further where a seat said *would*. The round's history goes where the table below sends it.
 
 **This narrows the rule that an artifact edited after its verdict is a draft again, and the narrowing is only as wide as its condition.** A revision that touches or adds a claim is a fresh draft, whatever it costs to re-read — the carve-out is not a judgement that a change is small, and a session reaching for it on a revision that moves or adds one has misread it. The one exception is the third verdict's discharge above, which is stated there as an exception. The recording obligation is what makes all of this checkable: a claim named is a claim a later reader can test.
 
