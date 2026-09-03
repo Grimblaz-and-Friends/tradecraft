@@ -1,0 +1,63 @@
+# D-347: The deletion instrument says whose leaning counts — an ablated-arm-only run is `unresolved`, a record hit keeps, and the void gate reads every arm whose silence is read
+
+**Status:** Accepted 2026-09-03 (PR #347)
+
+**Evidence.** The three limbs as filed, with their independent arrivals: [#340](https://github.com/Grimblaz-and-Friends/tradecraft/issues/340). The brief settled in conversation and posted at [issuecomment-5531684131](https://github.com/Grimblaz-and-Friends/tradecraft/issues/340#issuecomment-5531684131); the owner's affirmation at [issuecomment-5531685584](https://github.com/Grimblaz-and-Friends/tradecraft/issues/340#issuecomment-5531685584); the artifact at [issuecomment-5532190659](https://github.com/Grimblaz-and-Friends/tradecraft/issues/340#issuecomment-5532190659). The instrument this amends is [D-320](D-320-2026-09-02-the-fences-are-measured-and-nearly-all-of-them-are-live.md), which built it, and [D-337](D-337-2026-09-03-the-instrument-rules-move-to-the-cell.md), which moved its rules into the cell and routed this question here rather than closing it.
+
+## The condition
+
+D-337 landed the instrument's rules in `skills/spikes/` and its review raised three separate questions about what those rules count as evidence, recorded rather than fixed as rows 144, 146 and 145 of `docs/recorded-findings.jsonl` at `6cccbda`. All three are about the same thing — **whose leaning counts** — and none was settleable by the session that found it, because every available answer changes what the instrument licenses.
+
+**They were not one question three sessions would answer alike.** Limb 1 was reached by the `operational` seat from the arm asymmetry and independently by [#337's first experience session's consumer](https://github.com/Grimblaz-and-Friends/tradecraft/pull/337#issuecomment-5520276671) from text duplication. Limb 2 was reached by `cold-read` and by `claims-vs-evidence`. Limb 3 was reached by `cold-read` and, independently, by an external pass on the same commit. **Independent arrival is not an incident**, and the charter's admission order refuses an agent-proposed rule without an incident from real work or the owner's specific approval — *"a review finding about governing prose is not an incident."* None of the three has an incident. So all three waited on the owner, and this entry records the approval as much as the rules.
+
+## The decision
+
+**All three limbs were put as argued forks with a recommendation, and the owner affirmed all three recommendations.** That affirmation is the specific approval the admission bar names, and it is what admits every rule below.
+
+**1B — an ablated-arm-only run is `unresolved`, not a keep.** The rule read *"Anything else keeps, one citation by one seat being enough"*, so a seat in the arm the text had been *removed* from that reasoned its substance — the strongest available evidence that the substance is reachable without the text — scored as a keep. It now splits by arm: a citation from the arm **holding** the text is a keep; where the only citations came from the arm it was removed from, the run is **`unresolved`**, the text stays on the same cost asymmetry, and it may not be recorded as tested-and-kept.
+
+**The text stays either way, so what this buys is the record rather than the outcome.** A keep asserts something about the text; `unresolved` asserts the instrument was blind. That distinction is what a later session cites, and conflating them is how *tested and kept* gets said about a run that measured nothing.
+
+**The stronger form was rejected on width.** Counting an ablated-arm citation *toward* deletion is the reading the evidence most directly supports — the substance was demonstrably reachable without the text. It over-claims: three seats an arm reconstructing does not establish that the ninetieth reader will, and the failure is a session routed where the text existed to stop it, invisible for months. Value 1 refuses a rule that claims more than it measured. Leaving it a keep with [#337](https://github.com/Grimblaz-and-Friends/tradecraft/pull/337)'s arm disclosure alone was also rejected: the disclosure stops the record overstating itself and leaves the category mixing measurement with blindness.
+
+**2B — a citation in this repository's own record keeps the text and stops the dispatch.** #337 landed the cost half — search before dispatching, one grep against six seats — and left open what a hit licenses, in the shipped text. It is answered on the instrument's own logic rather than a new principle: **the rule already keeps on one cold seat working a docket somebody wrote for it, and a session that leaned on the text in its own work owed nothing to a docket.** A stronger witness cannot license less.
+
+**Two conditions are part of the rule rather than left to the scorer, and they are what stop it becoming a veto.** A record that discusses everything would otherwise keep everything — and this practice's record discusses the charter body at length, which would have killed [#303](https://github.com/Grimblaz-and-Friends/tradecraft/issues/303) on its first grep. So: the session must have **used** the text, given it as its reason for what it did, where a document discussing the text mentions it and is not one; and it must have used **the text as it now reads**, a citation of wording since replaced being a citation of something else.
+
+**3B — the void gate reads every arm whose silence is being read.** The gate voided on the intact arm alone, while the standard it certifies is a both-arms null, so a confirm whose ablated seats cited nothing at all — neither the plant nor the text — passed and had its silence read as a null. Which arms the gate reaches now follows the plant-placement rule already shipped: **both arms in a confirm**, where the plant rides in both by design; **the intact arm alone in a screen**, where it rides with the ablated class and a screen licenses no deletion anyway. Reading both arms unconditionally was rejected — it voids every screen by construction.
+
+**D-320 already performed this reading.** It reports the ablated-arm control readings, 3/3 on one confirm and 2/3 on the other, and says they *"are what shows the ablated arm could still read a fence of that shape, which is what a both-arms null rests on."* The shipped rule was narrower than its only precedent. What is new is that it binds; D-320's *stated* rule gated on the intact arm exactly as landed, which is why this needed the owner rather than a fidelity fix.
+
+**The coupling, which decided nothing but explains the shape:** the deletion standard is a both-arms null under every option, so 3B is what makes any null trustworthy — 1B's included.
+
+## What the ceiling does and does not become
+
+D-320 records a ceiling flatly: *"a clause whose substance a seat can reconstruct from the cell name alone can never clear this instrument."* This change **narrows it for the measurement and leaves it standing for the licence**, and the split is the session's reading of the brief's promise that `unresolved` would name what resolves it.
+
+**The licence is untouched.** The deletion rule requires a run *"in which no seat, in either arm, cited the text or its substance"*. An `unresolved` run fails that by construction, and no further arm rescues it — a run removing a second thing alongside the text is no longer one whose *"arms differ in that text alone"*. So such text still cannot clear the rule, and **this change licenses no deletion that was not already licensed.**
+
+**The measurement is not.** A further arm removing the reconstruction source alongside the text leaves a seat nothing to rebuild from and says which it was: seats that stop giving the substance show the source was carrying it; seats that still give it show nothing in the material was. Either result is a measurement and neither is a licence.
+
+**An earlier draft got this wrong twice and a cold seat caught both.** It cited D-320's *"Settling it needs a third arm with that sentence ablated"* as authority for the resolver — that sentence closes a **different** paragraph, about the charter naming cells as a second route, and says nothing about the reconstruction ceiling. And it then let the resolver's first outcome license a deletion the unamended rule forbids. Both are retracted here. The narrowing is this change's own and is argued on its merits above, not inherited.
+
+## What the arm disclosure became
+
+#337's *"Say which arm a keep came from"* is **struck from the reference and re-landed on the spike-report rule** in `skills/spikes/SKILL.md`, which is the only rule governing a run's report as such. A first draft claimed the disposition *name* carried the duty on its own; a cold seat falsified that — a name discloses nothing unless a rule makes someone write it down — and the recording duty exists because of that verdict.
+
+**What is not restored, and is a real loss against the struck sentence:** a `keep` no longer says whether one arm cited or both. Under 1B the case #337 cared about — the blind spot — is a different disposition rather than a footnote on a keep, which carries its purpose more strongly; the finer distinction was not its subject and nothing here recovers it.
+
+## What the review and the use of it found
+
+**Five cold-seat dispatches settled the artifact, four returning `would not` before the fifth returned `would`**; every seat a fresh dispatch, never a resumed one. Three consecutive verdicts landed on the ceiling passage, which under [D-304]'s repeated-point rule is evidence about the point rather than the sentence: the diagnosis was *false about the tree*, so D-320 was opened and read rather than reworded, and the licence/measurement split above is what came back. The four adverse rounds also struck a boundary bullet claiming no text was deleted against a change that strikes shipped prose, and one claiming line 9 untouched *entire* against a change section editing the keep sentence on that line.
+
+**The experience session found the defect this change created, and it is the reason for the second commit.** A cold consumer handed a finished confirm run scored it `unresolved` correctly and from the shipped text — checking the plant first, refusing to score the intact arm's positive-trigger declines as citations — and then named a collision: `SKILL.md`'s *"a run that separated on the text under test … stands on what it returned"* reads naturally as **behavioural** separation, which would make that same run a keep. Before the split the two readings agreed, because *"anything else keeps"* covered both. **And the thing that resolves it — that the measure is the warrant rather than the route — was stated in neither shipped file**, living only in D-320, which the consumer could not follow. Fixed in the change: *separated* is disambiguated to citations and the measure is stated in the cell.
+
+That consumer also found two flaws in the job I built for it — a docket item carrying `filing`'s own positive trigger, which the cell's near-miss rule bars, and an ablation left incomplete by the description's opening clause stating the exclusion's substance positively. The second is the case `unresolved` exists for, arriving unplanned.
+
+## What was rejected or left alone
+
+- **Running the instrument on itself.** Each ruling follows from a principle already inside the instrument rather than from a claim about what a reader does under a wording, so no spike was owed. The wordings that implement them *are* reader-behaviour claims, and they were checked by the experience session and the review rather than by a spike ahead of them.
+- **Recorded findings 143 and 147** — the deletion rule's subject widened from a fence clause to any text, and the generosity calibration of *"or its substance"*. Both stay recorded; neither is a limb of this ruling.
+- **The deletion requirement, the three-seats-an-arm width, the screen-licenses-no-deletion rule, the void-run sentence and the citation test.** All untouched.
+- **[#342](https://github.com/Grimblaz-and-Friends/tradecraft/issues/342)**, which generalises the instrument from an ablation to a substitution and touches the same sentences. It needs no owner ruling, so this went first and #342 generalises settled rules rather than rules about to change underneath it. That ordering is the session's call, reported.
+- **Whether the three were one ruling or three.** One change, three separately-stated rulings, one entry: they share a subject and both files and do not share an answer, so each is written to be superseded alone.
