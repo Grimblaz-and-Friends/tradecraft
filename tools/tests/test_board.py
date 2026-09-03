@@ -499,35 +499,40 @@ def test_is_available_excludes_the_four_states_and_an_unset_one():
 # ------------------------------------------- what cycle one's look found
 
 
-def no_wire(monkeypatch):
-    """Make any wire call a test failure rather than a real GitHub request.
+@pytest.fixture(autouse=True)
+def fence_the_wire(monkeypatch):
+    """Every test in this module starts fenced off the network. Nobody opts in.
 
-    Pins the primitive, not the wrapper. `gql` is a convenience over `gh`, and
-    `gh` is the only thing that transmits, so a fence on `gql` alone leaves
-    every `gh`-routed path open -- which is the same hole one layer down as
-    the defect this helper was written to close, and a review proved it by
-    mutating one command onto the `gh` route and watching a real request go
-    out and come back. `subprocess.run` is pinned as well, so a future call
-    site that reaches neither wrapper still cannot transmit.
+    This is the third form of this fence and the first that does not depend on
+    being remembered. The first pinned `gql` and left `gh` open -- `gql` is a
+    convenience over `gh`, and `gh` is the only thing that transmits. The
+    second pinned `gql`, `gh` and `subprocess.run`, and was a function three of
+    sixty-five tests called; the one test that drives `createProjectV2` was not
+    among them, so a mutation routed onto `gh` still transmitted, and a review
+    proved it by watching a real request go out. Each fix closed the instance
+    in front of it and left the generalisation one step out.
+
+    Autouse closes it: a test needing a stub overrides the one route it stubs
+    and stays fenced on the others, so the failure mode is a test that cannot
+    reach the wire rather than one that quietly does. Scoped to this module
+    rather than a conftest because the other suites here run real subprocesses
+    on purpose.
     """
-    def refuse_gql(query, **variables):
-        raise AssertionError("this test reached the network via gql: " + query[:90])
+    def refuse(kind):
+        def _refuse(*args, **kwargs):
+            raise AssertionError(
+                f"this test reached the network via {kind}: {str(args)[:90]}"
+            )
+        return _refuse
 
-    def refuse_gh(args):
-        raise AssertionError("this test reached the network via gh: " + " ".join(args)[:90])
-
-    def refuse_subprocess(*args, **kwargs):
-        raise AssertionError("this test reached the network via subprocess: " + str(args)[:90])
-
-    monkeypatch.setattr(q, "gql", refuse_gql)
-    monkeypatch.setattr(q, "gh", refuse_gh)
-    monkeypatch.setattr(q.subprocess, "run", refuse_subprocess)
+    monkeypatch.setattr(q, "gql", refuse("gql"))
+    monkeypatch.setattr(q, "gh", refuse("gh"))
+    monkeypatch.setattr(q.subprocess, "run", refuse("subprocess"))
 
 
 def test_init_refuses_when_a_board_with_that_title_already_exists(monkeypatch):
     """init used to create unconditionally, manufacturing the one condition
     pick_project refuses -- and pick_project's own message is what sent callers there."""
-    no_wire(monkeypatch)
     monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": q.BOARD_TITLE}])
     with pytest.raises(q.BoardError) as caught:
         q.cmd_init()
@@ -628,15 +633,14 @@ def test_next_still_reports_a_genuinely_saturated_board(capsys, monkeypatch):
     assert "unranked" not in out
 
 
-def test_no_wire_fences_gh_and_subprocess_not_only_gql(monkeypatch):
-    """The fence's own both-polarities probe.
+def test_every_wire_route_is_fenced_without_the_test_asking():
+    """The fence's own probe, and it opts into nothing.
 
     A fence that stops `gql` and lets `gh` through looks identical from a green
     suite, and every `gql` call reaches GitHub through `gh`. Each route is
     provoked separately, because pinning one and assuming the others is exactly
-    the mistake this replaced.
+    the mistake this replaced twice.
     """
-    no_wire(monkeypatch)
     with pytest.raises(AssertionError, match="via gql"):
         q.gql("query{x}")
     with pytest.raises(AssertionError, match="via gh"):
@@ -645,9 +649,8 @@ def test_no_wire_fences_gh_and_subprocess_not_only_gql(monkeypatch):
         q.subprocess.run(["gh", "api"])
 
 
-def test_open_issues_cannot_transmit_under_the_fence(monkeypatch):
-    """A gh-routed call site, not a gql-routed one -- the route F-1 left open."""
-    no_wire(monkeypatch)
+def test_open_issues_cannot_transmit_under_the_fence():
+    """A gh-routed call site, not a gql-routed one -- the route the first fence left open."""
     with pytest.raises(AssertionError, match="via gh"):
         q.open_issues()
 
@@ -672,3 +675,46 @@ def test_options_payload_sanitises_the_name_as_well_as_the_description():
     )
     assert chr(92) not in payload and chr(10) not in payload
     assert payload.count('"') % 2 == 0, payload
+
+
+def test_options_payload_guards_every_interpolated_value_including_the_id():
+    """All four, not three. The id is GitHub-generated today and that is not a guarantee."""
+    payload = q.options_payload(
+        [{"id": "a" + chr(92), "name": "b" + chr(92), "color": "BLUE",
+          "description": "c" + chr(92)}],
+        [],
+    )
+    assert chr(92) not in payload, payload
+    assert payload.count('"') % 2 == 0, payload
+
+
+def test_sync_warns_and_does_not_claim_the_run_will_halt(capsys, monkeypatch):
+    """cmd_sync had no test at all, and its warning had been wrong twice.
+
+    An archive target missing from the pre-add read is skipped; a read still
+    missing it then matches the target and settles green, so the run returns 0
+    with a closed issue still on the board. The warning must say that, and must
+    not promise a halt that does not come.
+    """
+    # The class is patched before it is replaced by the factory, or the factory
+    # is what setattr walks into.
+    monkeypatch.setattr(q.Board, "members", lambda self: [1, 2, 3])
+    monkeypatch.setattr(q.Board, "ordered", lambda self: [
+        {"item_id": "x1", "issue": 1, "band": "-", "bundle": "-", "status": "-"},
+        {"item_id": "x2", "issue": 2, "band": "-", "bundle": "-", "status": "-"},
+    ])
+    monkeypatch.setattr(q.Board, "add", lambda self, cid: "new")
+    monkeypatch.setattr(q.Board, "archive", lambda self, iid: None)
+    board = board_without_network()
+    monkeypatch.setattr(q, "Board", lambda: board)
+    monkeypatch.setattr(q, "open_issues", lambda: {1: "I1", 2: "I2"})
+
+    assert q.cmd_sync(dry_run=False) == 0
+    out = capsys.readouterr().out
+    assert "#3" in out and "NOT removed" in out
+    assert "will halt" not in out, "the run returns 0; promising a halt made it contradict itself"
+    assert "Run sync again" in out
+    # And it must not claim the opposite either. The warning's whole job is to
+    # say the run's own result is not evidence about this item, so pinning only
+    # the absence of a halt-claim leaves it free to promise success instead.
+    assert "does not tell you whether it worked" in out

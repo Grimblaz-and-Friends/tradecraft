@@ -646,7 +646,8 @@ def options_payload(existing: list[dict], new_names: list[str]) -> str:
     """
     parts = [
         '{id:"%s",name:"%s",color:%s,description:"%s"}'
-        % (o["id"], option_text(o["name"]), option_color(o), option_text(o.get("description")))
+        % (option_text(o["id"]), option_text(o["name"]),
+           option_color(o), option_text(o.get("description")))
         for o in existing
     ]
     parts += ['{name:"%s",color:GRAY,description:""}' % option_text(n) for n in new_names]
@@ -674,7 +675,10 @@ def option_text(value: str | None) -> str:
     through `parse_plan`, so the charset that guards a bundle name never sees
     either. A backslash escapes the closing quote and the string runs on; a
     quote or a newline ends it early. This is the one write the module calls
-    silently destructive, so nothing reaches it unsanitised.
+    silently destructive, so **every** value interpolated into it comes through
+    here -- ids included, which are GitHub-generated today and so prove
+    nothing about tomorrow. A claim that nothing reaches it unsanitised is only
+    worth making if it is true of all four.
     """
     text = (value or "").replace("\\", "").replace('"', "")
     return "".join(ch for ch in text if ch >= " ")
