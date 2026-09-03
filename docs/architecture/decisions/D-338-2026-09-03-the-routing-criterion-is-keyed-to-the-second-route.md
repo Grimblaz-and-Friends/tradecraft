@@ -1,4 +1,4 @@
-# D-338: A routing criterion names which quantity it claims, and reach is falsifiable only where nothing else routes the situation
+# D-338: A routing criterion names which quantity it claims, and reach is falsifiable only where nothing else routes the situation, or routes it too weakly to mask the difference
 
 **Status:** Accepted 2026-09-03 (PR #338)
 
@@ -12,7 +12,7 @@ The session that wrote it had the general rule loaded. That is the whole argumen
 
 ## The decision
 
-**One bullet, immediately after the rule it instantiates.** A criterion claiming a piece of text routes a reader names **which of two quantities** it claims — that a reader *reaches* the destination, or that a reader's *stated reason* names the text. **Reach is falsifiable only where nothing else the reader loads routes that same situation to the same place**, and two routes are named because both have actually defeated a run: the destination's own summary sentence sitting above the trigger under test, and an always-on surface naming the destination. **Warrant stays falsifiable where reach does not**, so the rule hands over a replacement rather than removing a form and leaving nothing in its place.
+**One bullet, immediately after the rule it instantiates.** A criterion claiming a piece of text routes a reader names **which of two quantities** it claims — that a reader *reaches* the destination, or that a reader's *stated reason* names the text. **Reach is falsifiable only where nothing else the reader loads routes that same situation to the same place, or where what does routes it too weakly to mask the difference**, and two routes are named because both have defeated a run: the destination's own summary sentence sitting above the trigger under test, and an always-on surface naming the destination. **Warrant is falsifiable where reach is not, and it fails the same way** — where the destination's name or summary sentence lets a reader reconstruct the text's substance, a reader gives that substance as their reason whether or not the text is there. So the rule hands over a replacement rather than removing a form and leaving nothing in its place, and says where the replacement stops working. **This paragraph states the rule as the review left it**; the weak-route exception and the ceiling on warrant both arrived there, and the section below records what each cost and what bought it.
 
 **The rule is keyed to the second route, not to the quantity.** This is the change's central judgement, it was the owner's ruling, and it is the one thing a later session is most likely to flatten back.
 
