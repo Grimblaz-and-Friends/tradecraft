@@ -1,0 +1,73 @@
+# D-345: A routing criterion covers text that keeps a reader away, and a third route defeats reach there
+
+**Status:** Accepted 2026-09-03 (PR #345)
+
+**Evidence.** Everything quoted from a live file is pinned to this change's base `ed5a524`, the tip of `main` the branch was cut from. The measurements this entry reasons from were made by [D-320](D-320-2026-09-02-the-fences-are-measured-and-nearly-all-of-them-are-live.md)'s fence run and are not re-run here; that entry's own evidence exposure — its figures resting on GitHub comments no in-repository reader can check — is inherited and is [#324](https://github.com/Grimblaz-and-Friends/tradecraft/issues/324). The brief and its affirmation are on [#339](https://github.com/Grimblaz-and-Friends/tradecraft/issues/339#issuecomment-5531637883); the settled artifact is [there too](https://github.com/Grimblaz-and-Friends/tradecraft/issues/339#issuecomment-5531866100). Cell-body figures are the rows of `python tools/lint.py`, run from the repository root.
+
+## The condition
+
+[D-338] landed the routing-criterion bullet a day earlier and left it positive-polarity throughout. Its subject was *"A criterion claiming a piece of text routes a reader"*, its quantities were *reaches the destination* and a *stated reason*, and its two enumerated reach-defeaters were both destination-shaped. That entry's own closing section records the gap as sustained and not fixed: *"The bullet is silent on routing away — a fence clause claims the mirror."*
+
+**The mirror is the polarity this repository has actually measured.** D-320's run tested twenty-one exclusion clauses across thirty seats. The run that produced the positive rule tested one clause across six — a comparison that motivates this change without carrying it, since D-338 also rests on #255's five-arm harness, and it was that second run rather than the first that decided its central judgement.
+
+**And D-320 reached D-338's own thesis first, in this polarity, without generalising it:** *"The measure is the warrant, not the outcome … An instrument built on reach would have reported every clause dead whether or not it worked."*
+
+Half of what [#339](https://github.com/Grimblaz-and-Friends/tradecraft/issues/339) was filed about is not here, because it was discharged before this change started. The citation disqualifier the filing said shipped in no cell now ships in `skills/spikes/references/licensing-a-deletion.md`, landed by [D-337](D-337-2026-09-03-the-instrument-rules-move-to-the-cell.md) hours after the filing. The filer posted the correction themselves; this change acts on the remaining limb only.
+
+## The decision
+
+**One bullet, widened, and no second one.**
+
+**Its subject covers both polarities** — a criterion claiming a piece of text *moves a reader, toward a destination or away from one* — and the two quantities are restated so they read in both: that the reader **goes where the text says**, or that the reader's **stated reason** names the text.
+
+**A third route joins the enumeration of what has defeated reach: the reader's own indifference.** It reaches only text that keeps a reader away, and there it is the ordinary case. A reader with no pull toward that destination declines it whether or not the text is there, and the situations that test such text at all are near misses, where the pull is weakest by construction. So reach is the quantity least likely to survive there.
+
+**Least likely, and not unavailable** — which is the clause a later session is most likely to flatten. D-320 records **five clauses that changed conduct and not merely warrant**, seats declining the cell with the fence present and opening it without, and a fence-free arm that opened the excluded cell on **four of twenty** informative near-misses. A rule saying reach is simply unavailable in this polarity would be falsified by this repository's own record, so the rule is stated as a comparative and the record that forbids the absolute is why.
+
+**Route 1's wording widens with it**, from *the destination's own summary sentence* to *its summary sentence, or another of its clauses*. **D-320's one licensed deletion is route 1 measured in the mirror**: on that clause's own confirm run all six seats declined the cell, and every one gave a cell-specific reason naming that cell's **own positive trigger, four clauses above the one under test**, resolving it on timing rather than on topic and identically in both arms. The enumeration is therefore polarity-neutral in its first two members, and stating otherwise would have understated what has been measured against it. Route 2 is present in the mirror as well, though as a residual rather than a measured defeater — D-320 records the charter body carried unablated in every arm while naming four of the nine cells, and flags it as **structural** for [#303](https://github.com/Grimblaz-and-Friends/tradecraft/issues/303) rather than residual. That status is carried as that entry states it and is not resolved here.
+
+**The closing warrant-failure sentence is unchanged**, because it already read in both polarities and D-320 records that failure mode in this one directly: *"a clause whose substance a seat can reconstruct from the cell name alone can never clear this instrument."*
+
+## `engagement` does not name `spikes`, and that is the load-bearing placement call
+
+The obvious remedy was for the widened bullet to point the criterion-writer at `skills/spikes/references/licensing-a-deletion.md`, where the citation disqualifier now lives. **`skills/authoring/references/cell-structure.md` refuses it**: a cell names no sibling, the charter is the only live exception here — the one-way repo-only exception is empty, both cells shipping — and the reserved reference form is a cell name rather than a path. A cold seat found this; `tools/lint.py`'s `check_cell_references` does not, enforcing existence and the shipped/repo-only wall rather than the sideways prohibition.
+
+That standard names two remedies for a standard two cells need, and **both are declined with reasons rather than foreclosed**. Routing it up to the charter is refused because the charter body is the adopter surface #303 exists to shrink, and paying for this there is the most expensive character in the practice. Giving it one owning cell is what already holds: `spikes` owns it since D-337, and this change leaves it whole there.
+
+**What survives is that `engagement` needs no copy.** The disqualifier is a rule for scoring a run; the criterion-writer's moment ends at naming which quantity is claimed and what defeats it, and the third route supplies exactly that in `engagement`'s own terms. A session that goes on to *run* the check reaches `spikes` by that cell's own trigger.
+
+## What was rejected
+
+**A second bullet for the mirror polarity.** It duplicates the closing warrant-failure sentence, which transfers unchanged, at roughly double the cost in the cell with the largest body and no budget. Put to the owner as option C; not ruled.
+
+**Leaving the bullet alone and routing the criterion-writer to `spikes`'s reference.** Cheapest in the cell that can least afford characters, and the substance is already written there. Rejected on two independent grounds, one of which is this repository's own instrument turned on the proposal: that file's load condition is *scoring* a run or *deleting* text, not writing a criterion; and the claim *"a criterion-writer reaches `spikes`"* is itself a **reach** claim, which the very bullet under repair says is falsifiable only where nothing else the reader loads routes that same situation to the same place — and `engagement`'s own body routes to `spikes` two paragraphs below the bullet. The proposal's premise could not be tested here. Put to the owner as option B; not ruled. The sibling-naming standard above then made it unlawful as well, which is a second and later ground rather than the one it was declined on.
+
+**Generalising further, to any criterion about reader behaviour.** D-338 declined this on the ground that nothing was measured about criteria of other shapes, and that ground still holds for shapes other than the mirror. The mirror is not another shape — it is routing, in the other polarity, and it is measured — which is what made this a filing rather than a scope note, and what keeps the widening from being the generalisation D-338 refused.
+
+**A run of any kind.** The premise this rests on is that the reader's own indifference is the ordinary defeater of reach in this polarity, and D-320 records the measurement on both sides of it. A run built to re-confirm what that entry already reports would spend seats on a settled reading.
+
+## The placement call, and what it cost
+
+**The bullet stays in the body**, on D-338's own reasoning: the list's other items are all in the body, and an instance separated from the rule it instantiates is one a reader meets without the rule that explains it. Moving the list behind a pointer is a restructure of the cell and was in neither change's boundary.
+
+**What it cost.** The `engagement` cell-body row of `python tools/lint.py`, run from the repository root at this change's base `ed5a524` and at its head. The cell was already first of thirteen and carries no body budget; recorded findings decline fixes on it for size, and this entry is on the record as having grown it anyway. **No always-on row moved** — the change is in a cell body, not a description.
+
+## What the cold seat changed
+
+Three seats, each a fresh dispatch, two adverse then `would` — on sha256 `99b500db64380499180fd95fa339aaaf7bf232334b8a116fd05189bdcb284f1e` / 13,398 bytes, against `ed5a524`, which every seat confirmed on its first read.
+
+**Round 1 landed on five points**, and two of them changed the rule rather than the document. The sibling-naming breach above is the first. The second is that the draft's asymmetry claim was **unconditional where its premise was conditional**, asserted against a contrary datum in the very entry the draft said it had consulted in full — D-320's five conduct-changing clauses, of which the draft carried only the supporting half. That is what produced the comparative.
+
+**Round 2 landed on two**, and they are the reason route 1's wording moved. The draft claimed the two enumerated routes keep their positive-polarity scope on the ground that *"nothing measured says they defeat the mirror"*; the seat answered that D-320's one licensed deletion **is** that measurement. An acceptance criterion had been written whose failure condition would have scored that measured answer as failing.
+
+**One figure was asserted falsely and is retracted here.** An early draft stated *"four recorded findings decline fixes on that cell for size."* The number was never derived — it was carried from D-338's closing section, where it is stated of a different tree and a different question — and it does not reproduce against `docs/recorded-findings.jsonl`. The claim is withdrawn; the artifact names no count there, and neither does this entry.
+
+**Two loose statements the round-3 seat raised and declined to land on** are recorded rather than repaired, editing either having bought a fourth round for nothing the reading turned on: the one-clause-across-six comparison understates D-338's evidence base, which rests on two runs; and the artifact's *"two edits"* undercounts what it then specifies as three, route 1's widening being the third.
+
+## What this change does not decide
+
+**Nothing about how a licensing run is built, dispatched or scored.** That is `spikes`, and D-337 landed it. This entry says what a criterion may claim, not what the run testing it must carry.
+
+**Nothing about `engagement`'s size.** No budget is set and no size pass is run; the cell grows.
+
+**Nothing for [#303](https://github.com/Grimblaz-and-Friends/tradecraft/issues/303)**, whose ablation target is the charter body and which is where this widened rule will first be used rather than something this change performs. Route 2's structural status there is D-320's statement, carried forward unresolved.
