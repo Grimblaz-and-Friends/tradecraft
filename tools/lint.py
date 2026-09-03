@@ -386,7 +386,14 @@ CELL_REF_TAIL = re.compile(r"`([a-z][a-z0-9-]*)`\Z")
 CELL_REF_HEAD = re.compile(r"\A[Cc]ells?\b")
 # A pointer from a cell into its own depth. Resolved against the directory of
 # the file naming it, the same rule a script's calling contract follows.
-REFERENCES_REF = re.compile(r"(references/[\w.-]+\.md)")
+# **Both separators, because a backslash is what a Windows session writing the
+# path from its own shell produces**, and matching only the forward form made
+# `references\x.md` name a file that need not exist while the guard stayed
+# green -- the one polarity nothing here tested. RELATIVE_MD_REF beside it
+# already accepts both, so the narrow form was a divergence rather than a
+# choice. The separator is normalised at the point of resolution below, since
+# `Path` on a POSIX runtime does not read a backslash as one. [#337]
+REFERENCES_REF = re.compile(r"(references[\\/][\w.-]+\.md)")
 # The same pointer written relatively, which is the only form a cell's depth
 # can use to reach its sibling depth: the bare form above would resolve to
 # references/references/x.md from inside references/. Anchored at `.md` rather
@@ -1191,7 +1198,10 @@ def check_cell_references(root: Path) -> list[str]:
                     if before and re.search(r"[\w@\-/\\]$", before):
                         continue
                     pointer = match.group(1)
-                    if not (path.parent / pointer).is_file():
+                    # Normalised because a POSIX runtime does not read a
+                    # backslash as a separator, so the unnormalised form
+                    # resolves to a single strangely-named file and misses.
+                    if not (path.parent / pointer.replace("\\", "/")).is_file():
                         findings.append(
                             f"reference-pointer: {rel_file}:{lineno} points at "
                             f"'{pointer}', which does not resolve against this "
