@@ -25,4 +25,4 @@
 
 ## The rest of this repository's mechanics
 
-Repo-only cells under `docs/cells/` carry them, loaded on demand in both runtimes and never loaded by an adopter: the `landing` cell for taking a change from a branch to a pull request, the `records` cell for this repository's append-only records and decision log, and the `siting` cell for where content goes here and what this tree assumes.
+Repo-only cells under `docs/cells/` carry them, loaded on demand in both runtimes and never loaded by an adopter: `board`, `landing`, `records`, `siting`. Every cell's own description loads in every session here and states what it covers, so the names route on their own. [D-327]
