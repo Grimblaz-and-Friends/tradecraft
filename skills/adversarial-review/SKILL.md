@@ -20,16 +20,14 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 ## Choosing the shape
 
 - **Routine change**: one adversarial pass that reads the artifact **cold**, then defense — the terminal stage on this lane — then executable re-validation of fixes.
-- **Substantial artifact** (newly written foundational prose, new scripts, high blast radius — and when in doubt, this lane): the four-seat panel, then defense, then judge, then re-validation. Width beyond four is bought by declared risk.
+- **Substantial artifact** (newly written foundational prose, new scripts, high blast radius — and when in doubt, this lane): the four-seat panel, then defense, then judge, then re-validation. **Five where the artifact is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both, the common case here and not a widening. Width beyond the applicable count is bought by declared risk.
 - **The report records which lane was chosen and why, in one line** — an unrecorded shape choice can never be audited later.
-
-Why a panel and not one strong pass: seats find largely different defects, and four is the measured width. What that rests on, and why it is contested, is in the roster (`references/roster.md`).
 
 ## The pipeline, and where each stage's depth lives
 
 Every stage is held to everything in this file. Each stage's own machinery is one hop away, and the pointer says when to open it — a session on one step of the pipeline has no use for the rest.
 
-- **Staffing a panel, or any review role** → `references/roster.md`: the four slots and the fifth name, what four is measured on, the cold boundary operationally, and the tier rule.
+- **Staffing a panel, or any review role** → `references/roster.md`: the seats, when a fifth sits, what the width rests on, the cold boundary operationally, and the tier rule.
 - **Building a dispatch** → `references/dispatch.md`: the three parts in order, what a dispatch read cold does not receive, and which roles take no dispatcher's note.
 - **Merging findings, defending, or ruling as the terminal stage** → `references/arbitration.md`: the merge's ownership and the consequence shape it records, the defense's verdicts and the price it states, and the terminal stage's docket and two clauses.
 - **A fix batch that has landed, an open pull request an automated reviewer may have posted on, or a review tool you invoked yourself** → `references/after-the-fix.md`: the post-fix look's scope, the two conditions that end the cycle, every external comment's disposition, and the commissioned pass.
