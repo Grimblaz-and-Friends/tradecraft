@@ -20,10 +20,8 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 ## Choosing the shape
 
 - **Routine change**: one adversarial pass that reads the artifact **cold**, then defense — the terminal stage on this lane — then executable re-validation of fixes.
-- **Substantial artifact** (newly written foundational prose, new scripts, high blast radius — and when in doubt, this lane): the four-seat panel, then defense, then judge, then re-validation. Width beyond four is bought by declared risk.
+- **Substantial artifact** (newly written foundational prose, new scripts, high blast radius — and when in doubt, this lane): the four-seat panel, then defense, then judge, then re-validation. **Five where the artifact is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both, the common case here and not a widening. Width beyond that is bought by declared risk.
 - **The report records which lane was chosen and why, in one line** — an unrecorded shape choice can never be audited later.
-
-Why a panel and not one strong pass: seats find largely different defects, and four is the measured width. What that rests on, and why it is contested, is in the roster (`references/roster.md`).
 
 ## The pipeline, and where each stage's depth lives
 
