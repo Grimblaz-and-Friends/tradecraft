@@ -171,16 +171,18 @@ Checks:
     while the surface a session loads had not moved (#260).
 
 25. admissions: docs/admissions.jsonl parses, every row carries all six
-    fields, and no ceiling is left carrying admitted characters after its
-    surface came back under the constant. The record is what lets a needed
-    item land over a ceiling without the constant moving; a row this cannot
-    read grants nothing (#334).
+    fields, and no key has banked more than was ever admitted against it.
+    The record is what lets a needed item land over a ceiling without the
+    constant moving; a row this cannot read grants nothing. The re-arming
+    finding, which fires when a surface comes back to or below its constant
+    with characters still charged, belongs to checks 10, 4 and 24 -- the
+    three that know each surface's size -- and not to this one (#334).
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution and the ADRs beneath it) is not validated: it is history, not a
 live format (D-74). The prose guards skip the live append-only records too --
-docs/reviews.jsonl and docs/recorded-findings.jsonl -- because a finding
-inside one is a red no lawful edit can clear.
+docs/reviews.jsonl, docs/recorded-findings.jsonl and docs/admissions.jsonl --
+because a finding inside one is a red no lawful edit can clear.
 
 All shipped files are scanned regardless of extension; binary content (NUL
 byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
@@ -337,7 +339,10 @@ POINTER_BUDGET_CHARS = 500
 # and the owner ruled a budget follows the split. The basis is the size the
 # split landed at plus about one bullet, which
 # `python tools/figures.py --cell skills/adversarial-review/SKILL.md
-# --cell-budget 9000` prices against this constant on whatever tree you are on.
+# --cell-budget 9000` prices against this constant on whatever tree you are on,
+# or against the constant plus what `docs/admissions.jsonl` charges to that
+# body, which is what `check_doctrine` enforces and what that command
+# reconciles against.
 # That margin is deliberate in both directions: at zero headroom every
 # reword of the body is a constant change, which turns the cap into noise
 # nobody reads, while a section-sized regrowth cannot fit under it. The number
@@ -355,9 +360,13 @@ CELL_BODY_BUDGET_CHARS = {
     "skills/authoring/SKILL.md": 7_359,
 }
 
-# **The fourth answer at a ceiling, and the record that carries it.** Every
-# ceiling above used to offer three: cut something, merge two, or raise the
-# constant. The owner ruled that a size limit exists to trigger better design
+# **The fourth answer at a ceiling, and the record that carries it.** None of
+# the ceilings above offered a way to admit a needed item. The always-on row
+# finding offered three answers -- retire a cell, merge two, or raise the
+# ceiling as a recorded decision; `doctrine-budget` offered two relocations
+# and no raise; the description and adopter-total findings named no answer at
+# all. So "three" was one finding's list rather than the file's, and the
+# condition was worse than a first draft of this comment claimed. The owner ruled that a size limit exists to trigger better design
 # and must never keep out a needed item, and none of the three admits one --
 # so a needed clause was priced as a deletion somewhere else four times on
 # #303 alone, once as the examples D-141 had placed (D-184), and once as a
@@ -366,9 +375,20 @@ CELL_BODY_BUDGET_CHARS = {
 #
 # **An admission is not a raise, and that difference is the whole mechanism.**
 # A raise moves the constant and creates round headroom nobody argued for,
-# which the next commit spends -- this repository's measured history is that
-# ceilings ratchet to just under their limit and stay there. An admission
-# moves nothing. It adds exactly the characters its row names, spent by the
+# which nothing then has to argue for spending. An admission moves nothing.
+#
+# **What that rests on, and what it does not.** The structural half is enough
+# on its own: a raise hands the next addition room it never argued for, and
+# an admission does not. An earlier draft of this comment also claimed
+# "ceilings ratchet to just under their limit and stay there", and that claim
+# is withdrawn -- `ratchet` is D-184's word for the opposite move, lowering a
+# constant to what the tree measures, and the census the review ran falsifies
+# the empirical claim anyway: twelve of thirteen description ceilings carry
+# more than fifty characters of headroom. What is true of this tree is that
+# the surfaces which actually bind sit tight, and `python tools/lint.py`
+# prints which those are on whatever tree you are on. The history of what
+# happened to headroom after a raise here is on #260 and is not checkable
+# from inside this repository. It adds exactly the characters its row names, spent by the
 # item that row names, and leaves the next addition with nothing. So the item
 # lands and the pressure survives, which is the pair the comment on
 # `ALWAYS_ON_ROW_BUDGET_CHARS` says no single value can hold: headroom and the
@@ -391,6 +411,24 @@ ADMISSION_KEY_PREFIXES = ("description:", "body:")
 _ADMISSION_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 
 
+def _admission_blank(value: object) -> bool:
+    """Whether a row's field carries nothing a reader can act on.
+
+    **`str(value).strip()` alone is the defeated idiom.** `str(None)` is
+    `"None"` and `str([])` is `"[]"`, both non-blank, so JSON `null`, `[]`,
+    `{}` and `false` all passed a truthiness check and admitted their
+    characters. That was found for `issue` and fixed for `issue` alone, and
+    the two fields beside it kept the hole -- while `issue` itself kept it for
+    `[]` and `{}`, which is the field acceptance criterion 6 is written about,
+    so that criterion held on its literal falsifier and failed on the natural
+    reading of *empty*. One predicate now, all three fields.
+    [PR #346 review, M6, M25]
+    """
+    return (value is None or isinstance(value, bool)
+            or isinstance(value, (list, dict, tuple))
+            or not str(value).strip())
+
+
 def _admission_key_ok(key: object) -> bool:
     """Whether a row's ceiling key names something this file enforces.
 
@@ -398,6 +436,16 @@ def _admission_key_ok(key: object) -> bool:
     that row's key, and the record is append-only -- so a guard demanding the
     path resolve would red a tree over history no lawful edit can clear, which
     is the shape #224 was about.
+
+    **What that costs, stated because only the benefit was.** A key that
+    matched nothing on the run that wrote it -- a typo, a cell name where a
+    path belongs -- validates, charges nothing, and leaves the ceiling finding
+    repeating verbatim with nothing connecting the two; the row is then
+    permanent and unbankable, since a body ceiling skips an absent cell and
+    `check_admissions` reports only over-banking. Separating that case from a
+    genuinely stranded key without reinstating the #224 red is a design call
+    with no observed instance behind it, and it is recorded rather than taken
+    here. [PR #346 review, M20]
     """
     if not isinstance(key, str):
         return False
@@ -453,8 +501,7 @@ def read_admissions(root: Path) -> tuple[list[dict], list[str]]:
         # a JSON null issue passed a truthiness check and admitted. Found by
         # the null arm of the malformed-row pin, which is why that pin carries
         # one.
-        if (row["issue"] is None or isinstance(row["issue"], bool)
-                or not str(row["issue"]).strip()):
+        if _admission_blank(row["issue"]):
             findings.append(
                 f"{where} names no issue. An admission says which work "
                 f"required the item; a row that cannot name it is a waiver, "
@@ -482,7 +529,7 @@ def read_admissions(root: Path) -> tuple[list[dict], list[str]]:
                 f"{forms} -- it admits nothing meanwhile")
             continue
         empty = [field for field in ("item", "outflow")
-                 if not str(row[field]).strip()]
+                 if _admission_blank(row[field])]
         if empty:
             findings.append(
                 f"{where} leaves {', '.join(empty)} empty. The item is what "
@@ -535,12 +582,18 @@ def admit_route(key: str) -> str:
     """
     return (
         f"Where the outflow frees nothing and the item is needed, admit it "
-        f"rather than cutting, merging or raising: append one row to "
+        f"rather than cutting, merging or raising: append ONE row to "
         f"{ADMISSIONS} carrying date, issue (the work that required it), "
-        f'ceilings ["{key}"], chars (the increment this item needs), item, '
-        f"and outflow (what moved, what was deleted, or why nothing had a "
-        f"cheaper home). The constant does not move -- an admission buys its "
-        f"own item and no room for the next one")
+        f'ceilings ["{key}"], chars, item, and outflow (what moved, what was '
+        f"deleted, or why nothing had a cheaper home). **One item is one "
+        f"row, however many findings report it** -- both runtime rows cross "
+        f"one ceiling together, and a row per finding charges the item twice "
+        f"and leaves the surplus as headroom for the next addition. **Size "
+        f"chars to the overage**, the largest where several findings name one "
+        f"ceiling, and charge only the ceilings the item actually exceeds -- "
+        f"a ceiling still under its constant reds as a stale admission. The "
+        f"constant does not move: an admission buys its own item and no room "
+        f"for the next one")
 
 
 def stale_admission(label: str, size: int, constant: int,
@@ -569,7 +622,10 @@ def stale_admission(label: str, size: int, constant: int,
         f'"{key}" across {count} row{"" if count == 1 else "s"} -- that is '
         f"room nobody argued for, which is the refill a ceiling exists to "
         f"refuse. Bank it: append a row to {ADMISSIONS} with chars {-extra} "
-        f"naming what came back. Appending, never editing what it banks"]
+        f"and the same five other fields an admission carries -- date, issue, "
+        f'ceilings ["{key}"], item and outflow, where item names what came '
+        f"back and outflow names what freed it. Appending, never editing what "
+        f"it banks"]
 
 # The one cell any other cell may reference, and the one cell that may
 # reference the others. Self-containment exists to stop loading cost and
@@ -1582,7 +1638,7 @@ def check_doctrine(root: Path) -> list[str]:
             findings.append(
                 f"doctrine-budget: {rel}'s body is {size} chars, {against} -- "
                 f"shed depth to references/ or route content out; "
-                f"`python tools/figures.py --cell {rel} --cell-budget {budget}` "
+                f"`python tools/figures.py --cell {rel} --cell-budget {allowed}` "
                 f"reports the cell total, which shedding does not reduce. "
                 f"{admit_route(key)}"
             )
@@ -2761,8 +2817,9 @@ def check_docstring_control_chars(root: Path) -> list[str]:
 # `docs/architecture/adr/` is a prefix rather than a file -- `AGENTS.md` names
 # the ADRs as part of the archive and there are ten of them.
 #
-# **The live records** -- `docs/reviews.jsonl` and `docs/recorded-findings.jsonl`
-# -- are skipped by the prose guard only, and the asymmetry is the point. A
+# **The live records** -- `docs/reviews.jsonl`, `docs/recorded-findings.jsonl`
+# and `docs/admissions.jsonl` -- are skipped by the prose guard only, and the
+# asymmetry is the point. A
 # finding must quote the line it names, so a review row about a hollow code
 # span holds one: that is intended content, and reporting it would red the
 # lint over a file doctrine forbids repairing. **A lone carriage return in
@@ -2772,7 +2829,8 @@ def check_docstring_control_chars(root: Path) -> list[str]:
 # a script whose escapes had become control bytes. Skipping them from the byte
 # guard withdrew, for `docs/recorded-findings.jsonl`, the pre-commit catch this
 # change's own M2 remedy had just bought; `docs/reviews.jsonl` is covered
-# either way, because check 11 parses it and reds on the same run.
+# either way, because check 11 parses it and reds on the same run, and so is
+# `docs/admissions.jsonl` via check 25.
 # [PR #247 review, post-fix 1]
 FROZEN_ARCHIVE = frozenset({
     "docs/ledger.jsonl",
@@ -4401,7 +4459,11 @@ def check_always_on_budget(root: Path) -> list[str]:
                 f"*description* over budget can do neither without ceasing "
                 f"to be a trigger, so it is answered by retiring a cell or "
                 f"merging two. {admit_route(row_key)}. What to do at a "
-                f"ceiling is skills/authoring/SKILL.md's"
+                f"ceiling is skills/authoring/SKILL.md's -- whose outflow names "
+                f"a fourth answer of its own, deleting the rule, "
+                f"which is a different move from admitting and is "
+                f"reached only against evidence that the rule does "
+                f"not bind"
             )
     # **The largest row, because one constant governs both.** Re-arming asks
     # whether the surface has come back under, and it has not while either
@@ -4450,7 +4512,7 @@ def check_admissions(root: Path) -> list[str]:
             findings.append(
                 f"admissions: the rows charged against \"{key}\" sum to "
                 f"{total}, which would put its ceiling below the constant "
-                f"{ADMISSIONS} exists to relax -- a record does not tighten a "
+                f"that {ADMISSIONS} exists to relax -- a record does not tighten a "
                 f"ceiling, and tools/lint.py is where they are set. Bank no "
                 f"more than was admitted"
             )
@@ -4593,9 +4655,11 @@ def admission_note() -> str:
     **A route reachable only after you exceed cannot reach a session whose
     method is not exceeding.** An experience session on this change closed a
     real charter gap against 108 characters of headroom: it drafted six
-    candidate sentences, measured each before touching the file, found three
-    of them at or over the line, and shipped the one that fitted -- dropping a
-    clause it wanted to keep. That is the move `skills/authoring/SKILL.md`
+    candidate sentences, measured each before touching the file, found its
+    first three came in at +98 to +109 against 108 characters of room, and
+    shipped one at +95 -- dropping a clause it wanted to keep. (An earlier
+    wording here said all three were at or over the line; the note it cites
+    says +98, which fits with ten to spare.) That is the move `skills/authoring/SKILL.md`
     forbids in the same sentence that names it, and it happened with
     `tools/lint.py`'s budget and admission constants among what the session
     reports having read. The run never went red, so it never met the finding
@@ -4610,11 +4674,16 @@ def admission_note() -> str:
     states what to do at a ceiling and lets the reader see where it stands
     from the figures above it.
     """
+    keys = ", ".join(ADMISSION_BARE_KEYS) + ", or " + " or ".join(
+        prefix + "<path to SKILL.md>" for prefix in ADMISSION_KEY_PREFIXES)
     return (
-        f"at a ceiling: a needed item that will not fit is admitted on "
-        f"{ADMISSIONS} -- one row carrying {', '.join(ADMISSION_FIELDS)} -- "
-        f"and never trimmed until it fits. The constant does not move, so an "
-        f"admission buys its own item and no room for the next one"
+        f"at a ceiling on a share of what a session loads -- an always-on "
+        f"row, the adopter total, a cell description, a budgeted cell body "
+        f"-- a needed item that will not fit is admitted on {ADMISSIONS} "
+        f"rather than trimmed until it fits: one row carrying "
+        f"{', '.join(ADMISSION_FIELDS)}, where ceilings names one or more of "
+        f"{keys}. The constant does not move, so an admission buys its own "
+        f"item and no room for the next one"
     )
 
 

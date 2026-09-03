@@ -129,16 +129,30 @@ def figure_cell_description(root: Path, rel_path: str) -> dict:
     if fields is None or "description" not in fields:
         raise SystemExit(f"figures: {rel_path} has no parseable description")
     chars = len(fields["description"])
-    budget = lint.CELL_FIELD_MAX_CHARS["description"]
+    # **The ceiling in force, not the constant.** `check_cell_frontmatter`
+    # compares against the constant plus what is admitted against this cell's
+    # description, so a figure stating the constant tells a session that has
+    # just admitted characters it must cut them again -- the trim the
+    # admission exists to prevent, produced by the reporting surface. Found by
+    # four seats of PR #346's panel, three of them citing this function.
+    admissions, _ = lint.read_admissions(root)
+    budget, _phrase = lint.ceiling(
+        lint.CELL_FIELD_MAX_CHARS["description"], admissions,
+        f"description:{rel_path}")
+    extra = budget - lint.CELL_FIELD_MAX_CHARS["description"]
     return {
         "name": f"cell `{rel_path}` (description)",
-        "value": f"{chars:,} of {budget:,} chars, headroom {budget - chars:,}",
+        "value": (f"{chars:,} of {priced(lint.CELL_FIELD_MAX_CHARS['description'], extra)}"
+                  f" chars, headroom {budget - chars:,}"),
         "basis": (
             "decoded UTF-8 characters of the frontmatter description as "
-            "check_cell_frontmatter reads it, working tree"
+            "check_cell_frontmatter reads it, against the ceiling that check "
+            "enforces -- the constant plus what docs/admissions.jsonl charges "
+            "to this description; working tree"
         ),
         "data": {
             "path": rel_path, "chars": chars, "budget": budget,
+            "admitted": extra,
             "headroom": budget - chars,
         },
     }
@@ -716,13 +730,29 @@ def build_figures(root: Path, base: str | None,
                 "caller decision and picking one silently is how a stated "
                 "figure diverges from the guard that judges it"
             )
-        enforced = lint.CELL_BODY_BUDGET_CHARS.get(cell)
+        # **What check_doctrine enforces is the constant plus what is
+        # admitted against this body**, so the reconciliation and the figure
+        # both read the record. Before this, passing the ceiling actually in
+        # force was refused and the constant was accepted and then blessed as
+        # guard-backed -- the refusal rejecting the correct value and the
+        # basis affirming the drift it exists to stop. Probed in both arms by
+        # PR #346's panel. `constant` stays separate from `enforced` because
+        # the caller argues the constant and the guard enforces the sum.
+        admissions, _ = lint.read_admissions(root)
+        constant = lint.CELL_BODY_BUDGET_CHARS.get(cell)
+        enforced = None if constant is None else lint.ceiling(
+            constant, admissions, f"body:{cell}")[0]
         if enforced is not None and enforced != budget:
+            admitted_note = (
+                "" if enforced == constant else
+                f" ({constant} plus {enforced - constant} admitted on "
+                f"{lint.ADMISSIONS})")
             raise SystemExit(
                 f"figures: --cell-budget {budget} disagrees with the {enforced} "
-                f"check_doctrine enforces for {cell}. Refusing rather than "
-                "defaulting: the caller decides the budget, and a stated headroom "
-                "no guard backs is the drift this script exists to stop"
+                f"check_doctrine enforces for {cell}{admitted_note}. Refusing "
+                "rather than defaulting: the caller decides the budget, and a "
+                "stated headroom no guard backs is the drift this script "
+                "exists to stop"
             )
         cell_figure = engine.figure_cell(root, cell, budget)
         if enforced is not None:

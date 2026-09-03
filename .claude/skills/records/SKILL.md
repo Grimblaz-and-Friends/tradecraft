@@ -1,6 +1,6 @@
 ---
 name: records
-description: This repository's append-only records and its decision log — which record each kind of outcome appends to, where a decision entry lives and what freezes about it on landing, and the rule that no record here is ever maintained after its append. Use when appending to a record in this repository, when writing or citing a decision entry, when recording a review's outcome, or when tempted to correct or reconcile something already recorded; not for how a review reaches the outcome being recorded, and not for deciding where a rule or document belongs.
+description: This repository's append-only records and its decision log — which record each kind of outcome appends to, the admission that lands a needed item over a ceiling, where a decision entry lives and what freezes about it on landing, and the rule that no record here is ever maintained after its append. Use when appending to a record in this repository, when a needed item will not fit under a ceiling, when writing or citing a decision entry, when recording a review's outcome, or when tempted to correct or reconcile something already recorded; not for how a review reaches the outcome being recorded, and not for deciding where a rule or document belongs.
 ---
 
 # records

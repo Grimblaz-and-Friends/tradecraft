@@ -239,6 +239,27 @@ def test_a_cell_budget_disagreeing_with_the_guard_is_refused(tmp_path, monkeypat
     assert "disagrees with the 9000" in str(caught.value)
     # Agreeing is lawful, and so is a budget for a cell the guard does not cap.
     assert repo_figures.build_figures(tmp_path, None, rel, 9_000)
+
+    # **Re-founded on the ceiling in force, not removed.** Under an admission
+    # `check_doctrine` enforces the constant plus what is charged to this
+    # body, so the pre-#346 refusal rejected the correct value and accepted
+    # -- and then blessed as guard-backed -- the one no guard held. Both arms
+    # here: the effective ceiling is accepted, the bare constant is refused,
+    # and the refusal names the composition so the caller can see why.
+    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / lint.ADMISSIONS).write_text(
+        json.dumps({"date": "2026-09-03", "issue": 346,
+                    "ceilings": [f"body:{rel}"], "chars": 500,
+                    "item": "a fixture item",
+                    "outflow": "nothing had a cheaper home"}) + NL,
+        encoding="utf-8")
+    assert repo_figures.build_figures(tmp_path, None, rel, 9_500)
+    with pytest.raises(SystemExit) as caught:
+        repo_figures.build_figures(tmp_path, None, rel, 9_000)
+    assert "disagrees with the 9500" in str(caught.value), caught.value
+    assert "9000 plus 500 admitted" in str(caught.value), caught.value
+    (tmp_path / lint.ADMISSIONS).unlink()
+
     monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {})
     assert repo_figures.build_figures(tmp_path, None, rel, 12_000)
 

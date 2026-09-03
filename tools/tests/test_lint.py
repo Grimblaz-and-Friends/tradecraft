@@ -4944,8 +4944,19 @@ def test_raising_the_row_budget_admits_a_relocation_it_should_refuse(tmp_path):
     relocation the budget tolerates, so a raise is not free, and a test that
     only checks a lowering cannot say so. [#291]
     """
-    over = lint.ALWAYS_ON_ROW_BUDGET_CHARS - _largest_row() + 1
-    assert over > 0, "the tree already exceeds its own budget"
+    # **Founded on the ceiling in force, not the constant.** The two were the
+    # same quantity until #346, and this pin measured the constant -- so on
+    # the first tree carrying a lawful admission it asserted "the tree already
+    # exceeds its own budget" about a tree that exceeds only its constant and
+    # sits under its ceiling, which is the state that change exists to create.
+    # Re-founded it stops being a casualty and becomes the only instrument
+    # holding the purpose statement's no-unargued-headroom clause: an
+    # over-sized admission widens the ceiling past one unit and reds here.
+    admissions, _ = lint.read_admissions(lint.ROOT)
+    allowed, _phrase = lint.ceiling(
+        lint.ALWAYS_ON_ROW_BUDGET_CHARS, admissions, "always-on-row")
+    over = allowed - _largest_row() + 1
+    assert over > 0, "the tree exceeds the ceiling actually in force"
     assert over <= 1_000, (
         "the headroom exceeds one unit, so the budget admits a relocation "
         f"larger than a cell costs: {over} chars of room"
@@ -5323,11 +5334,20 @@ def test_the_report_carries_nothing_evaluative():
     `[a-z][a-z0-9-]*` reds this pin rather than the report. That is the safe
     direction and it is deliberate.
     """
+    # **The admitted composition is arithmetic and is admitted here by name.**
+    # `cell_body_block` prints `of 7,859 (7,359 plus 500 admitted)` on a tree
+    # carrying an admission, and this pin -- written to catch an invented
+    # evaluative marker -- accused the lawful figure instead. Both alternation
+    # arms need it: the `of N` arm breaks under a body admission and the
+    # `shared with` arm under a row or adopter admission. Widened to exactly
+    # that shape and no wider; `.*` here would give back what #302 bought.
+    admitted = r"(?: \([\d,]+ plus [\d,]+ admitted\))?"
     lawful = re.compile(
         r"^  [a-z][a-z0-9-]*\s+[\d,]+  ("
         r"no body budget"
-        r"|of [\d,]+, headroom -?[\d,]+"
-        r"|shared with always-on row [\d,]+, adopter total [\d,]+"
+        r"|of [\d,]+" + admitted + r", headroom -?[\d,]+"
+        r"|shared with always-on row [\d,]+" + admitted +
+        r", adopter total [\d,]+" + admitted +
         r")$")
     lines = lint.cell_body_note(lint.ROOT).splitlines()
     assert lines[0] == "cell bodies here, largest first:", lines[0]
@@ -5358,6 +5378,18 @@ def test_the_lint_prints_every_cell_body_at_the_mandated_command(capsys):
     out = capsys.readouterr().out
     assert "cell bodies here, largest first:" in out, out
 
+    # **Founded on the enforcement composition, not on the renderer.** The
+    # docstring's anti-tautology rule forbids reading `figures.cell_budgets`,
+    # which is the surface under test; `lint.ceiling` is what `check_doctrine`
+    # and `check_always_on_budget` actually enforce, so reading it keeps the
+    # expectation independent while following the constant's redefinition.
+    admissions, _ = lint.read_admissions(lint.ROOT)
+
+    def _priced(constant, extra):
+        if not extra:
+            return f"{constant:,}"
+        return f"{constant + extra:,} ({constant:,} plus {extra:,} admitted)"
+
     expected = {}
     for name, source in roster.cell_sources(lint.ROOT).items():
         rel = f"{source}/{name}/{roster.CELL_FILE}"
@@ -5365,11 +5397,19 @@ def test_the_lint_prints_every_cell_body_at_the_mandated_command(capsys):
             (lint.ROOT / rel).read_text(encoding="utf-8", errors="replace")))
         own = lint.CELL_BODY_BUDGET_CHARS.get(rel)
         if own is not None:
-            against = f"of {own:,}, headroom {own - body:,}"
+            allowed, _ = lint.ceiling(own, admissions, f"body:{rel}")
+            against = (f"of {_priced(own, allowed - own)}, "
+                       f"headroom {allowed - body:,}")
         elif rel == lint.CHARTER:
-            against = (f"shared with always-on row "
-                       f"{lint.ALWAYS_ON_ROW_BUDGET_CHARS:,}, adopter total "
-                       f"{lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,}")
+            row, _ = lint.ceiling(lint.ALWAYS_ON_ROW_BUDGET_CHARS,
+                                  admissions, "always-on-row")
+            adopter, _ = lint.ceiling(lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS,
+                                      admissions, "always-on-adopter")
+            against = (
+                f"shared with always-on row "
+                f"{_priced(lint.ALWAYS_ON_ROW_BUDGET_CHARS, row - lint.ALWAYS_ON_ROW_BUDGET_CHARS)}"
+                f", adopter total "
+                f"{_priced(lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS, adopter - lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS)}")
         else:
             against = "no body budget"
         expected[name] = (body, against)
@@ -5476,6 +5516,18 @@ def test_every_malformed_row_admits_nothing_and_says_so(tmp_path):
          "is missing outflow"),
         (json.dumps(_row(issue="   ")) + NL, "names no issue"),
         (json.dumps(_row(issue=None)) + NL, "names no issue"),
+        # `str([])` is "[]" and `str({})` is "{}", both non-blank -- so the
+        # first fix for this class, which special-cased None and bool, left
+        # the hole open on the very field this arm exists for. Every
+        # non-scalar shape, on every one of the three fields.
+        (json.dumps(_row(issue=[])) + NL, "names no issue"),
+        (json.dumps(_row(issue={})) + NL, "names no issue"),
+        (json.dumps(_row(item=None)) + NL, "leaves item empty"),
+        (json.dumps(_row(item=[])) + NL, "leaves item empty"),
+        (json.dumps(_row(item={})) + NL, "leaves item empty"),
+        (json.dumps(_row(item=False)) + NL, "leaves item empty"),
+        (json.dumps(_row(outflow=None)) + NL, "leaves outflow empty"),
+        (json.dumps(_row(outflow=[])) + NL, "leaves outflow empty"),
         (json.dumps(_row(chars="42")) + NL, "not a whole number"),
         (json.dumps(_row(chars=True)) + NL, "not a whole number"),
         (json.dumps(_row(ceilings=[])) + NL, "non-empty list"),
@@ -5532,7 +5584,19 @@ def test_a_stale_admission_is_reported_in_both_polarities():
     assert stale[0].startswith("admission-stale:"), stale
     assert "chars -42" in stale[0], stale[0]
     assert lint.ADMISSIONS in stale[0], stale[0]
+    # A banking row runs through the same validation as an admission, so it
+    # needs the other five fields; the finding named only `chars` and left the
+    # session to reverse-engineer the rest from the row it was banking.
+    for field in lint.ADMISSION_FIELDS:
+        assert field in stale[0], (field, stale[0])
 
+    # **The boundary the docstring argues for, pinned at the character.**
+    # `stale_admission` fires at or under the constant, and mutating `>` to
+    # `>=` -- silent at exactly `size == constant` -- survived the whole suite
+    # green, so nothing held the one character the docstring reasons about.
+    assert lint.stale_admission("the row", 16_345, 16_345, rows,
+                                "always-on-row"), (
+        "a surface back exactly at its constant was not told to bank")
     assert lint.stale_admission("the row", 16_346, 16_345, rows,
                                 "always-on-row") == [], (
         "a surface still over its constant was told to bank the admission "
@@ -5557,6 +5621,15 @@ def test_the_always_on_ceiling_is_the_constant_plus_what_is_admitted(monkeypatch
     """
     largest = _largest_row()
     monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", largest - 100)
+    # **The control arm reads an empty record, not the live one.** This pin
+    # patches the constant and then the record; without patching the record
+    # here too, the first arm inherits whatever this repository has actually
+    # admitted and the "not over its ceiling" assertion fails on a tree that
+    # is merely admitted -- the same defect the batch re-founded three other
+    # pins for, in a pin this change itself added. Found by re-running the
+    # criterion-1 falsifier under all three key shapes, which the round-one
+    # ruling made binding on this batch.
+    monkeypatch.setattr(lint, "read_admissions", lambda root: ([], []))
     assert lint.check_always_on_budget(lint.ROOT), (
         "the arm this test rests on is not over its ceiling")
 
@@ -5592,6 +5665,17 @@ def test_the_ceiling_findings_carry_the_fourth_answer_and_no_longer_only_a_raise
     assert "an admission buys its own item and no room for the next one" in joined
     assert "raising this ceiling as a recorded decision" not in joined, (
         "the finding still names the answer this mechanism replaced")
+    # **One item is one row, said where the two findings are read.** Both
+    # runtime rows cross one ceiling together and each finding said "append
+    # one row", so a session remedying per finding appended two and landed
+    # green carrying twice the item as headroom -- silently, and permanently
+    # on an append-only record. Two findings fire here, and the sentence has
+    # to be in them.
+    assert len([f for f in findings if f.startswith("always-on-budget:")]) >= 2, (
+        "this pin needs the two-runtime shape to mean what it says", findings)
+    assert "One item is one row, however many findings report it" in joined, joined
+    assert "Size chars to the overage" in joined, joined
+    assert "charge only the ceilings the item actually exceeds" in joined, joined
 
 
 def test_the_description_ceiling_admits_and_the_name_cap_does_not(tmp_path,
@@ -5658,19 +5742,33 @@ def test_the_cell_body_ceiling_admits_in_both_polarities(tmp_path, monkeypatch):
         "one character past the effective ceiling was admitted")
 
 
-def test_the_repository_admits_nothing_today(tmp_path):
-    """The record lands empty, and a row here is a claim about real work.
+def test_every_admission_this_repository_carries_names_real_work():
+    """This repository's own record parses, and every row names its work.
 
-    Not decoration: every arm above proves the mechanism admits, and none of
-    them proves this tree is not quietly leaning on it. A row appearing here
-    without an issue behind it is exactly the refill the shape refuses, and
-    this is the surface that would say so.
+    **Shape, never emptiness.** The first version asserted `rows == []`, which
+    is a fact about today's tree whose falsification carries no defect: the
+    mechanism's first intended use falsified it, and the cheapest way out of
+    the red was `git checkout docs/admissions.jsonl` -- a pin whose cheapest
+    remedy is undoing the lawful use of the thing it guards. Nothing on the
+    route named it either, so a session discharging a ceiling finding from the
+    finding text alone met a green lint and a red required check. Found by two
+    seats of PR #346's panel and ruled by its terminal stage.
+
+    What survives is the arm that was always real -- the record this
+    repository actually carries parses, which is the only place
+    `read_admissions` runs against `lint.ROOT` -- plus a shape assertion that
+    stays true as the record grows. `issue` is the field that separates an
+    admission from a waiver, so the shape held is that it resolves to a piece
+    of work: a positive integer, `#N`, or a URL ending in one.
     """
     rows, findings = lint.read_admissions(lint.ROOT)
     assert findings == [], findings
-    assert rows == [], (
-        "this repository is carrying admissions; each names the work that "
-        "required it, and this pin is where that is read", rows)
+    names_work = re.compile(r"\A(?:#?\d+|https?://\S*/\d+)\Z")
+    for row in rows:
+        issue = str(row["issue"]).strip()
+        assert names_work.match(issue), (
+            f"an admission naming {issue!r} cannot be resolved to the work "
+            f"that required it: {row}")
 
 
 def test_the_fourth_answer_is_printed_before_a_session_writes_and_not_only_at_a_finding(capsys):
@@ -5690,8 +5788,19 @@ def test_the_fourth_answer_is_printed_before_a_session_writes_and_not_only_at_a_
     assert lint.ADMISSIONS in note, note
     for field in lint.ADMISSION_FIELDS:
         assert field in note, (field, note)
-    assert "never trimmed until it fits" in note, note
+    assert "rather than trimmed until it fits" in note, note
     assert "The constant does not move" in note, note
+    # **The block is actionable from itself.** It named the six fields and
+    # not the key vocabulary, while the labels printed two lines above it read
+    # `always-on row` and `adopter total` against the keys the guard requires
+    # -- a trap costing one red round-trip. And its flat universal covered
+    # ceilings that take no admission at all, the pointer cap and the 64-char
+    # name cap among them, so it is scoped to a share of what a session loads.
+    for key in lint.ADMISSION_BARE_KEYS:
+        assert key in note, (key, note)
+    for prefix in lint.ADMISSION_KEY_PREFIXES:
+        assert prefix in note, (prefix, note)
+    assert "share of what a session loads" in note, note
     # And it is printed by the command the flow mandates. Asserted through
     # `main()` rather than by calling the function twice: the defect was that
     # the route existed and no surface a session reads before writing carried
