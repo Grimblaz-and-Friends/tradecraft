@@ -654,6 +654,30 @@ def test_a_references_pointer_must_resolve_against_its_own_file(tmp_path):
     assert "reference-pointer" in findings[0] and "references/detail.md" in findings[0]
 
 
+def test_a_references_pointer_resolves_written_with_either_separator(tmp_path):
+    """Both polarities on the separator, which is where the guard was blind.
+
+    A Windows session writing the pointer from its own shell produces
+    `references\\detail.md`. Matching only the forward form let that name a
+    file that need not exist while the lint stayed green -- so the backslash
+    form has to fire when the target is gone and stay quiet when it is there,
+    exactly as the forward form does. [#337]
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    body = (skill / "SKILL.md").read_text(encoding="utf-8")
+    (skill / "SKILL.md").write_text(
+        body.replace("references/detail.md", "references\\detail.md"),
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert [f for f in lint.run(tmp_path) if "reference-pointer" in f] == []
+    (skill / "references" / "detail.md").rename(skill / "references" / "moved.md")
+    findings = [f for f in lint.run(tmp_path) if "reference-pointer" in f]
+    assert len(findings) == 1
+    assert "references\\detail.md" in findings[0]
+
+
 # Every check `run` calls, in call order. Literal on purpose: deriving this
 # from `run` would make the test agree with itself, which is what let the list
 # say eight while `run` called ten, silently, from #156 until #169 found it.
