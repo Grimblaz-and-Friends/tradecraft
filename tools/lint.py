@@ -4587,6 +4587,37 @@ def cell_body_note(root: Path) -> str:
         return f"cell bodies: not derived ({type(exc).__name__}: {exc})"
 
 
+def admission_note() -> str:
+    """The fourth answer, beside the figures rather than only in the finding.
+
+    **A route reachable only after you exceed cannot reach a session whose
+    method is not exceeding.** An experience session on this change closed a
+    real charter gap against 108 characters of headroom: it drafted six
+    candidate sentences, measured each before touching the file, found three
+    of them at or over the line, and shipped the one that fitted -- dropping a
+    clause it wanted to keep. That is the move `skills/authoring/SKILL.md`
+    forbids in the same sentence that names it, and it happened with
+    `tools/lint.py`'s budget and admission constants among what the session
+    reports having read. The run never went red, so it never met the finding
+    that carries the route, and the surface it did meet -- the block below,
+    which it preferred to `tools/figures.py` throughout -- named the ceiling
+    and no answer to it. [PR #346 session note]
+
+    **Unconditional, and evaluating nothing.** No threshold, no marker, no
+    word about how full a surface is: `cell_body_block` records why a figure
+    surface here invents no such number, and a route printed only when
+    headroom looks tight would be exactly that number wearing prose. This
+    states what to do at a ceiling and lets the reader see where it stands
+    from the figures above it.
+    """
+    return (
+        f"at a ceiling: a needed item that will not fit is admitted on "
+        f"{ADMISSIONS} -- one row carrying {', '.join(ADMISSION_FIELDS)} -- "
+        f"and never trimmed until it fits. The constant does not move, so an "
+        f"admission buys its own item and no room for the next one"
+    )
+
+
 def main() -> int:
     utf8_stdio()
     findings = run(ROOT)
@@ -4594,6 +4625,7 @@ def main() -> int:
         print(finding)
     print(always_on_note(ROOT))
     print(cell_body_note(ROOT))
+    print(admission_note())
     print(f"lint: {len(findings)} finding(s)")
     return 1 if findings else 0
 

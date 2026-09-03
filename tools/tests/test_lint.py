@@ -5671,3 +5671,30 @@ def test_the_repository_admits_nothing_today(tmp_path):
     assert rows == [], (
         "this repository is carrying admissions; each names the work that "
         "required it, and this pin is where that is read", rows)
+
+
+def test_the_fourth_answer_is_printed_before_a_session_writes_and_not_only_at_a_finding(capsys):
+    """What the experience session on #346 bought.
+
+    A session measuring before it writes meets the figure block on a green run
+    and never meets a finding; that consumer read the budget and admission
+    constants, hit 108 characters of headroom, and trimmed what it was adding
+    until it fitted -- the one move `skills/authoring/SKILL.md` forbids by
+    name. So the route is printed beside the figures, unconditionally.
+
+    **Unconditional is half the pin.** Printing it only when headroom looked
+    tight would invent the threshold `cell_body_block` refuses to invent, and
+    would go silent on exactly the run this consumer had.
+    """
+    note = lint.admission_note()
+    assert lint.ADMISSIONS in note, note
+    for field in lint.ADMISSION_FIELDS:
+        assert field in note, (field, note)
+    assert "never trimmed until it fits" in note, note
+    assert "The constant does not move" in note, note
+    # And it is printed by the command the flow mandates. Asserted through
+    # `main()` rather than by calling the function twice: the defect was that
+    # the route existed and no surface a session reads before writing carried
+    # it, so a pin on the string alone would have passed over that tree.
+    lint.main()
+    assert note in capsys.readouterr().out
