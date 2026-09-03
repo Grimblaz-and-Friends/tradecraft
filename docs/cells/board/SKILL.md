@@ -21,7 +21,13 @@ python tools/board.py notes    # the last refresh notes, newest first
 
 **In the browser**, the board is at `https://github.com/orgs/Grimblaz-and-Friends/projects/5`. Its `Queue` view carries `Band` and `Bundle` as columns, so the grouping is legible without reading any prose — which is the whole reason the fields exist, and they were invisible there until someone looked. **To collapse the board by bundle, group the view by `Bundle` once, from the view menu.** That is a click and not a command: `updateProjectV2View` sets a view's name, layout, filter and which fields it shows, and has no grouping in its configuration input, so a session can restore the columns and cannot restore the grouping. The same is true of the auto-add workflow.
 
-`next --count N` widens what it shows either side of the answer; `notes --limit N` asks for more notes. `show` prints the plan format — bare issue numbers, no titles — because it feeds `apply`; `show --plan FILE` writes that file and prints only the path it wrote.
+`next --count N` widens what it shows either side of the answer; `notes --limit N` asks for more notes. `show` prints the plan format — issue, band, bundle and status per line, no titles — because it feeds `apply`; `show --plan FILE` writes that file and prints only the path it wrote. **It is also how a bundle is resolved to its members**, which is the question the owner asks when he names one:
+
+```
+python tools/board.py show | awk -F'	' '$3 ~ /PR H/ {print $1}'
+```
+
+A cold session asked to "pick up PR H" found the members and was right about them, but got there the long way — `grep` over the tree returns nothing, because bundle names live only on the board, and an earlier wording of this paragraph said `show` printed "bare issue numbers", which reads as though the bundle column were not there.
 
 **Read the last note before you act on the order.** The board carries the conclusion; the note carries the reasoning that produced it, and the deltas that say which parts of the order are fresh judgment rather than inherited. A session that reads the order alone re-derives what the previous one already worked out.
 
