@@ -1,0 +1,58 @@
+# D-346: A ceiling admits a needed item on an itemised record, and the constant does not move
+
+**Status:** Accepted 2026-09-03 (PR #346)
+
+**Evidence, and where it can be checked from here.** Everything quoted from a live file is pinned to `tools/lint.py`, `tools/figures.py` and `skills/authoring/references/routing.md` at `4481dc9`, this change's first commit. Every figure is stated as the command that derives it — `python tools/lint.py`, run from the repository root — because this entry freezes and a number in it is one a later reader inherits rather than checks. The brief and its affirmation are on [#334](https://github.com/Grimblaz-and-Friends/tradecraft/issues/334#issuecomment-5531719663); the settled artifact is [there too](https://github.com/Grimblaz-and-Friends/tradecraft/issues/334#issuecomment-5531879455). Three of the four incidents below rest on GitHub comments and cannot be checked from inside this repository; [D-184] can.
+
+## The condition
+
+Three sites in `tools/lint.py` enforced a ceiling on a share of what a session loads — `check_always_on_budget` on the per-runtime rows and the adopter total, `check_cell_frontmatter` on each cell's description, `check_doctrine` on each budgeted cell body. Each was a finding, `.github/workflows/ci.yml` runs the lint as a required check, so each was a red build. **The row finding named exactly three answers**: *"retiring a cell, merging two, or raising this ceiling as a recorded decision."*
+
+**Every one of the three is a cut, a merge or a raise. None is *the item is needed*.** The owner ruled, in conversation on 2026-09-03 and recorded on #303, that *"The size limits should exist to trigger improved design, but they can't block us from having needed items."*
+
+**The prose the guards serve already said so and the mechanism did not.** `skills/authoring/SKILL.md` carries *"A ceiling reached is a trigger, not a wall"*, and `routing.md` carries *"The ceiling is what applies size pressure; the outflow is what makes the look happen. A session that reads it as a matched cost either refuses a lawful addition or forces a bad move to pay for one."* That sentence landed under #245, whose title was *"A budget ceiling reads as a wall"*: it corrected the prose and left the mechanism reading the ceiling as exactly the matched cost it disowns.
+
+**Four recorded instances of a needed item priced rather than judged.** #303's four charter gaps, each recorded as *"a clause of 26 to 100 characters against a charter body with 16 to 27 free"*; [D-184], where the description cap forced deleting examples [D-141] had placed; and #260, which needed a temporary owner approval to exceed the ceilings at all — granted, recorded, expired and discharged as a piece of work in itself.
+
+**And the counter-evidence any remedy owed.** `ALWAYS_ON_ROW_BUDGET_CHARS`' own comment: *"raising the unit to admit a cell widens, by the same amount, the relocation the budget exists to refuse. There is no value that separates them."* #260's measurement, that ceilings here ratchet to just under their limit and stay. `routing.md`'s *"A surface that only ever empties under pressure empties once and refills."* So the want was never a softer number.
+
+## The decision
+
+**A fourth answer: the item is admitted, itemised on `docs/admissions.jsonl`, and the constant does not move.** One row per admitted item, carrying six fields — `date`, `issue`, `ceilings`, `chars`, `item`, `outflow`. Each enforcement site compares the surface against `constant + sum of chars charged against that ceiling`.
+
+**The itemisation is the whole mechanism, and it is what the constant's own comment says no number can be.** Headroom and the largest tolerated relocation are one quantity; a raise buys both at once, creating round headroom nobody argued for which the next commit spends. An admission adds exactly the characters its row names, spent by the item that row names, and leaves the next addition with nothing — so the item lands and the pressure survives. **An itemisation separates the two because it is not a number.**
+
+**The constant stays where it is**, so every surface can report the ceiling in force *and* the constant it is built from. A session raising or arguing a ceiling argues the constant; the guard enforces the sum. Collapsing them would have made the accumulated overage indistinguishable from a bigger ceiling, which is the laundering this exists to refuse.
+
+**Two findings keep it from being a waiver.**
+
+- **A ceiling re-arms when its surface comes back to or below its constant while characters stay charged against it.** Space an outflow frees would otherwise sit as room nobody argued for — the refill `routing.md` names, arriving through the mechanism built to admit needed items. It is banked by **appending** a row with negative `chars`: a new fact about a new state, never a correction of the row it banks, so `docs/cells/records/SKILL.md`'s append-only rule reaches it and its no-maintenance rule does not.
+- **A row that names no issue, or that the reader cannot parse, admits nothing.** `read_admissions` fails closed and `check_admissions` reports what it dropped — silent fail-closed would be safe and unreadable, leaving a session at a ceiling finding it had just written a row to clear with nothing saying the row was the problem. `issue` is what separates *a needed item* from *this session wanted it*: an item is needed **by** some piece of work.
+
+**The route reaches the session on the finding text**, because `skills/authoring/SKILL.md` prefers the rule whose compliance is visible on the artifact its reader is producing, and the lint output is what a session at a ceiling already has open. All three findings name the record, the fields and that the constant does not move; none offers a raise any more.
+
+## What was rejected
+
+**The ceiling stops failing and speaks only at merge.** Cheapest to build, and it reuses `_always_on_line`, which already puts the figure and its per-PR delta in front of the owner. Rejected: it spends value 3, the scarcest input, on every exceedance — the opposite of converting a recurring ask into a standing mechanism; a note nobody must answer is the weakest rule form this practice recognises; and nothing opposes the ratchet between merges, the only record of why an exceedance was allowed being that a merge happened. Put to the owner as option 2; not ruled.
+
+**A soft band above the ceiling with a hard cap above that.** Rejected: the band is a second number, and this repository's own history is that a number with room in it fills to just under and stays, so it buys one more ceiling to run into. At the top of the band a needed item is blocked again, which moves the owner's ruling rather than answering it. Put as option 3; not ruled.
+
+**Giving a body budget to the eleven cells that have none.** Raised by the owner in the same conversation and ruled out of this change. It is [#328](https://github.com/Grimblaz-and-Friends/tradecraft/issues/328), whose own deferral list records that the prior question — whether body size deserves a ceiling at all when it costs a session nothing until the cell fires — is settled nowhere. It was also declined because every cell over a new limit on the day it landed would have needed an admission to go green, seeding the new record with rows meaning *this was already like this* rather than *this item was needed*, which is the record bookkeeping the `records` cell names as its tripwire. **The sequencing runs the other way and is why #328 gets cheaper from here:** after this change a body limit is a design trigger a session can discharge rather than a wall around the largest cell in the tree.
+
+**Any change to any constant.** Nothing here moves `ALWAYS_ON_ROW_BUDGET_CHARS`, `ALWAYS_ON_ADOPTER_BUDGET_CHARS`, `CELL_FIELD_MAX_CHARS` or either entry of `CELL_BODY_BUDGET_CHARS`. A change that moved one would be the mechanism this replaces, landing under its name.
+
+**Shipped prose.** `skills/authoring/SKILL.md` already says a ceiling is a trigger and not a wall, and `routing.md` already discharges an outflow by a refusal recorded where amendments are recorded; what contradicted them was this repository's own lint, which is repo-only. Shipped prose naming `docs/admissions.jsonl` would breach the zone wall, and shipped prose describing a mechanism an adopter does not have would ship a rule with nothing behind it. So the shipped zone is untouched and no plugin version is bumped.
+
+**Widening `DOCTRINE_PATHS`.** `tools/doctrine_callout.py`'s own comment reserves a widening for its own incident. The callout inherits the admitted figure through the always-on line it already renders, so an admission on a PR that also touches doctrine is visible at merge; one that does not is visible in the lint output and to the review.
+
+## The calls, and what each cost
+
+**Zero slack is not enforced.** Re-arming fires at the constant, not at the effective ceiling. A zero-slack rule would make every reword of an admitted surface a record append, which is the noise `CELL_BODY_BUDGET_CHARS`' comment warns a zero-headroom cap becomes. **What that costs:** between the constant and the effective ceiling, space an outflow frees is spendable without a new argument. It is reported at every surface that states a ceiling rather than policed, and full re-arming is what fires when the surface is unambiguously back.
+
+**What is admissible is a share of a surface, and nothing else.** `POINTER_BUDGET_CHARS` and the 64-character `name` cap are hard findings too and take no admission: each bounds a file's or a field's *shape* rather than its share of what a session loads, and neither has priced a needed item out. The cold seat that settled the artifact raised the same distinction independently, against an artifact that had called the three sites the enforced ceilings without qualification. Widening the set is a decision, not an edit.
+
+**The lint does not judge whether an admitted item was needed, and does not check `chars` against what the change actually grew.** It holds shape and arithmetic. **What that costs:** a session can write a row larger than its item needs, and the surplus is real headroom. The probe that exercised this change hit exactly that — an admission of 150 characters for a 42-character overage left the next character fitting — which is why the mechanism's own criterion is stated against an honestly-sized row. What answers it is that `chars` is on a permanent record beside the item it bought, the figure states the composition wherever a ceiling is printed, and the review and the owner's merge read are what judge it. A guard that tried to judge need would be the number problem in a second costume.
+
+**A defect the tests found rather than the design.** The null arm of the malformed-row pin failed on first run: `str(None)` is `"None"`, which is not blank, so a row whose `issue` was JSON `null` had been admitting. Fixed here, and the arm that found it is in the suite — recorded because the field it defeated is the one field separating an admission from a waiver.
+
+**The record lands empty.** Nothing in the tree is over a ceiling at this commit — `python tools/lint.py`, run from the repository root — so there is no grandfathering batch and the first row will be written by the first change that needs one. `tools/tests/test_lint.py` pins that emptiness, so a row appearing here is read rather than assumed.
