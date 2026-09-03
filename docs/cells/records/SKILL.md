@@ -11,6 +11,10 @@ description: This repository's append-only records and its decision log — whic
 
 Every review appends one row to `docs/reviews.jsonl`, and every `record` ruling one entry to `docs/recorded-findings.jsonl`.
 
+## Admissions, at a ceiling
+
+A needed item that puts a budgeted surface over its ceiling is admitted rather than cut, merged around or paid for by raising the number. The admission appends one row to `docs/admissions.jsonl` carrying its date, the issue whose work required it, the ceilings it is charged against, the characters it admits, what the item is, and what the outflow turned up first. **The constant does not move** — `tools/lint.py` enforces the constant plus what has been admitted against it, so a row buys its own item and no room for the next one, which is the difference between admitting and raising. When the surface comes back under its constant the lint says so, and the space is banked by **appending** a row with negative `chars`: a new fact about a new state, never a correction of the row it banks, so the rule below reaches it as an append and not as maintenance.
+
 ## Decisions
 
 `docs/architecture/decisions/D-<PR#>-YYYY-MM-DD-<slug>.md`, written in the PR that lands a choice a future session would otherwise re-derive or unknowingly undo; frozen on landing but for the two narrow repairs bounded in the log's README. A rule or skill line may cite its decision (`[D-N]`).

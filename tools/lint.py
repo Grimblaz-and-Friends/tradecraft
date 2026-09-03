@@ -170,6 +170,12 @@ Checks:
     two members of one row -- it read as a saving in whichever file shrank
     while the surface a session loads had not moved (#260).
 
+25. admissions: docs/admissions.jsonl parses, every row carries all six
+    fields, and no ceiling is left carrying admitted characters after its
+    surface came back under the constant. The record is what lets a needed
+    item land over a ceiling without the constant moving; a row this cannot
+    read grants nothing (#334).
+
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution and the ADRs beneath it) is not validated: it is history, not a
 live format (D-74). The prose guards skip the live append-only records too --
@@ -348,6 +354,222 @@ CELL_BODY_BUDGET_CHARS = {
     "skills/adversarial-review/SKILL.md": 9_000,
     "skills/authoring/SKILL.md": 7_359,
 }
+
+# **The fourth answer at a ceiling, and the record that carries it.** Every
+# ceiling above used to offer three: cut something, merge two, or raise the
+# constant. The owner ruled that a size limit exists to trigger better design
+# and must never keep out a needed item, and none of the three admits one --
+# so a needed clause was priced as a deletion somewhere else four times on
+# #303 alone, once as the examples D-141 had placed (D-184), and once as a
+# temporary owner approval that had to be granted, recorded, expired and
+# discharged as work in itself (#260).
+#
+# **An admission is not a raise, and that difference is the whole mechanism.**
+# A raise moves the constant and creates round headroom nobody argued for,
+# which the next commit spends -- this repository's measured history is that
+# ceilings ratchet to just under their limit and stay there. An admission
+# moves nothing. It adds exactly the characters its row names, spent by the
+# item that row names, and leaves the next addition with nothing. So the item
+# lands and the pressure survives, which is the pair the comment on
+# `ALWAYS_ON_ROW_BUDGET_CHARS` says no single value can hold: headroom and the
+# largest tolerated relocation are one quantity, and no *number* separates
+# them. An itemisation separates them because it is not a number. [#334]
+ADMISSIONS = "docs/admissions.jsonl"
+# Every field a row carries, all six required. `issue` is what makes the row
+# an admission rather than a waiver -- a needed item is needed *by* some piece
+# of work, and a row that cannot name it is one nobody can hold to anything.
+# `outflow` is the design obligation the exceedance triggers, written down:
+# what moved, what was deleted, or why nothing had a cheaper home.
+ADMISSION_FIELDS = ("date", "issue", "ceilings", "chars", "item", "outflow")
+# The keys a row may charge itself against: one per ceiling here that prices a
+# **share of a surface**. `POINTER_BUDGET_CHARS` and the 64-character `name`
+# cap are deliberately absent -- each bounds a file's or a field's shape
+# rather than its share of what a session loads, and neither has priced a
+# needed item out. Widening this set is a decision, not an edit.
+ADMISSION_BARE_KEYS = ("always-on-row", "always-on-adopter")
+ADMISSION_KEY_PREFIXES = ("description:", "body:")
+_ADMISSION_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+
+
+def _admission_key_ok(key: object) -> bool:
+    """Whether a row's ceiling key names something this file enforces.
+
+    Shape, never existence. A cell renamed after a row was written strands
+    that row's key, and the record is append-only -- so a guard demanding the
+    path resolve would red a tree over history no lawful edit can clear, which
+    is the shape #224 was about.
+    """
+    if not isinstance(key, str):
+        return False
+    if key in ADMISSION_BARE_KEYS:
+        return True
+    return any(key.startswith(prefix) and key[len(prefix):].strip()
+               for prefix in ADMISSION_KEY_PREFIXES)
+
+
+def read_admissions(root: Path) -> tuple[list[dict], list[str]]:
+    """The well-formed rows of the admissions record, and a finding for each that is not.
+
+    **Fail closed.** A row this cannot read grants nothing: it is dropped from
+    every sum and reported instead, so a malformed record leaves the constants
+    in force rather than admitting whatever the parse happened to salvage.
+    That is `check_always_on_budget`'s own rule -- no budget passes by being
+    unmeasurable -- applied to the thing that relaxes a budget.
+
+    **An absent record is an empty one, not a failure.** A tree that has never
+    admitted anything has no rows, which is the state of the commit that adds
+    this mechanism and of every fixture tree the suite builds.
+    """
+    rows: list[dict] = []
+    findings: list[str] = []
+    target = root / ADMISSIONS
+    if not target.is_file():
+        return rows, findings
+    text = target.read_text(encoding="utf-8", errors="replace")
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        where = f"admissions: {ADMISSIONS}:{lineno}"
+        try:
+            row = json.loads(line)
+        except ValueError as exc:
+            findings.append(
+                f"{where} is not valid JSON ({exc}), so it admits nothing and "
+                f"the constant stays in force on whatever it was meant to "
+                f"cover. One object per line")
+            continue
+        if not isinstance(row, dict):
+            findings.append(
+                f"{where} is not a JSON object, so it admits nothing")
+            continue
+        missing = [field for field in ADMISSION_FIELDS if field not in row]
+        if missing:
+            findings.append(
+                f"{where} is missing {', '.join(missing)} -- every row carries "
+                f"all of {', '.join(ADMISSION_FIELDS)}, and it admits nothing "
+                f"until it does")
+            continue
+        # `is None` explicitly: `str(None)` is "None", which is not blank, so
+        # a JSON null issue passed a truthiness check and admitted. Found by
+        # the null arm of the malformed-row pin, which is why that pin carries
+        # one.
+        if (row["issue"] is None or isinstance(row["issue"], bool)
+                or not str(row["issue"]).strip()):
+            findings.append(
+                f"{where} names no issue. An admission says which work "
+                f"required the item; a row that cannot name it is a waiver, "
+                f"and it admits nothing")
+            continue
+        if not isinstance(row["chars"], int) or isinstance(row["chars"], bool):
+            findings.append(
+                f"{where}'s chars is {row['chars']!r}, not a whole number of "
+                f"characters, so it admits nothing")
+            continue
+        keys = row["ceilings"]
+        if not isinstance(keys, list) or not keys:
+            findings.append(
+                f"{where}'s ceilings is {keys!r} -- it is a non-empty list of "
+                f"the ceilings this row is charged against, so it admits "
+                f"nothing")
+            continue
+        bad = [key for key in keys if not _admission_key_ok(key)]
+        if bad:
+            forms = " or ".join(prefix + "<path to SKILL.md>"
+                                for prefix in ADMISSION_KEY_PREFIXES)
+            findings.append(
+                f"{where} charges itself against {bad!r}, which names no "
+                f"ceiling here. Use {', '.join(ADMISSION_BARE_KEYS)}, or "
+                f"{forms} -- it admits nothing meanwhile")
+            continue
+        empty = [field for field in ("item", "outflow")
+                 if not str(row[field]).strip()]
+        if empty:
+            findings.append(
+                f"{where} leaves {', '.join(empty)} empty. The item is what "
+                f"was admitted and the outflow is what was tried first; a row "
+                f"stating neither records nothing, and it admits nothing")
+            continue
+        if not _ADMISSION_DATE.match(str(row["date"])):
+            findings.append(
+                f"{where}'s date is {row['date']!r}, not YYYY-MM-DD, so it "
+                f"admits nothing")
+            continue
+        rows.append(row)
+    return rows, findings
+
+
+def admitted(rows: list[dict], key: str) -> tuple[int, int]:
+    """The characters admitted against one ceiling, and how many rows say so.
+
+    Floored at zero for enforcement. `check_admissions` reports a set of rows
+    that has banked more than it admitted rather than letting the record
+    tighten a ceiling below its constant: a record that could tighten one
+    would be a second place constants are set, and this file is the first.
+    """
+    charged = [row for row in rows if key in row["ceilings"]]
+    return max(0, sum(row["chars"] for row in charged)), len(charged)
+
+
+def ceiling(constant: int, rows: list[dict], key: str) -> tuple[int, str]:
+    """The ceiling actually in force for one key, and how to say it.
+
+    One composition for all three enforcement sites, because three renderings
+    of "the constant plus what has been admitted against it" is three places
+    for the reported ceiling to stop being the enforced one.
+    """
+    extra, count = admitted(rows, key)
+    if not extra:
+        return constant, f"budget is {constant}"
+    return constant + extra, (
+        f"budget is {constant + extra} ({constant} plus {extra} admitted "
+        f"across {count} row{'' if count == 1 else 's'} of {ADMISSIONS})")
+
+
+def admit_route(key: str) -> str:
+    """The fourth answer, in the words of the ceiling being hit.
+
+    On the finding rather than behind a pointer: the `authoring` cell prefers
+    the rule whose compliance is visible on the artifact its reader is
+    producing, and the lint output is what a session at a ceiling already has
+    open. All three sites say it the same way because they share this.
+    """
+    return (
+        f"Where the outflow frees nothing and the item is needed, admit it "
+        f"rather than cutting, merging or raising: append one row to "
+        f"{ADMISSIONS} carrying date, issue (the work that required it), "
+        f'ceilings ["{key}"], chars (the increment this item needs), item, '
+        f"and outflow (what moved, what was deleted, or why nothing had a "
+        f"cheaper home). The constant does not move -- an admission buys its "
+        f"own item and no room for the next one")
+
+
+def stale_admission(label: str, size: int, constant: int,
+                    rows: list[dict], key: str) -> list[str]:
+    """A ceiling still carrying admitted characters after its surface came back under.
+
+    **This is what stops an admission becoming a waiver.** Space an outflow
+    frees under an admitted ceiling would otherwise sit as room nobody argued
+    for -- the refill `routing.md` names, arriving through the very mechanism
+    built to admit needed items. Banking it is an append naming what came
+    back, never an edit of the row it banks: the record stays append-only and
+    both rows stay readable.
+
+    **It fires at the constant, not at the effective ceiling.** Zero slack
+    would make every reword of an admitted surface a record append, which is
+    the noise the comment on `CELL_BODY_BUDGET_CHARS` warns a zero-headroom
+    cap becomes. At or under the constant the surface is unambiguously back,
+    and one row settles it.
+    """
+    extra, count = admitted(rows, key)
+    if not extra or size > constant:
+        return []
+    return [
+        f"admission-stale: {label} is {size} chars, back at or under its "
+        f"{constant} ceiling, while {extra} chars stay admitted against "
+        f'"{key}" across {count} row{"" if count == 1 else "s"} -- that is '
+        f"room nobody argued for, which is the refill a ceiling exists to "
+        f"refuse. Bank it: append a row to {ADMISSIONS} with chars {-extra} "
+        f"naming what came back. Appending, never editing what it banks"]
 
 # The one cell any other cell may reference, and the one cell that may
 # reference the others. Self-containment exists to stop loading cost and
@@ -1344,18 +1566,28 @@ def check_doctrine(root: Path) -> list[str]:
     # do is silently drop the budget on a rename, so that the map still names a
     # real cell is pinned against this repository's own tree in the suite,
     # where the question has an answer, rather than guessed at here.
+    # The record relaxes the constants below, never tightens them, and a row
+    # it cannot read grants nothing -- `read_admissions` fails closed and
+    # `check_admissions` reports what it dropped, so the malformed-record
+    # finding is not repeated at every site the record touches.
+    admissions, _ = read_admissions(root)
     for rel, budget in sorted(CELL_BODY_BUDGET_CHARS.items()):
         cell = root / rel
         if not cell.is_file():
             continue
         size = len(_frontmatterless(cell.read_text(encoding="utf-8", errors="replace")))
-        if size > budget:
+        key = f"body:{rel}"
+        allowed, against = ceiling(budget, admissions, key)
+        if size > allowed:
             findings.append(
-                f"doctrine-budget: {rel}'s body is {size} chars, budget is "
-                f"{budget} -- shed depth to references/ or route content out; "
+                f"doctrine-budget: {rel}'s body is {size} chars, {against} -- "
+                f"shed depth to references/ or route content out; "
                 f"`python tools/figures.py --cell {rel} --cell-budget {budget}` "
-                f"reports the cell total, which shedding does not reduce"
+                f"reports the cell total, which shedding does not reduce. "
+                f"{admit_route(key)}"
             )
+        findings += stale_admission(f"{rel}'s body", size, budget,
+                                    admissions, key)
     # An adopter loads the installed charter because its repository instructions
     # say so. In THIS source repository the local charter reaches the session
     # through an import in a file that is itself imported. Checked by shape
@@ -2179,6 +2411,11 @@ def check_cell_frontmatter(root: Path) -> list[str]:
     skills = root / SHIPPED_CELLS
     if not skills.is_dir():
         return findings
+    # The record relaxes the description ceiling below, never tightens it, and
+    # a row it cannot read grants nothing -- `read_admissions` fails closed
+    # and `check_admissions` reports what it dropped, so the malformed-record
+    # finding is not repeated at every site the record touches.
+    admissions, _ = read_admissions(root)
     # Both sources, because both load. A repo-only cell's description sits in
     # every session here exactly as a shipped one does -- the generator copies
     # it onto both runtime surfaces -- so an unparseable or oversized one fails
@@ -2230,15 +2467,29 @@ def check_cell_frontmatter(root: Path) -> list[str]:
                     f"frontmatter loads as empty metadata -- no name, no "
                     f"description, no trigger, silently"
                 )
-            elif len(value) > CELL_FIELD_MAX_CHARS.get(key, 10**9):
-                findings.append(
-                    f"cell-frontmatter: {rel}'s {key} is {len(value)} chars, "
-                    f"budget is {CELL_FIELD_MAX_CHARS[key]} -- "
-                    + ("every session here pays for it, invoked or not"
-                       if rel.startswith(REPO_CELLS + "/") else
-                       "every adopter pays for it in every session, "
-                       "invoked or not")
-                )
+            elif key in CELL_FIELD_MAX_CHARS:
+                # **Only `description` is admissible.** The 64-character
+                # `name` cap bounds an identifier the runtime addresses the
+                # cell by, not a share of what a session loads, so no
+                # admission key names it and `ceiling` is handed the constant
+                # with nothing charged against it.
+                admission = f"description:{rel}" if key == "description" else ""
+                allowed, against = ceiling(
+                    CELL_FIELD_MAX_CHARS[key], admissions, admission)
+                if len(value) > allowed:
+                    findings.append(
+                        f"cell-frontmatter: {rel}'s {key} is {len(value)} "
+                        f"chars, {against} -- "
+                        + ("every session here pays for it, invoked or not"
+                           if rel.startswith(REPO_CELLS + "/") else
+                           "every adopter pays for it in every session, "
+                           "invoked or not")
+                        + (f". {admit_route(admission)}" if admission else "")
+                    )
+                if admission:
+                    findings += stale_admission(
+                        f"{rel}'s description", len(value),
+                        CELL_FIELD_MAX_CHARS[key], admissions, admission)
         name = fields.get("name", "").strip().strip("'\"")
         if name and name != skill_dir.name:
             findings.append(
@@ -2534,6 +2785,13 @@ FROZEN_PREFIXES = ("docs/architecture/adr/",)
 LIVE_RECORDS = frozenset({
     "docs/reviews.jsonl",
     "docs/recorded-findings.jsonl",
+    # An admission's `item` and `outflow` are prose about the rule that was
+    # admitted, so a row naming a path or quoting a clause holds exactly the
+    # constructs the prose guard reports. Append-only means such a finding is
+    # a red no lawful edit clears, which is the shape #224 was about -- the
+    # byte guard still covers it, where a lone carriage return is corruption
+    # of the row's own format rather than content. [#334]
+    "docs/admissions.jsonl",
 })
 
 
@@ -4088,6 +4346,12 @@ def check_always_on_budget(root: Path) -> list[str]:
     # derivation failure and nothing about the descriptions it also could not
     # have measured. [#291]
     findings += _unmeasurable_descriptions(root)
+    # Before the figure, for the same reason: a malformed row is a fact about
+    # the record, not about whether `tools/figures.py` imported. The rows are
+    # what relax the two constants below; `read_admissions` fails closed, so a
+    # row it could not read leaves the constant in force and is reported by
+    # `check_admissions` rather than a second time here.
+    admissions, _ = read_admissions(root)
     try:
         spec = importlib.util.spec_from_file_location(
             "repo_figures_budget", root / "tools" / "figures.py"
@@ -4123,29 +4387,73 @@ def check_always_on_budget(root: Path) -> list[str]:
             f"({adopter!r}), so no ceiling applied to it -- fix "
             f"tools/figures.py; no budget passes by being unmeasurable"
         ]
+    row_key, adopter_key = "always-on-row", "always-on-adopter"
+    row_allowed, row_against = ceiling(
+        ALWAYS_ON_ROW_BUDGET_CHARS, admissions, row_key)
     for row in rows:
-        if row["total"] > ALWAYS_ON_ROW_BUDGET_CHARS:
+        if row["total"] > row_allowed:
             findings.append(
                 f"always-on-budget: the {row['runtime']} row is "
-                f"{row['total']} chars, budget is "
-                f"{ALWAYS_ON_ROW_BUDGET_CHARS} -- this is the whole surface "
-                f"that runtime loads before acting, so moving prose to "
-                f"another always-on file will not clear it. A body over "
+                f"{row['total']} chars, {row_against} -- this is the whole "
+                f"surface that runtime loads before acting, so moving prose "
+                f"to another always-on file will not clear it. A body over "
                 f"budget sheds to a cell body or to references/; a "
                 f"*description* over budget can do neither without ceasing "
-                f"to be a trigger, so it is answered by retiring a cell, "
-                f"merging two, or raising this ceiling as a recorded "
-                f"decision. What to do at a ceiling is "
-                f"skills/authoring/SKILL.md's"
+                f"to be a trigger, so it is answered by retiring a cell or "
+                f"merging two. {admit_route(row_key)}. What to do at a "
+                f"ceiling is skills/authoring/SKILL.md's"
             )
-    if adopter > ALWAYS_ON_ADOPTER_BUDGET_CHARS:
+    # **The largest row, because one constant governs both.** Re-arming asks
+    # whether the surface has come back under, and it has not while either
+    # runtime is still over -- taking the smaller would bank space the larger
+    # is still spending.
+    findings += stale_admission(
+        "the largest always-on row", max(row["total"] for row in rows),
+        ALWAYS_ON_ROW_BUDGET_CHARS, admissions, row_key)
+    adopter_allowed, adopter_against = ceiling(
+        ALWAYS_ON_ADOPTER_BUDGET_CHARS, admissions, adopter_key)
+    if adopter > adopter_allowed:
         findings.append(
-            f"always-on-budget: the adopter total is {adopter} chars, budget "
-            f"is {ALWAYS_ON_ADOPTER_BUDGET_CHARS} -- this is what this "
-            f"practice puts in every session of every repository that adopts "
-            f"it, and it counts the charter body and the shipped roster's "
-            f"descriptions only"
+            f"always-on-budget: the adopter total is {adopter} chars, "
+            f"{adopter_against} -- this is what this practice puts in every "
+            f"session of every repository that adopts it, and it counts the "
+            f"charter body and the shipped roster's descriptions only. "
+            f"{admit_route(adopter_key)}"
         )
+    findings += stale_admission(
+        "the adopter total", adopter, ALWAYS_ON_ADOPTER_BUDGET_CHARS,
+        admissions, adopter_key)
+    return findings
+
+
+def check_admissions(root: Path) -> list[str]:
+    """The admissions record parses, and no ceiling carries what it no longer spends.
+
+    **This is the guard on the thing that relaxes the other guards**, so it
+    reports what `read_admissions` refused rather than leaving a malformed row
+    to fail silently closed. Silent fail-closed would be safe and unreadable:
+    the session would meet a ceiling finding it had just written a row to
+    clear, with nothing saying the row was the problem.
+
+    **A record cannot tighten a ceiling.** Rows banking more than was ever
+    admitted against a key would drive the effective ceiling below the
+    constant, which would make this file's constants stop being where the
+    ceilings are set. `admitted` floors the sum at zero and this reports the
+    set that got there, in both polarities: over-banking is a finding, and
+    banking exactly what was admitted is the lawful end state.
+    """
+    rows, findings = read_admissions(root)
+    for key in sorted({key for row in rows for key in row["ceilings"]}):
+        charged = [row for row in rows if key in row["ceilings"]]
+        total = sum(row["chars"] for row in charged)
+        if total < 0:
+            findings.append(
+                f"admissions: the rows charged against \"{key}\" sum to "
+                f"{total}, which would put its ceiling below the constant "
+                f"{ADMISSIONS} exists to relax -- a record does not tighten a "
+                f"ceiling, and tools/lint.py is where they are set. Bank no "
+                f"more than was admitted"
+            )
     return findings
 
 
@@ -4175,6 +4483,7 @@ CHECKS = (
     check_marketplace_source,
     check_body_strip_owner,
     check_always_on_budget,
+    check_admissions,
 )
 
 
@@ -4223,10 +4532,17 @@ def always_on_note(root: Path) -> str:
         # with a traceback, which is the guarantee `run()`'s isolation
         # exists to make. Two seats disagreed about whether this function
         # was guarded; the probe settled it. [PR #247 review, M19]
+        # The adopter total is stated with what is admitted against it, for
+        # the reason `figures.priced` carries: a session reading the constant
+        # alone reads headroom a different number governs. Silent on a tree
+        # that has admitted nothing.
+        extra = data.get("admitted", {}).get("always-on-adopter", 0)
         return (
             f"always-on surface here, per runtime: "
             f"{figures.by_runtime(data)}; "
-            f"{data['adopter_total']:,} from this practice for an adopter"
+            f"{data['adopter_total']:,} of "
+            f"{figures.priced(ALWAYS_ON_ADOPTER_BUDGET_CHARS, extra)} "
+            f"from this practice for an adopter"
         )
     except Exception as exc:  # noqa: BLE001 -- reported, never fatal
         return f"always-on surface: not derived ({type(exc).__name__}: {exc})"

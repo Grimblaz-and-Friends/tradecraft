@@ -706,6 +706,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_marketplace_source",
     "check_body_strip_owner",
     "check_always_on_budget",
+    "check_admissions",
 )
 
 
@@ -5403,3 +5404,270 @@ def test_the_report_reports_rather_than_raising_on_a_bad_shape(tmp_path):
     assert "KeyError" in note, note
 
 
+# --------------------------------------------------------------------------
+# 25. admissions -- the fourth answer at a ceiling. [#334]
+# --------------------------------------------------------------------------
+
+def _row(**over):
+    """A lawful admission row, with fields overridden per test."""
+    row = {"date": "2026-09-03", "issue": 334,
+           "ceilings": ["always-on-row"], "chars": 42,
+           "item": "a clause the charter needs",
+           "outflow": "nothing had a cheaper home: the rule binds before any cell"}
+    row.update(over)
+    return row
+
+
+def _record(root: Path, *rows) -> None:
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    (root / lint.ADMISSIONS).write_text(
+        "".join(json.dumps(row) + NL for row in rows), encoding="utf-8")
+
+
+def test_an_absent_admissions_record_is_an_empty_one_and_not_a_failure(tmp_path):
+    """The state of every fixture tree, and of the commit that added this.
+
+    The other polarity of `read_admissions`' guard: an unreadable record must
+    grant nothing, and a record that was never written is not unreadable. A
+    guard reading absence as a failure would red every tree the suite builds;
+    one reading it as permission would be the deletion bypass #134 records.
+    """
+    rows, findings = lint.read_admissions(tmp_path)
+    assert (rows, findings) == ([], []), (rows, findings)
+    assert lint.admitted(rows, "always-on-row") == (0, 0)
+    assert lint.ceiling(700, rows, "description:x") == (700, "budget is 700")
+    assert lint.check_admissions(tmp_path) == []
+
+
+def test_a_lawful_row_is_admitted_and_charges_only_the_ceiling_it_names(tmp_path):
+    """An admission relaxes one ceiling, not the set of them.
+
+    The key is the whole of what a row buys. A row that leaked into ceilings
+    it does not name would be the raise this mechanism replaces, arriving
+    under a different word: one argued item widening every surface at once.
+    """
+    _record(tmp_path, _row(), _row(chars=8, ceilings=["description:skills/a/SKILL.md"]))
+    rows, findings = lint.read_admissions(tmp_path)
+    assert findings == [], findings
+    assert len(rows) == 2
+    assert lint.admitted(rows, "always-on-row") == (42, 1)
+    assert lint.admitted(rows, "description:skills/a/SKILL.md") == (8, 1)
+    assert lint.admitted(rows, "always-on-adopter") == (0, 0)
+    assert lint.admitted(rows, "body:skills/a/SKILL.md") == (0, 0)
+    allowed, against = lint.ceiling(16_345, rows, "always-on-row")
+    assert allowed == 16_387, against
+    assert "16345 plus 42 admitted across 1 row" in against, against
+    assert lint.ADMISSIONS in against, against
+
+
+def test_every_malformed_row_admits_nothing_and_says_so(tmp_path):
+    """Fail closed, and loudly. Each arm is one way a row can be wrong.
+
+    **Both halves matter and the second is the one that would rot.** A row
+    this cannot read must grant nothing -- otherwise the cheapest route past a
+    ceiling is a corrupt line -- and it must be *reported*, or a session meets
+    a ceiling finding it has just written a row to clear with nothing saying
+    the row was the problem. The lawful arm is `test_a_lawful_row...` above.
+    """
+    cases = [
+        ("{not json" + NL, "not valid JSON"),
+        (json.dumps([1, 2]) + NL, "not a JSON object"),
+        (json.dumps({k: v for k, v in _row().items() if k != "outflow"}) + NL,
+         "is missing outflow"),
+        (json.dumps(_row(issue="   ")) + NL, "names no issue"),
+        (json.dumps(_row(issue=None)) + NL, "names no issue"),
+        (json.dumps(_row(chars="42")) + NL, "not a whole number"),
+        (json.dumps(_row(chars=True)) + NL, "not a whole number"),
+        (json.dumps(_row(ceilings=[])) + NL, "non-empty list"),
+        (json.dumps(_row(ceilings="always-on-row")) + NL, "non-empty list"),
+        (json.dumps(_row(ceilings=["always-on-rows"])) + NL, "names no ceiling here"),
+        (json.dumps(_row(ceilings=["body:"])) + NL, "names no ceiling here"),
+        (json.dumps(_row(item="  ")) + NL, "leaves item empty"),
+        (json.dumps(_row(outflow="")) + NL, "leaves outflow empty"),
+        (json.dumps(_row(date="3 September 2026")) + NL, "not YYYY-MM-DD"),
+    ]
+    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+    for text, expected in cases:
+        (tmp_path / lint.ADMISSIONS).write_text(text, encoding="utf-8")
+        rows, findings = lint.read_admissions(tmp_path)
+        assert rows == [], (expected, "a row this could not read still admitted", rows)
+        assert len(findings) == 1, (expected, findings)
+        assert expected in findings[0], (expected, findings[0])
+        assert findings[0].startswith("admissions: " + lint.ADMISSIONS + ":1"), findings[0]
+
+
+def test_a_record_cannot_tighten_a_ceiling(tmp_path):
+    """Banking more than was ever admitted is a finding, not a smaller ceiling.
+
+    A record that could drive the effective ceiling below the constant would
+    be a second place ceilings are set, and `tools/lint.py` is the first. The
+    lawful polarity is banking exactly what was admitted, which returns the
+    constant and reports nothing.
+    """
+    _record(tmp_path, _row(chars=-42))
+    findings = lint.check_admissions(tmp_path)
+    assert any("does not tighten a ceiling" in f for f in findings), findings
+    rows, _ = lint.read_admissions(tmp_path)
+    assert lint.ceiling(16_345, rows, "always-on-row") == (16_345, "budget is 16345")
+
+    _record(tmp_path, _row(), _row(chars=-42, item="banking what came back"))
+    assert lint.check_admissions(tmp_path) == []
+    rows, _ = lint.read_admissions(tmp_path)
+    assert lint.admitted(rows, "always-on-row") == (0, 2)
+
+
+def test_a_stale_admission_is_reported_in_both_polarities():
+    """What stops an admission becoming a waiver.
+
+    Space an outflow frees under an admitted ceiling would otherwise sit as
+    room nobody argued for -- the refill `routing.md` names, arriving through
+    the mechanism built to admit needed items. The unlawful arm is a surface
+    back under its constant with characters still charged; the two lawful arms
+    are a surface still over it, where the admission is what is holding the
+    tree green, and nothing admitted at all.
+    """
+    rows = [_row()]
+    stale = lint.stale_admission("the row", 16_300, 16_345, rows, "always-on-row")
+    assert len(stale) == 1, stale
+    assert stale[0].startswith("admission-stale:"), stale
+    assert "chars -42" in stale[0], stale[0]
+    assert lint.ADMISSIONS in stale[0], stale[0]
+
+    assert lint.stale_admission("the row", 16_346, 16_345, rows,
+                                "always-on-row") == [], (
+        "a surface still over its constant was told to bank the admission "
+        "holding it green")
+    assert lint.stale_admission("the row", 1, 16_345, [], "always-on-row") == [], (
+        "a tree with nothing admitted was asked to bank something")
+
+
+def test_the_always_on_ceiling_is_the_constant_plus_what_is_admitted(monkeypatch):
+    """The wiring at the site, on the tree the quantity is composed from.
+
+    `read_admissions` is patched rather than the repository's own record
+    written to: the record is append-only doctrine, and a test that appended
+    to it would leave the tree carrying an admission for work nobody did. What
+    the patch stands in for is tested directly above, on fixture trees.
+
+    Three arms, because two would not separate the claims. A surface over the
+    constant but under the effective ceiling passes -- that is the needed item
+    landing. One character past the effective ceiling reds -- that is the
+    admission buying its own item and no room for the next one. And the
+    finding states the composition, or a reader is told a ceiling nobody set.
+    """
+    largest = _largest_row()
+    monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", largest - 100)
+    assert lint.check_always_on_budget(lint.ROOT), (
+        "the arm this test rests on is not over its ceiling")
+
+    monkeypatch.setattr(lint, "read_admissions",
+                        lambda root: ([_row(chars=100)], []))
+    assert lint.check_always_on_budget(lint.ROOT) == [], (
+        "an admission sized to the overage did not admit the item")
+
+    monkeypatch.setattr(lint, "read_admissions",
+                        lambda root: ([_row(chars=99)], []))
+    findings = lint.check_always_on_budget(lint.ROOT)
+    assert findings, "one character past the effective ceiling was admitted"
+    assert any(f"{largest - 100} plus 99 admitted" in f for f in findings), findings
+
+
+def test_the_ceiling_findings_carry_the_fourth_answer_and_no_longer_only_a_raise(
+        monkeypatch):
+    """The route reaches the session on the artifact it already has open.
+
+    The `authoring` cell prefers the rule whose compliance is visible on what
+    its reader is producing; the lint output is that artifact at a ceiling. So
+    the row finding names the record, the fields, and that the constant does
+    not move -- and it no longer offers raising the ceiling, which is the
+    answer #334 was filed about.
+    """
+    monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", 1_000)
+    findings = lint.check_always_on_budget(lint.ROOT)
+    assert findings, findings
+    joined = " ".join(findings)
+    assert lint.ADMISSIONS in joined, joined
+    for field in lint.ADMISSION_FIELDS:
+        assert field in joined, (field, joined)
+    assert "an admission buys its own item and no room for the next one" in joined
+    assert "raising this ceiling as a recorded decision" not in joined, (
+        "the finding still names the answer this mechanism replaced")
+
+
+def test_the_description_ceiling_admits_and_the_name_cap_does_not(tmp_path,
+                                                                 monkeypatch):
+    """Only a share of what a session loads is admissible.
+
+    The 64-character `name` cap bounds the identifier the runtime addresses
+    the cell by, not a share of the always-on surface, so no key names it and
+    an admission cannot relax it. The description is the other polarity: it is
+    charged to every session and an admission does relax it.
+    """
+    make_clean_tree(tmp_path)
+    cell = tmp_path / "skills" / "example-skill"
+    long_description = "A fixture cell. " * 50
+    (cell / "SKILL.md").write_text(
+        "---" + NL + "name: example-skill" + NL
+        + f"description: {long_description}" + NL + "---" + NL + NL + "# x" + NL,
+        encoding="utf-8")
+    roster.write(tmp_path)
+    rel = "skills/example-skill/SKILL.md"
+
+    findings = [f for f in lint.check_cell_frontmatter(tmp_path) if "description" in f]
+    assert findings, "an oversized description reported nothing"
+    assert lint.ADMISSIONS in findings[0], findings[0]
+
+    _record(tmp_path, _row(chars=len(long_description.strip()) - 700 + 1,
+                           ceilings=[f"description:{rel}"]))
+    assert [f for f in lint.check_cell_frontmatter(tmp_path)
+            if "description" in f] == [], "the admission did not admit it"
+
+    # The name cap takes no admission, however the row is written.
+    (cell / "SKILL.md").write_text(
+        "---" + NL + "name: " + "n" * 80 + NL
+        + "description: A fixture cell." + NL + "---" + NL + NL + "# x" + NL,
+        encoding="utf-8")
+    _record(tmp_path, _row(chars=1_000, ceilings=[f"description:{rel}"]))
+    findings = [f for f in lint.check_cell_frontmatter(tmp_path)
+                if "'s name is" in f]
+    assert findings, "the name cap was relaxed by an admission, and it is not admissible"
+
+
+def test_the_cell_body_ceiling_admits_in_both_polarities(tmp_path, monkeypatch):
+    """The third site, wired the same way and probed the same way."""
+    make_clean_tree(tmp_path)
+    rel = "skills/example-skill/SKILL.md"
+    body = "x" * 400
+    _write_cell(tmp_path / "skills" / "example-skill", body + NL)
+    monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {rel: 100})
+    size = len(lint._frontmatterless(
+        (tmp_path / rel).read_text(encoding="utf-8")))
+
+    findings = [f for f in lint.check_doctrine(tmp_path)
+                if f.startswith("doctrine-budget:")]
+    assert findings, "an oversized body reported nothing"
+    assert lint.ADMISSIONS in findings[0], findings[0]
+
+    _record(tmp_path, _row(chars=size - 100, ceilings=[f"body:{rel}"]))
+    assert [f for f in lint.check_doctrine(tmp_path)
+            if f.startswith("doctrine-budget:")] == [], "the admission did not admit it"
+
+    _record(tmp_path, _row(chars=size - 101, ceilings=[f"body:{rel}"]))
+    assert [f for f in lint.check_doctrine(tmp_path)
+            if f.startswith("doctrine-budget:")], (
+        "one character past the effective ceiling was admitted")
+
+
+def test_the_repository_admits_nothing_today(tmp_path):
+    """The record lands empty, and a row here is a claim about real work.
+
+    Not decoration: every arm above proves the mechanism admits, and none of
+    them proves this tree is not quietly leaning on it. A row appearing here
+    without an issue behind it is exactly the refill the shape refuses, and
+    this is the surface that would say so.
+    """
+    rows, findings = lint.read_admissions(lint.ROOT)
+    assert findings == [], findings
+    assert rows == [], (
+        "this repository is carrying admissions; each names the work that "
+        "required it, and this pin is where that is read", rows)

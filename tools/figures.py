@@ -382,6 +382,11 @@ def _always_on(read, cell_paths: list[str],
         # session happened to be in the other. [PR #278 review, M1]
         "repo_total": min(row["total"] for row in here),
         "adopter_total": adopter,
+        # Filled by `figure_always_on`, which has the root this composition
+        # does not: `always_on_at` reads a git revision through `read`, and a
+        # record read from the working tree would price a past surface against
+        # today's admissions. Absent, every renderer prices the constants
+        # alone, which is what a tree admitting nothing measures. [#334]
     }
 
 
@@ -412,9 +417,11 @@ def by_runtime(data: dict) -> str:
     `charter body N of M`; the replacement carried the sizes and dropped the
     bound. [#291]
     """
+    admitted = data.get("admitted", {}).get("always-on-row", 0)
     return "; ".join(
         f"{row['runtime']} {row['total']:,} of "
-        f"{lint.ALWAYS_ON_ROW_BUDGET_CHARS:,} = doctrine {row['doctrine']:,}"
+        f"{priced(lint.ALWAYS_ON_ROW_BUDGET_CHARS, admitted)}"
+        f" = doctrine {row['doctrine']:,}"
         f" + charter body {data['charter']:,}"
         f" + {row['entries']} name/description from {row['directory']}/"
         f" {row['roster']:,}"
@@ -444,11 +451,21 @@ def figure_always_on(root: Path) -> dict:
                                     is_roster_path(surface.directory))
          for surface in roster.SURFACES},
     )
+    # **Here rather than in `_always_on`.** That composition is shared with
+    # `always_on_at`, which reads a git revision; pricing a past surface
+    # against the working tree's record would report a ceiling that governed
+    # neither. The working tree's surface and the working tree's record are
+    # the pair that mean something together. [#334]
+    admissions, _ = lint.read_admissions(root)
+    data["admitted"] = {
+        key: lint.admitted(admissions, key)[0]
+        for key in ("always-on-row", "always-on-adopter")
+    }
     return {
         "name": "always-on surface",
         "value": (
             f"{by_runtime(data)}; an adopter {data['adopter_total']:,} of "
-            f"{lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,} = "
+            f"{priced(lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS, data['admitted']['always-on-adopter'])} = "
             f"charter body {data['charter']:,} + {data['cells']} cell "
             f"name/description {data['roster']:,}"
         ),
@@ -536,7 +553,26 @@ def always_on_at(root: Path, ref: str) -> dict[str, int]:
     return {row["runtime"]: row["total"] for row in data["here"]}
 
 
-def cell_budgets(rel_path: str) -> list[tuple[str, int]]:
+def priced(constant: int, extra: int) -> str:
+    """A ceiling as a reader must see it: the one in force, and its composition.
+
+    **The constant alone is not the ceiling once anything is admitted against
+    it**, and a surface printing the constant tells a session it has headroom
+    that a different number governs. The composition is printed rather than
+    the bare effective figure because the constant is what a later session
+    argues against and what `tools/lint.py` still holds -- an admission does
+    not move it, and a figure that hid it would make the two indistinguishable.
+
+    Silent when nothing is admitted, so every tree that has never admitted
+    anything renders exactly as it did before this existed. [#334]
+    """
+    if not extra:
+        return f"{constant:,}"
+    return f"{constant + extra:,} ({constant:,} plus {extra:,} admitted)"
+
+
+def cell_budgets(rel_path: str,
+                 admissions: list[dict] | None = None) -> list[tuple[str, int, int]]:
     """Every budget that governs one cell's body, named, or an empty list.
 
     **`CELL_BODY_BUDGET_CHARS` is not the only budget in view**, and treating
@@ -547,16 +583,26 @@ def cell_budgets(rel_path: str) -> list[tuple[str, int]]:
     that map. A cold seat settling this change's artifact caught the row that
     would have claimed otherwise. [#302]
 
-    Returns pairs rather than one number because the charter has two, and the
-    binding one is the smaller-headroom adopter total rather than the row a
-    reader reaches first.
+    Returns one entry per budget rather than one number because the charter
+    has two, and the binding one is the smaller-headroom adopter total rather
+    than the row a reader reaches first.
+
+    **Each entry carries the constant and what has been admitted against it,
+    apart.** The guard enforces their sum; a reader argues against the
+    constant. Collapsing them here would leave every surface unable to say
+    which of the two it was printing. `admissions` defaults to none charged,
+    which is what a caller with no record to hand means and what every tree
+    that has admitted nothing measures. [#334]
     """
+    rows = admissions or []
     own = lint.CELL_BODY_BUDGET_CHARS.get(rel_path)
     if own is not None:
-        return [("body", own)]
+        return [("body", own, lint.admitted(rows, f"body:{rel_path}")[0])]
     if rel_path == lint.CHARTER:
-        return [("always-on row", lint.ALWAYS_ON_ROW_BUDGET_CHARS),
-                ("adopter total", lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS)]
+        return [("always-on row", lint.ALWAYS_ON_ROW_BUDGET_CHARS,
+                 lint.admitted(rows, "always-on-row")[0]),
+                ("adopter total", lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS,
+                 lint.admitted(rows, "always-on-adopter")[0])]
     return []
 
 
@@ -583,6 +629,10 @@ def cell_body_rows(root: Path) -> list[dict]:
     guard that enforces it.
     """
     rows = []
+    # Read once for the whole table rather than per cell: one read is one
+    # answer, and a per-cell read could price two rows of one table against
+    # two states of the record.
+    admissions, _ = lint.read_admissions(root)
     for name, source in roster.cell_sources(root).items():
         rel = f"{source}/{name}/{roster.CELL_FILE}"
         text = (root / rel).read_text(encoding="utf-8", errors="replace")
@@ -591,7 +641,7 @@ def cell_body_rows(root: Path) -> list[dict]:
             "source": source,
             "path": rel,
             "body": len(lint._frontmatterless(text)),
-            "budgets": cell_budgets(rel),
+            "budgets": cell_budgets(rel, admissions),
         })
     rows.sort(key=lambda row: (-row["body"], row["name"]))
     return rows
@@ -627,14 +677,17 @@ def cell_body_block(rows: list[dict]) -> str:
             # comfortable among five-figure neighbours; this is otherwise the
             # only body-against-ceiling surface here that omits the difference.
             # Both terms are guard-backed, so no number is invented. [#302]
-            against = f"of {budgets[0][1]:,}, headroom {budgets[0][1] - row['body']:,}"
+            label, constant, extra = budgets[0]
+            against = (f"of {priced(constant, extra)}, "
+                       f"headroom {constant + extra - row['body']:,}")
         else:
             # **Shared, and no per-cell headroom stated.** These budgets price
             # the doctrine files, this body and every description together, so
             # a bare "of 16,345" beside a body of 5,851 would read as ten
             # thousand characters of room where the shared headroom is a few
             # hundred -- the same defect as "no budget", one step gentler.
-            named = ", ".join(f"{label} {value:,}" for label, value in budgets)
+            named = ", ".join(f"{label} {priced(constant, extra)}"
+                              for label, constant, extra in budgets)
             against = f"shared with {named}"
         lines.append(f"  {row['name']:<{width}}  {row['body']:>7,}  {against}")
     return chr(10).join(lines)
