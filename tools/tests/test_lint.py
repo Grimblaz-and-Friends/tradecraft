@@ -4949,9 +4949,12 @@ def test_raising_the_row_budget_admits_a_relocation_it_should_refuse(tmp_path):
     # the first tree carrying a lawful admission it asserted "the tree already
     # exceeds its own budget" about a tree that exceeds only its constant and
     # sits under its ceiling, which is the state that change exists to create.
-    # Re-founded it stops being a casualty and becomes the only instrument
-    # holding the purpose statement's no-unargued-headroom clause: an
-    # over-sized admission widens the ceiling past one unit and reds here.
+    # Re-founded it stops being a casualty: an over-sized admission widens
+    # the ceiling past one unit and reds here. That bound is what it holds
+    # and the whole of it -- it reads `always-on-row` alone and stays silent
+    # below a thousand characters, so it does not reach M5's own 226-character
+    # incident nor the 458 the cycle-one look measured. Nothing yet measures
+    # a small surplus on any key. [PR #346 cycle one, P6]
     admissions, _ = lint.read_admissions(lint.ROOT)
     allowed, _phrase = lint.ceiling(
         lint.ALWAYS_ON_ROW_BUDGET_CHARS, admissions, "always-on-row")
@@ -5621,14 +5624,25 @@ def test_the_always_on_ceiling_is_the_constant_plus_what_is_admitted(monkeypatch
     """
     largest = _largest_row()
     monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", largest - 100)
-    # **The control arm reads an empty record, not the live one.** This pin
-    # patches the constant and then the record; without patching the record
-    # here too, the first arm inherits whatever this repository has actually
-    # admitted and the "not over its ceiling" assertion fails on a tree that
-    # is merely admitted -- the same defect the batch re-founded three other
-    # pins for, in a pin this change itself added. Found by re-running the
-    # criterion-1 falsifier under all three key shapes, which the round-one
-    # ruling made binding on this batch.
+    # **This pin is about the row ceiling, so the adopter total is lifted out
+    # of the way rather than left to whatever the tree is doing.**
+    # `check_always_on_budget` enforces both, and the arms below patch
+    # `read_admissions` wholesale -- which throws away any lawful adopter
+    # admission the real record carries, so on a tree whose adopter total is
+    # over its constant the "did not admit the item" assertion redded against
+    # a green lint. That is the M2 signature living inside the pin written to
+    # close M2: a lawful admission, a green lint, a red required check. It
+    # survived the first fix batch because the round-one ruling's binding
+    # check named three admission key shapes where `ADMISSION_BARE_KEYS` plus
+    # `ADMISSION_KEY_PREFIXES` enumerate **four**, and `always-on-adopter` was
+    # the one nobody ran. The adopter key has its own pin below.
+    # [PR #346 cycle one, O1]
+    monkeypatch.setattr(lint, "ALWAYS_ON_ADOPTER_BUDGET_CHARS", 10 ** 9)
+    # **The control arm reads an empty record, not the live one.** Without
+    # patching the record here too, the first arm inherits whatever this
+    # repository has actually admitted and the "not over its ceiling"
+    # assertion fails on a tree that is merely admitted -- the same defect the
+    # batch re-founded three other pins for, in a pin this change added.
     monkeypatch.setattr(lint, "read_admissions", lambda root: ([], []))
     assert lint.check_always_on_budget(lint.ROOT), (
         "the arm this test rests on is not over its ceiling")
@@ -5643,6 +5657,48 @@ def test_the_always_on_ceiling_is_the_constant_plus_what_is_admitted(monkeypatch
     findings = lint.check_always_on_budget(lint.ROOT)
     assert findings, "one character past the effective ceiling was admitted"
     assert any(f"{largest - 100} plus 99 admitted" in f for f in findings), findings
+
+
+def test_the_adopter_total_admits_on_its_own_key(monkeypatch):
+    """The fourth admission key shape, which nothing exercised until cycle one.
+
+    `check_always_on_budget` enforces two ceilings and `ADMISSION_BARE_KEYS`
+    names one key for each, but every validation this change ran -- the fix
+    batch's and the post-fix look's alike -- covered `always-on-row`,
+    `body:` and `description:` and stopped. The adopter total was the fourth,
+    and the defect it hid is O1 above. This is the arm that would have caught
+    it: the adopter over its constant, admitted on its own key, nothing
+    charged to the row.
+
+    Both polarities, and the row is lifted out of the way for the mirror of
+    the reason the sibling lifts the adopter.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "repo_figures_adopter", lint.ROOT / "tools" / "figures.py")
+    figures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(figures)
+    adopter = figures.figure_always_on(lint.ROOT)["data"]["adopter_total"]
+
+    monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", 10 ** 9)
+    monkeypatch.setattr(lint, "ALWAYS_ON_ADOPTER_BUDGET_CHARS", adopter - 100)
+    monkeypatch.setattr(lint, "read_admissions", lambda root: ([], []))
+    findings = lint.check_always_on_budget(lint.ROOT)
+    assert any("adopter total" in f for f in findings), (
+        "the adopter total over its constant reported nothing", findings)
+
+    monkeypatch.setattr(
+        lint, "read_admissions",
+        lambda root: ([_row(chars=100, ceilings=["always-on-adopter"])], []))
+    assert lint.check_always_on_budget(lint.ROOT) == [], (
+        "an admission on the adopter key did not admit the adopter total")
+
+    monkeypatch.setattr(
+        lint, "read_admissions",
+        lambda root: ([_row(chars=99, ceilings=["always-on-adopter"])], []))
+    findings = lint.check_always_on_budget(lint.ROOT)
+    assert findings, "one character past the effective adopter ceiling was admitted"
+    assert any(f"{adopter - 100} plus 99 admitted" in f for f in findings), findings
 
 
 def test_the_ceiling_findings_carry_the_fourth_answer_and_no_longer_only_a_raise(
@@ -5673,8 +5729,18 @@ def test_the_ceiling_findings_carry_the_fourth_answer_and_no_longer_only_a_raise
     # to be in them.
     assert len([f for f in findings if f.startswith("always-on-budget:")]) >= 2, (
         "this pin needs the two-runtime shape to mean what it says", findings)
-    assert "One item is one row, however many findings report it" in joined, joined
-    assert "Size chars to the overage" in joined, joined
+    # **One row per ceiling, said where the two findings are read.** The
+    # first wording said "one item is one row, however many findings report
+    # it", generalising M5's two-findings-one-ceiling incident to the
+    # two-ceiling case it does not fit: an item over two ceilings by
+    # different amounts has no single lawful `chars`, and following that
+    # sentence left 458 characters of permanent unargued headroom on a green
+    # lint. An experience session's consumer met the same shape and trimmed
+    # its prose to escape it, which is the one move this route forbids by
+    # name. [PR #346 cycle one, P1]
+    assert "One row per ceiling" in joined, joined
+    assert "one row however many findings name that same ceiling" in joined, joined
+    assert "Size each row's chars to that ceiling's own overage" in joined, joined
     assert "charge only the ceilings the item actually exceeds" in joined, joined
 
 
@@ -5755,8 +5821,8 @@ def test_every_admission_this_repository_carries_names_real_work():
     seats of PR #346's panel and ruled by its terminal stage.
 
     What survives is the arm that was always real -- the record this
-    repository actually carries parses, which is the only place
-    `read_admissions` runs against `lint.ROOT` -- plus a shape assertion that
+    repository actually carries parses, which is the only place anything
+    asserts that the live record is readable -- plus a shape assertion that
     stays true as the record grows. `issue` is the field that separates an
     admission from a waiver, so the shape held is that it resolves to a piece
     of work: a positive integer, `#N`, or a URL ending in one.

@@ -175,7 +175,7 @@ Checks:
     The record is what lets a needed item land over a ceiling without the
     constant moving; a row this cannot read grants nothing. The re-arming
     finding, which fires when a surface comes back to or below its constant
-    with characters still charged, belongs to checks 10, 4 and 24 -- the
+    with characters still charged, belongs to checks 9, 4 and 24 -- the
     three that know each surface's size -- and not to this one (#334).
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
@@ -339,10 +339,11 @@ POINTER_BUDGET_CHARS = 500
 # and the owner ruled a budget follows the split. The basis is the size the
 # split landed at plus about one bullet, which
 # `python tools/figures.py --cell skills/adversarial-review/SKILL.md
-# --cell-budget 9000` prices against this constant on whatever tree you are on,
-# or against the constant plus what `docs/admissions.jsonl` charges to that
-# body, which is what `check_doctrine` enforces and what that command
-# reconciles against.
+# --cell-budget <the ceiling in force>` prices that cell on whatever tree you
+# are on. The value to pass is this constant plus what `docs/admissions.jsonl`
+# charges to that body -- which is what `check_doctrine` enforces and what
+# that command reconciles against, so passing the bare constant on a tree
+# carrying a body admission is refused rather than answered.
 # That margin is deliberate in both directions: at zero headroom every
 # reword of the body is a constant change, which turns the cap into noise
 # nobody reads, while a section-sized regrowth cannot fit under it. The number
@@ -382,13 +383,14 @@ CELL_BODY_BUDGET_CHARS = {
 # an admission does not. An earlier draft of this comment also claimed
 # "ceilings ratchet to just under their limit and stay there", and that claim
 # is withdrawn -- `ratchet` is D-184's word for the opposite move, lowering a
-# constant to what the tree measures, and the census the review ran falsifies
-# the empirical claim anyway: twelve of thirteen description ceilings carry
-# more than fifty characters of headroom. What is true of this tree is that
-# the surfaces which actually bind sit tight, and `python tools/lint.py`
-# prints which those are on whatever tree you are on. The history of what
+# constant to what the tree measures, and the empirical claim is falsified by
+# what `python tools/lint.py` prints on any run: `authoring`'s body sits a
+# fifth below its ceiling, and most cell descriptions carry room. What is
+# true of this tree is that the surfaces which actually bind sit tight, and
+# that same command says which those are. The history of what
 # happened to headroom after a raise here is on #260 and is not checkable
-# from inside this repository. It adds exactly the characters its row names, spent by the
+# from inside this repository. An admission adds exactly the characters
+# its row names, spent by the
 # item that row names, and leaves the next addition with nothing. So the item
 # lands and the pressure survives, which is the pair the comment on
 # `ALWAYS_ON_ROW_BUDGET_CHARS` says no single value can hold: headroom and the
@@ -497,10 +499,6 @@ def read_admissions(root: Path) -> tuple[list[dict], list[str]]:
                 f"all of {', '.join(ADMISSION_FIELDS)}, and it admits nothing "
                 f"until it does")
             continue
-        # `is None` explicitly: `str(None)` is "None", which is not blank, so
-        # a JSON null issue passed a truthiness check and admitted. Found by
-        # the null arm of the malformed-row pin, which is why that pin carries
-        # one.
         if _admission_blank(row["issue"]):
             findings.append(
                 f"{where} names no issue. An admission says which work "
@@ -585,15 +583,18 @@ def admit_route(key: str) -> str:
         f"rather than cutting, merging or raising: append ONE row to "
         f"{ADMISSIONS} carrying date, issue (the work that required it), "
         f'ceilings ["{key}"], chars, item, and outflow (what moved, what was '
-        f"deleted, or why nothing had a cheaper home). **One item is one "
-        f"row, however many findings report it** -- both runtime rows cross "
-        f"one ceiling together, and a row per finding charges the item twice "
-        f"and leaves the surplus as headroom for the next addition. **Size "
-        f"chars to the overage**, the largest where several findings name one "
-        f"ceiling, and charge only the ceilings the item actually exceeds -- "
-        f"a ceiling still under its constant reds as a stale admission. The "
-        f"constant does not move: an admission buys its own item and no room "
-        f"for the next one")
+        f"deleted, or why nothing had a cheaper home). **One row per "
+        f"ceiling, and one row however many findings name that same "
+        f"ceiling** -- both runtime rows cross the row ceiling together, so a "
+        f"row apiece there charges the item twice and leaves the surplus as "
+        f"headroom for the next addition; but an item exceeding two different "
+        f"ceilings takes a row for each, because a row carries one chars for "
+        f"every key it names and two ceilings are seldom over by the same "
+        f"amount. **Size each row's chars to that ceiling's own overage**, "
+        f"the largest where several findings name it, and charge only the "
+        f"ceilings the item actually exceeds -- a ceiling still under its "
+        f"constant reds as a stale admission. The constant does not move: an "
+        f"admission buys its own item and no room for the next one")
 
 
 def stale_admission(label: str, size: int, constant: int,
@@ -4459,8 +4460,8 @@ def check_always_on_budget(root: Path) -> list[str]:
                 f"*description* over budget can do neither without ceasing "
                 f"to be a trigger, so it is answered by retiring a cell or "
                 f"merging two. {admit_route(row_key)}. What to do at a "
-                f"ceiling is skills/authoring/SKILL.md's -- whose outflow names "
-                f"a fourth answer of its own, deleting the rule, "
+                f"ceiling is skills/authoring/SKILL.md's -- whose own list of moves "
+                f"ends in a fourth answer, deleting the rule, "
                 f"which is a different move from admitting and is "
                 f"reached only against evidence that the rule does "
                 f"not bind"
@@ -4674,8 +4675,9 @@ def admission_note() -> str:
     states what to do at a ceiling and lets the reader see where it stands
     from the figures above it.
     """
-    keys = ", ".join(ADMISSION_BARE_KEYS) + ", or " + " or ".join(
-        prefix + "<path to SKILL.md>" for prefix in ADMISSION_KEY_PREFIXES)
+    forms = list(ADMISSION_BARE_KEYS) + [
+        prefix + "<path to SKILL.md>" for prefix in ADMISSION_KEY_PREFIXES]
+    keys = ", ".join(forms[:-1]) + ", or " + forms[-1]
     return (
         f"at a ceiling on a share of what a session loads -- an always-on "
         f"row, the adopter total, a cell description, a budgeted cell body "
