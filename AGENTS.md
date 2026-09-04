@@ -4,7 +4,7 @@
 
 @skills/charter/SKILL.md
 
-**Read `skills/charter/SKILL.md` now, before acting** — the line above imports it where the runtime supports imports, and Codex has none, so the instruction is what carries it there. It carries the binding half of this practice — authority and which decisions are the owner's, the two ceremony moments, review, and where content goes — and it is what this repository ships to anyone who adopts the practice. This file adds only what must bind before a cell fires; the cells below carry the rest, and where this file and the charter touch, the charter states the rule.
+**Read `skills/charter/SKILL.md` now, before acting** — the line above imports it where the runtime supports imports, and Codex has none, so the instruction is what carries it there. It carries the binding half of this practice — authority and where the decisions that are the owner's are settled, the two ceremony moments, review, and where content goes — and it is what this repository ships to anyone who adopts the practice. This file adds only what must bind before a cell fires; the cells below carry the rest, and where this file and the charter touch, the charter states the rule.
 
 ## Worth doing
 
