@@ -1,6 +1,6 @@
 # Ending the review
 
-**Loaded when** you are closing a review: writing its final report, ruling whether another pass runs, appending its row to the review index, or ruling `record` and writing the entry. Nothing before the terminal ruling needs it.
+**Loaded when** you are closing a review: writing its final report, appending its row to the review index, or ruling `record` and writing the entry. Nothing before the terminal ruling needs it.
 
 The final report, posted to the PR or issue, carries:
 
