@@ -368,7 +368,18 @@ def _always_on_line(root: Path | None = None, base: str | None = None) -> str:
     return (
         f"Always-on surface here, per runtime: **{figures.by_runtime(data)}**"
         f"{movement}. **{data['adopter_total']:,} of "
-        f"{figures.lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,}** from this practice "
+        # **Priced, like the rows beside it.** The per-runtime half of this
+        # sentence inherited the admitted composition for free by routing
+        # through `by_runtime`; this half interpolated the constant and did
+        # not, so on a tree carrying an adopter admission it rendered a
+        # printed exceedance -- `11,547 of 11,508` -- while the required lint
+        # check was green, in the same sentence whose first half was correct.
+        # Four of PR #346's five seats found it independently. Same class as
+        # the two incidents this file already records at PR #210 M1 and
+        # PR #278 M13: a renderer stating a number its sentence did not
+        # compose. [#334]
+        f"{figures.priced(figures.lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS, data['admitted']['always-on-adopter'])}** "
+        f"from this practice "
         f"for an adopter. Against their ceilings: "
         + ", ".join(f"{label} {size:,} of {budget:,}" for label, size, budget in priced)
         + "."
