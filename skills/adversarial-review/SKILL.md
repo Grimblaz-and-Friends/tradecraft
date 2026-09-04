@@ -21,7 +21,7 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 
 - **Routine change**: one adversarial pass that reads the artifact **cold**, then defense — the terminal stage on this lane — then executable re-validation of fixes.
 - **Substantial artifact** (newly written foundational prose, new scripts, high blast radius — and when in doubt, this lane): the four-seat panel, then defense, then judge, then re-validation. **Five where the artifact is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both, the common case here and not a widening. Width beyond the applicable count is bought by declared risk.
-- **The report records which lane was chosen and why, in one line** — an unrecorded shape choice can never be audited later.
+- **The report records which lane was chosen and why, in one line** — an unrecorded shape choice can never be audited later. **What earlier reviews cost is evidence for this choice and never a ceiling to come under** — a review that needed its cost was worth it.
 
 ## The pipeline, and where each stage's depth lives
 
