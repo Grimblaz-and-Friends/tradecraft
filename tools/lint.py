@@ -66,11 +66,16 @@ Checks:
      because a PR deleting the job touches no doctrine file [D-81].
   11. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review. Past the cutover: date, artifact, lane, the
-     sustained highs named, the model and runtime that staffed it, report URL,
-     and no arithmetic — the key set is closed. Before it: per-seat counts,
-     what came of the findings, and the split by consequence shape, which
-     reconciles against the disposition counts and is the only cross-total on
-     the row that is sound.
+     sustained highs named — each with the surface it hit, past a later
+     boundary — the model and runtime that staffed it, the external pass's
+     outcome, what the review cost to run, report URL, and no arithmetic over
+     the findings, the key set being closed. Before the cutover: per-seat
+     counts, what came of the findings, and the split by consequence shape,
+     which reconciles against the disposition counts and is the only
+     cross-total on the row that is sound. Which of those a row owes is a fact
+     about *this* record: the file is identified by the sha256 of its first
+     non-blank row's bytes, trailing whitespace stripped,
+     and any other file is held to the current shape throughout.
  12. decision index: every decision entry has a row in the log's index, and
      every row a file.
  13. entry references: every path reference and relative link a decision entry
@@ -198,6 +203,7 @@ from __future__ import annotations
 
 import ast
 import datetime
+import hashlib
 import importlib.util
 import json
 import re
@@ -206,6 +212,7 @@ import sys
 import traceback
 import unicodedata
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -871,7 +878,7 @@ REVIEW_FIELDS = {"date", "artifact", "lane", "report"}
 REVIEW_LANES = {"panel", "routine"}
 SEAT_COUNTS = ("raw", "merged", "sustained", "high")
 
-# The row stops carrying arithmetic here. Every count on it was hand-totalled
+# The row stops carrying arithmetic over the findings here. Every count on it was hand-totalled
 # and reconciled by hand into a file nobody may edit, and that is this index's
 # whole defect record: two
 # open issues about values no stage produces, plus reconciliation prose inside
@@ -901,7 +908,7 @@ COUNTING_FIELDS = ("seats", "dispositions", "facing")
 QUALITATIVE_FIELDS = frozenset(
     {
         "date", "artifact", "lane", "report", "highs", "staffing", "external",
-        "notes",
+        "notes", "cost",
     }
 )
 
@@ -958,6 +965,152 @@ REVIEW_ROWS_GRANDFATHERED = 20
 # than one moving constant -- raising a single one would silently un-oblige
 # every row between the two boundaries, in a file nobody may edit.
 REVIEW_ROWS_FACING_GRANDFATHERED = 31
+
+# What the review cost to run, and where each sustained high landed. Both
+# arrive at the same boundary because one close writes both, and the value is
+# the file's row count when this landed.
+#
+# **`cost` is not the arithmetic the cutover retired.** That arithmetic was
+# over the *findings* -- raw/merged/sustained/high, hand-totalled, reconcilable
+# by nothing. These two integers are facts about the run, which is the same
+# ground `staffing` survived the cutover on: they are read off the figures each
+# dispatch returns, never estimated and never re-derived from a transcript. The
+# lane heuristic's own rule promises an audit ("an unrecorded shape choice can
+# never be audited later") that, with nothing recorded, could only ever be
+# answered qualitatively -- the reason a lane was chosen is in the report every
+# row already links; what it cost is nowhere.
+# [#357]
+REVIEW_ROWS_COST_AND_TARGET = 74
+# `subagent_tokens` may be null and `dispatches` may not: a runtime that does
+# not report per-dispatch tokens must be able to abstain, while the count of
+# dispatches is available to every runtime that made one. Null is an
+# abstention claiming nothing; zero is the claim that no subagent ran.
+COST_FIELDS = ("dispatches", "subagent_tokens")
+COST_NULLABLE = frozenset({"subagent_tokens"})
+# **`dispatches` is positive, not merely non-negative.** Every lane this
+# practice defines is staffed by fresh dispatches -- the routine lane by a cold
+# pass and a defense, the panel lane by four or five seats, a defense and a
+# judge -- so a completed review that made none of them is not a review that
+# ran. Zero was lawful until an external pass found it, and it was the shape
+# that made `{"dispatches": 0, "subagent_tokens": 500000}` -- no subagent ran,
+# and here is half a million tokens from the subagents that did not -- pass
+# clean into a record nobody may correct. [PR #365 review, M16 + external]
+COST_POSITIVE = frozenset({"dispatches"})
+
+# A sustained high stops being a bare string and carries the surface it hit.
+# Booked per high rather than as counts, because counts over findings are
+# exactly what could never be reconciled -- `facing` is that failure on this
+# record -- re-derive with
+#   python -c "import json;print([(i, r['date']) for i, r in enumerate(map(json.loads, open('docs/reviews.jsonl', encoding='utf-8'))) if 'facing' in r])"
+# whose denominator grows with every append. A label riding with
+# the text it describes cannot fail to reconcile, and the list's length is
+# still what answers "how many highs" [D-185].
+HIGH_FIELDS = ("high", "target")
+# Decided in this order, the first match governing, which is what makes the
+# three a partition rather than three overlapping enumerations: `record` is
+# this change's own paperwork and is tested first because the two of those
+# sites that are in the tree live in the repo-only zone; `shipped` is what an adopter installs; `repo` is the
+# residual, so every site in the tree has a lawful label.
+HIGH_TARGETS = ("record", "shipped", "repo")
+
+# Every boundary above is a fact about ONE record -- this repository's -- and
+# a guard that applied them to any file named `docs/reviews.jsonl` demanded the
+# retired counting shape from the first row of a tree whose index has not
+# started. Two experience-session consumers hit that independently and both
+# refused to clear the red the way the message asked, because clearing it meant
+# inventing counts into a record nobody may correct. [#268]
+#
+# The file is identified by the exact bytes of its first non-blank row -- the
+# sha256 of that line, trailing whitespace stripped, encoded UTF-8. Row 0's
+# `artifact` was rejected as the sentinel: it is `pr-74`, which no other
+# repository is prevented from writing, and `artifact` values are not even
+# unique within this file (`pr-156` appears twice). Records here are
+# append-only, so row 0's bytes are as stable as its name and far harder to
+# collide with.
+REVIEW_INDEX_ORIGIN_SHA256 = (
+    "ca5ef3bfdf26935a852b059c880aa8e2f7211b6e07d272e4fab6aa24394c3eef"
+)
+
+
+class ReviewBounds(NamedTuple):
+    """Which rows each schema boundary exempts, for the file in hand.
+
+    Every field is a row count: rows before it are grandfathered against that
+    schema. `FOREIGN` zeroes all five, which holds every row of a file that is
+    not this record to the current shape -- the one the shipped material
+    describes -- rather than to a shape it abolished.
+    """
+
+    qualitative: int
+    external: int
+    grandfathered: int
+    facing: int
+    cost: int
+
+
+REVIEW_BOUNDS_FOREIGN = ReviewBounds(0, 0, 0, 0, 0)
+
+
+def _this_record_bounds() -> ReviewBounds:
+    """Composed on each call rather than frozen at import.
+
+    The five constants above stay the single statement of where each schema
+    begins; a snapshot taken at import would be a sixth place the numbers live,
+    and the first edit to one of them would leave the other five disagreeing
+    silently.
+    """
+    return ReviewBounds(
+        qualitative=REVIEW_ROWS_QUALITATIVE,
+        external=REVIEW_ROWS_EXTERNAL_QUALITATIVE,
+        grandfathered=REVIEW_ROWS_GRANDFATHERED,
+        facing=REVIEW_ROWS_FACING_GRANDFATHERED,
+        cost=REVIEW_ROWS_COST_AND_TARGET,
+    )
+
+
+def _rows_past(boundary: int) -> str:
+    """How a message names the rows a schema obliges.
+
+    A boundary of zero is every row -- the ordinary state of any tree that is
+    not this record -- and "rows past the first 0" is a sentence a consumer has
+    to decode before it can act. **Both branches read as a plural noun phrase**,
+    so every call site takes a plural verb: a first draft returned "every row"
+    and forced the singular, which fixed the zero branch's grammar by breaking
+    the branch this repository's own record always takes. The one message #268 records a consumer
+    refusing to act on was this guard's, so its wording is load-bearing.
+    """
+    return "all rows" if boundary == 0 else f"rows past the first {boundary}"
+
+
+def _review_index_is_this_record(first_row_line: str | None) -> bool:
+    """Whether the file in hand is this repository's own review index.
+
+    Answered separately from the boundaries rather than read back off them: the
+    two are not the same question, and a value comparison against an all-zero
+    `ReviewBounds` conflates a foreign file with this record under boundaries a
+    test has patched to zero. That conflation fired the unrecognised-record
+    diagnostic on two passing tests when this was written the short way.
+    """
+    if first_row_line is None:
+        return False
+    digest = hashlib.sha256(first_row_line.rstrip().encode("utf-8")).hexdigest()
+    return digest == REVIEW_INDEX_ORIGIN_SHA256
+
+
+def _review_index_bounds(first_row_line: str | None) -> ReviewBounds:
+    """This record's boundaries, or none at all.
+
+    `None` for a file with no non-blank row -- there is nothing to grandfather
+    and nothing to check either. Any other first row that is not this record's
+    own gets the foreign bounds, deliberately including a truncated copy of
+    this file: a record that lost its first row was mutated, which this
+    repository forbids, and holding what remains to the current shape is the
+    safer of the two wrong answers.
+    """
+    if _review_index_is_this_record(first_row_line):
+        return _this_record_bounds()
+    return REVIEW_BOUNDS_FOREIGN
+
 
 def _read_text(path: Path) -> str | None:
     """Decoded text, or None for binary content or a file that will not open.
@@ -1749,8 +1902,14 @@ def _not_a_mapping(row, where: str, findings: list) -> bool:
 def check_review_index(root: Path) -> list[str]:
     """One row per review: date, artifact, lane, the staffing, the report URL,
     and — past REVIEW_ROWS_QUALITATIVE — each sustained high named, plus the
-    external pass's qualitative outcome from its later boundary, in place of
-    the arithmetic the rows before it carry.
+    external pass's qualitative outcome from its later boundary and, past
+    REVIEW_ROWS_COST_AND_TARGET, what the review cost to run and the surface
+    each high hit, all in place of the arithmetic the rows before it carry.
+
+    **Every boundary below is a fact about one record**, identified by the
+    sha256 of its first row's bytes. In any other file all five are zero, so
+    every row is held to the current shape rather than to one the material
+    abolished. [#268]
 
     The row is written once when the review ends and never maintained after —
     it exists so process-weight questions are answerable when asked, from the
@@ -1762,12 +1921,20 @@ def check_review_index(root: Path) -> list[str]:
     index = root / "docs" / "reviews.jsonl"
     if not index.is_file():
         return findings
+    lines = index.read_text(encoding="utf-8", errors="replace").splitlines()
+    # Which boundaries apply is a fact about the file, settled once before any
+    # row is read: this record's own, or none at all for any other file.
+    first_row_line = next((line for line in lines if line.strip()), None)
+    recognised = _review_index_is_this_record(first_row_line)
+    bounds = _review_index_bounds(first_row_line)
     # Rows are counted, not lines: a blank line would otherwise shift every
     # row's position and with it which rows the schema obliges.
     row_index = -1
-    for lineno, line in enumerate(
-        index.read_text(encoding="utf-8", errors="replace").splitlines(), 1
-    ):
+    # Whether a file this guard does not recognise is nonetheless carrying this
+    # record's retired shape -- which is what a mangled copy of it looks like,
+    # and what a genuinely fresh index never does.
+    foreign_with_counting_rows = False
+    for lineno, line in enumerate(lines, 1):
         if not line.strip():
             continue
         # Position is the non-blank line's ordinal, counted before the parse: a
@@ -1783,16 +1950,47 @@ def check_review_index(root: Path) -> list[str]:
         except Exception as exc:  # noqa: BLE001 - report, never crash the lint
             findings.append(f"{where} is not valid JSON ({type(exc).__name__}: {exc})")
             continue
+        if not recognised and isinstance(row, dict) and "seats" in row:
+            foreign_with_counting_rows = True
         try:
-            _check_review_row(row, where, findings, row_index)
+            _check_review_row(row, where, findings, row_index, bounds)
         except Exception as exc:  # noqa: BLE001 - report, never crash the lint
             findings.append(
                 f"{where} could not be fully validated ({type(exc).__name__}: {exc})"
             )
+    if foreign_with_counting_rows:
+        # Said once, first, and only where the evidence points at a mangled
+        # copy of this record rather than at a record that has not started.
+        #
+        # **The failure this closes is #268's own, reproduced by its fix.** The
+        # identity gate reads the first row's bytes, so a BOM prepended by a
+        # text-mode write, a leading space, or a re-serialisation of that row
+        # makes this record foreign -- and every one of its landed rows is then
+        # held to the current shape, which on the real file is several hundred
+        # findings, each one ordering a session to edit a row it may not edit.
+        # Without this line nothing in that output says why. Scoped to files
+        # carrying `seats` because a genuinely fresh index has no such row and
+        # must stay clean: an unscoped diagnostic would red every adopter's
+        # tree, which is the defect, not the remedy.
+        # [PR #365 review, M9]
+        findings.insert(
+            0,
+            "review-index: docs/reviews.jsonl is not recognised as this "
+            "repository's own record, so every row in it is held to the "
+            "current shape -- yet it carries rows in the retired counting "
+            "shape, which is what a mangled copy of this record looks like. "
+            "The identity is the sha256 of the first non-blank row's bytes, "
+            "trailing whitespace stripped: check that row for a byte-order "
+            "mark, leading whitespace, or a re-serialisation. Every finding "
+            "below may be an artefact of that, and rows already landed are "
+            "never edited to clear one",
+        )
     return findings
 
 
-def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
+def _check_review_row(
+    row, where: str, findings: list, row_index: int, bounds: ReviewBounds
+) -> None:
     if _not_a_mapping(row, where, findings):
         return
     missing = REVIEW_FIELDS - set(row)
@@ -1817,45 +2015,53 @@ def _check_review_row(row, where: str, findings: list, row_index: int) -> None:
             f"{where} report '{row.get('report')}' must be an https URL to the "
             f"review's report -- the row points at the findings, it does not hold them"
         )
-    _check_row_shape(row, row_index, where, findings)
+    _check_row_shape(row, row_index, where, findings, bounds)
     if "seats" in row:
         _check_seats(row["seats"], where, findings)
     if "highs" in row:
-        _check_highs(row["highs"], where, findings)
-    _check_external(row, row_index, where, findings)
-    _check_dispositions_and_staffing(row, row_index, where, findings)
-    _check_facing(row, row_index, where, findings)
+        _check_highs(row["highs"], where, findings, row_index, bounds.cost)
+    _check_external(row, row_index, where, findings, bounds)
+    _check_cost(row, row_index, where, findings, bounds)
+    _check_dispositions_and_staffing(row, row_index, where, findings, bounds)
+    _check_facing(row, row_index, where, findings, bounds)
 
 
-def _check_row_shape(row, row_index: int, where: str, findings: list) -> None:
+def _check_row_shape(
+    row, row_index: int, where: str, findings: list, bounds: ReviewBounds
+) -> None:
     """Which of the two shapes this row's position obliges.
 
     Before the cutover a row carries per-seat counts; from it a row carries
     `highs` and no arithmetic at all. Both directions are checked, because a
     guard that only catches the missing field lets the retired shape back in.
+
+    In a file that is not this record `bounds.qualitative` is zero, so no row
+    is ever obliged to the retired shape and every row is forbidden it -- which
+    is the whole of the fresh-index fix. [#268]
     """
-    if row_index < REVIEW_ROWS_QUALITATIVE:
+    if row_index < bounds.qualitative:
         if "seats" not in row:
             findings.append(
                 f"{where} missing field 'seats' -- rows before the first "
-                f"{REVIEW_ROWS_QUALITATIVE} carry per-seat counts"
+                f"{bounds.qualitative} carry per-seat counts"
             )
         return
     if "highs" not in row:
         findings.append(
-            f"{where} missing field 'highs' -- rows past the first "
-            f"{REVIEW_ROWS_QUALITATIVE} name each sustained high instead of "
-            f"counting anything (a list of strings; empty where none was "
-            f"sustained)"
+            f"{where} missing field 'highs' -- {_rows_past(bounds.qualitative)} "
+            f"name each sustained high instead of counting anything: for "
+            f"{_rows_past(bounds.cost)} a list of {{'high': ..., 'target': ...}} "
+            f"mappings, before that a list of strings, and empty where none was "
+            f"sustained"
         )
     present = [f for f in COUNTING_FIELDS if f in row]
     if present:
         findings.append(
             f"{where} carries retired counting field(s) {', '.join(present)} -- "
-            f"rows past the first {REVIEW_ROWS_QUALITATIVE} carry no arithmetic: "
-            f"every count this row used to carry was totalled and reconciled by "
-            f"hand into a file nobody may edit. What the review was worth is in "
-            f"the report it links"
+            f"{_rows_past(bounds.qualitative)} carry no arithmetic over "
+            f"the findings: every count this row used to carry was totalled and "
+            f"reconciled by hand into a file nobody may edit. What the review "
+            f"was worth is in the report it links"
         )
     # Naming the three retired fields is not the rule -- the same totals under a
     # fresh key are the same frozen arithmetic, and passed clean until this
@@ -1864,19 +2070,28 @@ def _check_row_shape(row, row_index: int, where: str, findings: list) -> None:
     unknown = sorted(set(row) - QUALITATIVE_FIELDS - set(COUNTING_FIELDS))
     if unknown:
         findings.append(
-            f"{where} carries unknown key(s) {', '.join(unknown)} -- past the "
-            f"first {REVIEW_ROWS_QUALITATIVE} the row's key set is closed "
+            f"{where} carries unknown key(s) {', '.join(unknown)} -- for "
+            f"{_rows_past(bounds.qualitative)} the key set is closed "
             f"({', '.join(sorted(QUALITATIVE_FIELDS))}); arithmetic under a "
             f"fresh name is the arithmetic this cutover retired"
         )
 
 
-def _check_highs(highs, where: str, findings: list) -> None:
+def _check_highs(
+    highs, where: str, findings: list, row_index: int, cost_boundary: int
+) -> None:
     """Each sustained high, named. The list is the record and its length is the
     count, so nothing here is transcribed and nothing can fail to reconcile.
 
     An empty list is lawful and means what it says -- a review that sustained
     no high is a valid outcome, and the field cannot express it otherwise.
+
+    Past the cost-and-target boundary — which is zero in any file that is not
+    this record, so there every element — an element also carries where the high
+    landed, so it is a mapping rather than a bare string. Both element shapes
+    are checked in both directions: a bare string past the boundary is the
+    field silently failing to carry what it promises, and a mapping before it
+    is a schema arriving in a row that predates it.
     """
     if not isinstance(highs, list):
         findings.append(
@@ -1884,13 +2099,18 @@ def _check_highs(highs, where: str, findings: list) -> None:
             f"(got {type(highs).__name__})"
         )
         return
+    # One fact, derived once, and one already-rendered phrase: passing the
+    # boundary and the verdict about it as two parameters let a later edit
+    # desynchronise them, and a first repair fixed that here while reproducing
+    # it one call deeper. [PR #365 review, M38 + cycle 2, L10]
+    carries_target = row_index >= cost_boundary
+    boundary_phrase = _rows_past(cost_boundary)
     seen: dict[str, int] = {}
-    for position, high in enumerate(highs):
-        if not isinstance(high, str) or not high.strip():
-            findings.append(
-                f"{where} highs[{position}] must be a non-empty string naming "
-                f"one sustained high"
-            )
+    for position, element in enumerate(highs):
+        high = _high_text(
+            element, position, where, findings, carries_target, boundary_phrase
+        )
+        if high is None:
             continue
         key = " ".join(high.split()).casefold()
         if key in seen:
@@ -1904,13 +2124,137 @@ def _check_highs(highs, where: str, findings: list) -> None:
             seen[key] = position
 
 
-def _check_external(row, row_index: int, where: str, findings: list) -> None:
+def _high_text(
+    element,
+    position: int,
+    where: str,
+    findings: list,
+    carries_target: bool,
+    boundary_phrase: str,
+):
+    """The high's own text, or None where the element is not a lawful high.
+
+    Returning the text rather than a bool is what lets the caller's duplicate
+    check key on the high itself under either element shape -- the length of
+    the list is what this record answers "how many highs" with [D-185], so a
+    high named twice under a different label would inflate the only count the
+    row still makes.
+    """
+    if not carries_target:
+        if isinstance(element, str) and element.strip():
+            return element
+        findings.append(
+            f"{where} highs[{position}] must be a non-empty string naming "
+            f"one sustained high"
+        )
+        return None
+    if not isinstance(element, dict):
+        findings.append(
+            f"{where} highs[{position}] must be a mapping of "
+            f"{', '.join(HIGH_FIELDS)} -- {boundary_phrase} name "
+            f"the surface a high hit as well as the high "
+            f"(got {type(element).__name__})"
+        )
+        return None
+    unknown = sorted(set(element) - set(HIGH_FIELDS))
+    if unknown:
+        findings.append(
+            f"{where} highs[{position}] carries unknown key(s) "
+            f"{', '.join(unknown)} -- a high names itself and where it landed, "
+            f"and nothing else: {', '.join(HIGH_FIELDS)}"
+        )
+    text = element.get("high")
+    if not isinstance(text, str) or not text.strip():
+        findings.append(
+            f"{where} highs[{position}] high must be a non-empty string naming "
+            f"one sustained high"
+        )
+        text = None
+    target = element.get("target")
+    if target not in HIGH_TARGETS:
+        findings.append(
+            f"{where} highs[{position}] target '{target}' not in "
+            f"{list(HIGH_TARGETS)} -- read from the site the finding cites, "
+            f"first match governing: this change's own paperwork is 'record', "
+            f"what an adopter installs is 'shipped', everything else here is "
+            f"'repo'"
+        )
+    return text
+
+
+def _check_cost(
+    row, row_index: int, where: str, findings: list, bounds: ReviewBounds
+) -> None:
+    """What the review cost to run -- evidence for the next lane choice.
+
+    Not a target and not a ceiling: the lane heuristic leans expensive by
+    design and its own rule promises an audit that, with nothing recorded,
+    could only ever be qualitative. The figures are read off what each dispatch
+    returned, so nothing here is estimated. Scoped to the REVIEW's own staffed
+    stages: convergence rounds, the convergence cold seat, spikes, experience
+    sessions and a commissioned pass are all outside it.
+    `docs/cells/records/SKILL.md` is where that list binds and where each
+    exclusion's reason is stated.
+
+    **A zero `subagent_tokens` under a nonzero `dispatches` is left lawful**,
+    deliberately: `null` is the field's way of saying a runtime does not report
+    the figure, and a runtime reporting an honest zero must not be forced to
+    lie. The combination is odd rather than impossible, and no guard can tell
+    those two apart. [#357] [PR #365 review, cycle 2, L12]
+    """
+    if "cost" not in row:
+        if row_index >= bounds.cost:
+            findings.append(
+                f"{where} missing field 'cost' -- {_rows_past(bounds.cost)} "
+                f"carry what the review cost to run "
+                f"({', '.join(COST_FIELDS)})"
+            )
+        return
+    cost = row["cost"]
+    if not isinstance(cost, dict):
+        findings.append(
+            f"{where} cost must be a mapping of {', '.join(COST_FIELDS)} "
+            f"(got {type(cost).__name__})"
+        )
+        return
+    missing = set(COST_FIELDS) - set(cost)
+    if missing:
+        findings.append(f"{where} cost missing {', '.join(sorted(missing))}")
+    for field in COST_FIELDS:
+        if field not in cost:
+            continue
+        value = cost[field]
+        if value is None and field in COST_NULLABLE:
+            continue
+        if not _is_count(value) or (field in COST_POSITIVE and value == 0):
+            findings.append(
+                f"{where} cost {field} '{value}' must be a "
+                + ("positive" if field in COST_POSITIVE else "non-negative")
+                + f" integer read off what the dispatches returned"
+                + (
+                    ", or null where the runtime does not report it"
+                    if field in COST_NULLABLE
+                    else ""
+                )
+            )
+    unknown = set(cost) - set(COST_FIELDS)
+    if unknown:
+        findings.append(
+            f"{where} cost carries unknown key(s) {', '.join(sorted(unknown))} "
+            f"-- the row records what the run took, not what it was worth: "
+            f"{', '.join(COST_FIELDS)}"
+        )
+
+
+def _check_external(
+    row, row_index: int, where: str, findings: list, bounds: ReviewBounds
+) -> None:
     """The external pass's qualitative outcome, never its arithmetic."""
     if "external" not in row:
-        if row_index >= REVIEW_ROWS_EXTERNAL_QUALITATIVE:
+        if row_index >= bounds.external:
             findings.append(
-                f"{where} missing field 'external' -- rows past the first "
-                f"{REVIEW_ROWS_EXTERNAL_QUALITATIVE} name the external pass's "
+                f"{where} missing field 'external' -- "
+                f"{_rows_past(bounds.external)} name the external pass's "
                 "qualitative outcome without counts or a panel seat"
             )
         return
@@ -1926,7 +2270,9 @@ def _check_external(row, row_index: int, where: str, findings: list) -> None:
         )
 
 
-def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: list) -> None:
+def _check_dispositions_and_staffing(
+    row, row_index: int, where: str, findings: list, bounds: ReviewBounds
+) -> None:
     """What came of the findings, and who produced them.
 
     Counts alone answer how many findings a review raised and nothing about
@@ -1935,7 +2281,8 @@ def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: 
     evidence can accumulate, which it cannot do anywhere queryable while the
     index drops both.
 
-    Required of every row past the first REVIEW_ROWS_GRANDFATHERED, and
+    Required of every row past the first REVIEW_ROWS_GRANDFATHERED — which is
+    zero in any file that is not this record, so there of every row — and
     validated whenever present, so rows already written stay valid untouched. This closes two of
     the four questions #126 raised: it does not verify that a routed finding
     reached its vehicle, which needs the vehicle named, and it detects no
@@ -1948,9 +2295,9 @@ def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: 
     # required to carry a field it is forbidden to carry.
     required = {
         "dispositions": (
-            REVIEW_ROWS_GRANDFATHERED <= row_index < REVIEW_ROWS_QUALITATIVE
+            bounds.grandfathered <= row_index < bounds.qualitative
         ),
-        "staffing": row_index >= REVIEW_ROWS_GRANDFATHERED,
+        "staffing": row_index >= bounds.grandfathered,
     }
     for field, checker in (
         ("dispositions", _check_disposition_counts),
@@ -1959,8 +2306,8 @@ def _check_dispositions_and_staffing(row, row_index: int, where: str, findings: 
         if field not in row:
             if required[field]:
                 findings.append(
-                    f"{where} missing field '{field}' -- rows past the first "
-                    f"{REVIEW_ROWS_GRANDFATHERED} carry it"
+                    f"{where} missing field '{field}' -- "
+                    f"{_rows_past(bounds.grandfathered)} carry it"
                     + (
                         f" ({', '.join(DISPOSITIONS)} counts)"
                         if field == "dispositions"
@@ -2007,7 +2354,9 @@ def _is_count(value) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and value >= 0
 
 
-def _check_facing(row, row_index: int, where: str, findings: list) -> None:
+def _check_facing(
+    row, row_index: int, where: str, findings: list, bounds: ReviewBounds
+) -> None:
     """The split by consequence shape -- what the review's rulings were about.
 
     #122 says to watch whether apparatus-facing findings trend down relative to
@@ -2016,17 +2365,15 @@ def _check_facing(row, row_index: int, where: str, findings: list) -> None:
     and two of the five reports that owed it under D-153 did not carry it.
 
     Required of every row past REVIEW_ROWS_FACING_GRANDFATHERED and validated
-    whenever present, so rows already written stay valid untouched.
+    whenever present, so rows already written stay valid untouched. In a file
+    that is not this record both boundaries are zero, so the required-window is
+    empty and `facing` is forbidden on every row rather than required on any.
     """
     if "facing" not in row:
-        if (
-            REVIEW_ROWS_FACING_GRANDFATHERED
-            <= row_index
-            < REVIEW_ROWS_QUALITATIVE
-        ):
+        if bounds.facing <= row_index < bounds.qualitative:
             findings.append(
-                f"{where} missing field 'facing' -- rows past the first "
-                f"{REVIEW_ROWS_FACING_GRANDFATHERED} carry it "
+                f"{where} missing field 'facing' -- "
+                f"{_rows_past(bounds.facing)} carry it "
                 f"({', '.join(FACING_FIELDS)} counts, summing to the "
                 f"dispositions total)"
             )
