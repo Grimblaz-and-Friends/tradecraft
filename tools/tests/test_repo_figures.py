@@ -239,6 +239,27 @@ def test_a_cell_budget_disagreeing_with_the_guard_is_refused(tmp_path, monkeypat
     assert "disagrees with the 9000" in str(caught.value)
     # Agreeing is lawful, and so is a budget for a cell the guard does not cap.
     assert repo_figures.build_figures(tmp_path, None, rel, 9_000)
+
+    # **Re-founded on the ceiling in force, not removed.** Under an admission
+    # `check_doctrine` enforces the constant plus what is charged to this
+    # body, so the pre-#346 refusal rejected the correct value and accepted
+    # -- and then blessed as guard-backed -- the one no guard held. Both arms
+    # here: the effective ceiling is accepted, the bare constant is refused,
+    # and the refusal names the composition so the caller can see why.
+    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / lint.ADMISSIONS).write_text(
+        json.dumps({"date": "2026-09-03", "issue": 346,
+                    "ceilings": [f"body:{rel}"], "chars": 500,
+                    "item": "a fixture item",
+                    "outflow": "nothing had a cheaper home"}) + NL,
+        encoding="utf-8")
+    assert repo_figures.build_figures(tmp_path, None, rel, 9_500)
+    with pytest.raises(SystemExit) as caught:
+        repo_figures.build_figures(tmp_path, None, rel, 9_000)
+    assert "disagrees with the 9500" in str(caught.value), caught.value
+    assert "9000 plus 500 admitted" in str(caught.value), caught.value
+    (tmp_path / lint.ADMISSIONS).unlink()
+
     monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {})
     assert repo_figures.build_figures(tmp_path, None, rel, 12_000)
 
@@ -903,3 +924,108 @@ def test_the_surface_literals_are_what_each_runtime_reads(tmp_path):
         "Codex": ("AGENTS.md",),
     }
 
+
+# --- a ceiling is reported as the one in force, not as its constant [#334] ---
+
+def _admit(root, chars, *keys):
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    (root / lint.ADMISSIONS).write_text(
+        json.dumps({"date": "2026-09-03", "issue": 334, "ceilings": list(keys),
+                    "chars": chars, "item": "a fixture item",
+                    "outflow": "nothing had a cheaper home"}) + NL,
+        encoding="utf-8")
+
+
+def test_a_ceiling_with_nothing_admitted_renders_as_its_bare_constant(tmp_path):
+    """The polarity that keeps every other pin in this suite honest.
+
+    Every expectation elsewhere is derived from `lint`'s constants, so a
+    renderer that decorated a ceiling unconditionally would red them and be
+    reverted -- but silently prefixing the constant on a tree with an empty
+    record would be worse: it would report a composition nobody wrote.
+    """
+    assert repo_figures.priced(9_000, 0) == "9,000"
+    surface(tmp_path)
+    data = repo_figures.figure_always_on(tmp_path)["data"]
+    assert data["admitted"] == {"always-on-row": 0, "always-on-adopter": 0}
+    assert f"of {lint.ALWAYS_ON_ROW_BUDGET_CHARS:,} =" in repo_figures.by_runtime(data)
+    assert "admitted" not in repo_figures.by_runtime(data)
+
+
+def test_a_ceiling_with_an_admission_states_the_one_in_force_and_its_constant(
+        tmp_path):
+    """Both numbers, because they answer different questions.
+
+    The guard enforces the sum; a session raising or arguing the ceiling
+    argues the constant, which an admission does not move. A surface printing
+    only the sum would hide what `tools/lint.py` still holds, and one printing
+    only the constant would tell a reader they had headroom a different number
+    governs -- which is the defect the always-on line was given a ceiling for.
+    """
+    assert repo_figures.priced(9_000, 42) == "9,042 (9,000 plus 42 admitted)"
+    surface(tmp_path)
+    _admit(tmp_path, 42, "always-on-row", "always-on-adopter")
+    data = repo_figures.figure_always_on(tmp_path)["data"]
+    assert data["admitted"] == {"always-on-row": 42, "always-on-adopter": 42}
+
+    rendered = repo_figures.by_runtime(data)
+    assert f"{lint.ALWAYS_ON_ROW_BUDGET_CHARS + 42:,} " in rendered, rendered
+    assert f"({lint.ALWAYS_ON_ROW_BUDGET_CHARS:,} plus 42 admitted)" in rendered, rendered
+    # The decomposition still sums to the total it is printed against: the
+    # composition sits before the `=`, where the chain pin reads nothing.
+    for chain, row in zip(rendered.split("; "), data["here"]):
+        terms = [int(part.replace(",", "").split()[-1])
+                 for part in chain.split(" = ")[1].split(" + ")]
+        assert sum(terms) == row["total"], (chain, row["total"])
+
+    value = repo_figures.figure_always_on(tmp_path)["value"]
+    assert f"({lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,} plus 42 admitted)" in value, value
+
+
+def test_a_cell_body_row_prices_against_what_is_admitted_to_it(tmp_path):
+    """The body table is the third surface, and it must not fork from the guard.
+
+    Its headroom is what a session reads before writing, so a row still
+    subtracting from the constant would say a cell was over its ceiling while
+    `check_doctrine` passed it -- the figure and the guard disagreeing about
+    the same cell, which is the class `cell_budgets` exists to close.
+    """
+    surface(tmp_path)
+    _cell(tmp_path, "example-skill", "y" * 400 + NL)
+    roster.write(tmp_path)
+    rel = "skills/example-skill/SKILL.md"
+    original = dict(lint.CELL_BODY_BUDGET_CHARS)
+    lint.CELL_BODY_BUDGET_CHARS = {rel: 100}
+    try:
+        rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
+        assert rows["example-skill"]["budgets"] == [("body", 100, 0)]
+        assert "of 100, headroom" in repo_figures.cell_body_block(
+            [rows["example-skill"]])
+
+        _admit(tmp_path, 350, f"body:{rel}")
+        rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
+        assert rows["example-skill"]["budgets"] == [("body", 100, 350)]
+        block = repo_figures.cell_body_block([rows["example-skill"]])
+        assert "of 450 (100 plus 350 admitted)" in block, block
+        body = rows["example-skill"]["body"]
+        assert f"headroom {450 - body:,}" in block, block
+    finally:
+        lint.CELL_BODY_BUDGET_CHARS = original
+
+
+def test_the_charter_row_prices_both_of_its_shared_ceilings(tmp_path):
+    """The charter has two budgets and an admission may reach either.
+
+    A row collapsing them, or applying one ceiling's admission to the other,
+    would report a cell as sharing a ceiling nobody set.
+    """
+    surface(tmp_path)
+    _admit(tmp_path, 60, "always-on-adopter")
+    rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
+    assert rows["charter"]["budgets"] == [
+        ("always-on row", lint.ALWAYS_ON_ROW_BUDGET_CHARS, 0),
+        ("adopter total", lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS, 60),
+    ]
+    block = repo_figures.cell_body_block([rows["charter"]])
+    assert f"always-on row {lint.ALWAYS_ON_ROW_BUDGET_CHARS:,}," in block, block
+    assert f"({lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,} plus 60 admitted)" in block, block

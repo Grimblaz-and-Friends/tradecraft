@@ -16,7 +16,7 @@ The charter carries the routing map. Specific to here:
 - **A binding document under `docs/`** → a file there, and a line in the doctrine that binds rather than names it; `docs/values.md` is the shape. [D-225]
 - **Review evidence** → the review report on the PR, plus its row in `docs/reviews.jsonl`; a decision entry lives at the path and under the freeze this repository's records material gives.
 
-The charter names the admission order. **Every edit of an always-on surface owes an outflow**, at the budget or nowhere near it — the budget being the whole surface each runtime loads, which `python tools/lint.py` prices as it runs and `python tools/figures.py` reports — the `authoring` cell carries the three moves, the evidence-gated fourth, and what they may not do. [D-184]
+The charter names the admission order. **Every edit of an always-on surface owes an outflow**, at the budget or nowhere near it — the budget being the whole surface each runtime loads, which `python tools/lint.py` prices as it runs and `python tools/figures.py` reports — the `authoring` cell carries the three moves, the evidence-gated fourth, and what they may not do. [D-184] **Where the outflow frees nothing and the item is needed, it is admitted rather than trimmed to fit** — one row on `docs/admissions.jsonl`, and the ceiling constant does not move. That answer is this repository's own, so it is not among the moves that cell carries; `python tools/lint.py` prints its shape on every run, and a session that reads only the cell above at a full surface trims instead. [#334]
 
 
 ## Structure and substrate

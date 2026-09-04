@@ -589,3 +589,68 @@ def test_the_delta_renders_its_sign_and_states_a_base_it_cannot_read():
     # stayed green when every delta was inverted.
     assert re.search(r"\((?:[A-Za-z][A-Za-z ]*[-+][\d,]+, )*[A-Za-z][A-Za-z ]*[-+][\d,]+ this PR\)", measured), measured
     assert "movement not derived" in unreadable and "0" * 40 in unreadable
+
+
+def test_every_ceiling_the_callout_states_is_the_one_in_force(tmp_path, monkeypatch):
+    """The adopter half of the sentence, against a tree carrying an admission.
+
+    **The half that inherited for free hid the half that did not.** The
+    per-runtime rows route through `figures.by_runtime` and picked up the
+    admitted composition without being touched; the adopter total
+    interpolated `ALWAYS_ON_ADOPTER_BUDGET_CHARS` directly and went on stating
+    the constant. On a tree admitting against the adopter total that renders a
+    printed exceedance -- `N of 11,508` where 11,946 is in force -- on the one
+    surface the owner reads at merge, while the required lint check is green.
+    Four of PR #346's five seats found it independently, and this file already
+    carries two incidents of the same class (PR #210 M1, PR #278 M13) with no
+    arm covering this one.
+
+    Both polarities: with the record empty the sentence renders exactly as it
+    did before the mechanism existed, and with a row charged it names the
+    constant, the admitted amount and the ceiling in force.
+    """
+    import json
+    import shutil
+
+    import roster as _roster
+
+    repo = Path(__file__).resolve().parents[2]
+    shutil.copytree(repo / "tools", tmp_path / "tools",
+                    ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    shutil.copytree(repo / "lib", tmp_path / "lib",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(repo / "skills" / "authoring" / "scripts",
+                    tmp_path / "skills" / "authoring" / "scripts",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    (tmp_path / "AGENTS.md").write_bytes(b"a" * 100)
+    (tmp_path / "CLAUDE.md").write_bytes(b"@AGENTS.md\n")
+    for name, desc in (("charter", "Binding rules."), ("extra", "Trigger.")):
+        cell = tmp_path / "skills" / name
+        cell.mkdir(parents=True, exist_ok=True)
+        (cell / "SKILL.md").write_bytes(
+            ("---\nname: " + name + "\ndescription: " + desc
+             + "\n---\n\nBody.\n").encode("utf-8"))
+    _roster.write(tmp_path)
+    monkeypatch.setattr(dc, "ROOT", tmp_path)
+
+    import lint as _lint
+    row_ceiling = _lint.ALWAYS_ON_ROW_BUDGET_CHARS
+    adopter_ceiling = _lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS
+
+    empty = dc._always_on_line()
+    assert "admitted" not in empty, (
+        "a tree admitting nothing rendered a composition nobody wrote", empty)
+    assert f"of {adopter_ceiling:,}" in empty, empty
+
+    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / _lint.ADMISSIONS).write_text(
+        json.dumps({"date": "2026-09-03", "issue": 346,
+                    "ceilings": ["always-on-row", "always-on-adopter"],
+                    "chars": 438, "item": "a fixture item",
+                    "outflow": "nothing had a cheaper home"}) + "\n",
+        encoding="utf-8")
+    admitted = dc._always_on_line()
+    assert f"{adopter_ceiling + 438:,} ({adopter_ceiling:,} plus 438 admitted)" in admitted, (
+        "the adopter total is still priced against the bare constant", admitted)
+    assert f"{row_ceiling + 438:,} ({row_ceiling:,} plus 438 admitted)" in admitted, (
+        "the per-runtime rows stopped inheriting the composition", admitted)
