@@ -25,7 +25,7 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 
 ## The pipeline, and where each stage's depth lives
 
-**A review is one round** — the panel or the cold pass, the defense, the terminal stage, the fix batch, the executable floor, once each — and what reads the result after it is use, not a further pass: [nothing after round one has been shown to pay on the text that ships](https://github.com/Grimblaz-and-Friends/tradecraft/issues/360). Every stage is held to everything in this file. Each stage's own machinery is one hop away, and the pointer says when to open it — a session on one step of the pipeline has no use for the rest.
+**A review is one round** — the panel or the cold pass, the defense, the terminal stage, the fix batch, the executable floor, once each — and what reads the result after it is use, not a further pass: [nothing after round one has been shown to pay on the text that ships](https://github.com/Grimblaz-and-Friends/tradecraft/issues/360) [D-371]. Every stage is held to everything in this file. Each stage's own machinery is one hop away, and the pointer says when to open it — a session on one step of the pipeline has no use for the rest.
 
 - **Staffing a panel, or any review role** → `references/roster.md`: the seats, when a fifth sits, what the width rests on, the cold boundary operationally, and the tier rule.
 - **Building a dispatch** → `references/dispatch.md`: the three parts in order, what a dispatch read cold does not receive, and which roles take no dispatcher's note.
