@@ -1260,16 +1260,28 @@ def test_review_row_missing_field_is_a_finding(tmp_path):
 
 
 def test_review_row_bad_json_reports_and_later_rows_still_checked(tmp_path):
+    """One malformed row must never silence the rest.
+
+    The origin row is laid down first and the file declared to be this record.
+    Without that the unparseable line is row 0, the file takes foreign bounds,
+    and this test exercises the opposite of what it reads as exercising --
+    which it did, silently, because both its assertions are `any(...)`.
+    [PR #365 review, M34]
+    """
     make_clean_tree(tmp_path)
     docs = tmp_path / "docs"
     docs.mkdir()
     bad_row = json.dumps(_review_row(lane="nonsense"))
     (docs / "reviews.jsonl").write_text(
-        "{not json\n" + bad_row + "\n", encoding="utf-8"
+        _origin_row_first_line() + "\n{not json\n" + bad_row + "\n",
+        encoding="utf-8",
     )
     findings = lint.run(tmp_path)
     assert any("not valid JSON" in f for f in findings)
     assert any("lane 'nonsense'" in f for f in findings)
+    # The point of the repair: nothing else fires, where the foreign reading
+    # produced five extra schema demands against rows nobody may edit.
+    assert len(findings) == 2, findings
 
 
 def test_review_row_non_mapping_is_a_finding_not_a_crash(tmp_path):
@@ -6082,20 +6094,6 @@ def test_dispatches_may_not_abstain(tmp_path, monkeypatch):
     assert "cost dispatches" in findings[0], findings[0]
 
 
-def test_a_review_that_dispatched_nothing_is_lawful(tmp_path, monkeypatch):
-    """Zero is a claim the field must be able to make -- the routine lane can
-    close without a single dispatch."""
-    make_clean_tree(tmp_path)
-    _at_cutover(monkeypatch)
-    _write_index(
-        tmp_path,
-        _qualitative_row(
-            lane="routine", cost={"dispatches": 0, "subagent_tokens": 0}
-        ),
-    )
-    assert lint.run(tmp_path) == []
-
-
 @pytest.mark.parametrize("target", ["shipped", "repo", "record"])
 def test_every_target_in_the_vocabulary_is_lawful(tmp_path, monkeypatch, target):
     make_clean_tree(tmp_path)
@@ -6165,7 +6163,12 @@ def test_a_high_repeated_under_two_targets_is_still_one_high(tmp_path, monkeypat
 
 def test_rows_before_the_boundary_owe_neither(tmp_path, monkeypatch):
     """Forward-only, like every boundary before it: the qualitative rows
-    already written carry bare strings and no cost, and stay valid untouched."""
+    already written carry bare strings and no cost, and stay valid untouched.
+
+    **This passes against the pre-fix revision too**, which has no boundary at
+    all, so it pins the rows staying lawful and not the boundary's existence.
+    `test_the_origin_digest_is_pinned_to_a_literal` and the foreign-index tests
+    are what pin the boundary. [PR #365 review, M35]"""
     make_clean_tree(tmp_path)
     _at_cutover(monkeypatch)
     monkeypatch.setattr(lint, "REVIEW_ROWS_COST_AND_TARGET", 5)
@@ -6177,7 +6180,12 @@ def test_rows_before_the_boundary_owe_neither(tmp_path, monkeypatch):
 
 def test_a_mapping_high_before_the_boundary_is_a_finding(tmp_path, monkeypatch):
     """Both directions, because a guard that only catches the missing key lets
-    the new shape drift backwards into rows that predate it."""
+    the new shape drift backwards into rows that predate it.
+
+    **Green against the pre-fix revision as well**, which rejects a mapping
+    high everywhere and for a different reason, so what this pins is the
+    message a pre-boundary row gets rather than the boundary. [PR #365 review,
+    M35]"""
     make_clean_tree(tmp_path)
     _at_cutover(monkeypatch)
     monkeypatch.setattr(lint, "REVIEW_ROWS_COST_AND_TARGET", 5)
@@ -6279,3 +6287,189 @@ def test_an_index_with_no_rows_at_all_is_clean(tmp_path):
     docs.mkdir(exist_ok=True)
     (docs / "reviews.jsonl").write_text("", encoding="utf-8")
     assert lint.check_review_index(tmp_path) == []
+
+
+# --- what the review's own fix batch pinned -----------------------------------
+
+def test_a_review_that_claims_no_dispatch_is_a_finding(tmp_path, monkeypatch):
+    """Zero is not an abstention and not a lawful count.
+
+    Every lane this practice defines is staffed by fresh dispatches -- the
+    routine lane by a cold pass and a defense, the panel lane by four or five
+    seats, a defense and a judge -- so a completed review that made none of
+    them is not a review that ran. An earlier version of this suite asserted
+    the opposite in its name and its docstring, on a premise
+    `skills/adversarial-review/SKILL.md` falsifies; an external pass found it.
+    [PR #365 review, M16 + external]
+    """
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(
+            lane="routine", cost={"dispatches": 0, "subagent_tokens": 0}
+        ),
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "cost dispatches '0' must be a positive integer" in findings[0], findings[0]
+
+
+def test_the_contradictory_cost_that_survived_round_one_is_caught(tmp_path, monkeypatch):
+    """The shape the panel found lawful: no subagent ran, and here is half a
+    million tokens from the subagents that did not. It reaches an append-only
+    record and cannot be repaired there, so the guard is the only place to stop
+    it. Caught as a consequence of the positive rule rather than by a second
+    check, which is why it is pinned separately."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(cost={"dispatches": 0, "subagent_tokens": 500_000}),
+    )
+    findings = lint.run(tmp_path)
+    assert len(findings) == 1, findings
+    assert "positive integer" in findings[0], findings[0]
+
+
+def test_one_dispatch_is_lawful(tmp_path, monkeypatch):
+    """The other polarity, at the boundary: a guard blocking lawful work fails
+    as hard as one passing unlawful work, and the rule is positive rather than
+    a floor at the roster's width -- a lane's seat count is the roster's to
+    change and this guard should not pin it."""
+    make_clean_tree(tmp_path)
+    _at_cutover(monkeypatch)
+    _write_index(
+        tmp_path,
+        _qualitative_row(cost={"dispatches": 1, "subagent_tokens": 0}),
+    )
+    assert lint.run(tmp_path) == []
+
+
+def test_the_zero_boundary_reads_as_all_rows(tmp_path):
+    """`_rows_past`'s zero branch, pinned by its text.
+
+    Its docstring calls the wording load-bearing -- #268 records a consumer
+    refusing to act on this guard's message -- and mutation showed the whole
+    branch was deletable with the suite green. Both branches are plural noun
+    phrases so every call site can take a plural verb; an earlier draft
+    returned "every row" and forced singular verbs onto the branch this
+    repository's own record always takes. [PR #365 review, M8 + M10]
+    """
+    make_clean_tree(tmp_path)
+    row = _fresh_row()
+    del row["cost"]
+    _write_foreign_index(tmp_path, row)
+    findings = [f for f in lint.run(tmp_path) if "missing field 'cost'" in f]
+    assert len(findings) == 1, findings
+    assert "all rows carry what the review cost to run" in findings[0], findings[0]
+    assert "past the first 0" not in findings[0], findings[0]
+
+
+def test_no_message_says_past_the_first_zero(tmp_path):
+    """The defect across every boundary message at once, including the one the
+    helper was written for and then not applied to."""
+    make_clean_tree(tmp_path)
+    row = _fresh_row(totals={"raw": 1})
+    del row["cost"]
+    del row["external"]
+    del row["staffing"]
+    del row["highs"]
+    _write_foreign_index(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert findings, "the malformed row must produce findings to check"
+    assert not any("past the first 0" in f for f in findings), findings
+
+
+@pytest.mark.parametrize("field", ["external", "staffing"])
+def test_a_fresh_index_owes_every_field_from_row_zero(tmp_path, field):
+    """The `REVIEW_BOUNDS_FOREIGN` slots that mutation found unpinned.
+
+    Setting the `external` or `grandfathered` slot to 9999 left the whole suite
+    green, so a later edit relaxing either would land silently and a fresh
+    index would then admit a first row missing the field -- pre-schema in a
+    record nobody may correct, which is the failure the boundary exists to
+    stop. The `facing` slot is not pinnable: its window is
+    `bounds.facing <= i < bounds.qualitative`, empty whenever both are zero, so
+    that slot is inert rather than untested. [PR #365 review, M11]
+    """
+    make_clean_tree(tmp_path)
+    row = _fresh_row()
+    del row[field]
+    _write_foreign_index(tmp_path, row)
+    findings = lint.run(tmp_path)
+    assert any(f"missing field '{field}'" in f for f in findings), findings
+
+
+def _origin_row_first_line() -> str:
+    """This record's first non-blank row, read from the real file."""
+    return next(l for l in _real_index_rows().splitlines() if l.strip())
+
+
+def test_the_origin_digest_is_pinned_to_a_literal(tmp_path):
+    """The identity contract, stated where the code cannot restate it.
+
+    `_as_this_record` recomputes the digest with the production expression, so
+    every test built on it asserts the rule against itself: mutation confirmed
+    that dropping `.rstrip()` or reading `lines[0]` instead of the first
+    non-blank line leaves the suite green. This asserts the digest of this
+    record's own first row as a literal, so editing the derivation means
+    editing this line too. [PR #365 review, M12]
+    """
+    first = _origin_row_first_line()
+    assert (
+        hashlib.sha256(first.rstrip().encode("utf-8")).hexdigest()
+        == "ca5ef3bfdf26935a852b059c880aa8e2f7211b6e07d272e4fab6aa24394c3eef"
+    )
+    assert lint.REVIEW_INDEX_ORIGIN_SHA256 == (
+        "ca5ef3bfdf26935a852b059c880aa8e2f7211b6e07d272e4fab6aa24394c3eef"
+    )
+    assert lint._review_index_is_this_record(first)
+
+
+def test_the_derivation_survives_a_trailing_space_and_a_leading_blank_line(tmp_path):
+    """The two mutations that survived, pinned by behaviour rather than by
+    reading the code: `.rstrip()` is what makes the first arm hold, and the
+    non-blank scan is what makes the second."""
+    make_clean_tree(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    rows = _real_index_rows()
+    first, rest = rows.split("\n", 1)
+    (docs / "reviews.jsonl").write_text(first + "   \n" + rest, encoding="utf-8")
+    assert lint.check_review_index(tmp_path) == []
+    (docs / "reviews.jsonl").write_text("\n\n" + rows, encoding="utf-8")
+    assert lint.check_review_index(tmp_path) == []
+
+
+def test_a_mangled_copy_of_this_record_says_so_before_anything_else(tmp_path):
+    """#268's failure shape, reproduced by #268's own fix and closed here.
+
+    A byte-order mark from a text-mode write, a leading space, or a
+    re-serialisation of row 0 makes this record foreign; every landed row is
+    then held to the current shape, which on the real file is several hundred
+    findings each ordering a session to edit a row it may not edit. Without
+    this line nothing in that output says why. [PR #365 review, M9]
+    """
+    make_clean_tree(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "reviews.jsonl").write_text(
+        chr(0xFEFF) + _real_index_rows(), encoding="utf-8"
+    )
+    findings = lint.check_review_index(tmp_path)
+    assert len(findings) > 100, len(findings)
+    assert "is not recognised as this repository's own record" in findings[0]
+    assert "byte-order mark" in findings[0]
+
+
+def test_a_fresh_index_is_never_told_it_is_a_mangled_copy(tmp_path):
+    """The other polarity, and the reason the diagnostic is scoped to files
+    carrying the retired shape: an unscoped one would red every adopter's tree,
+    which is the defect rather than the remedy."""
+    make_clean_tree(tmp_path)
+    _write_foreign_index(tmp_path, _fresh_row())
+    assert lint.check_review_index(tmp_path) == []
+    _write_foreign_index(tmp_path, _fresh_row(), _fresh_row(artifact="pr-2"))
+    findings = lint.check_review_index(tmp_path)
+    assert not any("not recognised" in f for f in findings), findings
