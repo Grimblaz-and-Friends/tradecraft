@@ -6442,6 +6442,27 @@ def test_the_derivation_survives_a_trailing_space_and_a_leading_blank_line(tmp_p
     assert lint.check_review_index(tmp_path) == []
 
 
+def test_leading_whitespace_on_row_zero_makes_the_file_foreign(tmp_path):
+    """The polarity `rstrip()` decides, and the one the suite left unpinned.
+
+    Mutating the digest's `.rstrip()` to `.strip()` left all 483 tests green
+    while silently accepting a leading-space-mangled copy of this record as
+    authentic -- every grandfathering boundary then applied to a file that was
+    edited. That is #268's defect restored in its other direction, and the
+    diagnostic's own shipped text names "leading whitespace" as a cause to
+    check, so that sentence goes false with the mutation too. The forgiving
+    directions are pinned above; this pins the unforgiving one.
+    [PR #365 review, cycle 2, L8]
+    """
+    make_clean_tree(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "reviews.jsonl").write_text(" " + _real_index_rows(), encoding="utf-8")
+    findings = lint.check_review_index(tmp_path)
+    assert len(findings) > 100, len(findings)
+    assert "is not recognised as this repository's own record" in findings[0]
+
+
 def test_a_mangled_copy_of_this_record_says_so_before_anything_else(tmp_path):
     """#268's failure shape, reproduced by #268's own fix and closed here.
 

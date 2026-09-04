@@ -73,7 +73,8 @@ Checks:
      counts, what came of the findings, and the split by consequence shape,
      which reconciles against the disposition counts and is the only
      cross-total on the row that is sound. Which of those a row owes is a fact
-     about *this* record: the file is identified by the bytes of its first row,
+     about *this* record: the file is identified by the sha256 of its first
+     non-blank row's bytes, trailing whitespace stripped,
      and any other file is held to the current shape throughout.
  12. decision index: every decision entry has a row in the log's index, and
      every row a file.
@@ -1007,8 +1008,8 @@ COST_POSITIVE = frozenset({"dispatches"})
 HIGH_FIELDS = ("high", "target")
 # Decided in this order, the first match governing, which is what makes the
 # three a partition rather than three overlapping enumerations: `record` is
-# this change's own paperwork and is tested first because those sites live in
-# the other two zones; `shipped` is what an adopter installs; `repo` is the
+# this change's own paperwork and is tested first because the two of those
+# sites that are in the tree live in the repo-only zone; `shipped` is what an adopter installs; `repo` is the
 # residual, so every site in the tree has a lawful label.
 HIGH_TARGETS = ("record", "shipped", "repo")
 
@@ -2098,13 +2099,16 @@ def _check_highs(
             f"(got {type(highs).__name__})"
         )
         return
-    # One fact, derived once: passing the boundary and the verdict about it as
-    # two parameters let a later edit desynchronise them.
+    # One fact, derived once, and one already-rendered phrase: passing the
+    # boundary and the verdict about it as two parameters let a later edit
+    # desynchronise them, and a first repair fixed that here while reproducing
+    # it one call deeper. [PR #365 review, M38 + cycle 2, L10]
     carries_target = row_index >= cost_boundary
+    boundary_phrase = _rows_past(cost_boundary)
     seen: dict[str, int] = {}
     for position, element in enumerate(highs):
         high = _high_text(
-            element, position, where, findings, carries_target, cost_boundary
+            element, position, where, findings, carries_target, boundary_phrase
         )
         if high is None:
             continue
@@ -2126,7 +2130,7 @@ def _high_text(
     where: str,
     findings: list,
     carries_target: bool,
-    cost_boundary: int,
+    boundary_phrase: str,
 ):
     """The high's own text, or None where the element is not a lawful high.
 
@@ -2147,7 +2151,7 @@ def _high_text(
     if not isinstance(element, dict):
         findings.append(
             f"{where} highs[{position}] must be a mapping of "
-            f"{', '.join(HIGH_FIELDS)} -- {_rows_past(cost_boundary)} name "
+            f"{', '.join(HIGH_FIELDS)} -- {boundary_phrase} name "
             f"the surface a high hit as well as the high "
             f"(got {type(element).__name__})"
         )
@@ -2186,9 +2190,17 @@ def _check_cost(
     Not a target and not a ceiling: the lane heuristic leans expensive by
     design and its own rule promises an audit that, with nothing recorded,
     could only ever be qualitative. The figures are read off what each dispatch
-    returned, so nothing here is estimated. Scoped to the REVIEW: convergence
-    rounds, cold seats, spikes and experience sessions are not it, because the
-    row's subject is the review. [#357]
+    returned, so nothing here is estimated. Scoped to the REVIEW's own staffed
+    stages: convergence rounds, the convergence cold seat, spikes, experience
+    sessions and a commissioned pass are all outside it.
+    `docs/cells/records/SKILL.md` is where that list binds and where each
+    exclusion's reason is stated.
+
+    **A zero `subagent_tokens` under a nonzero `dispatches` is left lawful**,
+    deliberately: `null` is the field's way of saying a runtime does not report
+    the figure, and a runtime reporting an honest zero must not be forced to
+    lie. The combination is odd rather than impossible, and no guard can tell
+    those two apart. [#357] [PR #365 review, cycle 2, L12]
     """
     if "cost" not in row:
         if row_index >= bounds.cost:
