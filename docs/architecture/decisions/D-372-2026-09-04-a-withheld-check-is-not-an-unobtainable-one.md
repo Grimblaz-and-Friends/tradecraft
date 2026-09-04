@@ -56,6 +56,18 @@ Row 199 of `docs/recorded-findings.jsonl` asks that *"the next convergence's col
 
 **The review.** 7 dispatches — five seats, defense, judge — and 1,044,018 subagent tokens, excluding the convergence seat and the experience sessions, which are the change's cost. **The rulings comment states that total as 1,043,978, which is an arithmetic error of 40**; the summands it lists are correct and the correct total is above.
 
+## The one matter put to the owner at release, and his ruling
+
+An external reviewer (`chatgpt-codex-connector`) posted a P1 arguing that where an imposed bound removes the check and its setter cannot be reached, the session has no lawful route — the artifact stays a permanent draft and the report goes to someone unreachable — and asking that the withheld branch be scoped to reachable, removable bounds. The review dropped it as a ruling and surfaced it argued, because it asks to re-decide the affirmed fork rather than to repair the change.
+
+**The owner declined it.** The exclusion stays unscoped: a bound whose setter cannot be reached leaves the artifact a draft, with the withholding reported where this cell already sends a call the session made.
+
+**The ground is the asymmetry the affirmation already carries, and it is the one that survived the review intact.** A wrong call under this reading is a stall someone notices and lifts; a wrong call under the alternative is a plan nobody judged that reads exactly like a plan somebody judged. Scoping the exclusion to reachable bounds would reopen the unilateral route from the other end — an unreachable setter would route back to truncation, which is the door this change exists to close.
+
+**One measurement bears on it and it arrived after the fork was put.** The second experience session's arm 4 ran precisely this standing case on the fixed tree — a one-shot session under a dispatch forbidding any other session, unable to ask mid-run — and produced the affirmed outcome: a draft labelled with warrant, plus the report of the withholding, and no reaching for a route out. The predicted dead end has one measurement against it and none for it.
+
+**What the decline leaves open, stated rather than glossed:** a session genuinely stuck in that case has no forward move, and that is accepted rather than solved. The condition to watch is a real run reporting itself unable to proceed with no party to return the withholding to.
+
 ## Known limits
 
 **The truncation arm of this change's first experience session did not stage.** The dispatch asserted that no dispatch facility existed; the consumer could see the Agent tool in its own toolset, correctly classified the claimed absence as a bound someone set, and held a draft. Acceptance criteria 2 and 3 were therefore not exercised by that run, and the over-tightening those criteria exist to catch rested on the diff alone until the second session staged the arm properly.
