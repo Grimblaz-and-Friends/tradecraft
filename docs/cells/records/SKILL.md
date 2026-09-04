@@ -9,7 +9,17 @@ description: This repository's append-only records and its decision log — whic
 
 ## Review, here
 
-Every review appends one row to `docs/reviews.jsonl`, and every `record` ruling one entry to `docs/recorded-findings.jsonl`.
+Every review appends one row to `docs/reviews.jsonl`, and every `record` ruling one entry to `docs/recorded-findings.jsonl`. Beyond the fields the practice's own `the-record.md` names, a row here carries two more.
+
+**`cost` — what the review took to run**, as `{"dispatches": n, "subagent_tokens": n}`. `dispatches` counts every subagent the **review** dispatched, from the first seat to the terminal ruling, its fix-and-look cycles, defence, judge and any commissioned pass included; convergence rounds, cold seats, spikes and experience sessions are the change's cost and not the review's, which is this row's subject. `subagent_tokens` sums what those dispatches returned, and is `null` where the runtime does not report it — an abstention claiming nothing, where zero would claim no subagent ran. **Both are read off tool returns and neither is ever estimated**; a figure reconstructed from a transcript is the thing this field exists to stop. It is evidence for the next lane choice and never a ceiling to come under.
+
+**`target` — the surface each sustained high hit**, carried on the high itself: `highs` entries are `{"high": "...", "target": "..."}`. Read from the site the finding cites, exactly as `arbitration.md` reads consequence shape, **and decided in this order, first match governing**:
+
+1. **`record`** — this change's own paperwork: its decision entry, its own index row, its pull request body, its commit message, its review report. First, because those sites sit inside the other two zones. A row or entry landed by *earlier* work is not this change's paperwork and falls through.
+2. **`shipped`** — what an adopter installs: the shipped zone `siting` names, or a generated mirror of it, which takes its source's label.
+3. **`repo`** — everything else here, by residue rather than by list, so every site has a lawful label.
+
+A high citing sites of more than one kind takes the highest-reaching, `shipped` > `repo` > `record` — the same direction as `arbitration.md`'s rule that a finding citing both kinds is artifact-facing. **`target` and consequence shape are different axes and neither is read off the other**: one asks whose machinery the finding is about, the other which surface it hit, and a finding about the review's own bookkeeping inside a shipped file is `apparatus` and `shipped` at once. Booked per high rather than as counts because counts over findings are what could never be reconciled — `facing` is that failure on this record. [#357]
 
 ## Admissions, at a ceiling
 
