@@ -6,6 +6,7 @@ The final report, posted to the PR or issue, carries:
 
 - The lane and why, and the purpose statement judged against.
 - **Per-seat counts** — raw / merged / sustained, highs broken out — with each seat's model and runtime. A seat's `merged` counts its own findings surviving the merge. **Its `high` counts the sustained highs that seat is credited on, so the column carries credits and never distinct highs** [D-185]. The unit counted throughout is the finding as originated and dispositioned, never a row of a ruling table.
+- **The revision each dispatched stage reported working at**, as that stage stated it, **or that it stated none** — so a stage that judged text the change had already replaced is legible to a reader who was not in it, and not only to the stage itself.
 - **Each sustained high's finders** — every credited seat as the merge records them, primary first and a merge-added co-finder labeled as its own; or the stage or seat that originated it where no merge carried it; and where a merge carried it with no finder list to copy, that fact.
 - **Every finding's disposition**, with each drop's one-line reason, each record's entry, and each handed-on decision's destination.
 - **What the review cost to run, and where each sustained high landed**, wherever the repository's index records either — so the row's values have a prior statement to be read against, which is what every other field on that row already has.
