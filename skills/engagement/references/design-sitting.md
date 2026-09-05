@@ -27,4 +27,4 @@ Eight steps, each run against a real question in [the sitting that produced this
 
 ## What closes it
 
-**A sitting closes when the ledger's settled column is the brief.** The cell's ordinary run resumes there, and everything it asks of a brief before and after that lock applies unchanged.
+**A sitting closes when the ledger's settled column, written out in the brief's own form, is the brief.** The cell's ordinary run resumes there, and everything it asks of a brief before and after that lock applies unchanged.
