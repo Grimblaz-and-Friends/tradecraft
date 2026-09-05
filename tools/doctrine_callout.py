@@ -851,6 +851,20 @@ def main(argv: list[str] | None = None) -> int:
               flush=True)
         print("doctrine-callout: --head requires --dry-run", file=sys.stderr)
         return FAILED
+    # **And --head without --base does nothing at all, silently.** `run()` takes
+    # the `base is None` branch, never calls `touched_frontmatter`, and discards
+    # the head -- so a replay reports path-arm findings only while the operator
+    # believes both arms ran. The shipped-cell refusal below catches most of it
+    # by accident, because a frontmatter edit usually puts the cell path in the
+    # diff; it misses a replay whose diff holds no shipped-cell path, and names
+    # the wrong flag when it does fire. Raised by the external pass on this PR.
+    if args.head is not None and args.base is None:
+        print("::error title=doctrine-callout::--head names the head side of a "
+              "comparison whose base side is --base, so without --base the "
+              "frontmatter arm does not run and the head is read by nothing",
+              flush=True)
+        print("doctrine-callout: --head requires --base", file=sys.stderr)
+        return FAILED
     try:
         status, _ = run(args.pr, args.repo, dry_run=args.dry_run,
                         base=args.base, head=args.head)

@@ -891,7 +891,7 @@ def test_run_unions_both_arms_against_a_real_tree(tmp_path, gh, monkeypatch):
     assert f"{dc.roster.CELLS}/alpha/{dc.roster.CELL_FILE}" in touched
 
 
-def test_the_charter_filter_is_read_at_both_of_its_use_sites(tmp_path):
+def test_the_charter_filter_is_read_at_both_of_its_use_sites():
     """`FRONTMATTER_EXCLUDED` decides `_is_shipped_cell` too, and that use was
     unpinned: mutating the filter away left the whole suite green.
 
@@ -917,6 +917,14 @@ def test_head_without_dry_run_is_refused(gh, capsys):
     gh(["AGENTS.md"])
     assert dc.main(["--pr", "1", "--base", "abc", "--head", "def"]) == dc.FAILED
     assert "--dry-run" in capsys.readouterr().err
+
+
+def test_head_without_base_is_refused(gh, capsys):
+    """Without --base the frontmatter arm never runs, so --head is discarded and
+    the replay silently reports the path arm alone."""
+    gh(["AGENTS.md"])
+    assert dc.main(["--pr", "1", "--head", "def", "--dry-run"]) == dc.FAILED
+    assert "--base" in capsys.readouterr().err
 
 
 def test_a_shipped_cell_change_without_a_base_is_refused(gh, capsys):
