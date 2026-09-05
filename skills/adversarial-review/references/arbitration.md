@@ -1,6 +1,6 @@
 # Merge, defense, and the terminal stage
 
-**Loaded when** you are merging a panel's findings, defending the artifact against them, or ruling as the terminal stage. A prosecution seat does not need it.
+**Loaded when** you are merging a panel's findings, defending the artifact against them, ruling as the terminal stage, or deciding what a finding you met outside a review earns — the fix bar at (b) governs that case too. A prosecution seat does not need it.
 
 **Merge — parent-owned, before defense.** The dispatching session merges the seats' findings: a duplicate is the same failure mode at the same location; a merged finding credits every finder, primary (first-surfacing) first. A seat that fails or returns unusable output is re-dispatched once; a panel still short proceeds, and the report records the degraded width. Zero findings from all seats is a valid outcome. **The merged list indexes the seat reports; it never replaces, edits, or restates them** [D-102], and content the merge adds that no seat wrote — a correction, a co-finder, an adverse note — is labeled as the merge's own.
 

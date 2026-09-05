@@ -29,7 +29,7 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 
 - **Staffing a panel, or any review role** → `references/roster.md`: the seats, when a fifth sits, what the width rests on, the cold boundary operationally, and the tier rule.
 - **Building a dispatch** → `references/dispatch.md`: the three parts in order, what a dispatch read cold does not receive, and which roles take no dispatcher's note.
-- **Merging findings, defending, or ruling as the terminal stage** → `references/arbitration.md`: the merge's ownership and the consequence shape it records, the defense's verdicts and the price it states, and the terminal stage's docket and two clauses.
+- **Merging findings, defending, ruling as the terminal stage, or deciding what a finding met outside a review earns** → `references/arbitration.md`: the merge's ownership and the consequence shape it records, the defense's verdicts and the price it states, and the terminal stage's docket and two clauses.
 - **A fix batch that has landed, an open pull request an automated reviewer may have posted on, or a review tool you invoked yourself** → `references/after-the-fix.md`: the executable floor the batch owes, the use that reads the result, every external comment's disposition, and the commissioned pass.
 - **Closing the review, or ruling `record`** → `references/the-record.md`: what the final report carries, the index row, and the entry a `record` appends.
 
