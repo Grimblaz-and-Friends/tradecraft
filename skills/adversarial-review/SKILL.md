@@ -7,7 +7,7 @@ description: Adversarial review of an artifact against its stated purpose — a 
 
 **Purpose:** find the defects that matter and only those, by prosecution under evidence rules. **Audience:** the session dispatching a review, every seat, defense, and judge it dispatches, and any session deciding what a finding met outside one earns. **Success:** the review answers one question — *is the artifact fit for its stated purpose?* — with every ruling traceable to evidence, and leaves the artifact no larger than that answer requires.
 
-**Pause discipline: typed-halt.** From first dispatch to final ruling the pipeline is atomic — no questions mid-run, no interim fixes, no edits to the artifact under review. A finding that needs an owner decision is surfaced in the final report as exactly that, argued: the live options, each with pros and cons, and a recommendation among them. Safe in attended and unattended lanes alike.
+**Pause discipline: typed-halt.** From first dispatch to final ruling the pipeline is atomic — no questions mid-run, no interim fixes, no edits to the artifact under review. **That last bars the tree other stages read, never a seat's own isolated one**, so a seat dispatched to write does the job it was dispatched for. A finding that needs an owner decision is surfaced in the final report as exactly that, argued: the live options, each with pros and cons, and a recommendation among them. Safe in attended and unattended lanes alike.
 
 ## The charter — purpose first
 
