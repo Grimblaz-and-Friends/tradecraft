@@ -78,10 +78,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # The callout derives the base side of its delta by reading blobs at
-          # another revision, and a shallow clone does not have that object:
-          # the read fails, the delta drops out, and the comment states a total
-          # with no direction -- the exact defect the delta was added to end.
+          # Two things read blobs at the base revision: the delta's base
+          # side, and the frontmatter arm that decides whether a cell's
+          # description moved. A shallow clone has neither object. The delta
+          # degrades to a total with no direction; the arm raises, so this job
+          # goes red on every pull request rather than only doctrine ones.
           fetch-depth: 0
           # No later step in this job reads git credentials from
           # .git/config -- the API calls carry GH_TOKEN from the environment --
@@ -109,9 +110,16 @@ jobs:
           # while this PR was open sits on both sides of the pair and cancels.
           # Pairing that merge commit with a computed merge base instead would
           # put main's own growth on the head side and bill it to this PR.
+          # **Cancellation is a property of sums, and the frontmatter arm does
+          # not sum.** It compares each cell's block at the two revisions, so
+          # it needs the stronger precondition that this sha IS the merge
+          # commit's base-side parent. Both come from the same event payload,
+          # so they agree by construction; a base that lagged would report
+          # another pull request's description edit as this one's.
           # The correct base depends on what is checked out, so a local run --
           # which has the PR head, not the merge commit -- wants
           # `--base $(git merge-base HEAD origin/main)`, not `--base origin/main`.
-          # Absent, the callout states the total and says nothing about direction.
+          # Absent, the frontmatter arm never runs and no description edit is
+          # flagged, which is the defect #277 was filed for.
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python tools/doctrine_callout.py --pr "$PR_NUMBER" --base "$BASE_SHA"
