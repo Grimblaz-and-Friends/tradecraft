@@ -15,4 +15,4 @@ Branch first (`main` refuses direct pushes) → settle the brief, then the artif
 
 ## What the pull request owes
 
-The PR body states `Closes #N`, or one line saying it closes none and why. A shipped-zone change bumps the plugin version.
+The PR body states `Closes #N`, or one line saying it closes none and why. **A change that fixes a cause disposes of every issue tied to it as a symptom** — a closing reference for each one the fix discharged, and one line each for the rest saying why it stands — so a root fix clears the board it was meant to clear instead of leaving its symptoms open behind it. Read the ties off the cause's own issue rather than from memory. **Each closing reference is a bare keyword and one number, on its own line**: GitHub parses neither an emphasised keyword nor a comma-separated list, and [PR #263](https://github.com/Grimblaz-and-Friends/tradecraft/pull/263) merged green having closed none of the five it named. A shipped-zone change bumps the plugin version.
