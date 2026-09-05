@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""The doctrine callout: label and speak on any PR that changes the doctrine.
+"""The doctrine callout: label and speak on any PR that changes what the
+owner reads before merging -- the doctrine, the shipped charter, a repo-only
+cell, or any other cell's name and description.
 
 The owner reads the doctrine diff himself before merging (doctrine, "The
 ceremony moments, here"; the charter states the rule it applies). The first mechanism for that was `.github/CODEOWNERS`,
@@ -33,7 +35,12 @@ and emits a workflow error annotation. The withdrawn version-bump predecessor
 failed open four ways while printing a clean pass, and a callout that silently
 no-ops is not a milder form of this bug: it *is* this bug.
 
-Usage:  python tools/doctrine_callout.py --pr N [--repo OWNER/NAME] [--dry-run]
+Usage:  python tools/doctrine_callout.py --pr N --base SHA [--head SHA]
+            [--repo OWNER/NAME] [--dry-run]
+**`--base` is not optional in practice.** It is the revision the frontmatter
+arm compares against, so without it this refuses any PR touching a shipped
+cell rather than degrading -- see `run()`. CI passes it; a hand run wants
+`--base $(git merge-base HEAD origin/main)`.
 Requires the `gh` CLI, authenticated (CI: `GH_TOKEN` from the workflow token,
 with `pull-requests: write`, `issues: write` and `contents: read`).
 
@@ -60,8 +67,23 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
-# Matches `.github/CODEOWNERS`. Widening this to skills or decisions is a
-# different requirement and wants its own incident. The charter cell is
+# Matches `.github/CODEOWNERS`. **The widening this comment once deferred has
+# happened, and it went to frontmatter only.** The owner ruled on 2026-08-31
+# that a cell's name and description are flagged -- they load in every session
+# whether or not the cell fires, and PR #269 had merged such an edit with
+# nothing raised [#277]. (That is one incident, not three: [D-107] and
+# [D-230] left the same description stale by *body* edits, and #230 was
+# flagged anyway because it touched AGENTS.md and the charter. PR #320 is a
+# second, found by this change's own review.) He ruled on 2026-09-05 that
+# *other* shipped cells' bodies are not [#386] -- other, because the charter
+# sits in the tuple below and its body is matched entire. Measured over the
+# 40 then-most-recent merged
+# pull requests, the flag fires on 15 today and on 17 once frontmatter is in,
+# but on 35 if bodies are, and a flag on seven of every eight pull requests is
+# one nobody reads. So bodies stay out by a ruling, not by an omission, and
+# what licenses reopening it is a further ruling rather than an incident.
+# `touched_frontmatter` is the frontmatter arm; this tuple is still paths
+# alone. The charter cell is
 # not a widening: it holds the half of the doctrine that moved out of
 # `AGENTS.md`, and it also ships to consumers, so omitting it would shrink
 # the owner's read at the moment the material became more consequential.
@@ -75,9 +97,23 @@ from winio import utf8_stdio  # noqa: E402
 DOCTRINE_PATHS = ("AGENTS.md", "CLAUDE.md", "skills/charter/SKILL.md")
 DOCTRINE_PREFIXES = (roster.REPO_CELLS + "/",)
 
+JQ_RENAMED = '.[] | select(.status == "renamed") | .previous_filename'
+
+# The seventh surface stating this mechanism's reach, and a module constant
+# rather than an argparse literal so a test can address it. It was the one
+# surface the round-one panel found unpinned, because the test that claimed to
+# check it read `main.__doc__` -- which is None, `main` having no docstring.
+CLI_DESCRIPTION = (
+    "Label and comment on a pull request that changes the doctrine, the shipped "
+    "charter, a repo-only cell, or any other cell's name and description, so the "
+    "owner reads the diff before merging. Exit 0 when the PR state matches its "
+    "diff; non-zero turns the check red."
+)
+
 LABEL = "doctrine"
 LABEL_COLOR = "5319e7"
-LABEL_DESC = "Changes the doctrine or the shipped charter -- read the diff before merging"
+# GitHub caps a label description at 100 characters; a test measures this.
+LABEL_DESC = "Changes the doctrine or charter, a repo-only cell, or a cell's description -- read before merging"
 
 # The one standing coupling to an identity. Its tripwire is the log line in
 # `run()`: under a future identity change (a PAT, a GitHub App) the callout
@@ -91,8 +127,10 @@ EXPECTED_AUTHOR = "github-actions[bot]"
 MARKER = "<!-- tradecraft:doctrine-callout -->"
 
 CALLOUT = f"""{MARKER}
-**This PR changes the doctrine.** Read the {{files}} diff before merging -- \
-nothing else performs that read.
+**This PR changes what you read before merging.** Read the {{files}} diff \
+now -- nothing else performs that read. The reach is the doctrine, the \
+charter and repo-only cells entire, plus any other cell's name and \
+description.
 
 Touched: {{files}}
 
@@ -104,8 +142,8 @@ owner's.</sub>"""
 
 WITHDRAWN = f"""{MARKER}
 ~~This PR changes the doctrine.~~ **Withdrawn:** the PR no longer touches \
-`AGENTS.md`, `CLAUDE.md` or the charter cell. Nothing here needs the
-owner's doctrine read.
+the doctrine or the charter, a repo-only cell, or any cell's description.
+Nothing here needs the owner's doctrine read.
 
 <sub>Posted by `tools/doctrine_callout.py`.</sub>"""
 
@@ -176,12 +214,15 @@ def touched_doctrine(paths: list[str]) -> list[str]:
     Exact match on the repo-root path. A `docs/AGENTS.md` would not be the
     doctrine, and matching by basename would call out a PR that never touched
     it — a false callout trains the owner to ignore the true one. A rename out
-    of any of them escapes this match (git reports only the new path, at
-    similarity as low as 83% on this repo's own #74), and is caught instead by
-    `tools/lint.py`, which fails a required check when `AGENTS.md`, `CLAUDE.md`
-    or the charter cell goes missing -- the last of those only since the
-    charter got a guard of its own; before that this sentence named a backstop
-    that did not exist for it.
+    of any of them is reached, but not here: GitHub's `--name-only` diff
+    reports only a rename's destination (at similarity as low as 83% on this
+    repo's own #74), so this function never sees the source and cannot -- it
+    matches the paths it is handed. `run()` hands it `changed_paths` plus
+    `renamed_from`, and the latter exists for exactly that. `tools/lint.py`
+    remains the backstop it always was, failing a required check when
+    `AGENTS.md`, `CLAUDE.md` or the charter cell goes missing; it is now the
+    second line of defence rather than the only one, and it never covered a
+    repo-only cell at all. [#293]
     """
     changed = set(paths)
     exact = [p for p in DOCTRINE_PATHS if p in changed]
@@ -194,6 +235,191 @@ def touched_doctrine(paths: list[str]) -> list[str]:
         if any(path.startswith(prefix) for prefix in DOCTRINE_PREFIXES)
     )
     return exact + under
+
+
+# The frontmatter arm's exclusions, and one rule covers both: the path arm
+# already reports these entire, so naming them here would put the same cell in
+# `Touched:` twice. Repo-only cells are covered by DOCTRINE_PREFIXES; the
+# charter by its exact entry in DOCTRINE_PATHS -- which is also the reason the
+# charter is the one shipped cell whose *body* is flagged, and the reason every
+# sentence this repository renders about bodies says "other shipped cell
+# bodies". A wording that drops the "other" is false of this constant. [#386]
+FRONTMATTER_EXCLUDED = ("charter",)
+
+
+def renamed_from(pr: str, repo: str | None) -> list[str]:
+    """Every path a rename in this PR moved *out of*.
+
+    `changed_paths`' argument for `gh pr diff --name-only` stands untouched;
+    this is a second, narrower lookup beside it, for the one datum that read
+    structurally cannot carry. GitHub reports a rename by its destination
+    alone, so a doctrine file renamed *out* of the doctrine appeared to touch
+    no doctrine at all: the owner's merge-time read was skipped and nothing
+    said so. The exact-match half had `tools/lint.py` as a backstop; the prefix
+    half had one only in the sense that the roster guard reddens on a
+    repo-only cell renamed away -- and `python tools/roster.py --write`, the
+    ordinary next step for whoever moved it, clears that finding and leaves
+    nothing. Probed: the rename reddens lint with 2 findings, and 0 after the
+    regeneration. [#293]
+
+    `--paginate`, because this endpoint pages at 30 by default and a large PR
+    would drop the rename off the end -- the very failure this closes,
+    reintroduced one page down. Pagination is confined to this call, which is
+    what buys leaving the primary read alone.
+
+    An empty list is the ordinary answer: most pull requests rename nothing.
+    """
+    raw = _gh("api", "--paginate",
+              f"repos/{_slug(repo)}/pulls/{pr}/files?per_page=100",
+              "--jq", JQ_RENAMED)
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def _require_ref(root: Path, ref: str) -> None:
+    """Establish that `ref` resolves, before anything reads paths at it.
+
+    **What this buys is the message, not the loudness.** `_cell_names_at` runs
+    before any `_frontmatter_at` and already raises on a ref that will not
+    resolve, so neutering the raise below changes no outcome -- probed, and the
+    suite stays green. What it adds is a sentence naming the pull request's
+    base sha and a shallow fetch, where `_cell_names_at` passes git's raw
+    `fatal: not a tree object` up to an operator who then has to work out which
+    of two revisions git meant. It also catches the one input `_cell_names_at`
+    accepts and should not: a tree-ish that is not a commit.
+
+    An earlier wording claimed that without this an unreadable base would read
+    as every cell absent and fire on every pull request. That is false of the
+    code below it, and the test named for this guard passed with the guard
+    removed.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "--quiet",
+         f"{ref}^{{commit}}"],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    if proc.returncode != 0:
+        raise CalloutError(
+            f"could not resolve `{ref}` in this clone, so no cell's frontmatter "
+            "could be compared against it. In CI this is the pull request's base "
+            "sha and the usual cause is a shallow fetch"
+        )
+
+
+def _blob(root: Path, ref: str | None, path: str) -> bytes | None:
+    """One file's bytes at `ref`, or from the working tree when `ref` is None.
+
+    None means the file is not there, which is a real answer rather than a
+    failure: a cell that exists at one revision and not the other is exactly
+    what a rename out of `skills/` looks like from here. `_require_ref` is what
+    keeps that reading honest.
+    """
+    if ref is None:
+        here = root / path
+        return here.read_bytes() if here.is_file() else None
+    proc = subprocess.run(
+        ["git", "-C", str(root), "show", f"{ref}:{path}"],
+        stdin=subprocess.DEVNULL, capture_output=True,
+    )
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _cell_names_at(root: Path, ref: str | None) -> set[str]:
+    """Every shipped cell name at `ref`, or in the working tree when None."""
+    if ref is None:
+        return set(roster.names_under(root, roster.CELLS))
+    proc = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", ref,
+         roster.CELLS + "/"],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    if proc.returncode != 0:
+        raise CalloutError(
+            f"could not list `{roster.CELLS}/` at `{ref}`: "
+            + " ".join((proc.stderr or "").split())
+        )
+    names = set()
+    for line in proc.stdout.splitlines():
+        parts = line.strip().split("/")
+        if len(parts) == 3 and parts[0] == roster.CELLS and parts[2] == roster.CELL_FILE:
+            names.add(parts[1])
+    return names
+
+
+def _frontmatter_at(root: Path, ref: str | None, path: str) -> bytes | None:
+    """A cell's frontmatter block at one revision, line endings normalised.
+
+    **Normalised, and the scope of what that buys is narrower than it looks.**
+    `.gitattributes` is `* text=auto eol=lf` and the job runs on ubuntu, so a
+    fresh checkout is LF on both sides and an un-normalised compare would agree
+    anyway. What it protects is the *local* run on Windows after a text-mode
+    write has left CRLF on disk -- which the doctrine names as expected rather
+    than a defect. There the un-normalised compare differs on every file such a
+    write touched, and reports cells whose descriptions never moved. An earlier
+    wording here said it would differ "on every cell on every run" and flag
+    every pull request; that is not reproducible in either environment, and a
+    justification nobody can reproduce is how a correct guard gets deleted.
+
+    `roster.frontmatter` rather than a second definition of what a description
+    is: it returns exactly the block that loads, and #277 named its reuse as
+    what makes the mechanism available without a rival notion of the same
+    thing. It returns the whole block; every cell's block here is `name` plus
+    `description`, so a cell that ever gained a third key would widen this
+    silently -- recorded, not narrowed, because narrowing it would be that
+    rival notion.
+    """
+    data = _blob(root, ref, path)
+    if data is None:
+        return None
+    block = roster.frontmatter(data)
+    if block is None:
+        return None
+    return block.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def touched_frontmatter(root: Path, base: str, head: str | None = None) -> list[str]:
+    """Shipped cells whose frontmatter block differs between two revisions.
+
+    The arm that answers *the description changed*, which no path match can
+    express -- which is why adding cell paths to `DOCTRINE_PATHS` was the wrong
+    fix and was declined on #277: it would have fired on every body edit, the
+    thing the owner ruled against on #386.
+
+    **Both sides are named revisions**, `head` defaulting to the working tree.
+    CI passes no head and reads the checked-out merge commit, exactly as
+    `_always_on_delta` does. The parameter exists so any past pull request can
+    be replayed from one checkout by naming its base and head: a working-tree
+    head compares every base against the same tree, which reports changes
+    belonging to other pull requests as though they belonged to this one, and
+    makes the claim this arm supports unfalsifiable.
+
+    **The iteration set is the union of both revisions' cells**, so a cell's
+    disappearance is visible: a shipped cell renamed out of `skills/` has a
+    block at the base and none at the head, which is a difference and is
+    reported. That is what makes the rename claim true for a shipped cell,
+    where `renamed_from` makes it true for the watched paths.
+
+    Sorted, so the callout reads the same twice.
+    """
+    _require_ref(root, base)
+    if head is not None:
+        _require_ref(root, head)
+    names = (_cell_names_at(root, base) | _cell_names_at(root, head))
+    changed = []
+    for name in sorted(names - set(FRONTMATTER_EXCLUDED)):
+        path = f"{roster.CELLS}/{name}/{roster.CELL_FILE}"
+        if _frontmatter_at(root, base, path) != _frontmatter_at(root, head, path):
+            changed.append(path)
+    return changed
+
+
+def _is_shipped_cell(path: str) -> bool:
+    """Is this a shipped cell's own file, the frontmatter arm's exclusions aside?"""
+    parts = path.split("/")
+    return (len(parts) == 3 and parts[0] == roster.CELLS
+            and parts[2] == roster.CELL_FILE
+            and parts[1] not in FRONTMATTER_EXCLUDED)
 
 
 def changed_paths(pr: str, repo: str | None) -> list[str]:
@@ -501,10 +727,49 @@ def _post_comment(pr: str, repo: str | None, body: str) -> None:
 
 
 def run(pr: str, repo: str | None, *, dry_run: bool = False,
-        base: str | None = None) -> tuple[int, list[str]]:
-    """Bring the PR's label and comment into agreement with its diff."""
+        base: str | None = None, head: str | None = None) -> tuple[int, list[str]]:
+    """Bring the PR's label and comment into agreement with its diff.
+
+    **Two arms, unioned here.** `touched_doctrine` matches paths, which is what
+    answers *the doctrine changed*; `touched_frontmatter` compares blocks,
+    which is the only thing that can answer *a description changed* -- a path
+    cannot say it, and firing on the path would fire on every body edit, which
+    the owner ruled against [#386]. The path arm keeps its order (DOCTRINE_PATHS
+    order, then the prefix matches sorted) and the frontmatter arm's additions
+    arm are appended sorted, so the callout reads the same twice.
+
+    **The dedup below cannot fire today, and is kept as defence in depth.**
+    `touched_frontmatter` returns only `skills/<name>/SKILL.md` for a name that
+    is not `charter`; the path arm returns the three watched files, the charter,
+    or paths under `docs/cells/`. The two sets are disjoint by construction, so
+    the guard is there against a future widening rather than against anything
+    reachable now -- stated because a reader who assumes it fires will conclude
+    the arms overlap, and they do not.
+    """
     lines: list[str] = []
-    touched = touched_doctrine(changed_paths(pr, repo))
+    paths = changed_paths(pr, repo) + renamed_from(pr, repo)
+    touched = touched_doctrine(paths)
+
+    # **No base, and a shipped cell changed, is a refusal rather than a pass.**
+    # The frontmatter question cannot be answered without a revision to compare
+    # against, and answering it "no" by default is how PR #269's description
+    # edit merged unflagged [#277] -- one such incident before the filing, not
+    # three; the constant above carries the count and why it is not three.
+    # Loud, like every other failure here.
+    if base is None:
+        unanswerable = [path for path in paths if _is_shipped_cell(path)]
+        if unanswerable:
+            raise CalloutError(
+                "this PR changes " + ", ".join(sorted(unanswerable))
+                + ", so whether a cell's description moved decides the callout -- "
+                "and no --base was given to compare against. Pass the base sha "
+                "(CI passes the pull request's own) and re-run"
+            )
+    else:
+        for path in touched_frontmatter(ROOT, base, head):
+            if path not in touched:
+                touched.append(path)
+
     comments, labels = _state(pr, repo)
     ours, foreign = find_callout(comments)
 
@@ -556,20 +821,53 @@ def run(pr: str, repo: str | None, *, dry_run: bool = False,
 def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(
-        description=
-        "Label and comment on a pull request that changes the doctrine or the shipped charter, so the owner reads the diff before merging. Exit 0 when the PR state matches its diff; non-zero turns the check red.",
+        description=CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--pr", required=True, type=int, help="pull request number")
     parser.add_argument("--repo", default=None, help="OWNER/NAME (default: the checkout's)")
     parser.add_argument("--base", default=None,
-                        help="revision to measure the always-on delta against; "
-                             "omitted, the callout states the total and no delta")
+                        help="the PR's base sha. Both the revision the frontmatter "
+                             "arm compares against and the one the always-on delta "
+                             "is measured from; omit it and this refuses any PR "
+                             "touching a shipped cell rather than guessing")
+    parser.add_argument("--head", default=None,
+                        help="revision holding this PR's cells; omitted, the "
+                             "working tree is read, which is what CI wants. Name "
+                             "it to replay a past PR without checking it out")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would change; touch nothing")
     args = parser.parse_args(argv)
+    # **A bulk replay must not write.** `--head` exists so a past pull request
+    # can be evaluated without checking it out, and the procedure that uses it
+    # is a loop over forty merged pull requests. Without `--dry-run` that loop
+    # labels and comments on every one of them, each carrying an always-on
+    # figure derived from the current working tree, since `_always_on_line`
+    # takes no head. Refused rather than trusted to the caller's flag order.
+    if args.head is not None and not args.dry_run:
+        print("::error title=doctrine-callout::--head is for replaying a past "
+              "pull request and must be given with --dry-run; without it a "
+              "replay writes a label and a comment to every PR it visits",
+              flush=True)
+        print("doctrine-callout: --head requires --dry-run", file=sys.stderr)
+        return FAILED
+    # **And --head without --base does nothing at all, silently.** `run()` takes
+    # the `base is None` branch, never calls `touched_frontmatter`, and discards
+    # the head -- so a replay reports path-arm findings only while the operator
+    # believes both arms ran. The shipped-cell refusal below catches most of it
+    # by accident, because a frontmatter edit usually puts the cell path in the
+    # diff; it misses a replay whose diff holds no shipped-cell path, and names
+    # the wrong flag when it does fire. Raised by the external pass on this PR.
+    if args.head is not None and args.base is None:
+        print("::error title=doctrine-callout::--head names the head side of a "
+              "comparison whose base side is --base, so without --base the "
+              "frontmatter arm does not run and the head is read by nothing",
+              flush=True)
+        print("doctrine-callout: --head requires --base", file=sys.stderr)
+        return FAILED
     try:
-        status, _ = run(args.pr, args.repo, dry_run=args.dry_run, base=args.base)
+        status, _ = run(args.pr, args.repo, dry_run=args.dry_run,
+                        base=args.base, head=args.head)
     except CalloutError as exc:
         reason = " ".join(str(exc).split())
         # A workflow error annotation, so the reason reaches the checks panel

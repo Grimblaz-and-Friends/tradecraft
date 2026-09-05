@@ -13,7 +13,7 @@
 ## The ceremony moments, here
 
 - **Convergence.** The brief is posted as a comment on the work's issue (file one if none exists) and the affirmation recorded on the issue naming that comment; the artifact reading it is posted once settled, before the first commit. Mechanical work — a typo, a dependency bump, an append to a record — proceeds straight to a PR.
-- **Release.** `ci.yml` flags any PR touching this file, `CLAUDE.md`, the `charter` cell, or a repo-only cell for the owner's specific review. [D-81]
+- **Release.** `ci.yml` flags any PR touching this file, `CLAUDE.md`, the `charter` cell or a repo-only cell — each entire — or any other cell's name and description, a rename out of any of them included, for the owner's specific review. **Other shipped cell bodies are not flagged.** [D-81] [D-394]
 
 ## The wall, before anything is edited
 
