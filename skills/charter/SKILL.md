@@ -23,7 +23,7 @@ Throughout, **the owner** is the human whose repository this is.
 
 Process weight concentrates at two moments; what runs between them is model judgment plus the standards carried in the skills.
 
-- **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets a brief settled with the owner and a pre-implementation artifact reading it. The **brief** is drafted and settled with them in conversation, where they affirm, amend, or reject, and is recorded where the work lives — the record of what was agreed, never where they first read it. The artifact is the session's; what it contains, how it is settled, and when the owner is next needed are the `engagement` cell's. Mechanical work proceeds without it; when in doubt of that, ask the cheap question.
+- **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets a brief settled with the owner and a pre-implementation artifact reading it. The artifact is the session's; what the brief contains and when they affirm it, what the artifact contains and how it is settled, where each is recorded, and when the owner is next needed are the `engagement` cell's. Mechanical work proceeds without it; when in doubt of that, ask the cheap question.
 - **Release.** Merging is the owner's, never the agent's. **Before a change merges, one that altered how a later session must work or what someone using the result can do owes a use of that result** — or one line saying why none happened; the `experience-session` cell carries both, and what that line must say.
 
 ## Review
