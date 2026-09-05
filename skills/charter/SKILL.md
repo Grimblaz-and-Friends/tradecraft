@@ -28,9 +28,9 @@ Process weight concentrates at two moments; what runs between them is model judg
 
 ## Review
 
-Every reviewable artifact states its purpose, audience, and success criteria — the `authoring` cell carries that header's standard. The review judges against that statement; its own charter, roster, evidence standards and dispositions travel with it, in the `adversarial-review` cell.
+Every reviewable artifact states its purpose, audience, and success criteria — the `authoring` cell carries that header's standard. The review judges against that statement; its own charter, roster, evidence standards and dispositions travel with it, in the `adversarial-review` cell, including what a finding earns outside a review.
 
-**Fix what needs no decision, whatever its scope** — a remedy needing neither the owner's attention, a design call, nor a change to what this change is, lands here; scope does not decide it. Needing any of the three, it is a decision rather than a fix: it goes to the owner argued, or to the board where it earns its own issue. Real but not yet worth acting on is **recorded**, not filed. **Fixing needs no permission; declining to fix does** — a drop, a record, or a retired lens is ruled by a stage that is not the session that built the change. Outside a review no such stage exists, so there the decline is recorded on the work itself; naming a finding in conversation is not a disposition.
+**Outside a review, a decline is recorded on the work itself** — no stage exists there to rule one, and naming a finding in conversation is not a disposition.
 
 ## Where content goes
 
