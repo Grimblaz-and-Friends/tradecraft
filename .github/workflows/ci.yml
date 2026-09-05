@@ -52,7 +52,12 @@ jobs:
   # The owner reads the doctrine diff himself before merging -- AGENTS.md,
   # CLAUDE.md, the shipped charter, or any repo-only cell under docs/cells/,
   # which carry the mechanics that used to sit in AGENTS.md and reached him
-  # through this job every time a PR touched them. CODEOWNERS was
+  # through this job every time a PR touched them. Those four are matched
+  # entire; every OTHER cell is matched on its name and description alone,
+  # which load in every session whether or not the cell fires, while its body
+  # does not reach him here (#277, #386). A rename out of any of them counts:
+  # the diff read names only a rename's destination, so the source comes from
+  # a second, narrower lookup (#293). CODEOWNERS was
   # the first mechanism for that and cannot be: it fires by requesting a review,
   # and GitHub never requests one from a pull request's own author — which today
   # every PR here has (#79). This is the callout that reaches him. One runner:

@@ -44,8 +44,10 @@ def test_expected_author_matches_the_rest_api_not_the_graphql_view():
 class Gh:
     """A stub `gh`: answers by argument prefix, records every call."""
 
-    def __init__(self, files: list[str], comments: list[dict], labels: list[str]):
+    def __init__(self, files: list[str], comments: list[dict], labels: list[str],
+                 renames: list[str] | None = None):
         self.files, self.comments, self.labels = files, comments, labels
+        self.renames = list(renames or [])
         self.calls: list[tuple[str, ...]] = []
         self.fail_on: str | None = None
 
@@ -57,6 +59,11 @@ class Gh:
             return "".join(f"{f}\n" for f in self.files)
         if args[0] == "api" and args[-1] == "[.labels[].name]":
             return json.dumps(self.labels)
+        # Before the comments branch: both are `api` reads whose --jq starts
+        # `.[] |`, and matching the looser one first would feed the rename
+        # lookup a page of comment objects.
+        if args[0] == "api" and args[-1] == dc.JQ_RENAMED:
+            return "".join(f"{path}\n" for path in self.renames)
         if args[0] == "api" and args[-1].startswith(".[] |"):
             return "".join(json.dumps(c) + "\n" for c in self.comments)
         return ""
@@ -89,8 +96,9 @@ class Gh:
 
 @pytest.fixture
 def gh(monkeypatch):
-    def make(files=("AGENTS.md",), comments=(), labels=()):
-        stub = Gh(list(files), [dict(c) for c in comments], list(labels))
+    def make(files=("AGENTS.md",), comments=(), labels=(), renames=()):
+        stub = Gh(list(files), [dict(c) for c in comments], list(labels),
+                  list(renames))
         monkeypatch.setattr(dc, "_gh", stub)
         return stub
     return make
@@ -198,7 +206,7 @@ def test_label_create_forces_and_carries_its_appearance(gh):
 # --- the negative case -------------------------------------------------------
 
 def test_non_doctrine_pr_gets_neither(gh):
-    stub = gh(["skills/authoring/SKILL.md", ".claude-plugin/plugin.json"])
+    stub = gh(["tools/lint.py", ".claude-plugin/plugin.json"])
     status, _ = dc.run("61", None)
     assert status == dc.OK
     assert not stub.did("pr", "edit")
@@ -207,7 +215,7 @@ def test_non_doctrine_pr_gets_neither(gh):
 
 
 def test_no_label_to_remove_is_not_a_removal(gh):
-    stub = gh(["skills/authoring/SKILL.md"], labels=[])
+    stub = gh(["tools/lint.py"], labels=[])
     dc.run("61", None)
     assert not stub.did("pr", "edit")
 
@@ -227,7 +235,7 @@ def test_a_foreign_comment_carrying_the_marker_does_not_suppress_the_callout(gh)
 def test_a_foreign_comment_is_never_edited(gh):
     """Editing one would destroy a third party's comment — in practice, the
     review report that quoted the marker."""
-    for files, labels in ((["skills/x/SKILL.md"], [dc.LABEL]), (["AGENTS.md"], [])):
+    for files, labels in ((["tools/lint.py"], [dc.LABEL]), (["AGENTS.md"], [])):
         stub = gh(files, comments=[REPORT], labels=labels)
         dc.run("79", None)
         assert stub.patch_calls() == [], f"edited a foreign comment (files={files})"
@@ -253,7 +261,7 @@ def test_our_own_callout_is_recognised(gh):
 # --- one rule for the comment body ------------------------------------------
 
 def test_dropping_the_doctrine_change_withdraws_the_callout(gh):
-    stub = gh(["skills/authoring/SKILL.md"], comments=[_callout()], labels=[dc.LABEL])
+    stub = gh(["tools/lint.py"], comments=[_callout()], labels=[dc.LABEL])
     status, _ = dc.run("79", None)
     assert status == dc.OK
     assert stub.did("pr", "edit", "79", "--remove-label")
@@ -279,7 +287,7 @@ def test_a_stale_touched_list_is_refreshed(gh):
 
 
 def test_an_already_withdrawn_callout_is_left_alone(gh):
-    stub = gh(["skills/x/SKILL.md"], comments=[WITHDRAWN_COMMENT])
+    stub = gh(["tools/lint.py"], comments=[WITHDRAWN_COMMENT])
     dc.run("79", None)
     assert stub.patch_calls() == []
 
@@ -301,8 +309,8 @@ def test_the_comment_read_walks_every_page(gh):
 
 @pytest.mark.parametrize("files, comments, labels, expect", [
     (["AGENTS.md"], (), (), "posting the callout"),
-    (["skills/x/SKILL.md"], [_callout()], [dc.LABEL], "removing the doctrine label"),
-    (["skills/x/SKILL.md"], [_callout()], [dc.LABEL], "updating the callout"),
+    (["tools/lint.py"], [_callout()], [dc.LABEL], "removing the doctrine label"),
+    (["tools/lint.py"], [_callout()], [dc.LABEL], "updating the callout"),
     (["AGENTS.md"], [WITHDRAWN_COMMENT], (), "updating the callout"),
     (["AGENTS.md", "CLAUDE.md"], [_callout()], [dc.LABEL], "updating the callout"),
 ])
@@ -325,8 +333,8 @@ def test_dry_run_reports_every_change_and_makes_none(gh, files, comments, labels
     ("label create", ["AGENTS.md"], (), ()),                  # label uncreatable
     ("--add-label", ["AGENTS.md"], (), ()),                   # label unappliable
     ("pr comment", ["AGENTS.md"], (), ()),                    # callout unpostable
-    ("--remove-label", ["skills/x/SKILL.md"], [_callout()], [dc.LABEL]),
-    ("PATCH", ["skills/x/SKILL.md"], [_callout()], [dc.LABEL]),
+    ("--remove-label", ["tools/lint.py"], [_callout()], [dc.LABEL]),
+    ("PATCH", ["tools/lint.py"], [_callout()], [dc.LABEL]),
 ])
 def test_every_gh_call_site_exits_non_zero_when_rejected(gh, capsys, fail_on,
                                                          files, comments, labels):
@@ -654,3 +662,258 @@ def test_every_ceiling_the_callout_states_is_the_one_in_force(tmp_path, monkeypa
         "the adopter total is still priced against the bare constant", admitted)
     assert f"{row_ceiling + 438:,} ({row_ceiling:,} plus 438 admitted)" in admitted, (
         "the per-runtime rows stopped inheriting the composition", admitted)
+
+
+# --- the rename arm (#293) ---------------------------------------------------
+#
+# The diff read names only a rename's destination, so a doctrine file moved
+# *out* of the doctrine looked like a change touching no doctrine at all. Both
+# polarities, because a lookup that always returned something would pass a
+# single-polarity test while flagging every pull request.
+
+def test_renamed_from_reports_the_source_path(gh):
+    stub = gh(["docs/values.md"], renames=["docs/north-star/values.md"])
+    assert dc.renamed_from("225", None) == ["docs/north-star/values.md"]
+    assert "--paginate" in stub.call_with("/files")
+
+
+def test_renamed_from_is_empty_when_nothing_was_renamed(gh):
+    gh(["AGENTS.md"])
+    assert dc.renamed_from("388", None) == []
+
+
+def test_a_doctrine_file_renamed_away_still_reaches_the_owner(gh):
+    """The headline case: the destination is not doctrine, the source is."""
+    gh(["docs/somewhere/AGENTS.md"], renames=["AGENTS.md"])
+    status, lines = dc.run("1", None, dry_run=True)
+    assert status == dc.OK
+    assert any("AGENTS.md" in line for line in lines)
+    assert any("applying the doctrine label" in line for line in lines)
+
+
+def test_a_repo_only_cell_renamed_out_of_its_directory_reaches_him_too(gh):
+    """The case with no `lint.py` backstop, which is why #293 was filed."""
+    gh(["docs/retired/board.md"], renames=["docs/cells/board/SKILL.md"])
+    status, lines = dc.run("1", None, dry_run=True)
+    assert status == dc.OK
+    assert any("docs/cells/board/SKILL.md" in line for line in lines)
+
+
+def test_a_rename_into_the_doctrine_is_not_reported_twice(gh):
+    """Both arms can see this one; the union must still name it once."""
+    gh(["AGENTS.md"], renames=["docs/draft-agents.md"])
+    assert dc.touched_doctrine(["AGENTS.md", "docs/draft-agents.md"]) == ["AGENTS.md"]
+
+
+# --- the frontmatter arm (#277) ----------------------------------------------
+#
+# A real git tree, because the arm reads blobs at revisions and a stub of that
+# would be a stub of the one thing under test.
+
+def _repo(tmp_path, cells: dict[str, str]):
+    import subprocess
+
+    def git(*args):
+        out = subprocess.run(["git", "-C", str(tmp_path), *args],
+                             stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True)
+        assert out.returncode == 0, f"git {' '.join(args)}: {out.stderr}"
+        return out.stdout
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.invalid")
+    git("config", "user.name", "T")
+    _write(tmp_path, cells)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    return git
+
+
+def _write(tmp_path, cells: dict[str, str]):
+    for name, description in cells.items():
+        cell = tmp_path / dc.roster.CELLS / name
+        cell.mkdir(parents=True, exist_ok=True)
+        (cell / dc.roster.CELL_FILE).write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nBody.\n",
+            encoding="utf-8", newline="\n")
+
+
+def test_an_unchanged_tree_reports_no_cell(tmp_path):
+    _repo(tmp_path, {"alpha": "does a thing", "beta": "does another"})
+    assert dc.touched_frontmatter(tmp_path, "HEAD") == []
+
+
+def test_a_changed_description_is_reported(tmp_path):
+    _repo(tmp_path, {"alpha": "does a thing", "beta": "does another"})
+    _write(tmp_path, {"alpha": "does a DIFFERENT thing"})
+    assert dc.touched_frontmatter(tmp_path, "HEAD") == [
+        f"{dc.roster.CELLS}/alpha/{dc.roster.CELL_FILE}"]
+
+
+def test_a_body_only_change_is_not_reported(tmp_path):
+    """The negative control the owner's ruling turns on: bodies do not fire.
+
+    Without this, an implementation that flagged every cell edit -- the cheap
+    fix declined on #277 and ruled against on #386 -- passes the test above.
+    """
+    _repo(tmp_path, {"alpha": "does a thing"})
+    path = tmp_path / dc.roster.CELLS / "alpha" / dc.roster.CELL_FILE
+    path.write_text(path.read_text(encoding="utf-8") + "\nA new binding rule.\n",
+                    encoding="utf-8", newline="\n")
+    assert dc.touched_frontmatter(tmp_path, "HEAD") == []
+
+
+def test_the_charter_is_left_to_the_path_arm(tmp_path):
+    """It is watched entire by DOCTRINE_PATHS; reporting it here duplicates it."""
+    assert "charter" in dc.FRONTMATTER_EXCLUDED
+    _repo(tmp_path, {"charter": "the binding half", "alpha": "does a thing"})
+    _write(tmp_path, {"charter": "REWRITTEN", "alpha": "REWRITTEN too"})
+    assert dc.touched_frontmatter(tmp_path, "HEAD") == [
+        f"{dc.roster.CELLS}/alpha/{dc.roster.CELL_FILE}"]
+
+
+def test_a_cell_that_disappears_is_reported(tmp_path):
+    """A shipped cell renamed out of `skills/` -- present at base, gone at head.
+
+    This is what makes the Release bullet's rename clause true for a shipped
+    cell, where `renamed_from` makes it true for the watched paths.
+    """
+    _repo(tmp_path, {"alpha": "does a thing", "beta": "does another"})
+    import shutil
+    shutil.rmtree(tmp_path / dc.roster.CELLS / "beta")
+    assert dc.touched_frontmatter(tmp_path, "HEAD") == [
+        f"{dc.roster.CELLS}/beta/{dc.roster.CELL_FILE}"]
+
+
+def test_crlf_on_disk_is_not_a_change(tmp_path):
+    """This tree stores LF and a text-mode write leaves CRLF, which the doctrine
+    calls expected. Un-normalised, every cell would differ on every run and the
+    callout would fire on every pull request -- the false callout this module
+    exists to avoid, arriving through the guard added to prevent a miss.
+    """
+    _repo(tmp_path, {"alpha": "does a thing"})
+    path = tmp_path / dc.roster.CELLS / "alpha" / dc.roster.CELL_FILE
+    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    assert dc.touched_frontmatter(tmp_path, "HEAD") == []
+
+
+def test_an_unreadable_base_is_loud_rather_than_empty(tmp_path):
+    """`git show` cannot distinguish a missing ref from a missing path, so an
+    unchecked bad base would read as every cell absent and flag everything.
+    """
+    _repo(tmp_path, {"alpha": "does a thing"})
+    with pytest.raises(dc.CalloutError) as caught:
+        dc.touched_frontmatter(tmp_path, "no-such-ref")
+    assert "no-such-ref" in str(caught.value)
+
+
+def test_head_lets_a_past_range_be_replayed(tmp_path):
+    """Without `--head` every base compares against one working tree, which
+    reports other pull requests' changes as though they belonged to this one.
+    """
+    git = _repo(tmp_path, {"alpha": "first"})
+    _write(tmp_path, {"alpha": "second"})
+    git("commit", "-aqm", "second")
+    _write(tmp_path, {"alpha": "third"})
+    git("commit", "-aqm", "third")
+    cell = f"{dc.roster.CELLS}/alpha/{dc.roster.CELL_FILE}"
+    assert dc.touched_frontmatter(tmp_path, "HEAD~2", "HEAD~1") == [cell]
+    assert dc.touched_frontmatter(tmp_path, "HEAD~1", "HEAD~1") == []
+
+
+# --- the union, and the refusal ----------------------------------------------
+
+def test_a_shipped_cell_change_without_a_base_is_refused(gh, capsys):
+    """Answering the frontmatter question "no" by default is how a description
+    edit merged unflagged three times. Refused, not defaulted.
+    """
+    gh(["skills/engagement/SKILL.md"])
+    assert dc.main(["--pr", "1"]) == dc.FAILED
+    err = capsys.readouterr().err
+    assert "--base" in err and "skills/engagement/SKILL.md" in err
+
+
+def test_main_threads_its_head_argument_through(gh, monkeypatch):
+    seen = {}
+
+    def fake_run(pr, repo, *, dry_run=False, base=None, head=None):
+        seen.update(base=base, head=head)
+        return dc.OK, []
+
+    monkeypatch.setattr(dc, "run", fake_run)
+    assert dc.main(["--pr", "1", "--base", "abc", "--head", "def"]) == dc.OK
+    assert seen == {"base": "abc", "head": "def"}
+
+
+# --- what every surface claims (criterion 6) ---------------------------------
+
+def test_the_label_description_fits_githubs_cap():
+    assert len(dc.LABEL_DESC) <= 100
+
+
+def test_every_surface_stating_the_reach_names_what_it_now_reaches():
+    """Two of these were stale before this change: they named the doctrine and
+    the charter while repo-only cells had been firing since #260. A reach stated
+    in four places drifts in whichever one nothing reads.
+    """
+    surfaces = {
+        "LABEL_DESC": dc.LABEL_DESC,
+        "WITHDRAWN": dc.WITHDRAWN,
+        "argparse description": dc.main.__doc__ or "",
+    }
+    for label in ("LABEL_DESC", "WITHDRAWN"):
+        text = surfaces[label].lower()
+        assert "repo-only cell" in text, f"{label} does not name repo-only cells"
+        assert "description" in text, f"{label} does not name a cell description"
+
+
+def test_the_release_bullet_and_the_tool_agree_about_bodies():
+    """The sentence the owner reads must not deny the one carve-out the code
+    makes. `FRONTMATTER_EXCLUDED` holds the charter *because* the path arm
+    watches it entire, so a bullet saying shipped bodies are never flagged is
+    false of this module.
+    """
+    bullet = (dc.ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    line = next(l for l in bullet.splitlines() if l.startswith("- **Release.**"))
+    assert "Other shipped cell bodies are not flagged" in line, (
+        "the bullet must carve out the charter, which is a shipped cell "
+        "whose body IS flagged")
+    assert "charter" in line
+
+
+def test_a_cell_body_edit_earns_neither_label_nor_comment(gh, monkeypatch):
+    """The #386 ruling at the level the owner sees it.
+
+    The arm's own git-backed tests pin what it reports; this pins what `run()`
+    does with a shipped cell whose description did *not* move -- the ordinary
+    case, and the one that would put the flag on seven of every eight pull
+    requests if bodies fired.
+    """
+    monkeypatch.setattr(dc, "touched_frontmatter", lambda *a, **k: [])
+    stub = gh(["skills/engagement/SKILL.md", ".claude-plugin/plugin.json"])
+    status, lines = dc.run("1", None, base="abc")
+    assert status == dc.OK
+    assert any("touches no doctrine file" in line for line in lines)
+    assert not stub.did("pr", "comment")
+    assert not stub.did("pr", "edit")
+
+
+def test_a_moved_description_earns_both(gh, monkeypatch):
+    """The other polarity of the same decision, and the point of #277."""
+    cell = "skills/engagement/SKILL.md"
+    monkeypatch.setattr(dc, "touched_frontmatter", lambda *a, **k: [cell])
+    stub = gh([cell, ".claude-plugin/plugin.json"])
+    status, lines = dc.run("1", None, base="abc", dry_run=True)
+    assert status == dc.OK
+    assert any(cell in line for line in lines)
+    assert any("applying the doctrine label" in line for line in lines)
+
+
+def test_the_union_never_names_a_path_twice(gh, monkeypatch):
+    """Both arms can reach a repo-only cell; `Touched:` must name it once."""
+    cell = "docs/cells/board/SKILL.md"
+    monkeypatch.setattr(dc, "touched_frontmatter", lambda *a, **k: [cell])
+    gh([cell])
+    status, lines = dc.run("1", None, base="abc", dry_run=True)
+    touched_line = next(l for l in lines if "touches" in l)
+    assert touched_line.count(cell) == 1
