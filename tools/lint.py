@@ -722,22 +722,32 @@ RUNS_SCRIPT = re.compile(r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout
 # The event is named; the gate's exact wording is not, so a lawful rewrite
 # (adding `&& !draft`, or moving to ${{ }} form) does not fail a required check.
 GATED_ON_PR = re.compile(r"^\s+if:.*pull_request")
-# The delta's base side reads blobs at another revision, which a shallow clone
-# does not have: the read fails, the delta drops out, and the callout states a
-# total with no direction while every check stays green. The job cannot go red
-# for its own missing figure, so the pin is here. `0` and not a positive depth
-# -- a bounded depth is still a shallow clone, and the base sits any distance
-# back.
+# **The base revision is read twice, and the second read is the gate.** The
+# delta's base side reads blobs at another revision; so does the frontmatter
+# arm that decides whether a cell's description moved [#277]. A shallow clone
+# has neither object, and the two failures are not alike: the delta degrades to
+# a total with no direction, while the arm raises and the job goes red on
+# *every* pull request, not only doctrine ones. An earlier wording here said
+# the job could not go red for its own missing figure and that every check
+# stayed green -- true before the arm existed, false now. `0` and not a
+# positive depth -- a bounded depth is still a shallow clone, and the base sits
+# any distance back.
 FULL_HISTORY = re.compile(
     r"^\s+fetch-depth:\s*['\"]?0['\"]?\s*(?:#.*)?$"
 )
 # The delta's *request*, where the pin above is only its precondition. Both
 # seams, because neither regex can see the other's: deleting `--base` leaves
-# the env line standing, and deleting the env line leaves the run line
-# standing while `--base "$BASE_SHA"` expands to `--base ""` -- falsy, so the
-# delta drops out with the command still reading correctly. Four one-token
-# deletions across these two lines each rendered the callout the review had
-# already ruled an unmet criterion, with the whole suite green.
+# the env line standing, and deleting the env line leaves the run line standing
+# while `--base "$BASE_SHA"` expands to `--base ""`. Four one-token deletions
+# across these two lines each rendered the callout the review had already ruled
+# an unmet criterion, with the whole suite green.
+# **The two deletions no longer fail the same way, and neither is silent.**
+# `--base ""` is not None, so `run()` hands it to the frontmatter arm, which
+# raises: the job reddens on every pull request. `--base` deleted outright
+# leaves `base is None`, which refuses only a PR touching a shipped cell. The
+# split is `if not base:` in `_always_on_delta` against `if base is None:` in
+# `run()` -- deliberate, because a figure may degrade and a gate may not, and
+# stated here because an earlier wording called the empty case silent.
 BASE_FLAG = re.compile(
     r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout\.py\b.*--base\b"
 )
@@ -2561,14 +2571,15 @@ def check_doctrine_callout(root: Path) -> list[str]:
         (RUNS_SCRIPT, "does not run tools/doctrine_callout.py"),
         (GATED_ON_PR, "is not gated on a pull_request event"),
         (FULL_HISTORY, "does not check out full history (`fetch-depth: 0`), "
-                       "so the base revision is unreadable and the callout "
-                       "loses this PR's own movement"),
+                       "so the base revision is unreadable: the callout loses "
+                       "this PR's movement AND the frontmatter arm raises, "
+                       "reddening this job on every pull request"),
         (BASE_FLAG, "does not pass `--base` to tools/doctrine_callout.py, so "
-                    "the callout states a total and says nothing about "
-                    "direction"),
+                    "the frontmatter arm never runs and no description edit is "
+                    "ever flagged -- the defect #277 was filed for"),
         (BASE_ENV, "does not put the base revision in the environment as "
-                   "`BASE_SHA`, so `--base` expands to nothing and the delta "
-                   "is dropped with the command still reading correctly"),
+                   "`BASE_SHA`, so `--base` expands to `\"\"`, which is not "
+                   "None and so reaches the frontmatter arm and raises"),
     ):
         if not any(pattern.match(line) for line in block):
             findings.append(
