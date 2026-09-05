@@ -5,7 +5,7 @@ description: Adversarial review of an artifact against its stated purpose — a 
 
 # adversarial-review
 
-**Purpose:** find the defects that matter and only those, by prosecution under evidence rules. **Audience:** the session dispatching a review, and every seat, defense, and judge it dispatches. **Success:** the review answers one question — *is the artifact fit for its stated purpose?* — with every ruling traceable to evidence, and leaves the artifact no larger than that answer requires.
+**Purpose:** find the defects that matter and only those, by prosecution under evidence rules. **Audience:** the session dispatching a review, every seat, defense, and judge it dispatches, and any session deciding what a finding met outside one earns. **Success:** the review answers one question — *is the artifact fit for its stated purpose?* — with every ruling traceable to evidence, and leaves the artifact no larger than that answer requires.
 
 **Pause discipline: typed-halt.** From first dispatch to final ruling the pipeline is atomic — no questions mid-run, no interim fixes, no edits to the artifact under review. A finding that needs an owner decision is surfaced in the final report as exactly that, argued: the live options, each with pros and cons, and a recommendation among them. Safe in attended and unattended lanes alike.
 
@@ -29,7 +29,7 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 
 - **Staffing a panel, or any review role** → `references/roster.md`: the seats, when a fifth sits, what the width rests on, the cold boundary operationally, and the tier rule.
 - **Building a dispatch** → `references/dispatch.md`: the three parts in order, what a dispatch read cold does not receive, and which roles take no dispatcher's note.
-- **Merging findings, defending, ruling as the terminal stage, or deciding what a finding met outside a review earns** → `references/arbitration.md`: the merge's ownership and the consequence shape it records, the defense's verdicts and the price it states, and the terminal stage's docket and two clauses.
+- **Merging findings, defending, ruling as the terminal stage, or deciding what a finding met outside a review earns** → `references/arbitration.md`: the merge's ownership and the consequence shape it records, the defense's verdicts and the price it states, and the terminal stage's docket and two clauses, the fix bar among them.
 - **A fix batch that has landed, an open pull request an automated reviewer may have posted on, or a review tool you invoked yourself** → `references/after-the-fix.md`: the executable floor the batch owes, the use that reads the result, every external comment's disposition, and the commissioned pass.
 - **Closing the review, or ruling `record`** → `references/the-record.md`: what the final report carries, the index row, and the entry a `record` appends.
 

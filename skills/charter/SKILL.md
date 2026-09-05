@@ -28,9 +28,9 @@ Process weight concentrates at two moments; what runs between them is model judg
 
 ## Review
 
-Every reviewable artifact states its purpose, audience, and success criteria — the `authoring` cell carries that header's standard. The review judges against that statement; its own charter, roster, evidence standards and dispositions travel with it, in the `adversarial-review` cell.
+Every reviewable artifact states its purpose, audience, and success criteria — the `authoring` cell carries that header's standard. The review judges against that statement; its own charter, roster, evidence standards and dispositions travel with it, in the `adversarial-review` cell, including what a finding earns outside a review.
 
-**Outside a review, a decline is recorded on the work itself** — no stage exists there to rule one, and naming a finding in conversation is not a disposition. What a finding earns instead — fixed here whatever its scope, put to the owner or the board, or recorded — is the `adversarial-review` cell's.
+**Outside a review, a decline is recorded on the work itself** — no stage exists there to rule one, and naming a finding in conversation is not a disposition.
 
 ## Where content goes
 

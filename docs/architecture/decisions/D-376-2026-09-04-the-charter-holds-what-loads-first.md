@@ -16,7 +16,7 @@ Two things already on the record say the same and neither had been cited on the 
 
 **The incident is this change's own drafting session**, which is why this is admitted at all — the charter refuses an agent-proposed rule absent an incident from real work, and *"a review finding about governing prose is not an incident."* That session wrote three briefs against the charter's compressed form spec. Scored against the six rules at `skills/engagement/SKILL.md:16-21`, the two the charter carried were broken once between them and the four carried only in the cell were broken seven times.
 
-**The test keeps as well as it cuts, and that is load-bearing rather than incidental.** What has no other home stayed whole: the positioning paragraph; Authority; the mechanical-work exemption, whose only other carrier is repo-only `docs/cells/landing` and so reaches no adopter; and the whole fix-bar paragraph, every sentence of which fires *outside* a review where no cell is loaded — including its own *"Outside a review no such stage exists."*
+**The test keeps as well as it cuts, and that is load-bearing rather than incidental.** What has no other home stayed whole: the positioning paragraph; Authority; the mechanical-work exemption, whose only other carrier is repo-only `docs/cells/landing` and so reaches no adopter; and the whole fix-bar paragraph, every sentence of which fires *outside* a review where no cell is loaded — including its own *"Outside a review no such stage exists."* [corrected — see Erratum]
 
 **One statement was corrected rather than routed.** `exactly` left *"Process weight concentrates at exactly two moments"*, which PR #364's two-round cold-check cap had made false and which recorded row 194 names along with two further claims narrowed by the same cap.
 
@@ -49,3 +49,9 @@ Two things already on the record say the same and neither had been cited on the 
 The affirmed brief is on [#303](https://github.com/Grimblaz-and-Friends/tradecraft/issues/303#issuecomment-5546285274), its affirmation the comment naming it, and the settled artifact [here](https://github.com/Grimblaz-and-Friends/tradecraft/issues/303#issuecomment-5546485025). The first brief and its affirmation stand as the record of what was agreed at the time and are superseded on method and scope framing, not on purpose or on any exclusion.
 
 The cold check ran two rounds, each a fresh dispatch verifying the artifact's sha256 and byte count and confirming the tree at `fcbb27d`. Round 1 returned `would not` on one point — the artifact specified the fix-bar paragraph two incompatible ways, so an implementer executing it literally would have left the rule in the charter and written a second copy into a cell at its ceiling. That is the defect this entry's rule exists to prevent, produced by the change that removes it, and caught by the instrument. Round 2 returned `would`.
+
+## Erratum
+
+**Corrected 2026-09-04 (PR #388).** The sentence at *The test keeps as well as it cuts* lists the fix-bar paragraph among what *"has no other home"*. Four of its five sentences had one. The demonstrator is this entry's own **Rejected** section, which states it and cites the lines: *"`skills/adversarial-review/references/arbitration.md:15` states the whole fix/decision/record trichotomy and `:25` carries “Fixing needs no permission; declining to fix does” verbatim."* Read it there.
+
+**What is not corrected.** The clause *"every sentence of which fires outside a review where no cell is loaded"* is true and stands; so does the decision to keep the paragraph in this change. A correction repairs a description of where text lives and never re-decides a ruling.
