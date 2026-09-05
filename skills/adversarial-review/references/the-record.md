@@ -1,12 +1,14 @@
 # Ending the review
 
-**Loaded when** you are closing a review: writing its final report, appending its row to the review index, or ruling `record` and writing the entry. Nothing before the terminal ruling needs it.
+**Loaded when** you are closing a review: writing its final report, appending its row to the review index, or ruling `record` and writing the entry — **or writing the dispatches whose output the report reads**, which is a job before the terminal ruling that needs this file.
+
+**Four of the fields below this stage cannot produce for itself, and each has its own producer.** A seat's raw count, and the revision and tree each recipient reports, are asked for in the dispatch (`../references/dispatch.md`). Each high's finders are credited at the merge (`../references/arbitration.md`). What the review cost is read off what each dispatch returned rather than from any stage's report, so it is captured rather than asked of anyone. **A field nobody asked for is silently empty here**, and reads exactly like a field that had nothing to say.
 
 The final report, posted to the PR or issue, carries:
 
 - The lane and why, and the purpose statement judged against.
-- **Per-seat counts** — raw / merged / sustained, highs broken out — with each seat's model and runtime. A seat's `merged` counts its own findings surviving the merge. **Its `high` counts the sustained highs that seat is credited on, so the column carries credits and never distinct highs** [D-185]. The unit counted throughout is the finding as originated and dispositioned, never a row of a ruling table.
-- **The revision each dispatched recipient reported working at**, as it stated it, **or that it stated none** — so a recipient that judged text the change had already replaced is legible to a reader who was not in it, and not only to itself. Per recipient, a panel being one stage and five seats.
+- **Per-seat counts** — raw / merged / sustained, highs broken out — with each seat's model and runtime. **The raw count is the seat's own to report**; the rest this stage derives. A seat's `merged` counts its own findings surviving the merge. **Its `high` counts the sustained highs that seat is credited on, so the column carries credits and never distinct highs** [D-185]. The unit counted throughout is the finding as originated and dispositioned, never a row of a ruling table.
+- **The revision each dispatched recipient reported working at**, as it stated it, **or that it stated none**, **and whether it reported its tree its own or shared** — so a recipient that judged text the change had already replaced, or worked a tree another stage was writing in, is legible to a reader who was not in it, and not only to itself. Per recipient, a panel being one stage and five seats.
 - **Each sustained high's finders** — every credited seat as the merge records them, primary first and a merge-added co-finder labeled as its own; or the stage or seat that originated it where no merge carried it; and where a merge carried it with no finder list to copy, that fact.
 - **Every finding's disposition**, with each drop's one-line reason, each record's entry, and each handed-on decision's destination.
 - **What the review cost to run, and where each sustained high landed**, wherever the repository's index records either — so the row's values have a prior statement to be read against, which is what every other field on that row already has.
