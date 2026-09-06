@@ -1,6 +1,6 @@
 ---
 name: filing
-description: How a piece of work gets onto the board — the search that runs before a new issue is created, the ties that put its relationship to the board on the record at birth, and the line between the evidence a filing carries and the design it leaves for whoever picks it up. Use when about to create an issue, or when deciding whether something belongs on one that already exists; not for deciding whether a finding is worth filing at all, and not for the pre-implementation artifact written when the work is picked up.
+description: How a piece of work gets onto the board — the search that runs before a new issue is created, the ties that put its relationship to the board on the record at birth, and the line between the evidence a filing carries and the design it leaves for whoever picks it up. Use when about to create an issue, when deciding whether something belongs on one that already exists, or when deciding whether a finding about governing prose earns one at all; not for the pre-implementation artifact written when the work is picked up.
 ---
 
 # filing
@@ -65,7 +65,9 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 
 ## Creation carries the want; pickup does the work
 
-**Carried at creation:** the want or defect in plain terms; the evidence that makes it real; why it will get picked up; the ties above; and what discovery must settle, named as deliberately deferred.
+**Carried at creation:** the want or defect in plain terms; the evidence that makes it real; the wrong action, where the subject is governing prose; why it will get picked up; the ties above; and what discovery must settle, named as deliberately deferred.
+
+**A filing whose subject is governing prose names the wrong action** — who acts wrongly today, in what situation, and what they do wrong. Governing prose is prose a later session is expected to act on, so a defect in it that changes no action is a sentence somebody would rather were different, and prose is not improved into a rule: without the wrong action it is not filed, whatever is wrong with the sentence. The action is one taken **today**, under the text as it stands, and its situation concrete enough to put to a session holding none of this history — naming it is not the same as having demonstrated it, and the floor below is what a pickup confirms it against. **A breached rule's own sentence stays the observation**, as below; it is the evidence, never the whole of what is carried.
 
 **Left for pickup:** the framing, the options and their argument, the remedy design, the pre-implementation artifact. Filing is not convergence.
 
