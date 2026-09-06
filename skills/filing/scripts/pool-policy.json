@@ -3,12 +3,12 @@
 
   "axes": {
     "severity": {
-      "meaning": "how bad this is if nothing is done",
+      "meaning": "how bad this is if nothing is done, 4 the worst",
       "color": "B60205",
       "values": {"sev:1": 1, "sev:2": 2, "sev:3": 3, "sev:4": 4}
     },
     "urgency": {
-      "meaning": "how soon this needs attention",
+      "meaning": "how soon this needs attention, 4 the soonest",
       "color": "D93F0B",
       "values": {"urg:1": 1, "urg:2": 2, "urg:3": 3, "urg:4": 4}
     }
