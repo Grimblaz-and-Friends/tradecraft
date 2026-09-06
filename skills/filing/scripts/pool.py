@@ -409,12 +409,11 @@ def _header(policy: dict) -> str:
     return "issue    " + "  ".join(cells) + "  title"
 
 
-def cmd_list(policy: dict, source: Path, repo: str | None, limit: int | None) -> int:
+def cmd_list(policy: dict, repo: str | None, limit: int | None) -> int:
     if limit is not None and limit < 1:
         raise PoolError("--limit must be a whole number of at least 1")
     pool, framed = read_pool(policy, repo)
     unrated = [it for it in pool if not is_rated(it, policy)]
-    print(f"policy: {source}")
     print(f"pool: {len(pool)}   framed: {len(framed)}   unrated in pool: {len(unrated)}")
     print(_header(policy))
     for item in (pool[:limit] if limit is not None else pool):
@@ -584,6 +583,9 @@ def resolve_ratings(policy: dict, labels: list[str]) -> dict[str, str]:
 def cmd_rate(policy: dict, repo: str | None, number: int,
              chosen: dict[str, str]) -> int:
     add, remove = [], []
+    # Once, not per axis: the read does not depend on which axis is being set,
+    # so rating both in one call used to make two identical `gh issue view`s.
+    carried = set(issue_labels(number, repo))
     for axis_name, label in chosen.items():
         axis = policy["axes"][axis_name]
         add.append(label)
@@ -600,7 +602,6 @@ def cmd_rate(policy: dict, repo: str | None, number: int,
         # the state before `labels` has been run -- so the unconditional form
         # made the first `rate` in any repository fail at the wire, on the one
         # command the cell tells a filer to use.
-        carried = set(issue_labels(number, repo))
         remove += [other for other in axis["values"]
                    if other != label and other in carried]
     edit_labels(number, policy, add=add, remove=remove, repo=repo)
@@ -668,8 +669,13 @@ def dispatch(args: argparse.Namespace) -> int:
     policy = load_policy(source)
     if args.command == "policy":
         return cmd_policy(policy, source)
+    # Every command says which policy it resolved, before it acts. `--repo`
+    # steers the wire and the policy comes from the working directory, so a
+    # write against another repository carries this one's vocabulary -- and the
+    # commands that write are the ones that used to say nothing at all.
+    print(f"policy: {source}")
     if args.command == "list":
-        return cmd_list(policy, source, args.repo, args.limit)
+        return cmd_list(policy, args.repo, args.limit)
     if args.command == "framed":
         return cmd_framed(policy, args.repo)
     if args.command == "show":

@@ -615,7 +615,7 @@ def test_list_refuses_a_limit_below_one(monkeypatch):
     stub_issues(monkeypatch, [issue(i) for i in range(1, 6)])
     for bad in (0, -1):
         with pytest.raises(pool.PoolError):
-            pool.cmd_list(policy_dict(), pool.DEFAULT_POLICY, None, bad)
+            pool.cmd_list(policy_dict(), None, bad)
 
 
 def test_a_small_but_fully_rated_pool_gets_no_unrated_caveat(monkeypatch, capsys):
@@ -703,6 +703,41 @@ def test_the_cli_refuses_a_negative_count_rather_than_raising_most_of_the_pool(
         [issue(i, labels=["sev:2", "urg:2"]) for i in range(1, 11)]))
     assert cli(monkeypatch, "shortlist", "--count", "-1") == 1
     assert "at least 1" in capsys.readouterr().err
+
+
+def test_every_command_says_which_policy_it_resolved(monkeypatch, capsys):
+    """`--repo` steers the wire while the policy comes from the working
+    directory, so a write against another repository carries this one's
+    vocabulary. The commands that write said nothing at all about which policy
+    they were writing from."""
+    monkeypatch.setattr(pool, "gh", lambda args: json.dumps([]))
+    for argv in (["framed"], ["list"], ["shortlist"], ["labels", "--dry-run"]):
+        cli(monkeypatch, *argv)
+        out = capsys.readouterr().out
+        assert out.startswith("policy: "), (argv, out[:80])
+
+
+def test_a_write_command_names_its_policy_before_it_writes(monkeypatch, capsys):
+    """The sharp case: the label is written from the local policy even when
+    --repo points elsewhere, so the line has to precede the write."""
+    order = []
+    monkeypatch.setattr(pool, "gh", lambda args: order.append("wrote") or "")
+    monkeypatch.setattr(pool, "issue_labels", lambda number, repo=None: [])
+    cli(monkeypatch, "--repo", "other/repo", "frame", "7")
+    out = capsys.readouterr().out
+    assert out.startswith("policy: ")
+    assert order == ["wrote"]
+
+
+def test_rating_two_axes_reads_the_issue_once(monkeypatch, capsys):
+    """The read does not depend on the axis, so rating both used to make two
+    identical `gh issue view` calls."""
+    reads = []
+    monkeypatch.setattr(pool, "gh", lambda args: "")
+    monkeypatch.setattr(pool, "issue_labels",
+                        lambda number, repo=None: reads.append(number) or [])
+    pool.cmd_rate(policy_dict(), None, 5, {"severity": "sev:2", "urgency": "urg:1"})
+    assert reads == [5]
 
 
 def test_the_cli_reports_a_refusal_without_a_traceback(monkeypatch, capsys):
