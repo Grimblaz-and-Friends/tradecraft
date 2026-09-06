@@ -29,7 +29,7 @@ step-1 read costs a redundant add and never a duplicate -- and because step 3
 is the gate that everything downstream waits on.
 
 Usage:  python tools/board.py show   [--plan PATH]
-        python tools/board.py sync   [--dry-run]
+        python tools/board.py sync   [--dry-run] [--allow-empty]
         python tools/board.py apply  --plan PATH [--dry-run]
         python tools/board.py note   --body PATH
         python tools/board.py next
@@ -38,7 +38,7 @@ Usage:  python tools/board.py show   [--plan PATH]
 
   next   the answer: the first item not already being worked, with its title
   show   read the board and write the current state as a plan file
-  sync   steps 1-3: reconcile membership against the open set, then settle
+  sync   steps 1-3: reconcile membership against the framed set, then settle
   apply  step 4: order and label the board from a plan file
   note   step 5: post the refresh note as a project status update
   notes  read the refresh notes back, newest first
@@ -47,6 +47,7 @@ Usage:  python tools/board.py show   [--plan PATH]
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import os
@@ -57,6 +58,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
+
+# The pool's transport ships in the filing skill; this reads its policy to
+# learn which label marks decided work, because the board's membership is
+# now that set. Repo-only code importing shipped code is the lawful
+# direction, and resolving from this file rather than the working directory
+# is what lets the script run from any cwd. One owner for the label name:
+# a second copy here would drift from the policy the pool actually reads.
+_POOL_SPEC = importlib.util.spec_from_file_location(
+    "filing_pool",
+    Path(__file__).resolve().parent.parent / "skills" / "filing" / "scripts" / "pool.py",
+)
+pool = importlib.util.module_from_spec(_POOL_SPEC)
+_POOL_SPEC.loader.exec_module(pool)
+
+ROOT = Path(__file__).resolve().parent.parent
 
 OWNER = os.environ.get("TRADECRAFT_BOARD_OWNER", "Grimblaz-and-Friends")
 REPO = os.environ.get("TRADECRAFT_BOARD_REPO", "tradecraft")
@@ -317,17 +333,18 @@ def format_plan(rows: list[Row]) -> str:
 # ------------------------------------------------------------------- the jobs
 
 
-def reconcile(board: list[int], open_issues: list[int]) -> tuple[list[int], list[int]]:
+def reconcile(board: list[int], target: list[int]) -> tuple[list[int], list[int]]:
     """Step 2. What to add to the board, and what to archive off it.
 
-    Never raises. An open issue absent from the board is ordinary work -- it is
-    the normal state after any filing -- and a board item no longer open is
-    ordinary too. The caller does both and does not stop for either.
+    Never raises. A framed issue absent from the board is ordinary work -- it
+    is the normal state after any pick -- and a board item that is no longer
+    framed, because it closed or was returned to the pool, is ordinary too. The
+    caller does both and does not stop for either.
     """
-    board_set, open_set = set(board), set(open_issues)
+    board_set, target_set = set(board), set(target)
     return (
-        sorted(open_set - board_set),
-        sorted(board_set - open_set),
+        sorted(target_set - board_set),
+        sorted(board_set - target_set),
     )
 
 
@@ -479,16 +496,21 @@ def gql(query: str, **variables: object) -> dict:
     return data["data"]
 
 
-def open_issues() -> dict[int, str]:
+def framed_issues() -> dict[int, str]:
     """The target membership, number -> node id, in one call.
 
-    Always the issue list, never the board's own count: the board's ordered
-    connection reports a short list and a matching short `totalCount` together,
-    so it cannot be asked whether it is complete.
+    **The framed set, not the open set.** An open issue is in the pool until
+    somebody decides it is worth doing, and the board holds what has been
+    decided on; the label that records that decision is the pool policy's, read
+    rather than restated here. Everything else about this read is unchanged and
+    for the same reason: always the issue list, never the board's own count,
+    because the board's ordered connection reports a short list and a matching
+    short `totalCount` together and so cannot be asked whether it is complete.
     """
+    label = pool.load_policy(pool.find_policy(ROOT))["framed"]["label"]
     raw = gh([
         "issue", "list", "--repo", f"{OWNER}/{REPO}", "--state", "open",
-        "--limit", "1000", "--json", "number,id",
+        "--label", label, "--limit", "1000", "--json", "number,id",
     ])
     return {item["number"]: item["id"] for item in json.loads(raw)}
 
@@ -867,16 +889,30 @@ def cmd_show(plan_path: Path | None) -> int:
     return 0
 
 
-def cmd_sync(dry_run: bool) -> int:
+def cmd_sync(dry_run: bool, allow_empty: bool = False) -> int:
     board = Board()
     members = board.members()
-    node_ids = open_issues()
+    node_ids = framed_issues()
     target = sorted(node_ids)
     to_add, to_archive = reconcile(members, target)
+    # An empty framed set with a populated board is the shape a setup mistake
+    # takes -- the pool's labels never created, or nothing framed yet -- and
+    # the shape a legitimate empty board takes, when the last framed issue
+    # closes. The two are indistinguishable from here, and one of them archives
+    # the whole board. So it is refused and the operator says which it is: the
+    # cheap answer is right nearly always, and the expensive one is silent.
+    if members and not target and not allow_empty:
+        raise BoardError(
+            f"nothing is framed, and the board holds {len(members)} items, so "
+            f"this sync would archive all of them. The board holds decided "
+            f"work; if that is genuinely none, run `sync --allow-empty`. If it "
+            f"is not, the pool's labels may never have been created, or what "
+            f"is already decided may never have been framed"
+        )
     # Flushed because the halt below is raised through stderr, and a caller
     # merging the two streams otherwise sees the failure printed before the
     # summary that explains it -- which reads as though the adds never ran.
-    print(f"board: {len(members)}   open: {len(target)}")
+    print(f"board: {len(members)}   framed: {len(target)}")
     print(f"to add:     {to_add or 'none'}")
     print(f"to archive: {to_archive or 'none'}", flush=True)
     if dry_run:
@@ -1087,6 +1123,8 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--body", type=Path, required=True)
         if name in ("sync", "apply"):
             p.add_argument("--dry-run", action="store_true")
+        if name == "sync":
+            p.add_argument("--allow-empty", action="store_true")
 
     args = parser.parse_args(argv)
     try:
@@ -1099,7 +1137,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "show":
             return cmd_show(args.plan)
         if args.command == "sync":
-            return cmd_sync(args.dry_run)
+            return cmd_sync(args.dry_run, args.allow_empty)
         if args.command == "apply":
             return cmd_apply(args.plan, args.dry_run)
         if args.command == "notes":

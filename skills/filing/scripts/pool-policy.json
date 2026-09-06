@@ -1,0 +1,26 @@
+{
+  "_note": "Defaults for the pool. A repository overrides them with a file of this name at its own root; the script reads that one instead and never merges the two, so an override states the whole policy. Every number and every label name the script uses lives here, and the script writes no label this file does not name.",
+
+  "axes": {
+    "severity": {
+      "meaning": "how bad this is if nothing is done",
+      "color": "B60205",
+      "values": {"sev:1": 1, "sev:2": 2, "sev:3": 3, "sev:4": 4}
+    },
+    "urgency": {
+      "meaning": "how soon this needs attention",
+      "color": "D93F0B",
+      "values": {"urg:1": 1, "urg:2": 2, "urg:3": 3, "urg:4": 4}
+    }
+  },
+
+  "order": ["severity", "urgency"],
+
+  "framed": {
+    "label": "framed",
+    "color": "0E8A16",
+    "meaning": "decided work: it is on the board rather than in the pool"
+  },
+
+  "shortlist_size": 5
+}

@@ -77,7 +77,7 @@ def test_parse_plan_rejects_a_malformed_plan(bad, because):
 
 
 def test_reconcile_reports_both_directions_and_never_raises():
-    to_add, to_archive = q.reconcile(board=[1, 2, 3], open_issues=[2, 3, 4])
+    to_add, to_archive = q.reconcile(board=[1, 2, 3], target=[2, 3, 4])
     assert (to_add, to_archive) == ([4], [1])
 
 
@@ -650,10 +650,28 @@ def test_every_wire_route_is_fenced_without_the_test_asking():
         q.subprocess.run(["gh", "api"])
 
 
-def test_open_issues_cannot_transmit_under_the_fence():
+def test_framed_issues_cannot_transmit_under_the_fence():
     """A gh-routed call site, not a gql-routed one -- the route the first fence left open."""
     with pytest.raises(AssertionError, match="via gh"):
-        q.open_issues()
+        q.framed_issues()
+
+
+def test_the_board_asks_for_the_framed_set_and_not_the_open_set(monkeypatch):
+    """The membership inversion, read off the request the transport actually makes.
+
+    The board used to hold every open issue, so a filing became work the moment
+    it landed. It now holds what somebody decided to do, and the label that
+    records that decision is the pool policy's rather than a second copy here --
+    so this pins both halves: that the read is filtered at all, and that what it
+    filters by is what the policy names.
+    """
+    asked = []
+    monkeypatch.setattr(q, "gh", lambda args: asked.append(args) or "[]")
+    q.framed_issues()
+    label = q.pool.load_policy(q.pool.find_policy(q.ROOT))["framed"]["label"]
+    assert "--label" in asked[0]
+    assert asked[0][asked[0].index("--label") + 1] == label
+    assert "--state" in asked[0] and "open" in asked[0]
 
 
 def test_next_reports_an_empty_board_as_empty(capsys, monkeypatch):
@@ -689,6 +707,55 @@ def test_options_payload_guards_every_interpolated_value_including_the_id():
     assert payload.count('"') % 2 == 0, payload
 
 
+def test_sync_refuses_to_empty_a_populated_board_on_an_empty_framed_set(monkeypatch):
+    """The unlawful polarity: a setup mistake must not read as a decision.
+
+    Nothing framed and a full board is what a repository looks like before the
+    pool's labels exist, and it is also what one looks like when the last piece
+    of decided work closes. The transport cannot tell those apart, and one of
+    them archives every item, so it refuses and the operator says which.
+    """
+    monkeypatch.setattr(q.Board, "members", lambda self: [1, 2, 3])
+    board = board_without_network()
+    monkeypatch.setattr(q, "Board", lambda: board)
+    monkeypatch.setattr(q, "framed_issues", lambda: {})
+    with pytest.raises(q.BoardError) as caught:
+        q.cmd_sync(dry_run=False)
+    assert "archive all of them" in str(caught.value)
+    assert "--allow-empty" in str(caught.value)
+
+
+def test_sync_empties_the_board_when_the_operator_says_it_should(monkeypatch, capsys):
+    """The lawful polarity. A guard that could not be got past would block the
+    state it exists to make deliberate."""
+    live = [{"item_id": "x1", "issue": 1, "band": "-", "bundle": "-", "status": "-"}]
+    archived = []
+
+    def archive(self, item_id):
+        archived.append(item_id)
+        live[:] = [row for row in live if row["item_id"] != item_id]
+
+    monkeypatch.setattr(q.Board, "members", lambda self: [1])
+    monkeypatch.setattr(q.Board, "ordered", lambda self: list(live))
+    monkeypatch.setattr(q.Board, "archive", archive)
+    board = board_without_network()
+    monkeypatch.setattr(q, "Board", lambda: board)
+    monkeypatch.setattr(q, "framed_issues", lambda: {})
+    assert q.cmd_sync(dry_run=False, allow_empty=True) == 0
+    assert archived == ["x1"]
+
+
+def test_sync_does_not_refuse_an_empty_board_and_an_empty_framed_set(monkeypatch, capsys):
+    """The other lawful polarity: a board with nothing on it and nothing framed
+    is the state `init` leaves, and refusing it would stop an adopter's first run."""
+    monkeypatch.setattr(q.Board, "members", lambda self: [])
+    monkeypatch.setattr(q.Board, "ordered", lambda self: [])
+    board = board_without_network()
+    monkeypatch.setattr(q, "Board", lambda: board)
+    monkeypatch.setattr(q, "framed_issues", lambda: {})
+    assert q.cmd_sync(dry_run=False) == 0
+
+
 def test_sync_warns_and_does_not_claim_the_run_will_halt(capsys, monkeypatch):
     """cmd_sync had no test at all, and its warning had been wrong twice.
 
@@ -708,7 +775,7 @@ def test_sync_warns_and_does_not_claim_the_run_will_halt(capsys, monkeypatch):
     monkeypatch.setattr(q.Board, "archive", lambda self, iid: None)
     board = board_without_network()
     monkeypatch.setattr(q, "Board", lambda: board)
-    monkeypatch.setattr(q, "open_issues", lambda: {1: "I1", 2: "I2"})
+    monkeypatch.setattr(q, "framed_issues", lambda: {1: "I1", 2: "I2"})
 
     assert q.cmd_sync(dry_run=False) == 0
     out = capsys.readouterr().out

@@ -5,7 +5,7 @@ description: How a piece of work gets onto the board — the search that runs be
 
 # filing
 
-**Purpose:** make a filing useful to the session that picks it up, however long that takes and however far the practice's vocabulary moves in between, and keep off the board what nothing acts differently for. **Audience:** any session about to create an issue — usually mid-review or mid-implementation, rarely while writing anything else. **Success:** every filing arrives with its relationship to the board already on the record, and carries evidence that still holds at pickup rather than a design that does not; a finding about governing prose that changes nothing a session does takes no number; and one recorded under its cause is disposed when that cause's fix lands rather than lost with it.
+**Purpose:** make a filing useful to the session that picks it up, however long that takes and however far the practice's vocabulary moves in between, and keep off the board what nothing acts differently for. **Audience:** any session about to create an issue — usually mid-review or mid-implementation, rarely while writing anything else. **Success:** every filing arrives with its relationship to the board already on the record, and carries evidence that still holds at pickup rather than a design that does not; it lands in the pool with a rating rather than on the board as work nobody decided on; a finding about governing prose that changes nothing a session does takes no number; and one recorded under its cause is disposed when that cause's fix lands rather than lost with it.
 
 ## A filing searches before it lands
 
@@ -80,11 +80,33 @@ Write the ties as the **first element of the issue body, before any heading or p
 
 Where the search turned up nothing that earns a tie, the block says so **as a fact about the board** — *no siblings on the board* — because that is what a ranking uses. Where one limb could only be run on a phrase you coined, its zero is a fact about the phrase rather than the board, and the block claims the narrower thing. **Do not state that the search was performed.** The ties are its artifact, and a compliance sentence nobody can check buys nothing.
 
+## A filing lands in the pool, not on the board
+
+**Every filing lands in the pool** -- what has been noticed, with its evidence and a rating, and not yet decided on. **The board holds what has been decided on and only that.** An open issue is in the pool unless it carries the framed label, so nothing is written to put it there and a filer who forgets cannot lose one.
+
+**A filing carries two ratings the filer proposes, on separate axes: how severe it is, and how urgent** -- each one label from a set the policy names. Ideas are rated the same way as defects, by what is at stake rather than by what a wrong act would cost, so what waits in the pool is one kind of thing. **The owner confirms ratings only on the few raised to them**, never one filing at a time.
+
+**Work leaves the pool in one of two ways, and both end in the owner's pick.** Something crossing a line on both ratings is raised to them unasked; or they say they want something, a session raises a few with the case for and against each, and they pick one. **That pick is the decision that the work is worth doing, and it is what frames the filing** -- the brief settled afterwards still decides what the work is for and at what cost, and may send it back to the pool if the cause turns out bigger than the pick assumed.
+
+`scripts/pool.py` does the mechanics, and the judgment -- what a rating should be, what the case against a candidate is -- stays the session's:
+
+```bash
+python scripts/pool.py labels     # once, so the policy's labels exist
+python scripts/pool.py list
+python scripts/pool.py shortlist
+python scripts/pool.py rate 123 --rating sev:3 --rating urg:2
+python scripts/pool.py frame 123
+```
+
+**Every number and every label name it uses lives in `scripts/pool-policy.json`, and none lives in the script.** A repository overrides those defaults with a file of that name at its own root, so one that wants different bands, different names or a different order changes the file rather than the tool; one that wants a wholly different approach says so in its own doctrine and does not run it. **No label the policy does not name is ever written.**
+
+**An unrated filing is not a low-rated one.** It sorts below everything rated and is reported as unrated, because it has not been judged harmless -- it has not been judged.
+
 ## Creation carries the want; pickup does the work
 
-**Carried at creation:** the want or defect in plain terms; the evidence that makes it real; why it will get picked up; the ties above; what discovery must settle, named as deliberately deferred; and, where the subject is governing prose, the incident or the run below.
+**Carried at creation:** the want or defect in plain terms; the evidence that makes it real; the two ratings above; why it will get picked up; the ties above; what discovery must settle, named as deliberately deferred; and, where the subject is governing prose, the incident or the run below.
 
-**Left for pickup:** the framing, the options and their argument, the remedy design, the pre-implementation artifact. Filing is not convergence.
+**Left for pickup:** the design framing, the options and their argument, the remedy design, the pre-implementation artifact. Filing is not convergence.
 
 **Record what happened; do not decide what to do.** The line is not how much a filing carries but which kind of thing it carries. Evidence — a file and line, a quoted sentence, a count, an incident that occurred — survives however far the vocabulary moves, *provided it is written as an observation anyone can re-run rather than as a citation into vocabulary that can retire*. Design — options, remedy shapes, names for structures — is written in today's vocabulary and decays with it. [#38](https://github.com/Grimblaz-and-Friends/tradecraft/issues/38) is the exhibit for both halves and for the proviso: its frame was dead vocabulary before anyone opened it, and the observation underneath survived only because its successor could restate it against an authority that still existed.
 
