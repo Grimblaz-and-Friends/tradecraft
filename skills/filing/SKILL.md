@@ -1,11 +1,11 @@
 ---
 name: filing
-description: How a piece of work gets onto the board — the search that runs before a new issue is created, the ties that put its relationship to the board on the record at birth, and the line between the evidence a filing carries and the design it leaves for whoever picks it up. Use when about to create an issue, or when deciding whether something belongs on one that already exists; not for deciding whether a finding is worth filing at all, and not for the pre-implementation artifact written when the work is picked up.
+description: How a piece of work gets onto the board — the search that runs before a new issue is created, the ties that put its relationship to the board on the record at birth, the evidence a filing about governing prose must carry to be filed at all, the findings a cause carries as comments until its fix disposes of them, and the line between the evidence a filing carries and the design it leaves for whoever picks it up. Use when about to create an issue, when deciding whether something belongs on one that already exists, or when deciding whether a finding about governing prose has earned one; not for the pre-implementation artifact written when the work is picked up.
 ---
 
 # filing
 
-**Purpose:** make a filing useful to the session that picks it up, however long that takes and however far the practice's vocabulary moves in between. **Audience:** any session about to create an issue — usually mid-review or mid-implementation, rarely while writing anything else. **Success:** every filing arrives with its relationship to the board already on the record, and carries evidence that still holds at pickup rather than a design that does not.
+**Purpose:** make a filing useful to the session that picks it up, however long that takes and however far the practice's vocabulary moves in between, and keep off the board what nothing acts differently for. **Audience:** any session about to create an issue — usually mid-review or mid-implementation, rarely while writing anything else. **Success:** every filing arrives with its relationship to the board already on the record, and carries evidence that still holds at pickup rather than a design that does not; a finding about governing prose that changes nothing a session does takes no number; and one recorded under its cause is disposed when that cause's fix lands rather than lost with it.
 
 ## A filing searches before it lands
 
@@ -30,16 +30,17 @@ gh issue list --repo OWNER/REPO --state all --limit 1000 --search "post-fix"
 
 **The defect's own words are the board's, not yours.** The other two are printed on the artifact in front of you; this one guesses what somebody else called the same thing. Lift it from the material — the rule being breached, the term a decision entry used — rather than coining it, because a coined phrase is queried against a board that could never have contained it.
 
-Four outcomes, each lawful:
+Five outcomes, each lawful:
 
 - **Extend** an **open** issue — a comment, not a new number. A closed match is a tie, never a home. **Extend only where a ruling that closes the host would dispose of your defect too** — read its comments as well as its body, since an issue is re-scoped where it is discussed. Otherwise it is a tie, and extending buries your defect under a disposal that never reaches it.
+- **Record it under its cause** — where the cause is already on the board and what you hold is one of the instances it was observed producing, the finding lands as a comment on that cause and takes no number of its own. **The extend rule above does not govern it**, and what stands in for that rule is what answers the same burial: not that a ruling closing the cause disposes of the finding, but that **a change fixing a cause disposes of every finding recorded under it — clearing it, or filing it then as its own issue: a finding the fix left standing is one that now needs a fix of its own, and the fix having left it standing is the evidence for that, so the bar below does not run on it.** A finding already carrying a number is tied `caused-by` its cause rather than moved onto it. **A finding takes a number of its own while its cause is still open only where it needs fixing now, and that call is the owner's.**
 - **File new with named ties** — the relationship goes on the record at birth instead of being reconstructed at ranking time.
 - **File one issue carrying the batch** — where the defects in hand share one cause you can point at, they land as one number rather than several cross-tied ones: each defect with its own evidence, the shared probes stated once, pickup dispositioning them item by item. **The test is a cause you observed, never a fix you would have to design** — what one change would take is remedy design, which this cell leaves to pickup — **and not the surface either**: a shared file neither decides it nor is required. **Where the symptoms already carry numbers, the cause takes its own and the ties below group them**; one number is for what is in your hands at once. [#94](https://github.com/Grimblaz-and-Friends/tradecraft/issues/94) and [#95](https://github.com/Grimblaz-and-Friends/tradecraft/issues/95) are the cost of not taking it — two lawful filings against one sentence, merged into a single PR later, whose pairing had to be reconstructed at ranking time. [#151](https://github.com/Grimblaz-and-Friends/tradecraft/issues/151) and [#152](https://github.com/Grimblaz-and-Friends/tradecraft/issues/152) show the form a batch takes and are not an exhibit for the test: each was warranted by one opening of one cell, which is the surface.
 - **File standalone** — nothing turned up that earns a tie.
 
 [#233](https://github.com/Grimblaz-and-Friends/tradecraft/issues/233), [#234](https://github.com/Grimblaz-and-Friends/tradecraft/issues/234) and [#235](https://github.com/Grimblaz-and-Friends/tradecraft/issues/235) came out of one review, each naming the others. #233 and #234 share one cause, line-ending handling every guard passes; #235 named a third file and was closed without a change of its own, its subject discharged by a pull request already in flight. A shared file would have split the pair and grouped nothing.
 
-An extending comment carries the creation list and meets the same evidence standard; its tie is the issue it lands on.
+An extending comment carries the creation list and meets the same evidence standard, and so does a finding recorded under its cause — **except the bar below, which neither owes: an extending comment inherits its host's, and a recorded finding its cause's**, one filing carrying the incident or the run being what puts them all on the board. The tie is the issue the comment lands on.
 
 ### Naming a tie
 
@@ -81,7 +82,7 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 
 ## Creation carries the want; pickup does the work
 
-**Carried at creation:** the want or defect in plain terms; the evidence that makes it real; why it will get picked up; the ties above; and what discovery must settle, named as deliberately deferred.
+**Carried at creation:** the want or defect in plain terms; the evidence that makes it real; why it will get picked up; the ties above; what discovery must settle, named as deliberately deferred; and, where the subject is governing prose, the incident or the run below.
 
 **Left for pickup:** the framing, the options and their argument, the remedy design, the pre-implementation artifact. Filing is not convergence.
 
@@ -89,7 +90,9 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 
 **Where the evidence is itself a rule, the rule's own sentence is the observation.** Quote it with its location: the quote survives the file moving, where the location alone is the citation the proviso warns about. Which rule is breached is evidence; what replaces it is design, and stays out.
 
-**Where the defect can be demonstrated, the demonstration is the evidence** — the probe command and its output, not a sentence reporting what running it shows. A reproduction cannot be misread, survives the vocabulary moving around it, and hands the pickup its first acceptance criterion. Prose is the fallback rather than the default, and it is the right form for what has no failing run: a want, an idea, an incident that occurred, and a breached rule, whose own sentence is the observation above.
+**A filing whose subject is governing prose — prose a later session is expected to act on — carries an incident from real work, or a run: the same situation put to a session under the text as it stands and under what would replace it, behaving differently.** The breached rule's own sentence above is what is wrong with the text; this is what acts differently for it, and a filing carrying only the first is not filed. The bar sits at creation because an issue picked up is a brief, an artifact and a change — a rule by another door — so a rule about prose reaches the board on the evidence a rule needs; what an incident is not is the `charter` cell's. **Not filed is not binned:** where the cause is already on the board the finding is recorded under it, above; where none is, nothing is filed and the finding waits for the incident or the run that would earn one. Nothing else is gated here — a defect in a script or a guard carries its consequence in the failure it produces.
+
+**Where the defect can be demonstrated, the demonstration is the evidence** — the probe command and its output, not a sentence reporting what running it shows. A reproduction cannot be misread, survives the vocabulary moving around it, and hands the pickup its first acceptance criterion. Prose is the fallback rather than the default, and it is the right form for what has no failing run: a want, an idea, an incident that occurred, and a breached rule, whose own sentence is the observation above. On governing prose each of the four is half of what the filing carries, the bar above being the other.
 
 **The floor:** carry enough evidence that a session picking the work up can confirm the problem is real without redoing the discovery that found it.
 
