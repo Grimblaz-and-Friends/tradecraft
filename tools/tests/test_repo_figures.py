@@ -1044,7 +1044,7 @@ def test_reach_is_a_cell_s_own_prose_when_it_points_nowhere(tmp_path):
         tmp_path, "skills/alpha/SKILL.md")["data"]["total"]
     assert rows["alpha"]["reach"] == total == 51, rows
     assert rows["alpha"]["reached"] == [], rows
-    assert "no pointers out" in repo_figures.pointer_reach_block(
+    assert "points at nothing" in repo_figures.pointer_reach_block(
         list(rows.values()))
 
 
@@ -1078,7 +1078,7 @@ def test_reach_follows_pointers_transitively_and_counts_each_cell_once(tmp_path)
     block = repo_figures.pointer_reach_block(
         repo_figures.pointer_reach_rows(tmp_path))
     assert block.splitlines()[0].strip().startswith("alpha"), block
-    assert "via beta, delta, gamma" in block, block
+    assert "reaches beta, delta, gamma" in block, block
 
 
 def test_reach_excludes_the_charter_and_the_charter_reaches_what_it_names(

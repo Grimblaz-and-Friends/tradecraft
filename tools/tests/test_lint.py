@@ -5647,7 +5647,8 @@ def test_the_lint_prints_the_pointer_reach_at_the_mandated_command(capsys):
         assert clause in block, block
     # Every row states where its reach went, so no row is a bare number.
     for _name, _reach, via in _rows(block):
-        assert via.startswith("via ") or via == "its own prose, no pointers out", via
+        assert (via.startswith("reaches ")
+                or via == "points at nothing; its own prose only"), via
 
 
 def test_the_lint_prints_every_cell_body_at_the_mandated_command(capsys):

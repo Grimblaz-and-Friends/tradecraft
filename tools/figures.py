@@ -287,15 +287,24 @@ def pointer_reach_block(rows: list[dict]) -> str:
     names are what a reader follows to decide whether the pointer earns its
     reach. A cell that points nowhere says so in words, because a reach equal
     to a body is otherwise read as a figure that failed to derive.
+
+    **The label names the direction, because a consumer read the first one
+    backwards.** That label was `via <names>`, and a session that had just
+    written three pointers into one cell read its neighbours' rows as *reached
+    via* -- the arrow the other way -- and believed for a minute that it had
+    closed three rings. It corrected itself from the charter's row, which only
+    parses one way, but a figure that has to be disambiguated from another row
+    is a figure that misled. `reaches` states the direction in the word.
+    [#404 session note]
     """
     width = max((len(row["name"]) for row in rows), default=0)
     lines = []
     for row in rows:
         if row["reached"]:
-            via = "via " + ", ".join(row["reached"])
+            reached = "reaches " + ", ".join(row["reached"])
         else:
-            via = "its own prose, no pointers out"
-        lines.append(f"  {row['name']:<{width}}  {row['reach']:>7,}  {via}")
+            reached = "points at nothing; its own prose only"
+        lines.append(f"  {row['name']:<{width}}  {row['reach']:>7,}  {reached}")
     return chr(10).join(lines)
 
 
