@@ -133,7 +133,7 @@ def test_crlf_does_not_hide_a_real_drift(tmp_path):
 
     A guard that stopped reporting because it stopped comparing would pass this
     too. The entry here carries CRLF *and* a description its cell no longer
-    has, which is the whole triggering surface out of date."""
+    has, which is the triggering surface that cell owns, out of date."""
     make_cell(tmp_path, "alpha", "The first description.")
     roster.write(tmp_path)
     entry = entry_of(tmp_path, CLAUDE, "alpha")

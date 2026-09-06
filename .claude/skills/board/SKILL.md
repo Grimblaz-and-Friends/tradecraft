@@ -1,6 +1,6 @@
 ---
 name: board
-description: This repository's ranked board and the standing answer to what to pick up next — how to read it, how a refresh reconciles it against the open issue list and settles the ordered read before writing, and what the refresh note owes including the look at shipped work that docs/values.md asks for. Use when asking what to work on next here, when the board has moved, or when writing or reading a refresh note; not for whether work is worth doing, and not for filing.
+description: This repository's ranked board and the standing answer to what to pick up next — how to read it, how a refresh reconciles it against the framed set and settles the ordered read before writing, and what the refresh note owes including the look at shipped work that docs/values.md asks for. Use when asking what to work on next here, when the board has moved, or when writing or reading a refresh note; not for whether work is worth doing, and not for filing.
 ---
 
 # board

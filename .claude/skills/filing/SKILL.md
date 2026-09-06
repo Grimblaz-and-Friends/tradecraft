@@ -1,6 +1,6 @@
 ---
 name: filing
-description: How a piece of work gets onto the board — the search that runs before a new issue is created, the ties that put its relationship to the board on the record at birth, the evidence a filing about governing prose must carry to be filed at all, the findings a cause carries as comments until its fix disposes of them, and the line between the evidence a filing carries and the design it leaves for whoever picks it up. Use when about to create an issue, when deciding whether something belongs on one that already exists, or when deciding whether a finding about governing prose has earned one; not for the pre-implementation artifact written when the work is picked up.
+description: How a piece of work gets into the pool — the search that runs before a new issue is created, the ties that put its relationship to the board on the record at birth, the evidence a filing about governing prose must carry to be filed at all, the findings a cause carries as comments until its fix disposes of them, and the line between the evidence a filing carries and the design it leaves for whoever picks it up. Use when about to create an issue, when deciding whether something belongs on one that already exists, or when deciding whether a finding about governing prose has earned one; not for the pre-implementation artifact written when the work is picked up.
 ---
 
 # filing
