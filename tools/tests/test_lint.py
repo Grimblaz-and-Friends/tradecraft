@@ -579,6 +579,35 @@ def test_a_cell_may_point_at_a_sibling_and_a_circle_may_not_close(tmp_path):
     assert "skills/example-skill/SKILL.md" in findings[0], findings[0]
 
 
+def test_a_rooted_docs_cells_path_is_read_against_the_repo_only_roster(tmp_path):
+    """`docs/cells/<name>/` names a repo-only cell or it names nothing.
+
+    A shipped cell's name in that path resolves to no cell at all, so a
+    predicate answering from the union of both rosters reported prose about a
+    nonexistent path as a reference to a repo-only cell that does not exist --
+    a red lint on lawful prose, which blocks work exactly as hard as passing
+    unlawful work. Both polarities, because the whole defect was that the
+    unlawful arm kept working while the lawful one broke. Found by an external
+    reviewer on PR #437. [#404]
+    """
+    make_clean_tree(tmp_path)
+    _repo_cell(tmp_path, "records", "Depth.")
+    _repo_cell(tmp_path, "board", "Depth.")
+    roster.write(tmp_path)
+
+    # `example-skill` is a shipped cell, so this path names no cell: lawful.
+    _repo_cell(tmp_path, "board",
+               "The historical path docs/cells/example-skill/SKILL.md is gone.")
+    roster.write(tmp_path)
+    assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == [], lint.run(tmp_path)
+
+    # A real repo-only cell named by path is still the finding it always was.
+    _repo_cell(tmp_path, "board", "See docs/cells/records/SKILL.md.")
+    roster.write(tmp_path)
+    findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
+    assert len(findings) == 1 and "records" in findings[0], lint.run(tmp_path)
+
+
 def test_a_three_cell_circle_names_every_member(tmp_path):
     """A ring longer than two, because a two-cell case passes a guard that
     only looks one hop out -- and because the finding has to name every cell

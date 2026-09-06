@@ -1487,9 +1487,20 @@ def check_sideways_deps(root: Path) -> list[str]:
     # half-created shipped cell -- a directory with no SKILL.md -- was a cell
     # to this check and not to the generator or to check 6. [#404]
     cell_names = set(roster.cell_sources(root))
+    repo_cell_names = set(roster.names_under(root, REPO_CELLS))
 
     def _is_cell(name: str) -> bool:
         return name in cell_names
+
+    # **The rooted-repo-cell branch asks a narrower question and keeps its own
+    # predicate.** `docs/cells/<name>/` names a repo-only cell or it names
+    # nothing: a shipped cell's name there is a path that resolves to no cell
+    # at all, so answering it from the union reported prose about a
+    # nonexistent path as a reference to a repo-only cell that does not exist.
+    # Found by an external reviewer on PR #437, which is where the union
+    # arrived. [#404]
+    def _is_repo_cell(name: str) -> bool:
+        return name in repo_cell_names
 
     for base, own, own_is_repo in scan:
         for path in _iter_files(base):
@@ -1530,7 +1541,7 @@ def check_sideways_deps(root: Path) -> list[str]:
             for lineno, line in enumerate(text.splitlines(), 1):
                 for match in ROOTED_REPO_CELL.finditer(line):
                     target = match.group(1)
-                    if not _is_cell(target):
+                    if not _is_repo_cell(target):
                         continue
                     if own is not None and target.lower() == own.lower():
                         continue
