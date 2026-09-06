@@ -25,6 +25,7 @@ import board as q  # noqa: E402
 
 NL = chr(10)
 TAB = chr(9)
+DASH = chr(8212)
 
 
 def plan_text(*rows: str) -> str:
@@ -718,3 +719,420 @@ def test_sync_warns_and_does_not_claim_the_run_will_halt(capsys, monkeypatch):
     # say the run's own result is not evidence about this item, so pinning only
     # the absence of a halt-claim leaves it free to promise success instead.
     assert "does not tell you whether it worked" in out
+
+
+# ------------------------------------------- the cause-led grouping rule
+#
+# Guard-shaped, so probed in both polarities like the two above it. The refusal
+# arms are the point of the guard; the acceptance arms are what stop it from
+# being a guard that refuses everything, which passes a refusal test and breaks
+# every refresh.
+
+
+def caused(symptom: int, cause: int) -> dict[int, int]:
+    return {symptom: cause}
+
+
+def test_check_causes_refuses_a_symptom_left_available_under_an_open_cause():
+    """The failure #416 records: green apply, and `next` hands out the symptom."""
+    rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Queued"),
+    ))
+    with pytest.raises(q.BoardError) as excinfo:
+        q.check_causes(rows, caused(349, 404), {})
+    assert "#349" in str(excinfo.value) and "#404" in str(excinfo.value)
+
+
+def test_check_causes_accepts_the_same_plan_with_the_symptom_blocked():
+    """The negative control: the guard must not refuse a correct board."""
+    rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Blocked"),
+    ))
+    q.check_causes(rows, caused(349, 404), {})
+
+
+def test_check_causes_refuses_a_symptom_ranked_above_its_cause():
+    """Held apart from the status arm: a status-only guard passes that and fails this."""
+    rows = q.parse_plan(plan_text(
+        line(349, "Bundles", "Cause #404", "Blocked"),
+        line(404, "Bundles", "Cause #404", "In progress"),
+    ))
+    with pytest.raises(q.BoardError, match="ranked above"):
+        q.check_causes(rows, caused(349, 404), {})
+
+
+def test_check_causes_leaves_an_issue_with_no_cause_alone():
+    """Ninety-one of the board's open issues are in this state and must pass."""
+    rows = q.parse_plan(plan_text(
+        line(101, "Front", "-", "Queued"),
+        line(102, "Front", "-", "Queued"),
+    ))
+    q.check_causes(rows, {}, {})
+
+
+def test_a_closed_or_unlabelled_cause_never_reaches_the_guard():
+    """The map is what carries `open` and `labelled`, so an empty map is the whole test.
+
+    `causal_parents` is what drops those two cases; this pins that the guard
+    itself asks nothing further, so a cause closing lifts the block with no
+    cleanup step anyone has to remember.
+    """
+    rows = q.parse_plan(plan_text(line(349, "Bundles", "Cause #404", "Queued")))
+    q.check_causes(rows, {}, {})
+
+
+def test_the_owner_exception_exempts_only_the_symptom_it_names():
+    """Both arms in one plan: the named one passes, its sibling still refuses."""
+    rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Queued"),
+        line(350, "Bundles", "Cause #404", "Queued"),
+    ))
+    parents = {349: 404, 350: 404}
+    with pytest.raises(q.BoardError, match="#350"):
+        q.check_causes(rows, parents, {349: "work it on its own"})
+    q.check_causes(rows, parents, {349: "work it on its own", 350: "this one too"})
+
+
+def test_the_exception_also_lifts_the_ordering_arm():
+    """His ruling is that the symptom is worked, which is a claim about both."""
+    rows = q.parse_plan(plan_text(
+        line(349, "Bundles", "Cause #404", "In progress"),
+        line(404, "Bundles", "Cause #404", "In progress"),
+    ))
+    q.check_causes(rows, caused(349, 404), {349: "worked ahead of its cause"})
+
+
+def test_parse_exceptions_requires_his_words_rather_than_a_bare_flag():
+    """A flag would let the exception be taken silently, which is what it exists to stop.
+
+    Refused rather than ignored: an ignored flag leaves the refresher reading a
+    refusal that describes the line they believe they just wrote.
+    """
+    for bare in ("# owner-exception: #349", "# owner-exception: #349   "):
+        with pytest.raises(q.BoardError):
+            q.parse_exceptions(bare)
+    assert q.parse_exceptions("# owner-exception: #349 his words") == {349: "his words"}
+
+
+def test_the_plan_header_does_not_read_as_an_exception():
+    """The header advertises the directive, so it must not also perform one."""
+    header = q.format_plan([q.Row(1, "Front", "-", "Queued")])
+    assert "owner-exception" in header, "the header stopped advertising the directive"
+    assert q.parse_exceptions(header) == {}
+
+
+def test_both_cause_refusals_name_the_remedy():
+    """The form the Standing refusal already sets: say what to do, not just what is wrong."""
+    status_rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Queued"),
+    ))
+    order_rows = q.parse_plan(plan_text(
+        line(349, "Bundles", "Cause #404", "Blocked"),
+        line(404, "Bundles", "Cause #404", "In progress"),
+    ))
+    for rows in (status_rows, order_rows):
+        with pytest.raises(q.BoardError) as excinfo:
+            q.check_causes(rows, caused(349, 404), {})
+        message = str(excinfo.value)
+        assert "owner-exception" in message or "Move #404" in message, (
+            "a refusal that does not name the remedy: " + message
+        )
+
+
+def issues_page(nodes, has_next=False, cursor=None):
+    return {"repository": {"issues": {
+        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+        "nodes": nodes,
+    }}}
+
+
+def node(number, parent=None, state="OPEN", labels=("cause",)):
+    if parent is None:
+        return {"number": number, "parent": None}
+    return {"number": number, "parent": {
+        "number": parent, "state": state,
+        "labels": {"nodes": [{"name": name} for name in labels]},
+    }}
+
+
+def test_causal_parents_keeps_only_open_labelled_parents(monkeypatch):
+    """Four arms in one read, because each exclusion has a different reason."""
+    wire = FakeWire([issues_page([
+        node(349, parent=404),
+        node(360, parent=404, state="CLOSED"),
+        node(370, parent=404, labels=("documentation",)),
+        node(380, parent=None),
+    ])])
+    monkeypatch.setattr(q, "gql", wire)
+    assert q.causal_parents() == {349: 404}
+
+
+def test_causal_parents_pages_rather_than_stopping_at_the_first_hundred(monkeypatch):
+    """105 open issues today, and GraphQL's cap is 100: unpaged, this reads short."""
+    wire = FakeWire([
+        issues_page([node(349, parent=404)], has_next=True, cursor="CUR"),
+        issues_page([node(350, parent=404)]),
+    ])
+    monkeypatch.setattr(q, "gql", wire)
+    assert q.causal_parents() == {349: 404, 350: 404}
+    assert "CUR" in wire.queries[1][0], "the second page did not carry the cursor"
+
+
+# ------------------------------- the guard, as the review left it
+#
+# The status arm asks whether the row is AVAILABLE, not whether it says one
+# word. Every status that takes an item out of contention satisfies the rule
+# the guard exists to enforce, and refusing the other three refused boards that
+# were correct -- `In flight` above all, which the landing cell produces and
+# the board cell tells a refresher to keep true.
+
+
+@pytest.mark.parametrize("status", sorted(q.UNAVAILABLE))
+def test_any_out_of_contention_status_satisfies_the_cause_rule(status):
+    rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", status),
+    ))
+    q.check_causes(rows, caused(349, 404), {})
+
+
+def test_only_an_available_symptom_is_refused():
+    """The one status that leaves it in contention is the one that must fail."""
+    rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Queued"),
+    ))
+    with pytest.raises(q.BoardError, match="in contention"):
+        q.check_causes(rows, caused(349, 404), {})
+
+
+def test_the_placeholder_the_tool_used_to_hand_back_is_refused():
+    """The likeliest response to a refusal is pasting its remedy; it must not work."""
+    for placeholder in ("<his words>", "<the owner's ruling>", "<>"):
+        with pytest.raises(q.BoardError, match="placeholder"):
+            q.parse_exceptions(f"# owner-exception: #349 {placeholder}")
+
+
+def test_a_real_sentence_is_not_mistaken_for_a_placeholder():
+    """The negative control: angle brackets inside a real ruling stay lawful."""
+    got = q.parse_exceptions("# owner-exception: #349 work it now, see <the thread> for why")
+    assert got == {349: "work it now, see <the thread> for why"}
+
+
+@pytest.mark.parametrize("line_text", [
+    "# owner-exception: #349 he said work it",
+    "# owner-exception: #349: he said work it",
+    "# owner-exception: #349, he said work it",
+    "# owner-exception: #349 - he said work it",
+    "# Owner-Exception: #349 he said work it",
+    "# owner exception #349 he said work it",
+    "#owner-exception:#349 he said work it",
+])
+def test_the_natural_punctuations_of_a_directive_all_parse(line_text):
+    """A colon or comma before a quotation is how anyone writes one.
+
+    Under the first form each of these was silently ignored, and the plan was
+    then refused with a message describing the line the refresher believed they
+    had just written.
+    """
+    assert 349 in q.parse_exceptions(line_text)
+
+
+def test_the_plan_header_still_does_not_read_as_an_exception():
+    header = q.format_plan([q.Row(1, "Front", "-", "Queued")])
+    assert "owner-exception" in header, "the header stopped advertising the directive"
+    assert q.parse_exceptions(header) == {}
+
+
+# ------------------------------------------- the guard is actually wired in
+#
+# Every test above proves `check_causes` computes correctly and none proves it
+# runs. Four mutations of `cmd_apply` -- deleting the call, neutering it,
+# emptying the exceptions, and passing the board's CURRENT rows instead of the
+# plan -- all left the suite green, and the last silently restores the very
+# failure this guard was built to stop.
+
+
+class FakeBoard:
+    def __init__(self, items):
+        self._items = items
+
+    def ordered(self):
+        return list(self._items)
+
+
+def board_items(*rows):
+    return [
+        {"issue": r.issue, "item_id": f"item_{r.issue}", "band": r.band,
+         "bundle": r.bundle, "status": r.status}
+        for r in rows
+    ]
+
+
+def test_cmd_apply_runs_the_cause_guard_against_the_plan_on_the_dry_run_path(
+        monkeypatch, tmp_path):
+    """Red if the call is removed, neutered, or handed the board instead of the plan."""
+    on_board = board_items(
+        q.Row(404, "Bundles", "Cause #404", "In progress"),
+        q.Row(349, "Bundles", "Cause #404", "Blocked"),
+    )
+    monkeypatch.setattr(q, "Board", lambda: FakeBoard(on_board))
+    monkeypatch.setattr(q, "causal_parents", lambda: {349: 404})
+
+    plan = tmp_path / "plan.tsv"
+    plan.write_text(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Queued"),
+    ), encoding="utf-8")
+
+    with pytest.raises(q.BoardError, match="#349"):
+        q.cmd_apply(plan, dry_run=True)
+
+
+def test_cmd_apply_accepts_the_corrected_plan(monkeypatch, tmp_path):
+    """The negative control: the guard in cmd_apply is not refusing everything."""
+    on_board = board_items(
+        q.Row(404, "Bundles", "Cause #404", "In progress"),
+        q.Row(349, "Bundles", "Cause #404", "Queued"),
+    )
+    monkeypatch.setattr(q, "Board", lambda: FakeBoard(on_board))
+    monkeypatch.setattr(q, "causal_parents", lambda: {349: 404})
+
+    plan = tmp_path / "plan.tsv"
+    plan.write_text(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Blocked"),
+    ), encoding="utf-8")
+
+    assert q.cmd_apply(plan, dry_run=True) == 0
+
+
+def test_cmd_apply_reads_the_exception_off_the_plan_it_was_given(monkeypatch, tmp_path):
+    """Red if `exceptions` is emptied on the way to the guard."""
+    on_board = board_items(
+        q.Row(404, "Bundles", "Cause #404", "In progress"),
+        q.Row(349, "Bundles", "Cause #404", "Queued"),
+    )
+    monkeypatch.setattr(q, "Board", lambda: FakeBoard(on_board))
+    monkeypatch.setattr(q, "causal_parents", lambda: {349: 404})
+
+    plan = tmp_path / "plan.tsv"
+    plan.write_text(
+        "# owner-exception: #349 work it on its own, the cause is a long way off\n"
+        + plan_text(
+            line(404, "Bundles", "Cause #404", "In progress"),
+            line(349, "Bundles", "Cause #404", "Queued"),
+        ), encoding="utf-8")
+
+    assert q.cmd_apply(plan, dry_run=True) == 0
+
+
+def test_an_exception_that_exempts_nothing_says_so_rather_than_claiming_it_did(
+        monkeypatch, tmp_path, capsys):
+    """apply used to print a true-sounding exemption for an issue with no cause."""
+    on_board = board_items(q.Row(101, "Front", "-", "Queued"))
+    monkeypatch.setattr(q, "Board", lambda: FakeBoard(on_board))
+    monkeypatch.setattr(q, "causal_parents", lambda: {})
+
+    plan = tmp_path / "plan.tsv"
+    plan.write_text(
+        "# owner-exception: #9999 he never said anything of the kind\n"
+        + plan_text(line(101, "Front", "-", "Queued")), encoding="utf-8")
+
+    q.cmd_apply(plan, dry_run=True)
+    printed = capsys.readouterr().out
+    assert "exempts nothing" in printed, printed
+
+
+def test_cmd_causes_reports_the_groups_the_guard_reads(monkeypatch, capsys):
+    """The read reached nobody: its only caller was the guard."""
+    monkeypatch.setattr(q, "causal_parents", lambda: {349: 404, 350: 404, 500: 600})
+    assert q.cmd_causes() == 0
+    printed = capsys.readouterr().out
+    assert "#404 causes 2: #349, #350" in printed
+    assert "#600 causes 1: #500" in printed
+
+
+def test_cmd_causes_says_so_when_there_are_none(monkeypatch, capsys):
+    monkeypatch.setattr(q, "causal_parents", lambda: {})
+    assert q.cmd_causes() == 0
+    assert "no cause groups" in capsys.readouterr().out
+
+
+# ------------------------- a directive that meant to be one and was not
+#
+# Tolerating the natural punctuations narrows this but cannot close it: a line
+# can still miss the form entirely. Silently discarding it is how the owner's
+# ruling goes missing while the plan is refused for lacking it -- the refusal
+# then describes the line the refresher believes they already wrote.
+
+
+@pytest.mark.parametrize("line_text", [
+    "# owner-exception: #349",
+    "# owner-exception #349:",
+    "# owner-exception",
+    "# Owner Exception -- take 349 now",
+    "#owner-exception: 349 no hash on the number",
+])
+def test_a_line_that_meant_to_be_a_directive_is_refused_not_ignored(line_text):
+    with pytest.raises(q.BoardError, match="reads as an owner-exception"):
+        q.parse_exceptions(line_text)
+
+
+@pytest.mark.parametrize("line_text", [
+    "# One issue per line, in board order. Reorder lines to reorder the board.",
+    "# issue\tband\tbundle\tstatus",
+    "# bundle '-' means standalone.",
+    "# an ordinary note about an exception someone made once",
+])
+def test_an_ordinary_comment_is_not_mistaken_for_a_directive(line_text):
+    """The negative control: the loose match must not swallow the plan's own header."""
+    assert q.parse_exceptions(line_text) == {}
+
+
+def test_the_module_carries_no_stray_control_characters():
+    """A scripted edit wrote a literal backspace into a regex once.
+
+    `grep` could not render it, the exit code was clean, and the pattern
+    silently stopped matching -- the guard it fed was inert and every test
+    still passed.
+    """
+    raw = (ROOT / "tools" / "board.py").read_bytes()
+    stray = {bytes([c]) for c in range(32) if c not in (9, 10, 13)}
+    found = sorted(hex(c[0]) for c in stray if c in raw)
+    assert not found, f"control bytes in tools/board.py: {found}"
+
+
+# ---------------------- his words reach a terminal and a frozen note
+#
+# `cmd_apply` echoes the exception, and the refresh note carries the same
+# sentence. An escape sequence in it rewrites what both of them show, and the
+# note is append-only, so nothing afterwards can correct what it displays.
+
+
+@pytest.mark.parametrize("payload", [
+    "take it \x1b[2Know",          # CSI: erase line
+    "hide\x08\x08\x08\x08this",     # backspaces
+    "quiet\x00null",
+])
+def test_a_non_printable_character_in_his_words_is_refused(payload):
+    with pytest.raises(q.BoardError, match="non-printable"):
+        q.parse_exceptions(f"# owner-exception: #349 {payload}")
+
+
+@pytest.mark.parametrize("sentence", [
+    "take 702 now " + DASH + " the customer is waiting and the fix is a fortnight out",
+    "work it on its own; the cause is weeks away",
+    "start 3 now " + DASH + " the retention deletions are unrecoverable",
+])
+def test_an_ordinary_ruling_with_punctuation_is_not_refused(sentence):
+    """The negative control: em dashes, semicolons and ordinary prose all stand.
+
+    A carriage return is not among the refused cases because it cannot reach
+    the words field -- splitlines ends the line at it before the pattern runs.
+    """
+    assert q.parse_exceptions(f"# owner-exception: #349 {sentence}") == {349: sentence}
