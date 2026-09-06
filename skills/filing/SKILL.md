@@ -40,7 +40,7 @@ Five outcomes, each lawful:
 
 [#233](https://github.com/Grimblaz-and-Friends/tradecraft/issues/233), [#234](https://github.com/Grimblaz-and-Friends/tradecraft/issues/234) and [#235](https://github.com/Grimblaz-and-Friends/tradecraft/issues/235) came out of one review, each naming the others. #233 and #234 share one cause, line-ending handling every guard passes; #235 named a third file and was closed without a change of its own, its subject discharged by a pull request already in flight. A shared file would have split the pair and grouped nothing.
 
-An extending comment carries the creation list and meets the same evidence standard, and so does a finding recorded under its cause; the tie is the issue it lands on.
+An extending comment carries the creation list and meets the same evidence standard, and so does a finding recorded under its cause — **except the bar below, which is its cause's to meet and not each finding's**, one cause carrying the incident or the run being what puts all of them on the board. The tie is the issue the comment lands on.
 
 ### Naming a tie
 
