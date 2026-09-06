@@ -386,8 +386,19 @@ def causal_parents(policy: dict, repo: str | None = None) -> dict[int, int]:
 
 
 def _infer_repo() -> str:
-    """OWNER/REPO for the checkout, when no --repo was given."""
-    raw = gh(["repo", "view", "--json", "nameWithOwner"])
+    """OWNER/REPO for the checkout, when no --repo was given.
+
+    A checkout with no remote cannot answer, and the raw `gh` message for that
+    names a command the caller never typed. It is turned into the one sentence
+    that says what to do instead.
+    """
+    try:
+        raw = gh(["repo", "view", "--json", "nameWithOwner"])
+    except PoolError as exc:
+        raise PoolError(
+            f"cannot work out which repository this is, so the causation read "
+            f"has nowhere to go: {exc}. Name it with --repo OWNER/REPO"
+        ) from None
     return json.loads(raw)["nameWithOwner"]
 
 
