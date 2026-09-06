@@ -1029,3 +1029,96 @@ def test_the_charter_row_prices_both_of_its_shared_ceilings(tmp_path):
     block = repo_figures.cell_body_block([rows["charter"]])
     assert f"always-on row {lint.ALWAYS_ON_ROW_BUDGET_CHARS:,}," in block, block
     assert f"({lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,} plus 60 admitted)" in block, block
+
+
+# --- the pointer reach: what a session holds after following the pointers ---
+
+def test_reach_is_a_cell_s_own_prose_when_it_points_nowhere(tmp_path):
+    """The floor of the figure, and the one row a reader must be able to
+    recognise: a cell that points at nothing reaches exactly itself, body plus
+    depth, which is the same measure `figure_cell_total` renders for one cell.
+    A reach that silently omitted depth would look right on every row."""
+    _cell(tmp_path, "alpha", "x" * 40 + NL, depth={"flat.md": "y" * 10})
+    rows = {row["name"]: row for row in repo_figures.pointer_reach_rows(tmp_path)}
+    total = repo_figures.figure_cell_total(
+        tmp_path, "skills/alpha/SKILL.md")["data"]["total"]
+    assert rows["alpha"]["reach"] == total == 51, rows
+    assert rows["alpha"]["reached"] == [], rows
+    assert "points at nothing" in repo_figures.pointer_reach_block(
+        list(rows.values()))
+
+
+def test_reach_follows_pointers_transitively_and_counts_each_cell_once(tmp_path):
+    """Three claims the figure's basis makes, each falsifiable on its own.
+
+    Transitive: alpha reaches gamma through beta without naming it. Counted
+    once: a diamond reaching one cell by two routes must not double it, which
+    is the arithmetic a naive sum-per-edge gets wrong. And direction: gamma
+    points at nobody, so its reach stays its own prose while alpha's is the
+    union -- a figure that ignored direction would report the same number for
+    every member of a connected group.
+    """
+    _cell(tmp_path, "alpha", "a" * 10 + NL
+          + "See the `beta` cell and the `delta` cell." + NL)
+    _cell(tmp_path, "beta", "b" * 10 + NL + "See the `gamma` cell." + NL)
+    _cell(tmp_path, "delta", "d" * 10 + NL + "See the `gamma` cell." + NL)
+    _cell(tmp_path, "gamma", "g" * 10 + NL)
+    rows = {row["name"]: row for row in repo_figures.pointer_reach_rows(tmp_path)}
+
+    own = {
+        name: repo_figures.figure_cell_total(
+            tmp_path, f"skills/{name}/SKILL.md")["data"]["total"]
+        for name in ("alpha", "beta", "delta", "gamma")
+    }
+    assert rows["alpha"]["reached"] == ["beta", "delta", "gamma"], rows
+    assert rows["alpha"]["reach"] == sum(own.values()), rows
+    assert rows["gamma"]["reach"] == own["gamma"], rows
+    assert rows["beta"]["reach"] == own["beta"] + own["gamma"], rows
+    # Largest reach first, and the cells reached are named rather than counted.
+    block = repo_figures.pointer_reach_block(
+        repo_figures.pointer_reach_rows(tmp_path))
+    assert block.splitlines()[0].strip().startswith("alpha"), block
+    assert "reaches beta, delta, gamma" in block, block
+
+
+def test_reach_excludes_the_charter_and_the_charter_reaches_what_it_names(
+        tmp_path):
+    """The one exclusion the basis states, in both directions.
+
+    A pointer at the charter loads nothing -- every session has it already --
+    so counting it would add the same prose to every row and rank nothing.
+    Pointers *from* it are ordinary, which is what makes the practice's
+    declared roster a real set of pointers and its reach the whole of what a
+    session could route to.
+    """
+    _cell(tmp_path, "charter", "The binding half." + NL
+          + "The depth is the `alpha` cell's." + NL)
+    _cell(tmp_path, "alpha", "a" * 10 + NL + "Stated by the `charter` cell." + NL)
+    rows = {row["name"]: row for row in repo_figures.pointer_reach_rows(tmp_path)}
+    alpha_own = repo_figures.figure_cell_total(
+        tmp_path, "skills/alpha/SKILL.md")["data"]["total"]
+    charter_own = repo_figures.figure_cell_total(
+        tmp_path, "skills/charter/SKILL.md")["data"]["total"]
+    assert rows["alpha"]["reached"] == [], rows
+    assert rows["alpha"]["reach"] == alpha_own, rows
+    assert rows["charter"]["reached"] == ["alpha"], rows
+    assert rows["charter"]["reach"] == charter_own + alpha_own, rows
+
+
+def test_reach_survives_a_circle_rather_than_hanging(tmp_path):
+    """A circle is a finding, not a crash.
+
+    The guard that refuses one runs in the same command as the figure, and a
+    reach walk that recursed on a ring would answer the flow's mandated
+    command with a traceback instead of the finding that names the ring.
+    """
+    _cell(tmp_path, "alpha", "a" * 10 + NL + "See the `beta` cell." + NL)
+    _cell(tmp_path, "beta", "b" * 10 + NL + "See the `alpha` cell." + NL)
+    rows = {row["name"]: row for row in repo_figures.pointer_reach_rows(tmp_path)}
+    both = sum(
+        repo_figures.figure_cell_total(
+            tmp_path, f"skills/{name}/SKILL.md")["data"]["total"]
+        for name in ("alpha", "beta")
+    )
+    assert rows["alpha"]["reach"] == rows["beta"]["reach"] == both, rows
+    assert lint.pointer_cycle_findings(lint.cell_pointer_graph(tmp_path)), rows

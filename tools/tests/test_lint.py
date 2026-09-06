@@ -25,6 +25,30 @@ NL = chr(10)
 BS = chr(92)
 
 
+def _sync_charter_roster(root: Path) -> None:
+    """Put every shipped cell but the charter in the charter's roster.
+
+    `check_charter_roster` couples the two, so a fixture that adds a cell and
+    leaves the charter alone is an unlawful tree — the same reason
+    `_write_cell` already regenerates the generated roster. Regenerated
+    rather than hand-written, so a fixture cell added later is covered by
+    calling this rather than by remembering the line's shape.
+    """
+    charter = root / "skills" / "charter" / "SKILL.md"
+    if not charter.is_file():
+        return
+    text = charter.read_text(encoding="utf-8")
+    text = text.split(lint.CHARTER_ROSTER_HEADING, 1)[0].rstrip(NL) + NL
+    names = sorted(
+        p.name for p in (root / "skills").iterdir()
+        if p.is_dir() and (p / "SKILL.md").is_file() and p.name != "charter"
+    )
+    lines = [f"- `{name}` cell - you are working the {name} job." for name in names]
+    charter.write_text(
+        text + NL + lint.CHARTER_ROSTER_HEADING + NL + NL + NL.join(lines) + NL,
+        encoding="utf-8")
+
+
 def _write_cell(skill: Path, body: str) -> None:
     """Write a cell body under valid frontmatter.
 
@@ -42,6 +66,8 @@ def _write_cell(skill: Path, body: str) -> None:
     # keeps every other check's fixture about that check. The roster guard is
     # proven by its own tests, which build the unlawful shapes deliberately.
     roster.write(skill.parents[1])
+    # Same reason, for the charter's declared roster. [PR #437 review, M1]
+    _sync_charter_roster(skill.parents[1])
 
 
 def make_clean_tree(root: Path) -> None:
@@ -60,6 +86,7 @@ def make_clean_tree(root: Path) -> None:
     _write_cell(skill, "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n")
     _wire_callout(root)
     _wire_charter(root)
+    _sync_charter_roster(root)
     _write_marketplace(root, "./")
     # A conforming tree carries the roster its cells generate, for the same
     # reason the pointer above has a target: the fixture models a lawful tree,
@@ -503,7 +530,7 @@ def test_lib_may_not_reference_a_skill(tmp_path):
     assert len(findings) == 1 and "sideways-dep" in findings[0] and "from lib/" in findings[0]
 
 
-# --- the charter's exemption ------------------------------------------------
+# --- the charter, which costs nothing to point at ---------------------------
 
 def test_the_charter_may_reference_any_cell(tmp_path):
     make_clean_tree(tmp_path)
@@ -514,6 +541,7 @@ def test_the_charter_may_reference_any_cell(tmp_path):
         + "The depth behind this rule lives in the `example-skill` cell." + NL,
         encoding="utf-8",
     )
+    _sync_charter_roster(tmp_path)
     assert lint.run(tmp_path) == []
 
 
@@ -537,24 +565,262 @@ def test_the_exemption_is_the_name_form_and_not_a_path(tmp_path):
         + "---" + NL + NL + "The bar lives at skills/example-skill/SKILL.md." + NL,
         encoding="utf-8",
     )
+    _sync_charter_roster(tmp_path)
     findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
     assert len(findings) == 1 and "example-skill" in findings[0]
 
 
-def test_exempting_the_charter_does_not_exempt_cell_to_cell(tmp_path):
-    """The exemption's whole risk: buying it by weakening the guard for all.
+def _edges(root: Path, source: str) -> list[str]:
+    """The cells `source` points at, as the pointer graph reads them.
 
-    Both reference forms are checked, because the name form is what the
-    charter's own restored references use -- an exemption that let it through
-    for everyone would be indistinguishable from this test's absence.
+    The graph rather than the finding, because a lawful pointer is no longer
+    a finding: a fence or a wrap that stopped being read would drop an edge
+    from the cycle check and show up in no assertion at all. [#404]
+    """
+    return sorted({edge.target for edge in lint.cell_pointer_graph(root)[source]})
+
+
+def test_a_cell_may_point_at_a_sibling_and_a_circle_may_not_close(tmp_path):
+    """The permission and its bound, in one fixture.
+
+    The ban this replaced made a copy the only lawful way for two cells to
+    share a rule, and every copy nobody could bear went to the always-on
+    surface, which is budgeted -- the cause #404 files. What is refused now
+    is the shape the ban was aimed at: two cells neither of which can be read
+    or revised without the other.
     """
     make_clean_tree(tmp_path)
     other = tmp_path / "skills" / "other-skill"
     other.mkdir(parents=True)
     _write_cell(other, "Depth lives in the `example-skill` cell.\n")
+    assert _edges(tmp_path, "other-skill") == ["example-skill"]
+    assert lint.run(tmp_path) == []
+
+    _write_cell(tmp_path / "skills" / "example-skill",
+                "Depth lives in references/detail.md, "
+                "and the rest in the `other-skill` cell.\n")
+    findings = [f for f in lint.run(tmp_path) if "pointer-cycle" in f]
+    assert len(findings) == 1, lint.run(tmp_path)
+    assert "example-skill" in findings[0] and "other-skill" in findings[0]
+    # The hops, not just the members: a finding naming the ring and not the
+    # sentences that make it leaves the reader the archaeology.
+    assert "skills/other-skill/SKILL.md" in findings[0], findings[0]
+    assert "skills/example-skill/SKILL.md" in findings[0], findings[0]
+
+
+def test_a_rooted_docs_cells_path_is_read_against_the_repo_only_roster(tmp_path):
+    """`docs/cells/<name>/` names a repo-only cell or it names nothing.
+
+    A shipped cell's name in that path resolves to no cell at all, so a
+    predicate answering from the union of both rosters reported prose about a
+    nonexistent path as a reference to a repo-only cell that does not exist --
+    a red lint on lawful prose, which blocks work exactly as hard as passing
+    unlawful work. Both polarities, because the whole defect was that the
+    unlawful arm kept working while the lawful one broke. Found by an external
+    reviewer on PR #437. [#404]
+    """
+    make_clean_tree(tmp_path)
+    _repo_cell(tmp_path, "records", "Depth.")
+    _repo_cell(tmp_path, "board", "Depth.")
+    roster.write(tmp_path)
+
+    # `example-skill` is a shipped cell, so this path names no cell: lawful.
+    _repo_cell(tmp_path, "board",
+               "The historical path docs/cells/example-skill/SKILL.md is gone.")
+    roster.write(tmp_path)
+    assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == [], lint.run(tmp_path)
+
+    # A real repo-only cell named by path is still the finding it always was.
+    _repo_cell(tmp_path, "board", "See docs/cells/records/SKILL.md.")
+    roster.write(tmp_path)
+    findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
+    assert len(findings) == 1 and "records" in findings[0], lint.run(tmp_path)
+
+
+def test_the_charter_roster_is_coupled_to_the_shipped_cell_set(tmp_path):
+    """A shipped cell absent from the always-on router is a finding.
+
+    The router was held by prose alone: adding a cell and leaving the charter
+    untouched was green, and the only red was the new description's always-on
+    cost, which an admission row answers. After that a shipped cell was
+    absent from the surface every session reads and nothing said so. Both
+    polarities, and the finding names what a roster line costs, because at a
+    full surface the remedy is an admission rather than a free edit.
+    [PR #437 review, M1]
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    _write_cell(other, "A sibling cell." + NL)
+    assert [f for f in lint.run(tmp_path) if "charter-roster" in f] == [], lint.run(tmp_path)
+
+    charter = tmp_path / "skills" / "charter" / "SKILL.md"
+    charter.write_text(
+        NL.join(line for line in charter.read_text(encoding="utf-8").splitlines()
+                if "`other-skill` cell" not in line) + NL,
+        encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "charter-roster" in f]
+    assert len(findings) == 1, lint.run(tmp_path)
+    assert "other-skill" in findings[0], findings[0]
+    # The obligation the guard creates is stated where it fires.
+    assert lint.ADMISSIONS in findings[0], findings[0]
+
+
+def test_the_roster_check_is_keyed_to_a_heading_and_says_so_when_it_is_gone(tmp_path):
+    """A check keyed to a section is disabled by renaming the section.
+
+    Without this arm, deleting or retitling the roster heading would turn the
+    coupling above off with every other check still green -- the silent
+    failure the check exists to prevent, reproduced one level up.
+    """
+    make_clean_tree(tmp_path)
+    assert [f for f in lint.run(tmp_path) if "charter-roster" in f] == []
+
+    charter = tmp_path / "skills" / "charter" / "SKILL.md"
+    charter.write_text(
+        charter.read_text(encoding="utf-8").replace(
+            lint.CHARTER_ROSTER_HEADING, "## The cells"),
+        encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "charter-roster" in f]
+    assert len(findings) == 1 and "renamed" in findings[0], findings
+
+
+def test_only_a_cell_s_prose_makes_a_pointer(tmp_path):
+    """A reserved form in a cell's script is code, not a pointer.
+
+    The graph walked every file in the cell while the figure it feeds counts
+    markdown only, so one comment in a `.py` credited a cell the whole of
+    another's prose, and two of them redded the command the landing procedure
+    mandates -- naming a circle between two files no session reads as prose.
+    Both polarities: the same sentence in a `.md` still makes the edge.
+    [PR #437 review, M6]
+    """
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    (other / "scripts").mkdir(parents=True)
+    _write_cell(other, "A sibling cell." + NL)
+    (other / "scripts" / "run.py").write_text(
+        "# The rule is the `example-skill` cell's." + NL, encoding="utf-8")
+    assert _edges(tmp_path, "other-skill") == [], lint.cell_pointer_graph(tmp_path)
+    assert lint.run(tmp_path) == []
+
+    (other / "references").mkdir(exist_ok=True)
+    (other / "references" / "depth.md").write_text(
+        "The rule is the `example-skill` cell's." + NL, encoding="utf-8")
+    assert _edges(tmp_path, "other-skill") == ["example-skill"]
+
+
+def test_the_cycle_finding_names_the_route_in_order(tmp_path):
+    """The ordered walk is the half that says which hop to break where.
+
+    Deleting the route from the message left the whole suite green, because
+    every pin asserted only that each member's name appeared somewhere in the
+    finding -- and the hop clause already carries every member as a target.
+    Direction and order in a printed row is the class the experience session
+    caught once on the reach block. [PR #437 review, M30]
+    """
+    make_clean_tree(tmp_path)
+    for name in ("beta", "gamma"):
+        (tmp_path / "skills" / name).mkdir(parents=True)
+    _write_cell(tmp_path / "skills" / "example-skill",
+                "Depth lives in references/detail.md, then the `beta` cell." + NL)
+    _write_cell(tmp_path / "skills" / "beta", "On to the `gamma` cell." + NL)
+    _write_cell(tmp_path / "skills" / "gamma",
+                "Back to the `example-skill` cell." + NL)
+    findings = [f for f in lint.run(tmp_path) if "pointer-cycle" in f]
+    assert len(findings) == 1, lint.run(tmp_path)
+    assert "beta -> gamma -> example-skill -> beta" in findings[0], findings[0]
+    # And the remedy says a hop is a pair of cells, not the one line named.
+    assert "not only the line named here" in findings[0], findings[0]
+
+
+def test_a_three_cell_circle_names_every_member(tmp_path):
+    """A ring longer than two, because a two-cell case passes a guard that
+    only looks one hop out -- and because the finding has to name every cell
+    a reader must choose between to break the ring."""
+    make_clean_tree(tmp_path)
+    for name in ("beta", "gamma"):
+        (tmp_path / "skills" / name).mkdir(parents=True)
+    _write_cell(tmp_path / "skills" / "example-skill",
+                "Depth lives in references/detail.md, then the `beta` cell.\n")
+    _write_cell(tmp_path / "skills" / "beta", "On to the `gamma` cell.\n")
+    _write_cell(tmp_path / "skills" / "gamma",
+                "Back to the `example-skill` cell.\n")
+    findings = [f for f in lint.run(tmp_path) if "pointer-cycle" in f]
+    assert len(findings) == 1, lint.run(tmp_path)
+    for name in ("example-skill", "beta", "gamma"):
+        assert name in findings[0], findings[0]
+    # A chain that is not a ring is lawful however long it is: breaking one
+    # hop must clear the finding, which is what makes the finding actionable.
+    _write_cell(tmp_path / "skills" / "gamma", "The end of the chain.\n")
+    assert lint.run(tmp_path) == []
+
+
+def test_a_pointer_at_the_charter_closes_no_circle(tmp_path):
+    """The charter is loaded before substantive work in every session, so
+    following a pointer at it loads nothing and can close no circle of
+    loading. Both directions at once, which is the shape that would ring if
+    the charter were an ordinary node."""
+    make_clean_tree(tmp_path)
+    charter = tmp_path / "skills" / "charter"
+    (charter / "SKILL.md").write_text(
+        "---" + NL + "name: charter" + NL + "description: The binding rules." + NL
+        + "---" + NL + NL
+        + "The depth behind this rule lives in the `example-skill` cell." + NL,
+        encoding="utf-8",
+    )
+    _sync_charter_roster(tmp_path)
+    _write_cell(tmp_path / "skills" / "example-skill",
+                "The rule itself is stated by the `charter` cell.\n")
+    assert lint.run(tmp_path) == []
+    assert _edges(tmp_path, "example-skill") == []
+    assert _edges(tmp_path, "charter") == ["example-skill"]
+
+
+def test_a_cell_naming_itself_is_not_a_pointer(tmp_path):
+    """Depth inside one cell is not a dependency between two, and a self-edge
+    would make every cell that mentions its own name its own circle."""
+    make_clean_tree(tmp_path)
+    _write_cell(tmp_path / "skills" / "example-skill",
+                "This is the `example-skill` cell, and depth lives in "
+                "references/detail.md.\n")
+    assert _edges(tmp_path, "example-skill") == []
+    assert lint.run(tmp_path) == []
+
+
+def test_the_walls_refused_direction_is_not_an_edge(tmp_path):
+    """A shipped cell naming a repo-only one is check 6's finding.
+
+    Reading it as an edge would price one defect as two and could report a
+    circle one of whose hops is a finding rather than a pointer. The lawful
+    direction is the other one, and a ring built entirely out of repo-only
+    cells still closes.
+    """
+    make_clean_tree(tmp_path)
+    _repo_cell(tmp_path, "records", "Depth.")
+    roster.write(tmp_path)
+    _write_cell(tmp_path / "skills" / "example-skill",
+                "Depth lives in references/detail.md, then the `records` cell.\n")
     findings = lint.run(tmp_path)
-    assert len(findings) == 1
-    assert "sideways-dep" in findings[0] and "example-skill" in findings[0]
+    assert len(findings) == 1, findings
+    assert "cell-reference" in findings[0] and "records" in findings[0]
+    assert [f for f in findings if "pointer-cycle" in f] == []
+    assert _edges(tmp_path, "example-skill") == []
+
+    # The lawful direction, and then a repo-only ring, which is the mesh the
+    # ban's [#260] arm was aimed at and which the cycle check now refuses.
+    _write_cell(tmp_path / "skills" / "example-skill",
+                "Depth lives in references/detail.md.\n")
+    _repo_cell(tmp_path, "records", "The standard is the `example-skill` cell.")
+    _repo_cell(tmp_path, "board", "See the `records` cell.")
+    roster.write(tmp_path)
+    assert lint.run(tmp_path) == []
+    assert _edges(tmp_path, "records") == ["example-skill"]
+    _repo_cell(tmp_path, "records", "See the `board` cell.")
+    roster.write(tmp_path)
+    findings = [f for f in lint.run(tmp_path) if "pointer-cycle" in f]
+    assert len(findings) == 1, lint.run(tmp_path)
+    assert "records" in findings[0] and "board" in findings[0]
 
 
 def test_hooks_may_reference_no_skill(tmp_path):
@@ -579,8 +845,10 @@ def test_a_cell_reference_must_name_a_cell_that_exists(tmp_path):
     body = ("---" + NL + "name: charter" + NL + "description: The binding rules."
             + NL + "---" + NL + NL + "Depth lives in the `{}` cell." + NL)
     (charter / "SKILL.md").write_text(body.format("example-skill"), encoding="utf-8")
+    _sync_charter_roster(tmp_path)
     assert lint.run(tmp_path) == []
     (charter / "SKILL.md").write_text(body.format("renamed-away"), encoding="utf-8")
+    _sync_charter_roster(tmp_path)
     findings = lint.run(tmp_path)
     assert len(findings) == 1
     assert "cell-reference" in findings[0] and "renamed-away" in findings[0]
@@ -599,10 +867,11 @@ def test_a_reference_inside_a_fence_is_displayed_not_made(tmp_path):
     other.mkdir(parents=True)
     _write_cell(other, "Write it like this:" + NL + NL
                 + "```" + NL + "the `example-skill` cell" + NL + "```" + NL)
+    assert _edges(tmp_path, "other-skill") == []
     assert lint.run(tmp_path) == []
     _write_cell(other, "Depth lives in the `example-skill` cell." + NL)
-    findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "sideways-dep" in findings[0]
+    assert _edges(tmp_path, "other-skill") == ["example-skill"]
+    assert lint.run(tmp_path) == []
 
 
 def test_a_reference_wrapped_across_a_line_break_is_still_a_reference(tmp_path):
@@ -616,8 +885,25 @@ def test_a_reference_wrapped_across_a_line_break_is_still_a_reference(tmp_path):
     other = tmp_path / "skills" / "other-skill"
     other.mkdir(parents=True)
     _write_cell(other, "Depth lives in the `example-skill`" + NL + "cell." + NL)
-    findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "across a line break" in findings[0]
+    assert _edges(tmp_path, "other-skill") == ["example-skill"]
+    # And it counts as a hop, which is where dropping it would cost something:
+    # the wrapped half of a circle must still close it.
+    _write_cell(tmp_path / "skills" / "example-skill",
+                "Depth lives in references/detail.md, and the `other-skill`"
+                + NL + "cell." + NL)
+    findings = [f for f in lint.run(tmp_path) if "pointer-cycle" in f]
+    assert len(findings) == 1, lint.run(tmp_path)
+    assert "other-skill" in findings[0]
+    # The wrap still reads as a reference from lib/, where the name form is
+    # judged one reference at a time because a hook is not a cell.
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "README.md").write_text(
+        "Emits the `example-skill`" + NL + "cell on stdout." + NL, encoding="utf-8")
+    wrapped = [f for f in lint.run(tmp_path)
+               if "sideways-dep" in f and "across a line break" in f]
+    assert len(wrapped) == 1 and "from hooks/" in wrapped[0], lint.run(tmp_path)
+    (hooks / "README.md").unlink()
     # Lawful arm: the charter may be named the same way, wrapped or not...
     _write_cell(other, "The rule is the `charter`" + NL + "cell's." + NL)
     assert lint.run(tmp_path) == []
@@ -634,6 +920,7 @@ def test_a_wrapped_reference_must_also_name_a_cell_that_exists(tmp_path):
         + "---" + NL + NL + "Depth lives in the `renamed-away`" + NL + "cell." + NL,
         encoding="utf-8",
     )
+    _sync_charter_roster(tmp_path)
     findings = lint.run(tmp_path)
     assert len(findings) == 1
     assert "cell-reference" in findings[0] and "renamed-away" in findings[0]
@@ -708,6 +995,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_body_strip_owner",
     "check_always_on_budget",
     "check_admissions",
+    "check_charter_roster",
 )
 
 
@@ -941,14 +1229,13 @@ def test_a_fence_closes_only_on_its_own_marker(tmp_path):
     quoted = ("````" + NL + "A fence opens with:" + NL + "```" + NL + "````" + NL
               + NL + "Depth lives in the `example-skill` cell." + NL)
     _write_cell(other, quoted)
-    findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "sideways-dep" in findings[0], (
+    assert _edges(tmp_path, "other-skill") == ["example-skill"], (
         "a ``` quoted inside a ```` block must not end the fence"
     )
     mismatched = ("```" + NL + "shown, not made" + NL + "~~~" + NL
                   + NL + "Depth lives in the `example-skill` cell." + NL)
     _write_cell(other, mismatched)
-    assert lint.run(tmp_path) == [], (
+    assert _edges(tmp_path, "other-skill") == [], (
         "a ~~~ line must not close a ``` fence, so what follows stays fenced"
     )
 
@@ -1099,11 +1386,11 @@ def test_a_code_span_is_not_a_fence_and_a_closing_fence_carries_no_info(tmp_path
         + "the `example-skill` cell" + NL,
     ):
         _write_cell(other, body)
-        assert len([f for f in lint.run(tmp_path) if "sideways-dep" in f]) == 1, body
+        assert _edges(tmp_path, "other-skill") == ["example-skill"], body
     for fence in ("```", "```text", "~~~", "````"):
         closer = "~~~" if fence == "~~~" else fence.rstrip("text") or "```"
         _write_cell(other, fence + NL + "the `example-skill` cell" + NL + closer + NL)
-        assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == [], fence
+        assert _edges(tmp_path, "other-skill") == [], fence
 
 
 def test_a_cell_named_at_the_front_door_must_resolve(tmp_path):
@@ -1126,8 +1413,9 @@ def test_a_cell_named_at_the_front_door_must_resolve(tmp_path):
 
 def test_the_exempt_cell_name_is_the_one_these_tests_pin():
     """A test deriving its bound from the constant it tests cannot catch a
-    change to that constant [#164]. The exemption is a rule about one named
-    cell, so the name is pinned literally here."""
+    change to that constant [#164]. The rule is about one named cell -- the
+    one whose edges are dropped from the pointer graph -- so the name is
+    pinned literally here."""
     assert lint.CHARTER_CELL == "charter"
 
 
@@ -5470,6 +5758,33 @@ def test_the_report_carries_nothing_evaluative():
         assert lawful.match(line), f"row carries something beyond size and budget: {line!r}"
 
 
+def test_the_lint_prints_the_pointer_reach_at_the_mandated_command(capsys):
+    """The figure has to reach the session doing the editing.
+
+    Deleting the `print` from `main()` leaves every direct pin on
+    `pointer_reach_rows` green while the number vanishes from the one command
+    this repository's landing procedure mandates -- the mutation the body
+    block's own pin records having survived three times. The basis is
+    asserted with the rows because a figure whose basis a reader cannot
+    reconstruct is one they cannot act on, and the basis is the half that can
+    be dropped without any row changing. [#404]
+    """
+    lint.main()
+    out = capsys.readouterr().out
+    assert "pointer reach here, largest first" in out, out
+    block = out.split("pointer reach here, largest first", 1)[1]
+    printed = {name for name, _reach, _via in _rows(block)}
+    assert printed == set(roster.cell_sources(lint.ROOT)), printed
+    for clause in ("below its frontmatter", "counted once",
+                   "its own cell's prose plus every cell it reaches",
+                   "no cell reaches the charter"):
+        assert clause in block, block
+    # Every row states where its reach went, so no row is a bare number.
+    for _name, _reach, via in _rows(block):
+        assert (via.startswith("reaches ")
+                or via == "points at nothing; its own prose only"), via
+
+
 def test_the_lint_prints_every_cell_body_at_the_mandated_command(capsys):
     """Criterion 1, against the command it names and the tree it names.
 
@@ -5528,7 +5843,13 @@ def test_the_lint_prints_every_cell_body_at_the_mandated_command(capsys):
             against = "no body budget"
         expected[name] = (body, against)
 
-    printed = {name: (body, against) for name, body, against in _rows(out)}
+    # **Sliced to the block under test.** `main()` prints a second block of
+    # rows in the same shape -- the pointer reach -- and parsing the whole of
+    # stdout read a reach figure as a body and failed on the difference. The
+    # slice is the block's own header to the next line that is not a row.
+    block = out.split("cell bodies here, largest first:", 1)[1]
+    block = block.split("pointer reach here", 1)[0]
+    printed = {name: (body, against) for name, body, against in _rows(block)}
     assert set(printed) == set(expected), (
         f"missing {set(expected) - set(printed)}, extra {set(printed) - set(expected)}")
     for name, (body, against) in expected.items():
