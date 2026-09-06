@@ -102,6 +102,24 @@ EMPTY = "-"
 # seat/dispatch hygiene".
 BUNDLE_CHARS = re.compile(r"^[A-Za-z0-9 #/_.()-]+$")
 
+# The label that makes a sub-issue link causal. GitHub's link means task
+# decomposition by default -- a parent is "done" when its children are, which
+# is backwards for a cause whose fix may leave symptoms standing. The label is
+# what says this edge is the other kind, so it is what the guard reads: an
+# unlabelled parent is ordinary decomposition and none of the board's business.
+CAUSE_LABEL = "cause"
+
+BLOCKED = "Blocked"
+assert BLOCKED in STATUSES, "the status the cause rule writes must be one the parser accepts"
+
+# The owner may rule that a symptom is worked while its cause is open. A guard
+# with no way to express that refuses a board filled in CORRECTLY, so the plan
+# carries the ruling on a comment line -- which parse_plan already skips, so
+# the format does not move and every existing plan still parses. His words are
+# required rather than a bare flag: the board cell already obliges the refresh
+# note to carry them, and a flag would let the exception be taken silently.
+EXCEPTION_RE = re.compile(r"^#\s*owner-exception:\s*#(\d+)\s+(\S.*?)\s*$")
+
 
 class BoardError(Exception):
     """A condition the caller must see rather than a traceback."""
@@ -178,6 +196,59 @@ def parse_plan(text: str) -> list[Row]:
     return rows
 
 
+def parse_exceptions(text: str) -> dict[int, str]:
+    """The owner's exceptions, issue -> his words, read off the plan's comments.
+
+    Pure, and separate from `parse_plan` so that function stays a pure read of
+    the four columns: the exceptions live in the lines it discards, and a
+    parser returning two unrelated things is how the second one gets dropped.
+    A directive naming no words does not match, so it is not an exception and
+    the plan is refused by the guard exactly as if it were absent.
+    """
+    out: dict[int, str] = {}
+    for raw in text.splitlines():
+        m = EXCEPTION_RE.match(raw.strip())
+        if m:
+            out[int(m.group(1))] = m.group(2)
+    return out
+
+
+def check_causes(rows: list[Row], parents: dict[int, int],
+                 exceptions: dict[int, str]) -> None:
+    """The cause-led grouping rule, enforced. Pure: the caller supplies the map.
+
+    `parents` holds only symptoms whose cause is OPEN and carries CAUSE_LABEL,
+    so a cause closing lifts the block with no cleanup step for anyone to
+    forget, and an ordinary decomposition sub-issue never reaches here.
+
+    Refuses for the same reason the Standing/Queued pairing is refused: the
+    reading rule cannot see Bundle or position, so a symptom left Queued under
+    an open cause silently BECOMES the answer -- the one outcome the rule
+    exists to prevent.
+    """
+    at = {r.issue: i for i, r in enumerate(rows)}
+    for row in rows:
+        cause = parents.get(row.issue)
+        if cause is None or row.issue in exceptions:
+            continue
+        if row.status != BLOCKED:
+            raise BoardError(
+                f"#{row.issue} is a symptom of #{cause}, which is still open, and carries "
+                f"status {row.status!r}. The reading rule cannot see Bundle or position, so "
+                f"this row would be handed out as the answer while its cause is unfixed. "
+                f"Give it {BLOCKED!r}, or -- if the owner ruled it worked while #{cause} is "
+                f"open -- record that on a comment line as "
+                f"'# owner-exception: #{row.issue} <his words>'"
+            )
+        if cause in at and at[cause] > at[row.issue]:
+            raise BoardError(
+                f"#{row.issue} is a symptom of #{cause} but is ranked above it "
+                f"(line {at[row.issue] + 1} against line {at[cause] + 1} of the rows). "
+                f"A cause outranks every symptom it carries. Move #{cause} above "
+                f"#{row.issue}, or record the owner's exception for #{row.issue}"
+            )
+
+
 def format_plan(rows: list[Row]) -> str:
     """Render rows as a plan file. Round-trips through parse_plan."""
     out = [
@@ -186,6 +257,8 @@ def format_plan(rows: list[Row]) -> str:
         f"# bands:    {', '.join(BANDS)}",
         f"# statuses: {', '.join(STATUSES)}",
         f"# bundle '{EMPTY}' means standalone.",
+        "# a symptom whose cause is open must be Blocked, and rank below it.",
+        "# owner-exception: #<issue> <his words>   exempts one symptom from that.",
     ]
     for r in rows:
         out.append(f"{r.issue}\t{r.band}\t{r.bundle}\t{r.status}")
@@ -369,6 +442,37 @@ def open_issues() -> dict[int, str]:
         "--limit", "1000", "--json", "number,id",
     ])
     return {item["number"]: item["id"] for item in json.loads(raw)}
+
+
+def causal_parents() -> dict[int, int]:
+    """Open symptom -> its open, labelled cause. The parentage the guard reads.
+
+    GraphQL rather than `gh issue list`: neither `parent` nor `issueType` is in
+    that command's field set, so the one-call body read the cells used to
+    describe cannot carry this. Paged at GraphQL's own cap of 100.
+
+    A parent that is closed, or that carries no CAUSE_LABEL, yields nothing --
+    the first because a closed cause blocks nothing, the second because an
+    unlabelled link is task decomposition and means something else entirely.
+    """
+    parents: dict[int, int] = {}
+    cursor = "null"
+    while True:
+        data = gql(
+            "query($o:String!,$r:String!){repository(owner:$o,name:$r){"
+            "issues(states:OPEN,first:100,after:%s){pageInfo{hasNextPage endCursor}"
+            "nodes{number parent{number state labels(first:50){nodes{name}}}}}}}" % cursor,
+            o=OWNER, r=REPO,
+        )["repository"]["issues"]
+        for node in data["nodes"]:
+            parent = node.get("parent")
+            if not parent or parent["state"] != "OPEN":
+                continue
+            if CAUSE_LABEL in {lb["name"] for lb in parent["labels"]["nodes"]}:
+                parents[node["number"]] = parent["number"]
+        if not data["pageInfo"]["hasNextPage"]:
+            return parents
+        cursor = '"%s"' % data["pageInfo"]["endCursor"]
 
 
 def org_projects() -> list[dict]:
@@ -755,7 +859,9 @@ def cmd_sync(dry_run: bool) -> int:
 
 
 def cmd_apply(plan_path: Path, dry_run: bool) -> int:
-    plan = parse_plan(plan_path.read_text(encoding="utf-8"))
+    plan_text = plan_path.read_text(encoding="utf-8")
+    plan = parse_plan(plan_text)
+    exceptions = parse_exceptions(plan_text)
     board = Board()
     # One ordered read, not two. The second one used to be taken separately for
     # its item ids, so the guards were computed against one read and the writes
@@ -776,6 +882,12 @@ def cmd_apply(plan_path: Path, dry_run: bool) -> int:
         raise BoardError(
             f"plan omits issues the board holds: {absent}. A plan is the whole board."
         )
+
+    # Before any write, and on the dry-run path too: a plan that breaks the
+    # cause rule must be caught where --dry-run can show it, not half-applied.
+    check_causes(plan, causal_parents(), exceptions)
+    for issue, words in sorted(exceptions.items()):
+        print(f"owner-exception: #{issue} exempt while its cause is open -- {words}")
 
     target = [r.issue for r in plan]
     moves = moves_for([r.issue for r in before], target)

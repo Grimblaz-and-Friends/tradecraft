@@ -718,3 +718,159 @@ def test_sync_warns_and_does_not_claim_the_run_will_halt(capsys, monkeypatch):
     # say the run's own result is not evidence about this item, so pinning only
     # the absence of a halt-claim leaves it free to promise success instead.
     assert "does not tell you whether it worked" in out
+
+
+# ------------------------------------------- the cause-led grouping rule
+#
+# Guard-shaped, so probed in both polarities like the two above it. The refusal
+# arms are the point of the guard; the acceptance arms are what stop it from
+# being a guard that refuses everything, which passes a refusal test and breaks
+# every refresh.
+
+
+def caused(symptom: int, cause: int) -> dict[int, int]:
+    return {symptom: cause}
+
+
+def test_check_causes_refuses_a_symptom_left_available_under_an_open_cause():
+    """The failure #416 records: green apply, and `next` hands out the symptom."""
+    rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Queued"),
+    ))
+    with pytest.raises(q.BoardError) as excinfo:
+        q.check_causes(rows, caused(349, 404), {})
+    assert "#349" in str(excinfo.value) and "#404" in str(excinfo.value)
+
+
+def test_check_causes_accepts_the_same_plan_with_the_symptom_blocked():
+    """The negative control: the guard must not refuse a correct board."""
+    rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Blocked"),
+    ))
+    q.check_causes(rows, caused(349, 404), {})
+
+
+def test_check_causes_refuses_a_symptom_ranked_above_its_cause():
+    """Held apart from the status arm: a status-only guard passes that and fails this."""
+    rows = q.parse_plan(plan_text(
+        line(349, "Bundles", "Cause #404", "Blocked"),
+        line(404, "Bundles", "Cause #404", "In progress"),
+    ))
+    with pytest.raises(q.BoardError, match="ranked above"):
+        q.check_causes(rows, caused(349, 404), {})
+
+
+def test_check_causes_leaves_an_issue_with_no_cause_alone():
+    """Ninety-one of the board's open issues are in this state and must pass."""
+    rows = q.parse_plan(plan_text(
+        line(101, "Front", "-", "Queued"),
+        line(102, "Front", "-", "Queued"),
+    ))
+    q.check_causes(rows, {}, {})
+
+
+def test_a_closed_or_unlabelled_cause_never_reaches_the_guard():
+    """The map is what carries `open` and `labelled`, so an empty map is the whole test.
+
+    `causal_parents` is what drops those two cases; this pins that the guard
+    itself asks nothing further, so a cause closing lifts the block with no
+    cleanup step anyone has to remember.
+    """
+    rows = q.parse_plan(plan_text(line(349, "Bundles", "Cause #404", "Queued")))
+    q.check_causes(rows, {}, {})
+
+
+def test_the_owner_exception_exempts_only_the_symptom_it_names():
+    """Both arms in one plan: the named one passes, its sibling still refuses."""
+    rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Queued"),
+        line(350, "Bundles", "Cause #404", "Queued"),
+    ))
+    parents = {349: 404, 350: 404}
+    with pytest.raises(q.BoardError, match="#350"):
+        q.check_causes(rows, parents, {349: "work it on its own"})
+    q.check_causes(rows, parents, {349: "work it on its own", 350: "this one too"})
+
+
+def test_the_exception_also_lifts_the_ordering_arm():
+    """His ruling is that the symptom is worked, which is a claim about both."""
+    rows = q.parse_plan(plan_text(
+        line(349, "Bundles", "Cause #404", "In progress"),
+        line(404, "Bundles", "Cause #404", "In progress"),
+    ))
+    q.check_causes(rows, caused(349, 404), {349: "worked ahead of its cause"})
+
+
+def test_parse_exceptions_requires_his_words_rather_than_a_bare_flag():
+    """A flag would let the exception be taken silently, which is what it exists to stop."""
+    assert q.parse_exceptions("# owner-exception: #349") == {}
+    assert q.parse_exceptions("# owner-exception: #349   ") == {}
+    assert q.parse_exceptions("# owner-exception: #349 his words") == {349: "his words"}
+
+
+def test_the_plan_header_does_not_read_as_an_exception():
+    """The header advertises the directive, so it must not also perform one."""
+    header = q.format_plan([q.Row(1, "Front", "-", "Queued")])
+    assert "owner-exception" in header, "the header stopped advertising the directive"
+    assert q.parse_exceptions(header) == {}
+
+
+def test_both_cause_refusals_name_the_remedy():
+    """The form the Standing refusal already sets: say what to do, not just what is wrong."""
+    status_rows = q.parse_plan(plan_text(
+        line(404, "Bundles", "Cause #404", "In progress"),
+        line(349, "Bundles", "Cause #404", "Queued"),
+    ))
+    order_rows = q.parse_plan(plan_text(
+        line(349, "Bundles", "Cause #404", "Blocked"),
+        line(404, "Bundles", "Cause #404", "In progress"),
+    ))
+    for rows in (status_rows, order_rows):
+        with pytest.raises(q.BoardError) as excinfo:
+            q.check_causes(rows, caused(349, 404), {})
+        message = str(excinfo.value)
+        assert "owner-exception" in message or "Move #404" in message, (
+            "a refusal that does not name the remedy: " + message
+        )
+
+
+def issues_page(nodes, has_next=False, cursor=None):
+    return {"repository": {"issues": {
+        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+        "nodes": nodes,
+    }}}
+
+
+def node(number, parent=None, state="OPEN", labels=("cause",)):
+    if parent is None:
+        return {"number": number, "parent": None}
+    return {"number": number, "parent": {
+        "number": parent, "state": state,
+        "labels": {"nodes": [{"name": name} for name in labels]},
+    }}
+
+
+def test_causal_parents_keeps_only_open_labelled_parents(monkeypatch):
+    """Four arms in one read, because each exclusion has a different reason."""
+    wire = FakeWire([issues_page([
+        node(349, parent=404),
+        node(360, parent=404, state="CLOSED"),
+        node(370, parent=404, labels=("documentation",)),
+        node(380, parent=None),
+    ])])
+    monkeypatch.setattr(q, "gql", wire)
+    assert q.causal_parents() == {349: 404}
+
+
+def test_causal_parents_pages_rather_than_stopping_at_the_first_hundred(monkeypatch):
+    """105 open issues today, and GraphQL's cap is 100: unpaged, this reads short."""
+    wire = FakeWire([
+        issues_page([node(349, parent=404)], has_next=True, cursor="CUR"),
+        issues_page([node(350, parent=404)]),
+    ])
+    monkeypatch.setattr(q, "gql", wire)
+    assert q.causal_parents() == {349: 404, 350: 404}
+    assert "CUR" in wire.queries[1][0], "the second page did not carry the cursor"
