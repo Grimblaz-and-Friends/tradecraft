@@ -805,9 +805,14 @@ def test_the_exception_also_lifts_the_ordering_arm():
 
 
 def test_parse_exceptions_requires_his_words_rather_than_a_bare_flag():
-    """A flag would let the exception be taken silently, which is what it exists to stop."""
-    assert q.parse_exceptions("# owner-exception: #349") == {}
-    assert q.parse_exceptions("# owner-exception: #349   ") == {}
+    """A flag would let the exception be taken silently, which is what it exists to stop.
+
+    Refused rather than ignored: an ignored flag leaves the refresher reading a
+    refusal that describes the line they believe they just wrote.
+    """
+    for bare in ("# owner-exception: #349", "# owner-exception: #349   "):
+        with pytest.raises(q.BoardError):
+            q.parse_exceptions(bare)
     assert q.parse_exceptions("# owner-exception: #349 his words") == {349: "his words"}
 
 
@@ -1055,3 +1060,47 @@ def test_cmd_causes_says_so_when_there_are_none(monkeypatch, capsys):
     monkeypatch.setattr(q, "causal_parents", lambda: {})
     assert q.cmd_causes() == 0
     assert "no cause groups" in capsys.readouterr().out
+
+
+# ------------------------- a directive that meant to be one and was not
+#
+# Tolerating the natural punctuations narrows this but cannot close it: a line
+# can still miss the form entirely. Silently discarding it is how the owner's
+# ruling goes missing while the plan is refused for lacking it -- the refusal
+# then describes the line the refresher believes they already wrote.
+
+
+@pytest.mark.parametrize("line_text", [
+    "# owner-exception: #349",
+    "# owner-exception #349:",
+    "# owner-exception",
+    "# Owner Exception -- take 349 now",
+    "#owner-exception: 349 no hash on the number",
+])
+def test_a_line_that_meant_to_be_a_directive_is_refused_not_ignored(line_text):
+    with pytest.raises(q.BoardError, match="reads as an owner-exception"):
+        q.parse_exceptions(line_text)
+
+
+@pytest.mark.parametrize("line_text", [
+    "# One issue per line, in board order. Reorder lines to reorder the board.",
+    "# issue\tband\tbundle\tstatus",
+    "# bundle '-' means standalone.",
+    "# an ordinary note about an exception someone made once",
+])
+def test_an_ordinary_comment_is_not_mistaken_for_a_directive(line_text):
+    """The negative control: the loose match must not swallow the plan's own header."""
+    assert q.parse_exceptions(line_text) == {}
+
+
+def test_the_module_carries_no_stray_control_characters():
+    """A scripted edit wrote a literal backspace into a regex once.
+
+    `grep` could not render it, the exit code was clean, and the pattern
+    silently stopped matching -- the guard it fed was inert and every test
+    still passed.
+    """
+    raw = (ROOT / "tools" / "board.py").read_bytes()
+    stray = {bytes([c]) for c in range(32) if c not in (9, 10, 13)}
+    found = sorted(hex(c[0]) for c in stray if c in raw)
+    assert not found, f"control bytes in tools/board.py: {found}"

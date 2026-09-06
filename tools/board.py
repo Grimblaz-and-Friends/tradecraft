@@ -128,6 +128,12 @@ EXCEPTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Anything that was TRYING to be a directive. A line matching this and not the
+# one above was meant as an exception and did not become one; silently dropping
+# it is how the owner's ruling goes missing while the plan is refused for
+# lacking it.
+EXCEPTION_ATTEMPT_RE = re.compile(r"^#\s*owner[- ]?exception", re.IGNORECASE)
+
 # A words field of this shape is a placeholder someone copied, not a ruling.
 # It is refused because the tool's own refusal text used to hand back
 # "<his words>" with the number already filled in, so the single most
@@ -222,8 +228,16 @@ def parse_exceptions(text: str) -> dict[int, str]:
     """
     out: dict[int, str] = {}
     for lineno, raw in enumerate(text.splitlines(), start=1):
-        m = EXCEPTION_RE.match(raw.strip())
+        line = raw.strip()
+        m = EXCEPTION_RE.match(line)
         if not m:
+            if EXCEPTION_ATTEMPT_RE.match(line):
+                raise BoardError(
+                    f"line {lineno}: {line!r} reads as an owner-exception and does not parse as "
+                    f"one, so it would have been ignored and the plan refused for lacking it. "
+                    f"The form is the word 'owner-exception', then '#' and the issue number, "
+                    f"then the sentence he actually ruled"
+                )
             continue
         issue, words = int(m.group(1)), m.group(2)
         if PLACEHOLDER_RE.match(words):
