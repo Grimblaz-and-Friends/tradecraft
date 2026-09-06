@@ -1,6 +1,6 @@
 ---
 name: engagement
-description: How a session and the owner work together — which decisions are the owner's and which the session's, the plain brief that opens every surface they enter and binds where they affirmed it, and the pre-implementation artifact a cold seat settles against that brief. Use when deciding what a change is for, when deciding whether a call is the owner's or your own, when putting a decision to them, when reporting a call you made, when writing a pre-implementation artifact, when delivering a review's outcome to them, when handing work back after they have been away, or when you cannot reach them at all; not for writing skills or governing documents.
+description: How a session and the owner work together — which decisions are the owner's and which the session's, the plain brief that opens every surface they enter and binds where they affirmed it, the handoff across it, and the artifact a cold seat settles against it. Use when deciding what a change is for, when deciding whether a call is the owner's or your own, when putting a decision to them, when reporting a call you made, when handing off or picking up work across an affirmed brief, when writing a pre-implementation artifact, when delivering a review's outcome to them, when handing work back after time away, or when you cannot reach them at all; not for writing skills or governing documents.
 ---
 
 # engagement
@@ -79,6 +79,22 @@ The artifact settles what is being built before it is built, the drafted text be
 **A premise the artifact rests on may need testing before you assert it** — that is a spike, which tests one and commits nothing.
 
 **Where a check bears on the artifact, the artifact carries what came back rather than the fact that you looked.** It carries a spike's result, **including a spike that did not resolve**; where you considered one and did not run it, it carries the material you consulted instead — the enumeration, the query and the tree it ran on, the file you opened. [D-155]
+
+## The handoff at the affirmation
+
+**The session that settles the brief and the session that builds from it are routinely not the same**, and the issue is all that crosses between them: what is not on it did not reach the successor.
+
+**Before it leaves, the session that settled the brief makes the issue carry three things.** The first two go in the issue body's opening block, alongside the ties already there, because the ordinary read of an issue returns the body and no comments — so a brief posted only as a comment is invisible to a successor who does not already know to look for it.
+
+- **A pointer to the affirmed brief** — its link, the date it was affirmed, and that it governs.
+- **What the brief has replaced, marked as replaced.** A filing written before the conversation carries the vocabulary of before it; where the brief closed or contradicted any of that, the body says so rather than leaving superseded design lying there to be built from.
+- **Every ruling a ranking must act on, written as a tie on the issues themselves** — an ordering, a grouping, an exception. A ranking reads ties and not prose, so a ruling recorded only in the brief or in the record of its affirmation is one nothing acts on. This is the sibling-tying obligation above over a second class of ruling, and it falls at the same moment: before the brief locks.
+
+**Arriving, read those before anything else — the issue's comments included, since the brief and the record of its affirmation live there.** An affirmed brief on the issue is the term of the work: it is not re-settled, and no second brief is posted beside it. Two briefs on one issue leave nothing saying which governs, and an option the owner picked inside some later question is not their restatement of a whole one.
+
+**A successor that believes the affirmed brief is wrong amends it rather than replacing it** — saying what it would change and why, which for a brief means re-agreeing it with them. That is what the amendment route above is for; what it forbids is the successor settling the disagreement on its own.
+
+**A successor may not author the record of an affirmation it was not present for.** Where the affirmation happened in conversation and no session posted the record before the work changed hands, the term exists and its artifact does not — and writing that artifact and then quoting it puts the session's own prose where the owner's agreement belongs. So it reconstructs the brief, posts it **marked as not yet approved** and marking which sentences are the session's restatement rather than their own words, and gets one line of confirmation from them before building. **That confirmation is what affirms the reconstruction**, and nothing else supplies it; the artifact then quotes the confirmed comment exactly as it quotes any other.
 
 ## The two halves, and the boundary between them
 
