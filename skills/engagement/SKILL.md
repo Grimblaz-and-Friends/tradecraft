@@ -88,7 +88,7 @@ The artifact settles what is being built before it is built, the drafted text be
 
 - **A pointer to the affirmed brief** — its link, the date it was affirmed, and that it governs.
 - **What the brief has replaced, marked as replaced.** A filing written before the conversation carries the vocabulary of before it; where the brief closed or contradicted any of that, the body says so rather than leaving superseded design lying there to be built from.
-- **Every ruling a ranking must act on, written as a tie on the issues themselves** — an ordering, a grouping, an exception. A ranking reads ties and not prose, so a ruling recorded only in the brief or in the record of its affirmation is one nothing acts on. This is the sibling-tying obligation above over a second class of ruling, and it falls at the same moment: before the brief locks.
+- **Every ruling a ranking must act on, written as a tie on the issues themselves** — an ordering, a grouping, an exception. A ranking reads ties and not prose, so a ruling recorded only in the brief or in the record of its affirmation is one nothing acts on. This is the sibling-tying obligation above over a second class of ruling, and it falls earlier than the other two, at that obligation's own moment: before the brief locks.
 
 **Arriving, read those before anything else — the issue's comments included, since the brief and the record of its affirmation live there.** An affirmed brief on the issue is the term of the work: it is not re-settled, and no second brief is posted beside it. Two briefs on one issue leave nothing saying which governs, and an option the owner picked inside some later question is not their restatement of a whole one.
 
