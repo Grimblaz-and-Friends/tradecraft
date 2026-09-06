@@ -33,6 +33,8 @@ python tools/board.py notes    # the last refresh notes, newest first
 
 **Nothing reaches this board that has not been framed**, and `sync` refuses to empty a populated board on an empty framed set rather than reading a setup mistake as a decision; `sync --allow-empty` is how an operator says the emptiness is real.
 
+**The pool moves between refreshes, and two things read that.** The `filing` cell's own script carries a `cycle` command, which reports what rose from the symptoms under it, what faded to the floor, and the next bounded few nobody has asked about a cause; `python tools/pool_rot.py` names the filings whose evidence the tree no longer holds. Neither closes anything here — the fade closes only where a repository sets `fade.closes`, and the rot check never does.
+
 ## Refreshing it
 
 Run a refresh when the board moved — an issue framed or returned to the pool, an issue closed, a pull request merged, a dependency shifted. A filing no longer moves it.

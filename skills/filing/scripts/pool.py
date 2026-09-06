@@ -37,7 +37,9 @@ Usage:  python scripts/pool.py [--repo OWNER/REPO] [--policy PATH] <command>
 
         python scripts/pool.py list      [--limit N]
         python scripts/pool.py show      N
-        python scripts/pool.py shortlist [--count N]
+        python scripts/pool.py shortlist [--count N] [--unassessed]
+        python scripts/pool.py cycle
+        python scripts/pool.py assess    N --none
         python scripts/pool.py framed
         python scripts/pool.py policy
         python scripts/pool.py labels    [--dry-run]
@@ -47,7 +49,11 @@ Usage:  python scripts/pool.py [--repo OWNER/REPO] [--policy PATH] <command>
 
   list       the pool, highest-rated first, with each item's ratings
   show       one issue: whether it is framed, and what it is rated
-  shortlist  the few worth raising, at the policy's size
+  shortlist  the few worth raising, at the policy's size; refuses over an
+             unassessed top, so that what it raises are causes
+  cycle      what has risen from its symptoms, what has faded to the floor, and
+             the next bounded few to assess
+  assess     record that an issue was asked and is its own cause
   framed     the framed set, which is what the board holds
   policy     the resolved policy and the file it came from
   labels     create the policy's labels in the repository, idempotently
@@ -61,6 +67,7 @@ import argparse
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Shared code lives in lib/, which ships beside this cell, so the import
@@ -190,11 +197,60 @@ def load_policy(path: Path) -> dict:
             f"rating on axis '{seen[framed['label']]}'"
         )
 
+    for key in ("cause", "assessed"):
+        block = policy.get(key)
+        if not isinstance(block, dict) or not isinstance(block.get("label"), str):
+            raise PoolError(
+                f"{path}: '{key}' must carry a 'label' naming one label. A policy "
+                f"written before the accrual and the fade landed does not have it: "
+                f"add 'cause', 'assessed', 'accrual', 'fade' and 'assessment'"
+            )
+        _check_label_name(path, block["label"])
+        if block["label"] in seen or block["label"] == framed["label"]:
+            raise PoolError(
+                f"{path}: '{block['label']}' is the '{key}' label and is already "
+                f"in use, so an issue carrying it has two meanings"
+            )
+        seen[block["label"]] = key
+
     size = policy.get("shortlist_size")
     if not isinstance(size, int) or isinstance(size, bool) or size < 1:
         raise PoolError(f"{path}: 'shortlist_size' must be a whole number of at least 1")
 
+    _whole(policy, path, "accrual", "symptoms_per_band", least=1)
+    _whole(policy, path, "fade", "quiet_days", least=1)
+    _whole(policy, path, "assessment", "before_shortlist", least=0)
+    _whole(policy, path, "assessment", "per_cycle", least=1)
+
+    closes = policy.get("fade", {}).get("closes")
+    if not isinstance(closes, bool):
+        raise PoolError(
+            f"{path}: 'fade.closes' must be true or false. It is what decides "
+            f"whether the fade closes anything at all, so it is stated rather "
+            f"than defaulted"
+        )
+
     return policy
+
+
+def _whole(policy: dict, path: Path, block: str, key: str, *, least: int) -> None:
+    """One policy number, validated where every other one is.
+
+    Named rather than inlined four times because the message a repository reads
+    when it edits this file wrongly is the whole value of validating on load.
+    """
+    values = policy.get(block)
+    if not isinstance(values, dict):
+        raise PoolError(
+            f"{path}: '{block}' must be an object. A policy written before the "
+            f"accrual and the fade landed does not have it: add 'cause', "
+            f"'assessed', 'accrual', 'fade' and 'assessment'"
+        )
+    value = values.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < least:
+        raise PoolError(
+            f"{path}: '{block}.{key}' must be a whole number of at least {least}"
+        )
 
 
 def _check_label_name(path: Path, label: str) -> None:
@@ -229,6 +285,9 @@ def writable_labels(policy: dict) -> frozenset[str]:
     """
     names = {label for axis in policy["axes"].values() for label in axis["values"]}
     names.add(policy["framed"]["label"])
+    # `assess` writes this one, so the rail has to admit it or the one write
+    # stage two adds is refused by the guard stage one built.
+    names.add(policy["assessed"]["label"])
     return frozenset(names)
 
 
@@ -258,15 +317,19 @@ def _repo_args(repo: str | None) -> list[str]:
 
 
 def open_issues(repo: str | None = None) -> list[dict]:
-    """Every open issue with its labels, in one call.
+    """Every open issue with its labels and its last-touched time, in one call.
 
     Labels come back in the same read as the numbers because every command
     here needs both, and a second call per issue over a hundred-item board is
     a hundred round trips for something one query already carries.
+
+    `updatedAt` is here because the fade is read from it. It is the one field
+    that makes a decay derivable with nothing stored: GitHub maintains it, and
+    a decay that had to be written would bump the very field it reads.
     """
     raw = gh([
         "issue", "list", *_repo_args(repo), "--state", "open",
-        "--limit", str(ISSUE_READ_LIMIT), "--json", "number,title,labels",
+        "--limit", str(ISSUE_READ_LIMIT), "--json", "number,title,labels,updatedAt",
     ])
     issues = json.loads(raw)
     if len(issues) >= ISSUE_READ_LIMIT:
@@ -282,6 +345,63 @@ def issue_labels(number: int, repo: str | None = None) -> list[str]:
     """The labels one issue carries, as `gh` reports them."""
     raw = gh(["issue", "view", str(number), *_repo_args(repo), "--json", "labels"])
     return [lb["name"] for lb in json.loads(raw).get("labels", [])]
+
+
+def causal_parents(policy: dict, repo: str | None = None) -> dict[int, int]:
+    """Open symptom -> its open, labelled cause, paged.
+
+    GraphQL rather than `gh issue list`: neither `parent` nor `issueType` is in
+    that command's field set, so the one-call read above cannot carry this.
+
+    **A repository's own board transport may perform the same read, and the
+    repetition is the wall rather than an oversight.** Such a transport is
+    repo-only and this script ships, so it may not be imported from here; what
+    is shared instead is the label's name, which lives in the policy both of
+    them read. A parent that is closed,
+    or carries no cause label, yields nothing -- the first because a closed
+    cause accrues nothing, the second because an unlabelled link is an ordinary
+    task decomposition and means something else entirely.
+    """
+    owner_repo = repo or _infer_repo()
+    owner, _, name = owner_repo.partition("/")
+    label = policy["cause"]["label"]
+    parents: dict[int, int] = {}
+    cursor = "null"
+    while True:
+        data = _graphql(
+            "query($o:String!,$r:String!){repository(owner:$o,name:$r){"
+            "issues(states:OPEN,first:100,after:%s){pageInfo{hasNextPage endCursor}"
+            "nodes{number parent{number state labels(first:50){nodes{name}}}}}}}" % cursor,
+            o=owner, r=name,
+        )["repository"]["issues"]
+        for node in data["nodes"]:
+            parent = node.get("parent")
+            if not parent or parent["state"] != "OPEN":
+                continue
+            if label in {lb["name"] for lb in parent["labels"]["nodes"]}:
+                parents[node["number"]] = parent["number"]
+        if not data["pageInfo"]["hasNextPage"]:
+            return parents
+        cursor = '"%s"' % data["pageInfo"]["endCursor"]
+
+
+def _infer_repo() -> str:
+    """OWNER/REPO for the checkout, when no --repo was given."""
+    raw = gh(["repo", "view", "--json", "nameWithOwner"])
+    return json.loads(raw)["nameWithOwner"]
+
+
+def _graphql(query: str, **variables: object) -> dict:
+    args = ["api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        # -f, never -F: -F applies magic type conversion, reading a value
+        # beginning "@" as a filename and expanding {owner}/{repo} from the
+        # working directory. Every variable here is a String!.
+        args += ["-f", f"{key}={value}"]
+    data = json.loads(gh(args))
+    if "errors" in data:
+        raise PoolError(f"graphql: {json.dumps(data['errors'])[:400]}")
+    return data["data"]
 
 
 def edit_labels(number: int, policy: dict, *, add: list[str], remove: list[str],
@@ -328,8 +448,10 @@ def read_pool(policy: dict, repo: str | None = None) -> tuple[list[dict], list[d
     the order the issue list gave it, the board being what orders that half.
     """
     framed_label = policy["framed"]["label"]
+    assessed_label = policy["assessed"]["label"]
     pool: list[dict] = []
     framed: list[dict] = []
+    by_number: dict[int, dict] = {}
     for issue in open_issues(repo):
         labels = [lb["name"] for lb in issue.get("labels", [])]
         item = {
@@ -337,18 +459,131 @@ def read_pool(policy: dict, repo: str | None = None) -> tuple[list[dict], list[d
             "title": issue.get("title", ""),
             "ratings": {},
             "clashes": [],
+            "assessed": assessed_label in labels,
+            "updated_at": _stamp(issue.get("updatedAt")),
+            "symptoms": [],
         }
         for name, axis in policy["axes"].items():
             label, clashed = rating_of(labels, axis)
             item["ratings"][name] = label
             if clashed:
                 item["clashes"].append(name)
+        by_number[item["number"]] = item
         if framed_label in labels:
             framed.append(item)
         else:
             pool.append(item)
+
+    # The accrual's input. Read once for the whole set rather than per item,
+    # and only where something might accrue -- a repository with no cause links
+    # pays nothing for a mechanism it is not using.
+    for symptom, cause in causal_parents(policy, repo).items():
+        parent, child = by_number.get(cause), by_number.get(symptom)
+        if parent is not None and child is not None:
+            parent["symptoms"].append({"number": symptom, "values": _bare(child, policy)})
+
+    for item in (*pool, *framed):
+        item["effective"] = effective(item, policy)
     pool.sort(key=lambda it: sort_key(it, policy))
     return pool, framed
+
+
+def _bare(item: dict, policy: dict) -> dict[str, int | None]:
+    """One item's own band values, with nothing derived.
+
+    A symptom contributes what a person rated it, not what it accrued: letting
+    accrual feed accrual would make a chain of causes climb without limit and
+    for no reason anybody wrote down.
+    """
+    out: dict[str, int | None] = {}
+    for name, axis in policy["axes"].items():
+        label = item["ratings"].get(name)
+        out[name] = None if (label is None or name in item["clashes"]) else axis["values"][label]
+    return out
+
+
+def _stamp(raw: str | None) -> "datetime | None":
+    """GitHub's ISO-8601 timestamp, or None where a payload carries none."""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def quiet_windows(item: dict, policy: dict, now: datetime | None = None) -> int:
+    """How many whole quiet windows have passed since the issue was last touched.
+
+    Read from `updatedAt` rather than counted per run, so the fade needs no
+    stored state and no run has to have happened. An issue with no `updatedAt`
+    -- a stub in a test, an older payload -- has faded by zero rather than by
+    an amount nobody can check.
+    """
+    stamp = item.get("updated_at")
+    if not stamp:
+        return 0
+    moment = (now or datetime.now(timezone.utc))
+    days = (moment - stamp).days
+    return max(0, days // policy["fade"]["quiet_days"])
+
+
+def effective(item: dict, policy: dict, parents: dict[int, int] | None = None,
+              pool: list[dict] | None = None,
+              now: datetime | None = None) -> dict[str, int | None]:
+    """The pair the pool orders by: accrual applied, then the fade.
+
+    **Neither is ever written back.** A cause's own labels stay what a person
+    proposed, and the fade in particular could not be written without resetting
+    the signal it reads.
+
+    Accrual first, then the fade, because a cause with live symptoms is rarely
+    quiet and a cause whose symptoms have all gone quiet should fade with them.
+    """
+    axes, order = policy["axes"], policy["order"]
+    values: dict[str, int | None] = {}
+    for name in order:
+        label = item["ratings"].get(name)
+        if label is None or name in item["clashes"]:
+            values[name] = None
+        else:
+            values[name] = axes[name]["values"][label]
+
+    symptoms = item.get("symptoms", [])
+    if symptoms:
+        top = order[0]
+        # A cause is at least as bad as the worst thing it produces.
+        worst = [s for s in (sym["values"].get(top) for sym in symptoms) if s is not None]
+        if worst and values.get(top) is not None:
+            values[top] = max(values[top], max(worst))
+        elif worst and values.get(top) is None:
+            values[top] = max(worst)
+        # And it climbs on the second axis as they accumulate.
+        if len(order) > 1:
+            second = order[1]
+            if values.get(second) is not None:
+                bands = len(symptoms) // policy["accrual"]["symptoms_per_band"]
+                cap = max(axes[second]["values"].values())
+                values[second] = min(cap, values[second] + bands)
+
+    if len(order) > 1:
+        second = order[1]
+        if values.get(second) is not None:
+            floor = min(axes[second]["values"].values())
+            values[second] = max(floor, values[second] - quiet_windows(item, policy, now))
+    return values
+
+
+def at_floor(item: dict, policy: dict, values: dict[str, int | None]) -> bool:
+    """Whether the fade has taken this item to the bottom of the decaying axis."""
+    order = policy["order"]
+    if len(order) < 2:
+        return False
+    second = order[1]
+    if values.get(second) is None:
+        return False
+    floor = min(policy["axes"][second]["values"].values())
+    return values[second] <= floor and quiet_windows(item, policy) > 0
 
 
 def sort_key(item: dict, policy: dict) -> tuple:
@@ -358,21 +593,21 @@ def sort_key(item: dict, policy: dict) -> tuple:
     harmless; it has not been judged. Sorting it below every rated item says
     that, where a zero would assert the bottom of the scale.
     """
-    axes = policy["axes"]
     order = policy["order"]
+    derived = item.get("effective") or effective(item, policy)
     values = []
     complete = True
     for name in order:
-        label = item["ratings"].get(name)
         # Per axis, not over the whole clash list. Testing the list meant one
         # clashed axis discarded every clean rating the item had, so an issue
         # at the top of the severity scale with a stray second urgency label
         # sorted below the mildest thing in the pool on issue number alone.
-        if label is None or name in item["clashes"]:
+        value = derived.get(name)
+        if value is None:
             complete = False
             values.append(0)
         else:
-            values.append(axes[name]["values"][label])
+            values.append(value)
     return (0 if complete else 1, *[-v for v in values], item["number"])
 
 
@@ -390,18 +625,28 @@ def _widths(policy: dict) -> list[int]:
     axes or its values differently would otherwise get a header that no longer
     sits over the column it names.
     """
-    return [max(len(name), len("CLASH"), *(len(v) for v in policy["axes"][name]["values"]))
+    return [max(len(name), len("CLASH"),
+                *(len(v) + 2 for v in policy["axes"][name]["values"]))
             for name in policy["order"]]
 
 
 def _line(item: dict, policy: dict) -> str:
     cells = []
+    derived = item.get("effective") or effective(item, policy)
     for name, width in zip(policy["order"], _widths(policy)):
         label = item["ratings"].get(name) or UNRATED
         if name in item["clashes"]:
             label = "CLASH"
+        elif label != UNRATED:
+            # An arrow where the derived value differs from the labelled one, so
+            # the order a reader sees is explained by the row rather than by
+            # having read the policy.
+            own = policy["axes"][name]["values"][label]
+            if derived.get(name) is not None and derived[name] != own:
+                label = f"{label}>{derived[name]}"
         cells.append(label.ljust(width))
-    return f"#{item['number']:<6} {'  '.join(cells)}  {item['title'][:72]}"
+    mark = "" if item.get("assessed") else " ?"
+    return f"#{item['number']:<6} {'  '.join(cells)}{mark}  {item['title'][:70]}"
 
 
 def _header(policy: dict) -> str:
@@ -462,7 +707,8 @@ def _print_ratings(item: dict, policy: dict) -> None:
     print(f"  {item['title']}")
 
 
-def cmd_shortlist(policy: dict, repo: str | None, count: int | None) -> int:
+def cmd_shortlist(policy: dict, repo: str | None, count: int | None,
+                  unassessed: bool = False) -> int:
     # `shortlist_size` is validated on load; the flag that overrides it was not,
     # and a negative sliced from the end -- raising most of the pool under a
     # header saying it was raising a few, with the unrated caveat suppressed
@@ -472,6 +718,25 @@ def cmd_shortlist(policy: dict, repo: str | None, count: int | None) -> int:
     size = count if count is not None else policy["shortlist_size"]
     pool, _ = read_pool(policy, repo)
     raised = pool[:size]
+
+    # The amendment has the pool work out the causes behind the highest-rated
+    # unassessed things BEFORE a session brings the owner a few, so that what it
+    # brings are causes. An advisory line does not do that -- a session reads it
+    # and raises the symptoms anyway -- so this refuses, names exactly which
+    # items block and the command that answers for each, and leaves `--unassessed`
+    # as the stated escape. Bounded to what is being raised, at least as deep as
+    # the policy says, so `--count` cannot outrun the gate.
+    depth = max(len(raised), policy["assessment"]["before_shortlist"])
+    blocking = [it for it in pool[:depth] if not it["assessed"]]
+    if blocking and not unassessed:
+        listed = " ".join(f"#{it['number']}" for it in blocking)
+        raise PoolError(
+            f"{len(blocking)} of the top {min(depth, len(pool))} in the pool have "
+            f"never been asked whether they have a cause: {listed}. A shortlist "
+            f"raised over them raises symptoms. Ask why for each, then either link "
+            f"it under its cause as a sub-issue or record that it is its own with "
+            f"`assess <N> --none`. To raise them anyway, pass --unassessed"
+        )
     rated = [it for it in pool if is_rated(it, policy)]
     # Against what is actually being raised, not against the size asked for: a
     # pool of two fully-rated items under a size of five is not partly unrated,
@@ -609,6 +874,74 @@ def cmd_rate(policy: dict, repo: str | None, number: int,
     return 0
 
 
+def cmd_assess(policy: dict, repo: str | None, number: int) -> int:
+    """Record that an issue was asked whether it has a cause, and is its own.
+
+    Only this half is a label. Where the answer is that it *has* a cause, the
+    record is the sub-issue link the `filing` cell governs, and duplicating that
+    here would give one relationship two representations that could disagree.
+
+    There is no third state: an issue never asked carries nothing, exactly as an
+    issue in the pool carries nothing. The difference between asked-and-none and
+    never-asked is what the amendment required be visible, and it is the presence
+    or absence of this one label.
+    """
+    edit_labels(number, policy, add=[policy["assessed"]["label"]], remove=[], repo=repo)
+    print(f"#{number} assessed: asked, and it is its own cause")
+    return 0
+
+
+def cmd_cycle(policy: dict, repo: str | None) -> int:
+    """The fade, the accrual and the assessment bound, in one pass.
+
+    It writes nothing except the closes `fade.closes` licenses, and it names
+    every one of those before it makes it.
+    """
+    pool, _ = read_pool(policy, repo)
+    order = policy["order"]
+    risen = [it for it in pool if it.get("symptoms")]
+    floored = [it for it in pool if at_floor(it, policy, it["effective"])]
+    unassessed = [it for it in pool if not it["assessed"]]
+    nxt = unassessed[:policy["assessment"]["per_cycle"]]
+
+    print(f"pool: {len(pool)}   risen: {len(risen)}   at the floor: {len(floored)}   "
+          f"never assessed: {len(unassessed)}")
+
+    if risen:
+        print("")
+        print("risen, from the symptoms under them:")
+        for item in risen:
+            print(f"  {_line(item, policy)}   ({len(item['symptoms'])} open)")
+
+    if floored:
+        print("")
+        print(f"at the floor of {order[-1]}, having been quiet:")
+        for item in floored:
+            print(f"  {_line(item, policy)}")
+
+    if nxt:
+        print("")
+        print(f"next to assess, {len(nxt)} of {len(unassessed)} never asked:")
+        for item in nxt:
+            print(f"  {_line(item, policy)}")
+        print("  ask why for each, then link it under its cause or "
+              "`assess <N> --none`")
+
+    print("")
+    if not floored:
+        print("nothing has reached the floor, so nothing is closable")
+    elif not policy["fade"]["closes"]:
+        print("fade.closes is false, so nothing above was closed. A repository "
+              "that wants the fade to close sets it true in its own policy")
+    else:
+        for item in floored:
+            print(f"closing #{item['number']} as not planned; its body and every "
+                  f"comment stay, so the next symptom reopens it")
+            gh(["issue", "close", str(item["number"]), *_repo_args(repo),
+                "--reason", "not planned"])
+    return 0
+
+
 def cmd_frame(policy: dict, repo: str | None, number: int) -> int:
     edit_labels(number, policy, add=[policy["framed"]["label"]], remove=[], repo=repo)
     print(f"#{number} is marked framed -- it leaves the pool, and the board "
@@ -644,6 +977,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     shortlist = sub.add_parser("shortlist", help="the few worth raising")
     shortlist.add_argument("--count", type=int, help="override the policy's size")
+    shortlist.add_argument("--unassessed", action="store_true",
+                           help="raise even where the top of the pool is unassessed")
+
+    sub.add_parser("cycle", help="what has risen, what has floored, what to assess next")
+
+    assess = sub.add_parser("assess", help="record that an issue is its own cause")
+    assess.add_argument("number", type=int)
+    assess.add_argument("--none", action="store_true", required=True,
+                        help="the answer: it was asked, and it has no cause but itself")
 
     sub.add_parser("framed", help="the framed set, which is what the board holds")
     sub.add_parser("policy", help="the resolved policy and where it came from")
@@ -681,7 +1023,11 @@ def dispatch(args: argparse.Namespace) -> int:
     if args.command == "show":
         return cmd_show(policy, args.repo, args.number)
     if args.command == "shortlist":
-        return cmd_shortlist(policy, args.repo, args.count)
+        return cmd_shortlist(policy, args.repo, args.count, args.unassessed)
+    if args.command == "cycle":
+        return cmd_cycle(policy, args.repo)
+    if args.command == "assess":
+        return cmd_assess(policy, args.repo, args.number)
     if args.command == "labels":
         return cmd_labels(policy, args.repo, args.dry_run)
     if args.command == "frame":

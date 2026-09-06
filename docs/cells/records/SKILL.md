@@ -9,7 +9,7 @@ description: This repository's append-only records and its decision log — whic
 
 ## Review, here
 
-Every review appends one row to `docs/reviews.jsonl`, and every `record` ruling one entry to `docs/recorded-findings.jsonl`. Beyond the fields the practice's own `the-record.md` names, a row here carries one more field, `cost`, and one more key on each entry of `highs`.
+Every review appends one row to `docs/reviews.jsonl`, and every `record` ruling one entry to `docs/recorded-findings.jsonl` **and a filing into the pool, rated low**. The entry is the review's accounting and what the next review's dispatch fetches; the filing is what a ranking, a fade and a shortlist can reach, which the entry alone never was. Neither is maintained afterwards, and rows already written are not migrated — what moved is where a ruling goes from now, not what the record holds. Beyond the fields the practice's own `the-record.md` names, a row here carries one more field, `cost`, and one more key on each entry of `highs`.
 
 **`cost` — what the review took to run**, as `{"dispatches": n, "subagent_tokens": n}`.
 

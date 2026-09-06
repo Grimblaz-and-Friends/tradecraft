@@ -97,11 +97,17 @@ python scripts/pool.py shortlist
 python scripts/pool.py rate 123 --rating sev:3 --rating urg:2
 python scripts/pool.py frame 123
 python scripts/pool.py unframe 123   # the brief sent it back to the pool
+python scripts/pool.py cycle         # what rose, what faded, what to assess
+python scripts/pool.py assess 123 --none
 ```
 
 `scripts/pool-policy.json` carries the labels, the bands and the shortlist size; a repository overrides it with a file of that name at its own root, and one that wants a wholly different approach says so in its own doctrine and does not run any of this.
 
 **An unrated filing is not a low-rated one.** It sorts below everything rated and is reported as unrated, because it has not been judged harmless -- it has not been judged.
+
+**A filing does not keep the rating it was given, and nothing rewrites its labels.** A cause is read as at least as bad as the worst thing it produced and climbs as its symptoms accumulate; anything nobody touches falls on the urgency axis, a band per quiet window, while its severity never moves. Both are derived when the pool is read, so the labels stay the filer's proposal -- a fade that wrote would reset the very signal it reads quiet from. At the floor an item is named, and closed as *not planned* only where a repository has set `fade.closes`, which leaves the body and every comment so the next symptom reopens it.
+
+**Most of the pool has never been asked whether it has a cause, and that is not the same as having none.** An issue asked and found to be its own carries the assessed label; one never asked carries nothing, and the two read differently. `shortlist` refuses over an unassessed top so that what it raises are causes rather than symptoms, and `cycle` names a bounded few more each time so the backlog is worked through without anyone paying for it at once.
 
 ## Creation carries the want; pickup does the work
 
@@ -113,7 +119,7 @@ python scripts/pool.py unframe 123   # the brief sent it back to the pool
 
 **Where the evidence is itself a rule, the rule's own sentence is the observation.** Quote it with its location: the quote survives the file moving, where the location alone is the citation the proviso warns about. Which rule is breached is evidence; what replaces it is design, and stays out.
 
-**A filing whose subject is governing prose — prose a later session is expected to act on — carries an incident from real work, or a run: the same situation put to a session under the text as it stands and under what would replace it, behaving differently.** The breached rule's own sentence above is what is wrong with the text; this is what acts differently for it, and a filing carrying only the first is not filed. The bar sits at creation because an issue picked up is a brief, an artifact and a change — a rule by another door — so a rule about prose reaches the pool on the evidence a rule needs; what an incident is not is the `charter` cell's. **Not filed is not binned:** where the cause is already an open issue the finding is recorded under it, above; where none is, nothing is filed and the finding waits for the incident or the run that would earn one. Nothing else is gated here — a defect in a script or a guard carries its consequence in the failure it produces.
+**A filing whose subject is governing prose — prose a later session is expected to act on — carries an incident from real work, or a run: the same situation put to a session under the text as it stands and under what would replace it, behaving differently.** The breached rule's own sentence above is what is wrong with the text; this is what acts differently for it, and a filing carrying only the first is not filed. The bar sits at creation because an issue picked up is a brief, an artifact and a change — a rule by another door — so a rule about prose reaches the pool on the evidence a rule needs; what an incident is not is the `charter` cell's. **Not filed is not binned:** where the cause is already an open issue the finding is recorded under it, above; where none is, nothing is filed and the finding waits for the incident or the run that would earn one. **A finding a review ruled `record` is the one thing this bar does not refuse**, and the exception is narrow on purpose: that ruling is a stage which is not the builder judging the finding real, evidenced, and not yet worth acting on, which is the pool's own state rather than the board's. It lands rated low, and the fade is what disposes of it if nobody ever agrees. Nothing else is gated here — a defect in a script or a guard carries its consequence in the failure it produces.
 
 **Where the defect can be demonstrated, the demonstration is the evidence** — the probe command and its output, not a sentence reporting what running it shows. A reproduction cannot be misread, survives the vocabulary moving around it, and hands the pickup its first acceptance criterion. Prose is the fallback rather than the default, and it is the right form for what has no failing run: a want, an idea, an incident that occurred, and a breached rule, whose own sentence is the observation above. On governing prose each of the four is half of what the filing carries, the bar above being the other.
 

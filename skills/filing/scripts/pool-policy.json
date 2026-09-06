@@ -1,5 +1,5 @@
 {
-  "_note": "Defaults for the pool. A repository overrides them with a file of this name at its own root; the script reads that one instead and never merges the two, so an override states the whole policy. Every label name, every rating value, the ordering and the shortlist size live here, and the script writes no label this file does not name. A few operational bounds -- how many issues and labels a read may return -- are the script's own.",
+  "_note": "Defaults for the pool. A repository overrides them with a file of this name at its own root; the script reads that one instead and never merges the two, so an override states the whole policy. Every label name, every rating value, the ordering, the shortlist size, and the accrual, fade and assessment numbers live here, and the script writes no label this file does not name. A few operational bounds -- how many issues and labels a read may return -- are the script's own.",
 
   "axes": {
     "severity": {
@@ -22,5 +22,34 @@
     "meaning": "decided work: it is on the board rather than in the pool"
   },
 
-  "shortlist_size": 5
+  "cause": {
+    "label": "cause",
+    "color": "B60205",
+    "meaning": "observed cause of the issues linked under it as sub-issues; not a task split into parts"
+  },
+
+  "assessed": {
+    "label": "assessed:no-cause",
+    "color": "C5DEF5",
+    "meaning": "asked whether it has a cause, and it is its own; an issue never asked carries nothing"
+  },
+
+  "shortlist_size": 5,
+
+  "_accrual": "A cause is at least as bad as the worst thing it produces, and climbs as they accumulate. Both are read at list time from the sub-issue links; neither is ever written back, so a cause's own labels stay what a person proposed.",
+  "accrual": {
+    "symptoms_per_band": 2
+  },
+
+  "_fade": "Urgency falls one band per quiet window, read from the issue's own updatedAt so that nothing has to be stored -- and so that the fade never writes, since a write would reset the very signal quiet is read from. Severity has no decay term, which is why it never falls. At the floor an item is named; it is closed only where closes is true, as not planned, leaving the body and every comment in place so the evidence is kept and the next symptom can reopen it.",
+  "fade": {
+    "quiet_days": 30,
+    "closes": false
+  },
+
+  "_assessment": "Most of the pool has never been asked whether it has a cause. The shortlist refuses over an unassessed top so that what it raises are causes, and each cycle names a bounded few more so the backlog is worked through without anyone paying for it at once.",
+  "assessment": {
+    "before_shortlist": 5,
+    "per_cycle": 5
+  }
 }
