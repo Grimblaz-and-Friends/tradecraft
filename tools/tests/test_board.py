@@ -13,6 +13,7 @@ malformed plan and accept a well-formed one, because a plan that lost a row to
 a typo would silently drop that issue off the board.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -665,13 +666,64 @@ def test_the_board_asks_for_the_framed_set_and_not_the_open_set(monkeypatch):
     so this pins both halves: that the read is filtered at all, and that what it
     filters by is what the policy names.
     """
+    pool = q.pool_engine()
     asked = []
     monkeypatch.setattr(q, "gh", lambda args: asked.append(args) or "[]")
+    # A label no default names, reached through the policy the transport
+    # resolves. The earlier form computed the expected value with the same
+    # expression as the code under test, so replacing that expression with a
+    # literal "framed" passed -- which is the one refactor the cross-zone
+    # import exists to prevent.
+    monkeypatch.setattr(pool, "load_policy",
+                        lambda path: {"framed": {"label": "not-a-default-name"}})
     q.framed_issues()
-    label = q.pool.load_policy(q.pool.find_policy(q.ROOT))["framed"]["label"]
     assert "--label" in asked[0]
-    assert asked[0][asked[0].index("--label") + 1] == label
+    assert asked[0][asked[0].index("--label") + 1] == "not-a-default-name"
     assert "--state" in asked[0] and "open" in asked[0]
+
+
+def test_framed_issues_refuses_a_read_that_came_back_at_its_limit(monkeypatch):
+    """The completeness check the pool's own read performs, on the read the
+    board's whole membership comes from. Without it `reconcile` computes the
+    archive set over a short target and `sync` reports success."""
+    full = json.dumps([{"number": i, "id": f"I{i}"} for i in range(q.ISSUE_READ_LIMIT)])
+    monkeypatch.setattr(q, "gh", lambda args: full)
+    with pytest.raises(q.BoardError) as caught:
+        q.framed_issues()
+    assert "may be short" in str(caught.value)
+
+
+def test_framed_issues_accepts_a_read_below_its_limit(monkeypatch):
+    """The lawful polarity: an ordinary repository is not refused."""
+    some = json.dumps([{"number": i, "id": f"I{i}"} for i in range(5)])
+    monkeypatch.setattr(q, "gh", lambda args: some)
+    assert len(q.framed_issues()) == 5
+
+
+def test_a_malformed_pool_policy_is_a_board_refusal_not_a_traceback(monkeypatch):
+    """A supported configuration error reaches the operator as this transport's
+    own one-line refusal, not as a traceback from a module they did not know
+    was involved."""
+    pool = q.pool_engine()
+
+    def broken(path):
+        raise pool.PoolError("'axes' must be a non-empty object")
+
+    monkeypatch.setattr(pool, "load_policy", broken)
+    with pytest.raises(q.BoardError) as caught:
+        q.framed_issues()
+    assert "pool policy could not be read" in str(caught.value)
+
+
+def test_a_missing_pool_script_refuses_by_name_rather_than_by_traceback(monkeypatch):
+    """A partial checkout used to give every command, `--help` included, a raw
+    FileNotFoundError before argparse ran."""
+    monkeypatch.setattr(q, "_pool", None)
+    monkeypatch.setattr(q, "_POOL_PATH", Path("no", "such", "pool.py"))
+    with pytest.raises(q.BoardError) as caught:
+        q.pool_engine()
+    assert "pool's transport is missing" in str(caught.value)
+
 
 
 def test_next_reports_an_empty_board_as_empty(capsys, monkeypatch):
@@ -707,7 +759,21 @@ def test_options_payload_guards_every_interpolated_value_including_the_id():
     assert payload.count('"') % 2 == 0, payload
 
 
-def test_sync_refuses_to_empty_a_populated_board_on_an_empty_framed_set(monkeypatch):
+def test_sync_dry_run_shows_the_archive_list_before_it_refuses(monkeypatch, capsys):
+    """The guard sat above the summary print, so `--dry-run` -- the one way to
+    see what would be archived -- returned nothing at all, and the refusal's
+    stated remedy was the destructive form."""
+    monkeypatch.setattr(q.Board, "members", lambda self: [1, 2, 3])
+    board = board_without_network()
+    monkeypatch.setattr(q, "Board", lambda: board)
+    monkeypatch.setattr(q, "framed_issues", lambda: {})
+    assert q.cmd_sync(dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "to archive: [1, 2, 3]" in out
+    assert "framed: 0" in out
+
+
+def test_sync_refuses_to_empty_a_populated_board_on_an_empty_framed_set(monkeypatch, capsys):
     """The unlawful polarity: a setup mistake must not read as a decision.
 
     Nothing framed and a full board is what a repository looks like before the
@@ -721,8 +787,12 @@ def test_sync_refuses_to_empty_a_populated_board_on_an_empty_framed_set(monkeypa
     monkeypatch.setattr(q, "framed_issues", lambda: {})
     with pytest.raises(q.BoardError) as caught:
         q.cmd_sync(dry_run=False)
+    assert "to archive: [1, 2, 3]" in capsys.readouterr().out, (
+        "the summary must print before the refusal, or the operator cannot see "
+        "what the run was about to remove"
+    )
     assert "archive all of them" in str(caught.value)
-    assert "--allow-empty" in str(caught.value)
+    assert "--dry-run --allow-empty" in str(caught.value)
 
 
 def test_sync_empties_the_board_when_the_operator_says_it_should(monkeypatch, capsys):
@@ -1118,10 +1188,61 @@ def test_an_exception_that_exempts_nothing_says_so_rather_than_claiming_it_did(
 def test_cmd_causes_reports_the_groups_the_guard_reads(monkeypatch, capsys):
     """The read reached nobody: its only caller was the guard."""
     monkeypatch.setattr(q, "causal_parents", lambda: {349: 404, 350: 404, 500: 600})
+    monkeypatch.setattr(q, "framed_issues",
+                        lambda: {404: "a", 349: "b", 350: "c", 600: "d", 500: "e"})
     assert q.cmd_causes() == 0
     printed = capsys.readouterr().out
     assert "#404 causes 2: #349, #350" in printed
     assert "#600 causes 1: #500" in printed
+    assert "(pool)" not in printed
+
+
+def test_cmd_causes_marks_a_symptom_the_board_does_not_hold(monkeypatch, capsys):
+    """Parentage spans the open set; the board holds the framed subset. Unmarked,
+    the closing instruction told a refresher to give a board status to an issue
+    with no board row, which `apply` then refuses."""
+    monkeypatch.setattr(q, "causal_parents", lambda: {349: 404, 350: 404})
+    monkeypatch.setattr(q, "framed_issues", lambda: {404: "a", 349: "b"})
+    assert q.cmd_causes() == 0
+    printed = capsys.readouterr().out
+    assert "#350 (pool)" in printed
+    assert "no board row" in printed
+    assert "that the board holds" in printed
+
+
+def test_next_points_an_empty_board_at_the_pool(monkeypatch, capsys):
+    """The one code path where the membership inversion reaches an operator. It
+    used to say "Run sync to place the open issues on it", which after the
+    inversion places nothing at all."""
+    monkeypatch.setattr(q.Board, "__init__", lambda self: None)
+    monkeypatch.setattr(q.Board, "rows", lambda self: [])
+    monkeypatch.setattr(q, "gh", lambda args: "[]")
+    assert q.cmd_next(5) == 0
+    out = capsys.readouterr().out
+    assert "pool.py shortlist" in out
+    assert "open issues" not in out
+
+
+def test_next_points_a_saturated_board_at_the_pool_too(monkeypatch, capsys):
+    """Running out of decided work is not a ranking problem either."""
+    rows = [q.Row(1, "Front", "-", "In progress")]
+    monkeypatch.setattr(q.Board, "__init__", lambda self: None)
+    monkeypatch.setattr(q.Board, "rows", lambda self: rows)
+    monkeypatch.setattr(q, "gh", lambda args: "[]")
+    assert q.cmd_next(5) == 0
+    assert "pool.py shortlist" in capsys.readouterr().out
+
+
+def test_next_does_not_point_an_unranked_board_at_the_pool(monkeypatch, capsys):
+    """The lawful polarity. Unplaced rows are a plan problem, not an empty pool
+    -- pointing there would send a session to raise work it already has."""
+    rows = [q.Row(i, q.EMPTY, q.EMPTY, q.EMPTY) for i in (1, 2)]
+    monkeypatch.setattr(q.Board, "__init__", lambda self: None)
+    monkeypatch.setattr(q.Board, "rows", lambda self: rows)
+    monkeypatch.setattr(q, "gh", lambda args: "[]")
+    assert q.cmd_next(5) == 0
+    out = capsys.readouterr().out
+    assert "unranked" in out and "pool.py shortlist" not in out
 
 
 def test_cmd_causes_says_so_when_there_are_none(monkeypatch, capsys):

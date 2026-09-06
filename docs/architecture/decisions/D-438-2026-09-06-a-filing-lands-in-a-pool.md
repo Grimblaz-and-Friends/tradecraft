@@ -20,11 +20,13 @@
 
 **4. Two values on one axis are reported rather than resolved.** An issue carrying two severities is a clash: it sorts with the unrated and is printed as one. Taking the higher would make an issue that was rated twice indistinguishable from one rated once, and the fact worth surfacing about it is that somebody has to choose.
 
+**5a. A label name a write cannot carry intact is refused where the vocabulary is admitted.** `gh issue edit --add-label` splits its argument on commas — the CLI's own help demonstrates it with `"bug,help wanted"` — so a policy naming a label with a comma in it would have that one value write labels the policy never named and leave the intended one unset. That is the rail defeated by a name rather than by a call site, so `load_policy` refuses it, along with two labels on one axis sharing a value, which the validator's own docstring named as the silent wrong-order failure while not checking for it.
+
 **5. The policy owns the whole vocabulary, and the script owns none of it.** Every label name, every rating value, the ordering and the shortlist size live in `skills/filing/scripts/pool-policy.json`. This reaches further than label names: the ratings are set with a repeatable `--rating` taking a label, rather than a `--severity` flag, because a flag named after an axis is the script holding a piece of the vocabulary the policy is supposed to hold alone — a repository that renamed an axis would find a flag matching nothing. The override replaces the default rather than merging into it, so what a repository writes is the whole policy and no unwritten field can surprise it later.
 
 **6. The policy is resolved by walking up for `.git`, not against the working directory.** A session running the script from a subdirectory would otherwise get the shipped default while the repository's own override sat unread two directories up, with nothing in the output saying which was used. The `policy` command prints the file it resolved for the same reason.
 
-**7. The rail the brief required is one chokepoint, not a rule per call site.** Every write path resolves its labels through `writable_labels`, which is the only place the writable set is computed, so a command added in stage two inherits the rail rather than restating it. Removal is covered as well as addition: a rail over additions alone would let a command strip a label the policy never named.
+**7. The rail the brief required is one chokepoint over every issue edit, and `cmd_labels` is safe by construction rather than by that chokepoint.** `writable_labels` is the only place the writable set is computed, and every command that edits an issue's labels routes through `edit_labels`, which enforces it — removal as well as addition, since a rail over additions alone would let a command strip a label the policy never named. **`cmd_labels` creates labels rather than editing an issue, so it does not route through that function**, and an earlier wording of this decision claimed it did. What makes it safe is that it can only offer names `label_specs` derived from the same policy; the review's own probe put that at 0 of 300 generated policies, and the restated check it carried was unreachable and is deleted.
 
 **8. The script is sited in the `filing` cell, not in `lib/` — a departure from the placement note on the issue, argued in the artifact.** `docs/cells/siting/SKILL.md` says shared code lives *only* in `lib/`, which constrains shared code rather than declaring `lib/` the home of everything shipped. Two things settled it beyond that reading. `tools/tests/test_portability.py` requires every shipped script to be named cell-relatively by its own cell's prose and to run from a relocated plugin root, and a `lib/` script named from a cell sits outside that contract. And [D-252] already records the consequence: shipped prose naming `lib/winio.py` names a helper its reader cannot reach, because an installed plugin's copy sits at a version-stamped path. `skills/authoring/scripts/figures.py` with `tools/figures.py` over it is the shape this follows, and `tools/board.py` importing the shipped engine runs the wall's lawful direction.
 
@@ -34,6 +36,17 @@
 
 **11. The push route is stated as a repository's own to wire, not as a mechanism that exists.** The first draft of the `filing` cell wrote the two exits as *something crossing a line on both ratings is raised to them unasked; or* the pull. The experience session's consumer read that, went to the policy file for the line, and found none — it recorded *a stated threshold for raising a pool item to the owner unasked* under what it looked for and did not find. The threshold and the watcher are stage three's, so the sentence was this change sending a reader to a mechanism no tree has. The cell now names the push as something a repository sets up, and says outright that where neither the line nor the watcher exists the pull is the only route. **The alternative was a `null` threshold in the policy file**, rejected because a field no command reads is the same promise in a second place.
 
+## What the review's spike found, and what it changed
+
+**The claim that licensed `cmd_rate` skipping a read was half true, and the false half was the one that fires.** The comment read: *"`gh issue edit --remove-label` on a label the issue does not have is accepted, and asking for the current state first would be a read whose only use is to shorten a command line."* The terminal stage ruled it to a spike rather than to argument. Run against a live repository on 2026-09-06:
+
+```
+gh issue edit <N> --remove-label bug      -> exit 0    (the issue lacks it)
+gh issue edit <N> --remove-label sev:1    -> exit 1    ('sev:1' not found)
+```
+
+The first is the case the comment described. The second is a label the **repository** lacks, which is exactly the state before `pool.py labels` has been run — so removing every other value on the axis unconditionally made the first `rate` in any repository fail at the wire, on the one command the `filing` cell tells a filer to use and the one acceptance criterion 2 turns on. `cmd_rate` now reads the issue's labels and removes only what it carries. **The read the comment argued away is the read the behaviour needs**, and the comment now carries the probe rather than the assertion.
+
 ## What was rejected
 
 - **`gh label create --force` as the idempotent form for creating the policy's labels.** It is idempotent and it also rewrites the colour and description of a label already present, so a repository that had customised one would lose the customisation to a command whose whole point is that it changes nothing it does not have to. `labels` reads what exists and creates only what is missing.
@@ -42,6 +55,21 @@
 - **Backfilling ratings onto the existing pool.** Nothing here rates an issue a person has not rated. The pool therefore reports almost all of itself as unrated until somebody rates it, which is the honest state and the one the assessment in stage two works through.
 
 ## Meaning changes named
+
+**The review's fix batch added these, and they are the larger half.** A five-seat panel found that this change redefined *the board* and left the old sense standing in prose sessions act on. Each site below moved in the batch:
+
+- `skills/filing/SKILL.md`: the record-under-cause route (`:36`, `:115`) keyed on *already on the board*, which after the inversion excluded every cause sitting in the pool — so a reviewer holding a finding whose cause was unframed would have filed nothing. It now keys on the cause being an **open issue**, framed or pooled. This is the single highest-severity finding of the review and it was invisible to the change that caused it.
+- `skills/filing/SKILL.md`: the search's scope (`:12`, `:14`, `:29`, `:31`) said *the board* where the commands read every issue in every state; it now says so.
+- `skills/filing/SKILL.md`: the Purpose header's *keep off the board* half, revised while its Success half was revised and not it.
+- `skills/filing/SKILL.md`: the tie table's cause row, amended in the `board` cell and not here — which a recorded finding had predicted verbatim as *"an amendment to the rule landing in one and not the other."*
+- `skills/engagement/SKILL.md`: the systemic-cause paragraph turned on the noun four times, so a brief drafted against the framed set would have found an empty sibling list. The sibling test is over **open** issues; framing is not what makes a sibling.
+- `skills/engagement/SKILL.md`: the boundary map's *filing puts something on the board*.
+- `skills/adversarial-review/` (three files, four sites), `docs/cells/landing/SKILL.md`, `skills/experience-session/SKILL.md`, `skills/engagement/references/design-sitting.md`: every remaining *to the board* disposition and the surviving old sense of *framing*.
+- `docs/cells/board/SKILL.md`: *Reconciling asks whether the board holds the open set*, fifty lines below the sentence that inverted it; the pool described as *rated* when nothing is; the refresh trigger list naming a filing, which no longer moves the board, and omitting framing, which does.
+
+**Two deletions, both arguing their own weight:** the `filing` cell's policy-override paragraph, whose reader is a repository configuring the tool rather than the filer the cell is written for, and whose two other copies both reach that reader; and its push clause, which named a line, a watcher, a field and a command none of which exist and carried its own retraction. With them the batch nets `filing` **down** from the reviewed revision rather than up, and `engagement` down as well.
+
+## Meaning changes named in the first pass
 
 - `docs/cells/board/SKILL.md`'s membership sentence inverts. Its consequence for the cause rule citing [D-415] and [D-429] is stated in the cell rather than left implied: a symptom sitting in the pool is not on the board at all, so it never reaches `check_causes`. Both entries were read before the rule was touched; neither is superseded, a framed symptom reaching the guard exactly as before.
 - `skills/filing/SKILL.md`'s *Left for pickup: the framing* becomes *the design framing*. *Framing* now names the owner's pick, which happens before pickup, so the cell would otherwise carry two senses of one word. The sentence's meaning is unchanged; what changed is that it says which sense it means.

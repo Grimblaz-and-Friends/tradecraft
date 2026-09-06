@@ -12,18 +12,30 @@ The session supplies the judgment -- what a filing's ratings should be, which
 of the raised few is worth doing, what the case against each one is. This
 supplies everything that is not judgment.
 
-**Every number and every label name lives in the policy file, and none lives
-here.** `pool-policy.json` beside this script carries the defaults; a
+**Every label name, every rating value, the ordering and the shortlist size
+live in the policy file.** `pool-policy.json` beside this script carries the
+defaults; a
 repository overrides them with a file of that name at its own root, and the
 override is read instead of the default rather than merged into it, so what a
 repository states is the whole policy and no field it did not write can
 surprise it later.
 
-**No label the policy does not name is ever written.** Every write resolves its
-labels through `writable_labels`, which is the only place the writable set is
-computed, so a command added later inherits the rail rather than restating it.
+**No label the policy does not name is ever written.** `writable_labels` is the
+only place that set is computed, and every command that edits an issue's labels
+routes through `edit_labels`, which enforces it. `cmd_labels` creates labels
+rather than editing an issue, so it does not route through that function; what
+makes it safe is that it can only ever offer names `label_specs` derived from
+the same policy.
 
-Usage:  python scripts/pool.py list      [--limit N] [--repo OWNER/REPO]
+**`--repo` and `--policy` go before the subcommand**, being options of the
+top-level parser. **They belong together:** `--repo` steers only the wire, while
+the policy is resolved from the working directory, so reading another repository
+without naming its policy partitions its issues by this one's labels. Every
+command prints the policy it resolved for that reason.
+
+Usage:  python scripts/pool.py [--repo OWNER/REPO] [--policy PATH] <command>
+
+        python scripts/pool.py list      [--limit N]
         python scripts/pool.py show      N
         python scripts/pool.py shortlist [--count N]
         python scripts/pool.py framed
@@ -66,6 +78,11 @@ DEFAULT_POLICY = Path(__file__).resolve().parent / POLICY_NAME
 # here partitions the whole open set, and a partition over a truncated read is
 # wrong in a way its own output cannot show.
 ISSUE_READ_LIMIT = 1000
+
+# The same hazard on the label read `cmd_labels` performs: a truncated list
+# makes an existing label read as missing, and creating it then fails partway
+# through with an error blaming the wrong thing.
+LABEL_READ_LIMIT = 500
 
 UNRATED = "-"
 
@@ -125,12 +142,26 @@ def load_policy(path: Path) -> dict:
         values = axis.get("values")
         if not isinstance(values, dict) or not values:
             raise PoolError(f"{path}: axis '{name}' has no 'values'")
+        ranked: dict[int, str] = {}
         for label, value in values.items():
             if not isinstance(value, int) or isinstance(value, bool):
                 raise PoolError(
                     f"{path}: axis '{name}' maps '{label}' to something that "
                     f"is not a whole number, so nothing can be ordered by it"
                 )
+            # The docstring above promises this check by name, and for a while
+            # it was only promised: two labels sharing a number order as a tie,
+            # so a repository believes it configured distinct bands while the
+            # axis silently collapses them and a later axis or the issue number
+            # decides the shortlist.
+            if value in ranked:
+                raise PoolError(
+                    f"{path}: axis '{name}' gives '{ranked[value]}' and "
+                    f"'{label}' the same value {value}, so the two bands are "
+                    f"indistinguishable to the ordering"
+                )
+            ranked[value] = label
+            _check_label_name(path, label)
             if label in seen:
                 raise PoolError(
                     f"{path}: '{label}' is named by axis '{seen[label]}' and "
@@ -152,6 +183,7 @@ def load_policy(path: Path) -> dict:
     if not isinstance(framed, dict) or not isinstance(framed.get("label"), str) \
             or not framed["label"].strip():
         raise PoolError(f"{path}: 'framed' must carry a 'label' naming one label")
+    _check_label_name(path, framed["label"])
     if framed["label"] in seen:
         raise PoolError(
             f"{path}: '{framed['label']}' is both the framed label and a "
@@ -163,6 +195,28 @@ def load_policy(path: Path) -> dict:
         raise PoolError(f"{path}: 'shortlist_size' must be a whole number of at least 1")
 
     return policy
+
+
+def _check_label_name(path: Path, label: str) -> None:
+    """A label name a write can carry intact, and nothing else.
+
+    `gh issue edit --add-label` and `--remove-label` split their argument on
+    commas -- the CLI's own help demonstrates it with `"bug,help wanted"` -- so
+    a policy naming a label with a comma in it would have that one value write
+    two labels the policy never named and leave the intended one unset. That is
+    the write rail defeated by a name rather than by a call site, which is why
+    it is refused here, where the vocabulary is admitted, rather than at the
+    edit. Blank and whitespace-only names are refused for the same reason: what
+    reaches the wire would not be the name.
+    """
+    if not label.strip():
+        raise PoolError(f"{path}: a label name is blank")
+    if "," in label:
+        raise PoolError(
+            f"{path}: the label '{label}' contains a comma, which `gh issue "
+            f"edit` reads as a separator -- writing it would touch labels the "
+            f"policy does not name and leave this one unset"
+        )
 
 
 def writable_labels(policy: dict) -> frozenset[str]:
@@ -222,6 +276,12 @@ def open_issues(repo: str | None = None) -> list[dict]:
             f"without saying so. Raise ISSUE_READ_LIMIT and run again"
         )
     return issues
+
+
+def issue_labels(number: int, repo: str | None = None) -> list[str]:
+    """The labels one issue carries, as `gh` reports them."""
+    raw = gh(["issue", "view", str(number), *_repo_args(repo), "--json", "labels"])
+    return [lb["name"] for lb in json.loads(raw).get("labels", [])]
 
 
 def edit_labels(number: int, policy: dict, *, add: list[str], remove: list[str],
@@ -304,7 +364,11 @@ def sort_key(item: dict, policy: dict) -> tuple:
     complete = True
     for name in order:
         label = item["ratings"].get(name)
-        if label is None or item["clashes"]:
+        # Per axis, not over the whole clash list. Testing the list meant one
+        # clashed axis discarded every clean rating the item had, so an issue
+        # at the top of the severity scale with a stray second urgency label
+        # sorted below the mildest thing in the pool on issue number alone.
+        if label is None or name in item["clashes"]:
             complete = False
             values.append(0)
         else:
@@ -346,12 +410,14 @@ def _header(policy: dict) -> str:
 
 
 def cmd_list(policy: dict, source: Path, repo: str | None, limit: int | None) -> int:
+    if limit is not None and limit < 1:
+        raise PoolError("--limit must be a whole number of at least 1")
     pool, framed = read_pool(policy, repo)
     unrated = [it for it in pool if not is_rated(it, policy)]
     print(f"policy: {source}")
     print(f"pool: {len(pool)}   framed: {len(framed)}   unrated in pool: {len(unrated)}")
     print(_header(policy))
-    for item in pool[:limit] if limit else pool:
+    for item in (pool[:limit] if limit is not None else pool):
         print(_line(item, policy))
     return 0
 
@@ -368,7 +434,8 @@ def cmd_show(policy: dict, repo: str | None, number: int) -> int:
     pool, framed = read_pool(policy, repo)
     for item in framed:
         if item["number"] == number:
-            print(f"#{number} is framed -- decided work, on the board")
+            print(f"#{number} is framed -- decided work, which the board holds "
+                  f"from the next sync")
             _print_ratings(item, policy)
             return 0
     for item in pool:
@@ -397,12 +464,22 @@ def _print_ratings(item: dict, policy: dict) -> None:
 
 
 def cmd_shortlist(policy: dict, repo: str | None, count: int | None) -> int:
+    # `shortlist_size` is validated on load; the flag that overrides it was not,
+    # and a negative sliced from the end -- raising most of the pool under a
+    # header saying it was raising a few, with the unrated caveat suppressed
+    # because `len(rated) < size` is false for a negative.
+    if count is not None and count < 1:
+        raise PoolError("--count must be a whole number of at least 1")
     size = count if count is not None else policy["shortlist_size"]
     pool, _ = read_pool(policy, repo)
     raised = pool[:size]
     rated = [it for it in pool if is_rated(it, policy)]
+    # Against what is actually being raised, not against the size asked for: a
+    # pool of two fully-rated items under a size of five is not partly unrated,
+    # and saying so told a reader to discount a ranking that was sound.
+    unrated_raised = [it for it in raised if not is_rated(it, policy)]
     print(f"pool: {len(pool)}   rated: {len(rated)}   raising: {len(raised)}")
-    if len(rated) < size:
+    if unrated_raised:
         print(
             "fewer rated items than the shortlist holds, so what follows is "
             "partly the oldest unrated filings rather than the highest-rated. "
@@ -451,9 +528,17 @@ def cmd_labels(policy: dict, repo: str | None, dry_run: bool) -> int:
     replaced by running a command whose whole point was that it changes
     nothing it does not have to.
     """
-    existing = {lb["name"] for lb in json.loads(
-        gh(["label", "list", *_repo_args(repo), "--limit", "500", "--json", "name"])
-    )}
+    raw = json.loads(
+        gh(["label", "list", *_repo_args(repo), "--limit",
+            str(LABEL_READ_LIMIT), "--json", "name"])
+    )
+    if len(raw) >= LABEL_READ_LIMIT:
+        raise PoolError(
+            f"the label read came back at its limit of {LABEL_READ_LIMIT}, so "
+            f"a label that exists may read as missing and creating it would "
+            f"fail. Raise LABEL_READ_LIMIT and run again"
+        )
+    existing = {lb["name"] for lb in raw}
     allowed = writable_labels(policy)
     missing = [spec for spec in label_specs(policy) if spec[0] not in existing]
     present = sorted(allowed & existing)
@@ -462,8 +547,6 @@ def cmd_labels(policy: dict, repo: str | None, dry_run: bool) -> int:
     if dry_run:
         return 0
     for label, colour, description in missing:
-        if label not in allowed:
-            raise PoolError(f"'{label}' is not a label the policy names")
         args = ["label", "create", label, *_repo_args(repo), "--description", description]
         if colour:
             args += ["--color", colour]
@@ -504,11 +587,22 @@ def cmd_rate(policy: dict, repo: str | None, number: int,
     for axis_name, label in chosen.items():
         axis = policy["axes"][axis_name]
         add.append(label)
-        # Every other value on the same axis comes off, whether or not the
-        # issue carries it. `gh issue edit --remove-label` on a label the issue
-        # does not have is accepted, and asking for the current state first
-        # would be a read whose only use is to shorten a command line.
-        remove += [other for other in axis["values"] if other != label]
+        # Only the values the issue actually carries come off, which costs one
+        # read. An earlier version removed every other value on the axis and
+        # argued the read away: `gh issue edit --remove-label` on a label the
+        # issue does not have is accepted. That is true, and it is not the
+        # case that bites. Probed against a live repository on 2026-09-06:
+        #
+        #   gh issue edit N --remove-label bug        -> exit 0   (issue lacks it)
+        #   gh issue edit N --remove-label sev:1      -> exit 1   ('sev:1' not found)
+        #
+        # The second is a label the REPOSITORY does not have, which is exactly
+        # the state before `labels` has been run -- so the unconditional form
+        # made the first `rate` in any repository fail at the wire, on the one
+        # command the cell tells a filer to use.
+        carried = set(issue_labels(number, repo))
+        remove += [other for other in axis["values"]
+                   if other != label and other in carried]
     edit_labels(number, policy, add=add, remove=remove, repo=repo)
     print(f"#{number} rated {', '.join(sorted(add))}")
     return 0
@@ -516,8 +610,8 @@ def cmd_rate(policy: dict, repo: str | None, number: int,
 
 def cmd_frame(policy: dict, repo: str | None, number: int) -> int:
     edit_labels(number, policy, add=[policy["framed"]["label"]], remove=[], repo=repo)
-    print(f"#{number} is framed -- it leaves the pool and the board holds it "
-          f"from the next sync")
+    print(f"#{number} is marked framed -- it leaves the pool, and the board "
+          f"holds it from the next sync if the issue is open")
     return 0
 
 
@@ -599,9 +693,9 @@ def dispatch(args: argparse.Namespace) -> int:
     raise PoolError(f"no such command: {args.command}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
-    args = build_parser().parse_args()
+    args = build_parser().parse_args(argv)
     try:
         return dispatch(args)
     except PoolError as exc:

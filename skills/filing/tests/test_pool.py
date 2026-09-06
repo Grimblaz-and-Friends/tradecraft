@@ -16,6 +16,7 @@ useless.
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -396,12 +397,36 @@ def test_rating_clears_every_other_value_on_that_axis(monkeypatch, capsys):
     state above, and a rate that only added would manufacture it."""
     sent = []
     monkeypatch.setattr(pool, "gh", lambda args: sent.append(args) or "")
+    monkeypatch.setattr(pool, "issue_labels",
+                        lambda number, repo=None: ["sev:1", "sev:3", "urg:1"])
     pool.cmd_rate(policy_dict(), None, 5, {"severity": "sev:2"})
     args = sent[0]
     assert args[args.index("--add-label") + 1] == "sev:2"
     removed = [args[i + 1] for i, a in enumerate(args) if a == "--remove-label"]
     assert sorted(removed) == ["sev:1", "sev:3"]
     assert "urg:1" not in removed, "the other axis is untouched"
+
+
+def test_rating_removes_only_the_values_the_issue_actually_carries(monkeypatch):
+    """Probed live on 2026-09-06 against a real repository:
+
+        gh issue edit N --remove-label bug     -> exit 0   (issue lacks it)
+        gh issue edit N --remove-label sev:1   -> exit 1   ('sev:1' not found)
+
+    The second is a label the *repository* lacks, which is the state before
+    `labels` has run -- so removing every other value unconditionally made the
+    first `rate` in any repository fail at the wire, on the one command the
+    cell tells a filer to use.
+    """
+    sent = []
+    monkeypatch.setattr(pool, "gh", lambda args: sent.append(args) or "")
+    monkeypatch.setattr(pool, "issue_labels", lambda number, repo=None: [])
+    pool.cmd_rate(policy_dict(), None, 5, {"severity": "sev:2"})
+    args = sent[0]
+    assert "--remove-label" not in args, (
+        "nothing to remove: the issue carries no value on that axis"
+    )
+    assert args[args.index("--add-label") + 1] == "sev:2"
 
 
 def test_two_labels_on_one_axis_are_refused():
@@ -503,3 +528,186 @@ def test_every_gh_launch_names_all_three_streams(monkeypatch):
 def test_a_repository_is_named_only_when_one_is_given():
     assert pool._repo_args(None) == []
     assert pool._repo_args("o/r") == ["--repo", "o/r"]
+
+
+# ------------------------------------------------------- what the review found
+
+
+def test_two_labels_on_one_axis_sharing_a_value_are_refused(tmp_path):
+    """`load_policy`'s docstring names non-distinct values as the silent
+    wrong-order failure, and for a while only named it: two labels on one number
+    order as a tie, so a repository believes it configured distinct bands while
+    the axis collapses them."""
+    policy = policy_dict()
+    policy["axes"]["severity"]["values"] = {"sev:1": 1, "sev:2": 1}
+    path = write_policy(tmp_path / "pool-policy.json", policy)
+    with pytest.raises(pool.PoolError) as caught:
+        pool.load_policy(path)
+    assert "same value" in str(caught.value)
+
+
+@pytest.mark.parametrize("bad", ["sev,high", "a,b", ","])
+def test_a_label_name_carrying_a_comma_is_refused(tmp_path, bad):
+    """`gh issue edit --add-label` splits on commas -- its own help demonstrates
+    it with "bug,help wanted" -- so such a name would write labels the policy
+    never named and leave the intended one unset. The write rail defeated by a
+    name rather than by a call site, so it is refused where the vocabulary is
+    admitted."""
+    policy = policy_dict()
+    policy["axes"]["severity"]["values"] = {bad: 1, "sev:2": 2}
+    path = write_policy(tmp_path / "pool-policy.json", policy)
+    with pytest.raises(pool.PoolError) as caught:
+        pool.load_policy(path)
+    assert "comma" in str(caught.value)
+
+
+def test_a_comma_in_the_framed_label_is_refused_too(tmp_path):
+    """The framed label reaches the same write path."""
+    path = write_policy(tmp_path / "pool-policy.json",
+                        policy_dict(framed={"label": "framed,decided"}))
+    with pytest.raises(pool.PoolError):
+        pool.load_policy(path)
+
+
+def test_an_ordinary_colon_label_is_still_accepted(tmp_path):
+    """The lawful polarity, and the shipped default's own shape: a guard that
+    refused every punctuated name would reject the policy this cell ships."""
+    assert pool.load_policy(pool.DEFAULT_POLICY)["framed"]["label"]
+
+
+def test_a_clean_axis_survives_a_clash_on_another_axis(monkeypatch):
+    """The clash test was over the whole list, so one clashed axis discarded
+    every clean rating an item had -- the worst severity in the pool sorted
+    below the mildest on issue number alone."""
+    stub_issues(monkeypatch, [
+        issue(3, labels=["sev:1", "urg:1", "urg:2"]),
+        issue(7, labels=["sev:3", "urg:1", "urg:2"]),
+        issue(9),
+    ])
+    items, _ = pool.read_pool(policy_dict())
+    assert [it["number"] for it in items] == [7, 3, 9]
+
+
+def test_a_clashed_item_still_sorts_below_a_cleanly_rated_one(monkeypatch):
+    """The other half: a clash is still incomplete, so it does not overtake an
+    item that is rated on every axis."""
+    stub_issues(monkeypatch, [
+        issue(3, labels=["sev:3", "urg:1", "urg:2"]),
+        issue(7, labels=["sev:1", "urg:1"]),
+    ])
+    items, _ = pool.read_pool(policy_dict())
+    assert [it["number"] for it in items] == [7, 3]
+
+
+def test_shortlist_refuses_a_count_below_one(monkeypatch):
+    """`shortlist_size` is validated on load; the flag overriding it was not, and
+    a negative sliced from the end -- raising most of the pool while suppressing
+    the caveat, because `len(rated) < size` is false for a negative."""
+    stub_issues(monkeypatch, [issue(i, labels=["sev:2", "urg:2"]) for i in range(1, 11)])
+    for bad in (0, -1, -8):
+        with pytest.raises(pool.PoolError):
+            pool.cmd_shortlist(policy_dict(), None, bad)
+
+
+def test_list_refuses_a_limit_below_one(monkeypatch):
+    """`--limit 0` printed the whole pool, on a falsy test where a `None` test
+    was meant."""
+    stub_issues(monkeypatch, [issue(i) for i in range(1, 6)])
+    for bad in (0, -1):
+        with pytest.raises(pool.PoolError):
+            pool.cmd_list(policy_dict(), pool.DEFAULT_POLICY, None, bad)
+
+
+def test_a_small_but_fully_rated_pool_gets_no_unrated_caveat(monkeypatch, capsys):
+    """The caveat compared against the size asked for, so a pool of two rated
+    items under a size of five was called partly unrated -- telling a reader to
+    discount a ranking that was sound."""
+    stub_issues(monkeypatch, [issue(i, labels=["sev:2", "urg:2"]) for i in (1, 2)])
+    pool.cmd_shortlist(policy_dict(), None, None)
+    out = capsys.readouterr().out
+    assert "rather than the highest-rated" not in out
+    assert "raising: 2" in out
+
+
+def test_the_caveat_fires_when_an_unrated_item_is_actually_raised(monkeypatch, capsys):
+    """The unlawful polarity of the same guard."""
+    stub_issues(monkeypatch, [issue(1, labels=["sev:2", "urg:2"]), issue(2)])
+    pool.cmd_shortlist(policy_dict(), None, None)
+    assert "rather than the highest-rated" in capsys.readouterr().out
+
+
+def test_the_label_read_refuses_when_it_comes_back_at_its_limit(monkeypatch):
+    """The hazard the issue read refuses, on the label read next door: truncated,
+    an existing label reads as missing and creating it fails partway through."""
+    def wire(args):
+        if args[:2] == ["label", "list"]:
+            return json.dumps([{"name": f"l{i}"} for i in range(pool.LABEL_READ_LIMIT)])
+        raise AssertionError("should not reach a create")
+
+    monkeypatch.setattr(pool, "gh", wire)
+    with pytest.raises(pool.PoolError) as caught:
+        pool.cmd_labels(policy_dict(), None, dry_run=True)
+    assert "came back at its limit" in str(caught.value)
+
+
+def test_the_label_read_below_its_limit_is_accepted(monkeypatch, capsys):
+    """The lawful polarity: an ordinary repository is not refused."""
+    monkeypatch.setattr(pool, "gh", lambda args: json.dumps([{"name": "bug"}]))
+    assert pool.cmd_labels(policy_dict(), None, dry_run=True) == 0
+
+
+# ------------------------------------------------------------------- the CLI
+
+
+def cli(monkeypatch, *argv):
+    """Drive the real entry point. Nothing exercised the parser at all, so three
+    flags survived deletion with the suite green and the documented invocation
+    shape was wrong."""
+    monkeypatch.setattr(pool, "find_policy", lambda start=None: pool.DEFAULT_POLICY)
+    return pool.main(list(argv))
+
+
+def test_the_repo_and_policy_flags_parse_before_the_subcommand(monkeypatch, capsys):
+    """The Usage block documented them after it, where argparse exits 2."""
+    assert cli(monkeypatch, "--repo", "o/r", "policy") == 0
+    assert "writable labels:" in capsys.readouterr().out
+
+
+def test_the_documented_usage_shape_is_the_one_that_runs(monkeypatch):
+    """Every invocation the module docstring's Usage block shows, parsed by the
+    real parser. Nothing drove the parser at all, which is how the block came to
+    document `--repo` in a position argparse rejects with exit 2.
+
+    Optionals in brackets are dropped and placeholders are filled, so what is
+    checked is the *shape* -- the order of subcommand and options -- which is
+    the part that was wrong.
+    """
+    forms = re.findall(r"^\s*python scripts/pool\.py (.+)$", pool.__doc__, re.M)
+    assert forms, "the Usage block names no invocation"
+    filler = {"N": "1", "LABEL": "sev:1", "PATH": "p.json", "OWNER/REPO": "o/r"}
+    checked = 0
+    for form in forms:
+        bare = re.sub(r"\[[^\]]*\]", " ", form)          # drop the optionals
+        argv = [filler.get(tok, tok) for tok in bare.split()]
+        if not argv or argv[0].startswith("<"):
+            continue                                      # the summary line
+        pool.build_parser().parse_args(argv)
+        checked += 1
+    assert checked >= 9, f"only {checked} invocations were exercised"
+
+
+def test_the_cli_refuses_a_negative_count_rather_than_raising_most_of_the_pool(
+        monkeypatch, capsys):
+    """Criterion 3's own falsifier, driven through the shipped entry point."""
+    monkeypatch.setattr(pool, "gh", lambda args: json.dumps(
+        [issue(i, labels=["sev:2", "urg:2"]) for i in range(1, 11)]))
+    assert cli(monkeypatch, "shortlist", "--count", "-1") == 1
+    assert "at least 1" in capsys.readouterr().err
+
+
+def test_the_cli_reports_a_refusal_without_a_traceback(monkeypatch, capsys):
+    """`main` turns a PoolError into one line on stderr and exit 1."""
+    monkeypatch.setattr(pool, "gh", lambda args: json.dumps([]))
+    assert cli(monkeypatch, "show", "999") == 1
+    err = capsys.readouterr().err
+    assert err.startswith("pool: ") and "Traceback" not in err

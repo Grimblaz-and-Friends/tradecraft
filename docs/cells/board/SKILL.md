@@ -29,19 +29,19 @@ python tools/board.py notes    # the last refresh notes, newest first
 
 ## What is not on it
 
-**Every other open issue is in the pool: filed, rated, and not yet decided on.** The board answers *what next* out of decided work, so when it runs out the move is not to rank harder -- it is to raise a shortlist out of the pool and put it to the owner. The pool, its ratings and the script that lists it are the `filing` cell's; the form that ask takes is the `engagement` cell's.
+**Every other open issue is in the pool: filed and not yet decided on.** The board answers *what next* out of decided work, so when it runs out the move is not to rank harder -- it is to raise a shortlist out of the pool and put it to the owner. The pool, its ratings and the script that lists it are the `filing` cell's; the form that ask takes is the `engagement` cell's.
 
 **Nothing reaches this board that has not been framed**, and `sync` refuses to empty a populated board on an empty framed set rather than reading a setup mistake as a decision; `sync --allow-empty` is how an operator says the emptiness is real.
 
 ## Refreshing it
 
-Run a refresh when the board moved — an issue filed or closed, a pull request merged, a dependency shifted.
+Run a refresh when the board moved — an issue framed or returned to the pool, an issue closed, a pull request merged, a dependency shifted. A filing no longer moves it.
 
 **Start from what is on the board.** Move what a named board change justifies and leave the rest. This is not a restriction on what you may move; you may move anything you can argue for. It is that rebuilding the order from a blank page re-rolls the bundling judgment — the expensive part, and the part that varies most between sessions — and costs the board roughly an order of magnitude more writes than adjusting what changed.
 
 **A cause and its framed open symptoms are one bundle, and the refresh reads it off the sub-issue links rather than re-deriving it.** A symptom sitting in the pool is not on the board at all, so it is neither ranked nor blocked and never reaches the guard below. Name the bundle for the cause, rank the cause above every symptom, and give each symptom a status that takes it out of contention while the cause is open — `Blocked` ordinarily, and `In flight` for a symptom that has a pull request open against it, whether that fix came out of the cause or not — the reading rule above being unable to see `Bundle` or position. [D-415] [D-429] **`apply` refuses a plan that leaves a symptom in contention, or ranks one above its cause**, so those two are checked rather than remembered and the refusal names the symptom, its cause and what to do; **the bundle name is not checked** and is yours to get right.
 
-**`causes` prints the groups the guard reads**, so the parentage is in hand before the plan is written rather than discovered by being refused:
+**`causes` prints the cause groups over the open set, marking each member the board does not hold**, so the parentage is in hand before the plan is written rather than discovered by being refused. It is not the set the guard reads: the guard runs over plan rows, so a symptom in the pool never reaches it, and a plan row written for one is refused.
 
 ```bash
 python tools/board.py causes
@@ -53,11 +53,12 @@ A parent carrying no `cause` label is an ordinary task decomposition and is not 
 
 The owner may rule a symptom worked on its own while its cause is open; that exception is his, and the note carries it in his words — **and so does the plan**, on a comment line naming `owner-exception`, the issue number and the sentence he actually ruled. **His ruling lifts both halves of the guard for that symptom** — it may be available, and it may rank above its cause — a symptom being worked being a claim about both. A bare flag is refused, so is a placeholder in his place, and so is any line that reads as the directive and misses its form — an ignored line would leave the plan refused for lacking the very ruling someone had just written into it. His words are the point of it. **`show` does not carry an exception forward**, the plan being rebuilt from the board's own rows, so a live one is re-entered from the last note at every refresh until its cause closes.
 
-**Two jobs that look alike and must not be merged.** *Reconciling* asks whether the board holds the open set. *Settling* asks whether the ordered read has caught up with the board. They return opposite answers about the same newly added issue — reconcile says place it, settle says wait for it — so a single membership comparison cannot do both, and only settling may stop the run.
+**Two jobs that look alike and must not be merged.** *Reconciling* asks whether the board holds the framed set. *Settling* asks whether the ordered read has caught up with the board. They return opposite answers about the same newly added issue — reconcile says place it, settle says wait for it — so a single membership comparison cannot do both, and only settling may stop the run.
 
 If the board does not exist yet, `python tools/board.py init` creates it and its fields once. It refuses when a project of that title already exists, because a second one leaves the title ambiguous and every command refusing.
 
 ```
+python tools/board.py sync --dry-run        # what it would add and archive
 python tools/board.py sync                  # reconcile, then settle
 python tools/board.py show --plan plan.tsv  # current state, one issue per line
 #   edit plan.tsv: reorder lines, and give every new row a band, bundle and status

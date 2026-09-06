@@ -8,8 +8,8 @@ context is spent on.
 
 Two jobs a single membership comparison cannot do at once, and the reason the
 run order below is what it is. *Reconciling* asks whether the board holds the
-open set; *settling* asks whether the ordered read has caught up with the
-board. They return opposite answers about the same newly added issue --
+framed set -- the work somebody decided to do, which is what this board is for;
+*settling* asks whether the ordered read has caught up with the board. They return opposite answers about the same newly added issue --
 reconcile says place it, settle says wait for it -- so they are separate steps
 with separate failure behaviour, and only settling may halt.
 
@@ -65,12 +65,31 @@ from winio import utf8_stdio  # noqa: E402
 # direction, and resolving from this file rather than the working directory
 # is what lets the script run from any cwd. One owner for the label name:
 # a second copy here would drift from the policy the pool actually reads.
-_POOL_SPEC = importlib.util.spec_from_file_location(
-    "filing_pool",
-    Path(__file__).resolve().parent.parent / "skills" / "filing" / "scripts" / "pool.py",
-)
-pool = importlib.util.module_from_spec(_POOL_SPEC)
-_POOL_SPEC.loader.exec_module(pool)
+#
+# Loaded on demand rather than at import. At module level a tree without
+# `skills/` -- a partial checkout, a sparse clone -- gave every command a raw
+# `FileNotFoundError` traceback before argparse ran, `--help` included, where
+# every other failure here is a typed `BoardError` naming what to do.
+_POOL_PATH = Path(__file__).resolve().parent.parent / "skills" / "filing" / "scripts" / "pool.py"
+_pool = None
+
+
+def pool_engine():
+    """The shipped pool script, loaded once, with a typed refusal if it is absent."""
+    global _pool
+    if _pool is None:
+        if not _POOL_PATH.is_file():
+            raise BoardError(
+                f"the pool's transport is missing at {_POOL_PATH}. The board's "
+                f"membership is the framed set, and the label that marks it is "
+                f"the pool policy's, so this cannot run without the shipped "
+                f"skill. A partial checkout is the usual cause"
+            )
+        spec = importlib.util.spec_from_file_location("filing_pool", _POOL_PATH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _pool = module
+    return _pool
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -83,6 +102,10 @@ REPO = os.environ.get("TRADECRAFT_BOARD_REPO", "tradecraft")
 # sharing a title under one owner is the ambiguity this also lets a caller
 # avoid.
 BOARD_TITLE = os.environ.get("TRADECRAFT_BOARD_TITLE", "tradecraft board")
+
+# `gh issue list` returns at most what it is asked for and says nothing about
+# what it left behind, so a read that comes back exactly full may be short.
+ISSUE_READ_LIMIT = 1000
 
 BANDS = ["Standing", "Front", "Bundles", "Review-set", "Tail"]
 STATUSES = ["Queued", "In progress", "In flight", "Blocked", "Deferred"]
@@ -507,12 +530,30 @@ def framed_issues() -> dict[int, str]:
     because the board's ordered connection reports a short list and a matching
     short `totalCount` together and so cannot be asked whether it is complete.
     """
-    label = pool.load_policy(pool.find_policy(ROOT))["framed"]["label"]
+    pool = pool_engine()
+    try:
+        label = pool.load_policy(pool.find_policy(ROOT))["framed"]["label"]
+    except pool.PoolError as exc:
+        # A malformed override is a supported configuration error, so it comes
+        # back as this transport's own refusal rather than as a traceback from
+        # a module the operator did not know was involved.
+        raise BoardError(f"the pool policy could not be read: {exc}") from None
     raw = gh([
         "issue", "list", "--repo", f"{OWNER}/{REPO}", "--state", "open",
-        "--label", label, "--limit", "1000", "--json", "number,id",
+        "--label", label, "--limit", str(ISSUE_READ_LIMIT), "--json", "number,id",
     ])
-    return {item["number"]: item["id"] for item in json.loads(raw)}
+    issues = json.loads(raw)
+    # The completeness check the pool's own read performs, on the read this
+    # board's whole membership comes from. Without it a truncated list makes
+    # `reconcile` compute the archive set over a short target, and `sync`
+    # archives every framed issue past the limit while reporting success.
+    if len(issues) >= ISSUE_READ_LIMIT:
+        raise BoardError(
+            f"the framed-issue read came back at its limit of {ISSUE_READ_LIMIT}, "
+            f"so it may be short and every item past it would be archived. "
+            f"Raise ISSUE_READ_LIMIT and run again"
+        )
+    return {item["number"]: item["id"] for item in issues}
 
 
 def causal_parents() -> dict[int, int]:
@@ -895,20 +936,6 @@ def cmd_sync(dry_run: bool, allow_empty: bool = False) -> int:
     node_ids = framed_issues()
     target = sorted(node_ids)
     to_add, to_archive = reconcile(members, target)
-    # An empty framed set with a populated board is the shape a setup mistake
-    # takes -- the pool's labels never created, or nothing framed yet -- and
-    # the shape a legitimate empty board takes, when the last framed issue
-    # closes. The two are indistinguishable from here, and one of them archives
-    # the whole board. So it is refused and the operator says which it is: the
-    # cheap answer is right nearly always, and the expensive one is silent.
-    if members and not target and not allow_empty:
-        raise BoardError(
-            f"nothing is framed, and the board holds {len(members)} items, so "
-            f"this sync would archive all of them. The board holds decided "
-            f"work; if that is genuinely none, run `sync --allow-empty`. If it "
-            f"is not, the pool's labels may never have been created, or what "
-            f"is already decided may never have been framed"
-        )
     # Flushed because the halt below is raised through stderr, and a caller
     # merging the two streams otherwise sees the failure printed before the
     # summary that explains it -- which reads as though the adds never ran.
@@ -917,6 +944,25 @@ def cmd_sync(dry_run: bool, allow_empty: bool = False) -> int:
     print(f"to archive: {to_archive or 'none'}", flush=True)
     if dry_run:
         return 0
+    # An empty framed set with a populated board is the shape a setup mistake
+    # takes -- the pool's labels never created, or nothing framed yet -- and
+    # the shape a legitimate empty board takes, when the last framed issue
+    # closes. The two are indistinguishable from here, and one of them archives
+    # the whole board. So it is refused and the operator says which it is.
+    #
+    # Below the summary, not above it: the guard used to raise before anything
+    # printed, so `--dry-run` -- the one way to see what would be archived --
+    # returned nothing at all, and the remedy it named was the destructive form.
+    if members and not target and not allow_empty:
+        raise BoardError(
+            f"nothing is framed, and the board holds {len(members)} items, so "
+            f"this sync would archive all of them, as the summary above lists. "
+            f"The board holds decided work; if that is genuinely none, run "
+            f"`sync --dry-run --allow-empty` to confirm the list and then "
+            f"`sync --allow-empty`. If it is not, the pool's labels may never "
+            f"have been created, or what is already decided may never have "
+            f"been framed"
+        )
     # Resolved before the adds, because the adds are what make the ordered read
     # short. Reading afterwards can miss an archive target, skip it silently,
     # and leave settle waiting out its whole bound on an item nobody will
@@ -1017,12 +1063,20 @@ def cmd_apply(plan_path: Path, dry_run: bool) -> int:
 
 
 def cmd_causes() -> int:
-    """Print the cause groups the guard reads, so a refresher can plan from them.
+    """Print the cause groups, marking which members the board actually holds.
 
     The read existed and reached nobody: `causal_parents` was called from
     `cmd_apply` alone, so the only way to see the parentage was to submit a
     wrong plan and read the refusal. The cell documented a hand query instead,
     which was unpaged and silently short of the open set.
+
+    **Parentage spans the whole open set; the board holds the framed subset.**
+    So this is not, despite an earlier version of this docstring, "the groups
+    the guard reads": a symptom sitting in the pool never reaches the guard,
+    because that runs over plan rows. Each member is marked, and the closing
+    instruction is conditioned, because the unmarked form told a refresher to
+    give a board status to issues with no board row -- which `apply` then
+    refuses for a membership mismatch against a board that was correct.
     """
     parents = causal_parents()
     if not parents:
@@ -1032,12 +1086,24 @@ def cmd_causes() -> int:
     groups: dict[int, list[int]] = {}
     for symptom, cause in parents.items():
         groups.setdefault(cause, []).append(symptom)
+    on_board = set(framed_issues())
+    pooled = False
     for cause in sorted(groups):
-        symptoms = ", ".join(f"#{s}" for s in sorted(groups[cause]))
-        print(f"#{cause} causes {len(groups[cause])}: {symptoms}")
+        symptoms = ", ".join(
+            f"#{s}" + ("" if s in on_board else " (pool)")
+            for s in sorted(groups[cause])
+        )
+        pooled = pooled or any(s not in on_board for s in groups[cause])
+        head = f"#{cause}" + ("" if cause in on_board else " (pool)")
+        pooled = pooled or cause not in on_board
+        print(f"{head} causes {len(groups[cause])}: {symptoms}")
     print()
-    print("each symptom above needs a status that takes it out of contention, and a "
-          "position below its cause")
+    print("each symptom above that the board holds needs a status that takes it out "
+          "of contention, and a position below its cause")
+    if pooled:
+        print("(pool) marks an issue that is not framed, so it has no board row: it "
+              "is neither ranked nor blocked, and writing a plan row for it is "
+              "refused")
     return 0
 
 
@@ -1062,7 +1128,9 @@ def cmd_next(count: int) -> int:
     if not available:
         unplaced = sum(1 for r in rows if r.status == EMPTY)
         if not rows:
-            print("the board holds no items at all. Run sync to place the open issues on it")
+            print("the board holds no items at all. It holds framed work, so sync places "
+                  "what has been framed and nothing else -- if nothing has, the answer is "
+                  "in the pool")
         elif unplaced:
             print(f"nothing on the board is available: {unplaced} of {len(rows)} items have no "
                   "status yet, so they are unranked rather than available. Run apply with a plan "
@@ -1070,6 +1138,12 @@ def cmd_next(count: int) -> int:
         else:
             print("nothing on the board is available: every item is in progress, in flight, "
                   "blocked or deferred")
+        if not rows or not unplaced:
+            # The board answers out of decided work, so running out of it is not
+            # a ranking problem. The `board` cell says the move is to raise a
+            # shortlist; this is where a session actually meets the state.
+            print("raise a shortlist out of the pool and put it to the owner: "
+                  "python skills/filing/scripts/pool.py shortlist")
         return 0
     held = [r for r in rows if r.status in UNAVAILABLE][:count]
     first, rest = available[0], available[1:count + 1]
