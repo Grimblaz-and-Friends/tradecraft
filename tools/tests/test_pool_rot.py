@@ -34,7 +34,7 @@ def fence_the_wire(monkeypatch):
         raise AssertionError(f"this test reached the network: {str(args)[:90]}")
 
     monkeypatch.setattr(rot, "gh", refuse)
-    monkeypatch.setattr(rot.pool, "gh", refuse)
+    monkeypatch.setattr(rot.pool_engine(), "gh", refuse)
 
 
 def tree(tmp_path, *paths):
@@ -54,7 +54,7 @@ def body_issue(number, body):
 
 def test_a_path_that_has_gone_is_named(tmp_path):
     root = tree(tmp_path, "tools/lint.py")
-    found = rot.rot(root, [body_issue(1, "the guard at `tools/gone.py` is wrong")], False)
+    found = rot.rot(root, [body_issue(1, "the guard at `tools/gone.py` is wrong")])
     assert [f["number"] for f in found] == [1]
     assert found[0]["gone"] == ["tools/gone.py"]
 
@@ -63,7 +63,7 @@ def test_a_path_that_is_still_there_is_not(tmp_path):
     """The lawful polarity. A check that named every filing would be a check
     nobody reads."""
     root = tree(tmp_path, "tools/lint.py")
-    assert rot.rot(root, [body_issue(1, "the guard at `tools/lint.py` is wrong")], False) == []
+    assert rot.rot(root, [body_issue(1, "the guard at `tools/lint.py` is wrong")]) == []
 
 
 def test_a_path_inside_a_fenced_block_is_not_named(tmp_path):
@@ -72,7 +72,7 @@ def test_a_path_inside_a_fenced_block_is_not_named(tmp_path):
     them removed two of eight hits, both invented filenames inside a probe."""
     root = tree(tmp_path, "tools/lint.py")
     body = "see below\n\n```\n$ python tools/never_existed.py\n```\n"
-    assert rot.rot(root, [body_issue(1, body)], False) == []
+    assert rot.rot(root, [body_issue(1, body)]) == []
 
 
 def test_a_placeholder_segment_is_not_a_path(tmp_path):
@@ -80,7 +80,23 @@ def test_a_placeholder_segment_is_not_a_path(tmp_path):
     for placeholder in (".github/instructions/NAME.instructions.md",
                         "docs/<file>.md",
                         "skills/N/SKILL.md"):
-        assert rot.rot(root, [body_issue(1, f"a file at {placeholder}")], False) == [], placeholder
+        assert rot.rot(root, [body_issue(1, f"a file at {placeholder}")]) == [], placeholder
+
+
+def test_a_real_all_caps_filename_is_still_checked(tmp_path):
+    """The negative control the placeholder test lacked, and the defect it did
+    not catch: the first spelling of `PLACEHOLDER_RE` was `[A-Z]{2,}`, which
+    reads `SKILL` out of every `.../SKILL.md` and discarded 152 of the 290 paths
+    this repository's filings name. Every one of these is a real filename, and
+    every one must be checked rather than skipped."""
+    root = tree(tmp_path, "tools/lint.py", "skills/filing/SKILL.md")
+    for real in ("docs/cells/board/SKILL.md", "docs/README.md",
+                 "skills/engagement/SKILL.md", "docs/architecture/README.md"):
+        found = rot.rot(root, [body_issue(1, f"the rule at {real}")])
+        assert [f["gone"] for f in found] == [[real]], real
+    # And the other polarity on the same shape, so the control discriminates:
+    # an all-caps filename that is still there is not reported either.
+    assert rot.rot(root, [body_issue(1, "the rule at skills/filing/SKILL.md")]) == []
 
 
 def test_a_partial_path_out_of_the_middle_of_a_citation_is_not_named(tmp_path):
@@ -88,48 +104,14 @@ def test_a_partial_path_out_of_the_middle_of_a_citation_is_not_named(tmp_path):
     `docs/architecture/decisions/D` out of `[D-410](docs/architecture/...)`."""
     root = tree(tmp_path, "docs/architecture/decisions/D-410-x.md")
     body = "see D-410 in docs/architecture/decisions/D-410-x.md for the reasoning"
-    assert rot.rot(root, [body_issue(1, body)], False) == []
+    assert rot.rot(root, [body_issue(1, body)]) == []
 
 
 def test_a_word_that_merely_contains_a_zone_name_is_not_a_path(tmp_path):
     root = tree(tmp_path, "tools/lint.py")
     body = "the repository at github.com/owner/tools/other.py is not ours"
-    found = rot.rot(root, [body_issue(1, body)], False)
+    found = rot.rot(root, [body_issue(1, body)])
     assert found == [], found
-
-
-# --------------------------------------------------------------- the quotes
-
-
-def test_a_quotation_still_in_the_file_is_not_reported(tmp_path):
-    root = tree(tmp_path, "docs/rule.md")
-    body = "as `docs/rule.md` says:\n\n> the quick brown fox jumps over the lazy dog\n"
-    assert rot.rot(root, [body_issue(1, body)], True) == []
-
-
-def test_a_quotation_the_file_no_longer_carries_is_reported(tmp_path):
-    root = tree(tmp_path, "docs/rule.md")
-    body = "as `docs/rule.md` says:\n\n> a sentence that this file has never contained at all\n"
-    found = rot.rot(root, [body_issue(1, body)], True)
-    assert found and found[0]["missing_quotes"]
-
-
-def test_a_reflowed_quotation_still_matches(tmp_path):
-    """The normalisation earns its place: a quotation re-wrapped or re-emphasised
-    since it was taken is the ordinary case, and reporting it would be noise."""
-    root = tmp_path / "docs"
-    root.mkdir(parents=True)
-    (root / "rule.md").write_text(
-        "the **quick** brown\nfox jumps over\nthe lazy dog\n", encoding="utf-8")
-    body = "as `docs/rule.md` says:\n\n> the quick brown fox jumps over the lazy dog\n"
-    assert rot.rot(tmp_path, [body_issue(1, body)], True) == []
-
-
-def test_the_quote_check_is_off_unless_asked_for(tmp_path):
-    """It is the approximate half, so it does not run by default."""
-    root = tree(tmp_path, "docs/rule.md")
-    body = "as `docs/rule.md` says:\n\n> a sentence that this file has never contained at all\n"
-    assert rot.rot(root, [body_issue(1, body)], False) == []
 
 
 # ------------------------------------------------------- what it will not do
@@ -149,13 +131,13 @@ def test_nothing_is_ever_closed(monkeypatch, tmp_path, capsys):
         return ""
 
     monkeypatch.setattr(rot, "gh", wire)
-    monkeypatch.setattr(rot.pool, "find_policy", lambda start=None: rot.pool.DEFAULT_POLICY)
-    real = rot.pool.load_policy(rot.pool.DEFAULT_POLICY)
+    monkeypatch.setattr(rot.pool_engine(), "find_policy", lambda start=None: rot.pool_engine().DEFAULT_POLICY)
+    real = rot.pool_engine().load_policy(rot.pool_engine().DEFAULT_POLICY)
     for closes in (False, True):
         sent.clear()
         real["fade"]["closes"] = closes
-        monkeypatch.setattr(rot.pool, "load_policy", lambda path, p=real: p)
-        assert rot.cmd_rot(None, False) == 0
+        monkeypatch.setattr(rot.pool_engine(), "load_policy", lambda path, p=real: p)
+        assert rot.cmd_rot(None) == 0
         assert sent == [], f"closes={closes} wrote: {sent}"
     assert "nothing above was closed" in capsys.readouterr().out
 
@@ -171,7 +153,7 @@ def test_the_write_fence_in_that_probe_catches_a_write(monkeypatch):
 
 def test_a_framed_issue_is_not_in_the_pool(monkeypatch):
     """The check is over the pool, and the board's own membership is not it."""
-    policy = rot.pool.load_policy(rot.pool.DEFAULT_POLICY)
+    policy = rot.pool_engine().load_policy(rot.pool_engine().DEFAULT_POLICY)
     monkeypatch.setattr(rot, "gh", lambda args: json.dumps([
         {"number": 1, "title": "t", "body": "b", "labels": [{"name": policy["framed"]["label"]}]},
         {"number": 2, "title": "t", "body": "b", "labels": []},
@@ -182,9 +164,9 @@ def test_a_framed_issue_is_not_in_the_pool(monkeypatch):
 def test_a_read_at_its_limit_is_refused(monkeypatch):
     """A filing past a truncated read would go unchecked and the report would
     say nothing about it."""
-    policy = rot.pool.load_policy(rot.pool.DEFAULT_POLICY)
+    policy = rot.pool_engine().load_policy(rot.pool_engine().DEFAULT_POLICY)
     full = json.dumps([{"number": i, "title": "t", "body": "", "labels": []}
-                       for i in range(rot.pool.ISSUE_READ_LIMIT)])
+                       for i in range(rot.pool_engine().ISSUE_READ_LIMIT)])
     monkeypatch.setattr(rot, "gh", lambda args: full)
     with pytest.raises(rot.RotError):
         rot.pool_bodies(policy, None)

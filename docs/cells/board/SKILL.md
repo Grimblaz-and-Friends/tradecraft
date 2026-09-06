@@ -29,15 +29,17 @@ python tools/board.py notes    # the last refresh notes, newest first
 
 ## What is not on it
 
-**Every other open issue is in the pool: filed and not yet decided on.** The board answers *what next* out of decided work, so when it runs out the move is not to rank harder -- it is to raise a shortlist out of the pool and put it to the owner. The pool, its ratings and the script that lists it are the `filing` cell's; the form that ask takes is the `engagement` cell's.
+**Every other open issue is in the pool: filed and not yet decided on.** The board answers *what next* out of decided work, so when it runs out the move is not to rank harder -- it is to raise a shortlist out of the pool and put it to the owner. **That raise is gated**: the shortlist refuses while anything at the top of the pool has never been asked whether it has a cause, naming which items block and what answers for each, so the move begins with those questions rather than with the raise. `--unassessed` raises anyway and gives up the guarantee. The pool, its ratings and the script that lists it are the `filing` cell's; the form that ask takes is the `engagement` cell's.
 
 **Nothing reaches this board that has not been framed**, and `sync` refuses to empty a populated board on an empty framed set rather than reading a setup mistake as a decision; `sync --allow-empty` is how an operator says the emptiness is real.
 
-**The pool moves between refreshes, and two things read that.** The `filing` cell's own script carries a `cycle` command, which reports what rose from the symptoms under it, what faded to the floor, and the next bounded few nobody has asked about a cause; `python tools/pool_rot.py` names the filings whose evidence the tree no longer holds. Neither closes anything here — the fade closes only where a repository sets `fade.closes`, and the rot check never does.
+**The pool moves between refreshes once it has ratings to move, and two things read that.** Nothing moves before that: membership is the absence of the framed label, so every open issue is in the pool from the start, but the fade reaches only what somebody has rated and the accrual only what carries cause links. The `filing` cell's own script carries a `cycle` command, which reports what rose from the symptoms under it, what faded to the floor, and the next bounded few nobody has asked about a cause; `python tools/pool_rot.py` names the filings that name a **path** the tree no longer holds — paths only, since a quote check shipped for one revision and was deleted as an approximate half nothing ran. Neither closes anything here — the fade closes only where a repository sets `fade.closes`, and the rot check never does, its two survivors over this repository's own pool being one genuine rot and one filename invented inside a probe.
 
 ## Refreshing it
 
 Run a refresh when the board moved — an issue framed or returned to the pool, an issue closed, a pull request merged, a dependency shifted. A filing no longer moves it.
+
+**Run `python tools/pool_rot.py` as part of the refresh**, and put what it names in the note. It is cheap, it is the only thing in this repository that looks at whether a filing's evidence still exists, and a check nothing obliges is a check nobody runs — which is what it was for one revision. It closes nothing and reports two or three rows; reading them is the whole of the obligation.
 
 **Start from what is on the board.** Move what a named board change justifies and leave the rest. This is not a restriction on what you may move; you may move anything you can argue for. It is that rebuilding the order from a blank page re-rolls the bundling judgment — the expensive part, and the part that varies most between sessions — and costs the board roughly an order of magnitude more writes than adjusting what changed.
 

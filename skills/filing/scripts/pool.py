@@ -12,13 +12,12 @@ The session supplies the judgment -- what a filing's ratings should be, which
 of the raised few is worth doing, what the case against each one is. This
 supplies everything that is not judgment.
 
-**Every label name, every rating value, the ordering and the shortlist size
-live in the policy file.** `pool-policy.json` beside this script carries the
-defaults; a
-repository overrides them with a file of that name at its own root, and the
-override is read instead of the default rather than merged into it, so what a
-repository states is the whole policy and no field it did not write can
-surprise it later.
+**Every label name, every rating value, the ordering, the shortlist size and
+the accrual, fade and assessment numbers live in the policy file.**
+`pool-policy.json` beside this script carries the defaults; a repository
+overrides them with a file of that name at its own root, and the override is
+read instead of the default rather than merged into it, so what a repository
+states is the whole policy and no field it did not write can surprise it later.
 
 **No label the policy does not name is ever written.** `writable_labels` is the
 only place that set is computed, and every command that edits an issue's labels
@@ -38,7 +37,7 @@ Usage:  python scripts/pool.py [--repo OWNER/REPO] [--policy PATH] <command>
         python scripts/pool.py list      [--limit N]
         python scripts/pool.py show      N
         python scripts/pool.py shortlist [--count N] [--unassessed]
-        python scripts/pool.py cycle
+        python scripts/pool.py cycle     [--dry-run]
         python scripts/pool.py assess    N --none
         python scripts/pool.py framed
         python scripts/pool.py policy
@@ -91,7 +90,14 @@ ISSUE_READ_LIMIT = 1000
 # through with an error blaming the wrong thing.
 LABEL_READ_LIMIT = 500
 
+# The causation read pages 100 issues at a time. This bounds it, so a
+# `hasNextPage` that never goes false is a refusal rather than a hang.
+PAGE_LIMIT = 100
+
 UNRATED = "-"
+
+# The width of the issue-number column, shared by the header and every row.
+ISSUE_COL = 8
 
 
 class PoolError(Exception):
@@ -219,7 +225,13 @@ def load_policy(path: Path) -> dict:
 
     _whole(policy, path, "accrual", "symptoms_per_band", least=1)
     _whole(policy, path, "fade", "quiet_days", least=1)
-    _whole(policy, path, "assessment", "before_shortlist", least=0)
+    # `least=1`, not 0. Zero is the value a repository reaches for to switch the
+    # gate off, and it loaded without complaint while `max(len(raised), 0)`
+    # discarded it and every shortlist went on refusing -- a floor the validator
+    # invited and the mechanism did not honour. The gate is not switchable off
+    # per-policy; `--unassessed` is the per-invocation escape and the refusal
+    # names it.
+    _whole(policy, path, "assessment", "before_shortlist", least=1)
     _whole(policy, path, "assessment", "per_cycle", least=1)
 
     closes = policy.get("fade", {}).get("closes")
@@ -355,9 +367,11 @@ def causal_parents(policy: dict, repo: str | None = None) -> dict[int, int]:
 
     **A repository's own board transport may perform the same read, and the
     repetition is the wall rather than an oversight.** Such a transport is
-    repo-only and this script ships, so it may not be imported from here; what
-    is shared instead is the label's name, which lives in the policy both of
-    them read. A parent that is closed,
+    repo-only and this script ships, so it may not be imported from here. The
+    label's name is in the policy this reads, and a repo-only transport may read
+    it from there too -- **this repository's has not been changed to**, so the
+    name still has more than one home and a repository renaming it in its policy
+    would get an accrual on the new name beside a guard reading the old one. A parent that is closed,
     or carries no cause label, yields nothing -- the first because a closed
     cause accrues nothing, the second because an unlabelled link is an ordinary
     task decomposition and means something else entirely.
@@ -366,13 +380,28 @@ def causal_parents(policy: dict, repo: str | None = None) -> dict[int, int]:
     owner, _, name = owner_repo.partition("/")
     label = policy["cause"]["label"]
     parents: dict[int, int] = {}
-    cursor = "null"
+    # **The cursor is a variable, and the loop is bounded.** Interpolating the
+    # server's `endCursor` into the query string puts a value this script does
+    # not control into the query it sends; `_graphql` already passes variables
+    # over `-f` and explains why, so the cursor goes the same way. And the loop
+    # had no bound at all, where the issue read above refuses at a limit rather
+    # than running on: a `hasNextPage` that stays true with a null `endCursor`
+    # asks for `after:"None"` forever, and a hang says less than a refusal.
+    cursor: str | None = None
+    pages = 0
     while True:
+        pages += 1
+        if pages > PAGE_LIMIT:
+            raise PoolError(
+                f"the causation read passed {PAGE_LIMIT} pages of 100 issues "
+                f"without finishing, which it should never do -- treat this as "
+                f"the read failing rather than as a very large repository"
+            )
         data = _graphql(
-            "query($o:String!,$r:String!){repository(owner:$o,name:$r){"
-            "issues(states:OPEN,first:100,after:%s){pageInfo{hasNextPage endCursor}"
-            "nodes{number parent{number state labels(first:50){nodes{name}}}}}}}" % cursor,
-            o=owner, r=name,
+            "query($o:String!,$r:String!,$after:String){repository(owner:$o,name:$r){"
+            "issues(states:OPEN,first:100,after:$after){pageInfo{hasNextPage endCursor}"
+            "nodes{number parent{number state labels(first:50){nodes{name}}}}}}}",
+            o=owner, r=name, after=cursor,
         )["repository"]["issues"]
         for node in data["nodes"]:
             parent = node.get("parent")
@@ -380,17 +409,20 @@ def causal_parents(policy: dict, repo: str | None = None) -> dict[int, int]:
                 continue
             if label in {lb["name"] for lb in parent["labels"]["nodes"]}:
                 parents[node["number"]] = parent["number"]
-        if not data["pageInfo"]["hasNextPage"]:
+        cursor = data["pageInfo"]["endCursor"]
+        if not data["pageInfo"]["hasNextPage"] or cursor is None:
             return parents
-        cursor = '"%s"' % data["pageInfo"]["endCursor"]
 
 
 def _infer_repo() -> str:
     """OWNER/REPO for the checkout, when no --repo was given.
 
-    A checkout with no remote cannot answer, and the raw `gh` message for that
-    names a command the caller never typed. It is turned into the one sentence
-    that says what to do instead.
+    A checkout with no remote cannot answer. Raw `gh` says only `no git remotes
+    found`; what names a command the caller never typed is this script's own
+    `gh()` wrapper, which prefixes every failure with the arguments it sent. So
+    the refusal below adds what could not be worked out and what to pass
+    instead, and the wrapper's shape survives inside it -- the general repair
+    belongs at `gh()` and is not this one call site's to make.
     """
     try:
         raw = gh(["repo", "view", "--json", "nameWithOwner"])
@@ -405,9 +437,14 @@ def _infer_repo() -> str:
 def _graphql(query: str, **variables: object) -> dict:
     args = ["api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
+        # A `None` is left out rather than sent. `-f` stringifies, so passing it
+        # would send the four characters `None` where the query wants null --
+        # which is exactly the first page of a paged read, whose cursor is null.
+        if value is None:
+            continue
         # -f, never -F: -F applies magic type conversion, reading a value
         # beginning "@" as a filename and expanding {owner}/{repo} from the
-        # working directory. Every variable here is a String!.
+        # working directory. Every variable here is a String.
         args += ["-f", f"{key}={value}"]
     data = json.loads(gh(args))
     if "errors" in data:
@@ -485,13 +522,37 @@ def read_pool(policy: dict, repo: str | None = None) -> tuple[list[dict], list[d
         else:
             pool.append(item)
 
-    # The accrual's input. Read once for the whole set rather than per item,
-    # and only where something might accrue -- a repository with no cause links
-    # pays nothing for a mechanism it is not using.
+    # The accrual's input, read once for the whole set rather than per item.
+    #
+    # **Unconditionally**, which this comment used to deny. It claimed the read
+    # happened "only where something might accrue"; what is conditional is the
+    # loop body, and the walk itself runs for every command that reads the pool
+    # -- including `show`, which asks about one issue and pays a `gh repo view`
+    # plus a paged GraphQL read over the whole repository to answer. Gating it
+    # costs another wire call to find out whether any cause label exists, so the
+    # cost is stated here rather than hidden or paid for twice.
     for symptom, cause in causal_parents(policy, repo).items():
         parent, child = by_number.get(cause), by_number.get(symptom)
         if parent is not None and child is not None:
             parent["symptoms"].append({"number": symptom, "values": _bare(child, policy)})
+            # **The link is an answer to the assessment question, and this is
+            # where it is read.** There are three answers -- not asked, asked and
+            # it is its own, asked and here is its cause -- and only the first
+            # two have a label, the third being the sub-issue link the `filing`
+            # cell governs. Reading the flag from the label alone made the third
+            # read as the first: the gate named the symptom, its refusal offered
+            # `link it under its cause` as the first remedy, and taking that
+            # remedy changed nothing the gate could see, so a session doing
+            # exactly as instructed looped with no exit but `--unassessed`. The
+            # only thing that cleared the item was `assess <N> --none`, which
+            # asserts the opposite of the true answer.
+            #
+            # This stores nothing and writes nothing: the link stays the sole
+            # record and `assessed` becomes a derived read of it, exactly as
+            # effective severity and the fade are derived from that same link
+            # and that same `updatedAt`. A second *representation* would be a
+            # second thing written down, which is what this cannot disagree with.
+            child["assessed"] = True
 
     for item in (*pool, *framed):
         item["effective"] = effective(item, policy)
@@ -518,9 +579,14 @@ def _stamp(raw: str | None) -> "datetime | None":
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # A stamp with no offset parses cleanly and then dies at the subtraction in
+    # `quiet_windows` with a raw `TypeError`, which escapes the refusal contract
+    # this module prints without a traceback. An older payload, or a date with
+    # no time, is the case the line above anticipates and this one survives.
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
 
 
 def quiet_windows(item: dict, policy: dict, now: datetime | None = None) -> int:
@@ -539,8 +605,7 @@ def quiet_windows(item: dict, policy: dict, now: datetime | None = None) -> int:
     return max(0, days // policy["fade"]["quiet_days"])
 
 
-def effective(item: dict, policy: dict, parents: dict[int, int] | None = None,
-              pool: list[dict] | None = None,
+def effective(item: dict, policy: dict,
               now: datetime | None = None) -> dict[str, int | None]:
     """The pair the pool orders by: accrual applied, then the fade.
 
@@ -553,6 +618,12 @@ def effective(item: dict, policy: dict, parents: dict[int, int] | None = None,
     """
     axes, order = policy["axes"], policy["order"]
     values: dict[str, int | None] = {}
+    # Per axis, not over the whole clash list. Testing the list meant one
+    # clashed axis discarded every clean rating the item had, so an issue at the
+    # top of the severity scale with a stray second urgency label sorted below
+    # the mildest thing in the pool on issue number alone. The incident's lesson
+    # sits here because this is where an axis becomes unusable; everything
+    # downstream reads the answer rather than the labels.
     for name in order:
         label = item["ratings"].get(name)
         if label is None or name in item["clashes"]:
@@ -564,11 +635,21 @@ def effective(item: dict, policy: dict, parents: dict[int, int] | None = None,
     if symptoms:
         top = order[0]
         # A cause is at least as bad as the worst thing it produces.
+        #
+        # **Only where the cause carries a band of its own.** A `None` here means
+        # one of two things -- nobody rated the axis, or somebody rated it twice
+        # -- and filling it from the symptoms resolved both. That put an issue
+        # with two severity labels at the top of the pool at a value nobody
+        # wrote, its row saying only `CLASH`, which is the one signal meaning a
+        # human still has to choose; and it made an unrated cause sort in the
+        # rated tier while `is_rated` and the header count both called it
+        # unrated. D-438 decision 3 is that two values on one axis are reported
+        # rather than resolved, since taking the higher hides that somebody has
+        # to choose, and accrual is not an exception to it. An unrated axis stays
+        # unrated: accrual raises a rating, it does not supply one.
         worst = [s for s in (sym["values"].get(top) for sym in symptoms) if s is not None]
         if worst and values.get(top) is not None:
             values[top] = max(values[top], max(worst))
-        elif worst and values.get(top) is None:
-            values[top] = max(worst)
         # And it climbs on the second axis as they accumulate.
         if len(order) > 1:
             second = order[1]
@@ -585,8 +666,15 @@ def effective(item: dict, policy: dict, parents: dict[int, int] | None = None,
     return values
 
 
-def at_floor(item: dict, policy: dict, values: dict[str, int | None]) -> bool:
-    """Whether the fade has taken this item to the bottom of the decaying axis."""
+def at_floor(item: dict, policy: dict, values: dict[str, int | None],
+             now: datetime | None = None) -> bool:
+    """Whether the fade has taken this item to the bottom of the decaying axis.
+
+    Takes the same clock its sibling does. Without it this re-derived quiet
+    against the wall while judging values computed at an injected `now`, so the
+    two disagreed about one item: `effective(item, policy, now=X)` floored it and
+    `at_floor` handed those very values denied it.
+    """
     order = policy["order"]
     if len(order) < 2:
         return False
@@ -594,7 +682,7 @@ def at_floor(item: dict, policy: dict, values: dict[str, int | None]) -> bool:
     if values.get(second) is None:
         return False
     floor = min(policy["axes"][second]["values"].values())
-    return values[second] <= floor and quiet_windows(item, policy) > 0
+    return values[second] <= floor and quiet_windows(item, policy, now) > 0
 
 
 def sort_key(item: dict, policy: dict) -> tuple:
@@ -609,10 +697,8 @@ def sort_key(item: dict, policy: dict) -> tuple:
     values = []
     complete = True
     for name in order:
-        # Per axis, not over the whole clash list. Testing the list meant one
-        # clashed axis discarded every clean rating the item had, so an issue
-        # at the top of the severity scale with a stray second urgency label
-        # sorted below the mildest thing in the pool on issue number alone.
+        # Per axis. Which axes are unusable is `effective`'s to say, and this
+        # reads its answer one axis at a time rather than re-deriving it.
         value = derived.get(name)
         if value is None:
             complete = False
@@ -637,7 +723,8 @@ def _widths(policy: dict) -> list[int]:
     sits over the column it names.
     """
     return [max(len(name), len("CLASH"),
-                *(len(v) + 2 for v in policy["axes"][name]["values"]))
+                *(len(f"{v}>{max(policy['axes'][name]['values'].values())}")
+                  for v in policy["axes"][name]["values"]))
             for name in policy["order"]]
 
 
@@ -656,13 +743,21 @@ def _line(item: dict, policy: dict) -> str:
             if derived.get(name) is not None and derived[name] != own:
                 label = f"{label}>{derived[name]}"
         cells.append(label.ljust(width))
-    mark = "" if item.get("assessed") else " ?"
-    return f"#{item['number']:<6} {'  '.join(cells)}{mark}  {item['title'][:70]}"
+    # In its own column, under its own header. Appended to the joined cells it
+    # sat under no header, hard against the last rating where it read as part of
+    # that value, and moved the title two columns between an assessed row and an
+    # unassessed one.
+    mark = " " if item.get("assessed") else "?"
+    prefix = f"#{item['number']:<{ISSUE_COL - 2}} "
+    return f"{prefix}{'  '.join(cells)}  {mark}  {item['title'][:70]}"
 
 
 def _header(policy: dict) -> str:
+    # `ISSUE_COL`, not a literal run of spaces: the header read `"issue    "`
+    # against a row prefix of `#` plus six, so every column heading sat one to
+    # the right of the column it named. One constant, so they cannot drift.
     cells = [name.ljust(width) for name, width in zip(policy["order"], _widths(policy))]
-    return "issue    " + "  ".join(cells) + "  title"
+    return "issue".ljust(ISSUE_COL) + "  ".join(cells) + "  ?  title"
 
 
 def cmd_list(policy: dict, repo: str | None, limit: int | None) -> int:
@@ -705,16 +800,36 @@ def cmd_show(policy: dict, repo: str | None, number: int) -> int:
 
 
 def _print_ratings(item: dict, policy: dict) -> None:
+    """One issue as `list` reads it, in sentences rather than columns.
+
+    **Everything `list` distinguishes, this distinguishes.** It printed the
+    labelled value alone, so two issues differing only in the assessment read
+    byte-identical here and a faded issue asserted its label as its current
+    value -- while the row for the same issue in `list` carried both the arrow
+    and the mark. `show` is the command a session runs about one issue, which
+    made it the one place in the tool that answered the question it exists to
+    answer with the one fact that had changed left out.
+    """
+    derived = item.get("effective") or effective(item, policy)
     for name in policy["order"]:
         label = item["ratings"].get(name)
         axis = policy["axes"][name]
+        meaning = axis.get("meaning", name)
         if name in item["clashes"]:
             print(f"  {name}: CLASH -- more than one of {sorted(axis['values'])}")
         elif label is None:
-            print(f"  {name}: unrated ({axis.get('meaning', name)})")
+            print(f"  {name}: unrated ({meaning})")
         else:
-            print(f"  {name}: {label} = {axis['values'][label]} "
-                  f"({axis.get('meaning', name)})")
+            own, now = axis["values"][label], derived.get(name)
+            moved = "" if now is None or now == own else f" -- reads as {now} now"
+            print(f"  {name}: {label} = {own} ({meaning}){moved}")
+    if item.get("assessed"):
+        print("  assessed: asked whether it has a cause")
+    else:
+        print("  not assessed: nobody has asked whether it has a cause")
+    if item.get("symptoms"):
+        under = " ".join(f"#{s['number']}" for s in item["symptoms"])
+        print(f"  {len(item['symptoms'])} open symptom(s) under it: {under}")
     print(f"  {item['title']}")
 
 
@@ -781,16 +896,29 @@ def cmd_policy(policy: dict, source: Path) -> int:
 
 
 def label_specs(policy: dict) -> list[tuple[str, str, str]]:
-    """Name, colour and description for every label the policy names."""
+    """Name, colour and description for every label the policy names.
+
+    **Every one, including the two this script never writes.** `cause` is read
+    rather than written and `assessed` is written only by `assess`, but a label
+    a command needs and does not create is a setup step nobody is told about:
+    the gate instructs `assess <N> --none`, which fails at the wire against a
+    label the repository does not have, and the accrual reads a `cause` label
+    that has to be hand-made before anything accrues. Creating a label is not
+    the same act as writing one onto an issue, and the write rail is
+    `writable_labels`, which is deliberately narrower than this.
+    """
     specs = []
     for name, axis in policy["axes"].items():
         meaning = axis.get("meaning", name)
         colour = axis.get("color", "")
         for label, value in sorted(axis["values"].items(), key=lambda kv: kv[1]):
             specs.append((label, colour, f"Pool rating -- {meaning} ({value})"))
-    framed = policy["framed"]
-    specs.append((framed["label"], framed.get("color", ""),
-                  framed.get("meaning", "decided work, on the board")))
+    for key, fallback in (("framed", "decided work, on the board"),
+                          ("cause", "observed cause of the issues linked under it"),
+                          ("assessed", "asked whether it has a cause, and it is its own")):
+        block = policy[key]
+        specs.append((block["label"], block.get("color", ""),
+                      block.get("meaning", fallback)))
     return specs
 
 
@@ -814,9 +942,13 @@ def cmd_labels(policy: dict, repo: str | None, dry_run: bool) -> int:
             f"fail. Raise LABEL_READ_LIMIT and run again"
         )
     existing = {lb["name"] for lb in raw}
-    allowed = writable_labels(policy)
-    missing = [spec for spec in label_specs(policy) if spec[0] not in existing]
-    present = sorted(allowed & existing)
+    specs = label_specs(policy)
+    # Both lines read the same set, so they cannot disagree about a label.
+    # Reading "already present" off the write rail and "to create" off the
+    # specs meant a label this command creates and never writes was absent
+    # from one line and present in the other.
+    missing = [spec for spec in specs if spec[0] not in existing]
+    present = sorted({spec[0] for spec in specs} & existing)
     print(f"already present: {', '.join(present) or 'none'}")
     print(f"to create:       {', '.join(s[0] for s in missing) or 'none'}")
     if dry_run:
@@ -902,15 +1034,23 @@ def cmd_assess(policy: dict, repo: str | None, number: int) -> int:
     return 0
 
 
-def cmd_cycle(policy: dict, repo: str | None) -> int:
+def cmd_cycle(policy: dict, repo: str | None, dry_run: bool = False) -> int:
     """The fade, the accrual and the assessment bound, in one pass.
 
     It writes nothing except the closes `fade.closes` licenses, and it names
-    every one of those before it makes it.
+    every one of those before it makes it -- but only within a single run, which
+    is no use to somebody deciding whether to turn the switch on. `--dry-run`
+    is how that list is read first, as `labels` has one and the board's `apply`
+    has one; a command whose only write is a close and which had neither was the
+    odd one out.
     """
     pool, _ = read_pool(policy, repo)
     order = policy["order"]
-    risen = [it for it in pool if it.get("symptoms")]
+    # Carrying a symptom is not rising. Below `accrual.symptoms_per_band` the
+    # bands are zero and the pair is unchanged, so this listed unmoved items
+    # under a heading saying what rose, with no arrow on the row to show it.
+    risen = [it for it in pool
+             if it.get("symptoms") and it["effective"] != _bare(it, policy)]
     floored = [it for it in pool if at_floor(it, policy, it["effective"])]
     unassessed = [it for it in pool if not it["assessed"]]
     nxt = unassessed[:policy["assessment"]["per_cycle"]]
@@ -926,7 +1066,10 @@ def cmd_cycle(policy: dict, repo: str | None) -> int:
 
     if floored:
         print("")
-        print(f"at the floor of {order[-1]}, having been quiet:")
+        # `order[1]`, not `order[-1]`: with two axes they are the same and
+        # with three they are not, so this header named an axis that had not
+        # moved over rows the fade had floored on a different one.
+        print(f"at the floor of {order[1]}, having been quiet:")
         for item in floored:
             print(f"  {_line(item, policy)}")
 
@@ -944,6 +1087,10 @@ def cmd_cycle(policy: dict, repo: str | None) -> int:
     elif not policy["fade"]["closes"]:
         print("fade.closes is false, so nothing above was closed. A repository "
               "that wants the fade to close sets it true in its own policy")
+    elif dry_run:
+        for item in floored:
+            print(f"would close #{item['number']} as not planned")
+        print("--dry-run, so nothing above was closed")
     else:
         for item in floored:
             print(f"closing #{item['number']} as not planned; its body and every "
@@ -991,7 +1138,10 @@ def build_parser() -> argparse.ArgumentParser:
     shortlist.add_argument("--unassessed", action="store_true",
                            help="raise even where the top of the pool is unassessed")
 
-    sub.add_parser("cycle", help="what has risen, what has floored, what to assess next")
+    cycle = sub.add_parser(
+        "cycle", help="what has risen, what has floored, what to assess next")
+    cycle.add_argument("--dry-run", action="store_true",
+                       help="name the closes fade.closes would make, and make none")
 
     assess = sub.add_parser("assess", help="record that an issue is its own cause")
     assess.add_argument("number", type=int)
@@ -1036,7 +1186,7 @@ def dispatch(args: argparse.Namespace) -> int:
     if args.command == "shortlist":
         return cmd_shortlist(policy, args.repo, args.count, args.unassessed)
     if args.command == "cycle":
-        return cmd_cycle(policy, args.repo)
+        return cmd_cycle(policy, args.repo, args.dry_run)
     if args.command == "assess":
         return cmd_assess(policy, args.repo, args.number)
     if args.command == "labels":

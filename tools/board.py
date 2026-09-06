@@ -1142,8 +1142,14 @@ def cmd_next(count: int) -> int:
             # The board answers out of decided work, so running out of it is not
             # a ranking problem. The `board` cell says the move is to raise a
             # shortlist; this is where a session actually meets the state.
+            # The gate refuses while the top of the pool is unassessed, which
+            # at ship is all of it -- so the bare command is a dead end at the
+            # one moment a session meets this line. Both halves are printed.
             print("raise a shortlist out of the pool and put it to the owner: "
                   "python skills/filing/scripts/pool.py shortlist")
+            print("  it refuses while the top of the pool has never been asked "
+                  "whether it has a cause, and names what answers for each; "
+                  "--unassessed raises anyway and gives up the guarantee")
         return 0
     held = [r for r in rows if r.status in UNAVAILABLE][:count]
     first, rest = available[0], available[1:count + 1]
