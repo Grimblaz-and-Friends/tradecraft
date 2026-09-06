@@ -33,15 +33,19 @@ Run a refresh when the board moved — an issue filed or closed, a pull request 
 
 **Start from what is on the board.** Move what a named board change justifies and leave the rest. This is not a restriction on what you may move; you may move anything you can argue for. It is that rebuilding the order from a blank page re-rolls the bundling judgment — the expensive part, and the part that varies most between sessions — and costs the board roughly an order of magnitude more writes than adjusting what changed.
 
-**A cause and its open symptoms are one bundle, and the refresh reads it off the sub-issue links rather than re-deriving it.** Name the bundle for the cause, rank the cause above every symptom, and give each symptom `Blocked` while the cause is open, the reading rule above being unable to see `Bundle` or position. [D-415] **`apply` refuses a plan breaking either half**, so this is checked rather than remembered, and the refusal names the symptom, its cause and what to do about it. The links are fields rather than prose, and `gh issue list` exposes neither `parent` nor `issueType`, so the one-call body read this paragraph used to name cannot carry them — it is a paginated GraphQL read instead, at GraphQL's own cap of 100:
+**A cause and its open symptoms are one bundle, and the refresh reads it off the sub-issue links rather than re-deriving it.** Name the bundle for the cause, rank the cause above every symptom, and give each symptom a status that takes it out of contention while the cause is open — `Blocked` ordinarily, `In flight` where a fix for the cause is already open against it — the reading rule above being unable to see `Bundle` or position. [D-415] [D-429] **`apply` refuses a plan that leaves a symptom in contention, or ranks one above its cause**, so those two are checked rather than remembered and the refusal names the symptom, its cause and what to do; **the bundle name is not checked** and is yours to get right.
+
+**`causes` prints the groups the guard reads**, so the parentage is in hand before the plan is written rather than discovered by being refused:
 
 ```
-gh api graphql -f query='{repository(owner:"Grimblaz-and-Friends",name:"tradecraft"){
-  issues(states:OPEN,first:100){pageInfo{hasNextPage endCursor}
-  nodes{number parent{number state labels(first:50){nodes{name}}}}}}}'
+python tools/board.py causes
 ```
 
-A parent carrying no `cause` label is an ordinary task decomposition and is not a bundle; **a causal relationship carried in prose because it could not be linked groups the same way**, the refresh being judgment rather than a parser. The owner may rule a symptom worked on its own while its cause is open; that exception is his, and the note carries it in his words — **and so does the plan**, on a comment line reading `# owner-exception: #N <his words>`, which is what stops `apply` refusing the one board he is entitled to. A bare flag with no words is refused: his words are the point of it.
+Read it from there and not by hand. The links are fields, and `gh issue list` exposes neither `parent` nor `issueType`, so the one-call body read this paragraph used to name cannot carry them; a hand-written GraphQL read can, and the one this cell used to print was capped at a hundred against an open set already past it — the short-read hazard this whole cell is about, arriving through the command offered as the remedy. `causes` pages.
+
+A parent carrying no `cause` label is an ordinary task decomposition and is not a bundle, so it never reaches the guard; **a causal relationship carried in prose because it could not be linked groups the same way and reaches the guard no more than that one does**, the refresh being judgment rather than a parser. **Keep the bundle name to letters, digits, spaces and `#/_.()-`** — the transport refuses anything else at parse time, and this repository's issue titles are dense in colons, em dashes and ampersands, so a name lifted from one usually has to be trimmed.
+
+The owner may rule a symptom worked on its own while its cause is open; that exception is his, and the note carries it in his words — **and so does the plan**, on a comment line naming `owner-exception`, the issue number and the sentence he actually ruled. A bare flag is ignored and a placeholder in his place is refused: his words are the point of it. **`show` does not carry an exception forward**, the plan being rebuilt from the board's own rows, so a live one is re-entered from the last note at every refresh until its cause closes.
 
 **Two jobs that look alike and must not be merged.** *Reconciling* asks whether the board holds the open set. *Settling* asks whether the ordered read has caught up with the board. They return opposite answers about the same newly added issue — reconcile says place it, settle says wait for it — so a single membership comparison cannot do both, and only settling may stop the run.
 

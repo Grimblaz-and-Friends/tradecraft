@@ -110,7 +110,6 @@ BUNDLE_CHARS = re.compile(r"^[A-Za-z0-9 #/_.()-]+$")
 CAUSE_LABEL = "cause"
 
 BLOCKED = "Blocked"
-assert BLOCKED in STATUSES, "the status the cause rule writes must be one the parser accepts"
 
 # The owner may rule that a symptom is worked while its cause is open. A guard
 # with no way to express that refuses a board filled in CORRECTLY, so the plan
@@ -118,7 +117,23 @@ assert BLOCKED in STATUSES, "the status the cause rule writes must be one the pa
 # the format does not move and every existing plan still parses. His words are
 # required rather than a bare flag: the board cell already obliges the refresh
 # note to carry them, and a flag would let the exception be taken silently.
-EXCEPTION_RE = re.compile(r"^#\s*owner-exception:\s*#(\d+)\s+(\S.*?)\s*$")
+#
+# Deliberately tolerant about punctuation and case. A colon or a comma after
+# the number is how anyone naturally introduces a quotation, and the earlier
+# form silently ignored both -- the plan was then refused with a message
+# describing the line the refresher believed they had just written, which is
+# the state that sends someone to paste the remedy verbatim.
+EXCEPTION_RE = re.compile(
+    r"^#\s*owner[- ]exception\s*:?\s*#(\d+)\s*[:,-]?\s+(\S.*?)\s*$",
+    re.IGNORECASE,
+)
+
+# A words field of this shape is a placeholder someone copied, not a ruling.
+# It is refused because the tool's own refusal text used to hand back
+# "<his words>" with the number already filled in, so the single most
+# mechanical response to a refusal produced a certified exception behind
+# which no owner had said anything.
+PLACEHOLDER_RE = re.compile(r"^<[^>]*>$")
 
 
 class BoardError(Exception):
@@ -206,10 +221,18 @@ def parse_exceptions(text: str) -> dict[int, str]:
     the plan is refused by the guard exactly as if it were absent.
     """
     out: dict[int, str] = {}
-    for raw in text.splitlines():
+    for lineno, raw in enumerate(text.splitlines(), start=1):
         m = EXCEPTION_RE.match(raw.strip())
-        if m:
-            out[int(m.group(1))] = m.group(2)
+        if not m:
+            continue
+        issue, words = int(m.group(1)), m.group(2)
+        if PLACEHOLDER_RE.match(words):
+            raise BoardError(
+                f"line {lineno}: the owner-exception for #{issue} carries {words!r}, which is a "
+                f"placeholder rather than anything he said. Write what he actually ruled, in his "
+                f"words -- that sentence is what the refresh note has to carry too"
+            )
+        out[issue] = words
     return out
 
 
@@ -231,21 +254,25 @@ def check_causes(rows: list[Row], parents: dict[int, int],
         cause = parents.get(row.issue)
         if cause is None or row.issue in exceptions:
             continue
-        if row.status != BLOCKED:
+        if is_available(row):
             raise BoardError(
                 f"#{row.issue} is a symptom of #{cause}, which is still open, and carries "
-                f"status {row.status!r}. The reading rule cannot see Bundle or position, so "
-                f"this row would be handed out as the answer while its cause is unfixed. "
-                f"Give it {BLOCKED!r}, or -- if the owner ruled it worked while #{cause} is "
-                f"open -- record that on a comment line as "
-                f"'# owner-exception: #{row.issue} <his words>'"
+                f"status {row.status!r}, which leaves it in contention. The reading rule cannot "
+                f"see Bundle or position, so this row would be handed out as the answer while "
+                f"its cause is unfixed. Give it a status that takes it out of contention "
+                f"({sorted(UNAVAILABLE)}) -- {BLOCKED!r} is the ordinary one, and `In flight` is "
+                f"right where a fix for the cause is already open against it. If instead the "
+                f"owner ruled this one worked while #{cause} is open, put his ruling on a "
+                f"comment line: the directive is 'owner-exception', the issue number, and the "
+                f"sentence he actually said"
             )
         if cause in at and at[cause] > at[row.issue]:
             raise BoardError(
                 f"#{row.issue} is a symptom of #{cause} but is ranked above it "
                 f"(line {at[row.issue] + 1} against line {at[cause] + 1} of the rows). "
-                f"A cause outranks every symptom it carries. Move #{cause} above "
-                f"#{row.issue}, or record the owner's exception for #{row.issue}"
+                f"A cause outranks every symptom it carries, and `apply` writes that order to "
+                f"the board, so this is what someone reading the board sees. Move #{cause} "
+                f"above #{row.issue}"
             )
 
 
@@ -257,8 +284,9 @@ def format_plan(rows: list[Row]) -> str:
         f"# bands:    {', '.join(BANDS)}",
         f"# statuses: {', '.join(STATUSES)}",
         f"# bundle '{EMPTY}' means standalone.",
-        "# a symptom whose cause is open must be Blocked, and rank below it.",
-        "# owner-exception: #<issue> <his words>   exempts one symptom from that.",
+        "# a symptom whose cause is open is out of contention, and ranks below it.",
+        "# 'owner-exception:' plus an issue number and the owner's own sentence",
+        "#   exempts that one symptom. A placeholder in his place is refused.",
     ]
     for r in rows:
         out.append(f"{r.issue}\t{r.band}\t{r.bundle}\t{r.status}")
@@ -883,11 +911,22 @@ def cmd_apply(plan_path: Path, dry_run: bool) -> int:
             f"plan omits issues the board holds: {absent}. A plan is the whole board."
         )
 
+    # Echoed BEFORE the guard rather than after it. A refresher whose directive
+    # took a form the parser did not match used to get a refusal naming the
+    # symptom and no sign their line had been read at all -- which is the state
+    # that sends someone to paste the remedy verbatim. Printing first turns a
+    # silently-ignored line into a visibly-absent one.
+    parents = causal_parents()
+    for issue, words in sorted(exceptions.items()):
+        if parents.get(issue) is None:
+            print(f"owner-exception: #{issue} read from the plan, but #{issue} has no open "
+                  f"labelled cause, so it exempts nothing -- {words}")
+        else:
+            print(f"owner-exception: #{issue} exempt while #{parents[issue]} is open -- {words}")
+
     # Before any write, and on the dry-run path too: a plan that breaks the
     # cause rule must be caught where --dry-run can show it, not half-applied.
-    check_causes(plan, causal_parents(), exceptions)
-    for issue, words in sorted(exceptions.items()):
-        print(f"owner-exception: #{issue} exempt while its cause is open -- {words}")
+    check_causes(plan, parents, exceptions)
 
     target = [r.issue for r in plan]
     moves = moves_for([r.issue for r in before], target)
@@ -918,6 +957,31 @@ def cmd_apply(plan_path: Path, dry_run: bool) -> int:
     return 0
 
 
+
+
+def cmd_causes() -> int:
+    """Print the cause groups the guard reads, so a refresher can plan from them.
+
+    The read existed and reached nobody: `causal_parents` was called from
+    `cmd_apply` alone, so the only way to see the parentage was to submit a
+    wrong plan and read the refusal. The cell documented a hand query instead,
+    which was unpaged and silently short of the open set.
+    """
+    parents = causal_parents()
+    if not parents:
+        print("no cause groups: no open issue has an open parent carrying the "
+              f"{CAUSE_LABEL!r} label")
+        return 0
+    groups: dict[int, list[int]] = {}
+    for symptom, cause in parents.items():
+        groups.setdefault(cause, []).append(symptom)
+    for cause in sorted(groups):
+        symptoms = ", ".join(f"#{s}" for s in sorted(groups[cause]))
+        print(f"#{cause} causes {len(groups[cause])}: {symptoms}")
+    print()
+    print("each symptom above needs a status that takes it out of contention, and a "
+          "position below its cause")
+    return 0
 
 
 def cmd_next(count: int) -> int:
@@ -963,7 +1027,8 @@ def cmd_next(count: int) -> int:
         print()
         print("not in contention:")
         for r in held:
-            print(f"  #{r.issue}  [{r.status}]  {titles.get(r.issue, '')[:56]}")
+            group = "" if r.bundle == EMPTY else f"  ({r.bundle})"
+            print(f"  #{r.issue}  [{r.status}]{group}  {titles.get(r.issue, '')[:56]}")
     return 0
 
 
@@ -989,7 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("next", "show", "sync", "apply", "note", "notes", "init"):
+    for name in ("next", "show", "sync", "apply", "note", "notes", "init", "causes"):
         p = sub.add_parser(name)
         if name == "notes":
             p.add_argument("--limit", type=int, default=3)
@@ -1006,6 +1071,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             return cmd_init()
+        if args.command == "causes":
+            return cmd_causes()
         if args.command == "next":
             return cmd_next(args.count)
         if args.command == "show":
