@@ -179,19 +179,13 @@ def figure_cell_total(root: Path, rel_path: str) -> dict:
     target = root / rel_path
     if not target.is_file():
         raise SystemExit(f"figures: {rel_path} is not a readable file under {root}")
-    body = len(engine.frontmatterless(
-        target.read_text(encoding="utf-8", errors="replace")
-    ))
-    depth = sorted(
-        p for p in target.parent.rglob("*.md") if p.resolve() != target.resolve()
-    )
-    depth_chars = sum(
-        len(p.read_text(encoding="utf-8", errors="replace")) for p in depth
-    )
+    measure = cell_prose(root, rel_path)
+    body, depth_chars = measure["body"], measure["depth"]
+    depth = measure["depth_files"]
     return {
         "name": f"cell `{target.parent.relative_to(root).as_posix()}` (total prose)",
         "value": (
-            f"{body + depth_chars:,} chars -- body {body:,} + {len(depth)} "
+            f"{body + depth_chars:,} chars -- body {body:,} + {depth} "
             f"depth file(s) {depth_chars:,}"
         ),
         "basis": (
@@ -199,11 +193,110 @@ def figure_cell_total(root: Path, rel_path: str) -> dict:
             "its frontmatter plus every other .md in the cell whole; no budget "
             "-- a ceiling here would cap depth-shedding itself; working tree"
         ),
-        "data": {
-            "path": rel_path, "body": body, "depth_files": len(depth),
-            "depth": depth_chars, "total": body + depth_chars,
-        },
+        "data": measure,
     }
+
+
+def cell_prose(root: Path, rel_path: str) -> dict:
+    """A cell's whole prose from its SKILL.md path: body, depth, and the total.
+
+    **One measure, two readers.** `figure_cell_total` renders it for one cell
+    named on the command line; `pointer_reach_rows` sums it over every cell a
+    pointer reaches. Two readings of "the prose this cell carries" would be
+    two answers to one question, and the reach figure would then disagree
+    with the per-cell figure a session read on the same run.
+
+    Markdown only, and the body below its frontmatter. A script the cell
+    carries is code a session runs, not prose it loads; the frontmatter is
+    counted by the always-on figures instead, which is where a session pays
+    for it whether or not the cell fires.
+    """
+    target = root / rel_path
+    body = len(engine.frontmatterless(
+        target.read_text(encoding="utf-8", errors="replace")
+    ))
+    depth = sorted(
+        path for path in target.parent.rglob("*.md")
+        if path.resolve() != target.resolve()
+    )
+    depth_chars = sum(
+        len(path.read_text(encoding="utf-8", errors="replace")) for path in depth
+    )
+    return {
+        "path": rel_path, "body": body, "depth_files": len(depth),
+        "depth": depth_chars, "total": body + depth_chars,
+    }
+
+
+REACH_BASIS = (
+    "decoded UTF-8 characters; each cell's SKILL.md below its frontmatter "
+    "plus every other .md in the cell whole; each cell reached counted once "
+    "however many pointers lead to it; the charter excluded, every session "
+    "having loaded it already; no budget"
+)
+
+
+def pointer_reach_rows(root: Path) -> list[dict]:
+    """Every cell, and the prose a session reaches by following its pointers.
+
+    **The figure nobody could see while no cell could point at another.** A
+    cell's own body has been printed here for some time; what a session ends
+    up holding after following the pointers out of it has not, and that is
+    the quantity a rule's home is actually chosen against.
+
+    **Not named `figure_*` and not one**, for the reason `cell_body_rows`
+    records: every `figure_` function is enumerated in this module's docstring
+    and emitted by `build_figures`, and this is rendered by `tools/lint.py` at
+    the checkout's own checkpoint instead.
+
+    **Reports, evaluates nothing.** No threshold, no marker, no word ranking
+    a reach as large. A ceiling here would be a number chosen for a graph
+    nobody has argued about, and it would cap the pointer this change exists
+    to permit -- the same edge `cell_body_block` declines to cross.
+    """
+    graph = lint.cell_pointer_graph(root)
+    sources = roster.cell_sources(root)
+    own = {
+        name: cell_prose(root, f"{source}/{name}/{roster.CELL_FILE}")["total"]
+        for name, source in sources.items()
+    }
+    rows = []
+    for name in sources:
+        reached = {name}
+        queue = [name]
+        while queue:
+            for edge in graph.get(queue.pop(), []):
+                if edge.target not in reached and edge.target in own:
+                    reached.add(edge.target)
+                    queue.append(edge.target)
+        rows.append({
+            "name": name,
+            "own": own[name],
+            "reach": sum(own[reached_name] for reached_name in reached),
+            "reached": sorted(reached - {name}),
+        })
+    rows.sort(key=lambda row: (-row["reach"], row["name"]))
+    return rows
+
+
+def pointer_reach_block(rows: list[dict]) -> str:
+    """The rows as text, largest reach first, one per line.
+
+    The cells a row reaches are named rather than counted: the number alone
+    says a session loads more than this cell and not which prose, and the
+    names are what a reader follows to decide whether the pointer earns its
+    reach. A cell that points nowhere says so in words, because a reach equal
+    to a body is otherwise read as a figure that failed to derive.
+    """
+    width = max((len(row["name"]) for row in rows), default=0)
+    lines = []
+    for row in rows:
+        if row["reached"]:
+            via = "via " + ", ".join(row["reached"])
+        else:
+            via = "its own prose, no pointers out"
+        lines.append(f"  {row['name']:<{width}}  {row['reach']:>7,}  {via}")
+    return chr(10).join(lines)
 
 
 def is_cell_path(path: str) -> bool:

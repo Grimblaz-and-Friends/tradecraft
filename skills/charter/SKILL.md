@@ -44,3 +44,16 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 **Decisions inform, never bind.** A prior decision is superseded by reading it, not obeyed; what a reviser owes a cited entry is the `authoring` cell's.
 
 **Admitting a new requirement** runs an order from the cheapest reliable material to the most expensive, an always-on surface being the last resort; the `authoring` cell carries it. Owner-stated requirements are admitted, not argued — counter-argument is welcome, per Authority above; what is refused is stalling on one. Agent-proposed rules need an incident from real work or the owner's specific approval of that rule — **a review finding about governing prose is not an incident.**
+
+## The roster, and when each cell loads
+
+Every cell of this practice, with the one condition that loads it. Each cell's own description is the authority on its triggers; this list is for the session that does not yet know which cell owns what.
+
+- `adversarial-review` cell — a change is ready for review, or a reviewer's findings need dispositioning.
+- `authoring` cell — writing or revising this practice's prose, or deciding where a piece of content belongs.
+- `engagement` cell — anything crossing between a session and the owner: the brief, a call that may be theirs, the artifact, a handoff.
+- `experience-session` cell — a built result is ready to be used the way its consumer will use it.
+- `filing` cell — something is about to go onto the board.
+- `persist-changes` cell — validated work is ready to commit and push.
+- `spikes` cell — a premise you are about to assert rests on material you cannot survey.
+- `substrate` cell — writing or revising a script, test, hook or guard.

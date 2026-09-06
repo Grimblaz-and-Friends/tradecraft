@@ -17,17 +17,28 @@ Checks:
   4. cell frontmatter: every cell under either source declares a name and a description the
      runtime can parse, each within its field budget. A cell whose description
      is absent or malformed silently never fires.
-  5. sideways deps: no cell may reference another cell -- except the
-     charter, and except a repo-only cell naming a shipped one, which is
-     the wall's lawful direction — by path (rooted or
-     relative) or by the name form `<name>` cell — and lib/ and hooks/ may
-     reference no skill (deps point down otherwise). The
-     charter is exempt in the name form only and as a target from anywhere,
-     because an adopting repository loads it before substantive work, so the
-     citation costs no second loading and cannot drift like a copied rule.
-     Paths between cells stay findings even from the charter, for a reason
-     self-containment never covered — a rooted skills/ path does not resolve
-     once installed, while the name survives relocation.
+  5. pointer graph: a cell may name the one cell that owns a rule it
+     needs, in the name form `<name>` cell, and those pointers may not run
+     in a circle -- a cycle is the finding, named member by member, the way
+     a circular dependency fails a build. That is the whole of what the name
+     form is judged on now: the ban it replaces made a copy the only lawful
+     way for two cells to share a rule, and every copy that could not be
+     borne went to the always-on surface instead, which is budgeted [#404].
+     Three things the ban carried survive it, each for its own reason.
+     Paths between cells stay findings however they are written, for a
+     reason self-containment never covered — a rooted skills/ path does not
+     resolve once installed, while the name survives relocation. lib/ and
+     hooks/ may name no cell at all, neither being a cell, so deps still
+     point down. And a shipped cell naming a repo-only one is check 6's
+     finding rather than an edge here, which is what keeps the wall's
+     refused direction out of the graph.
+     An edge whose target is the charter is not an edge: an adopting
+     repository loads the charter before substantive work, so following that
+     pointer loads nothing and it can close no cycle of loading. Edges *from*
+     the charter are kept, which is what makes its roster a real set of
+     pointers. The run also prints, per cell, the prose a session reaches by
+     following every pointer transitively -- the figure nobody could see
+     while no cell could point at another.
   6. cell references: every `<name>` cell reference names a skill that
      exists, and every references/ pointer resolves against the directory of
      the file naming it, so renaming or deleting either cannot silently
@@ -635,15 +646,25 @@ def stale_admission(label: str, size: int, constant: int,
         f"back and outflow names what freed it. Appending, never editing what "
         f"it banks"]
 
-# The one cell any other cell may reference, and the one cell that may
-# reference the others. Self-containment exists to stop loading cost and
-# multi-site drift; neither applies here. The charter is always-on in every
+# The one cell a pointer to which costs nothing, and so the one cell that is
+# not a node in the graph below. Self-containment existed to stop loading cost
+# and multi-site drift; neither applies here. The charter is always-on in every
 # session by construction -- imported by this repository's AGENTS.md and loaded
 # by an adopter's repository instruction -- so a cell citing it points at prose
 # the reader has already loaded, and a citation cannot fall out of agreement
-# the way a second copy can. The exemption is one target at depth one: cells may cite the
-# charter and it may cite them, no cell may cite any other, so the shape
-# cannot grow into the mesh of mutual references the predecessor accumulated.
+# the way a second copy can.
+#
+# **What this constant now means, and what it stopped meaning.** It was the
+# single exemption from a ban on cells naming each other, and the ban is gone:
+# a cell may name the one cell owning a rule it needs, and what is refused is a
+# circle. So the charter is no longer an exception to a rule other cells obey.
+# It is the one target whose edge is dropped before the graph is built, because
+# an edge that loads nothing cannot close a cycle of loading, and because a
+# graph in which every cell reaches the charter and the charter reaches every
+# cell reports one reach figure for the whole practice and tells nobody
+# anything. The mesh of mutual references the predecessor accumulated is
+# refused by the cycle check now, which refuses it by shape rather than by
+# forbidding the first pointer. [#404]
 CHARTER_CELL = "charter"
 
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
@@ -1228,43 +1249,215 @@ def _origin(own: str | None, base: Path) -> str:
     return f" from skill '{own}'" if own else f" from {base.name}/"
 
 
-def _name_form_is_sideways(own: str | None, target: str,
-                           own_is_repo: bool = False,
-                           target_is_repo: bool = False) -> bool:
-    """Whether naming skill `target` from `own` couples two cells unlawfully.
+class PointerEdge(NamedTuple):
+    """One cell naming another, and the line that names it.
 
-    The charter's exemption lives here and only here -- in naming a cell, not
-    in reaching into one. A path form stays a finding from the charter too,
-    for a reason self-containment never covered: a rooted `skills/...` path
-    does not resolve once installed, because the cells sit in a plugin cache
-    rather than beside the reader. The name survives relocation, which the
-    path does not -- note that a runtime may qualify it (Claude Code addresses
-    an installed plugin's skills as `<plugin>:<skill>`), so the name is the
-    part a reader can still follow, not a string that resolves bare.
-
-    The charter is exempt as a target from another cell because an adopting
-    repository has already loaded it. `own is None` is lib/ or hooks/, neither
-    of which is a cell, so any skill dependency from either points sideways.
+    The line travels with the edge because a cycle finding that named only
+    the cells would leave the reader to find which sentence of which file
+    made each hop -- the archaeology a guard exists to spare them.
     """
-    if own is None:
-        return True
-    if target.lower() == CHARTER_CELL:
-        return False
-    if target.lower() == own.lower():
-        return False
-    if own.lower() == CHARTER_CELL:
-        return False
-    # **A repo-only cell naming a shipped cell is the wall's lawful
-    # direction**, and is the whole reason a repo-only cell can apply a
-    # standard the practice ships without copying it. No cycle can form
-    # through it, because the reverse is refused outright by
-    # check_cell_references: shipped never names repo-only. What stays
-    # unlawful is repo-only naming repo-only, which is the mesh of mutual
-    # references this rule exists to prevent, and which two cells in one
-    # repository can build as easily as two in a plugin. [#260]
-    if own_is_repo and not target_is_repo:
-        return False
-    return True
+
+    source: str
+    target: str
+    file: str
+    line: int
+
+
+def _cell_name_refs(text: str) -> list[tuple[int, str, bool]]:
+    """Every reserved-form cell reference in `text`, as (line, name, wrapped).
+
+    One reader for the pointer graph and for the lib/hooks arm below, so the
+    two cannot disagree about what counts as a reference: a name one read as
+    an edge and the other did not would be a pointer lawful in one guard and
+    invisible to the next. The name form is read outside fenced blocks only,
+    which is the split check 6's docstring states, and the wrapped form is
+    read because a reflow is a formatting edit nobody inspects.
+    """
+    lines = _unfenced_numbered(text)
+    refs = [(lineno, match.group(1), False)
+            for lineno, line in lines for match in CELL_REF.finditer(line)]
+    refs += [(lineno, name, True) for lineno, name in _wrapped_cell_refs(lines)]
+    return sorted(refs)
+
+
+def cell_pointer_graph(root: Path) -> dict[str, list[PointerEdge]]:
+    """Every pointer from one cell to another, keyed by the naming cell.
+
+    **This is the practice's dependency graph, and it exists because a cell
+    may now point at the one cell owning a rule it needs.** Before that, a
+    rule two cells needed was copied into both or routed up to the always-on
+    surface, which is budgeted -- so every lesson competed for one fixed pool,
+    which is the cause #404 files.
+
+    Four kinds of reference are read and not made edges, each for its own
+    reason, and none of them is a silent omission:
+
+    - **A name that is no cell.** `check_cell_references` rules on it; an
+      edge to a node that does not exist would report a broken pointer as a
+      graph shape.
+    - **A cell naming itself.** Depth inside one cell is not a pointer
+      between two, and a self-edge would make every cell its own cycle.
+    - **The charter as target.** An adopting repository loads it before
+      substantive work, so following that pointer loads nothing and can
+      close no cycle *of loading*, which is what the cycle check refuses.
+      Keeping it would also make every cell reach every other through the
+      charter's own roster and report one figure for the whole practice.
+    - **A shipped cell naming a repo-only one.** That is the wall's refused
+      direction and already `check_cell_references`' finding. Reading it as
+      an edge would price one defect as two and could report a cycle whose
+      hop is a finding rather than a pointer.
+
+    Edges *from* the charter are kept, which is what makes its roster a real
+    set of pointers and its reach the practice's whole reachable prose.
+
+    The roster's own predicate decides what a cell is: a directory is not a
+    cell until it holds the file that loads, and a graph disagreeing with the
+    generator would have nodes no runtime can reach.
+    """
+    sources = roster.cell_sources(root)
+    repo_names = set(roster.names_under(root, REPO_CELLS))
+    graph: dict[str, list[PointerEdge]] = {name: [] for name in sources}
+    for name, source in sorted(sources.items()):
+        base = root / source / name
+        if not base.is_dir():
+            continue
+        own_is_repo = name in repo_names
+        for path in _iter_files(base):
+            text = _read_text(path)
+            if text is None:
+                continue
+            rel_file = path.relative_to(root).as_posix()
+            for lineno, target, _wrapped in _cell_name_refs(text):
+                if target not in graph:
+                    continue
+                if target.lower() == name.lower():
+                    continue
+                if target.lower() == CHARTER_CELL:
+                    continue
+                if not own_is_repo and target in repo_names:
+                    continue
+                graph[name].append(PointerEdge(name, target, rel_file, lineno))
+    return graph
+
+
+def _strongly_connected(graph: dict[str, list[PointerEdge]]) -> list[list[str]]:
+    """Tarjan's components, iteratively.
+
+    Iterative rather than recursive not because this graph is large -- it is
+    a dozen cells -- but because a guard that raises on a deep input answers
+    the one command the landing procedure mandates with a traceback, and the
+    depth here is whatever an adopting repository's cell count happens to be.
+    """
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    on_stack: set[str] = set()
+    stack: list[str] = []
+    components: list[list[str]] = []
+    counter = 0
+    for start in sorted(graph):
+        if start in index:
+            continue
+        index[start] = low[start] = counter
+        counter += 1
+        stack.append(start)
+        on_stack.add(start)
+        work = [(start, iter(sorted({e.target for e in graph[start]})))]
+        while work:
+            node, successors = work[-1]
+            descended = False
+            for nxt in successors:
+                if nxt not in graph:
+                    continue
+                if nxt not in index:
+                    index[nxt] = low[nxt] = counter
+                    counter += 1
+                    stack.append(nxt)
+                    on_stack.add(nxt)
+                    work.append(
+                        (nxt, iter(sorted({e.target for e in graph[nxt]})))
+                    )
+                    descended = True
+                    break
+                if nxt in on_stack:
+                    low[node] = min(low[node], index[nxt])
+            if descended:
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[node])
+            if low[node] == index[node]:
+                component = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                components.append(component)
+    return components
+
+
+def _shortest_cycle(graph: dict[str, list[PointerEdge]],
+                    component: set[str]) -> list[PointerEdge]:
+    """One representative circle through the component's first member.
+
+    A component can hold exponentially many simple cycles, and printing them
+    all would answer a defect with a wall of text. One concrete circle names
+    every hop a reader has to break to clear the finding, and breaking any
+    hop of it changes the component -- so the next run reports what is left
+    rather than repeating itself. Breadth-first from the alphabetically first
+    member, so the same tree reports the same circle every run.
+    """
+    start = min(component)
+    reached: dict[str, PointerEdge] = {}
+    queue = [start]
+    while queue:
+        node = queue.pop(0)
+        for edge in sorted(graph.get(node, []),
+                           key=lambda e: (e.target, e.file, e.line)):
+            if edge.target not in component:
+                continue
+            if edge.target == start:
+                chain = [edge]
+                cursor = node
+                while cursor != start:
+                    hop = reached[cursor]
+                    chain.append(hop)
+                    cursor = hop.source
+                chain.reverse()
+                return chain
+            if edge.target not in reached:
+                reached[edge.target] = edge
+                queue.append(edge.target)
+    return []
+
+
+def pointer_cycle_findings(graph: dict[str, list[PointerEdge]]) -> list[str]:
+    """A circle of cell pointers, named member by member.
+
+    **The finding is the cycle and nothing else.** A pointer is lawful, and a
+    long chain of them is lawful; what a circle costs is what a circular
+    dependency costs a build -- neither end can be read, revised or removed
+    without the other, which is the coupling the old ban prevented by
+    forbidding the first pointer. [#404]
+    """
+    findings = []
+    for component in _strongly_connected(graph):
+        if len(component) < 2:
+            continue
+        chain = _shortest_cycle(graph, set(component))
+        if not chain:
+            continue
+        route = " -> ".join([chain[0].source] + [edge.target for edge in chain])
+        hops = "; ".join(
+            f"{edge.file}:{edge.line} names '{edge.target}'" for edge in chain
+        )
+        findings.append(
+            f"pointer-cycle: {route} -- cell pointers may not run in a "
+            f"circle, and every cell in this one is named by another that "
+            f"names it back: {hops}"
+        )
+    return sorted(findings)
 
 
 def check_sideways_deps(root: Path) -> list[str]:
@@ -1284,14 +1477,18 @@ def check_sideways_deps(root: Path) -> list[str]:
             # None: none of these is a skill, so any skill path is sideways.
             scan.append((base, None, False))
 
-    repo_cell_names = set(roster.names_under(root, REPO_CELLS))
+    # The generator's predicate, not a bare directory test: a directory is
+    # not a cell until it holds the file that loads. `check_cell_references`
+    # already agrees with the generator; this was the second definition of
+    # one fact, and the two disagreed on a half-created cell. [#291]
+    # **Both zones read it the same way now.** The shipped half was a
+    # directory test while the repo-only half was the generator's, so a
+    # half-created shipped cell -- a directory with no SKILL.md -- was a cell
+    # to this check and not to the generator or to check 6. [#404]
+    cell_names = set(roster.cell_sources(root))
 
-    def _is_repo_cell(name: str) -> bool:
-        # The generator's predicate, not a bare directory test: a directory is
-        # not a cell until it holds the file that loads. `check_cell_references`
-        # already agrees with the generator; this was the second definition of
-        # one fact, and the two disagreed on a half-created cell. [#291]
-        return name in repo_cell_names
+    def _is_cell(name: str) -> bool:
+        return name in cell_names
 
     for base, own, own_is_repo in scan:
         for path in _iter_files(base):
@@ -1310,35 +1507,29 @@ def check_sideways_deps(root: Path) -> list[str]:
             # unlawful *name* inside a fence is a spelling being shown, while
             # a path is dead once installed whatever encloses it.
             unfenced = _unfenced_numbered(text)
-            for lineno, target in _wrapped_cell_refs(unfenced):
-                target_is_repo = _is_repo_cell(target)
-                if not (root / SHIPPED_CELLS / target).is_dir() and not target_is_repo:
-                    continue
-                if _name_form_is_sideways(own, target, own_is_repo, target_is_repo):
-                    findings.append(
-                        f"sideways-dep: {rel_file}:{lineno} names skill "
-                        f"'{target}' across a line break" + _origin(own, base)
-                    )
-            for lineno, line in unfenced:
-                for match in CELL_REF.finditer(line):
-                    target = match.group(1)
+            if own is None:
+                # **The name form is judged here for lib/ and hooks/ alone.**
+                # A cell naming a cell is a pointer, and pointers are ruled on
+                # as a graph -- `pointer_cycle_findings` below -- rather than
+                # one reference at a time. Neither of these directories is a
+                # cell, so a skill dependency from either points sideways
+                # however it is spelled, and no graph rule reaches it. [#404]
+                for lineno, target, wrapped in _cell_name_refs(text):
                     # Only a name that is actually a cell couples anything; a
                     # backticked word before "cell" that names no skill is
                     # ordinary prose here, and check_cell_references is what
                     # rules on whether it should have resolved.
-                    target_is_repo = _is_repo_cell(target)
-                    if not (root / SHIPPED_CELLS / target).is_dir() and not target_is_repo:
+                    if not _is_cell(target):
                         continue
-                    if _name_form_is_sideways(own, target, own_is_repo,
-                                              target_is_repo):
-                        findings.append(
-                            f"sideways-dep: {rel_file}:{lineno} names "
-                            f"skill '{target}'" + _origin(own, base)
-                        )
+                    across = " across a line break" if wrapped else ""
+                    findings.append(
+                        f"sideways-dep: {rel_file}:{lineno} names "
+                        f"skill '{target}'" + across + _origin(own, base)
+                    )
             for lineno, line in enumerate(text.splitlines(), 1):
                 for match in ROOTED_REPO_CELL.finditer(line):
                     target = match.group(1)
-                    if not _is_repo_cell(target):
+                    if not _is_cell(target):
                         continue
                     if own is not None and target.lower() == own.lower():
                         continue
@@ -1375,6 +1566,13 @@ def check_sideways_deps(root: Path) -> list[str]:
                                 f"reference '{raw}' resolves into skill '{target}'"
                                 + _origin(own, base)
                             )
+    # **The graph is rebuilt rather than accumulated in the loop above.** That
+    # loop walks lib/ and hooks/ as well as the cells and carries a zone flag
+    # per directory; the graph is a statement about cells alone and is wanted
+    # by `tools/figures.py` too, so it has one definition, in one function,
+    # with one set of exclusions. The cost is a second read of the cell
+    # prose, on a tree of a dozen cells. [#404]
+    findings += pointer_cycle_findings(cell_pointer_graph(root))
     return findings
 
 
@@ -5008,6 +5206,44 @@ def cell_body_note(root: Path) -> str:
         return f"cell bodies: not derived ({type(exc).__name__}: {exc})"
 
 
+def pointer_reach_note(root: Path) -> str:
+    """What a session reaches through each cell's pointers, before it writes.
+
+    **The figure the ban made unaskable.** While no cell could name another,
+    what a session held after following a pointer was its own body and
+    nothing else, so there was nothing to report and no surface reported it.
+    A cell may now point at the one cell owning a rule it needs, and the
+    quantity that decides whether a pointer earns its place -- the prose a
+    reader ends up holding -- became invisible in the same movement that
+    created it. This is where it is answered, beside the body figures, on the
+    one surface this repository's landing procedure sends every session to
+    before a commit. [#404]
+
+    **The basis travels with the number**, because a figure whose basis a
+    reader cannot reconstruct is one they cannot act on -- which files count,
+    that a cell reached twice is counted once, and that the charter is out.
+
+    Never fatal, and never silent, for the two reasons `cell_body_note`
+    records: a tree with no cells and a broken input are states a reader must
+    tell apart, so each produces text.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "repo_figures_reach", root / "tools" / "figures.py"
+        )
+        figures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(figures)
+        rows = figures.pointer_reach_rows(root)
+        if not rows:
+            return "pointer reach here: no cells on either roster source"
+        return (
+            "pointer reach here, largest first -- " + figures.REACH_BASIS + ":"
+            + chr(10) + figures.pointer_reach_block(rows)
+        )
+    except Exception as exc:  # noqa: BLE001 -- reported, never fatal
+        return f"pointer reach: not derived ({type(exc).__name__}: {exc})"
+
+
 def admission_note() -> str:
     """The fourth answer, beside the figures rather than only in the finding.
 
@@ -5054,6 +5290,7 @@ def main() -> int:
         print(finding)
     print(always_on_note(ROOT))
     print(cell_body_note(ROOT))
+    print(pointer_reach_note(ROOT))
     print(admission_note())
     print(f"lint: {len(findings)} finding(s)")
     return 1 if findings else 0
