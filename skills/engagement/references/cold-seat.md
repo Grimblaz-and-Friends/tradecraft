@@ -22,7 +22,7 @@
 
 **One seat per verdict.** This answers one question in the vocabulary below; a panel is a different instrument for a different job.
 
-**The bar below, the three verdicts below, and what a verdict must name.** The seat does not read this file, so a dispatch omitting the verdicts asks a three-valued question in a two-valued voice and gets what it asked for, and one omitting the bar leaves the seat to infer a threshold — the same gap, read from the other end, as the dispatcher setting one. **So is the closed list under *What the draft carries between rounds*** — a seat that does not know the list is closed asks for a fifth thing, and additions of that kind have been made because a verdict asked for them.
+**The bar below, the three verdicts below, and what a verdict must name.** The seat does not read this file, so a dispatch omitting the verdicts asks a three-valued question in a two-valued voice and gets what it asked for, and one omitting the bar leaves the seat to infer a threshold. **So is the closed list under *What the draft carries between rounds*** — a seat that does not know the list is closed asks for a fifth thing, and additions of that kind have been made because a verdict asked for them.
 
 ## The three verdicts
 
@@ -42,7 +42,7 @@ The verdict **names the text it judged** — the sha256 and byte count it was gi
 
 ## What bounds the re-runs
 
-**Two rounds, then the owner.** A count that licensed shipping an unsettled artifact at round N would be crude and worse than crude, which is why this file refused one. **This one licenses nothing:** after a **second adverse verdict** the artifact is still unsettled, and the next question goes to the owner rather than to a third seat. Only `would not` counts toward it — `not settleable` settles the artifact by its own discharge, and a revision buying no fresh reading buys no round either.
+**Two rounds, then the owner, and the count licenses nothing:** after a **second adverse verdict** the artifact is still unsettled, and the next question goes to the owner rather than to a third seat. Only `would not` counts toward it — `not settleable` settles the artifact by its own discharge, and a revision buying no fresh reading buys no round either.
 
 **The session first repairs what a repair reaches** — a claim the verdicts found false about the tree is probed and rewritten, a passage of the wrong shape restated; those are the repeated-point rule's own remedies and no ruling substitutes for them. **What goes to the owner is every point the repairs do not reach, put as one sentence, with the argued options and the plain brief above it that this cell requires of every decision put to them.** **Their ruling, with those repairs, settles the artifact** — the label states **settled by an owner ruling at the cap**, never the word bare, so no stage inherits it as a reading a seat affirmed. **Against the repeated-point rule's third response the cap governs**: that response has the work proceeding on the recommendation, and at the cap it waits, the artifact being unsettled and a draft not built from. **An amended brief is a new term, and the count starts again there** — the artifact is settled against it exactly as it always was, a fresh dispatch included, because two verdicts against the brief it replaced judged something else. **This is a scheduled arrival inside the unattended stretch rather than a breach of it**, and what the cap changes is that it happens on the second verdict rather than on the owner noticing. [D-364]
 
