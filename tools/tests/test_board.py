@@ -25,6 +25,7 @@ import board as q  # noqa: E402
 
 NL = chr(10)
 TAB = chr(9)
+DASH = chr(8212)
 
 
 def plan_text(*rows: str) -> str:
@@ -1104,3 +1105,34 @@ def test_the_module_carries_no_stray_control_characters():
     stray = {bytes([c]) for c in range(32) if c not in (9, 10, 13)}
     found = sorted(hex(c[0]) for c in stray if c in raw)
     assert not found, f"control bytes in tools/board.py: {found}"
+
+
+# ---------------------- his words reach a terminal and a frozen note
+#
+# `cmd_apply` echoes the exception, and the refresh note carries the same
+# sentence. An escape sequence in it rewrites what both of them show, and the
+# note is append-only, so nothing afterwards can correct what it displays.
+
+
+@pytest.mark.parametrize("payload", [
+    "take it \x1b[2Know",          # CSI: erase line
+    "hide\x08\x08\x08\x08this",     # backspaces
+    "quiet\x00null",
+])
+def test_a_non_printable_character_in_his_words_is_refused(payload):
+    with pytest.raises(q.BoardError, match="non-printable"):
+        q.parse_exceptions(f"# owner-exception: #349 {payload}")
+
+
+@pytest.mark.parametrize("sentence", [
+    "take 702 now " + DASH + " the customer is waiting and the fix is a fortnight out",
+    "work it on its own; the cause is weeks away",
+    "start 3 now " + DASH + " the retention deletions are unrecoverable",
+])
+def test_an_ordinary_ruling_with_punctuation_is_not_refused(sentence):
+    """The negative control: em dashes, semicolons and ordinary prose all stand.
+
+    A carriage return is not among the refused cases because it cannot reach
+    the words field -- splitlines ends the line at it before the pattern runs.
+    """
+    assert q.parse_exceptions(f"# owner-exception: #349 {sentence}") == {349: sentence}

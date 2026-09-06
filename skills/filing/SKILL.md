@@ -58,9 +58,9 @@ Each paired relationship **written as a verb** is written in both directions; `b
 
 **The cause relationship is not a verb at all: it is GitHub's sub-issue link, the cause as parent, the parent carrying a `cause` label.** [D-429] The link means a task split into parts everywhere else, and the label is the only thing saying this one means causation — **an unlabelled parent is invisible to everything downstream**, which is a silent failure rather than a loud one. One link is carried by both issues, so a session opening a symptom sees its cause and a session opening the cause sees every symptom, whichever was filed first and without either body saying so. **GitHub refuses a second parent**, so a symptom carries one cause and the question of what two would mean cannot be asserted.
 
-**No `gh` subcommand sets the link**, so it is a mutation over the two issues' node ids, which `gh issue view <N> --json id` returns. The label is an ordinary one and `--label` puts it on, but it has to exist in the repository before it will:
+**No `gh` subcommand set the link as of 2.80.0**, so it is a mutation over the two issues' node ids, which `gh issue view <N> --json id` returns — check your own `gh issue create --help` for a `--parent` flag first, since an absence claim about a tool is only as old as the version it was checked against. The label is an ordinary one and `--label` puts it on, but it has to exist in the repository before it will:
 
-```
+```bash
 gh label create cause --description "Observed cause of the issues linked under it"
 gh api graphql -f query='mutation{addSubIssue(input:{issueId:"<cause id>",
   subIssueId:"<symptom id>"}){subIssue{number parent{number}}}}'

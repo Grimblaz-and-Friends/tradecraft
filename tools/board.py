@@ -240,6 +240,13 @@ def parse_exceptions(text: str) -> dict[int, str]:
                 )
             continue
         issue, words = int(m.group(1)), m.group(2)
+        if not words.isprintable():
+            raise BoardError(
+                f"line {lineno}: the owner-exception for #{issue} carries a non-printable "
+                f"character. His words are echoed to a terminal and copied into the refresh "
+                f"note, and an escape sequence there rewrites what both of them show. Write "
+                f"the sentence as text"
+            )
         if PLACEHOLDER_RE.match(words):
             raise BoardError(
                 f"line {lineno}: the owner-exception for #{issue} carries {words!r}, which is a "

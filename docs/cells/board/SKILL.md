@@ -37,7 +37,7 @@ Run a refresh when the board moved — an issue filed or closed, a pull request 
 
 **`causes` prints the groups the guard reads**, so the parentage is in hand before the plan is written rather than discovered by being refused:
 
-```
+```bash
 python tools/board.py causes
 ```
 
