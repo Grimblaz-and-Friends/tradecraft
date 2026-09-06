@@ -1454,8 +1454,9 @@ def pointer_cycle_findings(graph: dict[str, list[PointerEdge]]) -> list[str]:
         )
         findings.append(
             f"pointer-cycle: {route} -- cell pointers may not run in a "
-            f"circle, and every cell in this one is named by another that "
-            f"names it back: {hops}"
+            f"circle: each of these names the next until the chain returns "
+            f"to where it began, so none of them can be read or revised "
+            f"without the rest. Break any one hop -- {hops}"
         )
     return sorted(findings)
 
