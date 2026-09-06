@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The project roster: make this repository's own cell descriptions load (issues #199, #258).
 
-A cell's `description` is the whole of its triggering surface and is always
+A cell's `description` is the triggering surface it owns and is always
 loaded -- for an adopter, who installs the plugin. Not here. This repository
 never installs itself, so no session working in it held any cell's name or
 description, and every trigger deliberately routed to a description over the

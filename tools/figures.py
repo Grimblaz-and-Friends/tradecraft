@@ -228,21 +228,31 @@ def cell_prose(root: Path, rel_path: str) -> dict:
     }
 
 
+# **A row is its own cell plus what it reaches, and the basis says so.** The
+# first wording said only "the charter excluded", which was true of the graph
+# -- no edge targets the charter -- and read as a claim about the arithmetic,
+# where every row, the charter's included, counts its own cell's prose. A
+# reader reconstructing any row by hand came out short by that cell's own
+# body, which is acceptance criterion 3's own falsifier. Four seats of five
+# filed it. [PR #437 review, M4]
 REACH_BASIS = (
     "decoded UTF-8 characters; each cell's SKILL.md below its frontmatter "
-    "plus every other .md in the cell whole; each cell reached counted once "
-    "however many pointers lead to it; the charter excluded, every session "
-    "having loaded it already; no budget"
+    "plus every other .md in the cell whole; a row is its own cell's prose "
+    "plus every cell it reaches, each counted once however many pointers "
+    "lead to it; no cell reaches the charter, every session having loaded it "
+    "already; no budget"
 )
 
 
 def pointer_reach_rows(root: Path) -> list[dict]:
     """Every cell, and the prose a session reaches by following its pointers.
 
-    **The figure nobody could see while no cell could point at another.** A
-    cell's own body has been printed here for some time; what a session ends
-    up holding after following the pointers out of it has not, and that is
-    the quantity a rule's home is actually chosen against.
+    **The figure no surface printed.** A cell's own body has been printed
+    here for some time; what a session ends up holding after following the
+    pointers out of it has not, and that is the quantity a rule's home is
+    actually chosen against. The graph it walks was never empty -- pointers
+    existed under the old exemptions -- so what changed is that they became
+    the ordinary move and that this reports them. [PR #437 review, M9]
 
     **Not named `figure_*` and not one**, for the reason `cell_body_rows`
     records: every `figure_` function is enumerated in this module's docstring

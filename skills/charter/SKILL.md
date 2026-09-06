@@ -47,7 +47,7 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 
 ## The roster, and when each cell loads
 
-Every cell of this practice, with the one condition that loads it. Each cell's own description is the authority on its triggers; this list is for the session that does not yet know which cell owns what.
+Every cell this practice ships, and the condition that loads it. Each cell's own description is the authority on its triggers; this list is for the session that does not yet know which cell owns what.
 
 - `adversarial-review` cell — a change is ready for review, or a reviewer's findings need dispositioning.
 - `authoring` cell — writing or revising this practice's prose, or deciding where a piece of content belongs.
@@ -55,5 +55,5 @@ Every cell of this practice, with the one condition that loads it. Each cell's o
 - `experience-session` cell — a built result is ready to be used the way its consumer will use it.
 - `filing` cell — something is about to go onto the board.
 - `persist-changes` cell — validated work is ready to commit and push.
-- `spikes` cell — a premise you are about to assert rests on material you cannot survey.
-- `substrate` cell — writing or revising a script, test, hook or guard.
+- `spikes` cell — you are about to assert a premise no run you can consult has tested.
+- `substrate` cell — you are working in code rather than prose.

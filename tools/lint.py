@@ -32,13 +32,12 @@ Checks:
      point down. And a shipped cell naming a repo-only one is check 6's
      finding rather than an edge here, which is what keeps the wall's
      refused direction out of the graph.
-     An edge whose target is the charter is not an edge: an adopting
-     repository loads the charter before substantive work, so following that
-     pointer loads nothing and it can close no cycle of loading. Edges *from*
-     the charter are kept, which is what makes its roster a real set of
-     pointers. The run also prints, per cell, the prose a session reaches by
-     following every pointer transitively -- the figure nobody could see
-     while no cell could point at another.
+     An edge whose target is the charter is not an edge, and edges *from* it
+     are kept; `cell_pointer_graph`'s docstring carries why, once.
+     The run also prints, per cell, the prose a session reaches by following
+     every pointer transitively -- a figure no surface printed before, though
+     the graph was never empty: the charter and three repo-only cells already
+     pointed under the old exemptions.
   6. cell references: every `<name>` cell reference names a skill that
      exists, and every references/ pointer resolves against the directory of
      the file naming it, so renaming or deleting either cannot silently
@@ -193,6 +192,15 @@ Checks:
     finding, which fires when a surface comes back to or below its constant
     with characters still charged, belongs to checks 9, 4 and 24 -- the
     three that know each surface's size -- and not to this one (#334).
+26. charter roster: every shipped cell but the charter has a line in the
+    charter's declared roster, so the always-on router cannot go stale when a
+    cell is added. Keyed by the roster's heading, which is checked too -- a
+    check keyed to a section is disabled by renaming it. The names only,
+    never the load conditions: what a line says is prose a reflow may
+    lawfully rewrite, and check 3 already declines to machine-read the
+    charter's wording for that reason. It runs last because it is the
+    newest, not because anything orders it: the chain isolates every
+    check [#404].
 
 The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
 constitution and the ADRs beneath it) is not validated: it is history, not a
@@ -658,20 +666,18 @@ def stale_admission(label: str, size: int, constant: int,
 # single exemption from a ban on cells naming each other, and the ban is gone:
 # a cell may name the one cell owning a rule it needs, and what is refused is a
 # circle. So the charter is no longer an exception to a rule other cells obey.
-# It is the one target whose edge is dropped before the graph is built, because
-# an edge that loads nothing cannot close a cycle of loading, and because a
-# graph in which every cell reaches the charter and the charter reaches every
-# cell reports one reach figure for the whole practice and tells nobody
-# anything. The mesh of mutual references the predecessor accumulated is
-# refused by the cycle check now, which refuses it by shape rather than by
-# forbidding the first pointer. [#404]
+# It is the one target whose edge is dropped before the graph is built, for
+# the two reasons `cell_pointer_graph`'s docstring gives and this does not
+# repeat -- one argument at four sites was a review finding against the change
+# that wrote them. [#404] [PR #437 review, M16]
 CHARTER_CELL = "charter"
 
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
 ROOTED_SKILL = re.compile(r"skills[\\/]([\w-]+)[\\/]", re.IGNORECASE)
-# The same reference in the repo-only tree. The name form was fenced when the
-# second source landed and the path form was not, so one repo-only cell could
-# name another as a path and build exactly the mesh the name-form fence bans.
+# The same reference in the repo-only tree, by path. The name form is now a
+# lawful pointer and the path form is not, for the reason check 5's docstring
+# gives: a path does not survive installation where a name does. This regex is
+# what makes that hold in the repo-only tree as well as the shipped one.
 # Written from the generator's constant so a moved source directory moves this
 # with it. [#260]
 ROOTED_REPO_CELL = re.compile(
@@ -1266,10 +1272,12 @@ class PointerEdge(NamedTuple):
 def _cell_name_refs(text: str) -> list[tuple[int, str, bool]]:
     """Every reserved-form cell reference in `text`, as (line, name, wrapped).
 
-    One reader for the pointer graph and for the lib/hooks arm below, so the
-    two cannot disagree about what counts as a reference: a name one read as
-    an edge and the other did not would be a pointer lawful in one guard and
-    invisible to the next. The name form is read outside fenced blocks only,
+    The one reader for every consumer of the name form -- the pointer graph,
+    the lib/hooks arm below, and `check_cell_references` -- so none of them
+    can disagree about what counts as a reference: a name one read as an edge
+    and another did not would be a pointer lawful in one guard and invisible
+    to the next, and the wall's refused direction rests on exactly that
+    agreement. [PR #437 review, M12] The name form is read outside fenced blocks only,
     which is the split check 6's docstring states, and the wrapped form is
     read because a reflow is a formatting edit nobody inspects.
     """
@@ -1307,6 +1315,15 @@ def cell_pointer_graph(root: Path) -> dict[str, list[PointerEdge]]:
       an edge would price one defect as two and could report a cycle whose
       hop is a finding rather than a pointer.
 
+    **Only markdown is read**, which is the same basis `cell_prose` counts on
+    and says why: a script the cell carries is code a session runs, not prose
+    it loads. The first draft walked every file in the cell, so a reserved
+    form inside a `.py` comment made an edge -- crediting a cell the whole of
+    another's prose in a figure that counts no `.py` at all, and, with a
+    second such comment, reddening the mandated pre-commit command with a
+    circle between two files no session reads as prose. Two halves of one
+    change disagreeing about what a pointer is. [PR #437 review, M6]
+
     Edges *from* the charter are kept, which is what makes its roster a real
     set of pointers and its reach the practice's whole reachable prose.
 
@@ -1323,6 +1340,8 @@ def cell_pointer_graph(root: Path) -> dict[str, list[PointerEdge]]:
             continue
         own_is_repo = name in repo_names
         for path in _iter_files(base):
+            if path.suffix.lower() != ".md":
+                continue
             text = _read_text(path)
             if text is None:
                 continue
@@ -1403,10 +1422,16 @@ def _shortest_cycle(graph: dict[str, list[PointerEdge]],
 
     A component can hold exponentially many simple cycles, and printing them
     all would answer a defect with a wall of text. One concrete circle names
-    every hop a reader has to break to clear the finding, and breaking any
-    hop of it changes the component -- so the next run reports what is left
-    rather than repeating itself. Breadth-first from the alphabetically first
-    member, so the same tree reports the same circle every run.
+    every hop a reader has to break to clear the finding. Breadth-first from
+    the alphabetically first member, so the same tree reports the same circle
+    every run.
+
+    **A hop is a pair of cells, not a line, and the finding says so.** This
+    returns one edge per hop, and a cell may name another from several lines
+    or several files -- seven of fourteen pairs did on the tree this landed
+    on. A reader who deleted exactly the line named, re-ran, and met the same
+    route would read the guard as not registering the fix. The remedy names
+    the pair; the line is where to start looking. [PR #437 review, M7]
     """
     start = min(component)
     reached: dict[str, PointerEdge] = {}
@@ -1456,7 +1481,9 @@ def pointer_cycle_findings(graph: dict[str, list[PointerEdge]]) -> list[str]:
             f"pointer-cycle: {route} -- cell pointers may not run in a "
             f"circle: each of these names the next until the chain returns "
             f"to where it began, so none of them can be read or revised "
-            f"without the rest. Break any one hop -- {hops}"
+            f"without the rest. Break any one hop, which means every "
+            f"reference from that cell to the next and not only the line "
+            f"named here -- {hops}"
         )
     return sorted(findings)
 
@@ -1464,19 +1491,24 @@ def pointer_cycle_findings(graph: dict[str, list[PointerEdge]]) -> list[str]:
 def check_sideways_deps(root: Path) -> list[str]:
     findings = []
     skills = root / SHIPPED_CELLS
-    scan: list[tuple[Path, str | None, bool]] = []
+    # **No zone flag on the row.** The name form is judged here for `lib/` and
+    # `hooks/` alone and every path form is judged the same from either zone,
+    # so nothing below reads which zone a directory sits in; carrying the flag
+    # left a dead discriminator a later reader would take for a live one.
+    # [PR #437 review, M14]
+    scan: list[tuple[Path, str | None]] = []
     if skills.is_dir():
         for skill_dir in sorted(p for p in skills.iterdir() if p.is_dir()):
-            scan.append((skill_dir, skill_dir.name, False))
+            scan.append((skill_dir, skill_dir.name))
     repo_cells_dir = root / REPO_CELLS
     if repo_cells_dir.is_dir():
         for cell_dir in sorted(p for p in repo_cells_dir.iterdir() if p.is_dir()):
-            scan.append((cell_dir, cell_dir.name, True))
+            scan.append((cell_dir, cell_dir.name))
     for name in ("lib", "hooks"):
         base = root / name
         if base.is_dir():
             # None: none of these is a skill, so any skill path is sideways.
-            scan.append((base, None, False))
+            scan.append((base, None))
 
     # The generator's predicate, not a bare directory test: a directory is
     # not a cell until it holds the file that loads. `check_cell_references`
@@ -1502,23 +1534,21 @@ def check_sideways_deps(root: Path) -> list[str]:
     def _is_repo_cell(name: str) -> bool:
         return name in repo_cell_names
 
-    for base, own, own_is_repo in scan:
+    for base, own in scan:
         for path in _iter_files(base):
             text = _read_text(path)
             if text is None:
                 continue
             rel_file = path.relative_to(root).as_posix()
-            # The fence exemption is the *name form's* alone. A path inside a
-            # fence is not display: this repo's fenced blocks are calling
-            # contracts and command lines, check_zone_wall and
+            # **Every path form below is read fenced or not**, which is the
+            # split `_cell_name_refs` states from the other side. A path
+            # inside a fence is not display: this repo's fenced blocks are
+            # calling contracts and command lines, check_zone_wall and
             # check_harness_tokens both fire inside them, and
             # test_portability.py reads a cell's script contract through one
-            # and requires it to resolve. Exempting paths here would put two
-            # guards in one tree disagreeing about what a fence means. What
-            # licenses the name form's exemption is different in kind -- an
-            # unlawful *name* inside a fence is a spelling being shown, while
-            # a path is dead once installed whatever encloses it.
-            unfenced = _unfenced_numbered(text)
+            # and requires it to resolve. A path is dead once installed
+            # whatever encloses it, where an unlawful *name* inside a fence is
+            # a spelling being shown.
             if own is None:
                 # **The name form is judged here for lib/ and hooks/ alone.**
                 # A cell naming a cell is a pointer, and pointers are ruled on
@@ -1548,8 +1578,9 @@ def check_sideways_deps(root: Path) -> list[str]:
                     findings.append(
                         f"sideways-dep: {rel_file}:{lineno} names the "
                         f"repo-only cell '{target}' by path" + _origin(own, base)
-                        + " -- a cell is reached by name, and only the charter "
-                        f"may be named across cells"
+                        + " -- a cell is reached by its name, never by a "
+                        f"path into its files, which does not resolve once "
+                        f"installed"
                     )
                 for match in ROOTED_SKILL.finditer(line):
                     # Same lawful-case guards as the zone wall's rooted branch:
@@ -1749,6 +1780,74 @@ def _doctrine_ref_resolves(root: Path, ref: str) -> bool:
     return _within(resolved, root) and resolved.exists()
 
 
+# The charter's roster section, keyed by its heading rather than by reading
+# every reserved-form name in the file. The two differ exactly where it
+# matters: the charter names cells in its prose as well, so a whole-file read
+# would be satisfied by a cell mentioned in a rule and absent from the roster
+# -- which is the state this check exists to refuse. [PR #437 review, M1]
+CHARTER_ROSTER_HEADING = "## The roster, and when each cell loads"
+
+
+def check_charter_roster(root: Path) -> list[str]:
+    """Every shipped cell but the charter has a line in the charter's roster.
+
+    **The router is half of what #404 bought and was held by prose alone.**
+    The affirmed brief prefers a check in code wherever the ground is stable,
+    and this ground is as stable as this repository has: the cell set is
+    `roster.cell_sources`, which `check_project_roster` already derives a set
+    from, and the roster is a bullet list in the reserved form. Adding a cell
+    and leaving the roster alone was green -- the only red was the new
+    description's always-on cost, answered by an admission row, after which a
+    shipped cell was absent from the surface every session reads and nothing
+    said so. [PR #437 review, M1]
+
+    **The name set, never the load conditions.** What a line says is prose a
+    reflow may lawfully rewrite, and `check_charter_cell` already declines to
+    machine-read the charter's wording for that reason. What is checkable
+    without freezing the prose is which cells appear.
+
+    **The heading is checked too**, because a check keyed to a section is
+    disabled by renaming it, and the rename would otherwise be silent.
+    """
+    findings = []
+    charter = root / CHARTER
+    text = _read_text(charter)
+    if text is None:
+        return findings  # check 3 owns an absent or unreadable charter
+    if CHARTER_ROSTER_HEADING not in text:
+        return [
+            f"charter-roster: {CHARTER} has no '{CHARTER_ROSTER_HEADING}' "
+            f"section, so the always-on router this practice declares is "
+            f"either gone or renamed. It is keyed by that heading: rename it "
+            f"and every cell below stops being checked, silently"
+        ]
+    section = text.split(CHARTER_ROSTER_HEADING, 1)[1]
+    # To the next heading of the same level, so a later section's prose is not
+    # read as roster content.
+    for lineno, line in enumerate(section.splitlines()):
+        if lineno and line.startswith("## "):
+            section = section.split(line, 1)[0]
+            break
+    listed = {name for _lineno, name, _wrapped in _cell_name_refs(section)}
+    shipped = {
+        name for name, source in roster.cell_sources(root).items()
+        if source == SHIPPED_CELLS
+    }
+    missing = sorted(shipped - listed - {CHARTER_CELL})
+    for name in missing:
+        findings.append(
+            f"charter-roster: the '{name}' cell ships and is not in "
+            f"{CHARTER}'s roster, so a session that does not know which cell "
+            f"owns its rule is not routed to it from the one surface every "
+            f"session has already read. Add one line naming it in the "
+            f"reserved form with the condition that loads it -- and note what "
+            f"that costs: the line is always-on in every runtime, so at a "
+            f"full surface it is admitted on {ADMISSIONS} like any other "
+            f"needed item"
+        )
+    return findings
+
+
 def check_cell_references(root: Path) -> list[str]:
     """Every `<name>` cell reference names a real skill, and every pointer resolves.
 
@@ -1809,10 +1908,14 @@ def check_cell_references(root: Path) -> list[str]:
             if text is None:
                 continue
             rel_file = path.relative_to(root).as_posix()
-            lines = _unfenced_numbered(text)
-            named = [(n, m.group(1)) for n, line in lines
-                     for m in CELL_REF.finditer(line)]
-            named += list(_wrapped_cell_refs(lines))
+            # **The one reader, not a third copy of it.** These three steps
+            # were repeated inline here while `_cell_name_refs` was extracted
+            # to own them, and this copy is the sole guard for the wall's
+            # refused direction in the name form -- check 5 drops that edge on
+            # the ground that this check holds it. A divergence here would
+            # open the wall with nothing reporting it. [PR #437 review, M12]
+            named = [(lineno, name)
+                     for lineno, name, _wrapped in _cell_name_refs(text)]
             in_shipped = any(
                 rel_file == d or rel_file.startswith(d + "/")
                 for d in SHIPPED_DIRS
@@ -5115,6 +5218,7 @@ CHECKS = (
     check_body_strip_owner,
     check_always_on_budget,
     check_admissions,
+    check_charter_roster,
 )
 
 
@@ -5221,13 +5325,14 @@ def cell_body_note(root: Path) -> str:
 def pointer_reach_note(root: Path) -> str:
     """What a session reaches through each cell's pointers, before it writes.
 
-    **The figure the ban made unaskable.** While no cell could name another,
-    what a session held after following a pointer was its own body and
-    nothing else, so there was nothing to report and no surface reported it.
-    A cell may now point at the one cell owning a rule it needs, and the
-    quantity that decides whether a pointer earns its place -- the prose a
-    reader ends up holding -- became invisible in the same movement that
-    created it. This is where it is answered, beside the body figures, on the
+    **The figure no surface printed.** The graph was never empty -- the
+    charter and three repo-only cells pointed under the old exemptions, and a
+    session following `landing`'s pointers already held twenty times that
+    cell's own prose -- but nothing reported it, because with the ban in
+    force a pointer was the exception rather than the move. A cell may now
+    point at the one cell owning a rule it needs, and the quantity that
+    decides whether a pointer earns its place is the prose a reader ends up
+    holding. [PR #437 review, M9] This is where it is answered, beside the body figures, on the
     one surface this repository's landing procedure sends every session to
     before a commit. [#404]
 
