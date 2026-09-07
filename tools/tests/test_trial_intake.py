@@ -61,17 +61,44 @@ The owner ruled on 2026-09-05 that no marker is carried. The claim was sustained
 Filed from PR #437's second experience session, which met it on the fixed tree.
 """
 
-# A body that *discusses* the judge and the cold seat at length, with no
-# provenance section and no verb of provenance. Topic is not origin.
+# A body that *discusses* every mechanism the weak tier names -- the judge, the
+# cold seat, the terminal stage, the experience session, the A/B run, the
+# design sitting -- with no provenance section and no verb of provenance.
+# Topic is not origin. PR #451's review found the first version of this
+# control drawn from outside the defect's class: it omitted the two literals
+# that were actually misplaced, so the defect shipped green.
 TOPICAL_BODY = """> **In plain terms:** the cold seat and the judge disagree about a word.
 
 ## The evidence
 
-`references/cold-seat.md` says the seat applies the bar; `arbitration.md` says the judge rules at the terminal stage. A cold consumer would read the two apart.
+`references/cold-seat.md` says the seat applies the bar; `arbitration.md` says the judge rules at the terminal stage. A cold consumer would read the two apart, and an experience session or an A/B run would show it. The design sitting on 2026-09-05 used the word both ways.
 
 ## The want
 
 One owner for the word.
+"""
+
+# Provenance stated under the heading forms the corpus actually uses.
+HEADED_PROVENANCE_BODY = """> **In plain terms:** something.
+
+## The evidence
+
+The claim was sustained by the terminal stage of PR #415's review.
+
+## Provenance
+
+Found by the second experience session PR #376's fix batch bought, on the fixed tree.
+
+## Why this will get picked up
+
+Value 2 by number.
+"""
+
+MIGHT_VARIANT_BODY = """> **In plain terms:** something.
+
+## Why it might get picked up, and why it might not
+
+The judge routed it here at the terminal stage; the fix is cheap.
 """
 
 
@@ -120,18 +147,114 @@ def test_provenance_section_outranks_phrases_in_the_evidence():
     assert whole[0] == "ambiguous", "the control must differ, or the section rule proves nothing"
 
 
+def _every_weak_literal_is_in(body: str) -> None:
+    # The control is only a control if it carries the words the tiers are about.
+    for name, pattern in ti.WEAK_PATTERNS.items():
+        assert pattern.search(body), f"control body lacks a weak {name} phrase"
+
+
 def test_a_body_that_discusses_the_mechanisms_is_not_classified_by_topic():
-    # Negative control for the weak tier: 'the judge', 'cold seat', 'terminal
-    # stage' and 'cold consumer' all appear, none as a verb of provenance,
-    # and there is no provenance section. This must be unstated, not review
-    # or use -- the failure the first real run showed on the older filings.
+    # Negative control for the tiers: every mechanism phrase the weak tier
+    # names appears, none as a verb of provenance, and there is no provenance
+    # section. This must be unstated, not review, use or owner.
+    _every_weak_literal_is_in(TOPICAL_BODY)
     cls, phrases, basis = ti.classify(TOPICAL_BODY)
     assert cls == "unstated", (cls, phrases)
     assert basis == "body"
-    # And the same words inside a provenance section do decide, which is what
-    # makes the control a control rather than a dead pattern.
-    sectioned = TOPICAL_BODY + "\n## Why it will get picked up\n\nThe judge routed it here at the terminal stage.\n"
-    assert ti.classify(sectioned)[0] == "review"
+
+
+def test_no_strong_phrase_is_a_mechanism_noun():
+    # The two nouns PR #451's review found in STRONG, and the words the weak
+    # tier owns: none may match in the anywhere tier.
+    for word in ("A/B run", "design sitting", "the judge", "terminal stage", "cold seat",
+                 "experience session", "cold consumer"):
+        for name, pattern in ti.STRONG_PATTERNS.items():
+            assert not pattern.search(word), f"{word!r} matches STRONG {name}"
+
+
+def test_weak_words_decide_inside_a_provenance_section_and_only_there():
+    # Second half of the control, decided by a WEAK phrase: 'the judge' and
+    # 'terminal stage' with no verb of provenance. It must classify with the
+    # section, and stop classifying when the weak tier is emptied, which is
+    # what shows the weak tier is the tier deciding it.
+    sectioned = TOPICAL_BODY + "\n## Why it will get picked up\n\nThe judge at the terminal stage.\n"
+    cls, phrases, basis = ti.classify(sectioned)
+    assert (cls, basis) == ("review", "provenance")
+    assert sorted(p.lower() for p in phrases) == ["terminal stage", "the judge"]
+    saved = dict(ti.WEAK_PATTERNS)
+    try:
+        ti.WEAK_PATTERNS.clear()
+        assert ti.classify(sectioned)[0] == "unstated", "the weak tier was not what decided it"
+    finally:
+        ti.WEAK_PATTERNS.update(saved)
+    saved_strong = dict(ti.STRONG_PATTERNS)
+    try:
+        ti.STRONG_PATTERNS.clear()
+        assert ti.classify(sectioned)[0] == "review", "clearing STRONG must not touch a weak-decided row"
+    finally:
+        ti.STRONG_PATTERNS.update(saved_strong)
+
+
+def test_a_provenance_heading_is_read_and_outranks_the_evidence():
+    # '## Provenance' names use; '## The evidence' carries a strong review
+    # phrase. The heading section decides, and only its own words count.
+    cls, phrases, basis = ti.classify(HEADED_PROVENANCE_BODY)
+    assert (cls, basis) == ("use", "provenance"), (cls, phrases, basis)
+    assert not any("sustained by" in p for p in phrases)
+
+
+def test_the_might_and_this_heading_variants_are_recognised():
+    cls, phrases, basis = ti.classify(MIGHT_VARIANT_BODY)
+    assert (cls, basis) == ("review", "provenance"), (cls, phrases, basis)
+    section = ti.provenance_text(MIGHT_VARIANT_BODY)
+    assert "The judge routed it here" in section
+    headed = ti.provenance_text(HEADED_PROVENANCE_BODY)
+    assert "Found by the second experience session" in headed      # '## Provenance'
+    assert "Value 2 by number" in headed                             # '## Why this will get picked up'
+    assert "sustained by the terminal stage" not in headed           # '## The evidence' is not provenance
+
+
+def test_a_section_runs_to_the_next_heading_and_no_further():
+    body = "## Provenance\n\nsurfaced by a seat.\n\n## The want\n\nA consumer hit this.\n"
+    section = ti.provenance_text(body)
+    assert "surfaced by" in section and "consumer hit" not in section
+
+
+def test_a_naive_instant_is_utc_not_local():
+    assert ti.parse_when("2026-09-25") == ti.parse_when("2026-09-25T00:00:00Z")
+    assert ti.parse_when("2026-09-25T00:00:00") == ti.parse_when("2026-09-25T00:00:00+00:00")
+    # Negative control: an explicit non-zero offset still moves the instant.
+    assert ti.parse_when("2026-09-25T00:00:00+04:00") != ti.parse_when("2026-09-25T00:00:00Z")
+    assert ti.parse_when("2026-09-25T00:00:00+04:00").hour == 20
+
+
+def test_duplicate_rows_from_a_paginated_search_count_once():
+    a = _issue(358, "2026-09-04T02:37:27Z", USE_BODY)
+    rows = ti.dedupe([a, dict(a), _issue(359, "2026-09-04T03:00:00Z", USE_BODY)])
+    assert [r["number"] for r in rows] == [358, 359]
+
+
+def test_a_capped_fetch_warns_on_stderr(monkeypatch, capsys: pytest.CaptureFixture[str]):
+    capped = json.dumps([_issue(n, "2026-09-05T00:00:00Z", USE_BODY) for n in range(ti.FETCH_LIMIT)])
+    monkeypatch.setattr(ti, "gh", lambda args: capped)
+    ti.fetch_issues(None, ti.parse_when("2026-08-14T00:00:00Z"))
+    assert "GitHub's cap" in capsys.readouterr().err
+    # Negative control: one under the cap warns of nothing.
+    under = json.dumps([_issue(n, "2026-09-05T00:00:00Z", USE_BODY) for n in range(ti.FETCH_LIMIT - 1)])
+    monkeypatch.setattr(ti, "gh", lambda args: under)
+    ti.fetch_issues(None, ti.parse_when("2026-08-14T00:00:00Z"))
+    assert capsys.readouterr().err == ""
+
+
+def test_the_text_run_carries_the_caveat_and_a_pinned_corpus_is_byte_identical(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    dump = tmp_path / "issues.json"
+    dump.write_text(json.dumps([_issue(40, "2026-09-05T00:00:00Z", USE_BODY)]), encoding="utf-8")
+    args = ["--from-file", str(dump), "--until", "2026-09-06T00:00:00Z", "--rows"]
+    assert ti.main(args) == 0
+    first = capsys.readouterr().out
+    assert "bodies get edited" in first and "--from-file" in first
+    assert ti.main(args) == 0
+    assert capsys.readouterr().out == first
 
 
 def test_empty_body_is_unstated():
