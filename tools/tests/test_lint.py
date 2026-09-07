@@ -995,6 +995,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_body_strip_owner",
     "check_always_on_budget",
     "check_admissions",
+    "check_settling_index",
     "check_charter_roster",
 )
 

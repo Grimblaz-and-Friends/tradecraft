@@ -11,13 +11,10 @@ question carried inside a pull request body, ruled by the merge, with nothing
 showing it was read (#423).
 
 **What is checked is presence, never truth.** Whether an unmarked ask is buried
-in a body is a content judgement, and content judgements do not survive
-automation here: over the briefs posted to this repository every mechanical
-disqualifier was clean and four of seven carried a content one, for the reason
-that nothing but a reader can see them (#428). A guard grepping for
-question-shaped prose would fire on nearly every body in this repository. So
-this asks only that the author answered the question, and a green check is not
-evidence the answer is right.
+in a body is a content judgement, and a guard grepping for question-shaped
+prose would fire on nearly every body in this repository -- the affirmed brief
+rejected that shape before it was offered. So this asks only that the author
+answered the question, and a green check is not evidence the answer is right.
 
 **What it buys is the moment, not the check.** A session that has just written
 three options and a recommendation into a body, and must then write that it is
@@ -43,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -55,14 +53,34 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
+# Repo-only importing repo-only, the lawful direction. `_unfenced_text`
+# blanks fenced blocks while preserving line numbering: a marker inside a
+# fence is being *shown*, not written, which is the premise the lint's own
+# checks 5 and 6 already reason from -- and this file's prose shows the
+# marker in a fence, so the guard would otherwise pass on its own example.
+# Reused rather than reimplemented; that module records a second
+# implementation of this rule as a held defect.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lint import _unfenced_text  # noqa: E402
+
 # The exact opener. Bold, because the body is markdown and the line has to be
 # visible to a human skimming it -- this guard is the enforcement of a habit,
 # and a marker nobody sees in the rendered body would enforce a habit nobody
-# performs. Matched on the stripped line so list markers and blockquote
-# prefixes do not defeat it, and case-sensitively: a marker that drifts in
-# case is a marker with two spellings, and the next session copies the wrong
-# one.
+# performs. Matched case-sensitively: a marker that drifts in case is a
+# marker with two spellings, and the next session copies the wrong one.
 MARKER = "**Waiting on you:**"
+
+# Leading blockquote and list markers, stripped before matching. A
+# declaration written as a bullet renders identically, and this
+# repository's pull request bodies are bullet-heavy.
+#
+# **Stripped, never matched loosely.** Relaxing the anchor to
+# `MARKER in stripped` is the smaller edit and it is wrong: the offset
+# `rest` is taken at does not move with it, so `- **Waiting on you:**
+# nothing.` reports `** nothing.` and exits 0 -- a green check printing
+# garbage. The whole suite stays green under that edit, which is why
+# `test_the_marker_is_anchored_not_merely_contained` exists.
+_PREFIX = re.compile(r"^(?:\s*(?:>|[-*+]\s|\d+[.)]\s))+")
 
 WHAT_TO_WRITE = (
     "Add a line to the pull request body naming what waits on the owner, or "
@@ -82,12 +100,13 @@ def declaration(body: str) -> str | None:
     """The declaration's content, or None where the body carries none.
 
     A line whose stripped form opens with the marker and has something after
-    it. The remainder is required: an empty declaration would be a check that
+    it, ignoring any blockquote or list prefix and ignoring fenced blocks
+    entirely. The remainder is required: an empty declaration would be a check that
     cannot fail, which is the one shape of guard this repository treats as
     worse than no guard at all.
     """
-    for line in body.splitlines():
-        stripped = line.strip()
+    for line in _unfenced_text(body).splitlines():
+        stripped = _PREFIX.sub("", line).strip()
         if stripped.startswith(MARKER):
             rest = stripped[len(MARKER):].strip()
             if rest:
@@ -101,6 +120,13 @@ def _gh(*args: str) -> str:
         proc = subprocess.run(
             ["gh", *args], stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8",
+            # Dropped when this was copied from `doctrine_callout.py`,
+            # whose own copy carries it. Without it a child emitting
+            # invalid UTF-8 crashes the reader thread, `proc.stdout`
+            # comes back None, and `json.loads(None)` raises TypeError --
+            # bypassing the DeclarationError path below entirely rather
+            # than degrading.
+            errors="replace",
         )
     except OSError as exc:                      # gh absent from the runner
         raise DeclarationError(f"could not run `gh {' '.join(args)}`: {exc}") from exc

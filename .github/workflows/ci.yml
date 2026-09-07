@@ -125,12 +125,19 @@ jobs:
         run: python tools/doctrine_callout.py --pr "$PR_NUMBER" --base "$BASE_SHA"
       - name: Ask declaration
         # Presence, never truth: whether an unmarked ask is buried in the body
-        # is a content judgement, and content judgements do not survive
-        # automation here (#428). What this buys is that the author answered
-        # the question at the one moment the whole body is in front of them.
-        # Runs in the same job as the callout because both need `gh` and a PR
-        # number; the packaging lint cannot host it, shelling out to `git`
-        # alone.
+        # is a content judgement, and a grep for question-shaped prose would
+        # fire on nearly every body here. What this buys is that the author
+        # answered the question at the one moment the whole body is in front
+        # of them. Runs in the same job as the callout because both need `gh`
+        # and a PR number; the packaging lint cannot host it, shelling out to
+        # `git` alone.
+        #
+        # **Not gated on the callout.** Steps default to `if: success()`, so
+        # without this a callout failure -- an API refusal, a fork PR whose
+        # token lacks the write scopes -- would skip this check silently and
+        # spend a fix-and-push cycle before the second defect was even
+        # reported.
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
