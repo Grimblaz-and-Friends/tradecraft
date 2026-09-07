@@ -51,10 +51,12 @@ def policy_dict(**over):
         "framed": {"label": "framed", "color": "0E8A16", "meaning": "decided"},
         "cause": {"label": "cause", "color": "B60205", "meaning": "a cause"},
         "assessed": {"label": "assessed:no-cause", "color": "C5DEF5", "meaning": "asked"},
+        "raised": {"label": "raised", "color": "5319E7", "meaning": "put to the owner"},
         "shortlist_size": 3,
         "accrual": {"symptoms_per_band": 2},
         "fade": {"quiet_days": 30, "closes": False},
         "assessment": {"before_shortlist": 3, "per_cycle": 3},
+        "push": {"severity": 3, "urgency": 3},
     }
     base.update(over)
     return base
@@ -241,8 +243,14 @@ def test_nothing_is_sent_when_there_is_nothing_to_change(monkeypatch):
 def test_writable_labels_is_exactly_the_policy(monkeypatch):
     assert pool.writable_labels(policy_dict()) == frozenset(
         {"sev:1", "sev:2", "sev:3", "urg:1", "urg:2", "urg:3", "framed",
-         "assessed:no-cause"}
-    ), "the rail admits exactly the labels the policy names, and `cause` is not one -- nothing here writes it"
+         "assessed:no-cause", "raised"}
+    ), "the rail admits exactly the labels the policy names that something here writes"
+    # And two names it must NOT admit: `cause`, which only the accrual reads,
+    # and `awaiting-owner`, which the `engagement` cell governs and this script
+    # never sees -- a second governing home for that name is the shape D-441
+    # decision 4 recorded for the cause label.
+    assert "cause" not in pool.writable_labels(policy_dict())
+    assert "awaiting-owner" not in pool.writable_labels(policy_dict())
 
 
 def test_the_framed_label_a_repository_renamed_is_what_frame_writes(monkeypatch):
@@ -495,7 +503,7 @@ def test_labels_creates_only_what_is_missing(monkeypatch, capsys):
     pool.cmd_labels(policy_dict(), None, dry_run=False)
     created = [a[2] for a in calls if a[:2] == ["label", "create"]]
     assert "sev:1" not in created
-    assert sorted(created) == ["assessed:no-cause", "cause", "framed",
+    assert sorted(created) == ["assessed:no-cause", "cause", "framed", "raised",
                                "sev:2", "sev:3", "urg:1", "urg:2", "urg:3"]
     assert all("--force" not in a for a in calls)
 

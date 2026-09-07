@@ -39,6 +39,8 @@ python tools/board.py notes    # the last refresh notes, newest first
 
 Run a refresh when the board moved — an issue framed or returned to the pool, an issue closed, a pull request merged, a dependency shifted. A filing no longer moves it.
 
+**Run the `filing` cell's own script with its `pushed` command as part of the refresh, and finish what it starts.** It names what has crossed the push line and has not been put to the owner yet; for each one, **post an ask block on the issue and mark it as the `engagement` cell says, then run that script's `raise` command on the number** so the pool does not raise it again. All three, or none: a refresh that reads the list and stops leaves an item the owner never heard about, and one that marks without asking silences it permanently. The note carries what crossed.
+
 **Run `python tools/pool_rot.py` as part of the refresh**, and put what it names in the note. It is cheap, it is the only thing in this repository that looks at whether a filing's evidence still exists, and a check nothing obliges is a check nobody runs — which is what it was for one revision. It closes nothing and reports two or three rows; reading them is the whole of the obligation.
 
 **Start from what is on the board.** Move what a named board change justifies and leave the rest. This is not a restriction on what you may move; you may move anything you can argue for. It is that rebuilding the order from a blank page re-rolls the bundling judgment — the expensive part, and the part that varies most between sessions — and costs the board roughly an order of magnitude more writes than adjusting what changed.

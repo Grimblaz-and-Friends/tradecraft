@@ -37,6 +37,8 @@ Usage:  python scripts/pool.py [--repo OWNER/REPO] [--policy PATH] <command>
         python scripts/pool.py list      [--limit N]
         python scripts/pool.py show      N
         python scripts/pool.py shortlist [--count N] [--unassessed]
+        python scripts/pool.py pushed
+        python scripts/pool.py raise     N
         python scripts/pool.py cycle     [--dry-run]
         python scripts/pool.py assess    N --none
         python scripts/pool.py framed
@@ -50,6 +52,8 @@ Usage:  python scripts/pool.py [--repo OWNER/REPO] [--policy PATH] <command>
   show       one issue: whether it is framed, and what it is rated
   shortlist  the few worth raising, at the policy's size; refuses over an
              unassessed top, so that what it raises are causes
+  pushed     what crossed the push line and has not been put to the owner
+  raise      record that a crossing was put, so it is not raised twice
   cycle      what has risen from its symptoms, what has faded to the floor, and
              the next bounded few to assess
   assess     record that an issue was asked and is its own cause
@@ -203,13 +207,14 @@ def load_policy(path: Path) -> dict:
             f"rating on axis '{seen[framed['label']]}'"
         )
 
-    for key in ("cause", "assessed"):
+    for key in ("cause", "assessed", "raised"):
         block = policy.get(key)
         if not isinstance(block, dict) or not isinstance(block.get("label"), str):
             raise PoolError(
                 f"{path}: '{key}' must carry a 'label' naming one label. A policy "
-                f"written before the accrual and the fade landed does not have it: "
-                f"add 'cause', 'assessed', 'accrual', 'fade' and 'assessment'"
+                f"written before the accrual, the fade and the push landed does "
+                f"not have it: add 'cause', 'assessed', 'raised', 'accrual', "
+                f"'fade', 'assessment' and 'push'"
             )
         _check_label_name(path, block["label"])
         if block["label"] in seen or block["label"] == framed["label"]:
@@ -233,6 +238,34 @@ def load_policy(path: Path) -> dict:
     # names it.
     _whole(policy, path, "assessment", "before_shortlist", least=1)
     _whole(policy, path, "assessment", "per_cycle", least=1)
+
+    push = policy.get("push")
+    if not isinstance(push, dict):
+        raise PoolError(
+            f"{path}: 'push' must be an object naming a threshold per axis. A "
+            f"policy written before the push landed does not have it: add "
+            f"'raised' and 'push'"
+        )
+    # **Every axis in `order`, never a subset.** The brief's push fires on
+    # something crossing a line on *both* ratings, so a policy naming one axis
+    # would silently push on that axis alone -- and a repository adding a third
+    # axis would get a line it never wrote. Refused, not defaulted, on [D-441]
+    # decision 8's ground.
+    missing = [name for name in policy["order"] if name not in push]
+    extra = [name for name in push if name not in axes]
+    if missing or extra:
+        raise PoolError(
+            f"{path}: 'push' must name a threshold for every axis and no others. "
+            f"Missing: {', '.join(missing) or 'none'}. Not an axis: "
+            f"{', '.join(extra) or 'none'}"
+        )
+    for name, band in push.items():
+        allowed = sorted(axes[name]["values"].values())
+        if not isinstance(band, int) or isinstance(band, bool) or band not in allowed:
+            raise PoolError(
+                f"{path}: 'push.{name}' is {band!r}, which axis '{name}' does "
+                f"not have. Its bands are {allowed}"
+            )
 
     closes = policy.get("fade", {}).get("closes")
     if not isinstance(closes, bool):
@@ -300,6 +333,16 @@ def writable_labels(policy: dict) -> frozenset[str]:
     # `assess` writes this one, so the rail has to admit it or the one write
     # stage two adds is refused by the guard stage one built.
     names.add(policy["assessed"]["label"])
+    # And `raise` writes this one.
+    #
+    # **The mark an ask carries is deliberately NOT here, and is not named
+    # anywhere in this script.** That mark belongs to the `engagement` cell,
+    # which lets an adopting repository rename it in its own doctrine; naming it
+    # here would give it a second governing home, which is the shape [D-441]
+    # decision 4 recorded for the cause label -- a rename in one place leaving a
+    # guard reading the old name silently. The session putting the ask applies
+    # it; this script never sees it, and a test greps to keep that true.
+    names.add(policy["raised"]["label"])
     return frozenset(names)
 
 
@@ -520,6 +563,7 @@ def read_pool(policy: dict, repo: str | None = None) -> tuple[list[dict], list[d
     """
     framed_label = policy["framed"]["label"]
     assessed_label = policy["assessed"]["label"]
+    raised_label = policy["raised"]["label"]
     pool: list[dict] = []
     framed: list[dict] = []
     by_number: dict[int, dict] = {}
@@ -531,6 +575,7 @@ def read_pool(policy: dict, repo: str | None = None) -> tuple[list[dict], list[d
             "ratings": {},
             "clashes": [],
             "assessed": assessed_label in labels,
+            "raised": raised_label in labels,
             "updated_at": _stamp(issue.get("updatedAt")),
             "symptoms": [],
         }
@@ -944,7 +989,8 @@ def label_specs(policy: dict) -> list[tuple[str, str, str]]:
             specs.append((label, colour, f"Pool rating -- {meaning} ({value})"))
     for key, fallback in (("framed", "decided work, on the board"),
                           ("cause", "observed cause of the issues linked under it"),
-                          ("assessed", "asked whether it has a cause, and it is its own")):
+                          ("assessed", "asked whether it has a cause, and it is its own"),
+                          ("raised", "put to the owner unasked, having crossed the push line")):
         block = policy[key]
         specs.append((block["label"], block.get("color", ""),
                       block.get("meaning", fallback)))
@@ -1060,6 +1106,74 @@ def cmd_assess(policy: dict, repo: str | None, number: int) -> int:
     """
     edit_labels(number, policy, add=[policy["assessed"]["label"]], remove=[], repo=repo)
     print(f"#{number} assessed: asked, and it is its own cause")
+    return 0
+
+
+def crosses(item: dict, policy: dict) -> bool:
+    """Whether an item's effective pair reaches the push line on every axis.
+
+    **At or above, not above.** The shipped line is the top band, and a strict
+    comparison against a top band can never fire at all -- so a threshold nobody
+    edited would be a mechanism that silently does nothing.
+
+    **Every axis, never a subset.** The brief's push is something crossing a
+    line on *both* ratings; an item catastrophic but not urgent, or urgent but
+    trivial, is what the pull is for. An unrated or clashed axis reads `None`
+    and cannot reach anything, which is the same answer `at_floor` gives.
+    """
+    values = item.get("effective") or effective(item, policy)
+    for name, band in policy["push"].items():
+        value = values.get(name)
+        if value is None or value < band:
+            return False
+    return True
+
+
+def cmd_pushed(policy: dict, repo: str | None) -> int:
+    """What has crossed the push line and has not been put to the owner yet.
+
+    **This writes nothing.** It is the read half; `raise` is the write half, and
+    they are separate because the mark means *the ask was put* and the only
+    thing that knows an ask was put is the session that posted it. A command
+    that printed and marked in one breath would make the mark mean *this was
+    printed once*: running it twice would silence the pool, and a refresh
+    abandoned halfway would silence items no ask was ever put for.
+
+    **Not gated on assessment.** [D-441] decision 5 gates `shortlist`, and the
+    amendment that ordered it scopes the gate to the pull -- the pool works out
+    causes *before a session brings you a few*. A push is not a session choosing
+    what to bring; it is a line being crossed, and gating it would silence an
+    unassessed catastrophe precisely because nobody has got to it yet. The row
+    carries its `?` mark, so whoever writes the ask knows the question is open.
+    """
+    pool, _ = read_pool(policy, repo)
+    over = [it for it in pool if crosses(it, policy) and not it["raised"]]
+    line = ", ".join(f"{name} {band}" for name, band in policy["push"].items())
+    print(f"pool: {len(pool)}   over the line ({line}) and not yet raised: {len(over)}")
+    if not over:
+        print("")
+        print("nothing has crossed, so there is nothing to put to the owner unasked")
+        return 0
+    print(_header(policy))
+    for item in over:
+        print(_line(item, policy))
+    print("")
+    print("For each: put the ask where the `engagement` cell says -- an ask block "
+          "on the issue, marked -- then `raise <N>` so this does not ask twice.")
+    return 0
+
+
+def cmd_raise(policy: dict, repo: str | None, number: int) -> int:
+    """Record that a crossing was put to the owner. Run it after the ask exists.
+
+    The label is the pool's own, and it is durable on purpose: when the owner
+    answers, the ask's own mark comes off and this one stays. A framed item has
+    left the pool; a declined one keeps this and stops asking, until somebody
+    takes the label off, which is the act of saying *ask me again*.
+    """
+    edit_labels(number, policy, add=[policy["raised"]["label"]], remove=[], repo=repo)
+    print(f"#{number} is marked raised -- it was put to the owner, so the push "
+          f"will not name it again")
     return 0
 
 
@@ -1183,6 +1297,11 @@ def build_parser() -> argparse.ArgumentParser:
     cycle.add_argument("--dry-run", action="store_true",
                        help="name the closes fade.closes would make, and make none")
 
+    sub.add_parser("pushed", help="what crossed the push line and is not yet raised")
+
+    raised = sub.add_parser("raise", help="record that a crossing was put to the owner")
+    raised.add_argument("number", type=int)
+
     assess = sub.add_parser("assess", help="record that an issue is its own cause")
     assess.add_argument("number", type=int)
     assess.add_argument("--none", action="store_true", required=True,
@@ -1225,6 +1344,10 @@ def dispatch(args: argparse.Namespace) -> int:
         return cmd_show(policy, args.repo, args.number)
     if args.command == "shortlist":
         return cmd_shortlist(policy, args.repo, args.count, args.unassessed)
+    if args.command == "pushed":
+        return cmd_pushed(policy, args.repo)
+    if args.command == "raise":
+        return cmd_raise(policy, args.repo, args.number)
     if args.command == "cycle":
         return cmd_cycle(policy, args.repo, args.dry_run)
     if args.command == "assess":

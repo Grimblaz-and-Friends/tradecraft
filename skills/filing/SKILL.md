@@ -88,7 +88,13 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 
 **A filing carries two ratings the filer proposes, on separate axes: how severe it is, and how urgent** -- each one label from a set the policy names. Ideas are rated the same way as defects, by what is at stake rather than by what a wrong act would cost, so what waits in the pool is one kind of thing. **The owner confirms ratings only on the few raised to them**, never one filing at a time.
 
-**Work leaves the pool by the owner's pick, and what is in the pool is what a session noticed rather than what the owner asked for.** They say they want something, a session raises a few with the case for and against each, and they pick one. **That pick is the decision that the work is worth doing, and it is what frames the filing** -- the brief settled afterwards still decides what the work is for and at what cost, and may send it back to the pool if the cause turns out bigger than the pick assumed.
+**Work leaves the pool two ways, and what is in the pool is what a session noticed rather than what the owner asked for.**
+
+**The pull, which is the ordinary one.** They say they want something, a session raises a few with the case for and against each, and they pick one. **That pick is the decision that the work is worth doing, and it is what frames the filing** -- the brief settled afterwards still decides what the work is for and at what cost, and may send it back to the pool if the cause turns out bigger than the pick assumed.
+
+**The push, which a repository wires rather than gets.** An item whose *effective* rating reaches the policy's `push` threshold on **every** axis is worth the owner's attention without their asking, and `scripts/pool.py pushed` is what finds those. **Nothing runs it for you.** A repository decides where it runs -- a board refresh, a scheduled job, a session's own habit -- and **a repository that runs it nowhere has the pull as its only route**, which is a coherent way to use this and not a failure. What crosses is not a rating anyone set: the accrual is what lifts a cause over the line as its symptoms accumulate, so the push fires for exactly the thing nobody rated urgently enough.
+
+**A crossing is put as an ask, on the surface every other ask uses** -- the `engagement` cell's, so it waits in one place beside everything else the owner owes an answer to rather than in a second list. Then `scripts/pool.py raise <N>` marks it, so the pool does not ask twice. **The mark is durable on purpose**: when the owner answers, the ask's own mark comes off and this one stays, so an item they declined stops asking until somebody takes the label off -- which is the act of saying *ask me again*. The cost of that is stated rather than solved: an item declined once goes quiet even if it later gets worse, and only the pull reaches it after that.
 
 `scripts/pool.py` does the mechanics, and the judgment -- what a rating should be, what the case against a candidate is -- stays the session's:
 
@@ -100,7 +106,9 @@ python scripts/pool.py list                                # what is in the pool
 python scripts/pool.py rate 123 --rating sev:3 --rating urg:2
 python scripts/pool.py cycle                               # what rose, what faded, what to assess next
 python scripts/pool.py assess 123 --none                   # asked, and it is its own cause
-python scripts/pool.py shortlist                           # the raise -- gated on the two lines above
+python scripts/pool.py shortlist                           # the pull -- gated on the two lines above
+python scripts/pool.py pushed                              # the push -- what crossed the line, unasked
+python scripts/pool.py raise 123                           # ...and was put to the owner, so ask once
 python scripts/pool.py show 123                            # one issue, and why its row reads as it does
 python scripts/pool.py frame 123                           # the owner picked it
 python scripts/pool.py unframe 123                         # the brief sent it back to the pool

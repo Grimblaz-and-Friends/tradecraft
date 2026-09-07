@@ -41,6 +41,11 @@
     "color": "C5DEF5",
     "meaning": "asked whether it has a cause, and it is its own; an issue never asked carries nothing"
   },
+  "raised": {
+    "label": "raised",
+    "color": "5319E7",
+    "meaning": "put to the owner unasked, because it crossed the push line"
+  },
   "shortlist_size": 5,
   "_accrual": "A cause is at least as bad as the worst thing it produces on the first axis in order, and climbs on the second as they accumulate -- one band per symptoms_per_band, so below that number a symptom moves nothing. Both are read at list time from the sub-issue links; neither is ever written back, so a cause's own labels stay what a person proposed, and an axis nobody rated or rated twice stays that way rather than being filled in from the symptoms.",
   "accrual": {
@@ -55,5 +60,10 @@
   "assessment": {
     "before_shortlist": 5,
     "per_cycle": 5
+  },
+  "_push": "An item whose effective rating reaches the threshold on EVERY axis is put to the owner unasked, which is the push half of the two ways work leaves the pool. The threshold is at or above, not above, so a line at the top band can fire at all. Every axis in order must be named: an item that is catastrophic but not urgent, or urgent but trivial, is what the pull is for. Reaching the line does not raise anything by itself -- pushed names what crossed, a session puts the ask, and raise marks it so the pool does not ask twice.",
+  "push": {
+    "severity": 4,
+    "urgency": 4
   }
 }
