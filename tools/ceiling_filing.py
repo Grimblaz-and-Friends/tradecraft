@@ -93,8 +93,10 @@ def body_for(rel: str, size: int, ceiling: int) -> str:
         f"is that what one trigger among several needs belongs in `references/`. "
         f"The disqualifier decides which paragraphs, and that is a judgment this "
         f"item does not make.\n\n"
-        f"Raised by `tools/ceiling_filing.py` on merge. Its whole evidence is the "
-        f"measurement above, which is the carve-out `skills/filing/SKILL.md` "
+        f"**Provenance:** instrument -- raised by `tools/ceiling_filing.py` on "
+        f"merge, from the measurement above.\n\n"
+        f"Its whole evidence is the "
+        f"measurement, which is the carve-out `skills/filing/SKILL.md` "
         f"names -- there is no incident to attach, because nothing has gone wrong "
         f"yet.\n"
     )

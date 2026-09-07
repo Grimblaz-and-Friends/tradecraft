@@ -7,28 +7,42 @@ in a window by where it came from -- found in use by a consumer or an
 instrument run, routed by a review, or filed by the owner -- and comparing the
 use-found rate in the trial window against the weeks before it.
 
-This script does the mechanical half. It reads the issues, finds the sentence
-each body uses to state its own provenance, and classifies on that sentence:
+This script does the mechanical half. It reads the issues, finds where each
+body states its own provenance, and classifies on that:
 
-  use       an experience session, a cold consumer or seat, a dispatched
-            recipient, or an A/B run found it
-  review    a review seat surfaced or sustained it, a terminal stage or judge
-            routed it, or an external reviewer raised it
-  owner     the owner directed it or it came out of a design sitting
-  ambiguous the provenance text names more than one of the above; the row
-            shows every phrase matched and a human decides
-  unstated  no provenance phrase found anywhere in the body
+  use        an experience session, a cold consumer or seat, a dispatched
+             recipient, or an A/B run found it
+  review     a review seat surfaced or sustained it, a terminal stage or judge
+             routed it, or an external reviewer raised it
+  owner      the owner directed it or it came out of a design sitting
+  session    a session noticed it while doing other work
+  instrument a script or a guard raised it
+  ambiguous  the provenance text names more than one of the above; the row
+             shows every phrase matched and a human decides
+  unstated   no provenance phrase found anywhere in the body
+
+A body carrying the element `skills/filing/SKILL.md` requires -- one line under
+`**Provenance:**` whose first word is one of the five origins -- is classified
+on that word alone, and the row's basis reads `stated`. Nothing else in the
+body can move it, which is the point: the origin is a key, not a phrase to be
+inferred from the prose around it.
 
 The judgment half stays with the close-out session: every row prints the
 phrase it matched, so a classification can be checked and overridden by
 reading, and an ambiguous row is never counted as any class.
 
-Two tiers of phrase decide. A STRONG phrase is a verb of provenance -- who
-found or filed the thing -- and counts anywhere in the body. A WEAK phrase
-only names a mechanism, the judge, the cold seat, and counts only inside the
-body's own provenance section, because a filing that discusses a mechanism
-is about it, not from it. A body with no provenance section and no strong
-phrase is unstated, whatever it discusses.
+Where no origin is stated, two tiers of phrase decide. A STRONG phrase is a
+verb of provenance -- who found or filed the thing -- and counts anywhere in
+the body. A WEAK phrase only names a mechanism, the judge, the cold seat, and
+counts only inside the body's own provenance section, because a filing that
+discusses a mechanism is about it, not from it. A body with no provenance
+section and no strong phrase is unstated, whatever it discusses.
+
+The tiers stay because every body in the baseline window predates the element:
+dropping them would classify the whole baseline `unstated` and empty the
+comparison this script exists to make. No phrase pattern is written for the two
+newer origins, so a body without the element can never be classified into
+either -- they did not exist to be stated.
 
 Reads through the GitHub CLI, or from a JSON file for tests and offline runs.
 Output is ASCII; the stream setup is the shipped shim's.
@@ -51,8 +65,24 @@ from winio import utf8_stdio  # noqa: E402
 TRIAL_OPENED = "2026-09-04T22:34:00Z"
 BASELINE_WEEKS = 3
 
-# Two tiers. STRONG phrases state provenance wherever they appear -- a verb
-# that says who found or filed the thing. WEAK phrases name the mechanism and
+# The closed list of origins `skills/filing/SKILL.md` states, and the classes a
+# row may take. The origins are the first five: `ambiguous` and `unstated` are
+# what the classifier says about a body, never what a body says about itself.
+ORIGINS = ("use", "review", "owner", "session", "instrument")
+CLASSES = ORIGINS + ("ambiguous", "unstated")
+
+# The element itself. The heading, then the origin as the first word after it.
+# `.` as well as `:` on the heading, because bodies here already write both, and
+# a classifier that refused one would report the filer's punctuation as a
+# missing origin.
+STATED_PATTERN = re.compile(
+    r"^[ \t]*\*\*Provenance[:.]?\*\*[ \t:.\u2014\u2013-]*[`*_]*(" + "|".join(ORIGINS) + r")\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Two tiers, the fallback for bodies filed before the element existed. STRONG
+# phrases state provenance wherever they appear -- a verb that says who found
+# or filed the thing. WEAK phrases name the mechanism and
 # only count inside a body's own provenance section, because a body that
 # *discusses* the judge or the cold seat is about them, not from them.
 STRONG_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -147,14 +177,31 @@ def _verdict(hits: dict[str, list[str]], basis: str) -> tuple[str, list[str], st
     return name, phrases, basis
 
 
+def stated_origins(body: str) -> dict[str, list[str]]:
+    """Every origin the body states outright, as {origin: [the lines that state it]}.
+
+    Empty for a body filed before the element existed, which is what sends the
+    classification down to the phrase tiers.
+    """
+    hits: dict[str, list[str]] = {}
+    for match in STATED_PATTERN.finditer(body):
+        hits.setdefault(match.group(1).lower(), []).append(match.group(0).strip())
+    return hits
+
+
 def classify(body: str) -> tuple[str, list[str], str]:
     """Return (class, phrases matched, basis) for one body.
 
-    basis is 'provenance' when the classification came from the body's own
-    provenance section, where both tiers count, and 'body' when no such
-    section exists and only a STRONG phrase anywhere in the text may decide.
+    basis is 'stated' when the body carries the provenance element and named
+    its own origin, which nothing else in the body can override; 'provenance'
+    when no origin was stated and the classification came from the body's own
+    provenance section, where both tiers count; and 'body' when there is no
+    such section either and only a STRONG phrase anywhere in the text decides.
     """
     body = body or ""
+    stated = stated_origins(body)
+    if stated:
+        return _verdict(stated, "stated")
     section = provenance_text(body)
     if section.strip():
         hits = _hits(section, [STRONG_PATTERNS, WEAK_PATTERNS])
@@ -199,7 +246,7 @@ def window_rows(issues: list[dict], start: datetime, end: datetime) -> list[dict
 
 def summarize(rows: list[dict], start: datetime, end: datetime) -> dict:
     days = max((end - start).total_seconds() / 86400.0, 1e-9)
-    counts = {name: 0 for name in ("use", "review", "owner", "ambiguous", "unstated")}
+    counts = {name: 0 for name in CLASSES}
     for row in rows:
         counts[row["class"]] += 1
     return {
@@ -213,7 +260,7 @@ def render(name: str, summary: dict, rows: list[dict], *, verbose: bool, only: s
     out = [f"== {name}: {summary['start'][:10]} to {summary['end'][:10]} "
            f"({summary['days']} days, {summary['total']} issues)"]
     out.append("  class      count  per day")
-    for cls in ("use", "review", "owner", "ambiguous", "unstated"):
+    for cls in CLASSES:
         out.append(f"  {cls:<10} {summary['counts'][cls]:>5}  {summary['per_day'][cls]:>7.3f}")
     if verbose:
         out.append("  issue  class      basis       phrase(s) matched")
@@ -238,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baseline-weeks", type=int, default=BASELINE_WEEKS,
                         help=f"weeks before --opened that form the baseline (default {BASELINE_WEEKS})")
     parser.add_argument("--rows", action="store_true", help="print every issue with the phrase it matched")
-    parser.add_argument("--only", metavar="CLASS", choices=["use", "review", "owner", "ambiguous", "unstated"],
+    parser.add_argument("--only", metavar="CLASS", choices=list(CLASSES),
                         help="with --rows, print only rows of this class; the counts still cover every row")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     args = parser.parse_args(argv)

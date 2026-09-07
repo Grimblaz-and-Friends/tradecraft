@@ -1,5 +1,11 @@
-"""Tests for tools/trial_intake.py: classification in both polarities, the
-ambiguity refusal, the window split, and the CLI on a fixture file."""
+"""Tests for tools/trial_intake.py: the stated provenance element and its
+negative control, classification in both polarities, the ambiguity refusal,
+the window split, and the CLI on a fixture file.
+
+The fixtures further down predate the provenance element and are left exactly
+as they were. They are what proves the trial's baseline still classifies once
+the stated line is read first, so editing one to make a test pass would be the
+failure rather than the fix."""
 
 from __future__ import annotations
 
@@ -137,6 +143,98 @@ def test_a_body_that_discusses_the_mechanisms_is_not_classified_by_topic():
 def test_empty_body_is_unstated():
     assert ti.classify("")[0] == "unstated"
     assert ti.classify(None)[0] == "unstated"  # type: ignore[arg-type]
+
+
+# --- the stated element, and what it must override --------------------------
+
+# The line states `use`; the prose around it carries a strong `review` phrase.
+# The negative control is the same body with the line removed, which must come
+# back `review` -- a pair that classified the same way both ways would be
+# measuring nothing.
+STATED_LINE = "**Provenance:** use -- the second experience session on PR #470 met it.\n"
+STATED_OVER_PROSE_BODY = """> **In plain terms:** something.
+
+## The evidence
+
+The claim was sustained by the terminal stage of PR #415's review, and the judge routed the remedy here.
+
+""" + STATED_LINE
+
+STATED_SESSION_BODY = """> **In plain terms:** something.
+
+**Provenance:** session -- noticed while landing an unrelated change on 2026-09-07.
+"""
+
+STATED_INSTRUMENT_BODY = """> **In plain terms:** something.
+
+**Provenance:** instrument -- raised by a guard on merge.
+"""
+
+
+def test_a_stated_origin_decides_over_the_prose_around_it():
+    cls, phrases, basis = ti.classify(STATED_OVER_PROSE_BODY)
+    assert (cls, basis) == ("use", "stated"), (cls, basis, phrases)
+    assert phrases == ["**Provenance:** use"]
+
+
+def test_the_control_for_that_pair_classifies_the_other_way():
+    """Remove the one line, and the same body must come back `review`."""
+    control = STATED_OVER_PROSE_BODY.replace(STATED_LINE, "")
+    assert STATED_LINE not in control
+    assert ti.classify(control)[0] == "review", (
+        "the control must differ, or the stated-line rule proves nothing")
+
+
+def test_the_two_newer_origins_come_only_from_a_stated_line():
+    assert ti.classify(STATED_SESSION_BODY)[0] == "session"
+    assert ti.classify(STATED_SESSION_BODY)[2] == "stated"
+    assert ti.classify(STATED_INSTRUMENT_BODY)[0] == "instrument"
+    assert ti.classify(STATED_INSTRUMENT_BODY)[2] == "stated"
+    # No phrase tier can produce either, so a body filed before the element
+    # existed never lands in one. Strip the element and the same prose is
+    # unstated -- which is what keeps the trial's baseline where it was.
+    for body in (STATED_SESSION_BODY, STATED_INSTRUMENT_BODY):
+        stripped = "\n".join(l for l in body.splitlines() if "**Provenance:**" not in l)
+        assert "Provenance" not in stripped
+        assert ti.classify(stripped)[0] == "unstated", stripped
+
+
+def test_a_full_stop_heading_is_still_the_element():
+    """Bodies here write `**Provenance.**` as well as `**Provenance:**`, and a
+    classifier refusing one would report the filer's punctuation as a missing
+    origin."""
+    assert ti.classify("**Provenance.** owner -- he asked for it.")[0] == "owner"
+
+
+def test_two_stated_origins_refuse_to_classify():
+    both = STATED_SESSION_BODY + "\n**Provenance:** review -- and a seat surfaced it.\n"
+    cls, phrases, basis = ti.classify(both)
+    assert cls == "ambiguous" and basis == "stated"
+    assert any(p.startswith("session:") for p in phrases)
+    assert any(p.startswith("review:") for p in phrases)
+
+
+def test_the_origin_is_read_from_the_element_and_not_from_a_bare_word():
+    """`use` in running prose is not a stated origin; the heading is required."""
+    assert ti.classify("We use the cold seat here. Provenance: use.")[0] == "unstated"
+
+
+def test_the_new_classes_reach_the_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """A class the counts know but the table and --only do not is a class the
+    close-out cannot read, which is the whole point of stating one."""
+    dump = tmp_path / "issues.json"
+    dump.write_text(json.dumps([
+        _issue(40, "2026-09-05T00:00:00Z", STATED_SESSION_BODY),
+        _issue(41, "2026-09-05T01:00:00Z", STATED_INSTRUMENT_BODY),
+    ]), encoding="utf-8")
+    rc = ti.main(["--from-file", str(dump), "--until", "2026-09-06T00:00:00Z",
+                  "--rows", "--only", "session"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "#40" in out and "#41" not in out, "--only did not filter on the new class"
+    assert "instrument" in out, "the new class is missing from the summary table"
+    assert "stated" in out, "the basis column does not report the element"
+    assert out.isascii()
 
 
 def _issue(number: int, created: str, body: str) -> dict:
