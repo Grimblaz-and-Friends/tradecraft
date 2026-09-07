@@ -5323,14 +5323,22 @@ def check_depth_index(root: Path) -> list[str]:
             body = _frontmatterless(skill.read_text(encoding="utf-8", errors="replace"))
             rel = f"{parent}/{cell.name}"
 
+            # **Both separators, like REFERENCES_REF.** A pointer written
+            # `references\\detail.md` is lawful here and a forward-slash-only
+            # match misses it -- which does not merely fail to check that
+            # pointer, it reports the file it names as an orphan. Captures are
+            # normalised so the comparison against the directory is one shape.
+            def _named(pattern):
+                return {m.replace("\\", "/")
+                        for m in re.findall(pattern, body)}
+
             # Relative mentions belong to this cell by construction.
-            bare = set(re.findall(
-                r"(?<![\w/.-])references/([A-Za-z0-9._/-]+\.md)", body))
+            bare = _named(r"(?<![\w/.\\-])references[\\/]([A-Za-z0-9._/\\-]+\.md)")
             # Rooted mentions belong to whichever cell they name; only this
             # cell's count here, and only they can be reported dangling.
-            rooted = set(re.findall(
-                rf"(?<![\w/.-]){re.escape(rel)}/references/([A-Za-z0-9._/-]+\.md)",
-                body))
+            rooted = _named(
+                rf"(?<![\w/.\\-]){re.escape(rel)}[\\/]references[\\/]"
+                rf"([A-Za-z0-9._/\\-]+\.md)")
 
             named = bare | rooted
             present = {f.relative_to(depth_dir).as_posix()
