@@ -82,11 +82,13 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 
 ## A filing lands in the pool, not on the board
 
-**Every filing lands in the pool** -- what has been noticed, with its evidence and a rating, and not yet decided on. **The board holds what has been decided on and only that.** An open issue is in the pool unless it carries the framed label, so nothing is written to put it there and a filer who forgets cannot lose one.
+**A filing a session made on its own lands in the pool** -- what has been noticed, with its evidence and a rating, and not yet decided on. **The board holds what has been decided on and only that.** An open issue is in the pool unless it carries the framed label, so nothing is written to put it there and a filer who forgets cannot lose one.
+
+**What the owner filed, or told a session to file, is decided work from the start and goes straight to the board.** The line is *who decided*, not whether the thing is a defect or an idea: an owner filing something has already decided it is worth doing, and a pool that made them pull their own filing back out would have them waiting on themselves. So an owner-originated filing is **framed at birth** -- they run `frame` on it, or a session filing on their instruction frames it and says in the issue that it is the owner's ask. **A session may not frame its own filing**, which is the whole of the bar; nothing reads authorship off the wire, and a repository that wants owner filings pooled too says so in its own doctrine rather than in the policy, no command here reading such a field.
 
 **A filing carries two ratings the filer proposes, on separate axes: how severe it is, and how urgent** -- each one label from a set the policy names. Ideas are rated the same way as defects, by what is at stake rather than by what a wrong act would cost, so what waits in the pool is one kind of thing. **The owner confirms ratings only on the few raised to them**, never one filing at a time.
 
-**Work leaves the pool by the owner's pick.** They say they want something, a session raises a few with the case for and against each, and they pick one. **That pick is the decision that the work is worth doing, and it is what frames the filing** -- the brief settled afterwards still decides what the work is for and at what cost, and may send it back to the pool if the cause turns out bigger than the pick assumed.
+**Work leaves the pool by the owner's pick, and what is in the pool is what a session noticed rather than what the owner asked for.** They say they want something, a session raises a few with the case for and against each, and they pick one. **That pick is the decision that the work is worth doing, and it is what frames the filing** -- the brief settled afterwards still decides what the work is for and at what cost, and may send it back to the pool if the cause turns out bigger than the pick assumed.
 
 `scripts/pool.py` does the mechanics, and the judgment -- what a rating should be, what the case against a candidate is -- stays the session's:
 

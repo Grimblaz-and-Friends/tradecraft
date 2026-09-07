@@ -42,6 +42,14 @@
 
 **And a floor the mechanism cannot honour is not offered.** `assessment.before_shortlist` first validated at `least=0`, which is the value a repository reaches for to switch the gate off — and `max(len(raised), 0)` discarded it, so the policy loaded and every shortlist went on refusing with nothing saying why. It now validates at `least=1`: the gate is not switchable off from the policy, `--unassessed` is the per-invocation escape, and a repository that writes 0 is told rather than ignored. **The same positional confusion cost a header:** `cycle` printed the floor section against `order[-1]` while the fade and `at_floor` read `order[1]`, which coincide at two axes and do not at three, so a three-axis repository got a heading naming an axis that had not moved over rows floored on one that had.
 
+**9. The brief was amended a second time while this stage was in flight, and the sentence lands here.** [The amendment](https://github.com/Grimblaz-and-Friends/tradecraft/issues/434#issuecomment-5564240903) adds that *a filing you made yourself, or told a session to make, is decided work from the start and goes straight to the board; the pool holds what sessions notice on their own.* It reaches prose stage one landed — *Every filing lands in the pool* and *Work leaves the pool by the owner's pick* are now true of session-originated filings only  — and this stage is the change in flight on that cell, so carrying it in a fourth pull request would leave the cell contradicting itself in the meantime.
+
+**The line is who decided, not what kind of thing it is.** The owner first imagined splitting ideas to the board and defects to the pool; that was argued down in the sitting on three grounds recorded there, of which the load-bearing one is that a defect-or-idea label is gameable and this practice already carries a disguise clause for exactly that reason. Authorship is not gameable in the same way, because the owner is the only one who can be it.
+
+**Nothing mechanical is added, deliberately.** No command reads authorship: an owner-originated filing is framed at birth by the owner running `frame`, or by a session filing on their instruction framing it and saying so in the issue. **The policy gains no field**, though the amendment permits one, because [D-438] decision 11 is that a field no command reads is a promise in a second place — a repository wanting owner filings pooled too says so in its own doctrine. What this costs is that the rule is a bar a session keeps rather than one a guard enforces, and the bar is stated as the narrowest thing that works: **a session may not frame its own filing.**
+
+**No criterion moves.** The amendment is about what enters the pool; this stage's criteria are about what happens to things already in it, so the reading is carried rather than re-settled.
+
 ## What was rejected
 
 - **Writing the decayed rating**, which is the obvious design and is self-defeating; decision 1.
@@ -54,7 +62,7 @@
 
 - `skills/adversarial-review/references/arbitration.md` and `skills/adversarial-review/references/the-record.md`: a `record` ruling now files into a pool where one exists, and the entry's role narrows to accounting. Both are shipped.
 - `docs/cells/records/SKILL.md`: the local statement of where a ruling goes. Repo-only, and flagged for the owner's review by `ci.yml` as a repo-only cell is.
-- `skills/filing/SKILL.md`: the pool paragraph gains the accrual, the fade and the assessment; and the governing-prose bar gains its one exception, decision 6.
+- `skills/filing/SKILL.md`: the pool paragraph gains the accrual, the fade and the assessment; the governing-prose bar gains its one exception, decision 6; and the membership sentences are qualified to session-originated filings, decision 9. Shipped.
 - `docs/cells/board/SKILL.md`: the two commands that read what moves between refreshes.
 - `tools/board.py`: the line printed when the board runs out of work now names the gate that would refuse the command it prints, and its escape. Repo-only.
 - No always-on document and no cell description is touched, which is the affirmed brief's exclusion and is stage one's reading of it, unchanged. **Two descriptions are now stale by it and neither is repaired here**: the `records` cell's says a ruling appends to a record, where the body now also files into the pool, and the `filing` cell's sits further from its cell's job by exactly the size of this change. Both are put to the owner rather than left unrecorded.
