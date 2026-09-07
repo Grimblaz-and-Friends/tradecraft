@@ -7,6 +7,15 @@ description: How this practice writes the code it ships and runs — one substra
 
 **Purpose:** make the code this practice ships and runs behave the same for every consumer, on every platform, in every runtime. **Audience:** any session writing or revising a script, test, hook or guard, in this repo or a repo that adopts the practice. **Success:** a script written under these standards runs the same from a source checkout as from an installed plugin, its output survives being captured, and whatever proves it travels with it.
 
+## Where this cell's depth lives
+
+Every firing of this cell needs what is above; each file below is one
+trigger's worth and costs nothing until that trigger fires. The entry says
+when to open it.
+
+- **A script prints, or writes a file something will later compare, restore or measure** -> `references/text-mode.md`: the three rules, why the first two are not a choice, and what setting a stream also pins.
+- **A script launches another program** -> `references/subprocess-streams.md`: why a launch redirects nothing or names all three streams.
+
 ## The standards
 
 - **One substrate, chosen once and hardened**, because one substrate is one set of idioms to harden. Which one is the adopting repository's own call, made in its doctrine.

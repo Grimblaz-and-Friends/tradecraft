@@ -7,6 +7,17 @@ description: How to create and revise this practice's prose — the purpose head
 
 **Purpose:** make every governing document and skill in the practice accountable to a stated job, and what a write-up rests on — its figures, and its claims about how things behave — re-derivable rather than inherited. **Audience:** any session creating or revising a skill or governing document, or stating a derived figure or a behaviour claim in a write-up — in this repo or a repo that adopts the practice. **Success:** every document it governs can say what it is for, who reads it, and what its review should judge it against — and contains nothing that fails that test; every skill earns what it puts in a session's context and keeps the rest behind a pointer; every figure it governs is its command and tree, or lives where it re-derives, and every behaviour claim on a surface nobody goes back to correct names what demonstrates it.
 
+## Where this cell's depth lives
+
+Every firing of this cell needs what is above; each file below is one
+trigger's worth and costs nothing until that trigger fires. The entry says
+when to open it.
+
+- **Creating a cell, restructuring one, writing or revising a description, or writing prose that names or relies on another cell** -> `references/cell-structure.md`: what the description owes, when depth leaves the body, the index a cell with depth carries, and the pointer form and its one-way rules.
+- **Deciding which home a piece of content belongs in, or editing an always-on surface at all** -> `references/routing.md`: the four homes, and the outflow an always-on edit owes, read as the admission order backwards.
+- **Changing prose that already governs something, rather than writing new prose** -> `references/revising.md`: reading the cited decision first, naming every meaning change, and what a reviser owes the entry it supersedes.
+- **About to put a figure, or a claim about current behaviour, into anything that does not re-derive it at read time** -> `references/frozen-documents.md`: what a frozen surface may state, and why the command and the tree go in place of the number.
+
 ## The purpose header
 
 Every governing document and skill opens by answering three questions, a sentence or two each:

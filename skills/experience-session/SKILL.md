@@ -7,6 +7,15 @@ description: A chartered, time-boxed use of a built result as its consumer would
 
 **Purpose:** find what only use finds, by using the built result on a real job and reporting what was lived. **Audience:** any session that has just built or amended something a later session must work under, or something a product's users use. **Success:** the built result has been used on a real job by someone who was not in the conversation that produced it, and what use found — friction or its absence — is written on the change's pull request or issue.
 
+## Where this cell's depth lives
+
+Every firing of this cell needs what is above; each file below is one
+trigger's worth and costs nothing until that trigger fires. The entry says
+when to open it.
+
+- **The run needs a repository tree of its own and you are about to build it** -> `references/isolation.md`: building from the change's content without its history, and the records that leak what is under test.
+- **The built result is software someone uses and you are about to hand a consumer something to use** -> `references/running-instance.md`: standing the product up, and why the consumer is still manufactured.
+
 ## The instrument — three pieces, nothing more
 
 - **Charter.** One sentence naming the mission: *use X on a real job as its consumer would; where does it fight you.* Name the material and the job; do not name what to look for. A charter listing what it expects has become a lens brief, and the session will find those things and stop.

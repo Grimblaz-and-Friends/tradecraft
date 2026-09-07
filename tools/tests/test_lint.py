@@ -57,6 +57,16 @@ def _write_cell(skill: Path, body: str) -> None:
     with empty metadata. The fixtures exercise body content, so the header is
     boilerplate here; it is not boilerplate in the tree.
     """
+    # A depth file no body names is an orphan under check_depth_index, and
+    # the fixtures that carry one are about other checks. Naming any the
+    # caller did not keeps each fixture about its own check, exactly as the
+    # roster entry below does.
+    ref_dir = skill / "references"
+    depth = sorted(f.name for f in ref_dir.glob("*.md")) if ref_dir.is_dir() else []
+    unnamed = [n for n in depth if f"references/{n}" not in body]
+    if unnamed:
+        body = body + NL + "Depth lives in " + ", ".join(
+            f"references/{n}" for n in unnamed) + "." + NL
     (skill / "SKILL.md").write_text(
         "---" + NL + f"name: {skill.name}" + NL
         + "description: A fixture cell." + NL + "---" + NL + NL + body,
@@ -938,8 +948,12 @@ def test_a_references_pointer_must_resolve_against_its_own_file(tmp_path):
     assert lint.run(tmp_path) == []
     (skill / "references" / "detail.md").rename(skill / "references" / "moved.md")
     findings = lint.run(tmp_path)
-    assert len(findings) == 1
-    assert "reference-pointer" in findings[0] and "references/detail.md" in findings[0]
+    # Two guards see this and both are right: the pointer resolves against
+    # nothing, and the index now names a file that is gone while the renamed
+    # one is named by nobody. This test owns the first.
+    pointer = [f for f in findings if "reference-pointer" in f]
+    assert len(pointer) == 1 and "references/detail.md" in pointer[0]
+    assert all("reference-pointer" in f or "depth-index" in f for f in findings)
 
 
 def test_a_references_pointer_resolves_written_with_either_separator(tmp_path):
@@ -977,6 +991,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_project_roster",
     "check_sideways_deps",
     "check_cell_references",
+    "check_depth_index",
     "check_doctrine_citations",
     "check_doctrine_references",
     "check_doctrine",
@@ -2811,13 +2826,17 @@ def test_a_cell_body_budget_is_enforced_in_both_polarities(tmp_path):
     original = lint.CELL_BODY_BUDGET_CHARS
     try:
         lint.CELL_BODY_BUDGET_CHARS = monkey
-        _write_cell(skill, "x" * budget + NL)
+        # The body names its own depth file, so _write_cell appends nothing
+        # and the character count stays exactly what this test sets.
+        named = "Depth lives in references/detail.md." + NL
+        pad = budget - len(named)
+        _write_cell(skill, named + "x" * pad + NL)
         over = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
         assert len(over) == 1 and "example-skill" in over[0], over
         # Exactly at the budget, not under it: this is the arm that catches a
         # guard drifting to >=, and a cell sitting five chars from its cap
         # makes landing on the boundary an ordinary next edit.
-        _write_cell(skill, "x" * budget)
+        _write_cell(skill, named + "x" * pad)
         assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []
     finally:
         lint.CELL_BODY_BUDGET_CHARS = original
