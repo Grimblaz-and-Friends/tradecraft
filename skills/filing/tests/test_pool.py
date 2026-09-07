@@ -17,6 +17,7 @@ useless.
 import importlib.util
 import json
 import re
+from datetime import datetime, timedelta, timezone
 import subprocess
 import sys
 from pathlib import Path
@@ -48,7 +49,12 @@ def policy_dict(**over):
         },
         "order": ["severity", "urgency"],
         "framed": {"label": "framed", "color": "0E8A16", "meaning": "decided"},
+        "cause": {"label": "cause", "color": "B60205", "meaning": "a cause"},
+        "assessed": {"label": "assessed:no-cause", "color": "C5DEF5", "meaning": "asked"},
         "shortlist_size": 3,
+        "accrual": {"symptoms_per_band": 2},
+        "fade": {"quiet_days": 30, "closes": False},
+        "assessment": {"before_shortlist": 3, "per_cycle": 3},
     }
     base.update(over)
     return base
@@ -59,9 +65,22 @@ def write_policy(path: Path, policy) -> Path:
     return path
 
 
-def issue(number, title="t", labels=()):
-    return {"number": number, "title": title,
-            "labels": [{"name": name} for name in labels]}
+ASSESSED = "assessed:no-cause"
+
+
+def issue(number, title="t", labels=(), assessed=True, updated=None):
+    """One issue as `gh issue list --json` returns it.
+
+    `assessed` defaults to True so that a test about ratings is not silently a
+    test of the shortlist's assessment gate. The gate has its own tests, which
+    pass False.
+    """
+    names = list(labels) + ([ASSESSED] if assessed else [])
+    out = {"number": number, "title": title,
+           "labels": [{"name": name} for name in names]}
+    if updated is not None:
+        out["updatedAt"] = updated
+    return out
 
 
 @pytest.fixture(autouse=True)
@@ -221,8 +240,9 @@ def test_nothing_is_sent_when_there_is_nothing_to_change(monkeypatch):
 
 def test_writable_labels_is_exactly_the_policy(monkeypatch):
     assert pool.writable_labels(policy_dict()) == frozenset(
-        {"sev:1", "sev:2", "sev:3", "urg:1", "urg:2", "urg:3", "framed"}
-    )
+        {"sev:1", "sev:2", "sev:3", "urg:1", "urg:2", "urg:3", "framed",
+         "assessed:no-cause"}
+    ), "the rail admits exactly the labels the policy names, and `cause` is not one -- nothing here writes it"
 
 
 def test_the_framed_label_a_repository_renamed_is_what_frame_writes(monkeypatch):
@@ -237,8 +257,17 @@ def test_the_framed_label_a_repository_renamed_is_what_frame_writes(monkeypatch)
 # -------------------------------------------------------------- the partition
 
 
-def stub_issues(monkeypatch, issues):
+def stub_issues(monkeypatch, issues, parents=None):
+    """The two reads `read_pool` makes: the issue list, and the parentage.
+
+    The parentage is stubbed to empty by default. It is a separate read because
+    neither `parent` nor `issueType` is in `gh issue list`'s field set, so it
+    has to be GraphQL -- and it is this script's own rather than an import from
+    a repository's board transport, which is repo-only and may not be reached
+    from a shipped script.
+    """
     monkeypatch.setattr(pool, "gh", lambda args: json.dumps(issues))
+    monkeypatch.setattr(pool, "causal_parents", lambda policy, repo=None: parents or {})
 
 
 def test_an_issue_is_in_the_pool_unless_it_carries_the_framed_label(monkeypatch):
@@ -466,8 +495,32 @@ def test_labels_creates_only_what_is_missing(monkeypatch, capsys):
     pool.cmd_labels(policy_dict(), None, dry_run=False)
     created = [a[2] for a in calls if a[:2] == ["label", "create"]]
     assert "sev:1" not in created
-    assert sorted(created) == ["framed", "sev:2", "sev:3", "urg:1", "urg:2", "urg:3"]
+    assert sorted(created) == ["assessed:no-cause", "cause", "framed",
+                               "sev:2", "sev:3", "urg:1", "urg:2", "urg:3"]
     assert all("--force" not in a for a in calls)
+
+
+def test_every_label_a_command_needs_is_one_labels_creates(monkeypatch):
+    """The gap that shipped: `writable_labels` gained the assessed label for the
+    write rail and `label_specs` did not, so the setup command reported success
+    while `assess` failed at the wire against a label the repository lacked. The
+    cause label is the same shape -- never written here, read by the accrual,
+    and unusable until something creates it."""
+    calls = []
+
+    def wire(args):
+        calls.append(args)
+        return json.dumps([]) if args[:2] == ["label", "list"] else ""
+
+    monkeypatch.setattr(pool, "gh", wire)
+    policy = policy_dict()
+    pool.cmd_labels(policy, None, dry_run=False)
+    created = {a[2] for a in calls if a[:2] == ["label", "create"]}
+    assert pool.writable_labels(policy) <= created
+    assert policy["cause"]["label"] in created
+    # And the rail stays narrower than the create set: creating a label is not
+    # licence to write it onto an issue.
+    assert pool.writable_labels(policy) < created
 
 
 def test_labels_dry_run_writes_nothing(monkeypatch):
@@ -664,13 +717,14 @@ def cli(monkeypatch, *argv):
     flags survived deletion with the suite green and the documented invocation
     shape was wrong."""
     monkeypatch.setattr(pool, "find_policy", lambda start=None: pool.DEFAULT_POLICY)
+    monkeypatch.setattr(pool, "causal_parents", lambda policy, repo=None: {})
     return pool.main(list(argv))
 
 
 def test_the_repo_and_policy_flags_parse_before_the_subcommand(monkeypatch, capsys):
     """The Usage block documented them after it, where argparse exits 2."""
     assert cli(monkeypatch, "--repo", "o/r", "policy") == 0
-    assert "writable labels:" in capsys.readouterr().out
+    assert "labels it writes onto an issue:" in capsys.readouterr().out
 
 
 def test_the_documented_usage_shape_is_the_one_that_runs(monkeypatch):
@@ -746,3 +800,714 @@ def test_the_cli_reports_a_refusal_without_a_traceback(monkeypatch, capsys):
     assert cli(monkeypatch, "show", "999") == 1
     err = capsys.readouterr().err
     assert err.startswith("pool: ") and "Traceback" not in err
+
+
+# ================================================== accrual, the fade, assessment
+
+
+def ago(days):
+    """An ISO-8601 stamp that many days in the past, as GitHub writes them."""
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+
+
+# ------------------------------------------------------------------- accrual
+
+
+def test_a_cause_is_at_least_as_bad_as_the_worst_thing_it_produces(monkeypatch):
+    """The first axis accrues by maximum, not by count: a cause that produced a
+    sev:3 is not a sev:1 problem however mildly anyone rated it."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:1", "urg:1"]),
+        issue(2, labels=["sev:3", "urg:1"]),
+    ], parents={2: 1})
+    items, _ = pool.read_pool(policy_dict())
+    by = {it["number"]: it for it in items}
+    assert by[1]["effective"]["severity"] == 3
+    assert by[1]["ratings"]["severity"] == "sev:1", "the label itself is untouched"
+
+
+def test_a_cause_climbs_on_the_second_axis_as_symptoms_accumulate(monkeypatch):
+    """One band per `accrual.symptoms_per_band`, which is 2 in the test policy."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:1", "urg:1"]),
+        *[issue(n, labels=["sev:1", "urg:1"]) for n in (2, 3, 4, 5)],
+    ], parents={2: 1, 3: 1, 4: 1, 5: 1})
+    items, _ = pool.read_pool(policy_dict())
+    by = {it["number"]: it for it in items}
+    assert by[1]["effective"]["urgency"] == 3, "four symptoms, two per band, from 1"
+
+
+def test_accrual_is_capped_at_the_axis_maximum(monkeypatch):
+    """A cause with many symptoms does not climb past the scale a person can write."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:1", "urg:1"]),
+        *[issue(n, labels=["sev:1", "urg:1"]) for n in range(2, 20)],
+    ], parents={n: 1 for n in range(2, 20)})
+    items, _ = pool.read_pool(policy_dict())
+    by = {it["number"]: it for it in items}
+    assert by[1]["effective"]["urgency"] == 3, "the test policy's urgency tops out at 3"
+
+
+def test_a_cause_that_accumulated_outranks_an_identically_labelled_one(monkeypatch):
+    """Criterion 1: same labels, same bands, one carrying symptoms -- and the
+    order separates them without anyone editing a label."""
+    stub_issues(monkeypatch, [
+        issue(10, labels=["sev:2", "urg:2"]),
+        issue(11, labels=["sev:2", "urg:2"]),
+        issue(12, labels=["sev:2", "urg:2"]),
+        issue(13, labels=["sev:2", "urg:2"]),
+    ], parents={12: 11, 13: 11})
+    items, _ = pool.read_pool(policy_dict())
+    assert items[0]["number"] == 11, [it["number"] for it in items]
+
+
+def test_a_symptom_contributes_its_labelled_band_and_nothing_derived():
+    """`_bare` is what a symptom contributes, and it reads labels only.
+
+    A chain of causes would otherwise climb without limit and for no reason
+    anybody wrote down. Pinned on `_bare` directly rather than through
+    `read_pool`, because there the property is additionally held by call order
+    -- symptoms are collected before any `effective` is computed -- and a test
+    that rests on the ordering alone goes green under a change that removes the
+    intent while keeping the order. Mutating `_bare` to return a derived pair
+    reddens this; mutating `read_pool`'s call site does not, which is why this
+    is the site that carries the pin.
+    """
+    item = {"ratings": {"severity": "sev:1", "urgency": "urg:1"}, "clashes": [],
+            "effective": {"severity": 3, "urgency": 3}}
+    assert pool._bare(item, policy_dict()) == {"severity": 1, "urgency": 1}
+
+
+def test_a_chain_of_causes_accrues_one_level(monkeypatch):
+    """The composition, over a two-level chain: #2 accrues from #3, and #1
+    accrues #2's own band rather than #2's accrued one."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:1", "urg:1"]),
+        issue(2, labels=["sev:1", "urg:1"]),
+        issue(3, labels=["sev:3", "urg:1"]),
+    ], parents={2: 1, 3: 2})
+    items, _ = pool.read_pool(policy_dict())
+    by = {it["number"]: it for it in items}
+    assert by[2]["effective"]["severity"] == 3
+    assert by[1]["effective"]["severity"] == 1
+
+
+def test_a_repository_with_no_cause_links_accrues_nothing(monkeypatch):
+    """The lawful polarity: a mechanism nobody is using costs nothing."""
+    stub_issues(monkeypatch, [issue(1, labels=["sev:2", "urg:2"])])
+    items, _ = pool.read_pool(policy_dict())
+    assert items[0]["effective"] == {"severity": 2, "urgency": 2}
+
+
+def test_accrual_raises_a_rating_and_never_supplies_one(monkeypatch):
+    """The clash and the blank both read as `None`, and filling either from the
+    symptoms resolved a question the design refuses to resolve.
+
+    An issue carrying two severity labels rode to the top of the pool at a value
+    nobody wrote, its row saying only `CLASH` -- the one signal meaning a human
+    still has to choose -- and an unrated cause sorted in the rated tier while
+    `is_rated` and the header count both called it unrated. D-438 decision 3 is
+    that two values on one axis are reported rather than resolved.
+    """
+    stub_issues(monkeypatch, [
+        issue(10, labels=["sev:1", "sev:2", "urg:2"]),   # clashed severity
+        issue(11, labels=["urg:2"]),                     # unrated severity
+        issue(12, labels=["sev:2", "urg:2"]),            # rated, accrues
+        issue(20, labels=["sev:3"]), issue(21, labels=["sev:3"]),
+        issue(22, labels=["sev:3"]), issue(23, labels=["sev:3"]),
+        issue(24, labels=["sev:3"]), issue(25, labels=["sev:3"]),
+    ], parents={20: 10, 21: 10, 22: 11, 23: 11, 24: 12, 25: 12})
+    items, _ = pool.read_pool(policy_dict())
+    by = {it["number"]: it for it in items}
+
+    assert by[10]["effective"]["severity"] is None, "a clash is not resolved"
+    assert by[11]["effective"]["severity"] is None, "unrated is not supplied"
+    # The control, on the same run: a cause that HAS a band still climbs to its
+    # worst symptom's, so this pins the narrowing and not the mechanism.
+    assert by[12]["effective"]["severity"] == 3
+
+    # And the two agree with each other about which tier the item is in, which
+    # they did not: `sort_key` called the item complete while `is_rated` and the
+    # header count called it unrated, in one output.
+    for number in (10, 11):
+        assert not pool.is_rated(by[number], policy_dict())
+        assert pool.sort_key(by[number], policy_dict())[0] == 1
+    assert pool.sort_key(by[12], policy_dict())[0] == 0
+
+
+# ---------------------------------------------------------------------- fade
+
+
+def test_urgency_falls_one_band_per_quiet_window(monkeypatch):
+    stub_issues(monkeypatch, [issue(1, labels=["sev:2", "urg:3"], updated=ago(65))])
+    items, _ = pool.read_pool(policy_dict())
+    assert items[0]["effective"]["urgency"] == 1, "two whole 30-day windows, from 3"
+
+
+def test_severity_never_falls(monkeypatch):
+    """Structural rather than a rule: only urgency carries a decay term."""
+    stub_issues(monkeypatch, [issue(1, labels=["sev:3", "urg:3"], updated=ago(400))])
+    items, _ = pool.read_pool(policy_dict())
+    assert items[0]["effective"]["severity"] == 3
+    assert items[0]["ratings"]["severity"] == "sev:3"
+
+
+def test_the_fade_floors_rather_than_going_negative(monkeypatch):
+    stub_issues(monkeypatch, [issue(1, labels=["sev:2", "urg:2"], updated=ago(3000))])
+    items, _ = pool.read_pool(policy_dict())
+    assert items[0]["effective"]["urgency"] == 1, "the test policy's urgency floor"
+
+
+def test_a_quiet_issue_falls_below_an_equally_rated_active_one(monkeypatch):
+    """Criterion 2's ordering half."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:2", "urg:3"], updated=ago(90)),
+        issue(2, labels=["sev:2", "urg:3"], updated=ago(0)),
+    ])
+    items, _ = pool.read_pool(policy_dict())
+    assert [it["number"] for it in items] == [2, 1]
+
+
+def test_an_issue_with_no_timestamp_fades_by_zero(monkeypatch):
+    """Rather than by an amount nobody can check: a payload without the field is
+    a stub or an older read, not evidence of quiet."""
+    stub_issues(monkeypatch, [issue(1, labels=["sev:2", "urg:3"])])
+    items, _ = pool.read_pool(policy_dict())
+    assert items[0]["effective"]["urgency"] == 3
+
+
+def test_the_fade_writes_nothing(monkeypatch):
+    """Criterion 3. The whole reason the decay is derived: a write would bump
+    `updatedAt`, which is the signal quiet is read from, so an item would decay
+    once and then never again while looking exactly like one being kept alive."""
+    sent = []
+
+    def wire(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([issue(1, labels=["sev:2", "urg:3"], updated=ago(400))])
+        sent.append(args)
+        return "[]"
+
+    monkeypatch.setattr(pool, "gh", wire)
+    monkeypatch.setattr(pool, "causal_parents", lambda policy, repo=None: {})
+    pool.cmd_list(policy_dict(), None, None)
+    assert sent == [], f"the fade wrote: {sent}"
+
+
+def test_the_write_fence_in_that_probe_catches_a_write(monkeypatch):
+    """The negative control for the test above: it would report differently if a
+    write happened, so its green means no write rather than a broken probe."""
+    sent = []
+
+    def wire(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([issue(1, labels=["sev:2", "urg:3"])])
+        sent.append(args)
+        return "[]"
+
+    monkeypatch.setattr(pool, "gh", wire)
+    monkeypatch.setattr(pool, "causal_parents", lambda policy, repo=None: {})
+    monkeypatch.setattr(pool, "issue_labels", lambda number, repo=None: [])
+    pool.cmd_frame(policy_dict(), None, 1)
+    assert sent, "the fence sees writes when there are writes"
+
+
+# ---------------------------------------------------------------- assessment
+
+
+def test_an_assessed_issue_reads_differently_from_one_never_asked(monkeypatch):
+    """Criterion 4. The difference the amendment required be visible is the
+    presence or absence of one label, and it shows in the row."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:2", "urg:2"], assessed=True),
+        issue(2, labels=["sev:2", "urg:2"], assessed=False),
+    ])
+    items, _ = pool.read_pool(policy_dict())
+    by = {it["number"]: it for it in items}
+    assert by[1]["assessed"] and not by[2]["assessed"]
+    assert "?" not in pool._line(by[1], policy_dict())
+    assert "?" in pool._line(by[2], policy_dict())
+
+
+def test_the_shortlist_refuses_over_an_unassessed_top(monkeypatch):
+    """Criterion 5. An advisory line does not do what the amendment asks -- a
+    session reads it and raises the symptoms anyway."""
+    stub_issues(monkeypatch, [
+        issue(n, labels=["sev:2", "urg:2"], assessed=False) for n in (1, 2, 3)
+    ])
+    with pytest.raises(pool.PoolError) as caught:
+        pool.cmd_shortlist(policy_dict(), None, None)
+    message = str(caught.value)
+    assert "#1" in message and "#2" in message and "#3" in message
+    assert "--unassessed" in message
+    assert "assess <N> --none" in message
+
+
+def test_the_shortlist_does_not_refuse_when_the_top_is_assessed(monkeypatch, capsys):
+    """The lawful polarity: a gate that could not be passed would make the
+    shortlist unavailable rather than better."""
+    stub_issues(monkeypatch, [
+        issue(n, labels=["sev:2", "urg:2"], assessed=True) for n in (1, 2, 3)
+    ])
+    assert pool.cmd_shortlist(policy_dict(), None, None) == 0
+    assert "#1" in capsys.readouterr().out
+
+
+def test_the_escape_raises_anyway(monkeypatch, capsys):
+    stub_issues(monkeypatch, [
+        issue(n, labels=["sev:2", "urg:2"], assessed=False) for n in (1, 2, 3)
+    ])
+    assert pool.cmd_shortlist(policy_dict(), None, None, unassessed=True) == 0
+    assert "#1" in capsys.readouterr().out
+
+
+def test_the_gate_looks_at_least_as_deep_as_count_asks(monkeypatch):
+    """`--count` cannot outrun the gate by raising past the policy's depth."""
+    policy = policy_dict(assessment={"before_shortlist": 1, "per_cycle": 3})
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:3", "urg:3"], assessed=True),
+        issue(2, labels=["sev:2", "urg:2"], assessed=False),
+    ])
+    with pytest.raises(pool.PoolError) as caught:
+        pool.cmd_shortlist(policy, None, 2)
+    assert "#2" in str(caught.value)
+
+
+def test_assess_writes_the_policys_label_and_nothing_else(monkeypatch, capsys):
+    sent = []
+    monkeypatch.setattr(pool, "gh", lambda args: sent.append(args) or "")
+    pool.cmd_assess(policy_dict(), None, 7)
+    assert sent[0][sent[0].index("--add-label") + 1] == "assessed:no-cause"
+    assert "--remove-label" not in sent[0]
+
+
+def test_assess_is_admitted_by_the_rail(monkeypatch):
+    """The one write stage two adds would otherwise be refused by the guard
+    stage one built, which is why `writable_labels` had to widen."""
+    assert "assessed:no-cause" in pool.writable_labels(policy_dict())
+
+
+# --------------------------------------------------------------------- cycle
+
+
+def test_the_cycle_bounds_what_it_names_to_assess(monkeypatch, capsys):
+    """Criterion 6: the backlog is worked through at a stated rate rather than
+    all at once."""
+    stub_issues(monkeypatch, [
+        issue(n, labels=["sev:2", "urg:2"], assessed=False) for n in range(1, 21)
+    ])
+    pool.cmd_cycle(policy_dict(), None)
+    out = capsys.readouterr().out
+    section = out.split("next to assess")[1]
+    named = [line for line in section.splitlines() if line.strip().startswith("#")]
+    assert len(named) == 3, "the test policy's per_cycle"
+    assert "3 of 20 never asked" in out
+
+
+def test_the_cycle_closes_nothing_where_the_policy_says_so(monkeypatch, capsys):
+    """Criterion 7, the default polarity."""
+    sent = []
+
+    def wire(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([issue(1, labels=["sev:2", "urg:1"], updated=ago(400))])
+        sent.append(args)
+        return ""
+
+    monkeypatch.setattr(pool, "gh", wire)
+    monkeypatch.setattr(pool, "causal_parents", lambda policy, repo=None: {})
+    pool.cmd_cycle(policy_dict(), None)
+    out = capsys.readouterr().out
+    assert "at the floor" in out and "#1" in out
+    assert "fade.closes is false" in out
+    assert sent == [], f"nothing may be written: {sent}"
+
+
+def test_the_cycle_closes_at_the_floor_where_a_repository_turned_it_on(monkeypatch, capsys):
+    """Criterion 7's other polarity. The brief agreed the close; the switch is a
+    condition on when, not a licence never to build it."""
+    sent = []
+
+    def wire(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([issue(1, labels=["sev:2", "urg:1"], updated=ago(400))])
+        sent.append(args)
+        return ""
+
+    monkeypatch.setattr(pool, "gh", wire)
+    monkeypatch.setattr(pool, "causal_parents", lambda policy, repo=None: {})
+    pool.cmd_cycle(policy_dict(fade={"quiet_days": 30, "closes": True}), None)
+    assert len(sent) == 1, sent
+    assert sent[0][:2] == ["issue", "close"]
+    assert sent[0][sent[0].index("--reason") + 1] == "not planned"
+    assert "closing #1 as not planned" in capsys.readouterr().out
+
+
+def test_the_cycle_closes_nothing_that_has_not_floored(monkeypatch, capsys):
+    """Even with the switch on: an item touched today does not close however low
+    it is rated, and an item quiet for a window does not close unless the fade
+    reached the floor.
+
+    It does **not** say that a low filing is safe: one filed at the floor and
+    left quiet does close, which the test below pins.
+    """
+    sent = []
+
+    def wire(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([
+                issue(1, labels=["sev:2", "urg:1"], updated=ago(0)),
+                issue(2, labels=["sev:2", "urg:3"], updated=ago(31)),
+            ])
+        sent.append(args)
+        return ""
+
+    monkeypatch.setattr(pool, "gh", wire)
+    monkeypatch.setattr(pool, "causal_parents", lambda policy, repo=None: {})
+    pool.cmd_cycle(policy_dict(fade={"quiet_days": 30, "closes": True}), None)
+    assert sent == [], "#1 is at the floor but was touched today; #2 is quiet but not floored"
+
+
+def test_an_item_filed_at_the_floor_and_left_quiet_does_close(monkeypatch):
+    """The case the test above claims to exclude and never ran, pinned as it
+    actually behaves rather than as its neighbour's docstring described it.
+
+    `at_floor` asks whether the item **is** at the bottom and quiet, not whether
+    the fade ever moved it, so a filing somebody deliberately rated lowest closes
+    one quiet window after it was filed -- at any severity. Whether that is right
+    changes what `fade.closes` means and is the owner's; what is not optional is
+    that the suite say which of the two it does.
+    """
+    sent = []
+
+    def wire(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([issue(1, labels=["sev:3", "urg:1"], updated=ago(31))])
+        sent.append(args)
+        return ""
+
+    monkeypatch.setattr(pool, "gh", wire)
+    monkeypatch.setattr(pool, "causal_parents", lambda policy, repo=None: {})
+    pool.cmd_cycle(policy_dict(fade={"quiet_days": 30, "closes": True}), None)
+    assert [a[:3] for a in sent] == [["issue", "close", "1"]], sent
+
+
+def test_a_dry_run_names_the_closes_and_makes_none(monkeypatch, capsys):
+    """The switch is unattended and irreversible-ish, and the list of what it
+    would close was readable only by turning it on."""
+    sent = []
+
+    def wire(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([issue(1, labels=["sev:3", "urg:1"], updated=ago(31))])
+        sent.append(args)
+        return ""
+
+    monkeypatch.setattr(pool, "gh", wire)
+    monkeypatch.setattr(pool, "causal_parents", lambda policy, repo=None: {})
+    pool.cmd_cycle(policy_dict(fade={"quiet_days": 30, "closes": True}), None, dry_run=True)
+    assert sent == [], sent
+    assert "would close #1" in capsys.readouterr().out
+
+
+# -------------------------------------------------------------- the policy
+
+
+@pytest.mark.parametrize("mutate, because", [
+    (lambda p: p.pop("cause"), "no cause label"),
+    (lambda p: p.pop("assessed"), "no assessed label"),
+    (lambda p: p.pop("accrual"), "no accrual block"),
+    (lambda p: p.pop("fade"), "no fade block"),
+    (lambda p: p.pop("assessment"), "no assessment block"),
+    (lambda p: p.update(fade={"quiet_days": 30}), "closes not stated"),
+    (lambda p: p.update(fade={"quiet_days": 0, "closes": False}), "a quiet window of zero"),
+    (lambda p: p.update(accrual={"symptoms_per_band": 0}), "a band of zero symptoms"),
+    (lambda p: p.update(assessment={"before_shortlist": 1, "per_cycle": 0}), "a cycle of zero"),
+    (lambda p: p.update(assessed={"label": "framed"}), "the assessed label already in use"),
+])
+def test_a_policy_missing_stage_twos_fields_is_refused(tmp_path, mutate, because):
+    policy = policy_dict()
+    mutate(policy)
+    path = write_policy(tmp_path / "pool-policy.json", policy)
+    with pytest.raises(pool.PoolError):
+        pool.load_policy(path)
+
+
+def test_the_refusal_names_what_an_older_override_must_add(tmp_path):
+    """The no-merge rule is stage one's decided shape, so a silent default here
+    would hand a repository numbers it never wrote. It gets a migration message
+    instead."""
+    policy = policy_dict()
+    policy.pop("accrual")
+    path = write_policy(tmp_path / "pool-policy.json", policy)
+    with pytest.raises(pool.PoolError) as caught:
+        pool.load_policy(path)
+    assert "'accrual'" in str(caught.value)
+
+
+def test_fade_closes_must_be_stated_rather_than_defaulted(tmp_path):
+    """It decides whether anything closes at all, so it is not inferred."""
+    path = write_policy(tmp_path / "pool-policy.json",
+                        policy_dict(fade={"quiet_days": 30, "closes": "yes"}))
+    with pytest.raises(pool.PoolError) as caught:
+        pool.load_policy(path)
+    assert "true or false" in str(caught.value)
+
+
+def test_the_shipped_default_carries_every_stage_two_field():
+    """The lawful polarity of all of the above."""
+    policy = pool.load_policy(pool.DEFAULT_POLICY)
+    assert policy["accrual"]["symptoms_per_band"] >= 1
+    assert policy["fade"]["closes"] is False, "the fade ships closing nothing"
+    assert policy["assessment"]["per_cycle"] >= 1
+    assert policy["cause"]["label"] and policy["assessed"]["label"]
+
+
+def test_a_symptom_linked_under_its_cause_reads_as_assessed(monkeypatch):
+    """The third answer, which has no label.
+
+    Not asked, asked and it is its own, asked and here is its cause -- and the
+    third's record is the sub-issue link. Read from the label alone, that answer
+    read as *not asked*: the gate named the symptom, offered `link it under its
+    cause` as its first remedy, and taking that remedy changed nothing the gate
+    could see.
+    """
+    stub_issues(monkeypatch, [
+        issue(1, labels=["cause", "sev:2", "urg:2"]),
+        issue(2, labels=["sev:3", "urg:3"], assessed=False),
+    ], parents={2: 1})
+    items, _ = pool.read_pool(policy_dict())
+    assert {it["number"]: it["assessed"] for it in items} == {1: True, 2: True}
+    # And the gate it exists to clear actually clears.
+    pool.cmd_shortlist(policy_dict(), None, None)
+
+
+def test_an_unlinked_issue_still_blocks_the_gate(monkeypatch):
+    """The negative control. Deriving the flag from the link must not disable the
+    gate for everything else, or the fix is indistinguishable from deleting it."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["cause", "sev:2", "urg:2"]),
+        issue(2, labels=["sev:3", "urg:3"], assessed=False),
+        issue(3, labels=["sev:1", "urg:1"], assessed=False),
+    ], parents={2: 1})
+    with pytest.raises(pool.PoolError) as caught:
+        pool.cmd_shortlist(policy_dict(), None, None)
+    assert "#3" in str(caught.value) and "#2" not in str(caught.value)
+
+
+def test_a_parent_without_the_cause_label_is_not_an_answer(monkeypatch):
+    """The second control: an ordinary task decomposition is not an assessment,
+    which is the same rule `causal_parents` applies to the accrual."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:2", "urg:2"]),
+        issue(2, labels=["sev:3", "urg:3"], assessed=False),
+    ], parents={})
+    items, _ = pool.read_pool(policy_dict())
+    assert {it["number"]: it["assessed"] for it in items} == {1: True, 2: False}
+
+
+def test_the_floor_and_the_fade_read_the_same_clock(monkeypatch):
+    """They did not: `at_floor` re-derived quiet against the wall while judging
+    values computed at an injected `now`, so the two disagreed about one item."""
+    policy = policy_dict()
+    stale = datetime.now(timezone.utc) - timedelta(days=1)
+    item = {"number": 1, "title": "t", "ratings": {"severity": "sev:3", "urgency": "urg:3"},
+            "clashes": [], "updated_at": stale, "assessed": True, "symptoms": []}
+    later = datetime.now(timezone.utc) + timedelta(days=400)
+    values = pool.effective(item, policy, now=later)
+    assert values["urgency"] == 1, values
+    assert pool.at_floor(item, policy, values, now=later)
+    # The other polarity on the same item: at the real clock it has not floored.
+    assert not pool.at_floor(item, policy, pool.effective(item, policy))
+
+
+def test_a_gate_depth_of_zero_is_refused_rather_than_silently_ignored(tmp_path):
+    """Zero is the value a repository reaches for to switch the gate off, and it
+    loaded while `max(len(raised), 0)` discarded it and every shortlist went on
+    refusing -- a floor the validator invited and the mechanism did not honour."""
+    policy = policy_dict()
+    policy["assessment"]["before_shortlist"] = 0
+    path = write_policy(tmp_path / "pool-policy.json", policy)
+    with pytest.raises(pool.PoolError):
+        pool.load_policy(path)
+
+
+def test_the_floor_header_names_the_axis_that_actually_faded(monkeypatch, capsys):
+    """With two axes `order[1]` and `order[-1]` are the same and with three they
+    are not, so the header named an axis that had not moved over rows the fade
+    had floored on a different one."""
+    policy = policy_dict()
+    policy["axes"]["effort"] = {"meaning": "how big", "color": "FBCA04",
+                                "values": {"eff:1": 1, "eff:2": 2, "eff:3": 3}}
+    policy["order"] = ["severity", "urgency", "effort"]
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:3", "urg:1", "eff:3"],
+              updated=(datetime.now(timezone.utc) - timedelta(days=95)).isoformat()),
+    ])
+    pool.cmd_cycle(policy, None)
+    out = capsys.readouterr().out
+    assert "at the floor of urgency" in out
+    assert "at the floor of effort" not in out
+
+
+def test_cycle_does_not_call_an_unmoved_item_risen(monkeypatch, capsys):
+    """Carrying a symptom is not rising, and neither is having moved.
+
+    Below `accrual.symptoms_per_band` the bands are zero and the pair is
+    unchanged, so the first spelling listed unmoved items under a heading saying
+    what rose. The second tested `effective != _bare`, which is worse in a way
+    the first was not: the fade is applied after the accrual, so an item with
+    one symptom that has been quiet for a window differs from its bare pair by
+    having gone *down* -- and every fixture here carried no `updatedAt`, so
+    `quiet_windows` was 0 and no row could reach that case.
+    """
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:2", "urg:2"]),   # one symptom: 1 // 2 == 0 bands
+        issue(2, labels=["sev:1", "urg:1"]),
+        issue(3, labels=["sev:2", "urg:2"]),   # two symptoms: it really rises
+        issue(4, labels=["sev:1", "urg:1"]), issue(5, labels=["sev:1", "urg:1"]),
+        # One symptom AND quiet: it moved, downwards.
+        issue(6, labels=["sev:2", "urg:3"], updated=ago(35)),
+        issue(7, labels=["sev:1", "urg:1"]),
+    ], parents={2: 1, 4: 3, 5: 3, 7: 6})
+    pool.cmd_cycle(policy_dict(), None)
+    out = capsys.readouterr().out
+    risen = out.split("risen, from the symptoms under them:")[1].split("\n\n")[0]
+    assert "#3" in risen, risen
+    assert "#1" not in risen, risen
+    assert "#6" not in risen, risen
+
+
+def test_a_timestamp_with_no_offset_does_not_escape_the_refusal_contract(monkeypatch):
+    """`PoolError` is documented as printed without a traceback. A stamp with no
+    offset parses cleanly and then died at the subtraction with a raw
+    `TypeError`, and the `except ValueError` above it reads as covering that."""
+    for raw in ("2026-01-01T00:00:00", "2026-01-01"):
+        item = {"number": 1, "title": "t", "ratings": {}, "clashes": [],
+                "updated_at": pool._stamp(raw), "assessed": True, "symptoms": []}
+        assert pool.quiet_windows(item, policy_dict()) > 0, raw
+    # The lawful polarity: an offset-carrying stamp is unchanged by the repair.
+    aware = pool._stamp("2026-01-01T00:00:00Z")
+    naive = pool._stamp("2026-01-01T00:00:00")
+    assert aware == naive
+
+
+def test_show_distinguishes_what_list_distinguishes(monkeypatch, capsys):
+    """Criterion 4 names `show` in its own falsifier, and the falsifier fired:
+    two issues differing only in the assessment read byte-identical here, and a
+    faded issue asserted its label as its current value while the row for the
+    same issue in `list` carried the arrow."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:2", "urg:2"]),
+        issue(2, labels=["sev:2", "urg:2"], assessed=False),
+        issue(3, labels=["sev:2", "urg:3"], updated=ago(65)),
+    ])
+    said = {}
+    for number in (1, 2, 3):
+        pool.cmd_show(policy_dict(), None, number)
+        said[number] = capsys.readouterr().out
+    assert said[1] != said[2].replace("#2", "#1")
+    assert "not assessed" in said[2] and "not assessed" not in said[1]
+    assert "reads as 1 now" in said[3], said[3]
+
+
+def test_the_assessment_mark_has_its_own_column(monkeypatch):
+    """Appended to the joined cells it sat under no header, hard against the last
+    rating where it read as part of that value, and moved the title two columns
+    between an assessed row and an unassessed one."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:2", "urg:2"]),
+        issue(2, labels=["sev:2", "urg:2"], assessed=False),
+    ])
+    items, _ = pool.read_pool(policy_dict())
+    rows = [pool._line(it, policy_dict()) for it in items]
+    assert rows[0].index("t") == rows[1].index("t"), rows
+    header = pool._header(policy_dict())
+    assert "?" in header
+    assert header.index("?") == rows[1].index("?")
+    # And every other heading sits over its own column, which none of them did:
+    # the header padded `issue` to nine against a row prefix of eight.
+    for name in policy_dict()["order"]:
+        assert header.index(name) == rows[0].index("sev:" if name == "severity" else "urg:")
+
+
+def test_a_two_digit_band_still_fits_its_column():
+    """`len(v) + 2` reserved for `>N` and a policy with a band above nine renders
+    `urg:10>10`, one column past its header."""
+    policy = policy_dict()
+    policy["axes"]["urgency"]["values"] = {f"urg:{i}": i for i in range(1, 11)}
+    width = _widths_of(policy)[1]
+    assert width >= len("urg:10>10"), width
+
+
+def _widths_of(policy):
+    return pool._widths(policy)
+
+
+def test_the_causation_read_passes_its_cursor_as_a_variable(monkeypatch):
+    """Interpolated into the query string, the server's own `endCursor` became
+    part of the query this script sends. `_graphql` already passes variables over
+    `-f` and explains why; the cursor goes the same way, and a `None` is left out
+    rather than sent as the four characters `None`."""
+    sent = []
+
+    def wire(args):
+        sent.append(args)
+        page = len([a for a in sent if a[:2] == ["api", "graphql"]])
+        return json.dumps({"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": page == 1, "endCursor": "CUR"},
+            "nodes": [],
+        }}}})
+
+    monkeypatch.setattr(pool, "gh", wire)
+    pool.causal_parents(policy_dict(), "o/r")
+    queries = [a for a in sent if a[:2] == ["api", "graphql"]]
+    assert len(queries) == 2, queries
+    assert all("CUR" not in a[3] for a in queries), "the cursor is in the query string"
+    assert "after=None" not in " ".join(queries[0]), "a null cursor was sent as a string"
+    assert ["-f", "after=CUR"] == queries[1][-2:], queries[1]
+
+
+def test_the_causation_read_is_bounded(monkeypatch):
+    """It looped forever on a `hasNextPage` that never goes false, where the
+    issue read beside it refuses at a limit. A hang says less than a refusal."""
+    def wire(args):
+        return json.dumps({"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": True, "endCursor": "CUR"},
+            "nodes": [],
+        }}}})
+
+    monkeypatch.setattr(pool, "gh", wire)
+    with pytest.raises(pool.PoolError) as caught:
+        pool.causal_parents(policy_dict(), "o/r")
+    assert str(pool.PAGE_LIMIT) in str(caught.value)
+
+
+def test_outside_a_checkout_the_first_command_names_its_own_problem(monkeypatch, tmp_path):
+    """`_infer_repo` had the right sentence and it fired only on the causation
+    read. The first command anyone runs is `list`, which reaches the wire
+    directly, so what came back was git's own message -- `failed to run git:
+    fatal: not a git repository` -- naming neither this script's problem nor its
+    remedy, and a consumer had to read the source to recover."""
+    monkeypatch.chdir(tmp_path)
+    assert not pool._in_checkout()
+    with pytest.raises(pool.PoolError) as caught:
+        pool._repo_args(None)
+    assert "--repo OWNER/REPO" in str(caught.value)
+    # Both lawful polarities: a named repo needs no checkout, and inside one the
+    # inference is left to `gh` as before.
+    assert pool._repo_args("o/r") == ["--repo", "o/r"]
+    (tmp_path / ".git").mkdir()
+    assert pool._repo_args(None) == []
+
+
+def test_policy_says_the_same_thing_labels_does(monkeypatch, capsys):
+    """The two commands disagreed about `cause`: created by one, absent from the
+    only line in the other that says which labels this tool touches."""
+    policy = policy_dict()
+    pool.cmd_policy(policy, pool.DEFAULT_POLICY)
+    out = capsys.readouterr().out
+    created = out.split("labels it creates:")[1].split("\n")[0]
+    for spec in pool.label_specs(policy):
+        assert spec[0] in created, spec[0]
+    assert policy["cause"]["label"] in created
