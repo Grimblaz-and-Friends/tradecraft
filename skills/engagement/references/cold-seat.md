@@ -1,10 +1,10 @@
 # The cold seat that settles the artifact
 
-**Loaded when** you are running the cold interpretation check on a pre-implementation artifact — writing the dispatch, reading a verdict back, or deciding what a revision after one costs. A seat working a dispatch it was handed does not need it; everything that reaches the seat reaches it in the dispatch, and the sections below name which of their content is dispatch content.
+**Loaded when** you are dispatching any cold seat, or running the cold interpretation check on a pre-implementation artifact — writing the dispatch, reading a verdict back, or deciding what a revision after one costs. A seat working a dispatch it was handed does not need it; everything that reaches the seat reaches it in the dispatch, and the sections below name which of their content is dispatch content.
 
 ## Cold, here
 
-**A seat is cold when it holds none of the conversation the artifact came out of and has read no earlier draft of it.** Both halves, and the second is the one that gets lost: a seat that judged revision one is not a cold reader of revision two, because it is now defending a position. So **a re-verdict is a fresh dispatch, never a resumed seat** — resuming a finished one has [failed to deliver a reply twice in one run, each time costing a full fresh read](https://github.com/Grimblaz-and-Friends/tradecraft/pull/304).
+**A seat is cold when it holds none of the conversation the material it judges came out of and has read no earlier draft of it.** Both halves, and the second is the one that gets lost: a seat that judged revision one is not a cold reader of revision two, because it is now defending a position. **A cold seat is therefore always a fresh dispatch with context inheritance disabled, never a session that authored or discussed the material.** So **a re-verdict is a fresh dispatch, never a resumed seat** — resuming a finished one has [failed to deliver a reply twice in one run, each time costing a full fresh read](https://github.com/Grimblaz-and-Friends/tradecraft/pull/304).
 
 ## What the dispatch carries
 

@@ -10,7 +10,7 @@ description: How a session and the owner work together — which decisions are t
 ## Where this cell's depth lives
 
 - **Writing a pre-implementation artifact, settling one, or reading a rule elsewhere in this cell that turns on what settles it — the truncation route, an amended brief, the boundary's own stages** → `references/the-artifact.md`: what the artifact carries beyond the brief, the acceptance criteria and their falsifiers, the boundary statement, the cold seat that settles it, what a draft carries between rounds, and the handoff contract that is also the test for whether it is finished.
-- **Running the cold interpretation check, reading a verdict back, or pricing a revision after one** → `references/cold-seat.md`: what the dispatch carries, what cold means, the bar, the three verdicts, and the two-round cap that sends the next question to the owner.
+- **Dispatching any cold seat, running the cold interpretation check, reading a verdict back, or pricing a revision after one** → `references/cold-seat.md`: what makes a seat cold, what the dispatch carries, the bar, the three verdicts, and the two-round cap that sends the next question to the owner.
 - **Deciding whether to open a design sitting, or running one** → `references/design-sitting.md`: the two triggers, the tell that catches the first, the eight steps, and what closes it.
 
 ## The plain brief
