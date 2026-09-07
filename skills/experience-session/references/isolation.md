@@ -1,6 +1,6 @@
 # Building the isolated tree
 
-**Loaded when** a run needs a repository tree of its own and you are about to build it — an experience session's run, or either arm of a cold-seat A/B. A job that needs no repository does not need this file, and the isolation rule it serves is in the cell whose run it is.
+**Loaded when** a run needs a repository tree of its own and you are about to build it, whichever instrument's run it is. A job that needs no repository does not need this file, and the isolation rule it serves is in the cell whose run it is.
 
 Build from the change's content without its history, carrying the paths the job needs and never the change's own record — its decision entry, its index row, its pull request body, the review's reports, whose titles alone can state what is under test.
 
