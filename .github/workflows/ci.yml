@@ -123,3 +123,15 @@ jobs:
           # flagged, which is the defect #277 was filed for.
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python tools/doctrine_callout.py --pr "$PR_NUMBER" --base "$BASE_SHA"
+      - name: Ask declaration
+        # Presence, never truth: whether an unmarked ask is buried in the body
+        # is a content judgement, and content judgements do not survive
+        # automation here (#428). What this buys is that the author answered
+        # the question at the one moment the whole body is in front of them.
+        # Runs in the same job as the callout because both need `gh` and a PR
+        # number; the packaging lint cannot host it, shelling out to `git`
+        # alone.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python tools/check_ask_declaration.py --pr "$PR_NUMBER"
