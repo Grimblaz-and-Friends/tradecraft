@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import ceiling_filing as cf  # noqa: E402
-import lint  # noqa: E402
 
 
 ROWS = [
@@ -88,12 +87,21 @@ def test_the_ratings_are_a_pair_the_pool_policy_names():
     assert axes == {"sev", "urg"}, "the two ratings must be one per axis"
 
 
-def test_this_repository_is_at_its_ceilings(tmp_path):
-    """The ratchet is set at landing, so nothing here is over it.
-
-    A cell over its ceiling in the tree that just set them means the baseline
-    was measured against a different tree than the one that shipped -- which
-    happened once during this change, when a rebase moved three cells after
-    the numbers were taken.
-    """
-    assert lint.cells_over_ceiling(ROOT) == []
+# `test_this_repository_is_at_its_ceilings` stood here and was removed.
+#
+# It asserted `lint.cells_over_ceiling(ROOT) == []` over this repository, to
+# catch a baseline measured against a different tree than the one that shipped
+# -- which had happened once, when a rebase moved three cell bodies after the
+# numbers were taken. But that assertion is true of exactly one tree and false
+# on any lawful growth, so it made a cell growing past its ceiling fail a test:
+# the refusal the owner's ruling took out of the guard, arriving through the
+# suite instead. `test_lint.py::test_the_declared_cell_body_ceilings_are_the_ones_these_tests_pin`
+# refuses to pin the ceiling *values* for that exact reason, so the two tests
+# landed in one change contradicting each other.
+#
+# A cold consumer adding a rule to a cell at its ceiling was the first thing to
+# trip it, and read the contradiction off the suite itself.
+#
+# Nothing replaces it. Staleness at landing and growth after it are the same
+# observation to any later tree, so no standing test separates them; what the
+# baseline is checked against is the measurement the landing session runs.
