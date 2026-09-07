@@ -192,7 +192,15 @@ Checks:
     finding, which fires when a surface comes back to or below its constant
     with characters still charged, belongs to checks 9, 4 and 24 -- the
     three that know each surface's size -- and not to this one (#334).
-26. charter roster: every shipped cell but the charter has a line in the
+26. settling index: docs/settling.jsonl parses and every row carries the
+    keys the `records` cell names. The record is append-only and doctrine
+    forbids repairing a landed row, so a malformed one is permanent; when it
+    shipped, invalid JSON there landed green while the identical append to
+    docs/admissions.jsonl was reported. Required keys, not exact keys -- a
+    later row may carry more without a guard change -- and a required figure
+    nobody can supply is written as null, since an absent key and a null one
+    say different things (#423).
+27. charter roster: every shipped cell but the charter has a line in the
     charter's declared roster, so the always-on router cannot go stale when a
     cell is added. Keyed by the roster's heading, which is checked too -- a
     check keyed to a section is disabled by renaming it. The names only,
@@ -3522,6 +3530,14 @@ LIVE_RECORDS = frozenset({
     # byte guard still covers it, where a lone carriage return is corruption
     # of the row's own format rather than content. [#334]
     "docs/admissions.jsonl",
+    # `scoring_pass` and `notes` are prose about a brief -- what the pass
+    # removed, and why a row is shaped as it is -- so a row quoting a
+    # whitespace-only span holds exactly what the prose guard reports, and
+    # append-only makes it a red no lawful edit clears. Measured rather than
+    # assumed: only a span of spaces or NBSP is reachable here, JSON escaping
+    # putting a raw tab or newline out of reach, and the byte guard still
+    # covers a lone carriage return as format corruption. [#423]
+    "docs/settling.jsonl",
 })
 
 
@@ -5192,6 +5208,58 @@ def check_admissions(root: Path) -> list[str]:
 
 
 
+def check_settling_index(root: Path) -> list[str]:
+    """Every settling row parses and carries the keys the `records` cell names.
+
+    The record is append-only and doctrine forbids repairing a landed row, so a
+    malformed one is permanent. Nothing read this file at all when it shipped:
+    invalid JSON landed green while the identical append to `admissions.jsonl`
+    was reported. That asymmetry is what this closes.
+
+    **Required keys, not exact keys.** A row may carry more -- the first one
+    carries `set`, `brief`, `history` and `notes` beyond the required list --
+    because a later session with more to record should not have to change a
+    guard first. What it may not do is omit what a reader needs to find the
+    row's own sources.
+
+    **A required key may be `null`**, which is how a successor reconstructing
+    an affirmation it was not present for records a figure nobody holds. An
+    absent key and a null one say different things: absent is an omission, null
+    is `nobody can supply this`. The `records` cell states that convention.
+    """
+    path = root / "docs" / "settling.jsonl"
+    if not path.exists():
+        return []
+    required = ("date", "issue", "brief", "puts", "amendments",
+                "corrected_before_posted", "scoring_pass", "cold_seat")
+    findings = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            findings.append(
+                f"settling-index: docs/settling.jsonl:{number} is not valid "
+                f"JSON ({exc}). The record is append-only, so a malformed row "
+                f"cannot be repaired -- append a corrected row instead"
+            )
+            continue
+        if not isinstance(row, dict):
+            findings.append(
+                f"settling-index: docs/settling.jsonl:{number} is not an object"
+            )
+            continue
+        missing = [key for key in required if key not in row]
+        if missing:
+            findings.append(
+                f"settling-index: docs/settling.jsonl:{number} is missing "
+                f"{', '.join(missing)}. A required figure nobody can supply is "
+                f"written as null, never omitted -- the two say different things"
+            )
+    return findings
+
+
 CHECKS = (
     check_zone_wall,
     check_harness_tokens,
@@ -5218,6 +5286,7 @@ CHECKS = (
     check_body_strip_owner,
     check_always_on_budget,
     check_admissions,
+    check_settling_index,
     check_charter_roster,
 )
 
