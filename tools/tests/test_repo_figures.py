@@ -225,7 +225,7 @@ def test_a_cell_budget_disagreeing_with_the_guard_is_refused(tmp_path, monkeypat
     """
     _cell(tmp_path, "example-skill", "x" * 40 + NL)
     rel = "skills/example-skill/SKILL.md"
-    monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {rel: 9_000})
+    monkeypatch.setattr(lint, "CELL_BODY_CEILING_CHARS", {rel: 9_000})
     stub = lambda *a, **k: {"name": "stub", "value": "skipped",
                             "basis": "stubbed", "data": {}}
     # Everything build_figures emits before the cell figures needs a full tree;
@@ -260,7 +260,7 @@ def test_a_cell_budget_disagreeing_with_the_guard_is_refused(tmp_path, monkeypat
     assert "9000 plus 500 admitted" in str(caught.value), caught.value
     (tmp_path / lint.ADMISSIONS).unlink()
 
-    monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {})
+    monkeypatch.setattr(lint, "CELL_BODY_CEILING_CHARS", {})
     assert repo_figures.build_figures(tmp_path, None, rel, 12_000)
 
 def test_the_description_ceiling_comes_from_the_guard(tmp_path, monkeypatch):
@@ -994,8 +994,8 @@ def test_a_cell_body_row_prices_against_what_is_admitted_to_it(tmp_path):
     _cell(tmp_path, "example-skill", "y" * 400 + NL)
     roster.write(tmp_path)
     rel = "skills/example-skill/SKILL.md"
-    original = dict(lint.CELL_BODY_BUDGET_CHARS)
-    lint.CELL_BODY_BUDGET_CHARS = {rel: 100}
+    original = dict(lint.CELL_BODY_CEILING_CHARS)
+    lint.CELL_BODY_CEILING_CHARS = {rel: 100}
     try:
         rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
         assert rows["example-skill"]["budgets"] == [("body", 100, 0)]
@@ -1010,7 +1010,7 @@ def test_a_cell_body_row_prices_against_what_is_admitted_to_it(tmp_path):
         body = rows["example-skill"]["body"]
         assert f"headroom {450 - body:,}" in block, block
     finally:
-        lint.CELL_BODY_BUDGET_CHARS = original
+        lint.CELL_BODY_CEILING_CHARS = original
 
 
 def test_the_charter_row_prices_both_of_its_shared_ceilings(tmp_path):

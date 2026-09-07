@@ -701,7 +701,7 @@ def cell_budgets(rel_path: str,
                  admissions: list[dict] | None = None) -> list[tuple[str, int, int]]:
     """Every budget that governs one cell's body, named, or an empty list.
 
-    **`CELL_BODY_BUDGET_CHARS` is not the only budget in view**, and treating
+    **`CELL_BODY_CEILING_CHARS` is not the only budget in view**, and treating
     it as though it were is how a report comes to say "no budget" about a cell
     that is capped. The charter's body is a term in every always-on row and in
     the adopter total, so `check_always_on_budget` reds on it at the same
@@ -721,7 +721,7 @@ def cell_budgets(rel_path: str,
     that has admitted nothing measures. [#334]
     """
     rows = admissions or []
-    own = lint.CELL_BODY_BUDGET_CHARS.get(rel_path)
+    own = lint.CELL_BODY_CEILING_CHARS.get(rel_path)
     if own is not None:
         return [("body", own, lint.admitted(rows, f"body:{rel_path}")[0])]
     if rel_path == lint.CHARTER:
@@ -743,7 +743,7 @@ def cell_body_rows(root: Path) -> list[dict]:
     exists to prevent, one name over. [#302]
 
     **Derived from the roster rather than from a list.** `check_doctrine`
-    iterates `CELL_BODY_BUDGET_CHARS`, so a cell absent from that map is sized
+    iterates `CELL_BODY_CEILING_CHARS`, so a cell absent from that map is sized
     by nothing at either command this repository's landing procedure mandates.
     Reading `roster.SOURCES` rather than naming the source directories here is
     what keeps a third source, added later, from being silently unmeasured --
@@ -851,7 +851,7 @@ def build_figures(root: Path, base: str | None,
         # PR #346's panel. `constant` stays separate from `enforced` because
         # the caller argues the constant and the guard enforces the sum.
         admissions, _ = lint.read_admissions(root)
-        constant = lint.CELL_BODY_BUDGET_CHARS.get(cell)
+        constant = lint.CELL_BODY_CEILING_CHARS.get(cell)
         enforced = None if constant is None else lint.ceiling(
             constant, admissions, f"body:{cell}")[0]
         if enforced is not None and enforced != budget:

@@ -337,7 +337,7 @@ CHARTER_IMPORT = f"@{CHARTER}"
 # a cell widens, by the same amount, the relocation the budget exists to
 # refuse. There is no value that separates them; a mechanism that did would
 # have to price the two moves apart, which is the shape
-# `CELL_BODY_BUDGET_CHARS`' comment argues for and this constant does not have.
+# `CELL_BODY_CEILING_CHARS`' comment argues for and this constant does not have.
 #
 # This replaces the two per-file ceilings raised under the owner approval on
 # issue #260; that approval's condition is discharged here. Find every change
@@ -394,10 +394,61 @@ POINTER_BUDGET_CHARS = 500
 # in the one comment a session reads while about to raise this constant. A body cap is dodgeable by moving prose one directory down,
 # which is why tools/figures.py reports the cell's total beside it, unbudgeted
 # -- a ceiling on the total would cap depth-shedding itself.
-CELL_BODY_BUDGET_CHARS = {
-    "skills/adversarial-review/SKILL.md": 9_000,
-    "skills/authoring/SKILL.md": 7_359,
+CELL_BODY_CEILING_CHARS = {
+    # Where each cell body stood when the ratchet landed (#455), measured the
+    # way check_doctrine measures a body: frontmatter stripped. Every number is
+    # read off the tree rather than argued, which is the whole of how they were
+    # chosen -- no cell's ceiling is a claim about what its body ought to be,
+    # which is #328's question and is still open.
+    #
+    # **Nothing here fails the lint.** A body over its ceiling raises a pool
+    # item and blocks nothing: the owner ruled on #455 that the standard is
+    # splitting and the ceiling directs to filing, not cutting content, and
+    # that it may not tell a session not to add text. cells_over_ceiling()
+    # below is what reads this, and ci.yml is what files from it.
+    #
+    # A cell that sheds depth re-baselines here in the same change, so the
+    # ratchet follows the split down. The three body: rows in
+    # docs/admissions.jsonl are absorbed: an admitted body was already part of
+    # the measurement, so its ceiling carries it without a separate row.
+    # skills/charter/SKILL.md is deliberately absent: its body is a term in
+    # every always-on row, so check_always_on_budget sizes it and an entry
+    # here would be the smuggled second limit that test pins against.
+    "skills/engagement/SKILL.md": 23_655,
+    "skills/filing/SKILL.md": 23_237,
+    "docs/cells/board/SKILL.md": 17_916,
+    "skills/spikes/SKILL.md": 17_300,
+    "skills/experience-session/SKILL.md": 11_967,
+    "skills/adversarial-review/SKILL.md": 9_855,
+    "skills/authoring/SKILL.md": 7_086,
+    "docs/cells/records/SKILL.md": 6_868,
+    "skills/persist-changes/SKILL.md": 5_549,
+    "docs/cells/landing/SKILL.md": 4_481,
+    "docs/cells/siting/SKILL.md": 3_835,
+    "skills/substrate/SKILL.md": 3_211,
 }
+
+
+def cells_over_ceiling(root: Path) -> list[tuple[str, int, int]]:
+    """Every cell body above where it stood, as (path, size, ceiling).
+
+    Read by ci.yml, which raises one pool item per cell over its ceiling, and
+    by the informational block at the end of a lint run. It returns rows and
+    never a finding, because a finding is what would make growth a refusal --
+    the thing the owner's ruling forbids.
+
+    A cell in the map that no longer exists is skipped rather than reported:
+    a tree without that cell is an ordinary tree, and every fixture is one.
+    """
+    over = []
+    for rel, ceiling_chars in sorted(CELL_BODY_CEILING_CHARS.items()):
+        cell = root / rel
+        if not cell.is_file():
+            continue
+        size = len(_frontmatterless(cell.read_text(encoding="utf-8", errors="replace")))
+        if size > ceiling_chars:
+            over.append((rel, size, ceiling_chars))
+    return over
 
 # **The fourth answer at a ceiling, and the record that carries it.** None of
 # the ceilings above offered a way to admit a needed item. The always-on row
@@ -648,7 +699,7 @@ def stale_admission(label: str, size: int, constant: int,
 
     **It fires at the constant, not at the effective ceiling.** Zero slack
     would make every reword of an admitted surface a record append, which is
-    the noise the comment on `CELL_BODY_BUDGET_CHARS` warns a zero-headroom
+    the noise the comment on `CELL_BODY_CEILING_CHARS` warns a zero-headroom
     cap becomes. At or under the constant the surface is unambiguously back,
     and one row settles it.
     """
@@ -2115,24 +2166,10 @@ def check_doctrine(root: Path) -> list[str]:
     # it cannot read grants nothing -- `read_admissions` fails closed and
     # `check_admissions` reports what it dropped, so the malformed-record
     # finding is not repeated at every site the record touches.
-    admissions, _ = read_admissions(root)
-    for rel, budget in sorted(CELL_BODY_BUDGET_CHARS.items()):
-        cell = root / rel
-        if not cell.is_file():
-            continue
-        size = len(_frontmatterless(cell.read_text(encoding="utf-8", errors="replace")))
-        key = f"body:{rel}"
-        allowed, against = ceiling(budget, admissions, key)
-        if size > allowed:
-            findings.append(
-                f"doctrine-budget: {rel}'s body is {size} chars, {against} -- "
-                f"shed depth to references/ or route content out; "
-                f"`python tools/figures.py --cell {rel} --cell-budget {allowed}` "
-                f"reports the cell total, which shedding does not reduce. "
-                f"{admit_route(key)}"
-            )
-        findings += stale_admission(f"{rel}'s body", size, budget,
-                                    admissions, key)
+    # A cell body over its ceiling raises no finding here and never has since
+    # #455: the ceiling directs to filing rather than to cutting, so it cannot
+    # redden the lint or refuse a commit. cells_over_ceiling() is what reads it
+    # and ci.yml is what acts on it.
     # An adopter loads the installed charter because its repository instructions
     # say so. In THIS source repository the local charter reaches the session
     # through an import in a file that is itself imported. Checked by shape
@@ -5414,7 +5451,7 @@ def cell_body_note(root: Path) -> str:
     """Every cell body, where a session sees it before it writes.
 
     **The map is not the cells.** `check_doctrine` iterates
-    `CELL_BODY_BUDGET_CHARS`, so a cell absent from it was sized by nothing at
+    `CELL_BODY_CEILING_CHARS`, so a cell absent from it was sized by nothing at
     either command the landing procedure mandates -- save the charter, whose
     body is a term in every always-on row and was already printed there -- and the cells absent from
     it had become the large ones, with the governed bodies neither the

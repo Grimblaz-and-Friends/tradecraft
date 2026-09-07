@@ -2810,37 +2810,6 @@ def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
     assert lint.POINTER_BUDGET_CHARS == 500
 
 
-def test_a_cell_body_budget_is_enforced_in_both_polarities(tmp_path):
-    """The cap #169 stated and nothing held.
-
-    It lived in a command string inside a decision entry that has frozen, so
-    the only thing standing between the body and unbounded growth was that
-    somebody remembered. The lawful arm is half the pin: a cell at its budget
-    must pass, or the guard is a ratchet nobody can land a change through.
-    """
-    make_clean_tree(tmp_path)
-    skill = tmp_path / "skills" / "example-skill"
-    budget = 200
-    monkey = dict(lint.CELL_BODY_BUDGET_CHARS)
-    monkey["skills/example-skill/SKILL.md"] = budget
-    original = lint.CELL_BODY_BUDGET_CHARS
-    try:
-        lint.CELL_BODY_BUDGET_CHARS = monkey
-        # The body names its own depth file, so _write_cell appends nothing
-        # and the character count stays exactly what this test sets.
-        named = "Depth lives in references/detail.md." + NL
-        pad = budget - len(named)
-        _write_cell(skill, named + "x" * pad + NL)
-        over = [f for f in lint.run(tmp_path) if "doctrine-budget" in f]
-        assert len(over) == 1 and "example-skill" in over[0], over
-        # Exactly at the budget, not under it: this is the arm that catches a
-        # guard drifting to >=, and a cell sitting five chars from its cap
-        # makes landing on the boundary an ordinary next edit.
-        _write_cell(skill, named + "x" * pad)
-        assert [f for f in lint.run(tmp_path) if "doctrine-budget" in f] == []
-    finally:
-        lint.CELL_BODY_BUDGET_CHARS = original
-
 
 def test_every_budgeted_cell_exists_in_this_repository():
     """A rename would drop the budget in silence.
@@ -2851,15 +2820,9 @@ def test_every_budgeted_cell_exists_in_this_repository():
     keys have an answer.
     """
     root = Path(__file__).resolve().parents[2]
-    for rel in lint.CELL_BODY_BUDGET_CHARS:
+    for rel in lint.CELL_BODY_CEILING_CHARS:
         assert (root / rel).is_file(), f"{rel} carries a body budget and does not exist"
 
-
-def test_the_declared_cell_body_budgets_are_the_ones_these_tests_pin():
-    assert lint.CELL_BODY_BUDGET_CHARS == {
-        "skills/adversarial-review/SKILL.md": 9_000,
-        "skills/authoring/SKILL.md": 7_359,
-    }
 
 
 def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):
@@ -5613,7 +5576,7 @@ def _rows(note: str) -> list[tuple[str, int, str]]:
 def test_the_report_sizes_every_cell_of_both_roster_sources(tmp_path):
     """Criterion 1 and 2: the map is not the cells, and neither is one source.
 
-    `check_doctrine` iterates `CELL_BODY_BUDGET_CHARS`, so before this a cell
+    `check_doctrine` iterates `CELL_BODY_CEILING_CHARS`, so before this a cell
     absent from it was sized by nothing at either mandated command, the
     charter excepted. A
     shipped-only report would be the hand-written carve-out this change exists
@@ -5702,13 +5665,13 @@ def test_the_charter_row_names_both_budgets_that_bind_it():
 
     The charter's body is a term in every always-on row and in the adopter
     total, so `check_always_on_budget` reds on it at the same command -- it is
-    enforced today while absent from `CELL_BODY_BUDGET_CHARS`. A row reading
+    enforced today while absent from `CELL_BODY_CEILING_CHARS`. A row reading
     `no budget` would be false, and would be false about the half of the brief
     that promises to say which cells have no limit. Both constants are named
     because the binding one is the adopter total, which a reader reaches
     second.
     """
-    assert lint.CHARTER not in lint.CELL_BODY_BUDGET_CHARS, (
+    assert lint.CHARTER not in lint.CELL_BODY_CEILING_CHARS, (
         "the charter row must come from the other guard, not a smuggled entry")
 
     rows = {name: against for name, _, against in _rows(lint.cell_body_note(lint.ROOT))}
@@ -5844,7 +5807,7 @@ def test_the_lint_prints_every_cell_body_at_the_mandated_command(capsys):
         rel = f"{source}/{name}/{roster.CELL_FILE}"
         body = len(lint._frontmatterless(
             (lint.ROOT / rel).read_text(encoding="utf-8", errors="replace")))
-        own = lint.CELL_BODY_BUDGET_CHARS.get(rel)
+        own = lint.CELL_BODY_CEILING_CHARS.get(rel)
         if own is not None:
             allowed, _ = lint.ceiling(own, admissions, f"body:{rel}")
             against = (f"of {_priced(own, allowed - own)}, "
@@ -6234,30 +6197,6 @@ def test_the_description_ceiling_admits_and_the_name_cap_does_not(tmp_path,
                 if "'s name is" in f]
     assert findings, "the name cap was relaxed by an admission, and it is not admissible"
 
-
-def test_the_cell_body_ceiling_admits_in_both_polarities(tmp_path, monkeypatch):
-    """The third site, wired the same way and probed the same way."""
-    make_clean_tree(tmp_path)
-    rel = "skills/example-skill/SKILL.md"
-    body = "x" * 400
-    _write_cell(tmp_path / "skills" / "example-skill", body + NL)
-    monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {rel: 100})
-    size = len(lint._frontmatterless(
-        (tmp_path / rel).read_text(encoding="utf-8")))
-
-    findings = [f for f in lint.check_doctrine(tmp_path)
-                if f.startswith("doctrine-budget:")]
-    assert findings, "an oversized body reported nothing"
-    assert lint.ADMISSIONS in findings[0], findings[0]
-
-    _record(tmp_path, _row(chars=size - 100, ceilings=[f"body:{rel}"]))
-    assert [f for f in lint.check_doctrine(tmp_path)
-            if f.startswith("doctrine-budget:")] == [], "the admission did not admit it"
-
-    _record(tmp_path, _row(chars=size - 101, ceilings=[f"body:{rel}"]))
-    assert [f for f in lint.check_doctrine(tmp_path)
-            if f.startswith("doctrine-budget:")], (
-        "one character past the effective ceiling was admitted")
 
 
 def test_every_admission_this_repository_carries_names_real_work():
@@ -6835,3 +6774,92 @@ def test_a_fresh_index_is_never_told_it_is_a_mangled_copy(tmp_path):
     _write_foreign_index(tmp_path, _fresh_row(), _fresh_row(artifact="pr-2"))
     findings = lint.check_review_index(tmp_path)
     assert not any("not recognised" in f for f in findings), findings
+
+
+def test_a_cell_body_over_its_ceiling_files_and_never_refuses(tmp_path):
+    """The ratchet reports; it does not redden.
+
+    #455's affirmed brief carries the owner's words: the standard is splitting
+    and the ceiling directs to filing, not cutting content, and it "can't be
+    something that at all tells the agent not to add text to the skill". So the
+    lawful arm here is not "a cell at its ceiling passes" -- it is that a cell
+    *over* its ceiling passes too, and is reported somewhere a filing can be
+    raised from. The old guard's finding named shedding and routing content
+    out, which is the sentence that ruling forbids.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    rel = "skills/example-skill/SKILL.md"
+    _write_cell(skill, "x" * 400 + NL)
+    original = lint.CELL_BODY_CEILING_CHARS
+    try:
+        lint.CELL_BODY_CEILING_CHARS = {rel: 100}
+        over = lint.cells_over_ceiling(tmp_path)
+        assert [row[0] for row in over] == [rel], over
+        assert over[0][1] > over[0][2], "the row did not carry size over ceiling"
+        # The whole point: nothing about that size reaches a finding.
+        findings = lint.run(tmp_path)
+        assert findings == [], findings
+        for word in ("shed", "route content out", "trim", "remove"):
+            assert not any(word in f for f in findings), word
+
+        lint.CELL_BODY_CEILING_CHARS = {rel: 10_000}
+        assert lint.cells_over_ceiling(tmp_path) == []
+        assert lint.run(tmp_path) == []
+    finally:
+        lint.CELL_BODY_CEILING_CHARS = original
+
+
+def test_a_cell_absent_from_the_tree_is_not_reported_over(tmp_path):
+    """A tree without the cell is an ordinary tree, and every fixture is one."""
+    make_clean_tree(tmp_path)
+    original = lint.CELL_BODY_CEILING_CHARS
+    try:
+        lint.CELL_BODY_CEILING_CHARS = {"skills/not-here/SKILL.md": 1}
+        assert lint.cells_over_ceiling(tmp_path) == []
+    finally:
+        lint.CELL_BODY_CEILING_CHARS = original
+
+
+def test_the_declared_cell_body_ceilings_are_the_ones_these_tests_pin():
+    """Which cells have a ratchet, not what any number is.
+
+    A ceiling is where a body stood when #455 landed, so pinning the values
+    would make growth fail a test -- which is the refusal the owner's ruling
+    took out, arriving through the suite instead of through the guard. What is
+    worth pinning is membership: every cell in the tree has one, the charter
+    does not, and no value is nonsense.
+    """
+    keys = set(lint.CELL_BODY_CEILING_CHARS)
+    assert lint.CHARTER not in keys, (
+        "the charter row must come from check_always_on_budget, not a smuggled entry")
+    on_disk = {
+        f"{parent}/{d.name}/SKILL.md"
+        for parent in ("skills", "docs/cells")
+        for d in (lint.ROOT / parent).iterdir()
+        if (d / "SKILL.md").is_file()
+    }
+    assert keys == on_disk - {lint.CHARTER}, (
+        "every cell but the charter carries a ceiling; this set has drifted")
+    assert all(isinstance(v, int) and v > 0
+               for v in lint.CELL_BODY_CEILING_CHARS.values())
+
+
+def test_a_body_over_its_ceiling_needs_no_admission(tmp_path, monkeypatch):
+    """The third admission site is gone, and its absence is the point.
+
+    An admission exists to let a needed item past a ceiling that would
+    otherwise refuse it. A body ceiling refuses nothing since #455, so there is
+    nothing to admit and no row to write -- and a body: row left in the record
+    still parses, its chars already inside the measured baseline.
+    """
+    make_clean_tree(tmp_path)
+    rel = "skills/example-skill/SKILL.md"
+    _write_cell(tmp_path / "skills" / "example-skill", "x" * 400 + NL)
+    monkeypatch.setattr(lint, "CELL_BODY_CEILING_CHARS", {rel: 100})
+
+    assert [f for f in lint.check_doctrine(tmp_path)
+            if f.startswith("doctrine-budget:")] == [], (
+        "a body size still reaches a finding")
+    assert lint.cells_over_ceiling(tmp_path), "the ratchet saw nothing"
+    assert lint.run(tmp_path) == [], "an oversized body reddened the lint"
