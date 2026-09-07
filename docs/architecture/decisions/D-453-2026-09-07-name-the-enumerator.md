@@ -20,7 +20,7 @@
 
 ## Decision
 
-**Two clauses in `skills/adversarial-review/references/arbitration.md`, no new stage and no new dispatch.** At the merge paragraph: before it dispatches the defense, the merge accounts for everything in a seat's report that no merged finding carries — wider than that seat's findings, and the same class the terminal stage's docket takes — naming each as an uncarried entry; and the account is read off the seat's report itself, never off a total the seat states about itself. At the docket paragraph: the terminal stage checks that second limb against the seat reports rather than taking the merge's account of it.
+**Two clauses in `skills/adversarial-review/references/arbitration.md`, no new stage and no new dispatch.** At the merge paragraph: before it dispatches the defense, the merge accounts for everything in a seat's report that no merged finding carries — the class the docket takes, so a finding and equally a remedy, a dissent, an examination that declined to file — naming each as an uncarried entry; and the account is read off the seat's report itself, never off a total the seat states about itself. At the docket paragraph: the terminal stage checks that second limb against the seat reports rather than taking the merge's account of it.
 
 **Placement is inherited from D-102, not re-argued.** A session dispatching one stage does not read the paragraph governing another; the merger reads the merge paragraph and the session serving the terminal stage reads the docket sentence.
 
@@ -54,6 +54,8 @@
 **Two rounds, one adverse.** Round 1 returned `would not` on two points, both repaired: clause 1's scope, above; and acceptance criterion 3, which specified a single post-change run and so did not discriminate — the unchanged docket sentence already obliging the ruling meant a no-op implementation would have passed it. Round 2 returned `would`.
 
 **Two claims the drafting asserted falsely, recorded because the artifact is settled and the retraction belongs somewhere.** The draft said D-102's reopen condition had *"fired four times"* — wrong on the condition's own words, `pr-270`'s terminal stage having checked; and wrong in count, round 2 finding a fifth bearing row, `pr-371`, that the drafting's own scan had missed. The draft also said the brief settled the no-mechanism scope; the brief names no mechanism either way, and the owner's pick among four options is what rules it out.
+
+**The experience session changed the shipped text.** A cold consumer ran the merge stage of a five-seat review under this change and produced the account, the four uncarried entries and the reconciliation correctly — and caught a seat that stated seven findings while filing eight, naming the read-off-the-report clause as the rule that corrected its own first reading. But it read the merge clause three times, first taking *wider than that seat's findings* to mean the duplicates the merge had absorbed, and resolved it only from the docket paragraph two below, which spells the class out. The round-2 cold seat had predicted exactly this and declined to fail the artifact on it; use settled it, and a session note outranks panel hypothesis on behaviour. **The merge clause now carries the class inline** — a finding and equally a remedy, a dissent, an examination that declined to file — while keeping the tie to the docket so an editor can see the two are one class. Seven words, against a criterion the text was otherwise failing in use.
 
 ## Evidence
 
