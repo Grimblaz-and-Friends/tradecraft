@@ -724,7 +724,7 @@ def cli(monkeypatch, *argv):
 def test_the_repo_and_policy_flags_parse_before_the_subcommand(monkeypatch, capsys):
     """The Usage block documented them after it, where argparse exits 2."""
     assert cli(monkeypatch, "--repo", "o/r", "policy") == 0
-    assert "writable labels:" in capsys.readouterr().out
+    assert "labels it writes onto an issue:" in capsys.readouterr().out
 
 
 def test_the_documented_usage_shape_is_the_one_that_runs(monkeypatch):
@@ -1351,20 +1351,31 @@ def test_the_floor_header_names_the_axis_that_actually_faded(monkeypatch, capsys
 
 
 def test_cycle_does_not_call_an_unmoved_item_risen(monkeypatch, capsys):
-    """Carrying a symptom is not rising. Below `accrual.symptoms_per_band` the
-    bands are zero and the pair is unchanged, so this listed unmoved items under
-    a heading saying what rose, with no arrow on the row to show it."""
+    """Carrying a symptom is not rising, and neither is having moved.
+
+    Below `accrual.symptoms_per_band` the bands are zero and the pair is
+    unchanged, so the first spelling listed unmoved items under a heading saying
+    what rose. The second tested `effective != _bare`, which is worse in a way
+    the first was not: the fade is applied after the accrual, so an item with
+    one symptom that has been quiet for a window differs from its bare pair by
+    having gone *down* -- and every fixture here carried no `updatedAt`, so
+    `quiet_windows` was 0 and no row could reach that case.
+    """
     stub_issues(monkeypatch, [
         issue(1, labels=["sev:2", "urg:2"]),   # one symptom: 1 // 2 == 0 bands
         issue(2, labels=["sev:1", "urg:1"]),
         issue(3, labels=["sev:2", "urg:2"]),   # two symptoms: it really rises
         issue(4, labels=["sev:1", "urg:1"]), issue(5, labels=["sev:1", "urg:1"]),
-    ], parents={2: 1, 4: 3, 5: 3})
+        # One symptom AND quiet: it moved, downwards.
+        issue(6, labels=["sev:2", "urg:3"], updated=ago(35)),
+        issue(7, labels=["sev:1", "urg:1"]),
+    ], parents={2: 1, 4: 3, 5: 3, 7: 6})
     pool.cmd_cycle(policy_dict(), None)
     out = capsys.readouterr().out
     risen = out.split("risen, from the symptoms under them:")[1].split("\n\n")[0]
     assert "#3" in risen, risen
     assert "#1" not in risen, risen
+    assert "#6" not in risen, risen
 
 
 def test_a_timestamp_with_no_offset_does_not_escape_the_refusal_contract(monkeypatch):
@@ -1470,3 +1481,33 @@ def test_the_causation_read_is_bounded(monkeypatch):
     with pytest.raises(pool.PoolError) as caught:
         pool.causal_parents(policy_dict(), "o/r")
     assert str(pool.PAGE_LIMIT) in str(caught.value)
+
+
+def test_outside_a_checkout_the_first_command_names_its_own_problem(monkeypatch, tmp_path):
+    """`_infer_repo` had the right sentence and it fired only on the causation
+    read. The first command anyone runs is `list`, which reaches the wire
+    directly, so what came back was git's own message -- `failed to run git:
+    fatal: not a git repository` -- naming neither this script's problem nor its
+    remedy, and a consumer had to read the source to recover."""
+    monkeypatch.chdir(tmp_path)
+    assert not pool._in_checkout()
+    with pytest.raises(pool.PoolError) as caught:
+        pool._repo_args(None)
+    assert "--repo OWNER/REPO" in str(caught.value)
+    # Both lawful polarities: a named repo needs no checkout, and inside one the
+    # inference is left to `gh` as before.
+    assert pool._repo_args("o/r") == ["--repo", "o/r"]
+    (tmp_path / ".git").mkdir()
+    assert pool._repo_args(None) == []
+
+
+def test_policy_says_the_same_thing_labels_does(monkeypatch, capsys):
+    """The two commands disagreed about `cause`: created by one, absent from the
+    only line in the other that says which labels this tool touches."""
+    policy = policy_dict()
+    pool.cmd_policy(policy, pool.DEFAULT_POLICY)
+    out = capsys.readouterr().out
+    created = out.split("labels it creates:")[1].split("\n")[0]
+    for spec in pool.label_specs(policy):
+        assert spec[0] in created, spec[0]
+    assert policy["cause"]["label"] in created

@@ -181,8 +181,30 @@ def rot(root: Path, issues: list[dict]) -> list[dict]:
     return findings
 
 
+def _refuse_a_foreign_repo(repo: str | None) -> None:
+    """`--repo` must name this checkout, because the tree is the other half.
+
+    The filings come from `--repo` and the paths are resolved against the local
+    `ROOT`, so pointing this at another repository compares one repository's
+    prose to another repository's files: every path it names reads as gone, and
+    real rot in its own tree is never looked at. Nothing in the output would say
+    so -- both halves succeed, and the answer is nonsense.
+    """
+    if repo is None:
+        return
+    here = pool_engine()._infer_repo()
+    if repo.strip().lower() != here.strip().lower():
+        raise RotError(
+            f"--repo names {repo} and this checkout is {here}. The filings come "
+            f"from the repository and the paths are checked against the tree "
+            f"here, so those have to be the same repository. Run this from a "
+            f"checkout of {repo}, or drop --repo"
+        )
+
+
 def cmd_rot(repo: str | None) -> int:
     policy = pool_engine().load_policy(pool_engine().find_policy(ROOT))
+    _refuse_a_foreign_repo(repo)
     issues = pool_bodies(policy, repo)
     findings = rot(ROOT, issues)
     print(f"pool: {len(issues)}   naming something the tree no longer holds: {len(findings)}")

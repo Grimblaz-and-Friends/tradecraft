@@ -90,22 +90,25 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 
 `scripts/pool.py` does the mechanics, and the judgment -- what a rating should be, what the case against a candidate is -- stays the session's:
 
+**In this order.** A consumer setting the pool up read this block top to bottom and it failed on the third line, `shortlist` being gated on work the two lines below it do. Add `--repo OWNER/REPO` to any of them when you are not inside the repository's own checkout.
+
 ```bash
-python scripts/pool.py labels     # once, so the policy's labels exist
-python scripts/pool.py list
-python scripts/pool.py shortlist
+python scripts/pool.py labels                              # once, so the policy's labels exist
+python scripts/pool.py list                                # what is in the pool, and what is rated
 python scripts/pool.py rate 123 --rating sev:3 --rating urg:2
-python scripts/pool.py frame 123
-python scripts/pool.py unframe 123   # the brief sent it back to the pool
-python scripts/pool.py cycle         # what rose, what faded, what to assess
-python scripts/pool.py assess 123 --none
+python scripts/pool.py cycle                               # what rose, what faded, what to assess next
+python scripts/pool.py assess 123 --none                   # asked, and it is its own cause
+python scripts/pool.py shortlist                           # the raise -- gated on the two lines above
+python scripts/pool.py show 123                            # one issue, and why its row reads as it does
+python scripts/pool.py frame 123                           # the owner picked it
+python scripts/pool.py unframe 123                         # the brief sent it back to the pool
 ```
 
 `scripts/pool-policy.json` carries the labels, the bands and the shortlist size; a repository overrides it with a file of that name at its own root, and one that wants a wholly different approach says so in its own doctrine and does not run any of this.
 
 **An unrated filing is not a low-rated one.** It sorts below everything rated and is reported as unrated, because it has not been judged harmless -- it has not been judged.
 
-**A filing does not keep the rating it was given, and nothing rewrites its labels.** A cause is read as at least as bad as the worst thing it produced, and climbs a band for every `accrual.symptoms_per_band` symptoms under it — so below that number a symptom moves nothing, which is the mechanism and not a fault. Anything nobody touches falls a band per quiet window, while the axis it is ranked on first never moves: **the policy's `order` decides which is which**, and with the order shipped here that is urgency falling and severity holding. Both show in a row as `label>value` where the derived value differs from the label — `urg:3>1` is a filing rated 3 that two quiet windows have read down to 1, and its label is still `urg:3`. **An axis nobody rated, or rated twice, stays that way**: accrual raises a rating and never supplies one, so a `-` or a `CLASH` in a row means somebody still has to choose. Both are derived when the pool is read, so the labels stay the filer's proposal — a fade that wrote would reset the very signal it reads quiet from. At the floor an item is named, and closed as *not planned* only where a repository has set `fade.closes`, which ships false and which leaves the body and every comment so the next symptom reopens it.
+**A filing does not keep the rating it was given, and nothing rewrites its labels.** A cause is read as at least as bad as the worst thing it produced, and climbs a band for every `accrual.symptoms_per_band` symptoms under it — so below that number a symptom moves nothing, which is the mechanism and not a fault. Anything nobody touches falls a band per quiet window, while the axis it is ranked on first never moves: **the policy's `order` decides which is which**, and with the order shipped here that is urgency falling and severity holding. Both show in a row as `label>value` where the derived value differs from the label — `urg:3>1` is a filing rated 3 that two quiet windows have read down to 1, and its label is still `urg:3`. **An axis nobody rated, or rated twice, stays that way**: accrual raises a rating and never supplies one, so a `-` or a `CLASH` in a row means somebody still has to choose. Both are derived when the pool is read, so the labels stay the filer's proposal — a fade that wrote would reset the very signal it reads quiet from. **So do not re-rate an item to match what its row shows.** A consumer tried it: setting `urg:1` on a row reading `urg:3>1` writes the decayed number in as the proposal *and* touches the issue, so the next quiet window decays it again from the lower floor — a ratchet, one well-meant correction at a time. If a faded item still matters, say so where saying so counts: comment on it, link it under its cause, or raise it. At the floor an item is named, and closed as *not planned* only where a repository has set `fade.closes`, which ships false. The close keeps the body and every comment, so nothing is lost and reopening costs a click — **but nothing reopens it for you**: every read here asks for open issues, so a later symptom lands under a cause the pool can no longer see.
 
 **Most of the pool has never been asked whether it has a cause, and that is not the same as having none.** There are three answers and only two of them are a label: one asked and found to be its own carries the assessed label, one never asked carries nothing, and **one whose cause is known is recorded by the sub-issue link above** — which is read as the answer it is, so linking a symptom under its cause is what clears it. A row carries `?` in its own column while nobody has asked. `shortlist` refuses over an unassessed top so that what it raises are causes rather than symptoms, and `cycle` names a bounded few more each time so the backlog is worked through without anyone paying for it at once.
 

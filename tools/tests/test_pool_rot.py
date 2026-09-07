@@ -170,3 +170,18 @@ def test_a_read_at_its_limit_is_refused(monkeypatch):
     monkeypatch.setattr(rot, "gh", lambda args: full)
     with pytest.raises(rot.RotError):
         rot.pool_bodies(policy, None)
+
+
+def test_a_repo_that_is_not_this_checkout_is_refused(monkeypatch):
+    """The filings come from `--repo` and the paths are resolved against the
+    local tree, so pointing this at another repository compares one repository's
+    prose to another's files: every path reads as gone and real rot here is
+    never looked at. Both halves succeed and the answer is nonsense."""
+    monkeypatch.setattr(rot.pool_engine(), "_infer_repo", lambda: "acme/demo")
+    with pytest.raises(rot.RotError) as caught:
+        rot._refuse_a_foreign_repo("other/repo")
+    assert "acme/demo" in str(caught.value) and "other/repo" in str(caught.value)
+    # Both lawful polarities: the same repository passes, and so does no --repo.
+    rot._refuse_a_foreign_repo("acme/demo")
+    rot._refuse_a_foreign_repo("ACME/Demo")
+    rot._refuse_a_foreign_repo(None)

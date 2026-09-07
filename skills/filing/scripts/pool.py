@@ -323,9 +323,32 @@ def gh(args: list[str]) -> str:
     return proc.stdout
 
 
+def _in_checkout(start: Path | None = None) -> bool:
+    """Whether there is a git checkout above here for `gh` to infer a repo from."""
+    here = (start or Path.cwd()).resolve()
+    return any((c / ".git").exists() for c in (here, *here.parents))
+
+
 def _repo_args(repo: str | None) -> list[str]:
-    """Nothing when no repository is named, so `gh` infers it from the checkout."""
-    return ["--repo", repo] if repo else []
+    """Nothing when no repository is named, so `gh` infers it from the checkout.
+
+    **Outside a checkout this refuses here rather than letting `gh` try.** The
+    first command anyone runs is `list`, which reaches the wire directly, and
+    what came back was git's own message -- `failed to run git: fatal: not a git
+    repository` -- naming neither this script's problem nor its remedy. A
+    consumer met exactly that and had to read the source to find the sentence
+    the script already had, which lived in `_infer_repo` and fires only on the
+    causation read. The check is a walk up for `.git`, as `find_policy` does, so
+    it costs no round trip.
+    """
+    if repo:
+        return ["--repo", repo]
+    if not _in_checkout():
+        raise PoolError(
+            "there is no git checkout here, so which repository this is cannot "
+            "be worked out. Name it with --repo OWNER/REPO"
+        )
+    return []
 
 
 def open_issues(repo: str | None = None) -> list[dict]:
@@ -887,7 +910,13 @@ def cmd_shortlist(policy: dict, repo: str | None, count: int | None,
 def cmd_policy(policy: dict, source: Path) -> int:
     print(f"policy: {source}")
     print(f"default: {DEFAULT_POLICY}")
-    print(f"writable labels: {', '.join(sorted(writable_labels(policy)))}")
+    # Both sets, because printing only the writable one had this command and
+    # `labels` saying different things about `cause`: created here, never
+    # written onto an issue by anything, and absent from the one line a reader
+    # checks to find out which labels this tool touches.
+    created = sorted({spec[0] for spec in label_specs(policy)})
+    print(f"labels it creates: {', '.join(created)}")
+    print(f"labels it writes onto an issue: {', '.join(sorted(writable_labels(policy)))}")
     print(json.dumps(policy, indent=2, sort_keys=True))
     return 0
 
@@ -1046,11 +1075,22 @@ def cmd_cycle(policy: dict, repo: str | None, dry_run: bool = False) -> int:
     """
     pool, _ = read_pool(policy, repo)
     order = policy["order"]
-    # Carrying a symptom is not rising. Below `accrual.symptoms_per_band` the
-    # bands are zero and the pair is unchanged, so this listed unmoved items
-    # under a heading saying what rose, with no arrow on the row to show it.
-    risen = [it for it in pool
-             if it.get("symptoms") and it["effective"] != _bare(it, policy)]
+    # Carrying a symptom is not rising, and neither is having moved. The first
+    # spelling of this listed every item with a symptom, so items the accrual
+    # had not touched printed under a heading saying what rose. The second
+    # tested `effective != _bare`, which is worse in a way the first was not:
+    # `effective` applies the fade after the accrual, so an item with one
+    # symptom (zero bands) that has been quiet for a window differs from its
+    # bare pair by having gone *down*, and printed as risen. What rising means
+    # is an increase, so that is what this asks.
+    def _rose(item: dict) -> bool:
+        bare = _bare(item, policy)
+        return any(item["effective"].get(name) is not None
+                   and bare.get(name) is not None
+                   and item["effective"][name] > bare[name]
+                   for name in order)
+
+    risen = [it for it in pool if it.get("symptoms") and _rose(it)]
     floored = [it for it in pool if at_floor(it, policy, it["effective"])]
     unassessed = [it for it in pool if not it["assessed"]]
     nxt = unassessed[:policy["assessment"]["per_cycle"]]
