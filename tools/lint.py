@@ -55,26 +55,30 @@ Checks:
   inside them. Both checks also read one wrap — a line ending in `<name>` whose successor
   begins "cell" — because a reflow is a formatting edit no reviewer inspects
   and it would otherwise silently remove a reference from both checks.
-  7. doctrine citations: every [D-N] the doctrine writes names an entry that
+  7. depth index: every references/ file a cell holds is named in
+     that cell's SKILL.md body, and every references/ file a body
+     names exists. An orphan routes no reader and is found only by
+     enumeration; a dangling entry reads correctly and leads nowhere.
+  8. doctrine citations: every [D-N] the doctrine writes names an entry that
      exists. The log's own references are check 13's; a marker in the always-on
      surface was checked by nothing, which the outflow rule makes load-bearing
      by instructing a session to compress prose into one.
-  8. doctrine references: every repo path the doctrine writes resolves.
+  9. doctrine references: every repo path the doctrine writes resolves.
      Check 13 covers the decision log, which is frozen exhaust, so the
      surface carrying the live rules was the one nothing checked --
      repointing the doctrine's own docs/values.md mention left lint
      green while the identical break inside an entry fired. Scoped to
      the doctrine files: docs/*.md needs resolver work, not a path-list
      edit, because references there resolve relative to their file.
-  9. doctrine: AGENTS.md exists, imports the charter and imports nothing
+  10. doctrine: AGENTS.md exists, imports the charter and imports nothing
      else, and CLAUDE.md stays a bare pointer; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  10. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  11. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  11. review index: docs/reviews.jsonl, when present, parses and carries one
+  12. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review. Past the cutover: date, artifact, lane, the
      sustained highs named — each with the surface it hit, past a later
      boundary — the model and runtime that staffed it, the external pass's
@@ -86,28 +90,28 @@ Checks:
      about *this* record: the file is identified by the sha256 of its first
      non-blank row's bytes, trailing whitespace stripped,
      and any other file is held to the current shape throughout.
- 12. decision index: every decision entry has a row in the log's index, and
+ 13. decision index: every decision entry has a row in the log's index, and
      every row a file.
- 13. entry references: every path reference and relative link a decision entry
+ 14. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
-14. emitted ASCII: no Python file states a non-ASCII character in a
+15. emitted ASCII: no Python file states a non-ASCII character in a
     non-docstring string constant. Windows encodes stdout and stderr to the
     locale codepage, pipes included, so a captured em dash garbles in the one
     message a guard exists to deliver. It reads literals, not reachability:
     a filename and a regex source are flagged too, and a character built at
     runtime is out of reach. Docstrings and comments are exempt.
-15. docstring not piped: no script passes __doc__ as an argparse
+16. docstring not piped: no script passes __doc__ as an argparse
     description. --help writes it to stdout before any stream setup runs,
     which turns the docstring check 14 exempts into locale-encoded output.
-16. stdio wired: every script with a main() imports utf8_stdio by that name
+17. stdio wired: every script with a main() imports utf8_stdio by that name
     and calls it as the first statement, so runtime data this repository did
     not write reaches the stream protected. Both halves are checked: without
     the import binding, a local no-op with the right name would satisfy the
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
-17. project roster: every cell has an entry under .claude/skills/ AND under
+18. project roster: every cell has an entry under .claude/skills/ AND under
     .agents/skills/ carrying its frontmatter byte for byte, and no entry THIS
     GENERATOR WROTE names a cell that is gone. A file it did not write is not
     its business: at a name that is no cell it draws no finding at all,
@@ -131,13 +135,13 @@ Checks:
     about a cell rather than a surface names neither and is reported once. The expectation is tools/roster.py's own, never recomputed
     here: a guard holding a second definition drifts from the writer it
     judges.
-18. marketplace source: the tradecraft entry's source stays the exact string
+19. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
-19. subprocess streams: a launch redirects nothing, or names all three of
+20. subprocess streams: a launch redirects nothing, or names all three of
     stdin, stdout and stderr, because on Windows an unnamed stream resolves
     through a std-handle table that can still name a closed handle.
 
-20. docstring control characters: no docstring's compiled value holds a
+21. docstring control characters: no docstring's compiled value holds a
     control character other than a line feed or a tab. A docstring is not raw,
     so a backslash followed by r, written in one, is a carriage return at
     runtime. Named in words rather than shown, because every attempt to write
@@ -149,7 +153,7 @@ Checks:
     because the instance that motivated this had clean bytes on disk and four
     carriage returns in `__doc__` [D-231].
 
-21. hollow code span: no inline code span holds nothing but whitespace. Prose
+22. hollow code span: no inline code span holds nothing but whitespace. Prose
     here names control characters constantly, and a span written to show one
     that no longer holds it reads as finished while saying nothing -- three
     instances in one change, one of which reached a commit and broke a row in
@@ -159,7 +163,7 @@ Checks:
     rather than on a list of call sites that would go stale. Fenced blocks are
     skipped, as checks 5 and 6 skip the name form inside one, and by the same
     closing rule -- a fence ends only on its own marker.
-22. committed carriage return: no file reaches a commit holding a lone
+23. committed carriage return: no file reaches a commit holding a lone
     carriage return. The LF pin has one hole and git states it plainly --
     text=auto refuses to normalize such a file, and commits every line ending
     in it verbatim. Three populations are read, because the flow runs this
@@ -172,27 +176,27 @@ Checks:
     source to a line feed before a docstring compiles -- a NUL is invisible
     there too, for its own reason, and check 14 is what reports that file.
 
-23. body strip: no module outside the authoring engine hand-rolls the strip
+24. body strip: no module outside the authoring engine hand-rolls the strip
     that takes a cell's body off its frontmatter. Three implementations were
     plausible and the cheapest was wrong; the rule lived in a sibling
     docstring, so a session going straight from the doctrine to code wrote
     its own and everything stayed green (#190). Recorded exemptions are
     (path, function) pairs and the suite pins that the set only shrinks.
 
-24. always-on budget: every per-runtime always-on row, and the adopter
+25. always-on budget: every per-runtime always-on row, and the adopter
     total separately, inside its ceiling. Replaces the two per-file ceilings
     on AGENTS.md and the charter body, which could not see a move between
     two members of one row -- it read as a saving in whichever file shrank
     while the surface a session loads had not moved (#260).
 
-25. admissions: docs/admissions.jsonl parses, every row carries all six
+26. admissions: docs/admissions.jsonl parses, every row carries all six
     fields, and no key has banked more than was ever admitted against it.
     The record is what lets a needed item land over a ceiling without the
     constant moving; a row this cannot read grants nothing. The re-arming
     finding, which fires when a surface comes back to or below its constant
     with characters still charged, belongs to checks 9, 4 and 24 -- the
     three that know each surface's size -- and not to this one (#334).
-26. settling index: docs/settling.jsonl parses and every row carries the
+27. settling index: docs/settling.jsonl parses and every row carries the
     keys the `records` cell names. The record is append-only and doctrine
     forbids repairing a landed row, so a malformed one is permanent; when it
     shipped, invalid JSON there landed green while the identical append to
@@ -200,7 +204,7 @@ Checks:
     later row may carry more without a guard change -- and a required figure
     nobody can supply is written as null, since an absent key and a null one
     say different things (#423).
-27. charter roster: every shipped cell but the charter has a line in the
+28. charter roster: every shipped cell but the charter has a line in the
     charter's declared roster, so the always-on router cannot go stale when a
     cell is added. Keyed by the roster's heading, which is checked too -- a
     check keyed to a section is disabled by renaming it. The names only,
@@ -5260,6 +5264,59 @@ def check_settling_index(root: Path) -> list[str]:
     return findings
 
 
+def check_depth_index(root: Path) -> list[str]:
+    """Every depth file a cell holds is named in that cell's body, and back.
+
+    `cell-structure.md` makes the index the authority on what depth a cell
+    has, and an authority nothing checks is a list that goes stale the first
+    time a file is added under a deadline. Two directions, because each fails
+    differently and only one of them is visible to a reader.
+
+    An **orphan** -- a `references/` file no body names -- is the silent half.
+    It loads for nobody, it costs nothing anyone can measure, and the only way
+    to find one is to enumerate the directory, which is exactly what no reader
+    does. A sibling repository shipping this convention carried 107 covered
+    documents against 108, and the uncovered one was invisible until somebody
+    counted.
+
+    A **dangling** entry -- a body naming a `references/` file that is not
+    there -- is the loud half, and it still merges: the sentence reads
+    correctly, the reader follows it, and what they find is nothing.
+
+    The check is naming, not shape. Whether the entries are collected into one
+    table or scattered through the prose is the standard's business and a
+    reader's judgment; whether every file is reachable at all is a fact, and a
+    fact is what a guard is for. So this is the floor beneath that standard
+    rather than the standard itself.
+    """
+    findings = []
+    for parent in ("skills", "docs/cells"):
+        base = root / parent
+        if not base.is_dir():
+            continue
+        for cell in sorted(d for d in base.iterdir() if d.is_dir()):
+            skill = cell / "SKILL.md"
+            depth_dir = cell / "references"
+            if not skill.is_file() or not depth_dir.is_dir():
+                continue
+            body = _frontmatterless(skill.read_text(encoding="utf-8", errors="replace"))
+            named = set(re.findall(r"references/([A-Za-z0-9._-]+\.md)", body))
+            present = {f.name for f in depth_dir.glob("*.md")}
+            rel = f"{parent}/{cell.name}"
+            for orphan in sorted(present - named):
+                findings.append(
+                    f"depth-index: {rel}/references/{orphan} is named nowhere in "
+                    f"{rel}/SKILL.md, so nothing routes a reader to it -- add its "
+                    f"entry to the cell's index, or delete the file"
+                )
+            for dangling in sorted(named - present):
+                findings.append(
+                    f"depth-index: {rel}/SKILL.md names references/{dangling}, "
+                    f"which does not exist -- fix the entry or restore the file"
+                )
+    return findings
+
+
 CHECKS = (
     check_zone_wall,
     check_harness_tokens,
@@ -5268,6 +5325,7 @@ CHECKS = (
     check_project_roster,
     check_sideways_deps,
     check_cell_references,
+    check_depth_index,
     check_doctrine_citations,
     check_doctrine_references,
     check_doctrine,
