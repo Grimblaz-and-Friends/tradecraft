@@ -225,7 +225,7 @@ def test_a_cell_budget_disagreeing_with_the_guard_is_refused(tmp_path, monkeypat
     """
     _cell(tmp_path, "example-skill", "x" * 40 + NL)
     rel = "skills/example-skill/SKILL.md"
-    monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {rel: 9_000})
+    monkeypatch.setattr(lint, "CELL_BODY_CEILING_CHARS", {rel: 9_000})
     stub = lambda *a, **k: {"name": "stub", "value": "skipped",
                             "basis": "stubbed", "data": {}}
     # Everything build_figures emits before the cell figures needs a full tree;
@@ -260,7 +260,7 @@ def test_a_cell_budget_disagreeing_with_the_guard_is_refused(tmp_path, monkeypat
     assert "9000 plus 500 admitted" in str(caught.value), caught.value
     (tmp_path / lint.ADMISSIONS).unlink()
 
-    monkeypatch.setattr(lint, "CELL_BODY_BUDGET_CHARS", {})
+    monkeypatch.setattr(lint, "CELL_BODY_CEILING_CHARS", {})
     assert repo_figures.build_figures(tmp_path, None, rel, 12_000)
 
 def test_the_description_ceiling_comes_from_the_guard(tmp_path, monkeypatch):
@@ -983,34 +983,47 @@ def test_a_ceiling_with_an_admission_states_the_one_in_force_and_its_constant(
 
 
 def test_a_cell_body_row_prices_against_what_is_admitted_to_it(tmp_path):
-    """The body table is the third surface, and it must not fork from the guard.
+    """A cell body charges nothing, and the figure matches what files.
 
-    Its headroom is what a session reads before writing, so a row still
-    subtracting from the constant would say a cell was over its ceiling while
-    `check_doctrine` passed it -- the figure and the guard disagreeing about
-    the same cell, which is the class `cell_budgets` exists to close.
+    The pairing this used to pin is what made the mandated command print 937
+    characters of headroom for a cell the ratchet would have filed against at
+    one. A ceiling is where the body stood, measured on a body that already
+    contained whatever had been admitted to it, so charging the rows again
+    counts them twice -- and the surface a session reads before writing then
+    disagrees with the mechanism that acts.
+
+    The `body:` key stays lawful. Three landed rows carry it and the record is
+    append-only, so the fix is to stop reading them here rather than to refuse
+    the key, which would fail those rows closed at `_admission_key_ok`.
     """
     surface(tmp_path)
     _cell(tmp_path, "example-skill", "y" * 400 + NL)
     roster.write(tmp_path)
     rel = "skills/example-skill/SKILL.md"
-    original = dict(lint.CELL_BODY_BUDGET_CHARS)
-    lint.CELL_BODY_BUDGET_CHARS = {rel: 100}
+    original = dict(lint.CELL_BODY_CEILING_CHARS)
+    lint.CELL_BODY_CEILING_CHARS = {rel: 100}
     try:
         rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
         assert rows["example-skill"]["budgets"] == [("body", 100, 0)]
         assert "of 100, headroom" in repo_figures.cell_body_block(
             [rows["example-skill"]])
 
+        # Both polarities on the thing that actually changed: a row admitting
+        # characters to this body moves neither the figure nor the block.
         _admit(tmp_path, 350, f"body:{rel}")
         rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
-        assert rows["example-skill"]["budgets"] == [("body", 100, 350)]
+        assert rows["example-skill"]["budgets"] == [("body", 100, 0)], (
+            "an admission row moved a cell body's ceiling")
         block = repo_figures.cell_body_block([rows["example-skill"]])
-        assert "of 450 (100 plus 350 admitted)" in block, block
+        assert "admitted" not in block, block
+        assert "of 100, headroom" in block, block
         body = rows["example-skill"]["body"]
-        assert f"headroom {450 - body:,}" in block, block
+        assert f"headroom {100 - body:,}" in block, block
+        # And the figure agrees with what the mechanism files against.
+        lint_ceiling = lint.CELL_BODY_CEILING_CHARS[rel]
+        assert rows["example-skill"]["budgets"][0][1] == lint_ceiling
     finally:
-        lint.CELL_BODY_BUDGET_CHARS = original
+        lint.CELL_BODY_CEILING_CHARS = original
 
 
 def test_the_charter_row_prices_both_of_its_shared_ceilings(tmp_path):

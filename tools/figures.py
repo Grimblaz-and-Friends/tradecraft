@@ -701,7 +701,7 @@ def cell_budgets(rel_path: str,
                  admissions: list[dict] | None = None) -> list[tuple[str, int, int]]:
     """Every budget that governs one cell's body, named, or an empty list.
 
-    **`CELL_BODY_BUDGET_CHARS` is not the only budget in view**, and treating
+    **`CELL_BODY_CEILING_CHARS` is not the only budget in view**, and treating
     it as though it were is how a report comes to say "no budget" about a cell
     that is capped. The charter's body is a term in every always-on row and in
     the adopter total, so `check_always_on_budget` reds on it at the same
@@ -721,9 +721,17 @@ def cell_budgets(rel_path: str,
     that has admitted nothing measures. [#334]
     """
     rows = admissions or []
-    own = lint.CELL_BODY_BUDGET_CHARS.get(rel_path)
+    own = lint.CELL_BODY_CEILING_CHARS.get(rel_path)
     if own is not None:
-        return [("body", own, lint.admitted(rows, f"body:{rel_path}")[0])]
+        # Nothing is charged against a cell body any more. Its ceiling is
+        # where the body stood when the ratchet landed (#455), measured on a
+        # body that already contained whatever had been admitted to it, so
+        # adding the rows here would count them twice -- which is what made
+        # this command print 937 characters of headroom that the mechanism
+        # filing against the same cell did not recognise. The rows stay
+        # lawful and inert: `body:` is still a valid admission key because
+        # three landed rows carry it and the record is append-only.
+        return [("body", own, 0)]
     if rel_path == lint.CHARTER:
         return [("always-on row", lint.ALWAYS_ON_ROW_BUDGET_CHARS,
                  lint.admitted(rows, "always-on-row")[0]),
@@ -743,7 +751,7 @@ def cell_body_rows(root: Path) -> list[dict]:
     exists to prevent, one name over. [#302]
 
     **Derived from the roster rather than from a list.** `check_doctrine`
-    iterates `CELL_BODY_BUDGET_CHARS`, so a cell absent from that map is sized
+    iterates `CELL_BODY_CEILING_CHARS`, so a cell absent from that map is sized
     by nothing at either command this repository's landing procedure mandates.
     Reading `roster.SOURCES` rather than naming the source directories here is
     what keeps a third source, added later, from being silently unmeasured --
@@ -851,7 +859,7 @@ def build_figures(root: Path, base: str | None,
         # PR #346's panel. `constant` stays separate from `enforced` because
         # the caller argues the constant and the guard enforces the sum.
         admissions, _ = lint.read_admissions(root)
-        constant = lint.CELL_BODY_BUDGET_CHARS.get(cell)
+        constant = lint.CELL_BODY_CEILING_CHARS.get(cell)
         enforced = None if constant is None else lint.ceiling(
             constant, admissions, f"body:{cell}")[0]
         if enforced is not None and enforced != budget:
@@ -861,7 +869,7 @@ def build_figures(root: Path, base: str | None,
                 f"{lint.ADMISSIONS})")
             raise SystemExit(
                 f"figures: --cell-budget {budget} disagrees with the {enforced} "
-                f"check_doctrine enforces for {cell}{admitted_note}. Refusing "
+                f"the ceiling map holds for {cell}{admitted_note}. Refusing "
                 "rather than defaulting: the caller decides the budget, and a "
                 "stated headroom no guard backs is the drift this script "
                 "exists to stop"
@@ -875,8 +883,8 @@ def build_figures(root: Path, base: str | None,
             # without that function's name on purpose: the docstring
             # enumeration test scans this source for figure_* tokens.)
             cell_figure["basis"] += (
-                " -- and here check_doctrine enforces that budget, so the figure "
-                "cannot drift from the guard that judges it"
+                " -- and here the ceiling map holds that number, so the figure "
+                "cannot drift from what a cell body is measured against"
             )
         figures.append(cell_figure)
         figures.append(figure_cell_total(root, cell))

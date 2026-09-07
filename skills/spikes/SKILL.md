@@ -7,6 +7,10 @@ description: Testing a premise by running it before you assert it — a bounded,
 
 **Purpose:** give a session about to assert something it has not checked a named, cheap move that is bounded and cannot be mistaken for work that ships. **Audience:** any session about to commit to a premise it has not tested — writing a pre-implementation artifact, arguing a review finding, proposing a rule, or building. **Success:** a session that has never seen this file can tell, from the text alone, whether the premise in front of it needs a spike; can run one and stop; and cannot mistake a spike for work that ships.
 
+## Where this cell's depth lives
+
+- **Scoring a cold-seat A/B's planted control, or the run's output would be the removal of the text under test** → `references/licensing-a-deletion.md`: the record search that ends a run before dispatch, what counts as a seat having cited text, and which disposition a scored run reaches.
+
 ## When a spike fires
 
 **Where a load-bearing premise turns on material no enumeration you can consult covers, or on behavior no run you can consult has exercised** — both limbs keyed to what you can consult, because a trigger turning on what anyone has ever done is one no session can evaluate. A premise is load-bearing when something you are about to assert rests on it and changes if it is false: a claim in a pre-implementation artifact, a thesis still disputed after a round of review, the wording of a rule you are proposing. Which surface asserts it does not matter. The first limb is material you cannot survey, not material you have not surveyed — where the answer sits in files you can open, open them.
