@@ -246,13 +246,64 @@ def test_a_capped_fetch_warns_on_stderr(monkeypatch, capsys: pytest.CaptureFixtu
     assert capsys.readouterr().err == ""
 
 
+def test_the_documented_pinning_recipe_actually_works(tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]):
+    # The experience session on the fix batch typed the recipe the caveat
+    # gave -- --json out, --from-file back in -- and got a traceback. The
+    # recipe is now --dump, and it must round-trip; a report fed back must
+    # be refused with a sentence, not a traceback.
+    issues = [_issue(50, "2026-09-05T00:00:00Z", USE_BODY), _issue(51, "2026-08-20T00:00:00Z", REVIEW_BODY)]
+    monkeypatch.setattr(ti, "gh", lambda args: json.dumps(issues))
+    corpus = tmp_path / "corpus.json"
+    assert ti.main(["--dump", str(corpus), "--until", "2026-09-06T00:00:00Z"]) == 0
+    live = capsys.readouterr().out
+    assert ti.main(["--from-file", str(corpus), "--until", "2026-09-06T00:00:00Z"]) == 0
+    pinned = capsys.readouterr().out
+    assert pinned == live
+    assert corpus.read_bytes().isascii()
+    # Negative control: the report is not a corpus, and says so.
+    report = tmp_path / "report.json"
+    assert ti.main(["--from-file", str(corpus), "--until", "2026-09-06T00:00:00Z", "--json"]) == 0
+    report.write_text(capsys.readouterr().out, encoding="utf-8")
+    rc = ti.main(["--from-file", str(report), "--until", "2026-09-06T00:00:00Z"])
+    err = capsys.readouterr().err
+    assert rc == 2 and "cannot be read back" in err
+
+
+def test_the_header_prints_the_full_instants_and_the_clamp(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    # A window printed as dates hid an end that defaulted to now; and a
+    # baseline beginning before the first issue counted empty days.
+    dump = tmp_path / "issues.json"
+    dump.write_text(json.dumps([_issue(60, "2026-08-20T00:02:00Z", USE_BODY),
+                                _issue(61, "2026-09-05T00:00:00Z", USE_BODY)]), encoding="utf-8")
+    assert ti.main(["--from-file", str(dump), "--until", "2026-09-06T00:00:00Z"]) == 0
+    out = capsys.readouterr().out
+    assert "to 2026-09-06T00:00:00+00:00" in out                       # the end instant, not a date
+    assert "== baseline: 2026-08-20T00:02:00+00:00" in out              # clamped to the first issue
+    assert "would have begun 2026-08-14T22:34:00+00:00" in out         # and says what it was
+    # Negative control: a corpus whose first issue predates the window is not clamped.
+    dump.write_text(json.dumps([_issue(62, "2026-08-01T00:00:00Z", USE_BODY),
+                                _issue(63, "2026-09-05T00:00:00Z", USE_BODY)]), encoding="utf-8")
+    assert ti.main(["--from-file", str(dump), "--until", "2026-09-06T00:00:00Z"]) == 0
+    assert "clamped" not in capsys.readouterr().out
+
+
+def test_basis_is_explained_where_it_is_printed(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    dump = tmp_path / "issues.json"
+    dump.write_text(json.dumps([_issue(70, "2026-09-05T00:00:00Z", USE_BODY)]), encoding="utf-8")
+    assert ti.main(["--from-file", str(dump), "--until", "2026-09-06T00:00:00Z", "--rows"]) == 0
+    assert "basis: 'provenance' means" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        ti.main(["--help"])
+    assert "basis: 'provenance' means" in capsys.readouterr().out
+
+
 def test_the_text_run_carries_the_caveat_and_a_pinned_corpus_is_byte_identical(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     dump = tmp_path / "issues.json"
     dump.write_text(json.dumps([_issue(40, "2026-09-05T00:00:00Z", USE_BODY)]), encoding="utf-8")
     args = ["--from-file", str(dump), "--until", "2026-09-06T00:00:00Z", "--rows"]
     assert ti.main(args) == 0
     first = capsys.readouterr().out
-    assert "bodies get edited" in first and "--from-file" in first
+    assert "bodies get edited" in first and "--dump" in first and "--until" in first
     assert ti.main(args) == 0
     assert capsys.readouterr().out == first
 

@@ -230,25 +230,38 @@ def window_rows(issues: list[dict], start: datetime, end: datetime) -> list[dict
     return rows
 
 
-def summarize(rows: list[dict], start: datetime, end: datetime) -> dict:
+def summarize(rows: list[dict], start: datetime, end: datetime, *, clamped_from: datetime | None = None) -> dict:
     days = max((end - start).total_seconds() / 86400.0, 1e-9)
     counts = {name: 0 for name in ("use", "review", "owner", "ambiguous", "unstated")}
     for row in rows:
         counts[row["class"]] += 1
     return {
         "start": start.isoformat(), "end": end.isoformat(), "days": round(days, 2),
+        "clamped_from": clamped_from.isoformat() if clamped_from else None,
         "total": len(rows), "counts": counts,
         "per_day": {name: round(n / days, 3) for name, n in counts.items()},
     }
 
 
+def earliest_created(issues: list[dict]) -> datetime | None:
+    whens = [parse_when(i["createdAt"]) for i in issues if i.get("createdAt")]
+    return min(whens) if whens else None
+
+
 def render(name: str, summary: dict, rows: list[dict], *, verbose: bool, only: str | None = None) -> str:
-    out = [f"== {name}: {summary['start'][:10]} to {summary['end'][:10]} "
+    # The full instants, not dates: a window that prints as a date hides an
+    # end that defaulted to now, which is what made two runs of one pinned
+    # corpus disagree in the experience session on the fix batch.
+    out = [f"== {name}: {summary['start']} to {summary['end']} "
            f"({summary['days']} days, {summary['total']} issues)"]
+    if summary.get("clamped_from"):
+        out.append(f"  (window start clamped to the earliest issue in the corpus; "
+                   f"it would have begun {summary['clamped_from']})")
     out.append("  class      count  per day")
     for cls in ("use", "review", "owner", "ambiguous", "unstated"):
         out.append(f"  {cls:<10} {summary['counts'][cls]:>5}  {summary['per_day'][cls]:>7.3f}")
     if verbose:
+        out.append("  " + BASIS_NOTE)
         out.append("  issue  class      basis       phrase(s) matched")
         for row in rows:
             if only and row["class"] != only:
@@ -262,10 +275,13 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(
         description="Classify the intake by stated provenance for the review trial's close-out.",
-        epilog="Instants without an offset are read as UTC. " + CAVEAT)
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Instants without an offset are read as UTC.\n" + CAVEAT + "\n" + BASIS_NOTE)
     parser.add_argument("--repo", metavar="OWNER/REPO", help="repository to read; inferred from the checkout")
     parser.add_argument("--from-file", metavar="PATH", type=Path,
-                        help="read issues from a JSON dump (gh issue list --json number,title,createdAt,state,body) instead of the CLI")
+                        help="read issues from a corpus file written by --dump instead of the CLI")
+    parser.add_argument("--dump", metavar="PATH", type=Path,
+                        help="fetch the issues and write them as a corpus file for --from-file, then classify as usual")
     parser.add_argument("--opened", metavar="ISO8601", default=TRIAL_OPENED,
                         help=f"instant the trial opened (default {TRIAL_OPENED})")
     parser.add_argument("--until", metavar="ISO8601", help="end of the trial window (default: now)")
@@ -286,6 +302,19 @@ def main(argv: list[str] | None = None) -> int:
     except IntakeError as exc:
         print(f"trial_intake: {exc}", file=sys.stderr)
         return 2
+    if not isinstance(issues, list) or (issues and not isinstance(issues[0], dict) or issues and "body" not in issues[0]):
+        print("trial_intake: --from-file wants a corpus written by --dump (a list of issues with bodies); "
+              "a --json report cannot be read back", file=sys.stderr)
+        return 2
+    if args.dump:
+        args.dump.write_bytes(json.dumps(issues, indent=1).encode("ascii"))
+
+    # A baseline that begins before the repository's first issue counts days
+    # with nothing to file in; clamp to the earliest issue and say so.
+    first = earliest_created(issues)
+    clamped_from = None
+    if first is not None and first > baseline_start:
+        clamped_from, baseline_start = baseline_start, first
 
     windows = {
         "baseline": (baseline_start, opened),
@@ -294,7 +323,9 @@ def main(argv: list[str] | None = None) -> int:
     result = {}
     for name, (start, end) in windows.items():
         rows = window_rows(issues, start, end)
-        result[name] = {"summary": summarize(rows, start, end), "rows": rows}
+        result[name] = {"summary": summarize(rows, start, end,
+                                             clamped_from=clamped_from if name == "baseline" else None),
+                        "rows": rows}
 
     if args.json:
         print(json.dumps(result, indent=2))
@@ -311,8 +342,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 CAVEAT = ("Classification reads issue bodies as they are now, and bodies get edited, so the same window "
-          "gives different counts on different days. To compare runs, pin a corpus: --json > file, "
-          "then --from-file file.")
+          "gives different counts on different days. To compare runs, pin both the corpus and the window: "
+          "--dump corpus.json once, then --from-file corpus.json --until <instant> every time. "
+          "(--json emits this report, not a corpus; it cannot be read back.)")
+
+BASIS_NOTE = ("basis: 'provenance' means the class came from the body's own provenance section, where "
+              "mechanism words count too; 'body' means no such section was found and only a verb of "
+              "provenance anywhere in the text decided.")
 
 
 if __name__ == "__main__":
