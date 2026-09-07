@@ -82,6 +82,13 @@ MARKER = "**Waiting on you:**"
 # `test_the_marker_is_anchored_not_merely_contained` exists.
 _PREFIX = re.compile(r"^(?:\s*(?:>|[-*+]\s|\d+[.)]\s))+")
 
+# HTML comments, blanked before scanning and newlines kept so a line is
+# still a line. A pull request template carrying the marker as a commented
+# placeholder would otherwise satisfy the check while being invisible in
+# the rendered body -- which is the opposite of what the marker is for.
+# Found by the external pass on #454, and not by the panel.
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
+
 WHAT_TO_WRITE = (
     "Add a line to the pull request body naming what waits on the owner, or "
     "saying that nothing does:\n"
@@ -100,12 +107,13 @@ def declaration(body: str) -> str | None:
     """The declaration's content, or None where the body carries none.
 
     A line whose stripped form opens with the marker and has something after
-    it, ignoring any blockquote or list prefix and ignoring fenced blocks
-    entirely. The remainder is required: an empty declaration would be a check that
+    it, ignoring any blockquote or list prefix and ignoring fenced blocks and
+    HTML comments entirely. The remainder is required: an empty declaration would be a check that
     cannot fail, which is the one shape of guard this repository treats as
     worse than no guard at all.
     """
-    for line in _unfenced_text(body).splitlines():
+    scanned = _HTML_COMMENT.sub(lambda m: "\n" * m.group().count("\n"), body)
+    for line in _unfenced_text(scanned).splitlines():
         stripped = _PREFIX.sub("", line).strip()
         if stripped.startswith(MARKER):
             rest = stripped[len(MARKER):].strip()

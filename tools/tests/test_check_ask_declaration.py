@@ -129,6 +129,21 @@ def test_a_marker_inside_a_fence_is_shown_not_written():
     assert guard.declaration(fenced + f"\n\n{MARKER} nothing.") == "nothing."
 
 
+def test_a_marker_inside_an_html_comment_is_not_a_declaration():
+    """A commented-out placeholder in a pull request template is invisible in
+    the rendered body, so it cannot be what tells the owner something waits.
+
+    Found by the external pass on PR #454, which the panel missed: the fence
+    blanking covers ``` blocks and said nothing about `<!-- -->`.
+    """
+    assert guard.declaration("<!--\n" + MARKER + " placeholder\n-->") is None
+    assert guard.declaration(f"<!-- {MARKER} placeholder -->") is None
+    # A real declaration below a commented template still passes.
+    assert guard.declaration(
+        f"<!-- {MARKER} placeholder -->\n\n{MARKER} nothing."
+    ) == "nothing."
+
+
 # --- the CLI, both polarities, through the exit code CI reads ---
 
 def test_cli_passes_on_a_body_that_declares(tmp_path, capsys):

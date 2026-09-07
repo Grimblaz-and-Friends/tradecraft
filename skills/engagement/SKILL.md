@@ -64,10 +64,10 @@ Every surface the owner enters opens with one, and so does the artifact, which c
 **One query is the whole of what waits, and it is scoped to the repository.** Unscoped, the label is a common one and the search returns other people's work.
 
 ```bash
-gh search issues --repo <owner>/<repo> --label <the mark> --state open --include-prs
+gh search issues --repo <owner>/<repo> --label <the mark> --state open --include-prs --limit 100
 ```
 
-**An empty result and a wrong label name are the same output** — no rows, exit zero — so a query that has never returned anything is worth checking against the repository's label set before it is read as *nothing waits*.
+**An empty result and a wrong label name are the same output** — no rows, exit zero — so a query that has never returned anything is worth checking against the repository's label set before it is read as *nothing waits*. **The limit is not decoration**: the default is thirty and a truncated page is indistinguishable from a complete one, so a result that comes back at whatever limit was asked for is a short read rather than the whole of what waits.
 
 **The mark comes off when the ask is answered**, by the session that reads the answer. A closed issue or a merged pull request leaves the set on its own, so nothing has to be swept.
 
