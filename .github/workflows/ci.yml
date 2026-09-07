@@ -5,10 +5,12 @@ on:
     branches: [main]
   pull_request:
 
-# Both jobs run test code taken from the pull request's own branch, so the
-# default token is scoped down here rather than left at the repository default
-# (which is write, including the ability to approve pull requests). A job that
-# needs more says so in its own block.
+# Two of the three jobs run test code taken from the pull request's own branch,
+# so the default token is scoped down here rather than left at the repository
+# default (which is write, including the ability to approve pull requests). A
+# job that needs more says so in its own block. **ceiling-filing is the
+# exception the reasoning does not cover**: it runs only on push, never on a
+# pull request's branch, and it escalates to `issues: write` in its own block.
 permissions:
   contents: read
 
@@ -92,6 +94,11 @@ jobs:
         # this job exists to raise work, and a merge is not the moment to break
         # on a repository variable nobody has set yet.
         run: |
+          # Two setup steps this job depends on and cannot create:
+          # the CELL_CEILING_CAUSE repository variable, pointing at the
+          # standing cause, and the pool's labels, which
+          # `python skills/filing/scripts/pool.py labels` creates once.
+          # Unset, the mechanism is silently inert (#482).
           if [ -z "$CAUSE" ]; then
             echo "ceiling-filing: no CELL_CEILING_CAUSE variable set; skipping"
             exit 0

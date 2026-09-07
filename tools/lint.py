@@ -47,7 +47,7 @@ Checks:
 
   Checks 5 and 6 split on form, not on check. The *name* form is read
   outside fenced blocks only: a name inside a fence is a spelling being
-  shown, as check 9 already reasons about an import. Every *path* form is
+  shown, as check 11 already reasons about an import. Every *path* form is
   read everywhere, fences included -- check 5's rooted and relative skill
   paths and check 6's references/ pointers alike -- because a path that does
   not resolve is broken whatever encloses it, this repository's fenced blocks
@@ -59,26 +59,30 @@ Checks:
      that cell's SKILL.md body, and every references/ file a body
      names exists. An orphan routes no reader and is found only by
      enumeration; a dangling entry reads correctly and leads nowhere.
-  8. doctrine citations: every [D-N] the doctrine writes names an entry that
-     exists. The log's own references are check 13's; a marker in the always-on
+  8. ceiling-filing job: .github/workflows/ci.yml still carries a live
+     `ceiling-filing:` job and it still runs tools/ceiling_filing.py. The
+     step cannot catch its own deletion: removing it touches no cell and
+     no doctrine file, so filing would stop with nothing going red.
+  9. doctrine citations: every [D-N] the doctrine writes names an entry that
+     exists. The log's own references are check 15's; a marker in the always-on
      surface was checked by nothing, which the outflow rule makes load-bearing
      by instructing a session to compress prose into one.
-  9. doctrine references: every repo path the doctrine writes resolves.
+  10. doctrine references: every repo path the doctrine writes resolves.
      Check 13 covers the decision log, which is frozen exhaust, so the
      surface carrying the live rules was the one nothing checked --
      repointing the doctrine's own docs/values.md mention left lint
      green while the identical break inside an entry fired. Scoped to
      the doctrine files: docs/*.md needs resolver work, not a path-list
      edit, because references there resolve relative to their file.
-  10. doctrine: AGENTS.md exists, imports the charter and imports nothing
+  11. doctrine: AGENTS.md exists, imports the charter and imports nothing
      else, and CLAUDE.md stays a bare pointer; CLAUDE.md exists and
      is a live @AGENTS.md import — checked by position (first non-empty line,
      unquoted), because Claude Code skips imports inside code spans and loads
      nothing from an absent file.
-  11. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
+  12. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
      declares the job that runs it. The callout cannot catch its own removal,
      because a PR deleting the job touches no doctrine file [D-81].
-  12. review index: docs/reviews.jsonl, when present, parses and carries one
+  13. review index: docs/reviews.jsonl, when present, parses and carries one
      valid row per review. Past the cutover: date, artifact, lane, the
      sustained highs named — each with the surface it hit, past a later
      boundary — the model and runtime that staffed it, the external pass's
@@ -90,28 +94,28 @@ Checks:
      about *this* record: the file is identified by the sha256 of its first
      non-blank row's bytes, trailing whitespace stripped,
      and any other file is held to the current shape throughout.
- 13. decision index: every decision entry has a row in the log's index, and
+ 14. decision index: every decision entry has a row in the log's index, and
      every row a file.
- 14. entry references: every path reference and relative link a decision entry
+ 15. entry references: every path reference and relative link a decision entry
      or the log's index writes resolves, is pinned to the commit it shipped at,
      or is recorded with a reason. Unlike check 1, this one reads shape rather
      than any path form: `A/B` is prose, not a reference.
-15. emitted ASCII: no Python file states a non-ASCII character in a
+16. emitted ASCII: no Python file states a non-ASCII character in a
     non-docstring string constant. Windows encodes stdout and stderr to the
     locale codepage, pipes included, so a captured em dash garbles in the one
     message a guard exists to deliver. It reads literals, not reachability:
     a filename and a regex source are flagged too, and a character built at
     runtime is out of reach. Docstrings and comments are exempt.
-16. docstring not piped: no script passes __doc__ as an argparse
+17. docstring not piped: no script passes __doc__ as an argparse
     description. --help writes it to stdout before any stream setup runs,
-    which turns the docstring check 14 exempts into locale-encoded output.
-17. stdio wired: every script with a main() imports utf8_stdio by that name
+    which turns the docstring check 16 exempts into locale-encoded output.
+18. stdio wired: every script with a main() imports utf8_stdio by that name
     and calls it as the first statement, so runtime data this repository did
     not write reaches the stream protected. Both halves are checked: without
     the import binding, a local no-op with the right name would satisfy the
     call site while setting nothing up. The first statement is a position, and a position is
     exact -- a call after parse_args is one that --help has outrun.
-18. project roster: every cell has an entry under .claude/skills/ AND under
+19. project roster: every cell has an entry under .claude/skills/ AND under
     .agents/skills/ carrying its frontmatter byte for byte, and no entry THIS
     GENERATOR WROTE names a cell that is gone. A file it did not write is not
     its business: at a name that is no cell it draws no finding at all,
@@ -135,13 +139,13 @@ Checks:
     about a cell rather than a surface names neither and is reported once. The expectation is tools/roster.py's own, never recomputed
     here: a guard holding a second definition drifts from the writer it
     judges.
-19. marketplace source: the tradecraft entry's source stays the exact string
+20. marketplace source: the tradecraft entry's source stays the exact string
     `./`, because Codex cannot discover the plugin from Claude's object form.
-20. subprocess streams: a launch redirects nothing, or names all three of
+21. subprocess streams: a launch redirects nothing, or names all three of
     stdin, stdout and stderr, because on Windows an unnamed stream resolves
     through a std-handle table that can still name a closed handle.
 
-21. docstring control characters: no docstring's compiled value holds a
+22. docstring control characters: no docstring's compiled value holds a
     control character other than a line feed or a tab. A docstring is not raw,
     so a backslash followed by r, written in one, is a carriage return at
     runtime. Named in words rather than shown, because every attempt to write
@@ -153,7 +157,7 @@ Checks:
     because the instance that motivated this had clean bytes on disk and four
     carriage returns in `__doc__` [D-231].
 
-22. hollow code span: no inline code span holds nothing but whitespace. Prose
+23. hollow code span: no inline code span holds nothing but whitespace. Prose
     here names control characters constantly, and a span written to show one
     that no longer holds it reads as finished while saying nothing -- three
     instances in one change, one of which reached a commit and broke a row in
@@ -163,7 +167,7 @@ Checks:
     rather than on a list of call sites that would go stale. Fenced blocks are
     skipped, as checks 5 and 6 skip the name form inside one, and by the same
     closing rule -- a fence ends only on its own marker.
-23. committed carriage return: no file reaches a commit holding a lone
+24. committed carriage return: no file reaches a commit holding a lone
     carriage return. The LF pin has one hole and git states it plainly --
     text=auto refuses to normalize such a file, and commits every line ending
     in it verbatim. Three populations are read, because the flow runs this
@@ -172,31 +176,34 @@ Checks:
     copy where git classifies it differently, and untracked files git is not
     told to ignore. What the classification flags has its bytes read before
     anything is said, because a genuine binary reports the same way. Disjoint
-    from check 20 by the tokenizer, which folds a lone carriage return in
+    from check 22 by the tokenizer, which folds a lone carriage return in
     source to a line feed before a docstring compiles -- a NUL is invisible
-    there too, for its own reason, and check 14 is what reports that file.
+    there too, for its own reason, and check 16 is what reports that file.
 
-24. body strip: no module outside the authoring engine hand-rolls the strip
+25. body strip: no module outside the authoring engine hand-rolls the strip
     that takes a cell's body off its frontmatter. Three implementations were
     plausible and the cheapest was wrong; the rule lived in a sibling
     docstring, so a session going straight from the doctrine to code wrote
     its own and everything stayed green (#190). Recorded exemptions are
     (path, function) pairs and the suite pins that the set only shrinks.
 
-25. always-on budget: every per-runtime always-on row, and the adopter
+26. always-on budget: every per-runtime always-on row, and the adopter
     total separately, inside its ceiling. Replaces the two per-file ceilings
     on AGENTS.md and the charter body, which could not see a move between
     two members of one row -- it read as a saving in whichever file shrank
     while the surface a session loads had not moved (#260).
 
-26. admissions: docs/admissions.jsonl parses, every row carries all six
+27. admissions: docs/admissions.jsonl parses, every row carries all six
     fields, and no key has banked more than was ever admitted against it.
     The record is what lets a needed item land over a ceiling without the
     constant moving; a row this cannot read grants nothing. The re-arming
     finding, which fires when a surface comes back to or below its constant
-    with characters still charged, belongs to checks 9, 4 and 24 -- the
-    three that know each surface's size -- and not to this one (#334).
-27. settling index: docs/settling.jsonl parses and every row carries the
+    with characters still charged, belongs to checks 4 and 26 -- the two that
+    still know a budgeted surface's size -- and not to this one (#334). It
+    reached a third, the cell body, until #455 made a body's ceiling something
+    that files rather than refuses: nothing is charged against a body now, so
+    there is no re-arming finding to own there.
+28. settling index: docs/settling.jsonl parses and every row carries the
     keys the `records` cell names. The record is append-only and doctrine
     forbids repairing a landed row, so a malformed one is permanent; when it
     shipped, invalid JSON there landed green while the identical append to
@@ -204,7 +211,7 @@ Checks:
     later row may carry more without a guard change -- and a required figure
     nobody can supply is written as null, since an absent key and a null one
     say different things (#423).
-28. charter roster: every shipped cell but the charter has a line in the
+29. charter roster: every shipped cell but the charter has a line in the
     charter's declared roster, so the always-on router cannot go stale when a
     cell is added. Keyed by the roster's heading, which is checked too -- a
     check keyed to a section is disabled by renaming it. The names only,
@@ -256,7 +263,7 @@ from winio import utf8_stdio  # noqa: E402
 
 # Repo-only importing repo-only, resolved from this file rather than the
 # working directory. The roster's expected content is the generator's to
-# define; check 17 asks it rather than reproducing it.
+# define; check 19 asks it rather than reproducing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import roster  # noqa: E402
 
@@ -356,44 +363,13 @@ ALWAYS_ON_ROW_BUDGET_CHARS = 16_345
 # members beside each total. [#291]
 ALWAYS_ON_ADOPTER_BUDGET_CHARS = 11_508
 POINTER_BUDGET_CHARS = 500
-# A cell body whose budget is enforced rather than remembered. `authoring`'s
-# cap was stated in #169 as that change's own evidence that depth-shedding is
-# applicable rather than aspirational -- and enforced by nothing: it lived in a
-# command string inside a decision entry that has since frozen. A budget a
-# guard does not hold is a budget the next edit does not have. The value is
-# the bound #169 declared and held itself under, not a fresh judgement: that
-# entry's own derivation command reads `--budget 7359`. The comparison below is
-# `>`, so 7,359 itself passes -- the cap admits one character more than the body
-# measured before that change, and is not the tighter "no larger than you
-# started" it reads like. Nothing has turned on that character yet; it is
-# stated because a session raising this constant reads here first. Raising
-# it is a decision to be made and recorded, which is what a constant makes visible and a sentence
-# in a frozen entry does not. Cells absent from this map are unbudgeted on
-# purpose: a number chosen for a cell nobody has argued about would be a
-# ruling on its size arriving as a constant.
-# `adversarial-review` is the second entry, and the first chosen rather than
-# inherited. #184 left it out on the ground that a number for a cell nobody
-# has argued about is a ruling arriving as a constant; #177 is that argument,
-# and the owner ruled a budget follows the split. The basis is the size the
-# split landed at plus about one bullet, which
-# `python tools/figures.py --cell skills/adversarial-review/SKILL.md
-# --cell-budget <the ceiling in force>` prices that cell on whatever tree you
-# are on. The value to pass is this constant plus what `docs/admissions.jsonl`
-# charges to that body -- which is what `check_doctrine` enforces and what
-# that command reconciles against, so passing the bare constant on a tree
-# carrying a body admission is refused rather than answered.
-# That margin is deliberate in both directions: at zero headroom every
-# reword of the body is a constant change, which turns the cap into noise
-# nobody reads, while a section-sized regrowth cannot fit under it. The number
-# is a ceiling above a measured body, not the measured body, so nothing here
-# should be read as "no larger than you started". What it holds is the split's
-# own claim: #54's rewrite took the body to 13,721 at the reset (401669f,
-# #74) and it regrew 76.0% to 24,155 because nothing failed when it did.
-# Re-derive that pair before citing it -- an earlier draft here said 63%,
-# which no reset-anchored measurement returns, and the understatement sat
-# in the one comment a session reads while about to raise this constant. A body cap is dodgeable by moving prose one directory down,
-# which is why tools/figures.py reports the cell's total beside it, unbudgeted
-# -- a ceiling on the total would cap depth-shedding itself.
+# The cell-body ceilings. The long block that stood here argued a sparse map of
+# enforced budgets and was left behind by #455, which made the map complete, the
+# numbers measured, and the ceiling something that files rather than refuses --
+# it described none of that and contradicted the comment three lines below it,
+# while ending on the warrant that a session raising the constant reads here
+# first. Its history is in D-169, D-177 and D-184; its rejected reasoning is in
+# D-480, which is where rationale belongs.
 CELL_BODY_CEILING_CHARS = {
     # Where each cell body stood when the ratchet landed (#455), measured the
     # way check_doctrine measures a body: frontmatter stripped. Every number is
@@ -414,18 +390,18 @@ CELL_BODY_CEILING_CHARS = {
     # skills/charter/SKILL.md is deliberately absent: its body is a term in
     # every always-on row, so check_always_on_budget sizes it and an entry
     # here would be the smuggled second limit that test pins against.
-    "skills/engagement/SKILL.md": 28_119,
+    "skills/engagement/SKILL.md": 28_090,
     "skills/filing/SKILL.md": 24_158,
     "docs/cells/board/SKILL.md": 17_916,
-    "skills/spikes/SKILL.md": 17_300,
-    "skills/experience-session/SKILL.md": 11_967,
+    "skills/spikes/SKILL.md": 17_136,
+    "skills/experience-session/SKILL.md": 11_802,
     "skills/adversarial-review/SKILL.md": 9_855,
-    "skills/authoring/SKILL.md": 7_086,
-    "docs/cells/records/SKILL.md": 8_689,
+    "skills/authoring/SKILL.md": 7_129,
+    "docs/cells/records/SKILL.md": 8_873,
     "skills/persist-changes/SKILL.md": 5_549,
     "docs/cells/landing/SKILL.md": 5_368,
-    "docs/cells/siting/SKILL.md": 3_835,
-    "skills/substrate/SKILL.md": 3_211,
+    "docs/cells/siting/SKILL.md": 4_034,
+    "skills/substrate/SKILL.md": 3_046,
 }
 
 
@@ -433,7 +409,7 @@ def cells_over_ceiling(root: Path) -> list[tuple[str, int, int]]:
     """Every cell body above where it stood, as (path, size, ceiling).
 
     Read by ci.yml, which raises one pool item per cell over its ceiling, and
-    by the informational block at the end of a lint run. It returns rows and
+    by ci.yml alone. It returns rows and
     never a finding, because a finding is what would make growth a refusal --
     the thing the owner's ruling forbids.
 
@@ -800,6 +776,10 @@ TOKEN = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 
 # The doctrine callout's wiring, matched by position rather than by substring:
 # a commented-out job still contains every substring it had when it was live.
+CEILING_JOB_HEADER = "  ceiling-filing:"
+CEILING_RUNS_SCRIPT = re.compile(
+    r"^\s+(?:-\s+)?.*python tools[\\/]ceiling_filing\.py\b", re.M)
+
 JOB_HEADER = "  doctrine-callout:"
 # All three lawful spellings of the trigger, and none of `pull_request_target`
 # (the `\b` cannot end before an underscore). A guard that fails a required
@@ -1745,7 +1725,7 @@ def check_doctrine_citations(root: Path) -> list[str]:
     for path in _doctrine_scan_paths(root):
         name = path.relative_to(root).as_posix()
         if not path.is_file():
-            continue  # its absence is check 9's finding, not this one's
+            continue  # its absence is check 11's finding, not this one's
         text = _read_text(path)
         if text is None:
             continue
@@ -1789,7 +1769,7 @@ def check_doctrine_references(root: Path) -> list[str]:
     for path in _doctrine_scan_paths(root):
         name = path.relative_to(root).as_posix()
         if not path.is_file():
-            continue  # its absence is check 9's finding, not this one's
+            continue  # its absence is check 11's finding, not this one's
         text = _read_text(path)
         if text is None:
             continue
@@ -3495,7 +3475,7 @@ def check_docstring_control_chars(root: Path) -> list[str]:
             # second message here would be one defect stated twice.
             continue
         except OSError:
-            # Reported by check 14 for the same reason and on the same walk,
+            # Reported by check 16 for the same reason and on the same walk,
             # so this one stays silent rather than stating it twice -- but it
             # must not raise, which it did. [PR #247 review, post-fix 5]
             continue
@@ -3550,8 +3530,8 @@ def check_docstring_control_chars(root: Path) -> list[str]:
 # a script whose escapes had become control bytes. Skipping them from the byte
 # guard withdrew, for `docs/recorded-findings.jsonl`, the pre-commit catch this
 # change's own M2 remedy had just bought; `docs/reviews.jsonl` is covered
-# either way, because check 11 parses it and reds on the same run, and so is
-# `docs/admissions.jsonl` via check 25.
+# either way, because check 13 parses it and reds on the same run, and so is
+# `docs/admissions.jsonl` via check 27.
 # [PR #247 review, post-fix 1]
 FROZEN_ARCHIVE = frozenset({
     "docs/ledger.jsonl",
@@ -3597,7 +3577,7 @@ def _unread_as_prose(rel_file: str) -> bool:
 
 
 # Git's own binary-detection window, matched deliberately. This module skips
-# binary content on a NUL in the first kilobyte everywhere else; check 22 uses
+# binary content on a NUL in the first kilobyte everywhere else; check 24 uses
 # git's number instead, so lint's answer to "is this text" and git's cannot
 # disagree inside the window. A binary whose first NUL falls past 8000 bytes
 # still classifies as `-text` and still draws a finding -- unclosable, because
@@ -3641,7 +3621,7 @@ def _unfenced_text(text: str) -> str:
     **A fence closes only on the same character, at least as long as the one
     that opened it**, and a backtick opener whose info string holds a backtick
     is not a fence at all -- CommonMark's rules, and the ones
-    `_unfenced_numbered` already implements for checks 5, 6 and 7. This began
+    `_unfenced_numbered` already implements for checks 5, 6 and 9. This began
     as an unconditional toggle, which got all three wrong: a ``` line shown
     inside a ```` block ended the fence early and drew a finding against
     lawful displayed prose -- the very construct
@@ -3765,7 +3745,7 @@ def check_hollow_code_span(root: Path) -> list[str]:
     by construction, which is what makes counting in the blanked one correct.
     [PR #247 review, M3]
 
-    **This is disjoint from check 20, which reads compiled docstrings.** That
+    **This is disjoint from check 22, which reads compiled docstrings.** That
     one catches the escape that became the character; this one catches the
     character that went missing. Neither sees the other's instance, which is
     the whole reason the class needed more than one guard.
@@ -3892,11 +3872,11 @@ def check_committed_carriage_return(root: Path) -> list[str]:
     remedy left the finding standing word for word, which is a fix that does
     not fix. [PR #247 review, M6]
 
-    **Disjoint from check 20 by the tokenizer, not by scope.** Python folds a
+    **Disjoint from check 22 by the tokenizer, not by scope.** Python folds a
     lone carriage return in *source* to a line feed before a docstring
     compiles, so a raw one on disk is invisible to a check reading the
     compiled value. It is not the only such character -- a NUL is invisible
-    there too, for its own reason, and check 14 is what reports that file --
+    there too, for its own reason, and check 16 is what reports that file --
     but it is the one this closes.
 
     Silent when git cannot answer, for `_git_ignored`'s reason: a tree with no
@@ -4179,13 +4159,13 @@ def check_emitted_ascii(root: Path) -> list[str]:
 
     Runtime data is out of reach by construction -- a path this repository did
     not write can carry anything -- and `lib/winio.py` is what protects that
-    half. The two are complementary, not alternatives, and check 15 is what
+    half. The two are complementary, not alternatives, and check 17 is what
     keeps the second one wired.
 
     Docstrings are exempt because the house prose style is free where it is
     read as prose. Note the exemption is about docstrings, not about reaching a
     stream: `argparse(description=__doc__)` pipes a module docstring to stdout,
-    which is why check 15 bans that construction outright.
+    which is why check 17 bans that construction outright.
     """
     findings = []
     candidates = [
@@ -4262,21 +4242,21 @@ def check_emitted_ascii(root: Path) -> list[str]:
 def check_docstring_not_piped(root: Path) -> list[str]:
     """No script hands its module docstring to argparse as help text.
 
-    **The warrant is check 14's exemption, not the encoding.** Check 14 lets a
+    **The warrant is check 16's exemption, not the encoding.** Check 14 lets a
     docstring carry any character the house prose style likes, and the reason it
     can is that a docstring is read as prose and never written to a stream.
     `ArgumentParser(description=__doc__)` falsifies that premise: it makes the
-    docstring output. The ban is what keeps check 14's exemption true.
+    docstring output. The ban is what keeps check 16's exemption true.
 
     An earlier version of this docstring gave the reason as "--help exits inside
     parse_args before any stream setup runs" -- which was accurate when it was
-    written and was falsified by check 16 in the same change, since the stream
+    written and was falsified by check 18 in the same change, since the stream
     is now set up before parse_args is reached. Left standing, a session that
     checked the stated reason would find it false and reason correctly to
-    deleting the check. The reason above is the one that survives check 16.
+    deleting the check. The reason above is the one that survives check 18.
 
     Two narrower warrants also survive: a module that parses arguments at import
-    with no `main()` at all, which check 16 does not reach, and a run where
+    with no `main()` at all, which check 18 does not reach, and a run where
     `utf8_stdio` hit its swallowed except and set nothing up.
 
     `epilog` is banned on the same terms. argparse writes it to stdout on --help
@@ -4344,7 +4324,7 @@ def check_stdio_wired(root: Path) -> list[str]:
     called".
 
     Scoped to the whole tree, minus what git is told to ignore, for the same
-    reason check 13 is: a zone list silently exempts the next directory someone
+    reason check 15 is: a zone list silently exempts the next directory someone
     adds, and `scripts/` or `.claude/` is exactly where a session drops a
     helper. A module without a `main()` is not a script and is not asked.
     """
@@ -5304,27 +5284,31 @@ def check_settling_index(root: Path) -> list[str]:
 def check_depth_index(root: Path) -> list[str]:
     """Every depth file a cell holds is named in that cell's body, and back.
 
-    `cell-structure.md` makes the index the authority on what depth a cell
-    has, and an authority nothing checks is a list that goes stale the first
-    time a file is added under a deadline. Two directions, because each fails
-    differently and only one of them is visible to a reader.
+    `cell-structure.md` makes the index the authority on what depth a cell has,
+    and an authority nothing checks is a list that goes stale the first time a
+    file is added under a deadline. Two directions, and they fail differently.
 
-    An **orphan** -- a `references/` file no body names -- is the silent half.
-    It loads for nobody, it costs nothing anyone can measure, and the only way
-    to find one is to enumerate the directory, which is exactly what no reader
-    does. A sibling repository shipping this convention carried 107 covered
-    documents against 108, and the uncovered one was invisible until somebody
-    counted.
+    An **orphan** -- a `references/` file no body names -- is the silent half,
+    and it is this guard's own. It loads for nobody, costs nothing anyone
+    measures, and is found only by enumerating the directory, which is what no
+    reader does. `check_cell_references` cannot see it: that guard resolves
+    pointers that exist, and an orphan is the absence of one.
 
-    A **dangling** entry -- a body naming a `references/` file that is not
-    there -- is the loud half, and it still merges: the sentence reads
-    correctly, the reader follows it, and what they find is nothing.
+    A **dangling** entry is reported only in the form the sibling guard skips.
+    `check_cell_references` already reds on a relative `references/x.md` that
+    does not resolve, and reporting it here too would price one defect as two
+    -- which that guard's own comment refuses. What it skips is the repo-root
+    form, `skills/<cell>/references/x.md`, which it reads as somebody else's
+    tree. That form is this half's, and only that form.
 
-    The check is naming, not shape. Whether the entries are collected into one
-    table or scattered through the prose is the standard's business and a
-    reader's judgment; whether every file is reachable at all is a fact, and a
-    fact is what a guard is for. So this is the floor beneath that standard
-    rather than the standard itself.
+    **A path naming another cell's depth is that cell's business, not this
+    one's.** Attributing it here invents a dangling entry against the naming
+    cell and masks a real orphan of the same basename in it.
+
+    The check is naming, not shape: whether the entries are collected into one
+    table is the standard's business and a reader's judgment, while whether
+    every depth file is reachable at all is a fact, and a fact is what a guard
+    is for. This is the floor beneath that standard, not the standard.
     """
     findings = []
     for parent in ("skills", "docs/cells"):
@@ -5337,20 +5321,66 @@ def check_depth_index(root: Path) -> list[str]:
             if not skill.is_file() or not depth_dir.is_dir():
                 continue
             body = _frontmatterless(skill.read_text(encoding="utf-8", errors="replace"))
-            named = set(re.findall(r"references/([A-Za-z0-9._-]+\.md)", body))
-            present = {f.name for f in depth_dir.glob("*.md")}
             rel = f"{parent}/{cell.name}"
+
+            # Relative mentions belong to this cell by construction.
+            bare = set(re.findall(
+                r"(?<![\w/.-])references/([A-Za-z0-9._/-]+\.md)", body))
+            # Rooted mentions belong to whichever cell they name; only this
+            # cell's count here, and only they can be reported dangling.
+            rooted = set(re.findall(
+                rf"(?<![\w/.-]){re.escape(rel)}/references/([A-Za-z0-9._/-]+\.md)",
+                body))
+
+            named = bare | rooted
+            present = {f.relative_to(depth_dir).as_posix()
+                       for f in depth_dir.rglob("*.md")}
+
             for orphan in sorted(present - named):
                 findings.append(
                     f"depth-index: {rel}/references/{orphan} is named nowhere in "
                     f"{rel}/SKILL.md, so nothing routes a reader to it -- add its "
-                    f"entry to the cell's index, or delete the file"
-                )
-            for dangling in sorted(named - present):
+                    f"entry to the cell's index, or delete the file")
+            for dangling in sorted(rooted - present):
                 findings.append(
-                    f"depth-index: {rel}/SKILL.md names references/{dangling}, "
-                    f"which does not exist -- fix the entry or restore the file"
-                )
+                    f"depth-index: {rel}/SKILL.md names "
+                    f"{rel}/references/{dangling}, which does not exist -- fix "
+                    f"the entry or restore the file")
+    return findings
+
+
+def check_ceiling_filing_job(root: Path) -> list[str]:
+    """The ratchet's filing step must still be wired into CI.
+
+    It has the sibling's problem in a sharper form. `check_doctrine_callout`
+    exists because a pull request deleting that job touches no doctrine file,
+    so nothing goes red. Here the same is true and the stake is larger: the
+    step running on merge is the whole of what makes filing independent of a
+    session choosing to file, which is the thing two closed issues failed to
+    get by writing the rule down better (#245, #302, #455). Delete the job and
+    the mechanism reverts to the rule that did not hold, silently.
+
+    Presence only. Whether the job is armed is a repository variable this
+    guard cannot read -- that gap is #482's, not this one's -- so what is
+    checked is that the job exists and still runs the script.
+    """
+    findings = []
+    workflow = root / ".github" / "workflows" / "ci.yml"
+    if not workflow.is_file():
+        return findings
+    text = workflow.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    if not any(line.rstrip() == CEILING_JOB_HEADER for line in lines):
+        findings.append(
+            "ceiling-filing: no live `ceiling-filing:` job in "
+            ".github/workflows/ci.yml -- a cell body passing its ceiling would "
+            "raise no pool item and nothing would go red, which is the failure "
+            "the step exists to prevent [#455]")
+        return findings
+    if not CEILING_RUNS_SCRIPT.search(text):
+        findings.append(
+            "ceiling-filing: the `ceiling-filing:` job does not run "
+            "tools/ceiling_filing.py, so the job is present and files nothing")
     return findings
 
 
@@ -5363,6 +5393,7 @@ CHECKS = (
     check_sideways_deps,
     check_cell_references,
     check_depth_index,
+    check_ceiling_filing_job,
     check_doctrine_citations,
     check_doctrine_references,
     check_doctrine,
@@ -5555,8 +5586,11 @@ def admission_note() -> str:
     keys = ", ".join(forms[:-1]) + ", or " + forms[-1]
     return (
         f"at a ceiling on a share of what a session loads -- an always-on "
-        f"row, the adopter total, a cell description, a budgeted cell body "
+        f"row, the adopter total, a cell description "
         f"-- a needed item that will not fit is admitted on {ADMISSIONS} "
+        f"(a cell body is not among them: it is measured against where it "
+        f"stood, and passing that raises a pool item rather than refusing "
+        f"anything, so nothing there is admitted and nothing is cut) "
         f"rather than trimmed until it fits: a row carrying "
         f"{', '.join(ADMISSION_FIELDS)}, where ceilings names one or more of "
         f"{keys}. The constant does not move, so an admission buys its own "

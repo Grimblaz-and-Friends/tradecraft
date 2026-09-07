@@ -9,12 +9,8 @@ description: A chartered, time-boxed use of a built result as its consumer would
 
 ## Where this cell's depth lives
 
-Every firing of this cell needs what is above; each file below is one
-trigger's worth and costs nothing until that trigger fires. The entry says
-when to open it.
-
-- **The run needs a repository tree of its own and you are about to build it** -> `references/isolation.md`: building from the change's content without its history, and the records that leak what is under test.
-- **The built result is software someone uses and you are about to hand a consumer something to use** -> `references/running-instance.md`: standing the product up, and why the consumer is still manufactured.
+- **The run needs a repository tree of its own and you are about to build it** → `references/isolation.md`: building from the change's content without its history, and the records that leak what is under test.
+- **The built result is software someone uses and you are about to hand a consumer something to use** → `references/running-instance.md`: standing the product up, and why the consumer is still manufactured.
 
 ## The instrument — three pieces, nothing more
 

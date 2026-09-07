@@ -9,11 +9,7 @@ description: Testing a premise by running it before you assert it — a bounded,
 
 ## Where this cell's depth lives
 
-Every firing of this cell needs what is above; each file below is one
-trigger's worth and costs nothing until that trigger fires. The entry says
-when to open it.
-
-- **Scoring a cold-seat A/B's planted control, or the run's output would be the removal of the text under test** -> `references/licensing-a-deletion.md`: the record search that ends a run before dispatch, what counts as a seat having cited text, and which disposition a scored run reaches.
+- **Scoring a cold-seat A/B's planted control, or the run's output would be the removal of the text under test** → `references/licensing-a-deletion.md`: the record search that ends a run before dispatch, what counts as a seat having cited text, and which disposition a scored run reaches.
 
 ## When a spike fires
 

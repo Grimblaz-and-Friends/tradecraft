@@ -149,6 +149,13 @@ WIRED_CI = (
     "      - env:\n"
     "          BASE_SHA: xyz\n"
     "        run: python tools/doctrine_callout.py --pr 1 --base $BASE_SHA\n"
+    # The ratchet's filing step is wired here for the same reason the callout is:
+    # check_ceiling_filing_job reds on its absence, and a fixture about some other
+    # check needs a lawful tree.
+    "  ceiling-filing:\n"
+    "    if: github.event_name == 'push'\n"
+    "    steps:\n"
+    "      - run: python tools/ceiling_filing.py --cause 1\n"
 )
 
 
@@ -992,6 +999,7 @@ LINT_CHECKS_IN_ORDER = (
     "check_sideways_deps",
     "check_cell_references",
     "check_depth_index",
+    "check_ceiling_filing_job",
     "check_doctrine_citations",
     "check_doctrine_references",
     "check_doctrine",
@@ -1757,8 +1765,12 @@ def test_deleting_the_callout_job_is_a_finding(tmp_path):
     no doctrine file, so nothing fires and nothing goes red. This is what makes
     such a PR fail a required check instead."""
     make_clean_tree(tmp_path)
+    # The ratchet's filing job is kept wired: this test is about the callout,
+    # and check_ceiling_filing_job reds on its absence for its own good reason.
     _ci(tmp_path, "on:\n  pull_request:\n\njobs:\n  lint-and-test:\n"
-                  "    steps:\n      - run: python tools/lint.py\n")
+                  "    steps:\n      - run: python tools/lint.py\n"
+                  "  ceiling-filing:\n"
+                  "    steps:\n      - run: python tools/ceiling_filing.py --cause 1\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "no live `doctrine-callout:` job" in findings[0]
 
@@ -5809,9 +5821,12 @@ def test_the_lint_prints_every_cell_body_at_the_mandated_command(capsys):
             (lint.ROOT / rel).read_text(encoding="utf-8", errors="replace")))
         own = lint.CELL_BODY_CEILING_CHARS.get(rel)
         if own is not None:
-            allowed, _ = lint.ceiling(own, admissions, f"body:{rel}")
-            against = (f"of {_priced(own, allowed - own)}, "
-                       f"headroom {allowed - body:,}")
+            # Nothing is charged against a cell body since #455: the ceiling is
+            # where the body stood, measured on a body that already contained
+            # whatever had been admitted to it. Pricing the rows in here again
+            # is the double count that made this command disagree with the
+            # mechanism that files, so the expectation carries no admitted term.
+            against = f"of {own:,}, headroom {own - body:,}"
         elif rel == lint.CHARTER:
             row, _ = lint.ceiling(lint.ALWAYS_ON_ROW_BUDGET_CHARS,
                                   admissions, "always-on-row")
@@ -6800,8 +6815,18 @@ def test_a_cell_body_over_its_ceiling_files_and_never_refuses(tmp_path):
         # The whole point: nothing about that size reaches a finding.
         findings = lint.run(tmp_path)
         assert findings == [], findings
-        for word in ("shed", "route content out", "trim", "remove"):
-            assert not any(word in f for f in findings), word
+        # The removal-word check runs over what the mandated command prints,
+        # not over `findings` -- the assertion above already requires that to
+        # be empty, so looping it there could never fail. This is the arm that
+        # catches the owner's red line drifting back into the output.
+        # Scoped to the cell-body block. `admission_note` still says
+        # "trimmed" about the always-on rows and the description cap, which
+        # are still admission-eligible and where trimming is a real answer;
+        # the owner's ruling is about a cell body.
+        printed = lint.cell_body_note(tmp_path)
+        for word in ("shed depth", "route content out", "trim", "removal"):
+            assert word not in printed, (
+                f"the mandated command still says {word!r} at a ceiling")
 
         lint.CELL_BODY_CEILING_CHARS = {rel: 10_000}
         assert lint.cells_over_ceiling(tmp_path) == []
@@ -6863,3 +6888,97 @@ def test_a_body_over_its_ceiling_needs_no_admission(tmp_path, monkeypatch):
         "a body size still reaches a finding")
     assert lint.cells_over_ceiling(tmp_path), "the ratchet saw nothing"
     assert lint.run(tmp_path) == [], "an oversized body reddened the lint"
+
+
+def test_the_ceiling_filing_job_must_stay_wired(tmp_path):
+    """Both polarities on the guard that catches the mechanism's own removal.
+
+    The step that runs on merge is what makes filing independent of a session
+    choosing to file. Deleting it touches no cell and no doctrine file, so
+    without this guard the mechanism reverts to the rule that did not hold and
+    nothing goes red.
+    """
+    make_clean_tree(tmp_path)
+    ci = tmp_path / ".github" / "workflows" / "ci.yml"
+    ci.parent.mkdir(parents=True, exist_ok=True)
+    wired = (
+        "name: ci" + NL
+        + "jobs:" + NL
+        + "  ceiling-filing:" + NL
+        + "    steps:" + NL
+        + "      - run: python tools/ceiling_filing.py --cause \"$CAUSE\"" + NL)
+    ci.write_text(wired, encoding="utf-8")
+    assert lint.check_ceiling_filing_job(tmp_path) == []
+
+    ci.write_text(wired.replace("  ceiling-filing:" + NL, ""), encoding="utf-8")
+    gone = lint.check_ceiling_filing_job(tmp_path)
+    assert len(gone) == 1 and "no live `ceiling-filing:` job" in gone[0], gone
+
+    ci.write_text(
+        wired.replace("python tools/ceiling_filing.py --cause \"$CAUSE\"", "true"),
+        encoding="utf-8")
+    inert = lint.check_ceiling_filing_job(tmp_path)
+    assert len(inert) == 1 and "files nothing" in inert[0], inert
+
+
+def test_this_repository_keeps_the_ceiling_filing_job_wired():
+    """The guard over the real tree, which is where it has to be true."""
+    assert lint.check_ceiling_filing_job(lint.ROOT) == []
+
+
+def test_an_orphan_depth_file_is_a_finding(tmp_path):
+    """The half nothing else in the tree can see.
+
+    A `references/` file no body names loads for nobody, costs nothing anyone
+    measures, and is found only by enumerating the directory -- which is what
+    no reader does. `check_cell_references` cannot see it: that guard resolves
+    pointers that exist, and an orphan is the absence of one.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "The body names its depth." + NL)
+    (skill / "references" / "unnamed.md").write_text("Depth." + NL, encoding="utf-8")
+
+    findings = [f for f in lint.check_depth_index(tmp_path) if "depth-index" in f]
+    assert len(findings) == 1, findings
+    assert "unnamed.md" in findings[0] and "named nowhere" in findings[0]
+
+    # Lawful arm: naming it clears the finding, and nothing else appears.
+    body = (skill / "SKILL.md").read_text(encoding="utf-8")
+    (skill / "SKILL.md").write_text(
+        body + NL + "Depth lives in references/unnamed.md." + NL, encoding="utf-8")
+    assert lint.check_depth_index(tmp_path) == []
+
+
+def test_a_body_naming_a_depth_file_that_is_not_there_is_a_finding(tmp_path):
+    """The other direction, pinned separately because it fails differently.
+
+    A dangling entry reads correctly and leads nowhere. `check_cell_references`
+    catches the relative form; this catches the repo-root form it skips as
+    somebody else's tree, which is why the two are not redundant.
+    """
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "See skills/example-skill/references/gone.md." + NL)
+
+    findings = [f for f in lint.check_depth_index(tmp_path) if "depth-index" in f]
+    assert len(findings) == 1, findings
+    assert "gone.md" in findings[0] and "does not exist" in findings[0]
+
+    (skill / "references" / "gone.md").write_text("Depth." + NL, encoding="utf-8")
+    assert lint.check_depth_index(tmp_path) == []
+
+
+def test_a_cell_with_no_depth_directory_is_not_reached(tmp_path):
+    """A cell that has shed nothing yet is not an orphan and not a defect."""
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "no-depth"
+    skill.mkdir(parents=True, exist_ok=True)
+    _write_cell(skill, "A cell with no references/ directory." + NL)
+    roster.write(tmp_path)
+    assert lint.check_depth_index(tmp_path) == []
+
+
+def test_this_repository_passes_the_depth_index_guard():
+    """The guard over the real tree, which is where it has to hold."""
+    assert lint.check_depth_index(lint.ROOT) == []

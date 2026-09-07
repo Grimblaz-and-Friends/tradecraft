@@ -9,7 +9,7 @@ per cell that is over.
 
 **Filing is not left to a session choosing to file.** Two closed issues aimed at
 this behaviour by writing the rule down better -- #245 and #302 -- and the
-largest cell body grew by two thirds between them. A rule a session may quietly
+largest cell body more than doubled between them. A rule a session may quietly
 not follow is the thing that failed; a step that runs on merge is not.
 
 **One item per cell, never one per commit.** A cell that keeps growing while its
@@ -18,11 +18,19 @@ touches it, which is what keeps the pool's quiet-window fade off it. What the
 accrual reads is the number of symptoms under the cause, and a symptom is a
 cell, so the cause climbs a band per two cells rather than per two commits.
 
-Ratings are a proposal like any filer's. Severity is fixed at the middle of the
-scale because what is at stake is the same for every cell -- a session loading
+Ratings are a proposal like any filer's. Severity is fixed at the scale's lower
+middle because what is at stake is the same for every cell -- a session loading
 prose it has no use for -- and urgency at the bottom because nothing here bites
 on the next run: the item exists to be picked up, not to interrupt. The owner
 confirms ratings only on the few raised to them.
+
+**Two setup steps, named here because nothing else names them.** The cause is
+passed as `--cause`, and `ci.yml` reads it from the `CELL_CEILING_CAUSE`
+repository variable -- unset, the job prints one line and exits 0, so an
+unarmed mechanism is indistinguishable from one with nothing to file (#482).
+And the ratings below are labels this script does not create: a repository
+that has not run `python skills/filing/scripts/pool.py labels` fails at
+`issue create` and files nothing.
 
 Usage:  python tools/ceiling_filing.py --cause N [--repo OWNER/REPO] [--dry-run]
 """
@@ -128,7 +136,7 @@ def node_id(number: str, repo: str | None) -> str:
     return json.loads(_gh(["issue", "view", number, "--json", "id"], repo))["id"]
 
 
-def link_sub_issue(cause: str, symptom: str, repo: str | None) -> None:
+def link_sub_issue(cause_id: str, symptom: str, repo: str | None) -> None:
     """Link the raised item under the standing cause.
 
     No `gh` subcommand sets this link -- checked against 2.80.0, where neither
@@ -137,11 +145,14 @@ def link_sub_issue(cause: str, symptom: str, repo: str | None) -> None:
     GitHub refuses a second parent, so re-running this on an item already linked
     is an error rather than a silent no-op, and the caller only reaches it for an
     item it just created.
+
+    The cause's node id arrives already resolved, because resolving it here
+    would put the lookup after the write it gates.
     """
     query = ("mutation($cause:ID!,$sub:ID!){addSubIssue(input:{issueId:$cause,"
              "subIssueId:$sub}){subIssue{number}}}")
     _gh(["api", "graphql", "-f", f"query={query}",
-         "-F", f"cause={node_id(cause, repo)}",
+         "-F", f"cause={cause_id}",
          "-F", f"sub={node_id(symptom, repo)}"], repo)
 
 
@@ -159,7 +170,18 @@ def main(argv: list[str] | None = None) -> int:
         print("ceiling-filing: no cell body is over its ceiling")
         return 0
 
-    existing = set() if args.dry_run else open_markers(args.repo)
+    # **The cause is resolved before the first write, not after it.** The
+    # ordering used to be create-then-link, so an unresolvable cause left an
+    # issue created, unparented, and carrying its marker -- which the next
+    # run's dedupe then reads as already filed, so the job goes green and the
+    # orphan is permanent. One call up front costs a round trip and closes it.
+    cause_id = None if args.dry_run else node_id(args.cause, args.repo)
+
+    # **--dry-run consults the dedupe too.** Skipping it made the one
+    # affordance for previewing this job report the opposite of what a real
+    # run does in the steady state, where every over-ceiling cell already
+    # carries an item.
+    existing = open_markers(args.repo)
     todo = needs_filing(over, existing)
     for rel, size, ceiling in todo:
         if args.dry_run:
@@ -169,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                    "--body", body_for(rel, size, ceiling),
                    *[a for r in RATINGS for a in ("--label", r)]], args.repo).strip()
         number = url.rsplit("/", 1)[-1]
-        link_sub_issue(args.cause, number, args.repo)
+        link_sub_issue(cause_id, number, args.repo)
         print(f"ceiling-filing: raised {url} for {rel} ({size} of {ceiling})")
 
     for rel, size, ceiling in over:

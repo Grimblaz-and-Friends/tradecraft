@@ -983,12 +983,18 @@ def test_a_ceiling_with_an_admission_states_the_one_in_force_and_its_constant(
 
 
 def test_a_cell_body_row_prices_against_what_is_admitted_to_it(tmp_path):
-    """The body table is the third surface, and it must not fork from the guard.
+    """A cell body charges nothing, and the figure matches what files.
 
-    Its headroom is what a session reads before writing, so a row still
-    subtracting from the constant would say a cell was over its ceiling while
-    `check_doctrine` passed it -- the figure and the guard disagreeing about
-    the same cell, which is the class `cell_budgets` exists to close.
+    The pairing this used to pin is what made the mandated command print 937
+    characters of headroom for a cell the ratchet would have filed against at
+    one. A ceiling is where the body stood, measured on a body that already
+    contained whatever had been admitted to it, so charging the rows again
+    counts them twice -- and the surface a session reads before writing then
+    disagrees with the mechanism that acts.
+
+    The `body:` key stays lawful. Three landed rows carry it and the record is
+    append-only, so the fix is to stop reading them here rather than to refuse
+    the key, which would fail those rows closed at `_admission_key_ok`.
     """
     surface(tmp_path)
     _cell(tmp_path, "example-skill", "y" * 400 + NL)
@@ -1002,13 +1008,20 @@ def test_a_cell_body_row_prices_against_what_is_admitted_to_it(tmp_path):
         assert "of 100, headroom" in repo_figures.cell_body_block(
             [rows["example-skill"]])
 
+        # Both polarities on the thing that actually changed: a row admitting
+        # characters to this body moves neither the figure nor the block.
         _admit(tmp_path, 350, f"body:{rel}")
         rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
-        assert rows["example-skill"]["budgets"] == [("body", 100, 350)]
+        assert rows["example-skill"]["budgets"] == [("body", 100, 0)], (
+            "an admission row moved a cell body's ceiling")
         block = repo_figures.cell_body_block([rows["example-skill"]])
-        assert "of 450 (100 plus 350 admitted)" in block, block
+        assert "admitted" not in block, block
+        assert "of 100, headroom" in block, block
         body = rows["example-skill"]["body"]
-        assert f"headroom {450 - body:,}" in block, block
+        assert f"headroom {100 - body:,}" in block, block
+        # And the figure agrees with what the mechanism files against.
+        lint_ceiling = lint.CELL_BODY_CEILING_CHARS[rel]
+        assert rows["example-skill"]["budgets"][0][1] == lint_ceiling
     finally:
         lint.CELL_BODY_CEILING_CHARS = original
 
