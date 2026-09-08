@@ -53,7 +53,7 @@ Every surface the owner enters opens with one, and so does the artifact, which c
 
 ## Putting an ask where it can be found
 
-**An ask is anything a session needs from the owner that the session may not settle** — a brief put for affirmation, an argued ask ruled at release, a shortlist raised out of work not yet decided on, an item raised out of that work unasked because it crossed a line the repository set, a handback after time away. The occasions are not a closed list; what makes something an ask is that **the matter is not the session's to close**, whether or not the work waits on the answer. **Waiting is not the test and never was**: an argued ask ruled at release has the work proceeding on the recommendation, and it is an ask.
+**An ask is anything a session needs from the owner that the session may not settle** — a brief put for affirmation, an argued ask ruled at release, a shortlist raised out of work not yet decided on, an item raised out of that work unasked because it crossed a line its policy draws, a handback after time away. The occasions are not a closed list; what makes something an ask is that **the matter is not the session's to close**, whether or not the work waits on the answer. **Waiting is not the test and never was**: an argued ask ruled at release has the work proceeding on the recommendation, and it is an ask.
 
 **An ask the owner is not in the room for is put by posting an ask block and marking what carries it.** The block is a comment on the issue or pull request the ask concerns, and carries three lines:
 

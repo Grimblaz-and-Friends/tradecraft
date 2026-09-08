@@ -13,7 +13,7 @@ of the raised few is worth doing, what the case against each one is. This
 supplies everything that is not judgment.
 
 **Every label name, every rating value, the ordering, the shortlist size and
-the accrual, fade and assessment numbers live in the policy file.**
+the accrual, fade, assessment and push numbers live in the policy file.**
 `pool-policy.json` beside this script carries the defaults; a repository
 overrides them with a file of that name at its own root, and the override is
 read instead of the default rather than merged into it, so what a repository
@@ -47,6 +47,7 @@ Usage:  python scripts/pool.py [--repo OWNER/REPO] [--policy PATH] <command>
         python scripts/pool.py rate      N --rating LABEL [--rating LABEL]
         python scripts/pool.py frame     N
         python scripts/pool.py unframe   N
+        python scripts/pool.py unraise   N
 
   list       the pool, highest-rated first, with each item's ratings
   show       one issue: whether it is framed, and what it is rated
@@ -63,6 +64,10 @@ Usage:  python scripts/pool.py [--repo OWNER/REPO] [--policy PATH] <command>
   rate       set an issue's rating on one axis or on every axis
   frame      record that this is decided work
   unframe    return a framed issue to the pool
+  unraise    take the raised mark off, which is asking the push to name it again
+
+  In a listing, `?` marks an issue nobody has asked the cause question of, and
+  `!` marks one the push has already put to the owner.
 """
 from __future__ import annotations
 
@@ -288,8 +293,9 @@ def _whole(policy: dict, path: Path, block: str, key: str, *, least: int) -> Non
     if not isinstance(values, dict):
         raise PoolError(
             f"{path}: '{block}' must be an object. A policy written before the "
-            f"accrual and the fade landed does not have it: add 'cause', "
-            f"'assessed', 'accrual', 'fade' and 'assessment'"
+            f"blocks that were added to it does not have this one: the blocks "
+            f"beyond the original shape are 'cause', 'assessed', 'raised', "
+            f"'accrual', 'fade', 'assessment' and 'push'"
         )
     value = values.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value < least:
@@ -816,8 +822,14 @@ def _line(item: dict, policy: dict) -> str:
     # that value, and moved the title two columns between an assessed row and an
     # unassessed one.
     mark = " " if item.get("assessed") else "?"
+    # The second mark, in its own column beside the first. Without it the one
+    # state the push turns on was invisible in every listing the tool prints:
+    # `shortlist` does not filter what has been raised and its first sort axis
+    # has no decay, so a crossing the owner declined sits at the top of every
+    # later shortlist with nothing on the row saying it was already put.
+    put = "!" if item.get("raised") else " "
     prefix = f"#{item['number']:<{ISSUE_COL - 2}} "
-    return f"{prefix}{'  '.join(cells)}  {mark}  {item['title'][:70]}"
+    return f"{prefix}{'  '.join(cells)}  {mark}  {put}  {item['title'][:70]}"
 
 
 def _header(policy: dict) -> str:
@@ -825,7 +837,7 @@ def _header(policy: dict) -> str:
     # against a row prefix of `#` plus six, so every column heading sat one to
     # the right of the column it named. One constant, so they cannot drift.
     cells = [name.ljust(width) for name, width in zip(policy["order"], _widths(policy))]
-    return "issue".ljust(ISSUE_COL) + "  ".join(cells) + "  ?  title"
+    return "issue".ljust(ISSUE_COL) + "  ".join(cells) + "  ?  !  title"
 
 
 def cmd_list(policy: dict, repo: str | None, limit: int | None) -> int:
@@ -870,11 +882,14 @@ def cmd_show(policy: dict, repo: str | None, number: int) -> int:
 def _print_ratings(item: dict, policy: dict) -> None:
     """One issue as `list` reads it, in sentences rather than columns.
 
-    **Everything `list` distinguishes, this distinguishes.** It printed the
-    labelled value alone, so two issues differing only in the assessment read
-    byte-identical here and a faded issue asserted its label as its current
-    value -- while the row for the same issue in `list` carried both the arrow
-    and the mark. `show` is the command a session runs about one issue, which
+    **Everything `list` distinguishes, this distinguishes** -- with one
+    asymmetry, stated so it is not read as a gap: `list` fills the raised column
+    on every row because a column has to be filled, and this prints that mark
+    only where it is set, the unraised state being the whole pool's default
+    rather than an answer anybody gave. It printed the labelled value alone, so
+    two issues differing only in the assessment read byte-identical here and a
+    faded issue asserted its label as its current value -- while the row for the
+    same issue in `list` carried both the arrow and the mark. `show` is the command a session runs about one issue, which
     made it the one place in the tool that answered the question it exists to
     answer with the one fact that had changed left out.
     """
@@ -895,6 +910,9 @@ def _print_ratings(item: dict, policy: dict) -> None:
         print("  assessed: asked whether it has a cause")
     else:
         print("  not assessed: nobody has asked whether it has a cause")
+    if item.get("raised"):
+        print("  raised: the push put it to the owner, so it will not be named "
+              "again until `unraise`")
     if item.get("symptoms"):
         under = " ".join(f"#{s['number']}" for s in item["symptoms"])
         print(f"  {len(item['symptoms'])} open symptom(s) under it: {under}")
@@ -911,7 +929,10 @@ def cmd_shortlist(policy: dict, repo: str | None, count: int | None,
         raise PoolError("--count must be a whole number of at least 1")
     size = count if count is not None else policy["shortlist_size"]
     pool, _ = read_pool(policy, repo)
-    raised = pool[:size]
+    # `few`, not `raised`: this is the pull's shortlist, and `raised` names the
+    # push's durable mark everywhere else in this module -- including on the
+    # very items this slice can contain, since nothing filters them out of it.
+    few = pool[:size]
 
     # The amendment has the pool work out the causes behind the highest-rated
     # unassessed things BEFORE a session brings the owner a few, so that what it
@@ -920,7 +941,7 @@ def cmd_shortlist(policy: dict, repo: str | None, count: int | None,
     # items block and the command that answers for each, and leaves `--unassessed`
     # as the stated escape. Bounded to what is being raised, at least as deep as
     # the policy says, so `--count` cannot outrun the gate.
-    depth = max(len(raised), policy["assessment"]["before_shortlist"])
+    depth = max(len(few), policy["assessment"]["before_shortlist"])
     blocking = [it for it in pool[:depth] if not it["assessed"]]
     if blocking and not unassessed:
         listed = " ".join(f"#{it['number']}" for it in blocking)
@@ -935,16 +956,16 @@ def cmd_shortlist(policy: dict, repo: str | None, count: int | None,
     # Against what is actually being raised, not against the size asked for: a
     # pool of two fully-rated items under a size of five is not partly unrated,
     # and saying so told a reader to discount a ranking that was sound.
-    unrated_raised = [it for it in raised if not is_rated(it, policy)]
-    print(f"pool: {len(pool)}   rated: {len(rated)}   raising: {len(raised)}")
-    if unrated_raised:
+    unrated_few = [it for it in few if not is_rated(it, policy)]
+    print(f"pool: {len(pool)}   rated: {len(rated)}   raising: {len(few)}")
+    if unrated_few:
         print(
             "fewer rated items than the shortlist holds, so what follows is "
             "partly the oldest unrated filings rather than the highest-rated. "
             "Rate what belongs in contention before reading this as a ranking."
         )
     print(_header(policy))
-    for item in raised:
+    for item in few:
         print(_line(item, policy))
     print("")
     print("Each of these is put to the owner with its one-line case and the "
@@ -972,9 +993,10 @@ def cmd_policy(policy: dict, source: Path) -> int:
 def label_specs(policy: dict) -> list[tuple[str, str, str]]:
     """Name, colour and description for every label the policy names.
 
-    **Every one, including the two this script never writes.** `cause` is read
-    rather than written and `assessed` is written only by `assess`, but a label
-    a command needs and does not create is a setup step nobody is told about:
+    **Every one, including the ones no more than a single command ever
+    writes.** `cause` is read rather than written, `assessed` is written only by
+    `assess`, and `raised` only by `raise` -- but a label a command needs and
+    does not create is a setup step nobody is told about:
     the gate instructs `assess <N> --none`, which fails at the wire against a
     label the repository does not have, and the accrual reads a `cause` label
     that has to be hand-made before anything accrues. Creating a label is not
@@ -997,6 +1019,26 @@ def label_specs(policy: dict) -> list[tuple[str, str, str]]:
     return specs
 
 
+def existing_labels(repo: str | None) -> set[str]:
+    """Every label name the repository has.
+
+    Shared by the command that creates the missing ones and the command that
+    refuses to write one that is missing, so the two cannot disagree about what
+    the repository has -- and so the read's own limit is guarded once.
+    """
+    raw = json.loads(
+        gh(["label", "list", *_repo_args(repo), "--limit",
+            str(LABEL_READ_LIMIT), "--json", "name"])
+    )
+    if len(raw) >= LABEL_READ_LIMIT:
+        raise PoolError(
+            f"the label read came back at its limit of {LABEL_READ_LIMIT}, so "
+            f"a label that exists may read as missing. Raise LABEL_READ_LIMIT "
+            f"and run again"
+        )
+    return {lb["name"] for lb in raw}
+
+
 def cmd_labels(policy: dict, repo: str | None, dry_run: bool) -> int:
     """Create what the policy names and is missing; never touch what exists.
 
@@ -1006,17 +1048,7 @@ def cmd_labels(policy: dict, repo: str | None, dry_run: bool) -> int:
     replaced by running a command whose whole point was that it changes
     nothing it does not have to.
     """
-    raw = json.loads(
-        gh(["label", "list", *_repo_args(repo), "--limit",
-            str(LABEL_READ_LIMIT), "--json", "name"])
-    )
-    if len(raw) >= LABEL_READ_LIMIT:
-        raise PoolError(
-            f"the label read came back at its limit of {LABEL_READ_LIMIT}, so "
-            f"a label that exists may read as missing and creating it would "
-            f"fail. Raise LABEL_READ_LIMIT and run again"
-        )
-    existing = {lb["name"] for lb in raw}
+    existing = existing_labels(repo)
     specs = label_specs(policy)
     # Both lines read the same set, so they cannot disagree about a label.
     # Reading "already present" off the write rail and "to create" off the
@@ -1147,12 +1179,27 @@ def cmd_pushed(policy: dict, repo: str | None) -> int:
     carries its `?` mark, so whoever writes the ask knows the question is open.
     """
     pool, _ = read_pool(policy, repo)
-    over = [it for it in pool if crosses(it, policy) and not it["raised"]]
-    line = ", ".join(f"{name} {band}" for name, band in policy["push"].items())
-    print(f"pool: {len(pool)}   over the line ({line}) and not yet raised: {len(over)}")
+    crossed = [it for it in pool if crosses(it, policy)]
+    over = [it for it in crossed if not it["raised"]]
+    # `policy["order"]`, not `push`'s own key order: every other printer in this
+    # module reads the axes in the order the policy states, and `load_policy`
+    # refuses a `push` whose keys are not exactly `order`'s, so the two can
+    # never disagree about which axes -- only about the sequence they print in.
+    line = ", ".join(f"{name} {policy['push'][name]}" for name in policy["order"])
+    print(f"pool: {len(pool)}   over the line ({line}): {len(crossed)}   "
+          f"not yet raised: {len(over)}")
     if not over:
         print("")
-        print("nothing has crossed, so there is nothing to put to the owner unasked")
+        # Two states, not one, and they are opposites. A repository that
+        # obliges a refresh note carrying what crossed had a run where every
+        # crossing was already put to the owner writing "nothing has crossed"
+        # into that standing record -- and the header above carries the threshold
+        # and the unraised count, so the number of crossings appeared nowhere.
+        if crossed:
+            print(f"all {len(crossed)} over the line have already been put to the "
+                  f"owner, so there is nothing to ask again")
+        else:
+            print("nothing has crossed, so there is nothing to put to the owner unasked")
         return 0
     print(_header(policy))
     for item in over:
@@ -1168,12 +1215,47 @@ def cmd_raise(policy: dict, repo: str | None, number: int) -> int:
 
     The label is the pool's own, and it is durable on purpose: when the owner
     answers, the ask's own mark comes off and this one stays. A framed item has
-    left the pool; a declined one keeps this and stops asking, until somebody
+    left the pool; a declined one keeps this and stops asking, until `unraise`
     takes the label off, which is the act of saying *ask me again*.
+
+    **It checks the label exists before it writes.** This is the last of three
+    steps a refresh performs, and the first two -- reading what crossed and
+    posting the ask -- have already happened by the time it runs. A write that
+    fails at the wire therefore leaves the item asked but unmarked, which is
+    the one state the mark exists to prevent: the next refresh names it again
+    and the owner is asked twice. A repository that has not run `labels` hits
+    exactly that on its first crossing, so the refusal names the command.
     """
-    edit_labels(number, policy, add=[policy["raised"]["label"]], remove=[], repo=repo)
+    label = policy["raised"]["label"]
+    if label not in existing_labels(repo):
+        raise PoolError(
+            f"this repository has no '{label}' label, so marking #{number} "
+            f"would fail at the wire and leave it asked but unmarked -- the "
+            f"state that asks the owner twice. Run `pool.py labels` once, then "
+            f"this again"
+        )
+    edit_labels(number, policy, add=[label], remove=[], repo=repo)
     print(f"#{number} is marked raised -- it was put to the owner, so the push "
           f"will not name it again")
+    return 0
+
+
+def cmd_unraise(policy: dict, repo: str | None, number: int) -> int:
+    """Take the mark off, which is the act of asking the push to name it again.
+
+    The mark is durable by design, so without this the only way back is a
+    hand-edit on GitHub -- the shape `frame` and `unframe` already refused to
+    leave. It is the command for a mark put on the wrong issue, and for a
+    crossing the owner declined and later wants raised again.
+
+    No existence check, unlike `raise`: `gh issue edit --remove-label` on a
+    label the repository does not have fails, but the state it would leave is
+    the one the caller is asking for.
+    """
+    edit_labels(number, policy, add=[],
+                remove=[policy["raised"]["label"]], repo=repo)
+    print(f"#{number} is no longer marked raised -- the push names it again if "
+          f"it is still over the line")
     return 0
 
 
@@ -1287,7 +1369,8 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show", help="one issue's pool state and ratings")
     show.add_argument("number", type=int)
 
-    shortlist = sub.add_parser("shortlist", help="the few worth raising")
+    shortlist = sub.add_parser(
+        "shortlist", help="the few worth putting to the owner")
     shortlist.add_argument("--count", type=int, help="override the policy's size")
     shortlist.add_argument("--unassessed", action="store_true",
                            help="raise even where the top of the pool is unassessed")
@@ -1323,6 +1406,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     unframe = sub.add_parser("unframe", help="return a framed issue to the pool")
     unframe.add_argument("number", type=int)
+
+    unraise = sub.add_parser(
+        "unraise", help="take the raised mark off, so the push names it again")
+    unraise.add_argument("number", type=int)
     return parser
 
 
@@ -1348,6 +1435,8 @@ def dispatch(args: argparse.Namespace) -> int:
         return cmd_pushed(policy, args.repo)
     if args.command == "raise":
         return cmd_raise(policy, args.repo, args.number)
+    if args.command == "unraise":
+        return cmd_unraise(policy, args.repo, args.number)
     if args.command == "cycle":
         return cmd_cycle(policy, args.repo, args.dry_run)
     if args.command == "assess":

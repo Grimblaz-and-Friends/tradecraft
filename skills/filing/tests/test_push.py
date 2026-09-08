@@ -10,6 +10,7 @@ fence that is itself controlled, because a fence that caught nothing would let a
 write-nothing claim pass while writing.
 """
 
+import ast
 import importlib.util
 import json
 from datetime import datetime, timedelta, timezone
@@ -181,11 +182,17 @@ def test_an_unassessed_crossing_is_still_pushed(monkeypatch, capsys):
     bring, and gating it would silence an unassessed catastrophe precisely
     because nobody has got to it yet.
     """
-    stub(monkeypatch, [issue(1, labels=["sev:3", "urg:3"], assessed=False)])
+    stub(monkeypatch, [issue(1, labels=["sev:3", "urg:3"], assessed=False),
+                       issue(2, labels=["sev:3", "urg:3"], assessed=True)])
     assert pool.cmd_pushed(policy_dict(), None) == 0
     out = capsys.readouterr().out
-    assert "#1" in out, out
-    assert "?" in out, "the row should still say the cause question is open"
+    # Off the rows, not off the output. `_header` supplies a literal `?` as a
+    # column heading on every listing this command prints, so `"?" in out` was
+    # true whatever the rows said and the pin could not fail.
+    rows = {ln[:2]: ln for ln in out.splitlines() if ln.startswith("#")}
+    assert set(rows) == {"#1", "#2"}, out
+    assert "?" in rows["#1"], rows["#1"]
+    assert "?" not in rows["#2"], rows["#2"]
 
 
 def test_pushed_says_so_when_nothing_has_crossed(monkeypatch, capsys):
@@ -193,7 +200,37 @@ def test_pushed_says_so_when_nothing_has_crossed(monkeypatch, capsys):
     nothing to do would read as broken."""
     stub(monkeypatch, [issue(1, labels=["sev:1", "urg:1"])])
     pool.cmd_pushed(policy_dict(), None)
-    assert "nothing has crossed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "nothing has crossed" in out
+    assert "over the line (severity 3, urgency 3): 0" in out, out
+
+
+def test_all_raised_does_not_read_as_nothing_crossed(monkeypatch, capsys):
+    """The two empty states are opposites, and one sentence covered both.
+
+    A repository whose refresh note carries what crossed had a run in which
+    everything over the line had already been put to the owner writing *nothing
+    has crossed* into that standing record. The header does not repair
+    it: it prints the threshold and the unraised count, so before this the
+    number of crossings appeared nowhere in the output.
+    """
+    over = ["sev:3", "urg:3"]
+    stub(monkeypatch, [issue(1, labels=[*over, RAISED]),
+                       issue(2, labels=[*over, RAISED])])
+    assert pool.cmd_pushed(policy_dict(), None) == 0
+    out = capsys.readouterr().out
+    assert "nothing has crossed" not in out, out
+    assert "already been put to the owner" in out, out
+    assert "over the line (severity 3, urgency 3): 2" in out, out
+
+
+def test_the_threshold_prints_in_the_policys_order(monkeypatch, capsys):
+    """Every other printer in the module reads the axes in the policy's order;
+    this one read `push`'s own key order, which a hand-written override sets."""
+    policy = policy_dict(order=["urgency", "severity"])
+    stub(monkeypatch, [issue(1, labels=["sev:1", "urg:1"])])
+    pool.cmd_pushed(policy, None)
+    assert "(urgency 3, severity 3)" in capsys.readouterr().out
 
 
 # ------------------------------------------------------------- the two halves
@@ -217,22 +254,107 @@ def test_the_fence_in_that_probe_catches_a_write(monkeypatch):
         pool.gh(["issue", "edit", "1", "--add-label", RAISED])
 
 
+def labelled(monkeypatch, sent, present=(RAISED,)):
+    """A wire that answers the label read and records every write."""
+    def wire(args):
+        if args[:2] == ["label", "list"]:
+            return json.dumps([{"name": n} for n in present])
+        sent.append(args)
+        return ""
+    monkeypatch.setattr(pool, "gh", wire)
+
+
 def test_raise_writes_the_mark_and_nothing_else(monkeypatch, capsys):
     """Criterion 5, and the write goes through the one chokepoint."""
     sent = []
-    monkeypatch.setattr(pool, "gh", lambda args: sent.append(args) or "")
+    labelled(monkeypatch, sent)
     pool.cmd_raise(policy_dict(), None, 7)
     assert sent == [["issue", "edit", "7", "--add-label", RAISED]], sent
     capsys.readouterr()
 
 
-def test_raise_is_the_only_thing_that_writes_the_mark():
-    """Criterion 5's second half, read off the source: a second writer would
-    make the mark mean two things."""
-    source = SCRIPT.read_text(encoding="utf-8")
-    writers = [line for line in source.splitlines()
-               if 'policy["raised"]["label"]' in line and "add=" in line]
-    assert len(writers) == 1, writers
+def test_raise_refuses_when_the_repository_has_no_such_label(monkeypatch, capsys):
+    """The state the mark exists to prevent.
+
+    `raise` is the third of the three steps a refresh performs, so by the time
+    it runs the ask has already been posted. A write that fails at the wire
+    leaves the item asked but unmarked, and the next refresh asks the owner a
+    second time -- which is what a repository that has not run `labels` gets on
+    its first crossing.
+    """
+    sent = []
+    labelled(monkeypatch, sent, present=("framed", "cause"))
+    with pytest.raises(pool.PoolError, match="labels"):
+        pool.cmd_raise(policy_dict(), None, 7)
+    assert sent == [], "it must refuse before it writes, not after"
+    capsys.readouterr()
+
+
+def test_unraise_takes_the_mark_off(monkeypatch, capsys):
+    """The inverse. Without it the only way back from a mark put on the wrong
+    issue -- or from a decline the owner changed their mind about -- is a
+    hand-edit on GitHub, which `frame`/`unframe` already refused to leave."""
+    sent = []
+    labelled(monkeypatch, sent)
+    pool.cmd_unraise(policy_dict(), None, 7)
+    assert sent == [["issue", "edit", "7", "--remove-label", RAISED]], sent
+    capsys.readouterr()
+
+
+def test_raise_is_the_only_command_that_writes_the_mark(monkeypatch, capsys):
+    """Criterion 5's second half, driven rather than grepped.
+
+    The line-scoped grep this replaces asked for a source line carrying both
+    `policy["raised"]["label"]` and `add=`. Two independent runs defeated it by
+    hoisting the label into a local first and got a green suite -- and so, in
+    the end, did this change's own `raise`, which reads the label into `label`
+    before writing it. Driving every command that writes a label catches that
+    spelling and every other one.
+    """
+    seen: dict[str, list[str]] = {}
+    current = [""]
+
+    def spy(number, policy, *, add, remove, repo=None):
+        seen.setdefault(current[0], []).extend(add)
+
+    monkeypatch.setattr(pool, "edit_labels", spy)
+    monkeypatch.setattr(pool, "issue_labels", lambda number, repo=None: [])
+    monkeypatch.setattr(pool, "existing_labels", lambda repo=None: {RAISED})
+    policy = policy_dict()
+    commands = {
+        "raise": lambda: pool.cmd_raise(policy, None, 1),
+        "unraise": lambda: pool.cmd_unraise(policy, None, 1),
+        "frame": lambda: pool.cmd_frame(policy, None, 1),
+        "unframe": lambda: pool.cmd_unframe(policy, None, 1),
+        "assess": lambda: pool.cmd_assess(policy, None, 1),
+        "rate": lambda: pool.cmd_rate(policy, None, 1, {"severity": "sev:3"}),
+    }
+    for name, call in commands.items():
+        current[0] = name
+        call()
+    assert sorted(seen) == sorted(commands), "every command must have been driven"
+    writers = sorted(name for name, added in seen.items() if RAISED in added)
+    assert writers == ["raise"], seen
+    capsys.readouterr()
+
+
+def test_every_write_site_is_a_command_that_test_drives():
+    """The other half of the guard above, which drives a fixed list.
+
+    A seventh call site added to a command the list does not name would write
+    the mark unobserved, so the list and the source are held level here rather
+    than by anyone remembering.
+    """
+    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    sites = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "edit_labels":
+                sites.add(fn.name)
+    assert sites == {"cmd_raise", "cmd_unraise", "cmd_frame", "cmd_unframe",
+                     "cmd_assess", "cmd_rate"}, sorted(sites)
 
 
 def test_the_mark_is_on_the_rail_and_the_asks_mark_is_not():
@@ -244,6 +366,78 @@ def test_the_mark_is_on_the_rail_and_the_asks_mark_is_not():
     source = SCRIPT.read_text(encoding="utf-8")
     assert "awaiting-owner" not in source
     assert "awaiting-owner" not in (CELL / "scripts" / "pool-policy.json").read_text(encoding="utf-8")
+
+
+def test_the_mark_is_rendered_in_every_listing(monkeypatch, capsys):
+    """Criterion 3's other half.
+
+    `shortlist` does not filter what has been raised, and its first sort axis
+    has no decay term, so a `sev:3` the owner declined sits first in every later
+    shortlist. Before this nothing on the row said it had already been put, and
+    a session raising that shortlist put it to the owner again.
+    """
+    over = ["sev:3", "urg:3"]
+    stub(monkeypatch, [issue(1, labels=[*over, RAISED]), issue(2, labels=over)])
+    pool.cmd_list(policy_dict(), None, None)
+    out = capsys.readouterr().out
+    rows = {ln[:2]: ln for ln in out.splitlines() if ln.startswith("#")}
+    assert "!" in rows["#1"], rows["#1"]
+    assert "!" not in rows["#2"], rows["#2"]
+    assert "!" in out.splitlines()[1], "the column needs a heading"
+
+
+def test_show_says_the_mark_is_set(monkeypatch, capsys):
+    """`show` is the command a session runs about one issue, so the one fact
+    that decides whether the push will name it again belongs in its answer."""
+    over = ["sev:3", "urg:3"]
+    stub(monkeypatch, [issue(1, labels=[*over, RAISED]), issue(2, labels=over)])
+    pool.cmd_show(policy_dict(), None, 1)
+    assert "raised:" in capsys.readouterr().out
+    stub(monkeypatch, [issue(1, labels=[*over, RAISED]), issue(2, labels=over)])
+    pool.cmd_show(policy_dict(), None, 2)
+    assert "raised:" not in capsys.readouterr().out
+
+
+# ------------------------------------------------- the fade, composed with crossing
+
+
+def test_the_fade_takes_a_crossing_back_under_the_line(monkeypatch):
+    """The composition decision 6 turns on, which nothing pinned.
+
+    The fade is pinned in `test_pool.py` and `crosses` is pinned above; what was
+    unguarded is the two together -- and that composition is the whole reason
+    the mark has to be durable rather than left to the quiet clock.
+    """
+    policy = policy_dict()
+    stub(monkeypatch, [issue(1, labels=["sev:3", "urg:3"], updated=ago(0)),
+                       issue(2, labels=["sev:3", "urg:3"], updated=ago(31))])
+    items = {it["number"]: it for it in pool.read_pool(policy, None)[0]}
+    assert pool.crosses(items[1], policy) is True
+    assert pool.crosses(items[2], policy) is False, items[2]["effective"]
+
+
+def test_a_faded_crossing_is_not_pushed(monkeypatch, capsys):
+    """The same composition at the command, not only at the predicate."""
+    stub(monkeypatch, [issue(1, labels=["sev:3", "urg:3"], updated=ago(0)),
+                       issue(2, labels=["sev:3", "urg:3"], updated=ago(31))])
+    assert pool.cmd_pushed(policy_dict(), None) == 0
+    out = capsys.readouterr().out
+    assert "#1" in out and "#2" not in out, out
+
+
+def test_touching_a_faded_crossing_puts_it_back_over_the_line(monkeypatch):
+    """Why the quiet clock is not a bound on the asking.
+
+    The fade reads the issue's own `updatedAt`, so any comment restarts it --
+    including the comment an ask itself posts. An item over the line that is
+    being discussed never fades out of the push, which is what makes the
+    durable mark the only thing that stops the second ask.
+    """
+    policy = policy_dict()
+    for days, expected in ((31, False), (0, True)):
+        stub(monkeypatch, [issue(1, labels=["sev:3", "urg:3"], updated=ago(days))])
+        item = pool.read_pool(policy, None)[0][0]
+        assert pool.crosses(item, policy) is expected, (days, item["effective"])
 
 
 # ------------------------------------------------------------- the policy
@@ -276,6 +470,21 @@ def test_a_push_policy_that_would_fire_wrongly_is_refused(tmp_path, mutate, beca
     path.write_text(json.dumps(policy), encoding="utf-8", newline="\n")
     with pytest.raises(pool.PoolError):
         pool.load_policy(path)
+
+
+def test_a_missing_block_is_refused_by_a_message_naming_every_added_block(tmp_path):
+    """D-441 decision 8: a refusal names what to add. It named five of the
+    seven blocks that have been added to the policy since its original shape,
+    so the two this stage's own work depends on were the ones left out."""
+    policy = policy_dict()
+    del policy["accrual"]
+    path = tmp_path / "pool-policy.json"
+    path.write_text(json.dumps(policy), encoding="utf-8", newline="\n")
+    with pytest.raises(pool.PoolError) as caught:
+        pool.load_policy(path)
+    for block in ("cause", "assessed", "raised", "accrual", "fade",
+                  "assessment", "push"):
+        assert f"'{block}'" in str(caught.value), (block, str(caught.value))
 
 
 def test_the_shipped_policy_validates_and_ships_at_the_top_band():
