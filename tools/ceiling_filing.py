@@ -73,7 +73,12 @@ def needs_filing(over: list[tuple[str, int, int]], open_markers: set[str]) -> li
 
 
 def body_for(rel: str, size: int, ceiling: int) -> str:
-    """The item's body. The measurement is its evidence and says so."""
+    """The item's body. The measurement is its evidence and says so.
+
+    The provenance element sits with the measurement, under `## The
+    observation`, because that is where `skills/filing/SKILL.md` puts it and
+    this body is the worked example every filer here copies.
+    """
     return (
         f"{marker_for(rel)}\n\n"
         f"> **In plain terms:** this skill's main file has grown past where it "
@@ -86,6 +91,8 @@ def body_for(rel: str, size: int, ceiling: int) -> str:
         f"**{ceiling}**, set to where that body stood when the ratchet landed.\n\n"
         f"```\npython -c \"import sys;sys.path.insert(0,'tools');import lint,pathlib;"
         f"print(lint.cells_over_ceiling(pathlib.Path('.')))\"\n```\n\n"
+        f"**Provenance:** instrument -- raised by `tools/ceiling_filing.py` on "
+        f"merge.\n\n"
         f"## What it is evidence of\n\n"
         f"A ceiling here is a record of where a body stood, never a claim about "
         f"where it should be. Passing it means the cell has taken on prose since, "
@@ -93,10 +100,9 @@ def body_for(rel: str, size: int, ceiling: int) -> str:
         f"is that what one trigger among several needs belongs in `references/`. "
         f"The disqualifier decides which paragraphs, and that is a judgment this "
         f"item does not make.\n\n"
-        f"Raised by `tools/ceiling_filing.py` on merge. Its whole evidence is the "
-        f"measurement above, which is the carve-out `skills/filing/SKILL.md` "
-        f"names -- there is no incident to attach, because nothing has gone wrong "
-        f"yet.\n"
+        f"Its whole evidence is the measurement above, which is the carve-out "
+        f"`skills/filing/SKILL.md` names -- there is no incident to attach, "
+        f"because nothing has gone wrong yet.\n"
     )
 
 

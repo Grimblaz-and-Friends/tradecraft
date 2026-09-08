@@ -1,5 +1,11 @@
-"""Tests for tools/trial_intake.py: classification in both polarities, the
-ambiguity refusal, the window split, and the CLI on a fixture file."""
+"""Tests for tools/trial_intake.py: the stated provenance element and its
+negative control, classification in both polarities, the ambiguity refusal,
+the window split, and the CLI on a fixture file.
+
+The fixtures further down predate the provenance element and are left exactly
+as they were. They are what proves the trial's baseline still classifies once
+the stated line is read first, so editing one to make a test pass would be the
+failure rather than the fix."""
 
 from __future__ import annotations
 
@@ -311,6 +317,240 @@ def test_the_text_run_carries_the_caveat_and_a_pinned_corpus_is_byte_identical(t
 def test_empty_body_is_unstated():
     assert ti.classify("")[0] == "unstated"
     assert ti.classify(None)[0] == "unstated"  # type: ignore[arg-type]
+
+
+# --- the stated element, and what it must override --------------------------
+
+# The line states `use`; the prose around it carries a strong `review` phrase.
+# The negative control is the same body with the line removed, which must come
+# back `review` -- a pair that classified the same way both ways would be
+# measuring nothing.
+STATED_LINE = "**Provenance:** use -- the second experience session on PR #470 met it.\n"
+STATED_OVER_PROSE_BODY = """> **In plain terms:** something.
+
+## The evidence
+
+The claim was sustained by the terminal stage of PR #415's review, and the judge routed the remedy here.
+
+""" + STATED_LINE
+
+STATED_SESSION_BODY = """> **In plain terms:** something.
+
+**Provenance:** session -- noticed while landing an unrelated change on 2026-09-07.
+"""
+
+STATED_INSTRUMENT_BODY = """> **In plain terms:** something.
+
+**Provenance:** instrument -- raised by a guard on merge.
+"""
+
+
+def test_a_stated_origin_decides_over_the_prose_around_it():
+    cls, phrases, basis = ti.classify(STATED_OVER_PROSE_BODY)
+    assert (cls, basis) == ("use", "stated"), (cls, basis, phrases)
+    assert phrases == ["**Provenance:** use"]
+
+
+def test_the_control_for_that_pair_classifies_the_other_way():
+    """Remove the one line, and the same body must come back `review`."""
+    control = STATED_OVER_PROSE_BODY.replace(STATED_LINE, "")
+    assert STATED_LINE not in control
+    assert ti.classify(control)[0] == "review", (
+        "the control must differ, or the stated-line rule proves nothing")
+
+
+def test_the_two_newer_origins_come_only_from_a_stated_line():
+    assert ti.classify(STATED_SESSION_BODY)[0] == "session"
+    assert ti.classify(STATED_SESSION_BODY)[2] == "stated"
+    assert ti.classify(STATED_INSTRUMENT_BODY)[0] == "instrument"
+    assert ti.classify(STATED_INSTRUMENT_BODY)[2] == "stated"
+    # No phrase tier can produce either, so a body filed before the element
+    # existed never lands in one. Strip the element and the same prose is
+    # unstated -- which is what keeps the trial's baseline where it was.
+    for body in (STATED_SESSION_BODY, STATED_INSTRUMENT_BODY):
+        stripped = "\n".join(l for l in body.splitlines() if "**Provenance:**" not in l)
+        assert "Provenance" not in stripped
+        assert ti.classify(stripped)[0] == "unstated", stripped
+
+
+def test_a_full_stop_heading_is_still_the_element():
+    """Bodies here write `**Provenance.**` as well as `**Provenance:**`, and a
+    classifier refusing one would report the filer's punctuation as a missing
+    origin."""
+    assert ti.classify("**Provenance.** owner -- he asked for it.")[0] == "owner"
+
+
+def test_two_stated_origins_refuse_to_classify():
+    both = STATED_SESSION_BODY + "\n**Provenance:** review -- and a seat surfaced it.\n"
+    cls, phrases, basis = ti.classify(both)
+    assert cls == "ambiguous" and basis == "stated"
+    assert any(p.startswith("session:") for p in phrases)
+    assert any(p.startswith("review:") for p in phrases)
+
+
+def test_the_origin_is_read_from_the_element_and_not_from_a_bare_word():
+    """`use` in running prose is not a stated origin; the heading is required."""
+    assert ti.classify("We use the cold seat here. Provenance: use.")[0] == "unstated"
+
+
+def test_the_new_classes_reach_the_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """A class the counts know but the table and --only do not is a class the
+    close-out cannot read, which is the whole point of stating one."""
+    dump = tmp_path / "issues.json"
+    dump.write_text(json.dumps([
+        _issue(40, "2026-09-05T00:00:00Z", STATED_SESSION_BODY),
+        _issue(41, "2026-09-05T01:00:00Z", STATED_INSTRUMENT_BODY),
+    ]), encoding="utf-8")
+    rc = ti.main(["--from-file", str(dump), "--until", "2026-09-06T00:00:00Z",
+                  "--rows", "--only", "session"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "#40" in out and "#41" not in out, "--only did not filter on the new class"
+    assert "instrument" in out, "the new class is missing from the summary table"
+    assert "stated" in out, "the basis column does not report the element"
+    assert out.isascii()
+
+
+# --- the forms the rule's wording licenses, and the ones it does not --------
+
+# "one line under the heading" is the ordinary markdown reading of a heading
+# with content beneath, and the cell's bodies carry bulleted elements, so both
+# are lawful filings. Each returned `unstated` before this batch -- the one
+# class the element exists to end. A blockquote marker stays out: `>` is how a
+# quoted example is written, and accepting it would widen the fenced hole below.
+@pytest.mark.parametrize("label,body,origin", [
+    ("inline", "**Provenance:** use -- a cold seat met it.", "use"),
+    ("next line", "**Provenance:**\nsession -- noticed while doing other work.", "session"),
+    ("dash bullet", "- **Provenance:** use -- an experience session met it.", "use"),
+    ("star bullet", "* **Provenance:** instrument -- a guard raised it.", "instrument"),
+    ("plus bullet", "+ **Provenance:** owner -- he asked for it.", "owner"),
+])
+def test_every_lawful_shape_of_the_element_is_read(label, body, origin):
+    cls, phrases, basis = ti.classify(body)
+    assert (cls, basis) == (origin, "stated"), (label, cls, basis, phrases)
+
+
+def test_a_blockquoted_element_is_not_the_bodys_own_origin():
+    """The negative control for the widening: `>` is a quotation marker, and a
+    body quoting someone else's filing has not stated its own origin."""
+    assert ti.classify("> **Provenance:** session noticed it")[0] == "unstated"
+
+
+# --- fenced examples, in both polarities ------------------------------------
+
+FENCED_ONLY = """> **In plain terms:** the closed list is missing a case.
+
+## The evidence
+
+The cell requires a line like
+
+```
+**Provenance:** review -- a seat found it
+```
+
+but a filing that came out of a spike has no lawful first word.
+"""
+
+FENCED_PLUS_REAL = FENCED_ONLY + "\n**Provenance:** session -- noticed while filing an unrelated item.\n"
+
+
+def test_a_fenced_example_is_not_the_bodys_own_origin():
+    """A filing *about* the origin list carries an example of the element. Read
+    as the body's own it fabricates an origin on the `stated` basis, which is
+    the one basis this tool tells the close-out nothing can move."""
+    cls, phrases, basis = ti.classify(FENCED_ONLY)
+    assert cls != "review", (cls, phrases, basis)
+    assert basis != "stated", (cls, phrases, basis)
+
+
+def test_a_real_line_still_decides_when_a_fenced_example_sits_above_it():
+    """The other polarity: fencing must not swallow the body's own element."""
+    cls, phrases, basis = ti.classify(FENCED_PLUS_REAL)
+    assert (cls, basis) == ("session", "stated"), (cls, basis, phrases)
+    assert not any("owner" in p for p in phrases)
+
+
+def test_two_real_elements_are_still_ambiguous_after_fencing():
+    """Genuine ambiguity survives the fence strip; a body naming two origins is
+    never counted as either."""
+    both = "**Provenance:** session -- one.\n\n**Provenance:** review -- two.\n"
+    cls, _, basis = ti.classify(both)
+    assert (cls, basis) == ("ambiguous", "stated")
+
+
+# --- the word boundary, which nothing pinned ---------------------------------
+
+@pytest.mark.parametrize("word", ["user", "sessions", "reviewer", "ownership", "instrumentation"])
+def test_an_english_word_beginning_with_an_origin_is_not_that_origin(word):
+    """Deleting the `\\b` from the alternation left the whole suite green, so
+    the one thing separating a key from an English prefix was unpinned."""
+    cls, _, basis = ti.classify(f"**Provenance:** {word} did the thing.")
+    assert basis != "stated", (word, cls, basis)
+
+
+# --- a heading that carries no origin is visible, and moves nothing ----------
+
+def test_a_malformed_element_is_reported_without_changing_class_or_basis():
+    """A body that carries the element and misses its first word classified
+    exactly like one that never carried it, so the close-out could not separate
+    *never wrote it* from *wrote it and missed*. The row now says which -- and
+    the class and basis are untouched, which is what keeps every pre-element
+    body classifying as it did."""
+    tail = " the review of PR #451, seat finding sustained by the defense."
+    cls, phrases, basis = ti.classify("**Provenance:**" + tail)
+    # The control swaps only the heading word for `**Warrant:**`, which forms a
+    # provenance section just as `**Provenance:**` does -- so the classification
+    # path is identical and the heading is the only difference.
+    c_cls, c_phrases, c_basis = ti.classify("**Warrant:**" + tail)
+    assert (cls, basis) == (c_cls, c_basis), "the marker moved the classification"
+    assert [p for p in phrases if not p.startswith("malformed-element: ")] == c_phrases
+    assert any(p.startswith("malformed-element: ") for p in phrases)
+    assert not any(p.startswith("malformed-element: ") for p in c_phrases)
+
+
+def test_a_well_formed_element_is_never_reported_as_malformed():
+    _, phrases, _ = ti.classify("**Provenance:** use -- a cold seat met it.")
+    assert not any("malformed" in p for p in phrases)
+
+
+def test_a_body_with_no_heading_at_all_is_never_reported_as_malformed():
+    _, phrases, _ = ti.classify(UNSTATED_BODY)
+    assert phrases == []
+
+
+# --- the key ends at a delimiter, not at a word boundary --------------------
+
+def test_a_legacy_phrase_is_not_read_as_the_structured_key():
+    """`\\b` let `owner-directed` in as the `owner` key, because a hyphen is a
+    word boundary -- so a body carrying the old phrase counted as one carrying
+    the element, and the adoption figure the close-out reads was inflated by
+    every one of them. It classifies by phrase, as a pre-element body does."""
+    cls, phrases, basis = ti.classify("**Provenance:** owner-directed, he asked for it.")
+    assert basis != "stated", (cls, basis, phrases)
+    assert any(p.startswith("malformed-element: ") for p in phrases)
+
+
+@pytest.mark.parametrize("suffix", ["-directed", "-stated", "-affirmed"])
+def test_no_hyphenated_legacy_form_reaches_the_stated_basis(suffix):
+    assert ti.classify(f"**Provenance:** owner{suffix} on 2026-09-05.")[2] != "stated"
+
+
+# --- the output this module promises is ASCII stays ASCII -------------------
+
+def test_a_unicode_dash_before_the_key_does_not_reach_the_output():
+    """The pattern accepts an em or en dash before the origin and `--rows`
+    prints what it matched, so retaining the raw span put non-ASCII into output
+    the module's own docstring promises is ASCII."""
+    for dash in (chr(0x2014), chr(0x2013)):
+        cls, phrases, basis = ti.classify(f"**Provenance:** {dash} owner asked for it.")
+        assert (cls, basis) == ("owner", "stated"), (dash, cls, basis)
+        assert all(p.isascii() for p in phrases), (dash, phrases)
+
+
+def test_a_unicode_dash_in_a_malformed_element_does_not_reach_the_output():
+    _, phrases, _ = ti.classify(
+        f"**Provenance:** {chr(0x2014)} the review of PR #451 sustained it.")
+    assert phrases and all(p.isascii() for p in phrases), phrases
 
 
 def _issue(number: int, created: str, body: str) -> dict:

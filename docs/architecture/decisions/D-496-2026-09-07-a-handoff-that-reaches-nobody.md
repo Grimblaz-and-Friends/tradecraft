@@ -1,0 +1,48 @@
+# D-496: The opener finishes the stretch, and a filing names its origin as a key rather than a description
+
+**Status:** Accepted 2026-09-07 (PR #496)
+
+## Context
+
+Two rules the owner affirmed in one conversation on 2026-09-07, filed as [#483](https://github.com/Grimblaz-and-Friends/tradecraft/issues/483) and [#485](https://github.com/Grimblaz-and-Friends/tradecraft/issues/485), both briefs saying one pull request may land both. Each is about a handoff that reached nobody.
+
+[#483](https://github.com/Grimblaz-and-Friends/tradecraft/issues/483): [PR #451](https://github.com/Grimblaz-and-Friends/tradecraft/pull/451) said in its own body that a fresh session would run its experience session and its review from a cold read. Nothing routes a pull request to a session — the pool raises issues, and the ask mark routes to the owner — so no session picked it up, and it merged unreviewed. `gh pr view 451 --json createdAt,mergedAt` gives `2026-09-07T02:55:57Z` and `2026-09-07T20:18:50Z`.
+
+[#485](https://github.com/Grimblaz-and-Friends/tradecraft/issues/485): `tools/trial_intake.py` had to reconstruct each filing's origin from phrases, because no element of a filing stated it. **The figure this filing was opened on does not reproduce, and no number replaces it here.** #485 states 193 of the baseline's 268 unstated. That number came from [PR #451](https://github.com/Grimblaz-and-Friends/tradecraft/pull/451)'s published table rather than from a run at `2c84f66`, and four stages of this change's own review re-derived a different one independently. What is written down instead is the derivation, both endpoints pinned — the tool by sha, the window by its closing instant:
+
+```
+git show 2c84f66:tools/trial_intake.py > ti.py
+gh issue list --repo Grimblaz-and-Friends/tradecraft --state all --limit 1000 \
+  --json number,title,createdAt,state,body > d.json
+python ti.py --from-file d.json --until 2026-09-07T20:22:44Z
+```
+
+The baseline window closed at `2026-09-04T22:34Z`, so its membership cannot grow; the bodies in it can still be edited, which is why the number belongs to the run and never to this entry. `skills/authoring/SKILL.md` states the rule this paragraph now keeps: a derived figure is its command and the tree it runs on, never a number, on any surface nobody goes back to correct.
+
+## Decision
+
+**1. #483's two halves sit in two cells, and the split follows from who owns what.** #483's brief-comment costed the change as one sentence in the repo-only `landing` cell. The charter routes *what the declining line must say* to the `experience-session` cell, which states it already at `skills/experience-session/SKILL.md`'s *"say so and why"* sentence, so putting the content rule in `docs/cells/landing/SKILL.md` too would be a second copy of a rule that has an owner. **Who runs the stretch** is this repository's own flow and stayed in `landing`; **what the line may not say** joined the sentence that already governs the line. Siting is the session's call under the `engagement` cell's list, and the cost the brief-comment's estimate was protecting — no version bump — is spent either way, since #485 touches the shipped `filing` cell.
+
+**2. The closed list of origins is five, not the four the brief names.** #485's *Deliberately deferred* hands the list to the artifact, to settle against the classifier's classes. The brief names *a review seat, an experience session, a consumer, or you*; `session` and `instrument` are added because two live categories have no lawful answer among those four. #483 is its own exhibit for the first — its body says *"Found by the session that opened the pull request, reading the merged state on 2026-09-07; not owner-directed"*, which is not a review, not use, and not the owner. `tools/ceiling_filing.py` is the second: it opens issues on merge, so without `instrument` this repository's own filer could not obey the rule on the day it landed. **A rule with no lawful answer for a live category is one sessions write around**, and both additions are reported as the session's call rather than put as a fork, since undoing either costs an edit to the rule and to nothing already in the world.
+
+**3. The heading is `**Provenance:**`, and the origin is its first word.** The heading was chosen because bodies here already write it and `tools/trial_intake.py` already looked for it — the cheapest reliable material the `authoring` cell's admission order asks for. **The first-word rule is what makes it a key rather than a description**: every body filed before this change that carried `**Provenance:**` opened with a word no classifier can sort on — #249 with `sustained`, #251 with `originated`, #268 with `both`. **That census reads one heading form and the pattern accepts two.** `STATED_PATTERN` also reads `**Provenance.**`, which #279 and #483 write, opening `PR` and `Found`; the second is the body decision 2 quotes above. The match list is given rather than a count because this surface freezes and a reader who wants the tally re-runs it over the slice named below. The widened branch is certified against the whole slice rather than against the census: **the pattern fires on no body filed before the element existed** — the slice running to #487, the last issue created before this change's own filings, at `2026-09-07T21:14:34Z`. The line sites with the evidence, the tie block staying the body's first element, because a required element with no stated place is one every filer sites differently.
+
+**4. The classifier keeps its phrase tiers as a fallback, which is #485's second deferred question.** Every body in the trial's baseline window predates the element. Dropping the tiers would classify the whole baseline `unstated` and empty the comparison the tool exists to make. A stated origin decides first and reports basis `stated`; the tiers run only where none is stated. No phrase pattern is written for `session` or `instrument`, so a pre-element body can never be classified into either — they did not exist to be stated.
+
+**The sibling landed first, and this change merged it in.** [PR #489](https://github.com/Grimblaz-and-Friends/tradecraft/pull/489), PR #451's own review fix batch, was open against this same base while this change was under review, and merged at `43adc93` on 2026-09-08 before this one. It removed `PROVENANCE_HEADINGS` and rewrote the loop in `provenance_text` that this change's fallback calls, moved `A/B run` and `design sitting` from the strong tiers to the weak ones, and made `parse_when` read a naive instant as UTC. **So what this decision re-certifies is the tiers as merged**, at this change's own merge commit — not as they stood at `2c84f66`, which is the tree every figure above was taken against.
+
+**The corpus check this entry said the second lander owed was run against the merged tool**, and the claim survives with its base moved. The comparison, both tools pinned: classify every issue body under `git show 43adc93:tools/trial_intake.py` and under this change's merge commit, and diff the `(class, basis)` pairs. **The only bodies that differ are the ones filed under this rule**, and `STATED_PATTERN` fires on no body filed before the element existed — the slice ending at #487, the last issue created before this change's own filings. The same comparison between `2c84f66` and `43adc93` is #489's effect on the trial's baseline rather than this change's, and no evidence on either pull request covered it, so a close-out that needs the number runs it rather than reading one here.
+
+**5. The incident's duration is written as two instants, because the figure #483 states is wrong.** #483's body and title say the pull request sat *twelve hours*; it sat 17.4. The artifact inherited the figure verbatim and its first cold seat failed it on that, before it reached `docs/cells/landing/SKILL.md`. The cell now states `2026-09-07T02:55:57Z` and `2026-09-07T20:18:50Z` and derives nothing, so a later reader re-checks with one command and no arithmetic. **The issue is not corrected**: records here are append-only and never maintained, and this entry is the forward surface where the correction lives.
+
+**6. A finding handed to #485 is disposed forward and not backward.** The review of [PR #451](https://github.com/Grimblaz-and-Friends/tradecraft/pull/451) handed #485 a design call: the classifier had no rule for whether a filing's tie block counts as its own provenance text, and three live rows (#342, #363, #400) classify on verbs appearing in tie lines about *other* issues. Reading the stated line first disposes of it for everything filed from here, the element being sited with the evidence rather than in the tie block. It does not reach those three or any other pre-element body, which still classify by phrase — which is what the finding itself anticipated, and its interim guidance stands.
+
+## Rejected
+
+**Putting both halves of #483 in the `landing` cell**, as its brief-comment costed. Rejected under decision 1: it would restate a rule the `experience-session` cell owns, and a second copy is what drifts.
+
+**Keeping the origin list at the brief's four.** Rejected under decision 2: `tools/ceiling_filing.py` would have been unable to obey the rule the same change shipped.
+
+**Dropping the phrase tiers once the element exists.** Rejected under decision 4: it destroys the baseline the trial compares against.
+
+**Editing #483's body to correct the duration, and editing older bodies to carry the element.** Rejected under decision 5 and the artifact's boundary: records here are not maintained, and retro-editing bodies the trial's own evidence cites would disturb that evidence.
