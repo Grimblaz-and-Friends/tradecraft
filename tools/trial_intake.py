@@ -7,28 +7,49 @@ in a window by where it came from -- found in use by a consumer or an
 instrument run, routed by a review, or filed by the owner -- and comparing the
 use-found rate in the trial window against the weeks before it.
 
-This script does the mechanical half. It reads the issues, finds the sentence
-each body uses to state its own provenance, and classifies on that sentence:
+This script does the mechanical half. It reads the issues, finds where each
+body states its own provenance, and classifies on that:
 
-  use       an experience session, a cold consumer or seat, a dispatched
-            recipient, or an A/B run found it
-  review    a review seat surfaced or sustained it, a terminal stage or judge
-            routed it, or an external reviewer raised it
-  owner     the owner directed it or it came out of a design sitting
-  ambiguous the provenance text names more than one of the above; the row
-            shows every phrase matched and a human decides
-  unstated  no provenance phrase found anywhere in the body
+  use        an experience session, a cold consumer or seat, a dispatched
+             recipient, or an A/B run found it
+  review     a review seat surfaced or sustained it, a terminal stage or judge
+             routed it, or an external reviewer raised it
+  owner      the owner directed it or it came out of a design sitting
+  session    a session noticed it while doing other work
+  instrument a script or a guard raised it
+  ambiguous  the provenance text names more than one of the above; the row
+             shows every phrase matched and a human decides
+  unstated   no provenance phrase found anywhere in the body
+
+A body carrying the element `skills/filing/SKILL.md` requires -- one line under
+`**Provenance:**` whose first word is one of the five origins -- is classified
+on that word alone, and the row's basis reads `stated`. Nothing else in the
+body can move it, which is the point: the origin is a key, not a phrase to be
+inferred from the prose around it. The heading may open its line or follow a
+list marker, and the origin may sit on the heading's line or the next; a fenced
+span is an example of the element and never the body's own.
+
+A body that carries the heading and misses the origin is classified by phrase
+like any pre-element body -- moving it would reclassify every pre-element body
+that carries the heading -- but the row prints `malformed-element:` and the
+line, so the close-out can tell *never wrote it* from *wrote it and missed*.
 
 The judgment half stays with the close-out session: every row prints the
 phrase it matched, so a classification can be checked and overridden by
 reading, and an ambiguous row is never counted as any class.
 
-Two tiers of phrase decide. A STRONG phrase is a verb of provenance -- who
-found or filed the thing -- and counts anywhere in the body. A WEAK phrase
-only names a mechanism, the judge, the cold seat, and counts only inside the
-body's own provenance section, because a filing that discusses a mechanism
-is about it, not from it. A body with no provenance section and no strong
-phrase is unstated, whatever it discusses.
+Where no origin is stated, two tiers of phrase decide. A STRONG phrase is a
+verb of provenance -- who found or filed the thing -- and counts anywhere in
+the body. A WEAK phrase only names a mechanism, the judge, the cold seat, and
+counts only inside the body's own provenance section, because a filing that
+discusses a mechanism is about it, not from it. A body with no provenance
+section and no strong phrase is unstated, whatever it discusses.
+
+The tiers stay because every body in the baseline window predates the element:
+dropping them would classify the whole baseline `unstated` and empty the
+comparison this script exists to make. No phrase pattern is written for the two
+newer origins, so a body without the element can never be classified into
+either -- they did not exist to be stated.
 
 Reads through the GitHub CLI, or from a JSON file for tests and offline runs.
 Output is ASCII; the stream setup is the shipped shim's.
@@ -51,17 +72,69 @@ from winio import utf8_stdio  # noqa: E402
 TRIAL_OPENED = "2026-09-04T22:34:00Z"
 BASELINE_WEEKS = 3
 
-# Two tiers. STRONG phrases state provenance wherever they appear -- a verb
-# that says who found or filed the thing. WEAK phrases name the mechanism and
+# The closed list of origins `skills/filing/SKILL.md` states, and the classes a
+# row may take. The origins are the first five: `ambiguous` and `unstated` are
+# what the classifier says about a body, never what a body says about itself.
+ORIGINS = ("use", "review", "owner", "session", "instrument")
+CLASSES = ORIGINS + ("ambiguous", "unstated")
+
+# The element itself. The heading, then the origin as the first word after it.
+# `.` as well as `:` on the heading, because bodies here already write both, and
+# a classifier that refused one would report the filer's punctuation as a
+# missing origin. A leading list marker and an origin on the *following* line
+# are accepted too: the rule says "one line under the heading", which is the
+# ordinary markdown reading of a heading with its content beneath, and a filer
+# who takes it produced `unstated` -- the one class the element exists to end.
+# A blockquote marker is deliberately not accepted, because `>` is how a quoted
+# example is written and accepting it would widen the fenced-example hole below.
+# The key ends at a delimiter rather than at a word boundary: `\b` let the legacy
+# phrase `owner-directed` in as the structured `owner` key, because a hyphen is a
+# boundary -- counting a pre-element body as one that carries the element.
+STATED_PATTERN = re.compile(
+    r"^[ \t]*(?:[-*+][ \t]+)?\*\*Provenance[:.]?\*\*[ \t:.\u2014\u2013-]*"
+    r"(?:\r?\n[ \t]*)?[`*_]*(" + "|".join(ORIGINS) + r")(?![\w-])",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# The same heading with no origin behind it -- a filer who wrote the element and
+# missed its first word. Reported rather than classified: see `classify`.
+HEADING_PATTERN = re.compile(
+    r"^[ \t]*(?:[-*+][ \t]+)?\*\*Provenance[:.]?\*\*.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# A fenced span is an example of the element, never the body's own. Blanked to
+# newlines rather than removed, so every offset and line anchor outside it holds.
+FENCE_PATTERN = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+
+
+def _ascii(text: str) -> str:
+    """One line, ASCII. The pattern accepts an em or en dash before the key and
+    `--rows` prints what it matched, so retaining the raw span would put
+    non-ASCII in output this module promises is ASCII."""
+    for dash in (chr(0x2014), chr(0x2013)):
+        text = text.replace(dash, "--")
+    return " ".join(text.split())
+
+
+def outside_fences(body: str) -> str:
+    """`body` with every fenced span blanked, line structure preserved."""
+    return FENCE_PATTERN.sub(lambda m: "\n" * m.group(0).count("\n"), body)
+
+# Two tiers, the fallback for bodies filed before the element existed. STRONG
+# phrases state provenance wherever they appear -- a verb that says who found
+# or filed the thing. WEAK phrases name the mechanism and
 # only count inside a body's own provenance section, because a body that
 # *discusses* the judge or the cold seat is about them, not from them.
+# STRONG holds verbs of provenance only. A mechanism noun never belongs here:
+# the review of PR #451 found `A/B run` and `design sitting` in this tier and
+# showed them classifying a negative A/B result the owner directed as use-found.
 STRONG_PATTERNS: dict[str, re.Pattern[str]] = {
     "use": re.compile(
         r"(?:cold |a |the )?consumer (?:hit|met|broke on|reached|read past)"
         r"|experience session(?:s)? (?:met|found|hit|reported|disputed|ran into)"
         r"|filed from (?:PR )?#?\d+'?s? .{0,30}experience session"
-        r"|found by (?:a |the |two )?(?:cold |dispatched )?(?:consumer|seat|recipient)s?"
-        r"|A/B run",
+        r"|found by (?:a |the |two )?(?:cold |dispatched )?(?:consumer|seat|recipient)s?",
         re.IGNORECASE,
     ),
     "review": re.compile(
@@ -72,14 +145,14 @@ STRONG_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "owner": re.compile(
         r"owner-directed|owner-stated|owner-affirmed|the owner (?:asked for|directed|requested)"
-        r"|filed at the owner's (?:direction|request)|design sitting",
+        r"|filed at the owner's (?:direction|request)|on the owner's (?:specific )?(?:instruction|direction|request)",
         re.IGNORECASE,
     ),
 }
 
 WEAK_PATTERNS: dict[str, re.Pattern[str]] = {
     "use": re.compile(
-        r"experience session|cold consumer|cold seat|cold-seat|cold check|dispatched (?:seat|recipient)",
+        r"experience session|cold consumer|cold seat|cold-seat|cold check|dispatched (?:seat|recipient)|A/B run",
         re.IGNORECASE,
     ),
     "review": re.compile(
@@ -87,17 +160,21 @@ WEAK_PATTERNS: dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
     "owner": re.compile(
-        r"the owner (?:asked|ruled|named)|owner's own|at the owner's",
+        r"the owner (?:asked|ruled|named)|owner's own|at the owner's|design sitting",
         re.IGNORECASE,
     ),
 }
 
-# Where a body states its provenance, in the forms this repository's filings use.
-PROVENANCE_HEADINGS = (
-    re.compile(r"^\s*\*\*Warrant:?\*\*.*$", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"^## Why it will get picked up\s*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL),
-    re.compile(r"^\s*\*\*Provenance:?\*\*.*$", re.IGNORECASE | re.MULTILINE),
-)
+# Where a body states its provenance, in the forms this repository's filings
+# use. Headings are matched by name and their section runs to the next `## `
+# heading; inline lead-ins are one line each. The census in PR #451's review:
+# `## Why it will get picked up` 198 bodies, `**Warrant:**` 34, `## Provenance`
+# 13, `## Why this will get picked up` 9, `**Provenance:**` 3, plus the two
+# `might` variants.
+PROVENANCE_SECTION_HEADING = re.compile(
+    r"^(?:provenance|why (?:it|this) (?:will|might) get picked up\b.*)$", re.IGNORECASE)
+PROVENANCE_INLINE = re.compile(r"^\s*\*\*(?:Warrant|Provenance):?\*\*.*$", re.IGNORECASE | re.MULTILINE)
+HEADING_LINE = re.compile(r"^## +(.*?)\s*$", re.MULTILINE)
 
 
 class IntakeError(Exception):
@@ -115,15 +192,23 @@ def gh(args: list[str]) -> str:
 
 
 def parse_when(text: str) -> datetime:
-    return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    """An ISO 8601 instant. The tool is UTC throughout, so a value with no
+    offset is read as UTC -- never as the machine's zone, which shifted the
+    trial window by the machine's offset in PR #451's review."""
+    when = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc)
 
 
 def provenance_text(body: str) -> str:
     """The part of a body that states where the filing came from, or '' if none is marked."""
-    pieces: list[str] = []
-    for pattern in PROVENANCE_HEADINGS:
-        for match in pattern.finditer(body):
-            pieces.append(match.group(1) if match.lastindex else match.group(0))
+    pieces: list[str] = [m.group(0) for m in PROVENANCE_INLINE.finditer(body)]
+    headings = list(HEADING_LINE.finditer(body))
+    for i, match in enumerate(headings):
+        if PROVENANCE_SECTION_HEADING.match(match.group(1)):
+            end = headings[i + 1].start() if i + 1 < len(headings) else len(body)
+            pieces.append(body[match.end():end])
     return "\n".join(pieces)
 
 
@@ -147,20 +232,65 @@ def _verdict(hits: dict[str, list[str]], basis: str) -> tuple[str, list[str], st
     return name, phrases, basis
 
 
+def stated_origins(body: str) -> dict[str, list[str]]:
+    """Every origin the body states outright, as {origin: [the lines that state it]}.
+
+    Empty for a body filed before the element existed, which is what sends the
+    classification down to the phrase tiers. Fenced spans do not count: a filing
+    *about* the origin list carries an example of the element, and reading that
+    as the body's own origin fabricates one on the `stated` basis -- the one
+    basis this tool tells the close-out nothing can move.
+    """
+    hits: dict[str, list[str]] = {}
+    for match in STATED_PATTERN.finditer(outside_fences(body)):
+        hits.setdefault(match.group(1).lower(), []).append(_ascii(match.group(0)))
+    return hits
+
+
+def malformed_elements(body: str) -> list[str]:
+    """Provenance headings outside fences that carry no origin from the list.
+
+    A body that carries the element and misses its first word classifies by
+    phrase exactly like a body that never carried one, so the close-out cannot
+    separate *never wrote it* from *wrote it and missed* -- and the element's
+    adoption rate is the thing it exists to make readable. These lines are
+    reported in the phrase column; they never change the class or the basis,
+    which is what keeps every pre-element body classifying as it did.
+    """
+    scope = outside_fences(body)
+    stated = {match.start() for match in STATED_PATTERN.finditer(scope)}
+    return [_ascii(m.group(0)) for m in HEADING_PATTERN.finditer(scope)
+            if m.start() not in stated]
+
+
 def classify(body: str) -> tuple[str, list[str], str]:
     """Return (class, phrases matched, basis) for one body.
 
-    basis is 'provenance' when the classification came from the body's own
-    provenance section, where both tiers count, and 'body' when no such
-    section exists and only a STRONG phrase anywhere in the text may decide.
+    basis is 'stated' when the body carries the provenance element and named
+    its own origin, which nothing else in the body can override; 'provenance'
+    when no origin was stated and the classification came from the body's own
+    provenance section, where both tiers count; and 'body' when there is no
+    such section either and only a STRONG phrase anywhere in the text decides.
     """
     body = body or ""
+    stated = stated_origins(body)
+    if stated:
+        return _verdict(stated, "stated")
     section = provenance_text(body)
     if section.strip():
         hits = _hits(section, [STRONG_PATTERNS, WEAK_PATTERNS])
         if hits:
-            return _verdict(hits, "provenance")
-    return classify_whole(body)
+            return _flagged(_verdict(hits, "provenance"), body)
+    return _flagged(classify_whole(body), body)
+
+
+def _flagged(verdict: tuple[str, list[str], str], body: str) -> tuple[str, list[str], str]:
+    """Prepend any malformed element to the phrases, leaving class and basis."""
+    bad = malformed_elements(body)
+    if not bad:
+        return verdict
+    name, phrases, basis = verdict
+    return name, [f"malformed-element: {line}" for line in bad] + phrases, basis
 
 
 def classify_whole(body: str) -> tuple[str, list[str], str]:
@@ -168,13 +298,32 @@ def classify_whole(body: str) -> tuple[str, list[str], str]:
     return _verdict(_hits(body or "", [STRONG_PATTERNS]), "body")
 
 
+FETCH_LIMIT = 1000  # GitHub's search cap; gh returns exactly this many, silently, when it binds
+
+
 def fetch_issues(repo: str | None, since: datetime) -> list[dict]:
-    args = ["issue", "list", "--state", "all", "--limit", "1000",
+    args = ["issue", "list", "--state", "all", "--limit", str(FETCH_LIMIT),
             "--search", f"created:>={since.date().isoformat()}",
             "--json", "number,title,createdAt,state,body"]
     if repo:
         args[2:2] = ["--repo", repo]
-    return json.loads(gh(args))
+    issues = dedupe(json.loads(gh(args)))
+    if len(issues) >= FETCH_LIMIT:
+        print(f"trial_intake: the search returned {FETCH_LIMIT} rows, which is GitHub's cap; "
+              f"the baseline may be truncated -- narrow --baseline-weeks or pin a corpus", file=sys.stderr)
+    return issues
+
+
+def dedupe(issues: list[dict]) -> list[dict]:
+    """Paginated search has returned the same issue twice; a count is the only product here."""
+    seen: set[int] = set()
+    out = []
+    for issue in issues:
+        if issue["number"] in seen:
+            continue
+        seen.add(issue["number"])
+        out.append(issue)
+    return out
 
 
 def load_issues(path: Path) -> list[dict]:
@@ -197,25 +346,38 @@ def window_rows(issues: list[dict], start: datetime, end: datetime) -> list[dict
     return rows
 
 
-def summarize(rows: list[dict], start: datetime, end: datetime) -> dict:
+def summarize(rows: list[dict], start: datetime, end: datetime, *, clamped_from: datetime | None = None) -> dict:
     days = max((end - start).total_seconds() / 86400.0, 1e-9)
-    counts = {name: 0 for name in ("use", "review", "owner", "ambiguous", "unstated")}
+    counts = {name: 0 for name in CLASSES}
     for row in rows:
         counts[row["class"]] += 1
     return {
         "start": start.isoformat(), "end": end.isoformat(), "days": round(days, 2),
+        "clamped_from": clamped_from.isoformat() if clamped_from else None,
         "total": len(rows), "counts": counts,
         "per_day": {name: round(n / days, 3) for name, n in counts.items()},
     }
 
 
+def earliest_created(issues: list[dict]) -> datetime | None:
+    whens = [parse_when(i["createdAt"]) for i in issues if i.get("createdAt")]
+    return min(whens) if whens else None
+
+
 def render(name: str, summary: dict, rows: list[dict], *, verbose: bool, only: str | None = None) -> str:
-    out = [f"== {name}: {summary['start'][:10]} to {summary['end'][:10]} "
+    # The full instants, not dates: a window that prints as a date hides an
+    # end that defaulted to now, which is what made two runs of one pinned
+    # corpus disagree in the experience session on the fix batch.
+    out = [f"== {name}: {summary['start']} to {summary['end']} "
            f"({summary['days']} days, {summary['total']} issues)"]
+    if summary.get("clamped_from"):
+        out.append(f"  (window start clamped to the earliest issue in the corpus; "
+                   f"it would have begun {summary['clamped_from']})")
     out.append("  class      count  per day")
-    for cls in ("use", "review", "owner", "ambiguous", "unstated"):
+    for cls in CLASSES:
         out.append(f"  {cls:<10} {summary['counts'][cls]:>5}  {summary['per_day'][cls]:>7.3f}")
     if verbose:
+        out.append("  " + BASIS_NOTE)
         out.append("  issue  class      basis       phrase(s) matched")
         for row in rows:
             if only and row["class"] != only:
@@ -228,17 +390,21 @@ def render(name: str, summary: dict, rows: list[dict], *, verbose: bool, only: s
 def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(
-        description="Classify the intake by stated provenance for the review trial's close-out.")
+        description="Classify the intake by stated provenance for the review trial's close-out.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Instants without an offset are read as UTC.\n" + CAVEAT + "\n" + BASIS_NOTE)
     parser.add_argument("--repo", metavar="OWNER/REPO", help="repository to read; inferred from the checkout")
     parser.add_argument("--from-file", metavar="PATH", type=Path,
-                        help="read issues from a JSON dump (gh issue list --json number,title,createdAt,state,body) instead of the CLI")
+                        help="read issues from a corpus file written by --dump instead of the CLI")
+    parser.add_argument("--dump", metavar="PATH", type=Path,
+                        help="fetch the issues and write them as a corpus file for --from-file, then classify as usual")
     parser.add_argument("--opened", metavar="ISO8601", default=TRIAL_OPENED,
                         help=f"instant the trial opened (default {TRIAL_OPENED})")
     parser.add_argument("--until", metavar="ISO8601", help="end of the trial window (default: now)")
     parser.add_argument("--baseline-weeks", type=int, default=BASELINE_WEEKS,
                         help=f"weeks before --opened that form the baseline (default {BASELINE_WEEKS})")
     parser.add_argument("--rows", action="store_true", help="print every issue with the phrase it matched")
-    parser.add_argument("--only", metavar="CLASS", choices=["use", "review", "owner", "ambiguous", "unstated"],
+    parser.add_argument("--only", metavar="CLASS", choices=list(CLASSES),
                         help="with --rows, print only rows of this class; the counts still cover every row")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     args = parser.parse_args(argv)
@@ -252,6 +418,19 @@ def main(argv: list[str] | None = None) -> int:
     except IntakeError as exc:
         print(f"trial_intake: {exc}", file=sys.stderr)
         return 2
+    if not isinstance(issues, list) or (issues and not isinstance(issues[0], dict) or issues and "body" not in issues[0]):
+        print("trial_intake: --from-file wants a corpus written by --dump (a list of issues with bodies); "
+              "a --json report cannot be read back", file=sys.stderr)
+        return 2
+    if args.dump:
+        args.dump.write_bytes(json.dumps(issues, indent=1).encode("ascii"))
+
+    # A baseline that begins before the repository's first issue counts days
+    # with nothing to file in; clamp to the earliest issue and say so.
+    first = earliest_created(issues)
+    clamped_from = None
+    if first is not None and first > baseline_start:
+        clamped_from, baseline_start = baseline_start, first
 
     windows = {
         "baseline": (baseline_start, opened),
@@ -260,7 +439,9 @@ def main(argv: list[str] | None = None) -> int:
     result = {}
     for name, (start, end) in windows.items():
         rows = window_rows(issues, start, end)
-        result[name] = {"summary": summarize(rows, start, end), "rows": rows}
+        result[name] = {"summary": summarize(rows, start, end,
+                                             clamped_from=clamped_from if name == "baseline" else None),
+                        "rows": rows}
 
     if args.json:
         print(json.dumps(result, indent=2))
@@ -272,7 +453,18 @@ def main(argv: list[str] | None = None) -> int:
     unstated = sum(result[n]["summary"]["counts"]["unstated"] for n in result)
     print(f"{ambiguous} ambiguous and {unstated} unstated rows need a reader; "
           f"run with --rows to see the phrases each row matched.")
+    print(CAVEAT)
     return 0
+
+
+CAVEAT = ("Classification reads issue bodies as they are now, and bodies get edited, so the same window "
+          "gives different counts on different days. To compare runs, pin both the corpus and the window: "
+          "--dump corpus.json once, then --from-file corpus.json --until <instant> every time. "
+          "(--json emits this report, not a corpus; it cannot be read back.)")
+
+BASIS_NOTE = ("basis: 'provenance' means the class came from the body's own provenance section, where "
+              "mechanism words count too; 'body' means no such section was found and only a verb of "
+              "provenance anywhere in the text decided.")
 
 
 if __name__ == "__main__":

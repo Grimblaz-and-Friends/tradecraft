@@ -60,6 +60,32 @@ def test_the_body_carries_the_measurement_and_the_command_that_derives_it():
     assert "cells_over_ceiling" in body, "no command a reader can re-derive it with"
 
 
+def test_the_body_states_its_own_provenance_as_the_filing_cell_requires():
+    """This repository's own filer obeys the element it ships.
+
+    The rule is one line under `**Provenance:**` whose first word is an origin
+    from the closed list. A script raising an item is `instrument`, and the
+    check is the classifier that reads the element rather than a substring:
+    a body that merely mentions the word would pass the second and fail the
+    consumer that matters.
+    """
+    import trial_intake as ti
+
+    body = cf.body_for("skills/filing/SKILL.md", 24_158, 23_237)
+    cls, _, basis = ti.classify(body)
+    assert (cls, basis) == ("instrument", "stated"), (cls, basis)
+
+    # The rule has a siting half as well as an origin half, and only the origin
+    # half was checked here -- so the criterion claimed the filer obeyed a rule
+    # of which one half was untested. The element goes with the evidence, which
+    # in this body is the measurement under `## The observation`.
+    observation = body.index("## The observation")
+    rationale = body.index("## What it is evidence of")
+    element = body.index("**Provenance:**")
+    assert observation < element < rationale, (
+        "the element is sited outside the section carrying the measurement")
+
+
 def test_the_body_never_tells_a_reader_to_cut():
     """The owner's red line, made executable.
 

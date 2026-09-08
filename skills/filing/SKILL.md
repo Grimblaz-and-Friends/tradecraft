@@ -124,7 +124,7 @@ python scripts/pool.py unframe 123                         # the brief sent it b
 
 ## Creation carries the want; pickup does the work
 
-**Carried at creation:** the want or defect in plain terms; the evidence that makes it real; the two ratings above; why it will get picked up; the ties above; what discovery must settle, named as deliberately deferred; and, where the subject is governing prose, the incident or the run below.
+**Carried at creation:** the want or defect in plain terms; the evidence that makes it real; the two ratings above; why it will get picked up; the ties above; who found it, in the line below; what discovery must settle, named as deliberately deferred; and, where the subject is governing prose, the incident or the run below.
 
 **Left for pickup:** the design framing, the options and their argument, the remedy design, the pre-implementation artifact. Filing is not convergence.
 
@@ -140,4 +140,4 @@ python scripts/pool.py unframe 123                         # the brief sent it b
 
 **The floor:** carry enough evidence that a session picking the work up can confirm the problem is real without redoing the discovery that found it.
 
-**A filing does not announce that it is minimal.** Provenance is different and belongs: who directed the work, or which review sustained it, is a fact the picker-up uses.
+**A filing does not announce that it is minimal.** Provenance is different and belongs, and it is carried as an element rather than left to the prose: **one line under the heading `**Provenance:**`, whose first word after that heading is one origin from a closed list** — `review` for a review seat, a defense, a terminal stage or judge, or an external reviewer; `use` for an experience session, a cold seat or consumer, a dispatched recipient, or an A/B run **outside a review**; `owner` for work the owner directed or that came out of a sitting with them; `session` for something a session noticed while doing other work; `instrument` for what a script or a guard raised. After that word the line says whatever the picker-up will use — which review, which run, which date. **The list is closed because the point is a key rather than a description.** Where none of the five fits, the line names the nearest and says why in the same line. **It goes with the evidence**, the tie block above staying the body's first element.
