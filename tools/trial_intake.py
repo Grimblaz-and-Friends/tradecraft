@@ -25,7 +25,14 @@ A body carrying the element `skills/filing/SKILL.md` requires -- one line under
 `**Provenance:**` whose first word is one of the five origins -- is classified
 on that word alone, and the row's basis reads `stated`. Nothing else in the
 body can move it, which is the point: the origin is a key, not a phrase to be
-inferred from the prose around it.
+inferred from the prose around it. The heading may open its line or follow a
+list marker, and the origin may sit on the heading's line or the next; a fenced
+span is an example of the element and never the body's own.
+
+A body that carries the heading and misses the origin is classified by phrase
+like any pre-element body -- moving it would reclassify every pre-element body
+that carries the heading -- but the row prints `malformed-element:` and the
+line, so the close-out can tell *never wrote it* from *wrote it and missed*.
 
 The judgment half stays with the close-out session: every row prints the
 phrase it matched, so a classification can be checked and overridden by
@@ -74,11 +81,33 @@ CLASSES = ORIGINS + ("ambiguous", "unstated")
 # The element itself. The heading, then the origin as the first word after it.
 # `.` as well as `:` on the heading, because bodies here already write both, and
 # a classifier that refused one would report the filer's punctuation as a
-# missing origin.
+# missing origin. A leading list marker and an origin on the *following* line
+# are accepted too: the rule says "one line under the heading", which is the
+# ordinary markdown reading of a heading with its content beneath, and a filer
+# who takes it produced `unstated` -- the one class the element exists to end.
+# A blockquote marker is deliberately not accepted, because `>` is how a quoted
+# example is written and accepting it would widen the fenced-example hole below.
 STATED_PATTERN = re.compile(
-    r"^[ \t]*\*\*Provenance[:.]?\*\*[ \t:.\u2014\u2013-]*[`*_]*(" + "|".join(ORIGINS) + r")\b",
+    r"^[ \t]*(?:[-*+][ \t]+)?\*\*Provenance[:.]?\*\*[ \t:.\u2014\u2013-]*"
+    r"(?:\r?\n[ \t]*)?[`*_]*(" + "|".join(ORIGINS) + r")\b",
     re.IGNORECASE | re.MULTILINE,
 )
+
+# The same heading with no origin behind it -- a filer who wrote the element and
+# missed its first word. Reported rather than classified: see `classify`.
+HEADING_PATTERN = re.compile(
+    r"^[ \t]*(?:[-*+][ \t]+)?\*\*Provenance[:.]?\*\*.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# A fenced span is an example of the element, never the body's own. Blanked to
+# newlines rather than removed, so every offset and line anchor outside it holds.
+FENCE_PATTERN = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+
+
+def outside_fences(body: str) -> str:
+    """`body` with every fenced span blanked, line structure preserved."""
+    return FENCE_PATTERN.sub(lambda m: "\n" * m.group(0).count("\n"), body)
 
 # Two tiers, the fallback for bodies filed before the element existed. STRONG
 # phrases state provenance wherever they appear -- a verb that says who found
@@ -181,12 +210,31 @@ def stated_origins(body: str) -> dict[str, list[str]]:
     """Every origin the body states outright, as {origin: [the lines that state it]}.
 
     Empty for a body filed before the element existed, which is what sends the
-    classification down to the phrase tiers.
+    classification down to the phrase tiers. Fenced spans do not count: a filing
+    *about* the origin list carries an example of the element, and reading that
+    as the body's own origin fabricates one on the `stated` basis -- the one
+    basis this tool tells the close-out nothing can move.
     """
     hits: dict[str, list[str]] = {}
-    for match in STATED_PATTERN.finditer(body):
-        hits.setdefault(match.group(1).lower(), []).append(match.group(0).strip())
+    for match in STATED_PATTERN.finditer(outside_fences(body)):
+        hits.setdefault(match.group(1).lower(), []).append(" ".join(match.group(0).split()))
     return hits
+
+
+def malformed_elements(body: str) -> list[str]:
+    """Provenance headings outside fences that carry no origin from the list.
+
+    A body that carries the element and misses its first word classifies by
+    phrase exactly like a body that never carried one, so the close-out cannot
+    separate *never wrote it* from *wrote it and missed* -- and the element's
+    adoption rate is the thing it exists to make readable. These lines are
+    reported in the phrase column; they never change the class or the basis,
+    which is what keeps every pre-element body classifying as it did.
+    """
+    scope = outside_fences(body)
+    stated = {match.start() for match in STATED_PATTERN.finditer(scope)}
+    return [" ".join(m.group(0).split()) for m in HEADING_PATTERN.finditer(scope)
+            if m.start() not in stated]
 
 
 def classify(body: str) -> tuple[str, list[str], str]:
@@ -206,8 +254,17 @@ def classify(body: str) -> tuple[str, list[str], str]:
     if section.strip():
         hits = _hits(section, [STRONG_PATTERNS, WEAK_PATTERNS])
         if hits:
-            return _verdict(hits, "provenance")
-    return classify_whole(body)
+            return _flagged(_verdict(hits, "provenance"), body)
+    return _flagged(classify_whole(body), body)
+
+
+def _flagged(verdict: tuple[str, list[str], str], body: str) -> tuple[str, list[str], str]:
+    """Prepend any malformed element to the phrases, leaving class and basis."""
+    bad = malformed_elements(body)
+    if not bad:
+        return verdict
+    name, phrases, basis = verdict
+    return name, [f"malformed-element: {line}" for line in bad] + phrases, basis
 
 
 def classify_whole(body: str) -> tuple[str, list[str], str]:

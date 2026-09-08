@@ -75,6 +75,16 @@ def test_the_body_states_its_own_provenance_as_the_filing_cell_requires():
     cls, _, basis = ti.classify(body)
     assert (cls, basis) == ("instrument", "stated"), (cls, basis)
 
+    # The rule has a siting half as well as an origin half, and only the origin
+    # half was checked here -- so the criterion claimed the filer obeyed a rule
+    # of which one half was untested. The element goes with the evidence, which
+    # in this body is the measurement under `## The observation`.
+    observation = body.index("## The observation")
+    rationale = body.index("## What it is evidence of")
+    element = body.index("**Provenance:**")
+    assert observation < element < rationale, (
+        "the element is sited outside the section carrying the measurement")
+
 
 def test_the_body_never_tells_a_reader_to_cut():
     """The owner's red line, made executable.
