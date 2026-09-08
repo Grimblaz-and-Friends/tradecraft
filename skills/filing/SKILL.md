@@ -98,7 +98,7 @@ Where the search turned up nothing that earns a tie, the block says so **as a fa
 
 `scripts/pool.py` does the mechanics, and the judgment -- what a rating should be, what the case against a candidate is -- stays the session's:
 
-**In this order.** A consumer setting the pool up read this block top to bottom and it failed on the third line, `shortlist` being gated on work the two lines below it do. Add `--repo OWNER/REPO` to any of them when you are not inside the repository's own checkout. **Every path here is relative to this cell's own directory** — `scripts/pool.py` sits beside this file — so a session sent here by another cell, running from somewhere else, prefixes the path to this cell. One did not, and searched the tree for it.
+**In this order.** A consumer setting the pool up read this block top to bottom and it failed on the third line, `shortlist` being gated on work the two lines above it do. Add `--repo OWNER/REPO` to any of them when you are not inside the repository's own checkout. **Every path here is relative to this cell's own directory** — `scripts/pool.py` sits beside this file — so a session sent here by another cell, running from somewhere else, prefixes the path to this cell. One did not, and searched the tree for it.
 
 ```bash
 python scripts/pool.py labels                              # so the policy's labels exist -- again after an upgrade adds one
