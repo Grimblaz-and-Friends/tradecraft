@@ -87,9 +87,12 @@ CLASSES = ORIGINS + ("ambiguous", "unstated")
 # who takes it produced `unstated` -- the one class the element exists to end.
 # A blockquote marker is deliberately not accepted, because `>` is how a quoted
 # example is written and accepting it would widen the fenced-example hole below.
+# The key ends at a delimiter rather than at a word boundary: `\b` let the legacy
+# phrase `owner-directed` in as the structured `owner` key, because a hyphen is a
+# boundary -- counting a pre-element body as one that carries the element.
 STATED_PATTERN = re.compile(
     r"^[ \t]*(?:[-*+][ \t]+)?\*\*Provenance[:.]?\*\*[ \t:.\u2014\u2013-]*"
-    r"(?:\r?\n[ \t]*)?[`*_]*(" + "|".join(ORIGINS) + r")\b",
+    r"(?:\r?\n[ \t]*)?[`*_]*(" + "|".join(ORIGINS) + r")(?![\w-])",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -103,6 +106,15 @@ HEADING_PATTERN = re.compile(
 # A fenced span is an example of the element, never the body's own. Blanked to
 # newlines rather than removed, so every offset and line anchor outside it holds.
 FENCE_PATTERN = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+
+
+def _ascii(text: str) -> str:
+    """One line, ASCII. The pattern accepts an em or en dash before the key and
+    `--rows` prints what it matched, so retaining the raw span would put
+    non-ASCII in output this module promises is ASCII."""
+    for dash in (chr(0x2014), chr(0x2013)):
+        text = text.replace(dash, "--")
+    return " ".join(text.split())
 
 
 def outside_fences(body: str) -> str:
@@ -217,7 +229,7 @@ def stated_origins(body: str) -> dict[str, list[str]]:
     """
     hits: dict[str, list[str]] = {}
     for match in STATED_PATTERN.finditer(outside_fences(body)):
-        hits.setdefault(match.group(1).lower(), []).append(" ".join(match.group(0).split()))
+        hits.setdefault(match.group(1).lower(), []).append(_ascii(match.group(0)))
     return hits
 
 
@@ -233,7 +245,7 @@ def malformed_elements(body: str) -> list[str]:
     """
     scope = outside_fences(body)
     stated = {match.start() for match in STATED_PATTERN.finditer(scope)}
-    return [" ".join(m.group(0).split()) for m in HEADING_PATTERN.finditer(scope)
+    return [_ascii(m.group(0)) for m in HEADING_PATTERN.finditer(scope)
             if m.start() not in stated]
 
 

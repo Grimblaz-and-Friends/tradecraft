@@ -344,6 +344,41 @@ def test_a_body_with_no_heading_at_all_is_never_reported_as_malformed():
     assert phrases == []
 
 
+# --- the key ends at a delimiter, not at a word boundary --------------------
+
+def test_a_legacy_phrase_is_not_read_as_the_structured_key():
+    """`\\b` let `owner-directed` in as the `owner` key, because a hyphen is a
+    word boundary -- so a body carrying the old phrase counted as one carrying
+    the element, and the adoption figure the close-out reads was inflated by
+    every one of them. It classifies by phrase, as a pre-element body does."""
+    cls, phrases, basis = ti.classify("**Provenance:** owner-directed, he asked for it.")
+    assert basis != "stated", (cls, basis, phrases)
+    assert any(p.startswith("malformed-element: ") for p in phrases)
+
+
+@pytest.mark.parametrize("suffix", ["-directed", "-stated", "-affirmed"])
+def test_no_hyphenated_legacy_form_reaches_the_stated_basis(suffix):
+    assert ti.classify(f"**Provenance:** owner{suffix} on 2026-09-05.")[2] != "stated"
+
+
+# --- the output this module promises is ASCII stays ASCII -------------------
+
+def test_a_unicode_dash_before_the_key_does_not_reach_the_output():
+    """The pattern accepts an em or en dash before the origin and `--rows`
+    prints what it matched, so retaining the raw span put non-ASCII into output
+    the module's own docstring promises is ASCII."""
+    for dash in (chr(0x2014), chr(0x2013)):
+        cls, phrases, basis = ti.classify(f"**Provenance:** {dash} owner asked for it.")
+        assert (cls, basis) == ("owner", "stated"), (dash, cls, basis)
+        assert all(p.isascii() for p in phrases), (dash, phrases)
+
+
+def test_a_unicode_dash_in_a_malformed_element_does_not_reach_the_output():
+    _, phrases, _ = ti.classify(
+        f"**Provenance:** {chr(0x2014)} the review of PR #451 sustained it.")
+    assert phrases and all(p.isascii() for p in phrases), phrases
+
+
 def _issue(number: int, created: str, body: str) -> dict:
     return {"number": number, "title": f"t{number}", "createdAt": created, "state": "OPEN", "body": body}
 
