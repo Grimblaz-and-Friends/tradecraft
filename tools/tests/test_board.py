@@ -773,6 +773,35 @@ def test_sync_dry_run_shows_the_archive_list_before_it_refuses(monkeypatch, caps
     assert "framed: 0" in out
 
 
+def test_sync_names_the_crossing_check_a_refresher_runs_next(monkeypatch, capsys):
+    """The refresh's next obliged step, with a path the prose cannot give it.
+
+    The `board` cell obliges a crossing check and names no invocation, because
+    `sideways-dep` refuses a cell naming another cell's files by rooted path.
+    The `filing` cell's own spelling is relative to itself -- right for an
+    adopter who installed that cell, and resolving to nothing from this
+    repository's root, which is where a session sent here by the board cell is
+    standing. A consumer performing a refresh searched the tree for it.
+    """
+    monkeypatch.setattr(q.Board, "members", lambda self: [1, 2, 3])
+    board = board_without_network()
+    monkeypatch.setattr(q, "Board", lambda: board)
+    monkeypatch.setattr(q, "framed_issues", lambda: {})
+    assert q.cmd_sync(dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "next in the refresh: python skills/filing/scripts/pool.py pushed" in out, out
+
+
+def test_the_invocation_it_prints_resolves_to_a_file():
+    """Derived from the path the module already resolves, so the two cannot
+    drift -- which is the failure this change kept meeting in prose, four
+    enumerations going stale in one pass with every guard green."""
+    assert q._POOL_PATH.is_file(), q._POOL_PATH
+    root = q.Path(__file__).resolve().parent.parent.parent
+    assert (root / q.POOL_INVOCATION).resolve() == q._POOL_PATH
+    assert chr(92) not in q.POOL_INVOCATION, q.POOL_INVOCATION
+
+
 def test_sync_refuses_to_empty_a_populated_board_on_an_empty_framed_set(monkeypatch, capsys):
     """The unlawful polarity: a setup mistake must not read as a decision.
 
