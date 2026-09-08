@@ -27,7 +27,7 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 
 **A review is one round** — every stage above and the fix batch, once each — and what reads the result after it is use, not a further pass: [a bounded trial, scored](https://github.com/Grimblaz-and-Friends/tradecraft/issues/360) [D-371]. Every stage is held to everything in this file. Each stage's own machinery is one hop away, and the pointer says when to open it — a session on one step of the pipeline has no use for the rest.
 
-- **Staffing a panel, or any review role** → `references/roster.md`: the seats, when a fifth sits, what the width rests on, the cold boundary operationally, and the tier rule.
+- **Staffing a panel, or any review role** → `references/roster.md`: the seats, when a fifth sits, what the width rests on, what a review withholds from a cold seat, and the tier rule.
 - **Building a dispatch** → `references/dispatch.md`: the three parts in order, what a dispatch read cold does not receive, and which roles take no dispatcher's note.
 - **Merging findings, defending, ruling as the terminal stage, or deciding what a finding met outside a review earns** → `references/arbitration.md`: the merge's ownership and the consequence shape it records, the defense's verdicts and the price it states, and the terminal stage's docket, its two clauses with the fix bar among them, and the filings it makes — by cause, and one per finding for a `record` where a pool exists.
 - **A fix batch that has landed, an open pull request an automated reviewer may have posted on, or a review tool you invoked yourself** → `references/after-the-fix.md`: the executable floor the batch owes, the use that reads the result, every external comment's disposition, and the commissioned pass.
