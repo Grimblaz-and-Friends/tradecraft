@@ -71,6 +71,10 @@ from winio import utf8_stdio  # noqa: E402
 # `FileNotFoundError` traceback before argparse ran, `--help` included, where
 # every other failure here is a typed `BoardError` naming what to do.
 _POOL_PATH = Path(__file__).resolve().parent.parent / "skills" / "filing" / "scripts" / "pool.py"
+# The same path as a repository-root-relative string, which is how a session
+# types it. Derived from `_POOL_PATH` rather than written twice, so the two
+# cannot drift -- the failure this whole change kept meeting in prose.
+POOL_INVOCATION = _POOL_PATH.relative_to(_POOL_PATH.parent.parent.parent.parent).as_posix()
 _pool = None
 
 
@@ -942,6 +946,15 @@ def cmd_sync(dry_run: bool, allow_empty: bool = False) -> int:
     print(f"board: {len(members)}   framed: {len(target)}")
     print(f"to add:     {to_add or 'none'}")
     print(f"to archive: {to_archive or 'none'}", flush=True)
+    # The refresh obliges a crossing check next, and the cell cannot give the
+    # path: a cell naming another cell's files by rooted path is refused by
+    # `sideways-dep`, and the `filing` cell's own spelling is relative to
+    # itself, so `python scripts/pool.py` -- correct for an adopter who
+    # installed that cell -- resolves to nothing from this root. A consumer
+    # performing a refresh searched the tree for it. This is the one place the
+    # refresher is certain to be standing beforehand, and the path is already
+    # printed a few functions down for the same reason.
+    print(f"next in the refresh: python {POOL_INVOCATION} pushed")
     if dry_run:
         return 0
     # An empty framed set with a populated board is the shape a setup mistake
