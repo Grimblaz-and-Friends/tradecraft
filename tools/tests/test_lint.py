@@ -43,7 +43,11 @@ def _sync_charter_roster(root: Path) -> None:
         p.name for p in (root / "skills").iterdir()
         if p.is_dir() and (p / "SKILL.md").is_file() and p.name != "charter"
     )
-    lines = [f"- `{name}` cell - you are working the {name} job." for name in names]
+    # The shipped form, names alone: a fixture rendering a load condition
+    # is the shape a session copies when it comes here to add a roster
+    # assertion, and #503 removed that shape from the charter. [#524 review,
+    # M18]
+    lines = [f"- `{name}` cell" for name in names]
     charter.write_text(
         text + NL + lint.CHARTER_ROSTER_HEADING + NL + NL + NL.join(lines) + NL,
         encoding="utf-8")
@@ -681,6 +685,32 @@ def test_the_charter_roster_is_coupled_to_the_shipped_cell_set(tmp_path):
     assert "other-skill" in findings[0], findings[0]
     # The obligation the guard creates is stated where it fires.
     assert lint.ADMISSIONS in findings[0], findings[0]
+
+
+def test_the_charter_named_in_its_own_roster_is_a_finding(tmp_path):
+    """The section says it names every cell but the charter; listing it is false.
+
+    `shipped - listed - {CHARTER_CELL}` subtracts the charter's name before
+    diffing, so the membership arm cannot see that name *present*. The
+    section's completeness sentence is the whole of what the block buys
+    since #503 took the load conditions out, and a one-line edit falsified
+    it with the entire lint green -- probed budget-neutrally, because the
+    always-on surface sits close enough to its ceiling that a naive
+    insertion reds on size rather than on sense. [#524 review, M5]
+    """
+    make_clean_tree(tmp_path)
+    assert [f for f in lint.run(tmp_path) if "charter-roster" in f] == []
+
+    charter = tmp_path / "skills" / "charter" / "SKILL.md"
+    charter.write_text(
+        charter.read_text(encoding="utf-8").rstrip(NL) + NL
+        + f"- `{lint.CHARTER_CELL}` cell" + NL,
+        encoding="utf-8")
+    findings = [f for f in lint.run(tmp_path) if "charter-roster" in f]
+    assert len(findings) == 1, lint.run(tmp_path)
+    assert lint.CHARTER_CELL in findings[0], findings[0]
+    # It names the remedy, not just the breach.
+    assert "Remove the line" in findings[0], findings[0]
 
 
 def test_the_roster_check_is_keyed_to_a_heading_and_says_so_when_it_is_gone(tmp_path):
