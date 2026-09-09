@@ -790,6 +790,9 @@ def test_sync_names_the_crossing_check_a_refresher_runs_next(monkeypatch, capsys
     assert q.cmd_sync(dry_run=True) == 0
     out = capsys.readouterr().out
     assert "next in the refresh: python skills/filing/scripts/pool.py pushed" in out, out
+    # Both, because the refresh obliges both and printing one is what [D-522]'s
+    # review found: a pin naming only `pushed` went green over the gap.
+    assert "python skills/filing/scripts/pool.py cycle" in out, out
 
 
 def test_the_invocation_it_prints_resolves_to_a_file():

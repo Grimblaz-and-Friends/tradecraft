@@ -192,7 +192,23 @@ def _refuse_a_foreign_repo(repo: str | None) -> None:
     """
     if repo is None:
         return
-    here = pool_engine()._infer_repo()
+    # **A checkout with no remote cannot answer, and the answer it used to give
+    # was the flag the caller had just passed.** `_infer_repo` shells `gh repo
+    # view`, which needs a remote, and its refusal ends "Name it with --repo
+    # OWNER/REPO" -- correct where it is raised, and read here as advice to do
+    # the thing that got you here. An experience session met it in an isolated
+    # tree and worked around it with `GH_REPO=`. The guard still refuses, since
+    # with nothing to compare against it cannot tell a foreign repository from
+    # this one, but it now says which of the two failures happened. [D-522]
+    try:
+        here = pool_engine()._infer_repo()
+    except pool_engine().PoolError as exc:
+        raise RotError(
+            f"--repo names {repo}, and this checkout has no remote to check it "
+            f"against, so whether the filings and the tree are the same "
+            f"repository cannot be established: {exc}. Set GH_REPO={repo} so "
+            f"the checkout answers, or add the remote"
+        ) from None
     if repo.strip().lower() != here.strip().lower():
         raise RotError(
             f"--repo names {repo} and this checkout is {here}. The filings come "

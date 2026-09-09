@@ -185,3 +185,22 @@ def test_a_repo_that_is_not_this_checkout_is_refused(monkeypatch):
     rot._refuse_a_foreign_repo("acme/demo")
     rot._refuse_a_foreign_repo("ACME/Demo")
     rot._refuse_a_foreign_repo(None)
+
+
+def test_a_checkout_with_no_remote_says_so_instead_of_advising_the_flag(monkeypatch):
+    """The old refusal ended "Name it with --repo OWNER/REPO" -- which is what
+    the caller had just done. Use met it in an isolated tree. [D-522]"""
+    engine = rot.pool_engine()
+
+    def _no_remote():
+        raise engine.PoolError(
+            "cannot work out which repository this is, so the causation read has "
+            "nowhere to go: no git remotes found. Name it with --repo OWNER/REPO"
+        )
+
+    monkeypatch.setattr(engine, "_infer_repo", _no_remote)
+    with pytest.raises(rot.RotError) as caught:
+        rot._refuse_a_foreign_repo("acme/demo")
+    message = str(caught.value)
+    assert "no remote" in message, message
+    assert "GH_REPO=acme/demo" in message, message
