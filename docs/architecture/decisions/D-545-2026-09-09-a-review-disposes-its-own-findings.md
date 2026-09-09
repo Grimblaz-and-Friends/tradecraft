@@ -1,6 +1,6 @@
-# D-544 — A review disposes of its own findings, and only a decided cause leaves it as a number
+# D-545 — A review disposes of its own findings, and only a decided cause leaves it as a number
 
-**Landed by** [PR #544](https://github.com/Grimblaz-and-Friends/tradecraft/pull/544), closing [#542](https://github.com/Grimblaz-and-Friends/tradecraft/issues/542). Brief affirmed 2026-09-09 at [issue #542 comment](https://github.com/Grimblaz-and-Friends/tradecraft/issues/542#issuecomment-5609820464); artifact at [comment 5609956394](https://github.com/Grimblaz-and-Friends/tradecraft/issues/542#issuecomment-5609956394). Evidence pinned at `69ba49f` unless stated.
+**Landed by** [PR #545](https://github.com/Grimblaz-and-Friends/tradecraft/pull/545), closing [#542](https://github.com/Grimblaz-and-Friends/tradecraft/issues/542). Brief affirmed 2026-09-09 at [issue #542 comment](https://github.com/Grimblaz-and-Friends/tradecraft/issues/542#issuecomment-5609820464); artifact at [comment 5609956394](https://github.com/Grimblaz-and-Friends/tradecraft/issues/542#issuecomment-5609956394). Evidence pinned at `69ba49f` unless stated.
 
 ## What was decided
 
