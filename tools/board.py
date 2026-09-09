@@ -954,7 +954,15 @@ def cmd_sync(dry_run: bool, allow_empty: bool = False) -> int:
     # performing a refresh searched the tree for it. This is the one place the
     # refresher is certain to be standing beforehand, and the path is already
     # printed a few functions down for the same reason.
+    #
+    # **All three the refresh obliges, not just the crossing check.** [D-522]
+    # added the assessment cycle and its answers to the refresh, and the
+    # comment above -- every clause of it -- applies to those as much as to
+    # `pushed`: the cell cannot give their path either. Printing one of three
+    # left the other two with no invocation anywhere a refresher stands.
     print(f"next in the refresh: python {POOL_INVOCATION} pushed")
+    print(f"                     python {POOL_INVOCATION} cycle"
+          f"   (then `assess <N> --none`, or link the symptom under its cause)")
     if dry_run:
         return 0
     # An empty framed set with a populated board is the shape a setup mistake

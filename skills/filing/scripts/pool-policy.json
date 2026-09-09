@@ -1,5 +1,5 @@
 {
-  "_note": "Defaults for the pool. A repository overrides them with a file of this name at its own root; the script reads that one instead and never merges the two, so an override states the whole policy. Every label name, every rating value, the ordering, the shortlist size, and the accrual, fade, assessment and push numbers live here, and the script writes no label this file does not name. A few operational bounds -- how many issues and labels a read may return -- are the script's own.",
+  "_note": "Defaults for the pool. A repository overrides them with a file of this name at its own root; the script reads that one instead and never merges the two, so an override states the whole policy -- which is every field below, since the script defaults none of them and refuses one that is missing by name. There is deliberately no list of those fields here: the last one went stale the first time a field was added, and the file itself is the list. The script writes no label this file does not name. A few operational bounds -- how many issues and labels a read may return -- are the script's own.",
   "axes": {
     "severity": {
       "meaning": "how bad this is if nothing is done, 4 the worst",
@@ -25,6 +25,11 @@
   "order": [
     "severity",
     "urgency"
+  ],
+  "_tie_break": "What orders items the axes above leave equal, most significant first, with the issue number as the last resort once these are exhausted -- so that a few raised out of a tie are a judgment rather than the accident of ascending issue number. The keys are the script's rather than this file's, each one being a computation: `symptoms`, how many open sub-issues are linked under the item, most first; and `recent`, the issue's own updatedAt, most recently touched first, an item with no stamp sorting last on that key because it has no evidence of activity to win a tie on. Both are read where the accrual and the fade are read and neither is ever written back. An empty list is lawful and leaves equals to the issue number, which the shortlist then says it did. A key this script cannot compute is refused rather than ignored. Note that `recent` reads the same signal the fade reads, so anything that touches an issue moves it up -- including this script's own label writes.",
+  "tie_break": [
+    "symptoms",
+    "recent"
   ],
   "framed": {
     "label": "framed",

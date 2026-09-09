@@ -43,6 +43,8 @@ Run a refresh when the board moved — an issue framed or returned to the pool, 
 
 **Run `python tools/pool_rot.py` as part of the refresh**, and put what it names in the note. It is cheap, it is the only thing in this repository that looks at whether a filing's evidence still exists, and a check nothing obliges is a check nobody runs — which is what it was for one revision. It closes nothing and reports two or three rows; reading them is the whole of the obligation.
 
+**Run the `filing` cell's `cycle` command as part of the refresh, and answer the ones it names.** Nothing else runs it. Ask why for each, then link it under its cause or `assess <N> --none`; what an assessment takes is that cell's. **How many it names is its `assessment.per_cycle`, and the shortlist gate those answers clear reads a second key, `assessment.before_shortlist`**, so re-pacing the pool moves both. **The note carries how many were answered, what each answer was, and which were left** — nothing else stores an answer. [D-522]
+
 **Start from what is on the board.** Move what a named board change justifies and leave the rest. This is not a restriction on what you may move; you may move anything you can argue for. It is that rebuilding the order from a blank page re-rolls the bundling judgment — the expensive part, and the part that varies most between sessions — and costs the board roughly an order of magnitude more writes than adjusting what changed.
 
 **A cause and its framed open symptoms are one bundle, and the refresh reads it off the sub-issue links rather than re-deriving it.** A symptom sitting in the pool is not on the board at all, so it is neither ranked nor blocked and never reaches the guard below. Name the bundle for the cause, rank the cause above every symptom, and give each symptom a status that takes it out of contention while the cause is open — `Blocked` ordinarily, and `In flight` for a symptom that has a pull request open against it, whether that fix came out of the cause or not — the reading rule above being unable to see `Bundle` or position. [D-415] [D-429] **`apply` refuses a plan that leaves a symptom in contention, or ranks one above its cause**, so those two are checked rather than remembered and the refusal names the symptom, its cause and what to do; **the bundle name is not checked** and is yours to get right.
@@ -88,7 +90,9 @@ The note is posted as a project status update, dated and kept, and read back wit
 
 - **The deltas** — what moved, what arrived, what closed, each with its one-line reason. Not a restatement of the board. **A refresh that changed nothing says so**, in one line.
 - **The watch-items** — what the board as a whole is trending toward, which no single item shows. Rate of arrival against rate of closure, and any single item whose settling would reshape everything behind it.
+- **The assessments** — the answers the cycle above produced, and which it left.
 - **The drift look**, below.
+- **The reach line** — the charter's row from `python tools/lint.py`'s pointer-reach block, beside the figure the last note to carry one gave and that note's date. It covers the charter and the shipped cells it reaches, so repo-only prose here can grow without moving it. [D-522]
 
 Reasons, not conclusions alone: the note is read cold days later by someone reconstructing why the board looks like this. **A figure in a note carries the command that derives it** — the note is kept and never edited, so a number standing alone cannot be re-checked by the reader who needs it most.
 
