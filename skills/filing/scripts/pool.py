@@ -119,20 +119,32 @@ ISSUE_COL = 8
 # not have is refused by name on load rather than ignored, because ignoring it
 # would leave a repository believing it had set an order it did not get.
 #
-# Each maps an item to a sort term, smaller first. `symptoms` negates the count
-# so more symptoms sorts higher. `recent` negates the stamp so the most
-# recently touched sorts higher, and an item with no stamp takes `inf` -- last
-# on this key rather than first, because an item with no evidence of activity
-# cannot win a tie on activity; it falls through to the next key. That is the
-# one place this differs from `quiet_windows`, which reads a missing stamp as
-# no fade: there the absence withholds a penalty, and here there is no neutral
-# position to withhold into, an ordering having no middle.
+# Each key is a name, a sort term and a way to show its own value. The term is
+# smaller-first: `symptoms` negates the count so more symptoms sorts higher, and
+# `recent` negates the stamp so the most recently touched sorts higher. An item
+# with no stamp takes `inf` -- last on that key rather than first, because an
+# item with no evidence of activity cannot win a tie on activity; it falls
+# through to the next key. That is the one place this differs from
+# `quiet_windows`, which reads a missing stamp as no fade: there the absence
+# withholds a penalty, and here there is no neutral position to withhold into,
+# an ordering having no middle.
+#
+# **The third element is why the shortlist can be argued with.** Naming the key
+# alone says a judgment happened without saying how big it was, and a consumer
+# doing the pull found the two stamps at its cut four seconds apart -- both
+# written by one bulk label pass, which the policy's own note warns this key
+# reads. It had to fetch both issues to learn that. The margin travels with the
+# claim so the reader can weigh it where they read it.
 TIE_BREAKS = {
     "symptoms": ("symptoms under it",
-                 lambda it: -len(it.get("symptoms") or ())),
+                 lambda it: -len(it.get("symptoms") or ()),
+                 lambda it: str(len(it.get("symptoms") or ()))),
     "recent": ("most recently touched",
                lambda it: -it["updated_at"].timestamp()
-               if it.get("updated_at") else math.inf),
+               if it.get("updated_at") else math.inf,
+               lambda it: it["updated_at"].astimezone(timezone.utc)
+               .strftime("%Y-%m-%dT%H:%M:%SZ") if it.get("updated_at")
+               else "no stamp"),
 }
 
 
@@ -1063,7 +1075,9 @@ def cut_line(pool: list[dict], few: list[dict], policy: dict) -> str:
     It names the two issues at the cut so the claim is checkable against the
     rows above it, and it names a key only where that key's own value actually
     differs across the cut -- naming the policy's first key regardless would be
-    a judgment asserted rather than one made.
+    a judgment asserted rather than one made. **And it carries that key's two
+    values**, because a key that separated the pair by four seconds and one
+    that separated them by a month read identically without them.
     """
     if not pool:
         return "the pool is empty, so nothing was chosen over anything"
@@ -1080,10 +1094,10 @@ def cut_line(pool: list[dict], few: list[dict], policy: dict) -> str:
     head = (f"{len(tied)} in the pool are tied on the ratings and "
             f"{len(raised)} of them raised")
     for name in policy["tie_break"]:
-        term = TIE_BREAKS[name][1]
+        shown, term, show = TIE_BREAKS[name]
         if term(last) != term(first):
-            return (f"{head}; {TIE_BREAKS[name][0]} is what put "
-                    f"#{last['number']} above #{first['number']}")
+            return (f"{head}; {shown} is what put #{last['number']} above "
+                    f"#{first['number']}, {show(last)} against {show(first)}")
     return (f"{head}; the tie-break separated none of them, so the lower "
             f"issue number is what put #{last['number']} above "
             f"#{first['number']}")

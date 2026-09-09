@@ -537,6 +537,32 @@ def test_the_shortlist_names_what_broke_the_tie_at_its_cut(monkeypatch, capsys):
     assert raised_numbers(out) == [5, 4, 3]
     assert "5 in the pool are tied on the ratings and 3 of them raised" in out, out
     assert "most recently touched is what put #3 above #2" in out, out
+    # The margin, not just the key. A key that separated the pair by seconds
+    # and one that separated them by a month read identically without it, and a
+    # consumer doing the pull had to fetch both issues to find out which it had.
+    margin = re.search(r"above #2, (\S+) against (\S+)", out)
+    assert margin, out
+    assert margin.group(1) > margin.group(2), margin.groups()
+    assert margin.group(1).endswith("Z"), margin.group(1)
+
+
+def test_the_line_shows_the_symptom_counts_it_decided_on(monkeypatch, capsys):
+    """The other key's own values, in its own unit.
+
+    #5 and #2 are tied on the ratings -- one symptom is below
+    `symptoms_per_band`, so the accrual moves neither axis -- and #9 is the
+    symptom, rated below both so it cannot displace either.
+    """
+    stub_issues(monkeypatch, [
+        issue(5, labels=["sev:3", "urg:3"]),
+        issue(2, labels=["sev:3", "urg:3"]),
+        issue(7, labels=["sev:3", "urg:3"]),
+        issue(9, labels=["sev:1", "urg:1"]),
+    ], parents={9: 5})
+    pool.cmd_shortlist(policy_dict(tie_break=["symptoms"]), None, 1)
+    out = capsys.readouterr().out
+    assert raised_numbers(out) == [5]
+    assert "symptoms under it is what put #5 above #2, 1 against 0" in out, out
 
 
 def test_the_shortlist_does_not_claim_a_key_broke_a_tie_it_did_not(monkeypatch, capsys):
