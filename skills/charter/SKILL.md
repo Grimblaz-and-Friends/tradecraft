@@ -47,7 +47,7 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 
 ## The cells this practice ships
 
-Every one of them, so a session that does not yet know which cell owns what sees the whole set rather than mistaking a partial list for it. **When to load each is its own description's to say**, and every description loads in every session beside its name — so the condition is stated where it is already read, and not a second time here.
+Every cell this practice ships but this one, which you are reading already — so a session that does not yet know which cell owns what sees the whole set rather than taking a partial list for it. **When to load each is its own description's to say**, and every description loads in every session beside its name — so the condition is stated where it is already read, and not a second time here.
 
 - `adversarial-review` cell
 - `authoring` cell
