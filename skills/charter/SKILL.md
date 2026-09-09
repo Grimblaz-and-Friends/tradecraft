@@ -45,15 +45,15 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 
 **Admitting a new requirement** runs an order from the cheapest reliable material to the most expensive, an always-on surface being the last resort; the `authoring` cell carries it. Owner-stated requirements are admitted, not argued — counter-argument is welcome, per Authority above; what is refused is stalling on one. Agent-proposed rules need an incident from real work or the owner's specific approval of that rule — **a review finding about governing prose is not an incident.**
 
-## The roster, and when each cell loads
+## The cells this practice ships
 
-Every cell this practice ships, and the condition that loads it. Each cell's own description is the authority on its triggers; this list is for the session that does not yet know which cell owns what.
+Every one of them, so a session that does not yet know which cell owns what sees the whole set rather than mistaking a partial list for it. **When to load each is its own description's to say**, and every description loads in every session beside its name — so the condition is stated where it is already read, and not a second time here.
 
-- `adversarial-review` cell — a change is ready for review, or a reviewer's findings need dispositioning.
-- `authoring` cell — writing or revising this practice's prose, or deciding where a piece of content belongs.
-- `engagement` cell — anything crossing between a session and the owner: the brief, a call that may be theirs, the artifact, a handoff.
-- `experience-session` cell — a built result is ready to be used the way its consumer will use it.
-- `filing` cell — something is about to go onto the board.
-- `persist-changes` cell — validated work is ready to commit and push.
-- `spikes` cell — you are about to assert a premise no run you can consult has tested.
-- `substrate` cell — you are working in code rather than prose.
+- `adversarial-review` cell
+- `authoring` cell
+- `engagement` cell
+- `experience-session` cell
+- `filing` cell
+- `persist-changes` cell
+- `spikes` cell
+- `substrate` cell

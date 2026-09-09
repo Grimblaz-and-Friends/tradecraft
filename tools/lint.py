@@ -215,9 +215,9 @@ Checks:
     charter's declared roster, so the always-on router cannot go stale when a
     cell is added. Keyed by the roster's heading, which is checked too -- a
     check keyed to a section is disabled by renaming it. The names only,
-    never the load conditions: what a line says is prose a reflow may
-    lawfully rewrite, and check 3 already declines to machine-read the
-    charter's wording for that reason. It runs last because it is the
+    which since #503 is all the roster carries: the load conditions left it
+    for the descriptions that already state them, so there is no longer a
+    second copy there to read or to drift. It runs last because it is the
     newest, not because anything orders it: the chain isolates every
     check [#404].
 
@@ -1828,7 +1828,7 @@ def _doctrine_ref_resolves(root: Path, ref: str) -> bool:
 # matters: the charter names cells in its prose as well, so a whole-file read
 # would be satisfied by a cell mentioned in a rule and absent from the roster
 # -- which is the state this check exists to refuse. [PR #437 review, M1]
-CHARTER_ROSTER_HEADING = "## The roster, and when each cell loads"
+CHARTER_ROSTER_HEADING = "## The cells this practice ships"
 
 
 def check_charter_roster(root: Path) -> list[str]:
@@ -1844,10 +1844,15 @@ def check_charter_roster(root: Path) -> list[str]:
     shipped cell was absent from the surface every session reads and nothing
     said so. [PR #437 review, M1]
 
-    **The name set, never the load conditions.** What a line says is prose a
-    reflow may lawfully rewrite, and `check_charter_cell` already declines to
-    machine-read the charter's wording for that reason. What is checkable
-    without freezing the prose is which cells appear.
+    **The name set, and since #503 the names are the whole of it.** The
+    roster carried one load condition per cell, which was a second always-on
+    copy of that cell's description; one was falsified four hours after it
+    landed by a change to the mechanism it described, and routed sessions to
+    a step that did not exist until a session working from it the next day noticed. The conditions
+    are gone and the descriptions keep them. What was already true stays the
+    reason this reads names alone: what a line says is prose a reflow may
+    lawfully rewrite, and `check_charter_cell` declines to machine-read the
+    charter's wording for that reason.
 
     **The heading is checked too**, because a check keyed to a section is
     disabled by renaming it, and the rename would otherwise be silent.
@@ -1883,10 +1888,12 @@ def check_charter_roster(root: Path) -> list[str]:
             f"{CHARTER}'s roster, so a session that does not know which cell "
             f"owns its rule is not routed to it from the one surface every "
             f"session has already read. Add one line naming it in the "
-            f"reserved form with the condition that loads it -- and note what "
-            f"that costs: the line is always-on in every runtime, so at a "
-            f"full surface it is admitted on {ADMISSIONS} like any other "
-            f"needed item"
+            f"reserved form, the name alone -- when to load it is its own "
+            f"description's to say, and that loads in every session already, "
+            f"so a condition here is a second always-on copy [#503]. Note "
+            f"what the line costs even so: it is always-on in every runtime, "
+            f"so at a full surface it is admitted on {ADMISSIONS} like any "
+            f"other needed item"
         )
     return findings
 
