@@ -1847,12 +1847,23 @@ def check_charter_roster(root: Path) -> list[str]:
     **The name set, and since #503 the names are the whole of it.** The
     roster carried one load condition per cell, which was a second always-on
     copy of that cell's description; one was falsified four hours after it
-    landed by a change to the mechanism it described, and routed sessions to
-    a step that did not exist until a session working from it the next day noticed. The conditions
-    are gone and the descriptions keep them. What was already true stays the
-    reason this reads names alone: what a line says is prose a reflow may
-    lawfully rewrite, and `check_charter_cell` declines to machine-read the
-    charter's wording for that reason.
+    landed by a change to the mechanism it described, and went on routing
+    sessions to a step that did not exist until this check's own change
+    removed it. The conditions are gone and the descriptions keep them. What
+    was already true stays the reason this reads names alone: what a line
+    says is prose a reflow may lawfully rewrite, and `check_charter_cell`
+    declines to machine-read the charter's wording for that reason.
+
+    **Membership is read in both directions, and form in neither.** A cell
+    that ships and is unlisted is the first arm; the charter's own name
+    appearing in a list that says it excludes it is the second, which
+    `shipped - listed - {CHARTER_CELL}` cannot see because it subtracts that
+    name before diffing. Every other over-listing already reds elsewhere --
+    `check_cell_references` answers a phantom name, a retired cell and the
+    wall's refused direction -- so this arm is the residue rather than a
+    general one. **A load condition returning to a line is still invisible**,
+    that being form rather than membership, and reading form is the design
+    call the paragraph above declines. [#524 review, M5]
 
     **The heading is checked too**, because a check keyed to a section is
     disabled by renaming it, and the rename would otherwise be silent.
@@ -1881,13 +1892,28 @@ def check_charter_roster(root: Path) -> list[str]:
         name for name, source in roster.cell_sources(root).items()
         if source == SHIPPED_CELLS
     }
+    # The charter excludes itself, so it is subtracted from `shipped`
+    # above -- which also makes a charter line in the roster invisible to
+    # that diff. The roster's completeness sentence names the exclusion, so
+    # a line contradicting it is a finding on its own arm. [#524 review, M5]
+    if CHARTER_CELL in listed:
+        findings.append(
+            f"charter-roster: {CHARTER}'s roster lists the "
+            f"'{CHARTER_CELL}' cell, which it excludes by construction -- a "
+            f"session reading the section's own claim that it names every "
+            f"cell but the one it is reading is reading a false sentence. "
+            f"Remove the line; the exclusion is what makes the claim true"
+        )
     missing = sorted(shipped - listed - {CHARTER_CELL})
     for name in missing:
         findings.append(
             f"charter-roster: the '{name}' cell ships and is not in "
-            f"{CHARTER}'s roster, so a session that does not know which cell "
-            f"owns its rule is not routed to it from the one surface every "
-            f"session has already read. Add one line naming it in the "
+            f"{CHARTER}'s '{CHARTER_ROSTER_HEADING}' section, so a session "
+            f"that does not know which cell owns its rule is not routed to "
+            f"it from the one surface every session has already read. The "
+            f"section is named here rather than called the roster because "
+            f"the charter's only use of that word names the review panel's. "
+            f"Add one line naming the cell in the "
             f"reserved form, the name alone -- when to load it is its own "
             f"description's to say, and that loads in every session already, "
             f"so a condition here is a second always-on copy [#503]. Note "
