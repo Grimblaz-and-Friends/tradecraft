@@ -26,6 +26,11 @@
     "severity",
     "urgency"
   ],
+  "_tie_break": "What orders items the axes above leave equal, most significant first, with the issue number as the last resort once these are exhausted -- so that a few raised out of a tie are a judgment rather than the accident of ascending issue number. The keys are the script's rather than this file's, each one being a computation: `symptoms`, how many open sub-issues are linked under the item, most first; and `recent`, the issue's own updatedAt, most recently touched first, an item with no stamp sorting last on that key because it has no evidence of activity to win a tie on. Both are read where the accrual and the fade are read and neither is ever written back. An empty list is lawful and leaves equals to the issue number, which the shortlist then says it did. A key this script cannot compute is refused rather than ignored. Note that `recent` reads the same signal the fade reads, so anything that touches an issue moves it up -- including this script's own label writes.",
+  "tie_break": [
+    "symptoms",
+    "recent"
+  ],
   "framed": {
     "label": "framed",
     "color": "0E8A16",
