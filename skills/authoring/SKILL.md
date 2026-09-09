@@ -28,7 +28,7 @@ A document that cannot state these three is not ready to be written; the missing
 
 Every piece of content has one home: methodology in a skill, a binding rule in the practice's always-on surface, rationale in a decision entry, what happened in append-only exhaust. Which one a given piece takes, and what a shipped standard owes its local application, are in `references/routing.md` — load it when the home is the question, or when editing an always-on surface, which is when outflow is owed.
 
-**A ceiling reached is a trigger, not a wall.** A budgeted surface is designed to sit tight, so a full one is what calls for the moves in that file — never a reason to leave the surface unedited, or to shrink what is being added until it fits. **A cell body's ceiling is not one of those**: it is measured against where the body stood, and passing it raises a work item rather than refusing anything, so nothing there is admitted, trimmed, or held back.
+**A ceiling reached is a trigger, not a wall.** A budgeted surface is designed to sit tight, so a full one is what calls for the moves in that file — never a reason to leave the surface unedited, or to shrink what is being added until it fits. **A cell body's ceiling is not one of those**: it is measured against where the body stood, and passing it is reported rather than refusing anything, so nothing there is admitted, trimmed, or held back. Whether that growth is worth acting on is a judgment somebody makes on reading the measurement, never one the measurement makes; your practice says where the reading is read.
 
 ## Writing standards
 
