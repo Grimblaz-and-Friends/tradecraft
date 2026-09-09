@@ -12,8 +12,9 @@ The session supplies the judgment -- what a filing's ratings should be, which
 of the raised few is worth doing, what the case against each one is. This
 supplies everything that is not judgment.
 
-**Every label name, every rating value, the ordering, the shortlist size and
-the accrual, fade, assessment and push numbers live in the policy file.**
+**Every label name, every rating value, the ordering, the tie-break, the
+shortlist size and the accrual, fade, assessment and push numbers live in the
+policy file.**
 `pool-policy.json` beside this script carries the defaults; a repository
 overrides them with a file of that name at its own root, and the override is
 read instead of the default rather than merged into it, so what a repository
@@ -73,6 +74,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -107,6 +109,55 @@ UNRATED = "-"
 
 # The width of the issue-number column, shared by the header and every row.
 ISSUE_COL = 8
+
+# What orders items the axes leave equal, keyed by the word a policy names and
+# carrying the plain words the shortlist says it in.
+#
+# **The vocabulary is the script's and the sequence is the policy's.** Each key
+# is a computation, so a repository cannot write a new one into a JSON file;
+# what it owns is which of these run and in what order. A key this table does
+# not have is refused by name on load rather than ignored, because ignoring it
+# would leave a repository believing it had set an order it did not get.
+#
+# Each key is a name, a sort term and a way to show its own value. The term is
+# smaller-first: `symptoms` negates the count so more symptoms sorts higher, and
+# `recent` negates the stamp so the most recently touched sorts higher. An item
+# with no stamp takes `inf` -- last on that key rather than first, because an
+# item with no evidence of activity cannot win a tie on activity; it falls
+# through to the next key. That is the one place this differs from
+# `quiet_windows`, which reads a missing stamp as no fade: there the absence
+# withholds a penalty, and here there is no neutral position to withhold into,
+# an ordering having no middle.
+#
+# The third element is what the shortlist prints beside the key it names; why
+# the margin travels with the claim is D-523's.
+TIE_BREAKS = {
+    "symptoms": ("symptoms under it",
+                 lambda it: -len(it.get("symptoms") or ()),
+                 lambda it: str(len(it.get("symptoms") or ()))),
+    "recent": ("most recently touched",
+               lambda it: -it["updated_at"].timestamp()
+               if it.get("updated_at") else math.inf,
+               lambda it: _stamp_shown(it.get("updated_at"))),
+}
+
+
+def _stamp_shown(stamp: "datetime | None") -> str:
+    """One stamp as the shortlist prints it, at a precision that distinguishes it.
+
+    Seconds where that is the whole of it, the full instant where a fraction
+    would otherwise be truncated away. The sort term compares full precision,
+    so a display that always truncated could name `recent` as what separated
+    two items and then print two identical values beside it -- a line refuting
+    its own claim, which is worse than no line. GitHub's `updatedAt` is
+    second-granular; `_stamp` exists to survive payloads that are not.
+    """
+    if stamp is None:
+        return "no stamp"
+    stamp = stamp.astimezone(timezone.utc)
+    if stamp.microsecond:
+        return stamp.isoformat().replace("+00:00", "Z")
+    return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class PoolError(Exception):
@@ -272,6 +323,46 @@ def load_policy(path: Path) -> dict:
                 f"not have. Its bands are {allowed}"
             )
 
+    tie_break = policy.get("tie_break")
+    # Refused, not defaulted, on the same ground as `push` above: this file
+    # states the whole policy and nothing merges the shipped one into an
+    # override, so a defaulted field would be that merge by another name. The
+    # comment sits on the absence check because absence is the only case where
+    # defaulting is even a question; an unknown key has nothing to default to.
+    if tie_break is None:
+        raise PoolError(
+            f"{path}: 'tie_break' is missing. It lists the keys that order "
+            f"items the axes leave equal, most significant first, and it is "
+            f"required rather than defaulted -- this file states the whole "
+            f"policy. Write [] to leave equals to the issue number and have "
+            f"the shortlist say so. {_tie_break_keys()}"
+        )
+    # A separate refusal from the one above, because they are separate
+    # mistakes: a policy that has the field in the wrong shape was told "does
+    # not have it: add 'tie_break'" and sent to look at a file that plainly
+    # has it.
+    if not isinstance(tie_break, list) or any(not isinstance(key, str)
+                                              for key in tie_break):
+        raise PoolError(
+            f"{path}: 'tie_break' is {tie_break!r}, which is not a list of key "
+            f"names. It lists the keys that order items the axes leave equal, "
+            f"most significant first -- [] to leave them to the issue number. "
+            f"{_tie_break_keys()}"
+        )
+    unknown = [key for key in tie_break if key not in TIE_BREAKS]
+    if unknown:
+        raise PoolError(
+            f"{path}: 'tie_break' names {', '.join(repr(k) for k in unknown)}, "
+            f"which this script cannot compute -- a tie-break key is code and "
+            f"not a name. {_tie_break_keys()}"
+        )
+    repeated = sorted({key for key in tie_break if tie_break.count(key) > 1})
+    if repeated:
+        raise PoolError(
+            f"{path}: 'tie_break' names {', '.join(repeated)} more than once, "
+            f"and a key consulted twice decides nothing the first look did not"
+        )
+
     closes = policy.get("fade", {}).get("closes")
     if not isinstance(closes, bool):
         raise PoolError(
@@ -281,6 +372,22 @@ def load_policy(path: Path) -> dict:
         )
 
     return policy
+
+
+def _tie_break_keys() -> str:
+    """The tie-break vocabulary, as a refusal shows it.
+
+    **A vocabulary and never a value to paste.** The refusals above are met by
+    exactly one audience -- a repository whose override predates the field --
+    and a bare list printed a sentence after `most significant first` reads as
+    the sequence to write. `sorted()` is alphabetical, so what such a reader
+    would have copied is the reverse of what this repository ships, loading
+    clean and ordering by recency while they believed otherwise. Each key is
+    given with what it means and the sequence is named as theirs.
+    """
+    keys = ", ".join(f"{name} ({TIE_BREAKS[name][0]})" for name in sorted(TIE_BREAKS))
+    return (f"Its keys are {keys}, and the sequence you write is the order "
+            f"they are consulted in")
 
 
 def _whole(policy: dict, path: Path, block: str, key: str, *, least: int) -> None:
@@ -407,9 +514,15 @@ def open_issues(repo: str | None = None) -> list[dict]:
     here needs both, and a second call per issue over a hundred-item board is
     a hundred round trips for something one query already carries.
 
-    `updatedAt` is here because the fade is read from it. It is the one field
-    that makes a decay derivable with nothing stored: GitHub maintains it, and
-    a decay that had to be written would bump the very field it reads.
+    `updatedAt` is here because **two** mechanisms are read from it: the fade,
+    and the `recent` tie-break key that orders items the ratings leave equal.
+    It is the one field that makes a decay derivable with nothing stored:
+    GitHub maintains it, and a decay that had to be written would bump the very
+    field it reads. **Dropping it does not fail loudly** -- every `recent` term
+    becomes `math.inf`, every pair ties on that key, the ordering falls back to
+    the issue number, and the shortlist reports that collapse as a fact rather
+    than as a broken read. The tests stub this function, so the pin on the
+    field list is what stands between a later fade rework and that silence.
     """
     raw = gh([
         "issue", "list", *_repo_args(repo), "--state", "open",
@@ -759,12 +872,17 @@ def at_floor(item: dict, policy: dict, values: dict[str, int | None],
     return values[second] <= floor and quiet_windows(item, policy, now) > 0
 
 
-def sort_key(item: dict, policy: dict) -> tuple:
-    """Rated above unrated, then each axis in the policy's order, then oldest first.
+def rating_key(item: dict, policy: dict) -> tuple:
+    """The part of the order the ratings decide: everything before the tie-break.
 
     Unrated is not zero. An issue nobody has rated has not been judged
     harmless; it has not been judged. Sorting it below every rated item says
     that, where a zero would assert the bottom of the scale.
+
+    Named rather than inlined in `sort_key` because two items are *tied* when
+    this much of their keys agree, and the shortlist has to say whether its cut
+    fell inside a tie. A second spelling of what a tie is would drift from the
+    one that sorts.
     """
     order = policy["order"]
     derived = item.get("effective") or effective(item, policy)
@@ -779,7 +897,25 @@ def sort_key(item: dict, policy: dict) -> tuple:
             values.append(0)
         else:
             values.append(value)
-    return (0 if complete else 1, *[-v for v in values], item["number"])
+    return (0 if complete else 1, *[-v for v in values])
+
+
+def tie_terms(item: dict, policy: dict) -> tuple:
+    """What orders two items the ratings left equal, in the policy's sequence."""
+    return tuple(TIE_BREAKS[name][1](item) for name in policy["tie_break"])
+
+
+def sort_key(item: dict, policy: dict) -> tuple:
+    """The ratings, then the policy's tie-break, then the issue number.
+
+    **The number is the last resort and not the rule.** A sort needs a total
+    order and the number is what supplies one; it used to be the only thing
+    consulted once two items agreed on both ratings, which made the first five
+    a shortlist raised out of a nineteen-way tie the five oldest and nothing
+    more. It is still here, still last, and the shortlist now says when it was
+    what decided.
+    """
+    return (*rating_key(item, policy), *tie_terms(item, policy), item["number"])
 
 
 def is_rated(item: dict, policy: dict) -> bool:
@@ -810,9 +946,12 @@ def _line(item: dict, policy: dict) -> str:
         if name in item["clashes"]:
             label = "CLASH"
         elif label != UNRATED:
-            # An arrow where the derived value differs from the labelled one, so
-            # the order a reader sees is explained by the row rather than by
-            # having read the policy.
+            # An arrow where the derived value differs from the labelled one,
+            # so a rating a reader sees is explained by the row rather than by
+            # having read the policy. **It explains the ratings and not the
+            # whole order**: neither tie-break key is on a row, so equals print
+            # identical cells in an order the row cannot account for, and
+            # `shortlist`'s own line is the only place that order is reported.
             own = policy["axes"][name]["values"][label]
             if derived.get(name) is not None and derived[name] != own:
                 label = f"{label}>{derived[name]}"
@@ -961,16 +1100,74 @@ def cmd_shortlist(policy: dict, repo: str | None, count: int | None,
     if unrated_few:
         print(
             "fewer rated items than the shortlist holds, so what follows is "
-            "partly the oldest unrated filings rather than the highest-rated. "
-            "Rate what belongs in contention before reading this as a ranking."
+            "partly unrated filings rather than the highest-rated -- ordered "
+            "among themselves by the policy's tie-break like everything else, "
+            "not by age. Rate what belongs in contention before reading this "
+            "as a ranking."
         )
     print(_header(policy))
     for item in few:
         print(_line(item, policy))
+    print(cut_line(pool, few, policy))
     print("")
     print("Each of these is put to the owner with its one-line case and the "
           "case against; neither is this script's to write.")
     return 0
+
+
+def cut_line(pool: list[dict], few: list[dict], policy: dict) -> str:
+    """What decided the boundary between the last item raised and the first not.
+
+    **The cut is the only place the tie-break decides who the owner sees**, so
+    it is what this reports rather than every tie in the pool. And it is
+    reported in every case, including the cases where no tie-break ran: a line
+    that appeared only sometimes would leave a reader unable to tell a cut the
+    ratings made from a tie-break that had silently stopped working.
+
+    It names the two issues at the cut so the claim is checkable against the
+    rows above it, and it names a key only where that key's own value actually
+    differs across the cut -- naming the policy's first key regardless would be
+    a judgment asserted rather than one made. **And it carries that key's two
+    values**, because a key that separated the pair by four seconds and one
+    that separated them by a month read identically without them.
+    """
+    if not pool:
+        return "the pool is empty, so nothing was chosen over anything"
+    if len(few) >= len(pool):
+        return ("the shortlist holds the whole pool, so nothing was chosen "
+                "over anything")
+    last, first = few[-1], pool[len(few)]
+    tie = rating_key(last, policy)
+    if rating_key(first, policy) != tie:
+        return (f"nothing is tied at the cut: the ratings alone chose these "
+                f"{len(few)}")
+    tied = [it for it in pool if rating_key(it, policy) == tie]
+    # `here`, not `raised`: `raised` is the push's durable mark everywhere else
+    # in this module, and a reader who took "of them raised" for that mark
+    # would read the few as already put to the owner. The sibling comment in
+    # `cmd_shortlist` refuses the same word for the same reason.
+    here = [it for it in few if rating_key(it, policy) == tie]
+    # `tie[0]` is the tier, which is 0 only where every axis carries a usable
+    # band. Below it are the items nobody rated and the ones rated twice, and
+    # what they share is that nobody chose -- not that anybody chose alike.
+    level = ("are tied on the ratings" if tie[0] == 0 else
+             "carry no usable rating on every axis, so the ratings separate "
+             "none of them")
+    head = (f"{len(tied)} in the pool {level}, and this shortlist holds "
+            f"{len(here)} of them")
+    if not policy["tie_break"]:
+        return (f"{head}; no tie-break key is configured, so the lower issue "
+                f"number is what put #{last['number']} above "
+                f"#{first['number']}")
+    for name in policy["tie_break"]:
+        shown, term, show = TIE_BREAKS[name]
+        if term(last) != term(first):
+            return (f"{head}; {shown} is what put #{last['number']} above "
+                    f"#{first['number']}, {show(last)} against {show(first)}")
+    return (f"{head}; no tie-break key separated these two, so the lower "
+            f"issue number is what put #{last['number']} above "
+            f"#{first['number']} -- which says nothing about the rest of "
+            f"the tie")
 
 
 def cmd_policy(policy: dict, source: Path) -> int:
