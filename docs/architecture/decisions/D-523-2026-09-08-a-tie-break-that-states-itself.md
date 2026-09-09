@@ -1,0 +1,46 @@
+# D-523: Equals in the pool are ordered by a stated tie-break, and the shortlist names what broke the tie
+
+**Status:** Accepted 2026-09-08 (PR #523)
+
+## Context
+
+[#452](https://github.com/Grimblaz-and-Friends/tradecraft/issues/452): after the cut-over, nineteen pooled issues shared the top rating on both axes. `pool-policy.json` carried `"order": ["severity", "urgency"]` and nothing after it, so once two items agreed on both, the only remaining term in `sort_key` was the issue number — and `gh issue list` returns by number, so the first shortlist raised the five oldest of the nineteen and nothing about that was a judgment.
+
+The owner affirmed the brief in conversation on 2026-09-08 — *"affirm 452 as you wrote it."* The one call put as his was which key orders equals, since it decides which five he sees. The recommendation was symptoms under it, then most recently touched; the alternatives stated were oldest first, which is what was happening by accident, and a declared random draw, which is honest but wastes the accrual signal.
+
+**One premise was tested before the artifact locked.** Reading the open pool on 2026-09-08 turned up nineteen issues carrying `sev:3` and `urg:3` as labels and not `framed`, with nineteen distinct `updatedAt` stamps — so `recent` separates every pair in that set and the tie-break has something to bite on. Eighteen of those stamps sit in two windows on 2026-09-07, six inside `02:32:32Z`–`02:34:47Z` and twelve inside `21:16:35Z`–`21:28:38Z`, which is the shape of batch label writes rather than of anyone thinking about the issue. **Recency here is a weak signal**, and that is a fact about the pool rather than about the key; it is why decision 4 below refuses to name a key that did not in fact separate the pair at the cut. The read is a fact about a mutable tree, so it belongs to its run and not to this entry:
+
+```
+gh issue list --repo Grimblaz-and-Friends/tradecraft --state open --limit 200 \
+  --json number,labels,updatedAt
+```
+
+## Decision
+
+**1. One ordered list of keys in the policy, and the vocabulary is the script's.** `pool-policy.json` gains `tie_break`, shipped as `["symptoms", "recent"]`. A repository that wants recency to outrank symptom count swaps the two words; one content with the issue number writes `[]` and gets that, declared rather than accidental. **The keys themselves are not configurable, because each is a computation and not a name** — `symptoms` counts open sub-issues linked under the item, `recent` reads the issue's own `updatedAt` — so `TIE_BREAKS` in `skills/filing/scripts/pool.py` is the closed set and `load_policy` refuses a key it cannot compute. The alternative, a data-driven key spec in JSON, was rejected: a policy file cannot express `-len(item["symptoms"])`, and a vocabulary of two does not earn a language.
+
+**2. The field is required, and its absence is refused rather than defaulted.** The policy file's own note says an override "states the whole policy" and that the script "never merges the two". A defaulted `tie_break` would be exactly that merge under another name. This costs an adopting repository with an override written before this change one line, added at the first refusal, which names the field and lists its keys. That is the loud failure; the quiet one it replaces is a repository ordering by issue number while believing it had configured otherwise. `push` already sits on this ground — its own comment says *"Refused, not defaulted, on [D-441] decision 8's ground"* — so this is the established shape here rather than a new one.
+
+**3. The issue number stays, last.** A sort needs a total order and the number is what supplies one. Removing it would leave two items equal on every term ordered by insertion order, which is `gh`'s and not anybody's. What changed is that the number is now the last term consulted rather than the only term consulted once the ratings agreed.
+
+**4. The shortlist's line names the key that actually separated the pair at the cut, and prints in every case.** The cut — the boundary between the last item raised and the first not — is the only place the tie-break decides who the owner sees, so it is what the line reports rather than every tie in the pool. **It names a key only where that key's own value differs across the boundary**; naming the policy's first key regardless would be a judgment asserted rather than one made, which is the defect #452 is about wearing a new word. Where no key separated them the line says so and names the lower issue number as what chose. **It prints in all three cases**, including where nothing was tied and where the shortlist holds the whole pool: a line that appeared only sometimes would leave a reader unable to tell a cut the ratings made from a tie-break that had silently stopped running.
+
+**5. The whole pool takes the new order, not the shortlist alone — the session's call, and it reads against the brief's exclusion.** The brief puts *what the cycle assesses* out of scope, and `cmd_cycle` names its next few off the ordered pool, so the items it names do move. That exclusion is read as barring a change to the assessment **rules** — the gate, `before_shortlist`, `per_cycle`, what an assessment means — and not as barring the consequence that ordering equals has on which few get named, since the cycle has always named them in pool order and this change gives that order a reason. Confining the tie-break to `cmd_shortlist` would leave `list` printing one order and `shortlist` raising a different five, so the rows a reader checks the shortlist against would not explain it. The cold seat that settled the artifact reached the same reading independently and declined to call it a fork, on the ground that the alternative is undone by an edit and its residue is a few assessment labels.
+
+**6. An item with no `updatedAt` sorts last on `recent`, not first.** It has no evidence of activity, so it cannot win a tie on activity; it falls through to the next key. **This is the one place the tie-break runs opposite to `quiet_windows`**, which reads a missing stamp as *faded by zero* — there the absence withholds a penalty, and an ordering has no middle to withhold into, so some direction had to be chosen and stated. In this repository every open issue carries the stamp; the stampless case is the stub or the older payload `_stamp` already anticipates.
+
+**7. `sort_key` splits, so that *tied* has one spelling.** `rating_key` is everything the ratings decide — the rated/unrated tier and the negated effective bands — and `sort_key` is that, then the tie-break terms, then the number. The shortlist's line has to ask whether its cut fell inside a tie, and a second spelling of what a tie is would drift from the one that sorts.
+
+**A known property, stated rather than fixed.** `recent` reads the same `updatedAt` the fade reads, so anything that touches an issue moves it up the tie-break — including this script's own label writes, which is visible in the two clustered windows above. Fixing it would mean storing a second activity signal, which is the thing the fade's design refuses; the brief chose recency knowing what it is read from.
+
+## Rejected
+
+**A declared random draw, and an explicit age key.** Both were put to the owner as alternatives and neither was chosen; building either would be building past the affirmation.
+
+**A data-driven key specification in the policy JSON.** Rejected under decision 1: a key is code, and a file that cannot express the computation would only be naming one the script implements anyway, with the refusal moved somewhere less legible.
+
+**Defaulting an absent `tie_break` to the shipped list.** Rejected under decision 2: it is the shipped policy merging into an override, which this file says it never does.
+
+**Confining the tie-break to the shortlist's own slice.** Rejected under decision 5: it splits one pool into two orders, and the list a reader checks the shortlist against would stop explaining it.
+
+**Printing the tie line only when a tie was broken.** Rejected under decision 4: silence would then mean two different things, and the reader cannot tell which.
