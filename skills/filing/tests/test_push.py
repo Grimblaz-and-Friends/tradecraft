@@ -38,6 +38,7 @@ def policy_dict(**over):
                         "values": {"urg:1": 1, "urg:2": 2, "urg:3": 3}},
         },
         "order": ["severity", "urgency"],
+        "tie_break": ["symptoms", "recent"],
         "framed": {"label": "framed", "color": "0E8A16", "meaning": "decided"},
         "cause": {"label": "cause", "color": "B60205", "meaning": "a cause"},
         "assessed": {"label": ASSESSED, "color": "C5DEF5", "meaning": "asked"},
