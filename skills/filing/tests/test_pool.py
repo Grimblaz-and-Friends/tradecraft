@@ -170,6 +170,71 @@ def test_a_lawful_tie_break_the_default_does_not_ship_is_accepted(tmp_path):
     assert pool.load_policy(path)["tie_break"] == []
 
 
+def test_every_tie_break_refusal_names_the_field(tmp_path):
+    """Criterion 4 says "refused **by name**", and the parametrized refusal
+    above asserts only that `PoolError` is raised -- so a message that stopped
+    naming the field, or named a key that does not exist, shipped green."""
+    # The vocabulary rides on the four whose remedy is to pick from it. The
+    # repeated-key refusal names the repeat instead, which is the more useful
+    # thing to say to somebody who already has the vocabulary in hand.
+    for mutate, vocabulary in (
+        (lambda p: p.pop("tie_break"), True),
+        (lambda p: p.update(tie_break="recent"), True),
+        (lambda p: p.update(tie_break=[1]), True),
+        (lambda p: p.update(tie_break=["age"]), True),
+        (lambda p: p.update(tie_break=["recent", "recent"]), False),
+    ):
+        policy = policy_dict()
+        mutate(policy)
+        path = write_policy(tmp_path / "pool-policy.json", policy)
+        with pytest.raises(pool.PoolError) as caught:
+            pool.load_policy(path)
+        said = str(caught.value)
+        assert "tie_break" in said, said
+        if vocabulary:
+            for key in pool.TIE_BREAKS:
+                assert key in said, (key, said)
+
+
+def test_a_missing_tie_break_and_a_malformed_one_are_told_apart(tmp_path):
+    """One message served both, so a policy that wrote `"tie_break": "recent"`
+    was told it "does not have it: add 'tie_break'" and sent to look at a file
+    that plainly has it."""
+    absent = policy_dict()
+    absent.pop("tie_break")
+    with pytest.raises(pool.PoolError) as missing:
+        pool.load_policy(write_policy(tmp_path / "pool-policy.json", absent))
+    with pytest.raises(pool.PoolError) as malformed:
+        pool.load_policy(write_policy(tmp_path / "pool-policy.json",
+                                      policy_dict(tie_break="recent")))
+    assert "is missing" in str(missing.value), str(missing.value)
+    assert "is missing" not in str(malformed.value), str(malformed.value)
+    assert "not a list of key names" in str(malformed.value), str(malformed.value)
+
+
+def test_no_refusal_hands_back_a_key_list_that_could_be_pasted(tmp_path):
+    """The audience for these refusals is a repository whose override predates
+    the field, and `sorted()` is alphabetical -- so a bare list printed a
+    sentence after "most significant first" reads as the sequence to write, and
+    what such a reader would copy is the reverse of what ships.
+    """
+    for value in (None, "recent", ["age"]):
+        policy = policy_dict()
+        if value is None:
+            policy.pop("tie_break")
+        else:
+            policy["tie_break"] = value
+        path = write_policy(tmp_path / "pool-policy.json", policy)
+        with pytest.raises(pool.PoolError) as caught:
+            pool.load_policy(path)
+        said = str(caught.value)
+        assert "['recent', 'symptoms']" not in said, said
+        # Each key arrives with what it means, so the line reads as a
+        # vocabulary rather than as a value.
+        for key, (shown, _term, _show) in pool.TIE_BREAKS.items():
+            assert f"{key} ({shown})" in said, (key, said)
+
+
 def test_a_policy_that_is_not_json_names_the_file(tmp_path):
     path = tmp_path / "pool-policy.json"
     path.write_text("{not json", encoding="utf-8", newline="\n")
@@ -326,6 +391,24 @@ def test_the_open_set_is_partitioned_with_nothing_in_both_and_nothing_lost(monke
     assert len(set(got)) == len(numbers)
 
 
+def test_the_read_asks_for_the_field_two_things_read(monkeypatch):
+    """`updatedAt` feeds the fade *and* the `recent` tie-break, and every test
+    here stubs `open_issues` -- so dropping it from the wire read left the whole
+    suite green while every `recent` term collapsed to `inf`, the ordering fell
+    back to the issue number, and the shortlist reported that collapse as a
+    fact rather than as a broken read."""
+    sent = {}
+
+    def wire(args):
+        sent["args"] = args
+        return json.dumps([])
+
+    monkeypatch.setattr(pool, "gh", wire)
+    pool.open_issues()
+    fields = sent["args"][sent["args"].index("--json") + 1].split(",")
+    assert "updatedAt" in fields, sent["args"]
+
+
 def test_a_read_that_comes_back_at_its_limit_is_refused(monkeypatch):
     """A partition over a truncated read is wrong in a way its output cannot show."""
     stub_issues(monkeypatch, [issue(n) for n in range(pool.ISSUE_READ_LIMIT)])
@@ -371,23 +454,6 @@ def test_the_issue_number_is_the_last_resort_and_not_the_rule(monkeypatch):
         issue(9, labels=["sev:2", "urg:2"]),
         issue(4, labels=["sev:2", "urg:2"]),
     ]) == [4, 9]
-
-
-def test_more_symptoms_wins_a_tie_on_both_ratings(monkeypatch):
-    """#5 carries one symptom and #2 carries none.
-
-    One symptom is below `symptoms_per_band`, so the accrual moves neither
-    axis and the pair really is tied on the ratings -- which is what makes this
-    a test of the tie-break rather than of the accrual. The numbers are the
-    wrong way round on purpose: under the old rule #2 came first.
-    """
-    issues = [issue(5, labels=["sev:2", "urg:2"]),
-              issue(2, labels=["sev:2", "urg:2"]),
-              issue(9, labels=["sev:1", "urg:1"])]
-    stub_issues(monkeypatch, issues, parents={9: 5})
-    items, _ = pool.read_pool(policy_dict())
-    assert [it["number"] for it in items] == [5, 2, 9]
-    assert items[0]["effective"] == items[1]["effective"], "not a tie on ratings"
 
 
 def test_the_same_pair_falls_back_to_the_number_when_no_key_runs(monkeypatch):
@@ -442,6 +508,11 @@ def test_the_policys_tie_break_order_is_what_breaks_ties(monkeypatch):
     stub_issues(monkeypatch, issues, parents={9: 5})
     first, _ = pool.read_pool(policy_dict(tie_break=["symptoms", "recent"]))
     assert [it["number"] for it in first] == [5, 2, 9]
+    # The fixture-validity guard, moved here from a sibling that pinned nothing
+    # this one does not: one symptom is below `symptoms_per_band`, so the
+    # accrual must have moved neither axis, or this is a ratings test wearing
+    # a tie-break test's name.
+    assert first[0]["effective"] == first[1]["effective"], "not a tie on ratings"
     stub_issues(monkeypatch, issues, parents={9: 5})
     second, _ = pool.read_pool(policy_dict(tie_break=["recent", "symptoms"]))
     assert [it["number"] for it in second] == [2, 5, 9]
@@ -502,9 +573,14 @@ def test_the_shortlist_raises_nothing_that_is_already_framed(monkeypatch, capsys
 
 
 def test_the_shortlist_says_so_when_it_is_drawn_from_an_unrated_pool(monkeypatch, capsys):
-    """Landing this leaves every filing unrated, so the first shortlists are the
-    oldest issues rather than the highest-rated. Saying that is the difference
-    between a report and a ranking nobody earned."""
+    """Landing this leaves every filing unrated, so the first shortlists are
+    drawn from filings nobody has judged rather than from the highest-rated.
+    Saying that is the difference between a report and a ranking nobody earned.
+
+    **Not "the oldest".** Unrated items are ordered by the tie-break like
+    everything else, so the caveat claimed an age artifact where the tail is a
+    symptom-and-recency selection -- and the same command's cut line, three
+    lines below, named recency as what chose."""
     stub_issues(monkeypatch, [issue(n) for n in range(1, 11)])
     pool.cmd_shortlist(policy_dict(), None, None)
     assert "rather than the highest-rated" in capsys.readouterr().out
@@ -535,8 +611,12 @@ def test_the_shortlist_names_what_broke_the_tie_at_its_cut(monkeypatch, capsys):
     pool.cmd_shortlist(policy_dict(), None, None)
     out = capsys.readouterr().out
     assert raised_numbers(out) == [5, 4, 3]
-    assert "5 in the pool are tied on the ratings and 3 of them raised" in out, out
+    assert ("5 in the pool are tied on the ratings, and this shortlist holds "
+            "3 of them") in out, out
     assert "most recently touched is what put #3 above #2" in out, out
+    # `raised` is the push's durable mark, and a reader who took the count for
+    # that mark would read three items as already put to the owner.
+    assert "of them raised" not in out, out
     # The margin, not just the key. A key that separated the pair by seconds
     # and one that separated them by a month read identically without it, and a
     # consumer doing the pull had to fetch both issues to find out which it had.
@@ -575,10 +655,151 @@ def test_the_shortlist_does_not_claim_a_key_broke_a_tie_it_did_not(monkeypatch, 
     pool.cmd_shortlist(policy_dict(), None, None)
     out = capsys.readouterr().out
     assert raised_numbers(out) == [1, 2, 3]
-    assert "the tie-break separated none of them" in out, out
+    assert "no tie-break key separated these two" in out, out
     assert "the lower issue number is what put #3 above #4" in out, out
     assert "most recently touched" not in out, out
     assert "symptoms under it" not in out, out
+
+
+def test_the_line_does_not_claim_the_cohort_when_only_the_pair_tied(
+        monkeypatch, capsys):
+    """The claim is about the two issues at the cut and about nothing else.
+
+    #13 and #14 carry a symptom each, #10, #11 and #12 carry none, and one
+    symptom is below `symptoms_per_band` so all five stay tied on the ratings.
+    The tie-break puts #13 and #14 into a shortlist of three that would
+    otherwise have been #10, #11, #12 -- and then the boundary pair, #10 and
+    #11, tie on every key, so the number decides *between them*. Saying the
+    tie-break separated none of *them* reported the whole shortlist as the
+    accident of ascending issue number in a run where the tie-break had chosen
+    two thirds of it.
+    """
+    stub_issues(monkeypatch, [
+        *[issue(n, labels=["sev:3", "urg:3"]) for n in (10, 11, 12, 13, 14)],
+        issue(90, labels=["sev:1", "urg:1"]), issue(91, labels=["sev:1", "urg:1"]),
+    ], parents={90: 14, 91: 13})
+    pool.cmd_shortlist(policy_dict(), None, None)
+    out = capsys.readouterr().out
+    assert raised_numbers(out) == [13, 14, 10], out
+    assert "no tie-break key separated these two" in out, out
+    assert "which says nothing about the rest of the tie" in out, out
+    assert "separated none of them" not in out, out
+
+
+def test_the_line_does_not_call_unrated_items_tied_on_the_ratings(
+        monkeypatch, capsys):
+    """An unrated filing has not been judged harmless; it has not been judged.
+
+    `rating_key`'s first term is the rated/unrated tier, so items nobody rated
+    compare equal there. Reporting that as a tie on the ratings asserts they
+    were judged and came out level -- the accident wearing the word judgment,
+    which is what this whole line exists to stop.
+    """
+    stub_issues(monkeypatch, [issue(n) for n in (11, 12, 13, 14)])
+    pool.cmd_shortlist(policy_dict(), None, None)
+    out = capsys.readouterr().out
+    assert "rated: 0" in out, out
+    assert "are tied on the ratings" not in out, out
+    assert "carry no usable rating on every axis" in out, out
+
+
+def test_a_policy_with_no_tie_break_keys_says_it_has_none(monkeypatch, capsys):
+    """Criterion 7's second half, at the command rather than at the ordering.
+
+    A repository that declared `[]` is told its keys ran and separated nothing
+    otherwise -- which is the same sentence a repository whose keys went inert
+    would see, so the two states were indistinguishable in the output.
+    """
+    stub_issues(monkeypatch, [
+        issue(n, labels=["sev:3", "urg:3"]) for n in range(1, 6)
+    ])
+    pool.cmd_shortlist(policy_dict(tie_break=[]), None, None)
+    out = capsys.readouterr().out
+    assert raised_numbers(out) == [1, 2, 3]
+    assert "no tie-break key is configured" in out, out
+    assert "no tie-break key separated these two" not in out, out
+
+
+def test_the_line_reads_the_policys_sequence_and_not_the_scripts(
+        monkeypatch, capsys):
+    """Criterion 3 at the reporting layer, which its ordering test does not reach.
+
+    Both keys differ across the cut, and the script's own vocabulary sorts
+    alphabetically to `recent, symptoms` -- the reverse of the shipped
+    sequence. So a line that iterated `TIE_BREAKS` rather than the policy would
+    name the wrong key here and pass every other test in this file.
+    """
+    stub_issues(monkeypatch, [
+        issue(5, labels=["sev:3", "urg:3"], updated=ago(0)),
+        issue(2, labels=["sev:3", "urg:3"], updated=ago(3)),
+        issue(9, labels=["sev:1", "urg:1"]),
+    ], parents={9: 5})
+    pool.cmd_shortlist(policy_dict(), None, 1)
+    out = capsys.readouterr().out
+    assert raised_numbers(out) == [5]
+    assert "symptoms under it is what put #5 above #2, 1 against 0" in out, out
+    assert "most recently touched" not in out, out
+
+
+def test_the_count_is_the_tied_subset_and_not_the_whole_slice(
+        monkeypatch, capsys):
+    """The shortlist spans two rating groups and the cut falls inside the lower.
+
+    Every other fixture here raises a slice sitting wholly inside one group, so
+    a line that reported `len(few)` would agree with all of them.
+    """
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:3", "urg:3"]), issue(2, labels=["sev:3", "urg:3"]),
+        issue(3, labels=["sev:2", "urg:2"]), issue(4, labels=["sev:2", "urg:2"]),
+        issue(5, labels=["sev:2", "urg:2"]),
+    ])
+    pool.cmd_shortlist(policy_dict(), None, None)
+    out = capsys.readouterr().out
+    assert raised_numbers(out) == [1, 2, 3]
+    assert "3 in the pool are tied on the ratings, and this shortlist holds 1 of them" in out, out
+
+
+def test_an_item_with_no_stamp_is_shown_as_having_none(monkeypatch, capsys):
+    """The display arm for a missing stamp, which nothing reached."""
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:3", "urg:3"], updated=ago(0)),
+        issue(2, labels=["sev:3", "urg:3"]),
+    ])
+    pool.cmd_shortlist(policy_dict(), None, 1)
+    out = capsys.readouterr().out
+    assert "most recently touched is what put #1 above #2" in out, out
+    assert "against no stamp" in out, out
+
+
+def test_a_key_named_as_decisive_never_shows_two_identical_values(
+        monkeypatch, capsys):
+    """The sort term compares full precision; the display used to truncate.
+
+    A line naming a key and then printing that key not differing refutes its
+    own claim, and a reader's correct conclusion is that the tool is wrong when
+    the ordering is right. GitHub's stamps are second-granular; `_stamp` exists
+    to survive payloads that are not.
+    """
+    base = datetime.now(timezone.utc).replace(microsecond=0)
+    stub_issues(monkeypatch, [
+        issue(1, labels=["sev:3", "urg:3"],
+              updated=base.replace(microsecond=400000).isoformat()),
+        issue(2, labels=["sev:3", "urg:3"], updated=base.isoformat()),
+    ])
+    pool.cmd_shortlist(policy_dict(), None, 1)
+    out = capsys.readouterr().out
+    shown = re.search(r"above #2, (\S+) against (\S+)", out)
+    assert shown, out
+    assert shown.group(1) != shown.group(2), out
+
+
+def test_an_empty_pool_says_so(monkeypatch, capsys):
+    """Its own branch, which the whole-pool branch would otherwise swallow --
+    and `the shortlist holds the whole pool` over `pool: 0` says less about
+    that state than naming it does."""
+    stub_issues(monkeypatch, [])
+    pool.cmd_shortlist(policy_dict(), None, None)
+    assert "the pool is empty" in capsys.readouterr().out
 
 
 def test_the_shortlist_says_when_the_ratings_alone_chose(monkeypatch, capsys):
