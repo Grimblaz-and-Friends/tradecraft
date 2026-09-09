@@ -1,0 +1,79 @@
+# D-524: A load condition has one home, the description; the charter's roster names cells and says nothing about when they load
+
+**Status:** Accepted 2026-09-08 (PR #524)
+
+## Context
+
+[#503](https://github.com/Grimblaz-and-Friends/tradecraft/issues/503) and [#504](https://github.com/Grimblaz-and-Friends/tradecraft/issues/504), framed together by the owner on 2026-09-08 — *"Can you frame the items needed to start?"* — as the two adopter-facing defects on the shipped surface that had to land before this practice is run frozen for a week. Both are symptoms of [#521](https://github.com/Grimblaz-and-Friends/tradecraft/issues/521), a cell gaining a capability while the lines elsewhere describing it stay put; the owner took his own exception to the rule that a cause is fixed before its symptoms, and #521 stays in the pool.
+
+**What the tree held at the base, `836a847`.** [D-437] had given the charter a declared roster: one line per shipped cell, naming it in the reserved form *with the one condition that loads it*. Nine such lines. Each cell's `description` — which `tools/roster.py` copies into `.claude/skills/` and `.agents/skills/` so that it loads in every session in this repository, and which an adopter receives from the plugin — already stated the same condition. So each condition existed twice on the always-on surface, and one of the two copies had no guard on it.
+
+**The copy drifted, and the interval is short enough to be the argument.** `b492e06` landed the roster at `2026-09-06 17:46:52 -0400` with `` `filing` cell — something is about to go onto the board ``. `8a770e1` landed the pool at `22:09:34` the same evening, giving the `filing` cell the section heading *"A filing lands in the pool, not on the board"*. Four hours and twenty-three minutes. The charter is always-on and the cell body is not, so from that evening every session read the false sentence first and the true one second — and on 2026-09-07 an experience-session consumer on [PR #496](https://github.com/Grimblaz-and-Friends/tradecraft/pull/496), holding none of that history, reported that the roster line *"sent me looking for a board step I do not owe."*
+
+**#504's own base state is unusual and is recorded here because the record would otherwise mislead.** [PR #492](https://github.com/Grimblaz-and-Friends/tradecraft/pull/492) merged `2026-09-08T21:03:19Z` and added to `skills/filing/SKILL.md`'s command block a sentence saying paths there are relative to the cell. #504's brief was posted `2026-09-09T02:10:40Z` — five hours later — and describes the defect as unfixed; #492's body does not mention #504. So this change delivers a residual, not the whole want, and says so on the pull request, in the artifact, and on the settling row.
+
+**The brief, and what it corrected before it was drafted.** The first brief put for #503 proposed correcting the stale roster line in place. The owner refused the shape rather than the fix: *"why are the sentences duplicated? We should only be putting it in 1 place."* The brief was re-put on the evidence that the lint's always-on figure counts every cell's name and description as loaded in every session — 7,661 of 16,713 characters at the time — so the roster's conditions were a second always-on copy by construction. Two ways out were put: generate the roster from the descriptions, or take the conditions out. He affirmed the second: *"affirm 503 and 504, post them."*
+
+## Decision
+
+**1. The charter's roster keeps the cell names and loses every load condition.** The section is now `## The cells this practice ships`. Each cell's description is the sole statement of when to load it, and it is already loaded in every session beside the name, so the condition is stated where it is read rather than a second time on a surface with no guard.
+
+**2. The block stays rather than going, and the reason is completeness rather than routing.** The brief's cost line left that open — *"or goes if the names alone carry nothing the stubs do not."* A bare name adds nothing to a description a session already holds. What no description can assert is that **these are all of them**: a description claims what its own cell covers, and nothing in the stub surface says the set is closed, so a session meeting a situation no description claims cannot tell a gap in the practice from a gap in what it loaded. That is the whole of what the block now buys, and its opening sentence claims exactly that and no more.
+
+**3. The rule had three live sites and the third was inside the guard.** `skills/charter/SKILL.md` was the one the filing named. `skills/authoring/references/cell-structure.md` — which ships to every adopter — instructed them to write *"one line per cell your consumers receive, saying when to load it"*, and is corrected here; landing #503 without it would have shipped a practice whose own always-on surface had abandoned, on recorded evidence, what its authoring standard still prescribed. **The third was `check_charter_roster`'s own finding string in `tools/lint.py`**, which told the next session to *"Add one line naming it in the reserved form with the condition that loads it"* — the same prescription aimed at this repository's own sessions, firing at exactly the moment a session edits the roster, and so instructing a session to re-create the copy this change removes against a charter that by then says the opposite. **The session enumerated the sites and missed it; the cold seat that settled the artifact found it and failed the artifact on it.** [D-437]'s own *"meaning changes"* section records the identical shape — a ban restated at seven sites, first counted at two — and the lesson survives another turn: an exception has as many sites as the rule, and enumerating is not finding.
+
+**4. Records are not corrected, and three further hits are records.** `grep -rn "condition that loads"` returns, besides the finding string, `docs/admissions.jsonl`'s #404 row, [D-437]'s decision 8, and the decision log's README row for it. All three are append-only and none is maintained. D-437 is superseded by reading this entry, per the charter, not by editing it.
+
+**5. Check 29 is unchanged in logic and re-keyed in prose.** `CHARTER_ROSTER_HEADING` follows the renamed section — the check is keyed to that heading precisely so that renaming the section cannot silently disable it, and `_sync_charter_roster` in the test suite builds its synthetic charter from the constant rather than a literal, so both the added-cell arm (`test_lint.py:657`) and the heading arm (`:686`) follow the rename rather than merely surviving it. `check_charter_roster` reads reserved-form cell names out of the section and compares them to `roster.cell_sources`; a bare-name bullet satisfies that exactly as a conditioned bullet did. The check's docstring had already said *"The name set, never the load conditions"* as a claim about what is **checkable**; it now also says the names are all the roster **carries**.
+
+**6. The `filing` cell states the contract `persist-changes` already states, rather than a local observation.** Its new lead sentence says the script sits beside that file and that every path the cell writes resolves against the directory the file is in — `skills/filing/scripts/pool.py` in this tree — which is the shape `skills/persist-changes/SKILL.md:20` had already worked out, and which `skills/substrate/SKILL.md:21` requires: a path resolved against the directory of the file naming it works in a source repository and an installed plugin alike. It opens the paragraph that introduces the script rather than trailing it behind an *"In this order"* lead about a different failure, and it is scoped to **the cell** rather than to the fenced block, which is what reaches `skills/filing/scripts/pool-policy.json` two lines below the fence.
+
+**7. The fork #504 deferred is closed by the session, with its reason.** #504 left open whether to spell the paths from the repository root, to say once in the block that they are cell-relative, or to open the block with a `cd`. Root-relative is refused by decision 6's substrate rule — `skills/filing/scripts/pool.py` written into shipped prose resolves to nothing once the plugin is installed, trading a defect two sessions hit for one every adopter hits — and a leading `cd` fails the same way, needing a root to `cd` from. Nothing about the pick could have made the brief wrong, the brief admitting either outcome in its own words, so it was the artifact's to close rather than the owner's.
+
+**8. The admitted 377 characters are banked, not left standing.** #404 admitted them against `always-on-row` for the roster block. With the conditions gone the largest row is 16,283 against a 16,345 constant, so the lint's `admission-stale` finding fired and named the remedy; `docs/admissions.jsonl` carries an append with `chars: -377`. The constant does not move. Banking is an append naming what came back, never an edit of the row it banks.
+
+**9. The incident count in the shipped prose is two, and #492's is not attributed to a third.** The `filing` cell says two sessions concluded the script does not exist and that one published that absence into two draft filings before checking it. Those are the two consumers #504 records with quoted accounts. #492's *"One did not, and searched the tree for it"* is not counted as a third, there being no account this session could source it to.
+
+## The decision this supersedes, named
+
+**[D-437] decision 8**, which read: *"The charter declares the roster: every shipped cell other than itself, with the one condition that loads it... The line is a load condition and never a second description."* Its own premise was that a load condition and a description are different things, so the roster line was not a second copy. **That premise is what changed.** In practice the condition and the description's trigger clause say the same thing to a reader, one of them is always-on with no guard on its truth, and the copy was falsified four hours after it landed. D-437's decision 10a already conceded half of this — *"The names only, never the load conditions"* — as a limit on what the guard could check; this makes it a limit on what the roster carries.
+
+**What is not reversed.** D-437's roster remains coupled to the cell set by a check rather than by prose, and every other decision in it stands: the pointer graph, the cycle finding, the charter's dropped edges, the reach figure, the prose measure. Only the content of a roster line changes.
+
+## Meaning changes, named
+
+`skills/authoring/references/revising.md` requires every one where amendments are recorded.
+
+1. **A roster line stating a load condition stops being the prescribed form and becomes the refused one.** `cell-structure.md`'s first bullet said such a line *"is a load condition and never a second description"*; it now says the roster *"names them and does not say when to load them"*, and gives this practice's own drift as the reason. An adopter reading the old bullet would have built the thing this entry removes.
+2. **`check_charter_roster`'s finding changes what it instructs**, not what it detects. A session that added a cell after this lands is told to add a bare name and is told, in the same breath, that the condition belongs in the description and would be a second always-on copy here.
+3. **The charter's section heading changes**, which is a guard-visible change and not cosmetic: check 29 is keyed to it, and `CHARTER_ROSTER_HEADING` moves with it. A later session renaming one and not the other disables the check silently, which is the failure the heading assertion exists to make loud.
+
+## What was deliberately left out
+
+- **#521, the cause.** Both briefs exclude it; the owner's exception is what puts these two symptoms ahead of it.
+- **What a description should contain.** #503's brief excludes it by name.
+- **How descriptions and commands are kept in step.** #504's brief excludes it by name — that is #521's work.
+- **Generating the roster from the descriptions**, the first of the two ways out put to the owner. He took the second.
+- **The other eight roster lines' accuracy**, which #503 deferred. Moot: there is no line left to be wrong.
+- **Other cells presenting runnable commands with cell-relative paths**, which #504 deferred. Checked rather than carried: three shipped cells have a `scripts/` directory — `filing`, `persist-changes` and `authoring`. `persist-changes` already states the contract; `authoring` names its mechanism cell-relative at `skills/authoring/SKILL.md:40`, which is the same case and correct, and separately requires at `skills/authoring/references/frozen-documents.md:11` that a figures command *cited in a written document* be named from the reader's repository root, which is a different case. Nothing outside `filing` is changed.
+- **`#476`**, the `filing` cell's body size. This change grows it by 212 characters; #476 is that item and is sequenced behind this by #504's own brief.
+- **A criterion falsifying decision 3's finding-string site.** The artifact carries the corrected string verbatim, so it gets built, but no acceptance criterion has a falsifier reaching it. Adding one after the settling verdict would have added a claim no seat had judged. Recorded as a gap the review inherits rather than as a covered claim.
+
+## Figures
+
+Every figure this change turns on moves with the tree, and this entry freezes at its own commit. Derive them rather than reading a number here:
+
+- the always-on rows, the adopter total and each cell's body: `python tools/lint.py`
+- the governing-prose delta against this change's base: `python tools/figures.py --base 836a847`
+- the drift interval: `git log -1 --format=%ad --date=iso b492e06` and the same for `8a770e1`
+- the sites of the removed rule: `grep -rn "condition that loads" tools/ skills/ docs/ AGENTS.md`
+
+## Provenance
+
+Two affirmed briefs, both affirmed in conversation 2026-09-08 — *"affirm 503 and 504, post them."* [#503's](https://github.com/Grimblaz-and-Friends/tradecraft/issues/503#issuecomment-5594710547) and [#504's](https://github.com/Grimblaz-and-Friends/tradecraft/issues/504#issuecomment-5594711272), with affirmation records at [5594710724](https://github.com/Grimblaz-and-Friends/tradecraft/issues/503#issuecomment-5594710724) and [5594711519](https://github.com/Grimblaz-and-Friends/tradecraft/issues/504#issuecomment-5594711519).
+
+One pre-implementation artifact covers both, at [5595033028](https://github.com/Grimblaz-and-Friends/tradecraft/issues/503#issuecomment-5595033028). **Two cold-seat rounds: `would not`, then `would`.** Round 1 failed it on decision 3's third site. Round 2 was a fresh seat against the repaired text. Both seats built the drafted text into a scratch copy of `836a847` outside the repository and reproduced every figure the artifact states; round 2 reported that all five edits applied cleanly on first attempt from the drafted-text section alone.
+
+**One assertion an earlier draft of the artifact made falsely, and its retraction.** The boundary statement said `skills/persist-changes/SKILL.md` was the only other shipped cell with a `scripts/` directory. There are three. Corrected before the artifact settled, on round 1's own observation.
+
+**One of round 2's observations was rejected rather than conceded.** That seat reported the artifact's citation of `skills/authoring/SKILL.md:40` for its sentence naming where that cell ships its figures mechanism as a fabricated quotation, naming `skills/authoring/references/frozen-documents.md:11` as the true source. Re-checked at `836a847`: line 40 carries the cited sentence verbatim, and the `frozen-documents.md` line carries a differently-worded one about the same script. Both exist; the citation stood. Recorded because a seat's finding taken on trust would have written a false correction into this entry.
