@@ -153,13 +153,6 @@ WIRED_CI = (
     "      - env:\n"
     "          BASE_SHA: xyz\n"
     "        run: python tools/doctrine_callout.py --pr 1 --base $BASE_SHA\n"
-    # The ratchet's filing step is wired here for the same reason the callout is:
-    # check_ceiling_filing_job reds on its absence, and a fixture about some other
-    # check needs a lawful tree.
-    "  ceiling-filing:\n"
-    "    if: github.event_name == 'push'\n"
-    "    steps:\n"
-    "      - run: python tools/ceiling_filing.py --cause 1\n"
 )
 
 
@@ -1029,7 +1022,6 @@ LINT_CHECKS_IN_ORDER = (
     "check_sideways_deps",
     "check_cell_references",
     "check_depth_index",
-    "check_ceiling_filing_job",
     "check_doctrine_citations",
     "check_doctrine_references",
     "check_doctrine",
@@ -1066,15 +1058,46 @@ def test_the_module_docstring_enumerates_every_check_run_calls():
     (#239), so the source no longer names them -- and the scrape was reading
     prose as well as calls, which a docstring naming a sibling check would
     have broken.
+
+    **A retired slot holds its number, and the assertion is split in two to
+    say so** [#543]. These numbers are cited by number from `tools/lint.py`
+    itself, from `tools/roster.py`, from `tools/check_ask_declaration.py`,
+    from this suite, and from a frozen decision entry naming "lint check 19" --
+    so closing a gap silently repoints every one of those and makes an entry
+    nobody may edit false. The two things worth holding survive the gap: the
+    sequence has no holes, and every check `run` calls is enumerated. A slot is
+    retired by opening with that word, which is also what a reader needs.
     """
     called = tuple(check.__name__ for check in lint.CHECKS)
     assert called == LINT_CHECKS_IN_ORDER, (
         "CHECKS names checks this list does not, or in another order"
     )
-    numbered = re.findall(r"^\s*(\d+)\.\s", lint.__doc__, re.M)
-    assert [int(n) for n in numbered] == list(
-        range(1, len(LINT_CHECKS_IN_ORDER) + 1)
-    ), "the docstring's numbered checks do not match what run() calls"
+    items = re.findall(r"^\s*(\d+)\.\s+(\S+)", lint.__doc__, re.M)
+    assert [int(n) for n, _ in items] == list(range(1, len(items) + 1)), (
+        "the docstring's numbering has a hole in it; a retired check keeps its "
+        "number rather than letting the ones below it shift up"
+    )
+    live = [n for n, first in items if first != "retired."]
+    assert len(live) == len(LINT_CHECKS_IN_ORDER), (
+        "the docstring's live checks do not match what run() calls -- "
+        f"{len(live)} enumerated, {len(LINT_CHECKS_IN_ORDER)} called. If a "
+        "slot was just retired, the sentinel is the exact token `retired.` "
+        "as the first word after the number; any other spelling counts live"
+    )
+    # **The retired slot is pinned by number, not merely tolerated.**
+    # Without this, deleting slot 8 and shifting 9->8 .. 29->28 in one edit
+    # leaves the sequence hole-free and the live count right, so BOTH
+    # assertions above pass and the lint stays green -- probed by three
+    # stages of PR #544's review, which is how the gap turned out to be
+    # defended by prose alone. The numbers are cited as identifiers from
+    # tools/roster.py and from the frozen decision log, so closing the gap
+    # repoints every citation above it. #551 carries what is wrong with the
+    # scheme itself; this only holds it still.
+    assert ("8", "retired.") in items, (
+        "docstring slot 8 no longer reads `8. retired.` -- if the gap was "
+        "closed up, every by-number citation above 8 has silently moved; see "
+        "the slot's own note and #551"
+    )
 
 
 def make_entry(root: Path, number: int) -> None:
@@ -1795,12 +1818,8 @@ def test_deleting_the_callout_job_is_a_finding(tmp_path):
     no doctrine file, so nothing fires and nothing goes red. This is what makes
     such a PR fail a required check instead."""
     make_clean_tree(tmp_path)
-    # The ratchet's filing job is kept wired: this test is about the callout,
-    # and check_ceiling_filing_job reds on its absence for its own good reason.
     _ci(tmp_path, "on:\n  pull_request:\n\njobs:\n  lint-and-test:\n"
-                  "    steps:\n      - run: python tools/lint.py\n"
-                  "  ceiling-filing:\n"
-                  "    steps:\n      - run: python tools/ceiling_filing.py --cause 1\n")
+                  "    steps:\n      - run: python tools/lint.py\n")
     findings = lint.run(tmp_path)
     assert len(findings) == 1 and "no live `doctrine-callout:` job" in findings[0]
 
@@ -6821,7 +6840,7 @@ def test_a_fresh_index_is_never_told_it_is_a_mangled_copy(tmp_path):
     assert not any("not recognised" in f for f in findings), findings
 
 
-def test_a_cell_body_over_its_ceiling_files_and_never_refuses(tmp_path):
+def test_a_cell_body_over_its_ceiling_is_reported_and_never_refuses(tmp_path):
     """The ratchet reports; it does not redden.
 
     #455's affirmed brief carries the owner's words: the standard is splitting
@@ -6829,7 +6848,7 @@ def test_a_cell_body_over_its_ceiling_files_and_never_refuses(tmp_path):
     something that at all tells the agent not to add text to the skill". So the
     lawful arm here is not "a cell at its ceiling passes" -- it is that a cell
     *over* its ceiling passes too, and is reported somewhere a filing can be
-    raised from. The old guard's finding named shedding and routing content
+    raised from -- the board's refresh note, since #543. The old guard's finding named shedding and routing content
     out, which is the sentence that ruling forbids.
     """
     make_clean_tree(tmp_path)
@@ -6920,40 +6939,107 @@ def test_a_body_over_its_ceiling_needs_no_admission(tmp_path, monkeypatch):
     assert lint.run(tmp_path) == [], "an oversized body reddened the lint"
 
 
-def test_the_ceiling_filing_job_must_stay_wired(tmp_path):
-    """Both polarities on the guard that catches the mechanism's own removal.
+def test_the_over_ceiling_line_names_every_cell_over_largest_first(tmp_path):
+    """The line the board's refresh note copies, in both polarities.
 
-    The step that runs on merge is what makes filing independent of a session
-    choosing to file. Deleting it touches no cell and no doctrine file, so
-    without this guard the mechanism reverts to the rule that did not hold and
-    nothing goes red.
+    The note carries this reading because #543 took it off the merge job that
+    used to file it. What the note needs is one pasteable line, so the shape is
+    part of the contract: every cell `cells_over_ceiling` returns, its overshoot
+    beside it, and the largest overshoot first -- which is NOT the same order as
+    the block above it, that one being by body size.
     """
     make_clean_tree(tmp_path)
-    ci = tmp_path / ".github" / "workflows" / "ci.yml"
-    ci.parent.mkdir(parents=True, exist_ok=True)
-    wired = (
-        "name: ci" + NL
-        + "jobs:" + NL
-        + "  ceiling-filing:" + NL
-        + "    steps:" + NL
-        + "      - run: python tools/ceiling_filing.py --cause \"$CAUSE\"" + NL)
-    ci.write_text(wired, encoding="utf-8")
-    assert lint.check_ceiling_filing_job(tmp_path) == []
+    for name in ("wide-skill", "narrow-skill"):
+        (tmp_path / "skills" / name).mkdir(parents=True)
+    _write_cell(tmp_path / "skills" / "wide-skill", "x" * 400 + NL)
+    _write_cell(tmp_path / "skills" / "narrow-skill", "x" * 200 + NL)
+    original = lint.CELL_BODY_CEILING_CHARS
+    try:
+        # **The two orders are pulled apart deliberately.** wide-skill has the
+        # larger body and the SMALLER overshoot; narrow-skill has the smaller
+        # body and the larger one. An implementation that sorted by size would
+        # put wide-skill first and fail here, which is the whole reason these
+        # numbers are not the obvious ones.
+        lint.CELL_BODY_CEILING_CHARS = {
+            "skills/wide-skill/SKILL.md": 390,     # body 401, over by 11
+            "skills/narrow-skill/SKILL.md": 20,    # body 201, over by 181
+        }
+        rows = {rel: (size, ceiling)
+                for rel, size, ceiling in lint.cells_over_ceiling(tmp_path)}
+        assert rows["skills/wide-skill/SKILL.md"][0] > rows["skills/narrow-skill/SKILL.md"][0], (
+            "the fixture stopped pulling size and overshoot apart")
+        wide_over = rows["skills/wide-skill/SKILL.md"][0] - 390
+        narrow_over = rows["skills/narrow-skill/SKILL.md"][0] - 20
+        assert narrow_over > wide_over, (
+            "the fixture stopped pulling size and overshoot apart")
 
-    ci.write_text(wired.replace("  ceiling-filing:" + NL, ""), encoding="utf-8")
-    gone = lint.check_ceiling_filing_job(tmp_path)
-    assert len(gone) == 1 and "no live `ceiling-filing:` job" in gone[0], gone
+        line = lint.over_ceiling_note(tmp_path)
+        assert line.startswith('cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: '), line
+        assert line.count(chr(10)) == 0, "the note copies one line"
+        assert "wide-skill" in line and "narrow-skill" in line, line
+        assert line.index("narrow-skill") < line.index("wide-skill"), (
+            f"ordered by body size rather than by overshoot: {line}")
+        assert f"+{narrow_over:,}" in line and f"+{wide_over:,}" in line, (
+            f"the line does not carry how much each is over: {line}")
 
-    ci.write_text(
-        wired.replace("python tools/ceiling_filing.py --cause \"$CAUSE\"", "true"),
-        encoding="utf-8")
-    inert = lint.check_ceiling_filing_job(tmp_path)
-    assert len(inert) == 1 and "files nothing" in inert[0], inert
+        # Nothing over says so in words. An empty tail would read the same as a
+        # derivation that broke, which is the pair a reader must tell apart.
+        lint.CELL_BODY_CEILING_CHARS = {"skills/wide-skill/SKILL.md": 10_000}
+        assert lint.over_ceiling_note(tmp_path) == 'cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: ' + "none"
+    finally:
+        lint.CELL_BODY_CEILING_CHARS = original
 
 
-def test_this_repository_keeps_the_ceiling_filing_job_wired():
-    """The guard over the real tree, which is where it has to be true."""
-    assert lint.check_ceiling_filing_job(lint.ROOT) == []
+def test_the_lint_prints_the_over_ceiling_line_at_the_mandated_command(capsys):
+    """The line the board's refresh note copies must reach the command it names.
+
+    Every other pin here calls `over_ceiling_note` directly, so deleting the
+    single `print(over_ceiling_note(ROOT))` from `main()` left the whole suite
+    green and the lint at 0 findings while the line vanished -- probed by two
+    seats of PR #544's review. `docs/cells/board/SKILL.md` obliges every
+    refresh note to carry this line, so a refresher would run the mandated
+    command, find nothing to copy, and hold an obligation with no figure.
+
+    The sibling pin thirteen lines above records the same incident for the
+    cell-bodies block, in the same words: *"deleting the `print` from `main()`
+    (the block vanishes from the mandated command)"*. #552 carries the class --
+    that whether a line main() prints reaches the command is held by a test
+    somebody remembered to write.
+
+    **The expectation is the label, which is `over_ceiling_note`'s own
+    constant** -- asserting a whole rendered row would pin the tree's current
+    figures and red on any lawful growth, which is the refusal the owner's
+    #455 ruling took out of the guard.
+    """
+    lint.main()
+    out = capsys.readouterr().out
+    assert "cell bodies over where they stood" in out, out
+    # Not merely present: it must carry a result. All three of the note's
+    # states end in something -- a row list, `none`, or `not derived (...)` --
+    # so a label printed with an empty tail is a defect this catches.
+    line = [ln for ln in out.splitlines()
+            if ln.startswith("cell bodies over where they stood")]
+    assert len(line) == 1, line
+    assert line[0].rstrip().endswith(":") is False, (
+        f"the line printed its label and no result: {line[0]!r}")
+
+
+def test_the_over_ceiling_line_reports_a_broken_derivation_and_never_raises():
+    """Never fatal, for the reason `cell_body_note` records.
+
+    This line prints on the command the landing procedure mandates before every
+    commit, so an exception here answers that command with a traceback.
+    """
+    assert lint.over_ceiling_note(Path("no-such-root-for-543")) == 'cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: ' + "none", (
+        "an absent root is an ordinary tree")
+
+    original = lint.CELL_BODY_CEILING_CHARS
+    try:
+        lint.CELL_BODY_CEILING_CHARS = {None: "not a ceiling"}
+        broken = lint.over_ceiling_note(lint.ROOT)
+    finally:
+        lint.CELL_BODY_CEILING_CHARS = original
+    assert broken.startswith('cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: ' + "not derived ("), broken
 
 
 def test_an_orphan_depth_file_is_a_finding(tmp_path):
