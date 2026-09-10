@@ -1104,7 +1104,8 @@ COST_FIELDS = ("dispatches", "subagent_tokens")
 COST_NULLABLE = frozenset({"subagent_tokens"})
 # **`dispatches` is positive, not merely non-negative.** Every lane this
 # practice defines is staffed by fresh dispatches -- the routine lane by a cold
-# pass and a defense, the panel lane by four or five seats, a defense and a
+# pass, a second seat where the change amends governing prose, and a defense;
+# the panel lane by four or five seats, a defense and a
 # judge -- so a completed review that made none of them is not a review that
 # ran. Zero was lawful until an external pass found it, and it was the shape
 # that made `{"dispatches": 0, "subagent_tokens": 500000}` -- no subagent ran,

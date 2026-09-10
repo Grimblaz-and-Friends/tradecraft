@@ -6639,8 +6639,9 @@ def test_a_review_that_claims_no_dispatch_is_a_finding(tmp_path, monkeypatch):
     """Zero is not an abstention and not a lawful count.
 
     Every lane this practice defines is staffed by fresh dispatches -- the
-    routine lane by a cold pass and a defense, the panel lane by four or five
-    seats, a defense and a judge -- so a completed review that made none of
+    routine lane by a cold pass, a second seat where the change amends
+    governing prose, and a defense; the panel lane by four or five seats, a
+    defense and a judge -- so a completed review that made none of
     them is not a review that ran. An earlier version of this suite asserted
     the opposite in its name and its docstring, on a premise
     `skills/adversarial-review/SKILL.md` falsifies; an external pass found it.
