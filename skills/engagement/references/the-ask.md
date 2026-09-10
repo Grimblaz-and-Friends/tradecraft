@@ -32,4 +32,4 @@ gh search issues --repo <owner>/<repo> --label <the mark> --state open --include
 
 **The mark comes off when the ask is answered**, by the session that reads the answer. A closed issue or a merged pull request leaves the set on its own, so nothing has to be swept.
 
-**Where the owner cannot be reached at all, the waiting rule (`../references/waiting.md`) governs**, and it decides whether this section applies — read it before putting an ask into an absence rather than after.
+**Where the owner cannot be reached at all, the waiting rule (`../references/waiting.md`) governs**, and it decides whether the ask block and its mark above apply — read it before putting an ask into an absence rather than after.
