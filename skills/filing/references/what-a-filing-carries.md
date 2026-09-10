@@ -4,6 +4,8 @@
 
 **Carried at creation:** the want or defect in plain terms; the evidence that makes it real; the two ratings this cell's body states; why it will get picked up; the ties (`../references/naming-a-tie.md`); who found it, in the line below; what discovery must settle, named as deliberately deferred; and, where the subject is governing prose, the incident or the run below.
 
+**An extending comment and a finding recorded under a cause carry that list with three exceptions**, which `../references/the-search.md` states: neither carries the ratings, neither owes the bar below, and the tie is the issue the comment lands on.
+
 **Left for pickup:** the design framing, the options and their argument, the remedy design, the pre-implementation artifact. Filing is not convergence.
 
 **Record what happened; do not decide what to do.** The line is not how much a filing carries but which kind of thing it carries. Evidence — a file and line, a quoted sentence, a count, an incident that occurred — survives however far the vocabulary moves, *provided it is written as an observation anyone can re-run rather than as a citation into vocabulary that can retire*. Design — options, remedy shapes, names for structures — is written in today's vocabulary and decays with it. [#38](https://github.com/Grimblaz-and-Friends/tradecraft/issues/38) is the exhibit for both halves and for the proviso: its frame was dead vocabulary before anyone opened it, and the observation underneath survived only because its successor could restate it against an authority that still existed.

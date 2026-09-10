@@ -10,6 +10,8 @@
 
 `../scripts/pool.py` does the mechanics, and the judgment -- what a rating should be, what the case against a candidate is -- stays the session's:
 
+**Every path in the block resolves against the directory this file is in**, so a session whose shell is elsewhere prefixes that directory rather than the cell's — the rule the cell's body states, applied to the file you are reading.
+
 **In this order.** A consumer setting the pool up read this block top to bottom and it failed on the third line, `shortlist` being gated on work the two lines above it do. Add `--repo OWNER/REPO` to any of them when you are not inside the repository's own checkout, **before the subcommand** — it is a global option, and appended after one it is an unrecognised argument. A refresher lost two tries of three to reading it as one more thing on the line.
 
 ```bash
@@ -26,7 +28,7 @@ python ../scripts/pool.py frame 123                           # the owner picked
 python ../scripts/pool.py unframe 123                         # the brief sent it back to the pool
 ```
 
-`../scripts/pool-policy.json` carries the labels, the bands, the tie-break and the shortlist size; a repository overrides it with a file named `pool-policy.json` at its own root -- that one by its bare name, the only path this cell's path rule does not reach, and one that wants a wholly different approach says so in its own doctrine and does not run any of this.
+`../scripts/pool-policy.json` carries the labels, the bands, the tie-break and the shortlist size; a repository overrides it with a file named `pool-policy.json` at its own root -- that one by its bare name, the only path the path rule in this cell's body does not reach, and one that wants a wholly different approach says so in its own doctrine and does not run any of this.
 
 **An unrated filing is not a low-rated one.** It sorts below everything rated and is reported as unrated, because it has not been judged harmless -- it has not been judged.
 

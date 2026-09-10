@@ -76,7 +76,7 @@ def body_for(rel: str, size: int, ceiling: int) -> str:
     """The item's body. The measurement is its evidence and says so.
 
     The provenance element sits with the measurement, under `## The
-    observation`, because that is where `skills/filing/SKILL.md` puts it and
+    observation`, because that is where `skills/filing/references/what-a-filing-carries.md` puts it and
     this body is the worked example every filer here copies.
     """
     return (
@@ -101,7 +101,7 @@ def body_for(rel: str, size: int, ceiling: int) -> str:
         f"The disqualifier decides which paragraphs, and that is a judgment this "
         f"item does not make.\n\n"
         f"Its whole evidence is the measurement above, which is the carve-out "
-        f"`skills/filing/SKILL.md` names -- there is no incident to attach, "
+        f"`skills/filing/references/what-a-filing-carries.md` names -- there is no incident to attach, "
         f"because nothing has gone wrong yet.\n"
     )
 
@@ -147,7 +147,7 @@ def link_sub_issue(cause_id: str, symptom: str, repo: str | None) -> None:
 
     No `gh` subcommand sets this link -- checked against 2.80.0, where neither
     `issue create` nor `issue edit` carries a parent flag -- so it is a mutation
-    over the two node ids, which is the route `skills/filing/SKILL.md` documents.
+    over the two node ids, which is the route `skills/filing/references/naming-a-tie.md` documents.
     GitHub refuses a second parent, so re-running this on an item already linked
     is an error rather than a silent no-op, and the caller only reaches it for an
     item it just created.
