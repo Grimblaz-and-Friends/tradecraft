@@ -16,7 +16,7 @@ The board is a GitHub Projects v2 project titled `tradecraft board`, linked to t
 
 ## Reading it
 
-**The answer is the first item that is not `In progress`, `In flight`, `Blocked` or `Deferred`, and not blank.** Position alone is not the answer and never was: the top of the board is usually something already being worked. A consumer that reads position 1 and stops has read the board wrong.
+**The answer is the first item that is not `In progress`, `In flight`, `Blocked` or `Deferred`, and not blank.** Position alone is not the answer and never was: the top of the board is usually something already being worked. A consumer that reads position 1 and stops has read the board wrong. **Where a row out of contention shares the answer's bundle name, it is usually a symptom held while its cause is open** — `references/refreshing-it.md` carries the three shapes a bundle takes, and the bundle column is the only place any of them shows.
 
 ```
 python tools/board.py next     # the answer, with its title and what is behind it
