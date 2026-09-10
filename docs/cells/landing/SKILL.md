@@ -9,8 +9,8 @@ description: This repository's own procedure for taking a change from a fresh br
 
 ## Where this cell's depth lives
 
-- **Deciding where the flow starts for the change in hand — whether it is mechanical work, or a change whose delivery is the truth of some text** → `references/where-the-flow-starts.md`: the mechanical exemption and whose list it is, the two neighbouring lists it is not, and the slice of build that precedes the artifact on a truth-of-text change.
-- **Writing a pull request body here, checking a draft of one before anything is opened, or returning to one already open** → `references/the-pull-request-body.md`: the waiting-on-you line and what its green check does not say, the closing references and the spelling GitHub parses, and everything a change fixing a cause disposes of on the way out, closing on the plugin version a shipped-zone change bumps.
+- **Your change may be mechanical, or may deliver the truth of some text, and you want to know what that changes about the order above** → `references/where-the-flow-starts.md`: which step each skips and which it never skips, whose list decides *mechanical* and the two neighbouring lists it is not, and the slice of build that precedes the artifact on a truth-of-text change.
+- **Anything owed at or after the commit — whether a shipped-zone change owes a version bump, what the pull request body must say, or what is left before this change can merge** → `references/the-pull-request-body.md`: the waiting-on-you line and what its green check does not say, the closing reference or the line saying it closes none, the spelling GitHub parses, everything a change fixing a cause disposes of on the way out, and the plugin version a shipped-zone change bumps.
 
 ## The flow
 
@@ -18,8 +18,4 @@ Branch first (`main` refuses direct pushes) → settle the brief, then the artif
 
 **The stretch from the pull request through the review is run by the session that opened it.** Nothing routes a pull request to another one — the pool raises issues, and the ask mark, which a pull request may carry, routes to the owner and never to a session — so a stretch handed on at the pull request is handed to nobody: [PR #451](https://github.com/Grimblaz-and-Friends/tradecraft/pull/451) deferred both its experience session and its review to a fresh session in its own body, and merged unreviewed the same day it opened, `2026-09-07T02:55:57Z` to `2026-09-07T20:18:50Z`. [D-496]
 
-**Not every change starts that chain at its first step**, mechanical work having no brief and no artifact to settle, and a change delivering the truth of some text taking a slice of build before the artifact. Which work is which, and why each is stated here at all: `references/where-the-flow-starts.md`.
-
-## What the pull request owes
-
-**The body carries a line declaring which marked asks this change is waiting on, and a closing reference for every issue its fix discharged.** What each of those must say, the check CI runs over the first and what a green one is not evidence of, and everything a change fixing a cause disposes of on the way out: `references/the-pull-request-body.md`.
+**Not every change starts that chain at the brief**, mechanical work having none to settle and no artifact either, and a change delivering the truth of some text taking a slice of build before the artifact. Which work is which — the doctrine's Convergence bullet, loaded in every session already — and why each is stated at all: `references/where-the-flow-starts.md`.

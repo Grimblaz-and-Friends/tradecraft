@@ -1043,7 +1043,19 @@ def test_a_runtime_path_the_repo_did_not_write_survives_capture(repo, monkeypatc
 # mutation shows it reaches. The version of this test that shipped in the first
 # round of #304 was the third instance, in the file documenting the first two.
 # Prove any new branch with a mutation that drops its citation. [#304]
-def test_flow_citation_names_a_path_that_carries_the_flow():
+BUMP_RULE = "A shipped-zone change bumps the plugin version."
+
+
+def test_flow_citation_names_a_path_that_carries_the_bump_rule():
+    """The citation must land on the rule, not merely on a file or a heading.
+
+    This pin asserted `"## The flow" in body` until #514, which split the
+    landing cell and moved the rule into that cell's depth. The heading stayed
+    where it was, so the assertion held and the citation was left pointing at a
+    section that no longer states the obligation -- the same failure as #291,
+    which is what this test was bought to stop. A heading is not the rule, and
+    only the rule's own sentence reds when the rule moves.
+    """
     root = Path(__file__).resolve().parent.parent.parent
     rel = cvb.FLOW_CITATION.split(",")[0]
     target = root / rel
@@ -1052,11 +1064,10 @@ def test_flow_citation_names_a_path_that_carries_the_flow():
         "the citation was left behind by a move"
     )
     body = target.read_text(encoding="utf-8")
-    # The heading, not a bare substring: the message below says "heading", and
-    # a loose match would pass on incidental prose mentioning the flow.
-    assert "## The flow" in body, (
-        f"FLOW_CITATION sends a session to {rel!r} for 'The flow', and that "
-        "heading is not there"
+    assert BUMP_RULE in body, (
+        f"FLOW_CITATION sends a session that forgot the bump to {rel!r}, and "
+        f"the rule it needs -- {BUMP_RULE!r} -- is not there. Repoint the "
+        "citation at whatever file states it now."
     )
 
 

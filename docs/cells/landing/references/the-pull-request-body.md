@@ -1,6 +1,6 @@
-# What the pull request body carries
+# What a change owes at and after the commit
 
-**Loaded when** you are writing a pull request body here, checking a draft of one before anything is opened, or returning to one that is already open.
+**Loaded when** you are asking whether a shipped-zone change owes a plugin version bump, writing a pull request body here, checking a draft of one before anything is opened, returning to one already open, or listing what this change still owes before it can merge.
 
 **The body carries a line beginning `**Waiting on you:**`**, naming the marked asks this change is waiting on or saying it is waiting on nothing. The `engagement` cell makes the mark what puts an ask; this is where the change says whether it put one. `python tools/check_ask_declaration.py --pr N` refuses a body without it, and CI runs it on every pull request — **it checks the line is present and never that it is true**, deciding whether an unmarked ask is buried in a body being a content judgement that does not survive automation here. A green check is not evidence the answer is right. What the line buys is the moment: it falls where the whole body is in front of you, so a buried ask has to be denied rather than merely omitted. `--body-file PATH` checks a draft body before anything is opened.
 
