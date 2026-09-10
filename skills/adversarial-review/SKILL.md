@@ -20,7 +20,7 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 ## Choosing the shape
 
 - **Routine change**: one adversarial pass that reads the artifact **cold**, then defense — the terminal stage on this lane — then the executable floor on the fixes. **Where it is unclear which lane applies, this one runs.**
-- **Substantial artifact**: the four-seat panel, then defense, then judge, then the executable floor on the fixes. **The panel is bought — by newly written foundational prose, new scripts, high blast radius, or a risk the review names.** **Five where a panel already bought is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both, which is not a widening. Risk also buys a seat beyond the applicable count.
+- **Substantial artifact**: the four-seat panel, then defense, then judge, then the executable floor on the fixes. **The panel is bought — by newly written foundational prose, new scripts, high blast radius, or a declared risk.** **Five where a panel already bought is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both, which is not a widening. It also buys a seat beyond the applicable count.
 - **The report records which lane was chosen and why, in one line** — an unrecorded shape choice can never be audited later. **What earlier reviews cost is evidence for this choice and never a ceiling to come under** — a review that needed its cost was worth it.
 
 ## The pipeline, and where each stage's depth lives
