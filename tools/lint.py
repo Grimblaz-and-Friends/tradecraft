@@ -410,14 +410,14 @@ CELL_BODY_CEILING_CHARS = {
     # here would be the smuggled second limit that test pins against.
     "skills/engagement/SKILL.md": 28_090,
     "skills/filing/SKILL.md": 5_235,
-    "docs/cells/board/SKILL.md": 17_916,
+    "docs/cells/board/SKILL.md": 5_106,
     "skills/spikes/SKILL.md": 17_136,
     "skills/experience-session/SKILL.md": 11_802,
     "skills/adversarial-review/SKILL.md": 9_855,
     "skills/authoring/SKILL.md": 7_129,
     "docs/cells/records/SKILL.md": 2_744,
     "skills/persist-changes/SKILL.md": 5_549,
-    "docs/cells/landing/SKILL.md": 5_368,
+    "docs/cells/landing/SKILL.md": 3_194,
     "docs/cells/siting/SKILL.md": 4_034,
     "skills/substrate/SKILL.md": 3_046,
 }

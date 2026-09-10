@@ -193,6 +193,15 @@ def test_this_repository_documents_the_marker_it_enforces():
     A marker changed here and not in the landing cell would refuse every
     compliant body; changed there and not here, the guard would enforce a form
     nobody is told to write.
+
+    The cell is read whole -- its body and every file of its depth -- rather
+    than its SKILL.md alone. The rule this pins is that the landing cell tells
+    an author the form; which file of that cell states it is the cell's own
+    shape to change, and pinning the body would have this test fail the next
+    time the marker sheds into `references/` while nothing had drifted.
     """
-    cell = (ROOT / "docs" / "cells" / "landing" / "SKILL.md").read_text(encoding="utf-8")
+    cell = "".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / "docs" / "cells" / "landing").rglob("*.md"))
+    )
     assert MARKER in cell

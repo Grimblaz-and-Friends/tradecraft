@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""A PR touching the shipped zone bumps the plugin version (the `landing` cell's "The flow").
+"""A PR touching the shipped zone bumps the plugin version (the `landing` cell's
+`references/the-pull-request-body.md`, which is where that rule lives).
 
 Measured as **the pull request against its merge base**, never per-commit: this
 repo squash-merges, so the PR is the commit that lands, and a per-commit reading
@@ -65,7 +66,13 @@ MANIFEST = ".claude-plugin/plugin.json"
 # the population that reads this message -- followed it to a file where the
 # word does not appear. A test pins the string against the tree so the next
 # move takes it along. [#304]
-FLOW_CITATION = "docs/cells/landing/SKILL.md, 'The flow'"
+# It happened a second time at #514, which split the landing cell and moved the
+# rule into that cell's depth -- and the pin stayed green, because it asserted
+# the *heading* the split left behind rather than the rule. So this now names a
+# depth file, which is where the rule is, and the pin below asserts the rule's
+# own sentence: a citation checked against a heading survives exactly the move
+# it exists to catch.
+FLOW_CITATION = "docs/cells/landing/references/the-pull-request-body.md"
 # The manifest field whose edit cannot count as a shipped-zone change, because
 # raising it is what this guard demands and counting it would make every bump
 # its own justification. The exemption is this FIELD and not the file: the
