@@ -21,7 +21,7 @@ body states its own provenance, and classifies on that:
              shows every phrase matched and a human decides
   unstated   no provenance phrase found anywhere in the body
 
-A body carrying the element `skills/filing/SKILL.md` requires -- one line under
+A body carrying the element `skills/filing/references/what-a-filing-carries.md` requires -- one line under
 `**Provenance:**` whose first word is one of the five origins -- is classified
 on that word alone, and the row's basis reads `stated`. Nothing else in the
 body can move it, which is the point: the origin is a key, not a phrase to be
@@ -72,7 +72,7 @@ from winio import utf8_stdio  # noqa: E402
 TRIAL_OPENED = "2026-09-04T22:34:00Z"
 BASELINE_WEEKS = 3
 
-# The closed list of origins `skills/filing/SKILL.md` states, and the classes a
+# The closed list of origins `skills/filing/references/what-a-filing-carries.md` states, and the classes a
 # row may take. The origins are the first five: `ambiguous` and `unstated` are
 # what the classifier says about a body, never what a body says about itself.
 ORIGINS = ("use", "review", "owner", "session", "instrument")
