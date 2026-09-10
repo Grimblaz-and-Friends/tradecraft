@@ -59,16 +59,25 @@ Checks:
      that cell's SKILL.md body, and every references/ file a body
      names exists. An orphan routes no reader and is found only by
      enumeration; a dangling entry reads correctly and leads nowhere.
-  8. ceiling-filing job: .github/workflows/ci.yml still carries a live
-     `ceiling-filing:` job and it still runs tools/ceiling_filing.py. The
-     step cannot catch its own deletion: removing it touches no cell and
-     no doctrine file, so filing would stop with nothing going red.
+  8. retired. A guard holding the merge-time ceiling-filing job wired
+     stood here until PR #544 replaced that job with a line in the board's
+     refresh note, so there is no job to hold. The numbers below are NOT
+     shifted up to close the gap, because these numbers are how this file's
+     checks are cited -- from this file, from tools/roster.py, and from the
+     decision log. Closing it would repoint every citation ABOVE 8 and leave
+     those at or below it alone, silently in both cases.
+     **Do not read the scheme as sound.** It is unguarded and already wrong
+     in three places, which is #551 -- D-232's "lint check 19" names
+     item 21, and two more are recorded there. That is an argument for
+     giving citations a repair route, not for renumbering underneath them.
+     test_the_module_docstring_enumerates_every_check_run_calls pins this
+     slot by number, so closing the gap now reds.
   9. doctrine citations: every [D-N] the doctrine writes names an entry that
      exists. The log's own references are check 15's; a marker in the always-on
      surface was checked by nothing, which the outflow rule makes load-bearing
      by instructing a session to compress prose into one.
   10. doctrine references: every repo path the doctrine writes resolves.
-     Check 13 covers the decision log, which is frozen exhaust, so the
+     Check 15 covers the decision log, which is frozen exhaust, so the
      surface carrying the live rules was the one nothing checked --
      repointing the doctrine's own docs/values.md mention left lint
      green while the identical break inside an entry fired. Scoped to
@@ -201,7 +210,8 @@ Checks:
     with characters still charged, belongs to checks 4 and 26 -- the two that
     still know a budgeted surface's size -- and not to this one (#334). It
     reached a third, the cell body, until #455 made a body's ceiling something
-    that files rather than refuses: nothing is charged against a body now, so
+    that reports rather than refuses (it filed until PR #544; the reading now
+    goes to the board's refresh note): nothing is charged against a body now, so
     there is no re-arming finding to own there.
 28. settling index: docs/settling.jsonl parses and every row carries the
     keys the `records` cell names. The record is append-only and doctrine
@@ -365,7 +375,7 @@ ALWAYS_ON_ADOPTER_BUDGET_CHARS = 11_508
 POINTER_BUDGET_CHARS = 500
 # The cell-body ceilings. The long block that stood here argued a sparse map of
 # enforced budgets and was left behind by #455, which made the map complete, the
-# numbers measured, and the ceiling something that files rather than refuses --
+# numbers measured, and the ceiling something that reports rather than refuses --
 # it described none of that and contradicted the comment three lines below it,
 # while ending on the warrant that a session raising the constant reads here
 # first. Its history is in D-169, D-177 and D-184; its rejected reasoning is in
@@ -377,11 +387,19 @@ CELL_BODY_CEILING_CHARS = {
     # chosen -- no cell's ceiling is a claim about what its body ought to be,
     # which is #328's question and is still open.
     #
-    # **Nothing here fails the lint.** A body over its ceiling raises a pool
-    # item and blocks nothing: the owner ruled on #455 that the standard is
+    # **Nothing here fails the lint.** A body over its ceiling is reported
+    # and blocks nothing: the owner ruled on #455 that the standard is
     # splitting and the ceiling directs to filing, not cutting content, and
     # that it may not tell a session not to add text. cells_over_ceiling()
-    # below is what reads this, and ci.yml is what files from it.
+    # below is what reads this, and over_ceiling_note() is what carries the
+    # reading to the board's refresh note, where the owner reads it.
+    # **PR #544 amended the first half of that ruling and left the second
+    # standing.** Until then a merge-time job filed one pool item per cell
+    # over; across the eight merges it was live for it filed on two, its
+    # per-cell dedupe holding the rest, and the owner ruled the reading
+    # belongs in the refresh note rather than in an item. Nothing here
+    # refuses, trims, or holds back an addition, which is the half that did
+    # not move.
     #
     # A cell that sheds depth re-baselines here in the same change, so the
     # ratchet follows the split down. The three body: rows in
@@ -408,8 +426,8 @@ CELL_BODY_CEILING_CHARS = {
 def cells_over_ceiling(root: Path) -> list[tuple[str, int, int]]:
     """Every cell body above where it stood, as (path, size, ceiling).
 
-    Read by ci.yml, which raises one pool item per cell over its ceiling, and
-    by ci.yml alone. It returns rows and
+    Read by over_ceiling_note() below, which prints them as the one line the
+    board's refresh note copies, and by that alone. It returns rows and
     never a finding, because a finding is what would make growth a refusal --
     the thing the owner's ruling forbids.
 
@@ -776,10 +794,6 @@ TOKEN = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 
 # The doctrine callout's wiring, matched by position rather than by substring:
 # a commented-out job still contains every substring it had when it was live.
-CEILING_JOB_HEADER = "  ceiling-filing:"
-CEILING_RUNS_SCRIPT = re.compile(
-    r"^\s+(?:-\s+)?.*python tools[\\/]ceiling_filing\.py\b", re.M)
-
 JOB_HEADER = "  doctrine-callout:"
 # All three lawful spellings of the trigger, and none of `pull_request_target`
 # (the `\b` cannot end before an underscore). A guard that fails a required
@@ -952,6 +966,27 @@ UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {
     ("D-186-2026-08-25-windows-text-mode-defaults.md", 9,
      "hooks/emit_charter.py"):
         "target retired by PR #222 with the lifecycle-hook fallback it implemented",
+    # Five references to one target, retired together by #543, which replaced
+    # the merge-time filing job with a line in the board's refresh note. Each
+    # sentence characterises the script -- what it ran on, what a guard caught
+    # in it, what it would have been unable to obey -- so none is a bare
+    # locator, and there is no new home to repoint to.
+    ("D-480-2026-09-07-the-split-is-the-shape.md", 25,
+     "tools/ceiling_filing.py"):
+        "target retired by PR #544, which moved the reading to the refresh note",
+    ("D-480-2026-09-07-the-split-is-the-shape.md", 43,
+     "tools/ceiling_filing.py"):
+        "target retired by PR #544; the sentence records a guard finding against it",
+    ("D-491-2026-09-07-one-owner-for-cold-one-route-to-the-tree.md", 25,
+     "tools/ceiling_filing.py"):
+        "target retired by PR #544, which is also what makes the sentence's "
+        "'raises a pool item' false of any later tree",
+    ("D-496-2026-09-07-a-handoff-that-reaches-nobody.md", 26,
+     "tools/ceiling_filing.py"):
+        "target retired by PR #544; the sentence names it as an origin exhibit",
+    ("D-496-2026-09-07-a-handoff-that-reaches-nobody.md", 44,
+     "tools/ceiling_filing.py"):
+        "target retired by PR #544; the sentence names it as a rejected shape's exhibit",
 }
 
 REVIEW_FIELDS = {"date", "artifact", "lane", "report"}
@@ -2180,9 +2215,9 @@ def check_doctrine(root: Path) -> list[str]:
     # `check_admissions` reports what it dropped, so the malformed-record
     # finding is not repeated at every site the record touches.
     # A cell body over its ceiling raises no finding here and never has since
-    # #455: the ceiling directs to filing rather than to cutting, so it cannot
+    # #455: the ceiling reports rather than cutting, so it cannot
     # redden the lint or refuse a commit. cells_over_ceiling() is what reads it
-    # and ci.yml is what acts on it.
+    # and over_ceiling_note() is what reports it [D-544].
     # An adopter loads the installed charter because its repository instructions
     # say so. In THIS source repository the local charter reaches the session
     # through an import in a file that is itself imported. Checked by shape
@@ -5390,41 +5425,6 @@ def check_depth_index(root: Path) -> list[str]:
     return findings
 
 
-def check_ceiling_filing_job(root: Path) -> list[str]:
-    """The ratchet's filing step must still be wired into CI.
-
-    It has the sibling's problem in a sharper form. `check_doctrine_callout`
-    exists because a pull request deleting that job touches no doctrine file,
-    so nothing goes red. Here the same is true and the stake is larger: the
-    step running on merge is the whole of what makes filing independent of a
-    session choosing to file, which is the thing two closed issues failed to
-    get by writing the rule down better (#245, #302, #455). Delete the job and
-    the mechanism reverts to the rule that did not hold, silently.
-
-    Presence only. Whether the job is armed is a repository variable this
-    guard cannot read -- that gap is #482's, not this one's -- so what is
-    checked is that the job exists and still runs the script.
-    """
-    findings = []
-    workflow = root / ".github" / "workflows" / "ci.yml"
-    if not workflow.is_file():
-        return findings
-    text = workflow.read_text(encoding="utf-8", errors="replace")
-    lines = text.splitlines()
-    if not any(line.rstrip() == CEILING_JOB_HEADER for line in lines):
-        findings.append(
-            "ceiling-filing: no live `ceiling-filing:` job in "
-            ".github/workflows/ci.yml -- a cell body passing its ceiling would "
-            "raise no pool item and nothing would go red, which is the failure "
-            "the step exists to prevent [#455]")
-        return findings
-    if not CEILING_RUNS_SCRIPT.search(text):
-        findings.append(
-            "ceiling-filing: the `ceiling-filing:` job does not run "
-            "tools/ceiling_filing.py, so the job is present and files nothing")
-    return findings
-
-
 CHECKS = (
     check_zone_wall,
     check_harness_tokens,
@@ -5434,7 +5434,6 @@ CHECKS = (
     check_sideways_deps,
     check_cell_references,
     check_depth_index,
-    check_ceiling_filing_job,
     check_doctrine_citations,
     check_doctrine_references,
     check_doctrine,
@@ -5558,6 +5557,46 @@ def cell_body_note(root: Path) -> str:
         return f"cell bodies: not derived ({type(exc).__name__}: {exc})"
 
 
+def over_ceiling_note(root: Path) -> str:
+    """Every cell body over where it stood, as the one line a refresh note copies.
+
+    The `board` cell obliges the refresh note to carry this reading, beside the
+    charter's reach. **One line, because a note copies a line and assembles a
+    block by hand** -- and assembling by hand is where a figure stops matching
+    the tool that derived it. The block above already prints every body against
+    its ceiling; what this adds is the subset a reader is being asked to act on,
+    in a form that survives being pasted.
+
+    **Ordered by overshoot, not by size.** The quantity the note reports is how
+    far past a body has gone, so the largest overshoot is what a reader wants
+    first; the largest body may not be over at all.
+
+    Never fatal and never silent, for the two reasons `cell_body_note` records.
+    `none` is written rather than left as an empty tail, because *nothing is
+    over* and *the derivation broke* are the two states a reader must tell
+    apart and an absent line says neither.
+    """
+    # **The scope is in the label because the label is what gets pasted.**
+    # The block above prints one row per cell in the roster, charter
+    # included; this reads CELL_BODY_CEILING_CHARS, which excludes the
+    # charter deliberately -- its body is a term in every always-on row and
+    # check_always_on_budget sizes it there. So the two adjacent outputs
+    # count different populations, and a consumer read the block's 13 rows
+    # as this line's universe [PR #544 review, M18/M24].
+    label = ("cell bodies over where they stood -- every cell but the "
+             "charter, which is sized against the always-on row instead: ")
+    try:
+        rows = cells_over_ceiling(root)
+        if not rows:
+            return label + "none"
+        rows = sorted(rows, key=lambda row: row[1] - row[2], reverse=True)
+        return label + "; ".join(
+            f"{rel.rsplit('/', 2)[-2]} +{size - ceiling:,}"
+            for rel, size, ceiling in rows)
+    except Exception as exc:  # noqa: BLE001 -- reported, never fatal
+        return f"{label}not derived ({type(exc).__name__}: {exc})"
+
+
 def pointer_reach_note(root: Path) -> str:
     """What a session reaches through each cell's pointers, before it writes.
 
@@ -5630,8 +5669,9 @@ def admission_note() -> str:
         f"row, the adopter total, a cell description "
         f"-- a needed item that will not fit is admitted on {ADMISSIONS} "
         f"(a cell body is not among them: it is measured against where it "
-        f"stood, and passing that raises a pool item rather than refusing "
-        f"anything, so nothing there is admitted and nothing is cut) "
+        f"stood, and passing that is reported in the board's refresh note "
+        f"rather than refusing anything, so nothing there is admitted and "
+        f"nothing is cut) "
         f"rather than trimmed until it fits: a row carrying "
         f"{', '.join(ADMISSION_FIELDS)}, where ceilings names one or more of "
         f"{keys}. The constant does not move, so an admission buys its own "
@@ -5646,6 +5686,7 @@ def main() -> int:
         print(finding)
     print(always_on_note(ROOT))
     print(cell_body_note(ROOT))
+    print(over_ceiling_note(ROOT))
     print(pointer_reach_note(ROOT))
     print(admission_note())
     print(f"lint: {len(findings)} finding(s)")

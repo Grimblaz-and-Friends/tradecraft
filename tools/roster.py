@@ -134,12 +134,12 @@ class Surface(NamedTuple):
 # file whose own `verify()` records that a stated count of its shapes has been
 # wrong twice running. **No command finds them either** -- the first attempt
 # named a line-based `grep` for the two runtime names, and three of the sites
-# carry neither name: check 17's registry line names only the two directories,
+# carry neither name: check 19's registry line names only the two directories,
 # and `tools/figures.py`'s comment and its emitted `basis` string say "both
 # read AGENTS.md and only Claude Code reads CLAUDE.md". At the time of writing
 # they include this file's module docstring,
 # `Surface`'s docstring, `main()`'s argparse description, `tools/lint.py`'s
-# check 17 registry line and `check_project_roster` docstring, two sites in
+# check 19 registry line and `check_project_roster` docstring, two sites in
 # `tools/figures.py` -- one of them emitted output -- and a comment in
 # `tools/tests/test_repo_figures.py`. Deriving them from here was priced and
 # declined for a row nobody has asked for. [PR #278 review, M11, F5]
