@@ -60,18 +60,24 @@ Checks:
      names exists. An orphan routes no reader and is found only by
      enumeration; a dangling entry reads correctly and leads nowhere.
   8. retired. A guard holding the merge-time ceiling-filing job wired
-     stood here until #543 replaced that job with a line in the board's
+     stood here until PR #544 replaced that job with a line in the board's
      refresh note, so there is no job to hold. The numbers below are NOT
-     shifted up to close the gap: they are cited from this file, from
-     tools/roster.py, from tools/check_ask_declaration.py, from the suite,
-     and from a decision entry that names "lint check 19" and is frozen.
-     Renumbering repoints every one of those silently.
+     shifted up to close the gap, because these numbers are how this file's
+     checks are cited -- from this file, from tools/roster.py, and from the
+     decision log. Closing it would repoint every citation ABOVE 8 and leave
+     those at or below it alone, silently in both cases.
+     **Do not read the scheme as sound.** It is unguarded and already wrong
+     in three places, which is #551 -- D-232's "lint check 19" names
+     item 21, and two more are recorded there. That is an argument for
+     giving citations a repair route, not for renumbering underneath them.
+     test_the_module_docstring_enumerates_every_check_run_calls pins this
+     slot by number, so closing the gap now reds.
   9. doctrine citations: every [D-N] the doctrine writes names an entry that
      exists. The log's own references are check 15's; a marker in the always-on
      surface was checked by nothing, which the outflow rule makes load-bearing
      by instructing a session to compress prose into one.
   10. doctrine references: every repo path the doctrine writes resolves.
-     Check 13 covers the decision log, which is frozen exhaust, so the
+     Check 15 covers the decision log, which is frozen exhaust, so the
      surface carrying the live rules was the one nothing checked --
      repointing the doctrine's own docs/values.md mention left lint
      green while the identical break inside an entry fired. Scoped to
@@ -204,7 +210,8 @@ Checks:
     with characters still charged, belongs to checks 4 and 26 -- the two that
     still know a budgeted surface's size -- and not to this one (#334). It
     reached a third, the cell body, until #455 made a body's ceiling something
-    that files rather than refuses: nothing is charged against a body now, so
+    that reports rather than refuses (it filed until PR #544; the reading now
+    goes to the board's refresh note): nothing is charged against a body now, so
     there is no re-arming finding to own there.
 28. settling index: docs/settling.jsonl parses and every row carries the
     keys the `records` cell names. The record is append-only and doctrine
@@ -368,7 +375,7 @@ ALWAYS_ON_ADOPTER_BUDGET_CHARS = 11_508
 POINTER_BUDGET_CHARS = 500
 # The cell-body ceilings. The long block that stood here argued a sparse map of
 # enforced budgets and was left behind by #455, which made the map complete, the
-# numbers measured, and the ceiling something that files rather than refuses --
+# numbers measured, and the ceiling something that reports rather than refuses --
 # it described none of that and contradicted the comment three lines below it,
 # while ending on the warrant that a session raising the constant reads here
 # first. Its history is in D-169, D-177 and D-184; its rejected reasoning is in
@@ -386,11 +393,13 @@ CELL_BODY_CEILING_CHARS = {
     # that it may not tell a session not to add text. cells_over_ceiling()
     # below is what reads this, and over_ceiling_note() is what carries the
     # reading to the board's refresh note, where the owner reads it.
-    # **#543 amended the first half of that ruling and left the second
+    # **PR #544 amended the first half of that ruling and left the second
     # standing.** Until then a merge-time job filed one pool item per cell
-    # over, which said the same thing at every merge; the owner ruled the
-    # reading belongs in the refresh note instead. Nothing here refuses,
-    # trims, or holds back an addition, which is the half that did not move.
+    # over; across the eight merges it was live for it filed on two, its
+    # per-cell dedupe holding the rest, and the owner ruled the reading
+    # belongs in the refresh note rather than in an item. Nothing here
+    # refuses, trims, or holds back an addition, which is the half that did
+    # not move.
     #
     # A cell that sheds depth re-baselines here in the same change, so the
     # ratchet follows the split down. The three body: rows in
@@ -964,20 +973,20 @@ UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {
     # locator, and there is no new home to repoint to.
     ("D-480-2026-09-07-the-split-is-the-shape.md", 25,
      "tools/ceiling_filing.py"):
-        "target retired by PR #543, which moved the reading to the refresh note",
+        "target retired by PR #544, which moved the reading to the refresh note",
     ("D-480-2026-09-07-the-split-is-the-shape.md", 43,
      "tools/ceiling_filing.py"):
-        "target retired by PR #543; the sentence records a guard finding against it",
+        "target retired by PR #544; the sentence records a guard finding against it",
     ("D-491-2026-09-07-one-owner-for-cold-one-route-to-the-tree.md", 25,
      "tools/ceiling_filing.py"):
-        "target retired by PR #543, which is also what makes the sentence's "
+        "target retired by PR #544, which is also what makes the sentence's "
         "'raises a pool item' false of any later tree",
     ("D-496-2026-09-07-a-handoff-that-reaches-nobody.md", 26,
      "tools/ceiling_filing.py"):
-        "target retired by PR #543; the sentence names it as an origin exhibit",
+        "target retired by PR #544; the sentence names it as an origin exhibit",
     ("D-496-2026-09-07-a-handoff-that-reaches-nobody.md", 44,
      "tools/ceiling_filing.py"):
-        "target retired by PR #543; the sentence names it as a rejected shape's exhibit",
+        "target retired by PR #544; the sentence names it as a rejected shape's exhibit",
 }
 
 REVIEW_FIELDS = {"date", "artifact", "lane", "report"}
@@ -2208,7 +2217,7 @@ def check_doctrine(root: Path) -> list[str]:
     # A cell body over its ceiling raises no finding here and never has since
     # #455: the ceiling reports rather than cutting, so it cannot
     # redden the lint or refuse a commit. cells_over_ceiling() is what reads it
-    # and over_ceiling_note() is what reports it [#543].
+    # and over_ceiling_note() is what reports it [D-544].
     # An adopter loads the installed charter because its repository instructions
     # say so. In THIS source repository the local charter reaches the session
     # through an import in a file that is itself imported. Checked by shape
@@ -5567,7 +5576,15 @@ def over_ceiling_note(root: Path) -> str:
     over* and *the derivation broke* are the two states a reader must tell
     apart and an absent line says neither.
     """
-    label = "cell bodies over where they stood: "
+    # **The scope is in the label because the label is what gets pasted.**
+    # The block above prints one row per cell in the roster, charter
+    # included; this reads CELL_BODY_CEILING_CHARS, which excludes the
+    # charter deliberately -- its body is a term in every always-on row and
+    # check_always_on_budget sizes it there. So the two adjacent outputs
+    # count different populations, and a consumer read the block's 13 rows
+    # as this line's universe [PR #544 review, M18/M24].
+    label = ("cell bodies over where they stood -- every cell but the "
+             "charter, which is sized against the always-on row instead: ")
     try:
         rows = cells_over_ceiling(root)
         if not rows:

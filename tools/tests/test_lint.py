@@ -1080,7 +1080,23 @@ def test_the_module_docstring_enumerates_every_check_run_calls():
     live = [n for n, first in items if first != "retired."]
     assert len(live) == len(LINT_CHECKS_IN_ORDER), (
         "the docstring's live checks do not match what run() calls -- "
-        f"{len(live)} enumerated, {len(LINT_CHECKS_IN_ORDER)} called"
+        f"{len(live)} enumerated, {len(LINT_CHECKS_IN_ORDER)} called. If a "
+        "slot was just retired, the sentinel is the exact token `retired.` "
+        "as the first word after the number; any other spelling counts live"
+    )
+    # **The retired slot is pinned by number, not merely tolerated.**
+    # Without this, deleting slot 8 and shifting 9->8 .. 29->28 in one edit
+    # leaves the sequence hole-free and the live count right, so BOTH
+    # assertions above pass and the lint stays green -- probed by three
+    # stages of PR #544's review, which is how the gap turned out to be
+    # defended by prose alone. The numbers are cited as identifiers from
+    # tools/roster.py and from the frozen decision log, so closing the gap
+    # repoints every citation above it. #551 carries what is wrong with the
+    # scheme itself; this only holds it still.
+    assert ("8", "retired.") in items, (
+        "docstring slot 8 no longer reads `8. retired.` -- if the gap was "
+        "closed up, every by-number citation above 8 has silently moved; see "
+        "the slot's own note and #551"
     )
 
 
@@ -6958,7 +6974,7 @@ def test_the_over_ceiling_line_names_every_cell_over_largest_first(tmp_path):
             "the fixture stopped pulling size and overshoot apart")
 
         line = lint.over_ceiling_note(tmp_path)
-        assert line.startswith("cell bodies over where they stood: "), line
+        assert line.startswith('cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: '), line
         assert line.count(chr(10)) == 0, "the note copies one line"
         assert "wide-skill" in line and "narrow-skill" in line, line
         assert line.index("narrow-skill") < line.index("wide-skill"), (
@@ -6969,10 +6985,43 @@ def test_the_over_ceiling_line_names_every_cell_over_largest_first(tmp_path):
         # Nothing over says so in words. An empty tail would read the same as a
         # derivation that broke, which is the pair a reader must tell apart.
         lint.CELL_BODY_CEILING_CHARS = {"skills/wide-skill/SKILL.md": 10_000}
-        assert lint.over_ceiling_note(tmp_path) == (
-            "cell bodies over where they stood: none")
+        assert lint.over_ceiling_note(tmp_path) == 'cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: ' + "none"
     finally:
         lint.CELL_BODY_CEILING_CHARS = original
+
+
+def test_the_lint_prints_the_over_ceiling_line_at_the_mandated_command(capsys):
+    """The line the board's refresh note copies must reach the command it names.
+
+    Every other pin here calls `over_ceiling_note` directly, so deleting the
+    single `print(over_ceiling_note(ROOT))` from `main()` left the whole suite
+    green and the lint at 0 findings while the line vanished -- probed by two
+    seats of PR #544's review. `docs/cells/board/SKILL.md` obliges every
+    refresh note to carry this line, so a refresher would run the mandated
+    command, find nothing to copy, and hold an obligation with no figure.
+
+    The sibling pin thirteen lines above records the same incident for the
+    cell-bodies block, in the same words: *"deleting the `print` from `main()`
+    (the block vanishes from the mandated command)"*. #552 carries the class --
+    that whether a line main() prints reaches the command is held by a test
+    somebody remembered to write.
+
+    **The expectation is the label, which is `over_ceiling_note`'s own
+    constant** -- asserting a whole rendered row would pin the tree's current
+    figures and red on any lawful growth, which is the refusal the owner's
+    #455 ruling took out of the guard.
+    """
+    lint.main()
+    out = capsys.readouterr().out
+    assert "cell bodies over where they stood" in out, out
+    # Not merely present: it must carry a result. All three of the note's
+    # states end in something -- a row list, `none`, or `not derived (...)` --
+    # so a label printed with an empty tail is a defect this catches.
+    line = [ln for ln in out.splitlines()
+            if ln.startswith("cell bodies over where they stood")]
+    assert len(line) == 1, line
+    assert line[0].rstrip().endswith(":") is False, (
+        f"the line printed its label and no result: {line[0]!r}")
 
 
 def test_the_over_ceiling_line_reports_a_broken_derivation_and_never_raises():
@@ -6981,8 +7030,8 @@ def test_the_over_ceiling_line_reports_a_broken_derivation_and_never_raises():
     This line prints on the command the landing procedure mandates before every
     commit, so an exception here answers that command with a traceback.
     """
-    assert lint.over_ceiling_note(Path("no-such-root-for-543")) == (
-        "cell bodies over where they stood: none"), "an absent root is an ordinary tree"
+    assert lint.over_ceiling_note(Path("no-such-root-for-543")) == 'cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: ' + "none", (
+        "an absent root is an ordinary tree")
 
     original = lint.CELL_BODY_CEILING_CHARS
     try:
@@ -6990,7 +7039,7 @@ def test_the_over_ceiling_line_reports_a_broken_derivation_and_never_raises():
         broken = lint.over_ceiling_note(lint.ROOT)
     finally:
         lint.CELL_BODY_CEILING_CHARS = original
-    assert broken.startswith("cell bodies over where they stood: not derived ("), broken
+    assert broken.startswith('cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: ' + "not derived ("), broken
 
 
 def test_an_orphan_depth_file_is_a_finding(tmp_path):

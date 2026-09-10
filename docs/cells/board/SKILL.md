@@ -93,7 +93,7 @@ The note is posted as a project status update, dated and kept, and read back wit
 - **The assessments** — the answers the cycle above produced, and which it left.
 - **The drift look**, below.
 - **The reach line** — the charter's row from `python tools/lint.py`'s pointer-reach block, beside the figure the last note to carry one gave and that note's date. It covers the charter and the shipped cells it reaches, so repo-only prose here can grow without moving it. [D-522]
-- **The ceiling line** — the same command's `cell bodies over where they stood` line, copied whole: every cell body past where it stood when its ratchet was set, and by how much. **It is a reading and nothing files from it**, which is the point of carrying it here — the growth reaches the person who decides whether a split is worth buying, at the moment they are already reading the board. `none` is a result like any other and is carried too, an absent line being indistinguishable from a refresh that did not look. [D-544]
+- **The ceiling line** — the same command's `cell bodies over where they stood` line, copied whole: every cell body past where it stood when its ratchet was set, and by how much. **It is a reading and nothing files from it.** `none` is a result like any other and is carried too, an absent line being indistinguishable from a refresh that did not look. [D-544]
 
 Reasons, not conclusions alone: the note is read cold days later by someone reconstructing why the board looks like this. **A figure in a note carries the command that derives it** — the note is kept and never edited, so a number standing alone cannot be re-checked by the reader who needs it most.
 
