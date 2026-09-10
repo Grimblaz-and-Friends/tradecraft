@@ -1,6 +1,12 @@
-# After a fix batch — the executable floor, the external pass, and the commissioned one
+# The fix batch — what binds while writing it, what it owes, and the passes around it
 
-**Loaded when** a fix batch has landed and you are discharging what it owes, a pull request is open and an automated reviewer may have posted on it, or you invoked a review tool yourself. A review's seats, defense and judge do not need it.
+**Loaded when** you are writing a review's fix batch, discharging what it owes once it has landed, a pull request is open and an automated reviewer may have posted on it, or you invoked a review tool yourself. A review's seats, defense and judge do not need it.
+
+## While the fixes are written
+
+- **A new test pin must go red against the pre-fix revision** — a green suite proves nothing about the defect.
+- **Derive a correction from its source; never adjust a wrong claim until it looks right.** Re-run the query or re-read the passage at fix time and write what it returns. A count over a corpus the change itself writes into is a query, not a number. Land the fix where the claim is *read* as well as where it is written.
+- **A fix changes the state the finding was diagnosed in** — re-derive the diagnosis and its probe against the tree the fix produces; a probe re-run unchanged answers the pre-fix question. A fix that reaches *n* sites creates *n* more to check, including sites the fix itself introduces.
 
 ## The fix batch — what it owes, and what looks at the result
 
