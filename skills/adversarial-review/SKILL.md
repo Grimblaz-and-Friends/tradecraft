@@ -19,8 +19,8 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 
 ## Choosing the shape
 
-- **Routine change**: one adversarial pass that reads the artifact **cold**, then defense — the terminal stage on this lane — then the executable floor on the fixes.
-- **Substantial artifact** (newly written foundational prose, new scripts, high blast radius — and when in doubt, this lane): the four-seat panel, then defense, then judge, then the executable floor on the fixes. **Five where the artifact is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both, the common case here and not a widening. Width beyond the applicable count is bought by declared risk.
+- **Routine change**: one adversarial pass that reads the artifact **cold**, then defense — the terminal stage on this lane — then the executable floor on the fixes. **Where it is unclear which lane applies, this one runs.**
+- **Substantial artifact**: the four-seat panel, then defense, then judge, then the executable floor on the fixes. **The panel is bought — by newly written foundational prose, new scripts, high blast radius, or a declared risk.** **Five where a panel already bought is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both, which is not a widening. It also buys a seat beyond the applicable count.
 - **The report records which lane was chosen and why, in one line** — an unrecorded shape choice can never be audited later. **What earlier reviews cost is evidence for this choice and never a ceiling to come under** — a review that needed its cost was worth it.
 
 ## The pipeline, and where each stage's depth lives
@@ -29,9 +29,9 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 
 - **Staffing a panel, or any review role** → `references/roster.md`: the seats, when a fifth sits, what the width rests on, what a review withholds from a cold seat, and the tier rule.
 - **Building a dispatch** → `references/dispatch.md`: the three parts in order, what a dispatch read cold does not receive, and which roles take no dispatcher's note.
-- **Merging findings, defending, ruling as the terminal stage, or deciding what a finding met outside a review earns** → `references/arbitration.md`: the merge's ownership and the consequence shape it records, the defense's verdicts and the price it states, and the terminal stage's docket, its two clauses with the fix bar among them, and the filings it makes — by cause, and one per finding for a `record` where a pool exists.
+- **Merging findings, defending, ruling as the terminal stage, or deciding what a finding met outside a review earns** → `references/arbitration.md`: the merge's ownership and the consequence shape it records, the defense's verdicts and the price it states, and the terminal stage's docket, its two clauses with the fix bar among them, and the filings it makes, by cause and capped.
 - **A fix batch that has landed, an open pull request an automated reviewer may have posted on, or a review tool you invoked yourself** → `references/after-the-fix.md`: the executable floor the batch owes, the use that reads the result, every external comment's disposition, and the commissioned pass.
-- **Closing the review, ruling `record`, or writing the dispatches whose output the report reads** → `references/the-record.md`: what the final report carries, which of its fields this stage cannot produce for itself, the index row, and what a `record` leaves behind: an entry, and a pool filing where the repository keeps one.
+- **Closing the review, ruling `record`, or writing the dispatches whose output the report reads** → `references/the-record.md`: what the final report carries, which of its fields this stage cannot produce for itself, the index row, and what a `record` leaves behind: an entry, and nothing else.
 
 ## Evidence standards — every seat, every stage
 
