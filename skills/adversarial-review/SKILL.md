@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: Adversarial review of an artifact against its stated purpose — a differentiated panel (or a single cold pass for routine changes), an evidence-bound defense, a terminal stage and an executable floor. Use when a change is ready for review, when deciding review depth for an artifact, when dispositioning what an automated reviewer posted on a pull request or what a review tool you invoked returned, or when deciding whether another pass is worth running; not for choosing what to build, and not for committing and pushing the fixes afterward.
+description: Adversarial review of an artifact against its stated purpose — a differentiated panel (or a cold pass for routine changes), an evidence-bound defense, a terminal stage and an executable floor. Use when a change is ready for review, when deciding review depth for an artifact, when dispositioning what an automated reviewer posted on a pull request or what a review tool you invoked returned, or when deciding whether another pass is worth running; not for choosing what to build, and not for committing and pushing the fixes afterward.
 ---
 
 # adversarial-review
@@ -19,8 +19,8 @@ Every review begins from the artifact's **purpose statement** — its stated pur
 
 ## Choosing the shape
 
-- **Routine change**: one adversarial pass that reads the artifact **cold**, joined by **`revision-diff` where the change amends governing prose**, then defense — the terminal stage on this lane — then the executable floor on the fixes. **Where it is unclear which lane applies, this one runs.**
-- **Substantial artifact**: the four-seat panel, then defense, then judge, then the executable floor on the fixes. **The panel is bought — by substantially new prose, new scripts, high blast radius, or a declared risk.** **Five where the artifact is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both, which is not a widening. A declared risk also buys a seat beyond the applicable count.
+- **Routine change**: an adversarial pass that reads the artifact **cold**, joined by **`revision-diff` where the change amends governing prose**, then defense — the terminal stage on this lane — then the executable floor on the fixes. **Where it is unclear which lane applies, this one runs.**
+- **Substantial artifact**: the four-seat panel, then defense, then judge, then the executable floor on the fixes. **The panel is bought — by substantially new prose, new scripts, high blast radius, or a declared risk.** **Five where the artifact is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both. A declared risk also buys a seat beyond the applicable count.
 - **The report records which lane was chosen and why, in one line** — an unrecorded shape choice can never be audited later. **What earlier reviews cost is evidence for this choice and never a ceiling to come under** — a review that needed its cost was worth it.
 
 ## The pipeline, and where each stage's depth lives

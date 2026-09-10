@@ -4,7 +4,7 @@
 
 ## The roster — five names, four or five seated
 
-Three seats stand; the fourth is chosen by the artifact's shape, and where the artifact is both shapes — the common case here — both shape seats sit and the panel is five. Seats differ or they are waste: a seat is added for a lens or vantage the panel lacks, never for a second pass at one it has. A **vantage** is where a seat reads from — cold, briefed, or as the consumer; a **lens** is what it is told to look for. What a dispatch prompt could have said is a lens, not a vantage.
+Three seats stand; the fourth is chosen by the artifact's shape, and where the artifact is both shapes, both shape seats sit and the panel is five. Seats differ or they are waste: a seat is added for a lens or vantage the panel lacks, never for a second pass at one it has. A **vantage** is where a seat reads from — cold, briefed, or as the consumer; a **lens** is what it is told to look for. What a dispatch prompt could have said is a lens, not a vantage.
 
 - **`cold-read`** — fresh vantage, no lens brief: forms its own view of the artifact before this review's findings exist for it. A brief aims attention, and aimed attention has a shadow; this seat is what falls in it.
 - **`wiring-falsifier`** — scripts and contracts: does the code enforce what the prose claims, does anything call it, can each guard actually fail? Probe by execution, not reading.
