@@ -1,6 +1,6 @@
 # The plain brief, and settling one with the owner
 
-**Loaded when** you are drafting a brief, scoring one before it is put, settling or recording one with the owner, briefing the systemic cause behind a problem, or amending a brief or the reading of one already recorded. A session that only needs to know an affirmed brief binds does not need it; the cell body states that.
+**Loaded when** you are drafting a brief, scoring one before it is put, settling or recording one with the owner, briefing the systemic cause behind a problem, amending a brief or the reading of one already recorded, or handing work back to them after time away. A session that only needs to know an affirmed brief binds does not need it; the cell body states that.
 
 - **Form:** a blockquote opening with a bold lead-in — `> **In plain terms:** …` — **immediately before what it briefs**. On a document, and on a comment recording an agreement, that is the top, with nothing above it but a title; on a message ending in a decision it is directly above the ask, because everything between a brief and its ask is what the reader has to hold to connect them. **The recorded form has no ask**, so that reason does not reach it.
 - **Plain English, and no term the owner would have to look up.** It explains; it does not compress. Issue numbers, decision citations, file paths, and a figure or the command that derives it, are not plain English, and they belong below.

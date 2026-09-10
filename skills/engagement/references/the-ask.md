@@ -1,6 +1,6 @@
 # Putting a decision to the owner
 
-**Loaded when** you are putting a decision to the owner — composing the argued form it arrives in — or putting one where they are not in the room to read it: writing the ask block, marking what carries it, or reading what waits.
+**Loaded when** you are putting a decision to the owner — composing the argued form it arrives in, or handing work back to them after time away — or putting one where they are not in the room to read it: writing the ask block, marking what carries it, or reading what waits.
 
 **What is theirs arrives argued:** the live options, each with its pros and cons, then the recommendation among them — above the brief, which sits last, immediately before the ask it briefs. Where exactly one option is live, say so and say what was rejected and why — the reasoning is what makes that case informative, and a fabricated second option under-informs worse than none, because it presents a search that did not happen.
 

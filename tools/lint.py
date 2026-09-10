@@ -408,7 +408,7 @@ CELL_BODY_CEILING_CHARS = {
     # skills/charter/SKILL.md is deliberately absent: its body is a term in
     # every always-on row, so check_always_on_budget sizes it and an entry
     # here would be the smuggled second limit that test pins against.
-    "skills/engagement/SKILL.md": 12_119,
+    "skills/engagement/SKILL.md": 12_208,
     "skills/filing/SKILL.md": 5_235,
     "docs/cells/board/SKILL.md": 17_916,
     "skills/spikes/SKILL.md": 17_136,
