@@ -415,7 +415,7 @@ CELL_BODY_CEILING_CHARS = {
     "skills/experience-session/SKILL.md": 11_802,
     "skills/adversarial-review/SKILL.md": 9_855,
     "skills/authoring/SKILL.md": 7_129,
-    "docs/cells/records/SKILL.md": 8_873,
+    "docs/cells/records/SKILL.md": 2_744,
     "skills/persist-changes/SKILL.md": 5_549,
     "docs/cells/landing/SKILL.md": 3_194,
     "docs/cells/siting/SKILL.md": 4_034,
@@ -2614,8 +2614,8 @@ def _check_cost(
     returned, so nothing here is estimated. Scoped to the REVIEW's own staffed
     stages: convergence rounds, the convergence cold seat, spikes, experience
     sessions and a commissioned pass are all outside it.
-    `docs/cells/records/SKILL.md` is where that list binds and where each
-    exclusion's reason is stated.
+    `docs/cells/records/references/what-a-review-records.md` is where that
+    list binds and where each exclusion's reason is stated.
 
     **A zero `subagent_tokens` under a nonzero `dispatches` is left lawful**,
     deliberately: `null` is the field's way of saying a runtime does not report
