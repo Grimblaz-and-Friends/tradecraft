@@ -6997,7 +6997,7 @@ def test_the_lint_prints_the_over_ceiling_line_at_the_mandated_command(capsys):
     Every other pin here calls `over_ceiling_note` directly, so deleting the
     single `print(over_ceiling_note(ROOT))` from `main()` left the whole suite
     green and the lint at 0 findings while the line vanished -- probed by two
-    seats of PR #544's review. `docs/cells/board/SKILL.md` obliges every
+    seats of PR #544's review. `docs/cells/board/references/the-refresh-note.md` obliges every
     refresh note to carry this line, so a refresher would run the mandated
     command, find nothing to copy, and hold an obligation with no figure.
 
