@@ -7,42 +7,11 @@ description: This repository's append-only records and its decision log — whic
 
 **Purpose:** carry what this repository writes to its own records — the exhaust its work produces, and the one record its guards read back — so a session appending here puts it in the right place and never maintains what it appended. **Audience:** any session here about to write to a record or a decision entry, or about to correct one. **Success:** every outcome lands in the record that holds it, decision entries are written where a later session finds them, and nothing is backfilled.
 
-## Review, here
+## Where this cell's depth lives
 
-Every review appends one row to `docs/reviews.jsonl`, and every `record` ruling one entry to `docs/recorded-findings.jsonl` **and nothing else — no filing into the pool**. The entry is the review's accounting and what the next review's dispatch fetches. Neither is maintained afterwards, and rows already written are not migrated: an entry carrying an `issue` from when the ruling also filed one keeps it, that filing having happened, and what moved is where a ruling goes from now, not what the record holds. Beyond the fields the practice's own `the-record.md` names, a row here carries one more field, `cost`, and one more key on each entry of `highs`.
-
-**`cost` — what the review took to run**, as `{"dispatches": n, "subagent_tokens": n}`.
-
-- **`dispatches`** counts every subagent **the review** dispatched: its seats, its defense, and its judge. **Not counted:** the convergence rounds and the cold seat that settles the artifact, spikes, experience sessions — including the one a fix batch buys, which the review dispatches but which is the change's cost — and a commissioned pass, which `after-the-fix.md` defines by provenance rather than by calling mechanism — so whether it dispatches agents of its own is not settled there, and it is excluded on the same ground as the rest. The row's subject is the review's own staffed stages, which is what the exclusions turn on — not on whose cost the excluded thing is. A spike the terminal stage commissions is dispatched by the review and is still excluded, being a distinct instrument that reports on the work's issue.
-- **`subagent_tokens`** sums what those same dispatches returned. It is `null` where the runtime does not report per-dispatch tokens — an abstention claiming nothing, where a zero would claim no subagent ran. **`dispatches` may not abstain**: a runtime that made dispatches can count them, so a null there is a figure withheld rather than one unavailable, and the guard rejects it.
-
-**Both are read off tool returns and neither is ever estimated**; a figure reconstructed from a transcript is the thing this field exists to stop. It is evidence for the next lane choice and never a ceiling to come under.
-
-**`target` — the surface each sustained high hit**, carried on the high itself: `highs` entries are `{"high": "...", "target": "..."}`. Read from the site the finding cites, exactly as `arbitration.md` reads consequence shape, **and decided in this order, first match governing**:
-
-1. **`record`** — this change's own paperwork, wherever it sits: its decision entry, its own index row, its pull request body, its commit message, its review report, its pre-implementation artifact and the brief that artifact carries. First, because the two of those that are in the tree sit in the repo-only zone and a zone test would swallow them. A row or entry landed by *earlier* work is not this change's paperwork and falls through.
-2. **`shipped`** — what an adopter installs: the shipped zone `siting` names, or a generated mirror of it, which takes its source's label.
-3. **`repo`** — everything else **in this tree**, by residue rather than by list, so every site in it has a lawful label.
-
-**A site outside the tree that is not this change's own paperwork has no lawful value**, and the answer is to say so on the change rather than to invent one into a record nobody may correct.
-
-A high citing sites of more than one kind takes the highest-reaching, `shipped` > `repo` > `record` — the same direction as `arbitration.md`'s rule that a finding citing both kinds is artifact-facing, and skewing against `record` for the reason [D-365] states.
-
-**`target` and consequence shape are two values on one finding, read from the same site.** Shape asks whether the consequence lands on the work or on the record of having checked it; `target` asks which of the three surfaces above that site sits on. Neither is inferred from the other and neither is read from what the finding is *about* — `arbitration.md` forbids that for shape, and the same site rule governs here.
-
-Booked per high rather than as counts because counts over findings are what could never be reconciled — `facing` is that failure on this record. [#357] [D-365]
-
-## How a brief reached settled
-
-Every change owing a brief appends one row to `docs/settling.jsonl` at landing, so the interaction design is measured rather than argued: [every review records what it cost and nothing records what it cost to get a note approved](https://github.com/Grimblaz-and-Friends/tradecraft/issues/424). A change owing no brief appends nothing.
-
-**The row is read off three places and never recalled.** The comment recording the affirmation carries the brief's own history, which the `engagement` cell obliges it to; the artifact's settlement block carries the verdict and the route to settled; the pull request body carries the enumeration of rounds and revisions, where the `engagement` cell sends it. A figure the landing session reconstructs from its own memory of the conversation is the thing this record exists to replace.
-
-A row carries the date, the issue whose brief it is, `brief` as the link to it, `puts` and `amendments` and `corrected_before_posted` and `scoring_pass` from the affirmation record, and `cold_seat` as its rounds, verdicts and route. Those are required and `tools/lint.py` checks them; a row may carry more, and the first carries `set`, `history` and `notes`. **A figure nobody can supply is written as `null`, never omitted** — a successor reconstructing an affirmation it was not present for holds none of the brief's own history, and an absent key and a null one say different things. **A reversal is a later append, never an edit**, and `reversed` is one more key a later row carries — what counts as one is not settled, and the session that appends the first is the one that has to argue it. **That append is not the bookkeeping tripwire below**: a reversal is observed long after the change and has nothing to ride with, exactly as an admission's bank row does.
-
-## Admissions, at a ceiling
-
-A needed item that puts a budgeted surface over its ceiling is admitted rather than cut, merged around or paid for by raising the number. **A cell body is not such a surface**: it is measured against where it stood, and passing that is reported in the board's refresh note rather than refusing anything, so it is never admitted and never cut. [D-544] The admission appends a row to `docs/admissions.jsonl` — one per ceiling the item exceeds, since a row carries one character count for every ceiling it names and two ceilings are seldom over by the same amount — carrying its date, the issue whose work required it, the ceilings it is charged against, the characters it admits there, what the item is, and what the outflow turned up first. **The constant does not move** — `tools/lint.py` enforces the constant plus what has been admitted against it, so a row buys its own item and no room for the next one, which is the difference between admitting and raising. When the surface comes back to or below its constant the lint says so, and the space is banked by **appending** a row with negative `chars`: a new fact about a new state, never a correction of the row it banks, so the append-only rule under *Records are exhaust* reaches it as an append and not as maintenance. **That section's bookkeeping tripwire does not reach this record** — a pull request whose only content is a bank row is discharging a finding, not booking exhaust, and deleting `docs/admissions.jsonl` would return every ceiling to its constant.
+- **Recording a review's outcome** → `references/what-a-review-records.md`: the row every review appends to `docs/reviews.jsonl`, the entry every ruling of `record` appends to `docs/recorded-findings.jsonl` and nothing else, and the two fields this repository adds beyond the ones the practice's own record names — `cost`, with what it counts and what it excludes, and `target`, the three surfaces a sustained high is read against in order.
+- **Landing a change that owed a brief** → `references/the-settling-row.md`: the row `docs/settling.jsonl` takes at landing, the three places it is read off rather than recalled, the keys it carries and what a figure nobody can supply is written as, and why a reversal is a later append.
+- **A needed item that will not fit under a ceiling** → `references/admissions-at-a-ceiling.md`: the row `docs/admissions.jsonl` takes, one per ceiling the item exceeds; why an admission is not a raise and the constant does not move; the one budgeted surface that is never admitted and is reported instead; and the bank row that returns the space.
 
 ## Decisions
 
