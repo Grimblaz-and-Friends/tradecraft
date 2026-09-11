@@ -1,6 +1,6 @@
 # Cold-seat A/B, for a premise about what a reader does
 
-**Loaded when** you are running a spike whose premise is about what a reader does under a wording — designing the arms, building the docket and the planted control, writing the dispatch, or reading what came back. A premise about what is in the material, or about whether a mechanism fires, does not need it: the cell body carries when a spike fires, the bound and the report every one takes, and that a spike commits nothing.
+**Loaded when** you are running a spike whose premise is about what a reader does under a wording — designing the arms, building the docket and the planted control, writing the dispatch, or reading what came back. A premise about what is in the material, or about whether a mechanism whose executor is not a reader fires — a guard, a script — does not need it: the cell body carries when a spike fires, the bound and the report every one takes, and that a spike commits nothing.
 
 Where the executor is a reader, the run you need is a fresh session. Six properties, and each is what keeps the result evidence rather than one more opinion:
 

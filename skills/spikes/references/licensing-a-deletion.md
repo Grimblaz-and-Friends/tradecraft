@@ -1,6 +1,6 @@
 # Scoring a cold-seat A/B, and licensing a deletion from one
 
-**Loaded when** you are scoring a cold-seat A/B's planted control, or the run's output would be the removal of the text under test.
+**Loaded when** you are scoring a cold-seat A/B's planted control, or the run's output would be the removal of the text under test. **`../references/cold-seat-ab.md` comes first on either route**, and a deletion's is the route that most needs it: the run shapes, the plant and the void gate every rule below turns on are defined there and nowhere else.
 
 **What counts as a citation, without which nothing below can be applied: a decline reasoned from something other than the text under test is not one** — most often the absence of a positive trigger, even where its content coincides with the text's. A seat attributing the effect *to the text* — *"its entry explicitly excludes push-rejection recovery"* — is citing, in whichever arm. Score both arms by the same reading, and say who scored: a run scored by the dispatching session is not blind to arm.
 
