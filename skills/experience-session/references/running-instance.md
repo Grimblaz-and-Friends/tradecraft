@@ -1,6 +1,6 @@
 # Standing up a running instance
 
-**Loaded when** the built result is software someone uses and you are about to hand a consumer something to use. A run whose consumer is a session reading material needs the tree procedure instead, in `isolation.md`, and a job that needs no repository needs neither.
+**Loaded when** the built result is software someone uses and you are about to hand a consumer something to use. A run whose consumer is a session reading material needs the tree procedure instead, in `../references/isolation.md`, and a job that needs no repository needs neither.
 
 **The consumer is still manufactured, and the reason sharpens here rather than weakening.** Whoever built the thing knows which control to reach for and will never meet the discoverability failure a real user meets first. What does not carry over is the tree procedure: it builds a repository, and this consumer needs the product running.
 
@@ -14,4 +14,4 @@
 - **Nothing the consumer can reach states what is under test.** A running product states it in more places than a tree does — a version or About screen, release notes, a changelog panel, a feature flag, seed data, and the repository metadata that rides along when the instance is run from a checkout rather than from a build. Look before dispatching: a branch name in `.git/HEAD` or a subject in the reflog is enough, and it survives every check that only asks whether the product works.
 - **The instance carries whatever its own instructions name**, and the dispatcher checks that before handing it over — a README naming a file, a documented command, a fixture the first step needs. Presence in the repository is not presence in the instance. A consumer that meets a documented step it cannot take reports the product as broken, and that reads exactly like a real defect until someone re-runs it.
 
-**What the note records for such a run is in the cell**, under what a note carries: which build, and what that build was cut off from.
+**What the note records for such a run is in the cell**, under the session note, in `../references/the-note.md`: which build, and what that build was cut off from.
