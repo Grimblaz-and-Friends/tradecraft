@@ -10,7 +10,7 @@ description: How to create and revise this practice's prose — the purpose head
 ## Where this cell's depth lives
 
 - **Creating a cell, restructuring one, writing or revising a description, or writing prose that names or relies on another cell** → `references/cell-structure.md`: what the description owes, when depth leaves the body, the index a cell with depth carries, and the pointer form and its one-way rules.
-- **Deciding which home a piece of content belongs in, or editing an always-on surface at all** → `references/routing.md`: the four homes, and the outflow an always-on edit owes, read as the admission order backwards.
+- **Deciding which home a piece of content belongs in, or editing an always-on surface at all** → `references/routing.md`: the four homes a concept takes, the four materials a rule takes instead, and the outflow an always-on edit owes, read as that same order backwards.
 - **Changing prose that already governs something, rather than writing new prose** → `references/revising.md`: reading the cited decision first, naming every meaning change, and what a reviser owes the entry it supersedes.
 - **About to put a figure, or a claim about current behaviour, into anything that does not re-derive it at read time** → `references/frozen-documents.md`: what a frozen surface may state, and why the command and the tree go in place of the number.
 
@@ -26,7 +26,7 @@ A document that cannot state these three is not ready to be written; the missing
 
 ## Routing — where content lives
 
-Every piece of content has one home: methodology in a skill, a binding rule in the practice's always-on surface, rationale in a decision entry, what happened in append-only exhaust. Which one a given piece takes, and what a shipped standard owes its local application, are in `references/routing.md` — load it when the home is the question, or when editing an always-on surface, which is when outflow is owed.
+Every piece of content has one home: methodology in a skill, what must hold before any context loads in the practice's always-on surface, rationale in a decision entry, what happened in append-only exhaust — and a rule in a guard, a script's own message, an exhibit, or nowhere. Which one a given piece takes, and what a shipped standard owes its local application, are in `references/routing.md` — load it when the home is the question, or when editing an always-on surface, which is when outflow is owed.
 
 **A ceiling reached is a trigger, not a wall.** A budgeted surface is designed to sit tight, so a full one is what calls for the moves in that file — never a reason to leave the surface unedited, or to shrink what is being added until it fits. **A cell body's ceiling is not one of those**: it is measured against where the body stood, and passing it is reported rather than refusing anything, so nothing there is admitted, trimmed, or held back.
 

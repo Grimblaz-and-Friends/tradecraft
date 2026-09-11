@@ -5240,8 +5240,9 @@ def check_always_on_budget(root: Path) -> list[str]:
                 f"ceiling is skills/authoring/SKILL.md's -- whose own fourth "
                 f"answer is deleting the rule, "
                 f"which is a different move from admitting and is "
-                f"reached only against evidence that the rule does "
-                f"not bind"
+                f"reached where the sentence is none of the four materials "
+                f"a rule takes -- a guard, a script's own message, an "
+                f"exhibit, or nowhere -- and states no concept"
             )
     # **The largest row, because one constant governs both.** Re-arming asks
     # whether the surface has come back under, and it has not while either
