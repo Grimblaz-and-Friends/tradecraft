@@ -12,7 +12,7 @@
 | `skills/experience-session/references/the-note.md` | `## What a note carries`, L31–L41, plus L69 | 2,290 |
 | `skills/experience-session/references/when-one-fires.md` | `## When one fires`, L43–L49 | 1,872 |
 
-The body keeps the purpose header, a five-entry depth index, `## The instrument — three pieces, nothing more` and `## What it is for, and where it stops`. **3,575 characters**, and `tools/lint.py`'s ceiling for this body is rebaselined to it, as that map's own comment requires of a cell that sheds depth.
+The body keeps the purpose header, a five-entry depth index, `## The instrument — three pieces, nothing more` and `## What it is for, and where it stops`. **3,611 characters** as this change lands, the review's fix batch having added a routing clause and widened a trigger after the split measured 3,575, and `tools/lint.py`'s ceiling for this body is rebaselined to it, as that map's own comment requires of a cell that sheds depth.
 
 ## The disqualifier is read against moments of use, not against the description's trigger clauses, and that is the call
 
