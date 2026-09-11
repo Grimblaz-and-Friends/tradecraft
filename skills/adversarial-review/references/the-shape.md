@@ -1,6 +1,6 @@
 # Choosing the shape
 
-**Loaded when** you are choosing the shape a review takes — which lane a change runs, or what depth an artifact buys. Every stage dispatched into a shape already chosen does not need it.
+**Loaded when** you are choosing the shape a review takes — which lane a change runs, or what depth an artifact buys, or writing the report's line about that choice. A stage dispatched into a shape already chosen needs nothing here but that last bullet.
 
 - **Routine change**: an adversarial pass that reads the artifact **cold**, joined by **`revision-diff` where the change amends governing prose**, then defense — the terminal stage on this lane — then the executable floor on the fixes. **Where it is unclear which lane applies, this one runs.**
 - **Substantial artifact**: the four-seat panel, then defense, then judge, then the executable floor on the fixes. **The panel is bought — by substantially new prose, new scripts, high blast radius, or a declared risk.** **Five where the artifact is both substantially new prose and an amendment to governing prose** — the roster's fourth slot then seats both. A declared risk also buys a seat beyond the applicable count.

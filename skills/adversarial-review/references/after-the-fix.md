@@ -1,6 +1,6 @@
 # The fix batch — what binds while writing it, what it owes, and the passes around it
 
-**Loaded when** you are writing a review's fix batch, discharging what it owes once it has landed, a pull request is open and an automated reviewer may have posted on it, or you invoked a review tool yourself. A review's seats, defense and judge do not need it.
+**Loaded when** you are writing a review's fix batch, discharging what it owes once it has landed, a pull request is open and an automated reviewer may have posted on it, or you invoked a review tool yourself. The three standards in the first section bind every stage, as they did when the cell body held them; **the rest of this file** a review's seats, defense and judge do not need.
 
 ## While the fixes are written
 
