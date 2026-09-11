@@ -1,6 +1,6 @@
 # The session note
 
-**Loaded when** a run has finished and you are writing the note from the consumer's own account of it, or deciding where that note goes. Deciding whether a session is owed at all does not need it, and neither does the line a change that bought none owes — both are `when-one-fires.md`.
+**Loaded when** a run has finished and you are writing the note from the consumer's own account of it, or deciding where that note goes. Deciding whether a session is owed at all does not need it, and neither does the line a change that bought none owes — both are `../references/when-one-fires.md`.
 
 **Written as a narrative of the run rather than a list of observations**; what follows are properties of a good note, not fields to fill in. The friction is the finding — a sentence that had to be read three times, a rule that seemed to forbid the obvious move, a step impossible to take in the order the text gives.
 

@@ -9,7 +9,7 @@ description: A chartered, time-boxed use of a built result as its consumer would
 
 ## Where this cell's depth lives
 
-- **A change is finished and you are deciding whether it bought a session, or writing the line one that bought none owes** → `references/when-one-fires.md`: which changes buy a run and which owe nothing at all, the second run a review's fix batch buys and when it fires, and what the line declining one must say.
+- **A change is finished and you are deciding whether it bought a session, or writing the line owed where one it bought did not run, or where it bought none** → `references/when-one-fires.md`: which changes buy a run and which owe nothing at all, the second run a review's fix batch buys and when it fires, and what the line declining one must say.
 - **A session is owed and you are about to charter and dispatch one** → `references/running-one.md`: manufacturing the consumer and what is withheld from it, the three things the dispatcher inspects first, giving the job rather than the test, stating the job's extent, and what may and may not leave the isolation.
 - **A run has finished and you are writing up what it found** → `references/the-note.md`: the properties of a note that reports what was lived, what belongs in one that a session is tempted to leave out, and where it lands and by when.
 - **A run needs a repository tree of its own and you are about to build it, whichever instrument's run it is** → `references/isolation.md`: building from the change's content without its history, and the records that leak what is under test.

@@ -1,6 +1,6 @@
 # When a session fires
 
-**Loaded when** you are deciding whether a change bought a session — including the second one a review's fix batch buys — or writing the line a change that bought none owes. A session already chartered does not need it, and neither does one writing up a run.
+**Loaded when** you are deciding whether a change bought a session — including the second one a review's fix batch buys — or writing the line owed where a change bought a run and did not get it, or concluded it bought none. A session already chartered does not need it; chartering and dispatching one is `../references/running-one.md`, and writing up a finished run is `../references/the-note.md`.
 
 **A change to how a later session must work, or to what someone using the result can do, buys a session on the built result** — a skill's behaviour, a mechanism's surface, or what a consumer can do with the running result. That last is the case a repository whose product is software meets on almost every change. Mechanical work — a typo, a behaviour-preserving dependency bump, a record append — does not, and owes nothing at all: not a session, and not a line saying none ran.
 
