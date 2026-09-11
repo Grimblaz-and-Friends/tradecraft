@@ -5237,12 +5237,13 @@ def check_always_on_budget(root: Path) -> list[str]:
                 f"*description* over budget can do neither without ceasing "
                 f"to be a trigger, so it is answered by retiring a cell or "
                 f"merging two. {admit_route(row_key)}. What to do at a "
-                f"ceiling is skills/authoring/SKILL.md's -- whose own fourth "
-                f"answer is deleting the rule, "
+                f"ceiling is skills/authoring/SKILL.md's -- whose own "
+                f"deletion answer removes the rule, "
                 f"which is a different move from admitting and is "
-                f"reached where the sentence is none of the four materials "
-                f"a rule takes -- a guard, a script's own message, an "
-                f"exhibit, or nowhere -- and states no concept"
+                f"reached where the sentence states no concept and no move "
+                f"is open to its rule -- not a guard, not a script's own "
+                f"message, not the cell where it binds, not a decision "
+                f"entry's citation"
             )
     # **The largest row, because one constant governs both.** Re-arming asks
     # whether the surface has come back under, and it has not while either
