@@ -413,7 +413,7 @@ CELL_BODY_CEILING_CHARS = {
     "docs/cells/board/SKILL.md": 5_106,
     "skills/spikes/SKILL.md": 17_136,
     "skills/experience-session/SKILL.md": 3_611,
-    "skills/adversarial-review/SKILL.md": 9_855,
+    "skills/adversarial-review/SKILL.md": 8_114,
     "skills/authoring/SKILL.md": 7_129,
     "docs/cells/records/SKILL.md": 2_744,
     "skills/persist-changes/SKILL.md": 5_549,
