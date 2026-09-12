@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -186,17 +187,31 @@ def write_bytes(path: Path, content: bytes) -> None:
         stream.write(content)
 
 
+def publish_verdict(path: Path, content: bytes) -> None:
+    """Publish complete bytes atomically, refusing any existing destination."""
+    with tempfile.TemporaryDirectory(prefix=".tradecraft-publish-", dir=path.parent) as temporary:
+        staged = Path(temporary) / "verdict"
+        write_bytes(staged, content)
+        # A same-filesystem link creates the final name atomically and, unlike
+        # POSIX rename/replace, never overwrites a concurrent caller's file.
+        os.link(staged, path)
+
+
 @contextmanager
 def reserve_bundle(destinations, output):
     """Prove exact-path creation before usage, keeping sidecars reserved."""
     streams = {}
+    created = []
     ready = False
     try:
         for path in destinations:
             streams[path] = path.open("xb")
+            created.append(path)
         # This empty preflight reservation carries no response; remove it
         # before a runtime starts. Only the completed verdict is published.
         streams.pop(output).close()
+        with tempfile.TemporaryDirectory(prefix=".tradecraft-publish-", dir=output.parent) as temporary:
+            os.link(output, Path(temporary) / "probe")
         output.unlink()
         ready = True
         yield streams
@@ -204,7 +219,7 @@ def reserve_bundle(destinations, output):
         for stream in streams.values():
             stream.close()
         if not ready:
-            for path in streams:
+            for path in created:
                 path.unlink(missing_ok=True)
 
 
@@ -325,11 +340,6 @@ def run_dispatch(args, *, now=None) -> int:
                         print("seat: On native Windows Codex, use approval-managed host execution.", file=sys.stderr)
             # No later seat can read this attempt's transcript from its tree.
             flush_logs()
-            if verdict is not None:
-                write_bytes(output, verdict)
-                print(f"seat: {vendor} ({model}, {effort}) -> {output}")
-                return 0
-            return 1
         except (OSError, UnicodeError, CliError, DispatchError) as exc:
             record["error"] = str(exc)
             raise
@@ -338,6 +348,14 @@ def run_dispatch(args, *, now=None) -> int:
                 flush_logs()
             finally:
                 record_stream.write((json.dumps(record, ensure_ascii=True, indent=2) + "\n").encode("utf-8"))
+                record_stream.flush()
+                for stream in streams.values():
+                    stream.close()
+        if verdict is not None:
+            publish_verdict(output, verdict)
+            print(f"seat: {vendor} ({model}, {effort}) -> {output}")
+            return 0
+        return 1
 
 
 def parser() -> argparse.ArgumentParser:
@@ -351,6 +369,7 @@ def parser() -> argparse.ArgumentParser:
                 "From native Windows Codex use approval-managed host execution for login. "
                 "Outputs must be new: verdict, .run.json, and per-vendor .stdout.log/.stderr.log. "
                 "Sidecars are reserved before launch; transcript contents appear after the last attempt. "
+                "The run record is flushed before atomic verdict publication, which requires same-filesystem hard links. "
                 "Malformed log bytes use a JSON base64 envelope named by the run record's encoding field. "
                 "Runtime model and usage data remain in the logs. Unknown failures and timeouts "
                 "do not fall back. The launcher does not elevate or buy credits."),

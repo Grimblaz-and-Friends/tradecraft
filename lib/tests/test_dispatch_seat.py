@@ -404,7 +404,7 @@ def test_timeout_stops_a_started_descendant(job, monkeypatch):
     assert len(record(args)["attempts"]) == 1
 
 
-@pytest.mark.parametrize("failure", ["write", "flush"])
+@pytest.mark.parametrize("failure", ["write", "flush", "close"])
 def test_record_failure_never_publishes_a_verdict(job, monkeypatch, failure):
     args, _ = job
     original = Path.open
@@ -418,9 +418,13 @@ def test_record_failure_never_publishes_a_verdict(job, monkeypatch, failure):
                 raise OSError("record write failed")
             return self.stream.write(content)
         def flush(self):
-            raise OSError("record flush failed")
+            if failure == "flush":
+                raise OSError("record flush failed")
+            self.stream.flush()
         def close(self):
             self.stream.close()
+            if failure == "close":
+                raise OSError("record close failed")
     def opened(path, mode="r", *a, **kw):
         stream = original(path, mode, *a, **kw)
         return FailingRecord(stream) if path == record_path and mode == "xb" else stream
@@ -442,3 +446,33 @@ def test_partial_verdict_write_is_not_published(job, monkeypatch):
     assert not args.output.exists()
     assert not list(args.output.parent.glob(".tradecraft-publish-*"))
     assert record(args)["attempts"][0]["outcome"] == "success"
+
+
+def test_verdict_publication_follows_complete_record_and_refuses_a_race(job, monkeypatch):
+    args, _ = job
+    link = os.link
+    def raced(source, destination):
+        if source == args.output:
+            return link(source, destination)
+        assert record(args)["actual_vendor"] == "claude"
+        assert Path(source).read_bytes()
+        destination.write_bytes(b"another caller")
+        link(source, destination)
+    monkeypatch.setattr(seat.os, "link", raced)
+    with pytest.raises(FileExistsError):
+        seat.run_dispatch(args)
+    assert args.output.read_bytes() == b"another caller"
+    assert not list(args.output.parent.glob(".tradecraft-publish-*"))
+
+
+def test_unsupported_atomic_publication_fails_before_usage(job, monkeypatch):
+    args, _ = job
+    def unsupported(*args):
+        raise OSError("hard links unavailable")
+    monkeypatch.setattr(os, "link", unsupported)
+    with pytest.raises(OSError, match="hard links unavailable"):
+        seat.run_dispatch(args)
+    assert not list(args.root.glob("seen-*"))
+    assert not args.output.exists()
+    assert not seat.sidecar(args.output, ".run.json").exists()
+    assert not list(args.output.parent.glob(".tradecraft-publish-*"))

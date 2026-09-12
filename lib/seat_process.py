@@ -86,9 +86,17 @@ def run_process(command, *, input, cwd, timeout):
                 pass
         try:
             stdout, stderr = process.communicate(input, timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as initial:
             stop_tree()
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=0.25)
+            except subprocess.TimeoutExpired as drain:
+                # A descendant can leave the group with setsid() while keeping
+                # our pipes. Bound cleanup without discarding received bytes.
+                stdout = drain.output if drain.output is not None else initial.output or b""
+                stderr = drain.stderr if drain.stderr is not None else initial.stderr or b""
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    stream.close()
             raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from None
         finally:
             stop_tree()
