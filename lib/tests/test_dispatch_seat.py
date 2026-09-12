@@ -402,3 +402,43 @@ def test_timeout_stops_a_started_descendant(job, monkeypatch):
     assert elapsed < 2, "Pipe-owning descendants delayed timeout cleanup."
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
+
+
+@pytest.mark.parametrize("failure", ["write", "flush"])
+def test_record_failure_never_publishes_a_verdict(job, monkeypatch, failure):
+    args, _ = job
+    original = Path.open
+    record_path = seat.sidecar(args.output, ".run.json")
+    class FailingRecord:
+        def __init__(self, stream):
+            self.stream = stream
+        def write(self, content):
+            if failure == "write":
+                self.stream.write(content[:5])
+                raise OSError("record write failed")
+            return self.stream.write(content)
+        def flush(self):
+            raise OSError("record flush failed")
+        def close(self):
+            self.stream.close()
+    def opened(path, mode="r", *a, **kw):
+        stream = original(path, mode, *a, **kw)
+        return FailingRecord(stream) if path == record_path and mode == "xb" else stream
+    monkeypatch.setattr(Path, "open", opened)
+    with pytest.raises(OSError, match="record"):
+        seat.run_dispatch(args)
+    assert not args.output.exists()
+
+
+def test_partial_verdict_write_is_not_published(job, monkeypatch):
+    args, _ = job
+    def partial(path, content):
+        with path.open("xb") as stream:
+            stream.write(content[:3])
+        raise OSError("verdict write failed")
+    monkeypatch.setattr(seat, "write_bytes", partial)
+    with pytest.raises(OSError, match="verdict write failed"):
+        seat.run_dispatch(args)
+    assert not args.output.exists()
+    assert not list(args.output.parent.glob(".tradecraft-publish-*"))
+    assert record(args)["attempts"][0]["outcome"] == "success"
