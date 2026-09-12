@@ -1,0 +1,9 @@
+{
+  "runtime": "codex-cli 0.154.0-alpha.6.2",
+  "provenance": "Captured from a loopback HTTP stub on 2026-09-12 with dummy credentials; generated thread events removed and local ports normalized.",
+  "cases": {
+    "401": "{\"type\":\"error\",\"message\":\"unexpected status 401 Unauthorized: Local fixture rejected request, url: http://127.0.0.1:1/v1/responses\"}\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"unexpected status 401 Unauthorized: Local fixture rejected request, url: http://127.0.0.1:1/v1/responses\"}}\n",
+    "429": "{\"type\":\"error\",\"message\":\"exceeded retry limit, last status: 429 Too Many Requests\"}\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"exceeded retry limit, last status: 429 Too Many Requests\"}}\n",
+    "500": "{\"type\":\"error\",\"message\":\"We're currently experiencing high demand, which may cause temporary errors.\"}\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"We're currently experiencing high demand, which may cause temporary errors.\"}}\n"
+  }
+}

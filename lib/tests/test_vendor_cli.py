@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import sys
 
 import pytest
@@ -63,3 +64,38 @@ def test_unknown_windows_shim_refused_and_posix_launcher_untouched(tmp_path):
     with pytest.raises(cli.CliError, match="native executable"):
         cli.executable_command("claude", path, platform="nt")
     assert cli.executable_command("claude", path, platform="posix") == [str(path)]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows implicit cwd lookup")
+def test_windows_discovery_honors_path_without_implicit_checkout_lookup(tmp_path, monkeypatch):
+    checkout, installed = tmp_path / "checkout", tmp_path / "installed"
+    checkout.mkdir()
+    installed.mkdir()
+    monkeypatch.chdir(checkout)
+    monkeypatch.setenv("PATH", str(installed))
+    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+    for vendor, package in (("claude", "@anthropic-ai/claude-code"), ("codex", "@openai/codex")):
+        decoy = file(checkout / (vendor + ".cmd"))
+        payload = file(checkout / "node_modules" / package / "bin" / (vendor + ".exe"))
+        trusted = file(installed / (vendor + ".exe"))
+        assert cli.resolve_command(vendor, None) == [str(trusted)]
+        for missing in (False, True):
+            if missing:
+                monkeypatch.delenv("PATH")
+            else:
+                monkeypatch.setenv("PATH", "")
+            with pytest.raises(cli.CliNotFound):
+                if vendor == "codex":
+                    cli.resolve_codex(None, env={})
+                else:
+                    cli.resolve_claude(None)
+        monkeypatch.setenv("PATH", str(installed))
+        assert cli.resolve_command(vendor, str(decoy)) == [str(payload)]
+        monkeypatch.setenv("PATH", str(checkout) + os.pathsep + str(installed))
+        assert cli.resolve_command(vendor, None) == [str(payload)]
+        monkeypatch.setenv("PATH", str(installed))
+    file(checkout / "node.exe")
+    node = file(installed / "node.exe")
+    shim = file(installed / "claude.cmd")
+    script = file(installed / "node_modules/@anthropic-ai/claude-code/cli.js")
+    assert cli.executable_command("claude", shim) == [str(node), str(script)]

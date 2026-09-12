@@ -15,11 +15,27 @@ class CliNotFound(CliError):
     """The vendor is not installed in a discoverable location."""
 
 
+def which_on_path(command: str) -> str | None:
+    """Honor PATH without Windows implicitly prepending the current directory."""
+    if os.name != "nt":
+        return shutil.which(command)
+    configured = os.environ.get("PATH", "")
+    if not configured:
+        return None
+    for directory in configured.split(os.pathsep):
+        # A qualified candidate bypasses which()'s implicit cwd search. An
+        # explicit empty/relative PATH entry still has its configured meaning.
+        candidate = shutil.which(str(Path(directory).resolve() / command))
+        if candidate:
+            return candidate
+    return None
+
+
 def resolve_codex(
     explicit: str | None,
     *,
     env: Mapping[str, str] | None = None,
-    path_lookup: Callable[[str], str | None] = shutil.which,
+    path_lookup: Callable[[str], str | None] = which_on_path,
     platform: str = os.name,
 ) -> Path:
     """Resolve Codex explicitly, from PATH, or from the Windows app bundle."""
@@ -51,7 +67,7 @@ def resolve_claude(explicit: str | None) -> Path:
         if candidate.is_file():
             return candidate.resolve()
         raise CliError(f"--claude does not name a file: {candidate}")
-    on_path = shutil.which("claude")
+    on_path = which_on_path("claude")
     if on_path and Path(on_path).is_file():
         return Path(on_path).resolve()
     raise CliNotFound("Claude CLI not found: install Claude or pass --claude PATH")
@@ -69,7 +85,9 @@ def executable_command(vendor: str, path: Path, *, platform: str = os.name) -> l
         return [str(native)]
     script = package / ("cli.js" if vendor == "claude" else "bin/codex.js")
     node = path.parent / "node.exe"
-    node_path = str(node) if node.is_file() else shutil.which("node")
+    node_path = str(node) if node.is_file() else which_on_path("node")
+    if node_path and Path(node_path).suffix.lower() in {".cmd", ".bat", ".ps1"}:
+        raise CliError("Node must be a native executable; batch shells are not used.")
     if script.is_file() and node_path:
         return [node_path, str(script)]
     raise CliError(

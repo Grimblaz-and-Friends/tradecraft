@@ -12,6 +12,8 @@ executable probe evidence in the dispatch. The dispatch owns its job context.
 from __future__ import annotations
 
 import argparse
+import base64
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
@@ -22,6 +24,7 @@ import sys
 import tempfile
 
 from vendor_cli import CliError, CliNotFound, resolve_command
+from seat_process import run_process
 from winio import utf8_stdio
 
 VENDORS = ("codex", "claude")
@@ -75,18 +78,17 @@ def build_command(vendor, executable, root, last_message, model, effort):
 def diagnostic_reason(text: str) -> str | None:
     """Recognize complete runtime diagnostic forms, never a keyword in prose."""
     text = text.strip().replace(chr(8217), "'")
-    auth = r"(?:Not logged in(?:\s*[\u00b7.]?\s*Please run /login)?|Invalid API key(?:\s*[\u00b7:].*)?|Login expired(?:\s*[\u00b7:].*)?)"
+    auth = r"(?:Not logged in|Invalid API key|Login expired)(?:\s*[\u00b7.]?\s*Please run /login)?"
     quota = (
         r"(?:You(?:'ve| have) hit your (?:usage |session |weekly |Opus |Sonnet )?limit"
-        r"(?:\s*[\u00b7.].*)?|Usage limit (?:reached|exceeded)(?:\s*[\u00b7.:].*)?"
-        r"|Rate limit (?:reached|exceeded)(?:\s*[\u00b7.:].*)?)"
+        r"|Usage limit (?:reached|exceeded)|Rate limit (?:reached|exceeded))"
+        r"(?:\. Try again (?:tomorrow|later)\.)?"
     )
     if re.fullmatch(auth, text, re.IGNORECASE):
         return "authentication unavailable"
     if re.fullmatch(quota, text, re.IGNORECASE):
         return "usage or rate limit"
-    # This prefix belongs to the runtime, not an ordinary successful paragraph.
-    if re.fullmatch(r"API Error: (?:401|429)(?:\s.*|:.*)?", text, re.IGNORECASE):
+    if re.fullmatch(r"API Error: (?:401|429)", text, re.IGNORECASE):
         return "authentication unavailable" if "401" in text[:16] else "usage or rate limit"
     return None
 
@@ -106,6 +108,12 @@ def error_reason(value) -> str | None:
     elif isinstance(value, list):
         return next((reason for item in value if (reason := error_reason(item))), None)
     elif isinstance(value, str):
+        # Observed Codex failed-event messages. Never apply these prefixes to
+        # successful final prose, where the status can be quoted evidence.
+        if re.match(r"unexpected status 401 Unauthorized(?::|$)", value):
+            return "authentication unavailable"
+        if re.match(r"(?:unexpected status 429 Too Many Requests|exceeded retry limit, last status: 429 Too Many Requests)(?::|$)", value):
+            return "usage or rate limit"
         if value in {"rate_limit", "rate_limit_error", "rate_limit_exceeded", "usage_limit_reached", "insufficient_quota"}:
             return "usage or rate limit"
         if value in {"authentication_failed", "authentication_error", "invalid_api_key", "unauthorized"}:
@@ -116,7 +124,7 @@ def error_reason(value) -> str | None:
 
 def interpret(vendor, result, last_message):
     """Return (outcome, reason, verdict); an adverse judgement is still success."""
-    stdout = result.stdout.decode("utf-8", errors="replace")
+    stdout = result.stdout.decode("utf-8")
     stderr = result.stderr.decode("utf-8", errors="replace")
     message = ""
     failure = None
@@ -178,6 +186,36 @@ def write_bytes(path: Path, content: bytes) -> None:
         stream.write(content)
 
 
+@contextmanager
+def reserve_bundle(destinations, output):
+    """Prove exact-path creation before usage, keeping sidecars reserved."""
+    streams = {}
+    ready = False
+    try:
+        for path in destinations:
+            streams[path] = path.open("xb")
+        # This empty preflight reservation carries no response; remove it
+        # before a runtime starts. Only the completed verdict is published.
+        streams.pop(output).close()
+        output.unlink()
+        ready = True
+        yield streams
+    finally:
+        for stream in streams.values():
+            stream.close()
+        if not ready:
+            for path in streams:
+                path.unlink(missing_ok=True)
+
+
+def log_bytes(raw):
+    try:
+        return raw.decode("utf-8").replace("\r\n", "\n").encode("utf-8"), "utf-8"
+    except UnicodeError:
+        encoded = {"encoding": "base64", "data": base64.b64encode(raw).decode("ascii")}
+        return (json.dumps(encoded) + "\n").encode("utf-8"), "base64-json"
+
+
 def run_dispatch(args, *, now=None) -> int:
     dispatch = args.dispatch.expanduser().resolve()
     root = args.root.expanduser().resolve()
@@ -208,10 +246,18 @@ def run_dispatch(args, *, now=None) -> int:
         if path.exists() or path.is_symlink():
             raise DispatchError(f"Refusing existing output: {path}. Choose a new --output path.")
     output.parent.mkdir(parents=True, exist_ok=True)
-    # The exclusive record reserves the whole bundle for this run. It stays on failure.
-    with record_path.open("xb") as record_stream:
+    with reserve_bundle(destinations, output) as streams:
+        record_stream = streams[record_path]
         record = {"requested_vendor": args.vendor, "own_vendor": args.own_vendor,
                   "actual_vendor": None, "fallback_reason": None, "attempts": []}
+        pending_logs = {}
+        verdict = None
+
+        def flush_logs():
+            for path in list(pending_logs):
+                streams[path].write(pending_logs.pop(path))
+                streams[path].flush()
+
         try:
             vendors = [args.vendor]
             if args.own_vendor != args.vendor:
@@ -238,9 +284,7 @@ def run_dispatch(args, *, now=None) -> int:
                             command = build_command(vendor, executable, root, last_message, model, effort)
                             returned = False
                             try:
-                                result = subprocess.run(command, input=prompt, stdout=subprocess.PIPE,
-                                                        stderr=subprocess.PIPE, cwd=root,
-                                                        timeout=args.timeout_seconds)
+                                result = run_process(command, input=prompt, cwd=root, timeout=args.timeout_seconds)
                             except subprocess.TimeoutExpired as exc:
                                 result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
                                 outcome, reason = "error", f"{vendor} timed out after {args.timeout_seconds:g}s; no fallback"
@@ -258,9 +302,9 @@ def run_dispatch(args, *, now=None) -> int:
                             attempt["exit_code"] = result.returncode
                             for stream in ("stdout", "stderr"):
                                 log = sidecar(output, f".{vendor}.{stream}.log")
-                                raw = getattr(result, stream).decode("utf-8", errors="replace").replace("\r\n", "\n")
-                                write_bytes(log, raw.encode("utf-8"))
+                                pending_logs[log], encoding = log_bytes(getattr(result, stream))
                                 attempt[stream] = str(log)
+                                attempt[stream + "_encoding"] = encoding
                             if returned:
                                 outcome, reason, message = interpret(vendor, result, last_message)
                 attempt.update(outcome=outcome, reason=reason)
@@ -268,24 +312,32 @@ def run_dispatch(args, *, now=None) -> int:
                     record["actual_vendor"] = vendor
                     if record["fallback_reason"]:
                         message = f"Fallback: {args.vendor} -> {vendor}; reason: {record['fallback_reason']}.\n\n" + message
-                    write_bytes(output, message.replace("\r\n", "\n").encode("utf-8"))
-                    print(f"seat: {vendor} ({model}, {effort}) -> {output}")
-                    return 0
+                    verdict = message.replace("\r\n", "\n").encode("utf-8")
+                    break
                 print(f"seat: {vendor}: {reason}", file=sys.stderr)
                 if outcome != "unavailable":
-                    return 1
+                    break
                 if vendor == args.vendor:
                     record["fallback_reason"] = reason
                     if "authentication" in reason:
                         if vendor == "claude":
                             print("seat: Claude launches omit --bare because it skips OAuth login lookup.", file=sys.stderr)
                         print("seat: On native Windows Codex, use approval-managed host execution.", file=sys.stderr)
+            # No later seat can read this attempt's transcript from its tree.
+            flush_logs()
+            if verdict is not None:
+                write_bytes(output, verdict)
+                print(f"seat: {vendor} ({model}, {effort}) -> {output}")
+                return 0
             return 1
         except (OSError, UnicodeError, CliError, DispatchError) as exc:
             record["error"] = str(exc)
             raise
         finally:
-            record_stream.write((json.dumps(record, ensure_ascii=True, indent=2) + "\n").encode("utf-8"))
+            try:
+                flush_logs()
+            finally:
+                record_stream.write((json.dumps(record, ensure_ascii=True, indent=2) + "\n").encode("utf-8"))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -298,6 +350,8 @@ def parser() -> argparse.ArgumentParser:
                 "and probe evidence in the dispatch. --bare is omitted to preserve OAuth. "
                 "From native Windows Codex use approval-managed host execution for login. "
                 "Outputs must be new: verdict, .run.json, and per-vendor .stdout.log/.stderr.log. "
+                "Sidecars are reserved before launch; transcript contents appear after the last attempt. "
+                "Malformed log bytes use a JSON base64 envelope named by the run record's encoding field. "
                 "Runtime model and usage data remain in the logs. Unknown failures and timeouts "
                 "do not fall back. The launcher does not elevate or buy credits."),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

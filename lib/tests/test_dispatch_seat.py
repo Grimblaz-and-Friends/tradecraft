@@ -1,10 +1,12 @@
 import base64
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -216,7 +218,7 @@ def test_permission_error_explains_host_route_without_fallback(job, monkeypatch)
     args, _ = job
     def denied(*a, **k):
         raise PermissionError("access denied")
-    monkeypatch.setattr(seat.subprocess, "run", denied)
+    monkeypatch.setattr(seat, "run_process", denied)
     with pytest.raises(seat.DispatchError, match="approval-managed host execution"):
         seat.run_dispatch(args)
     assert len(record(args)["attempts"]) == 1
@@ -292,3 +294,111 @@ def test_relocated_library_has_no_repository_dependency(tmp_path):
     suite = subprocess.run([sys.executable, "-m", "pytest", str(copied / "tests"), "-q", "-k", "not relocated"],
                            cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True)
     assert suite.returncode == 0, suite.stdout.decode(errors="replace") + suite.stderr.decode(errors="replace")
+
+
+@pytest.mark.parametrize("vendor", seat.VENDORS)
+@pytest.mark.parametrize("message", [
+    "API Error: 401 is a literal used by the implementation; no authentication failure occurred.",
+    "Rate limit exceeded. This is the diagnostic covered by the patch; the implementation is correct.",
+])
+def test_explanatory_diagnostic_prefix_keeps_the_original_verdict(job, vendor, message):
+    args, _ = job
+    args.vendor = vendor
+    args.own_vendor = "claude" if vendor == "codex" else "codex"
+    configure(job, {vendor: {"message": message}})
+    assert seat.run_dispatch(args) == 0
+    assert args.output.read_text(encoding="utf-8") == message
+    assert len(record(args)["attempts"]) == 1
+
+
+def test_malformed_claude_bytes_are_rejected_and_recoverable(job, monkeypatch):
+    args, _ = job
+    raw = b'{"type":"result","subtype":"success","is_error":false,"result":"would \xff not"}'
+    code = "import sys; sys.stdout.buffer.write(bytes.fromhex(" + repr(raw.hex()) + "))"
+    monkeypatch.setattr(seat, "resolve_command", lambda *a: [sys.executable, "-c", code])
+    with pytest.raises(UnicodeError):
+        seat.run_dispatch(args)
+    assert not args.output.exists()
+    assert len(record(args)["attempts"]) == 1
+    retained = json.loads(seat.sidecar(args.output, ".claude.stdout.log").read_bytes())
+    assert retained["encoding"] == "base64"
+    assert base64.b64decode(retained["data"]) == raw
+
+
+@pytest.mark.parametrize("http_status", [401, 429])
+def test_captured_codex_http_failures_fall_back_without_discarding_success(job, http_status):
+    args, _ = job
+    args.vendor, args.own_vendor = "codex", "claude"
+    fixtures = json.loads((LIB / "tests/fixtures/codex-errors.json").read_bytes())
+    captured = fixtures["cases"][str(http_status)]
+    configure(job, {"codex": {"exit": 1, "stdout": captured, "message": "discard partial"}})
+    assert seat.run_dispatch(args) == 0
+    assert record(args)["actual_vendor"] == "claude"
+    assert len(record(args)["attempts"]) == 2
+    assert "discard partial" not in args.output.read_text(encoding="utf-8")
+    # The same status words in a successful answer are not a failed event.
+    args.output = args.output.with_name("quoted.md")
+    message = json.loads(captured.splitlines()[-1])["error"]["message"] + " -- this is an example."
+    configure(job, {"codex": {"message": message}})
+    assert seat.run_dispatch(args) == 0
+    assert args.output.read_text(encoding="utf-8") == message
+    args.output = args.output.with_name("server-error.md")
+    configure(job, {"codex": {"exit": 1, "stdout": fixtures["cases"]["500"]}})
+    assert seat.run_dispatch(args) == 1
+    assert len(record(args)["attempts"]) == 1
+    assert not args.output.exists()
+
+
+def test_uncreatable_sidecar_fails_before_child_runs(job):
+    args, _ = job
+    args.output = args.output.with_name("a" * 242)
+    if os.name == "nt":
+        args.output = Path("\\\\?\\" + str(args.output))
+    with pytest.raises(OSError):
+        seat.run_dispatch(args)
+    assert not list(args.root.glob("seen-*"))
+    assert not seat.sidecar(args.output, ".run.json").exists()
+    args.output = args.output.with_name("a" * 237)
+    assert seat.run_dispatch(args) == 0
+    assert args.output.exists()
+
+
+def test_fallback_cannot_read_discarded_transcript_but_caller_can(job, monkeypatch):
+    args, _ = job
+    primary = json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                          "error": "rate_limit", "result": "DISCARDED_PARTIAL_VERDICT"})
+    first = "import sys; sys.stdout.write(" + repr(primary) + ")"
+    second = (
+        "import sys\nfrom pathlib import Path\n"
+        "found = any(b'DISCARDED_PARTIAL_VERDICT' in p.read_bytes() for p in Path.cwd().rglob('*.stdout.log'))\n"
+        "Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_bytes(str(found).encode())\n"
+        "print('{\"type\":\"turn.completed\"}')\n"
+    )
+    monkeypatch.setattr(seat, "resolve_command", lambda vendor, explicit: [
+        sys.executable, "-c", first if vendor == "claude" else second])
+    for inside in (True, False):
+        # Separate roots prevent a completed earlier bundle becoming input.
+        args.root = args.root.parent / ("inside" if inside else "outside")
+        args.root.mkdir()
+        args.output = (args.root if inside else args.root.parent) / ("in.md" if inside else "out.md")
+        assert seat.run_dispatch(args) == 0
+        assert args.output.read_text(encoding="utf-8").endswith("False")
+        assert b"DISCARDED_PARTIAL_VERDICT" in seat.sidecar(args.output, ".claude.stdout.log").read_bytes()
+
+
+def test_timeout_stops_a_started_descendant(job, monkeypatch):
+    args, _ = job
+    child = args.root / "child.py"
+    child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(2)\nPath('finished').write_bytes(b'yes')\n")
+    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(5)"
+    monkeypatch.setattr(seat, "resolve_command", lambda *a: [sys.executable, "-c", wrapper, str(child)])
+    args.timeout_seconds = 1
+    started = time.monotonic()
+    assert seat.run_dispatch(args) == 1
+    elapsed = time.monotonic() - started
+    assert (args.root / "started").exists(), "The descendant must actually start before cancellation."
+    time.sleep(max(0, 2.3 - elapsed))
+    assert not (args.root / "finished").exists(), "The descendant continued after the deadline."
+    assert elapsed < 2, "Pipe-owning descendants delayed timeout cleanup."
+    assert not args.output.exists()
+    assert len(record(args)["attempts"]) == 1
