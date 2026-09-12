@@ -233,6 +233,26 @@ def test_probe_answer_rejects_a_truncated_charter_tail():
         compat._assert_probe_answer(json.dumps(payload), marker)
 
 
+def test_tail_requires_prose_even_when_the_charter_ends_in_public_skill_names(tmp_path, monkeypatch):
+    charter = tmp_path / "skills/charter/SKILL.md"
+    charter.parent.mkdir(parents=True)
+    charter.write_text(
+        "# Charter\n\n**Purpose:** fixture\n\nOpening prose.\n\n"
+        "- **Convergence.** Settle the purpose.\n- **Release.** Human merges.\n\n"
+        "This closing paragraph is\nnot available from the skill index.\n\n"
+        "## Cells\n\n- `alpha` cell\n- `beta` cell\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(compat, "ROOT", tmp_path)
+    marker = "TRADECRAFT_CODEX_COMPAT_TEST"
+    payload = compat._expected_probe_payload(marker)
+    assert payload["tail"] == "This closing paragraph is not available from the skill index."
+    compat._assert_probe_answer(json.dumps(payload), marker)
+    payload["tail"] = "- `alpha` cell - `beta` cell"
+    with pytest.raises(compat.CompatError, match="source charter evidence"):
+        compat._assert_probe_answer(json.dumps(payload), marker)
+
+
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
 def test_timeout_must_be_positive(value):
     with pytest.raises(

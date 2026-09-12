@@ -74,8 +74,8 @@ nothing else. It must have exactly these keys:
 * `opening`: the charter's first prose paragraph after its purpose header,
   with internal whitespace collapsed to single spaces and Markdown preserved;
 * `ceremonies`: the two bold ceremony labels, in order and without punctuation;
-* `tail`: the charter's final prose paragraph, with internal whitespace
-  collapsed to single spaces and Markdown preserved.
+* `tail`: the charter's final prose paragraph (not a heading or list), with
+  internal whitespace collapsed to single spaces and Markdown preserved.
 
 Do not use code fences. If the charter is unavailable, respond instead with
 TRADECRAFT_COMPAT_FAIL followed by a short reason.
@@ -261,12 +261,17 @@ def _charter_evidence() -> dict[str, object]:
         None,
     )
     ceremonies = re.findall(r"(?m)^- \*\*([^*]+)\.\*\*", body)
-    if opening is None or len(ceremonies) != 2 or not paragraphs:
+    tail = next(
+        (block for block in reversed(paragraphs)
+         if not re.match(r"^(?:#|[-*+]\s|\d+[.)]\s)", block)),
+        None,
+    )
+    if opening is None or len(ceremonies) != 2 or tail is None:
         raise CompatError(f"source charter {charter} has no stable compatibility anchors")
     return {
         "opening": opening,
         "ceremonies": ceremonies,
-        "tail": paragraphs[-1],
+        "tail": tail,
     }
 
 

@@ -19,6 +19,19 @@ The unit of everything is the **skill**: a self-contained cell carrying whatever
 
 Content lives in three homes ([D-74](docs/architecture/decisions/D-74-2026-08-19-constitutional-reset.md)): the **doctrine** — the practice's binding half in [the charter](skills/charter/SKILL.md), a cell that ships, and this repository's own mechanics in [AGENTS.md](AGENTS.md), which does not — the **skills** (methodology, plus the charter itself, which is a cell so that a session can pull it deliberately), and the **[decision log](docs/architecture/decisions/)** (frozen rationale that informs, never binds). Every governing document states its purpose, audience, and success criteria, and its review judges against that statement — the review practice itself is the `adversarial-review` skill. Each review appends one row to [docs/reviews.jsonl](docs/reviews.jsonl); records are append-only exhaust, never maintained.
 
+## Develop this repository
+
+For work on this repository, use Python 3.14 and run `python tools/dev.py setup`
+from the repository root. It creates this worktree's `.venv` and installs
+`requirements-dev.txt`; CI uses the same Python and dependency declarations.
+Run `python tools/dev.py check` for lint, the version check and the test suite,
+or `python tools/dev.py test tools/tests/test_dev.py -q` for selected tests.
+The commands use the worktree's interpreter without activation and give each
+test run separate temporary storage outside the checkout.
+Codex's local environment runs setup when a worktree is created and exposes
+these validation actions. Setup requires package-download access; checks do not
+install dependencies. An existing incompatible `.venv` is reported, never deleted.
+
 ## Install it
 
 Tradecraft is one plugin package for both runtimes. Installation makes its nine

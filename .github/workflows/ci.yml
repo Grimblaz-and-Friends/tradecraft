@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version-file: ".python-version"
       - name: Packaging lint
         run: python tools/lint.py
       - name: Version bump
@@ -46,7 +46,7 @@ jobs:
         run: python tools/check_version_bump.py --base "origin/$BASE_REF"
       - name: Tests
         run: |
-          pip install pytest
+          python -m pip install -r requirements-dev.txt
           python -m pytest tools/tests skills -q
 
   # The owner reads the doctrine diff himself before merging -- AGENTS.md,
@@ -96,7 +96,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version-file: ".python-version"
       - name: Doctrine callout
         # The number is an integer in the event payload and carries no
         # injection risk, but it goes through the environment anyway: one rule
