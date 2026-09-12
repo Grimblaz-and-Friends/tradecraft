@@ -368,6 +368,7 @@ def parser() -> argparse.ArgumentParser:
                 "and probe evidence in the dispatch. --bare is omitted to preserve OAuth. "
                 "From native Windows Codex use approval-managed host execution for login. "
                 "Outputs must be new: verdict, .run.json, and per-vendor .stdout.log/.stderr.log. "
+                "Sidecar suffixes append to the full --output filename, including its extension. "
                 "Sidecars are reserved before launch; transcript contents appear after the last attempt. "
                 "The run record is flushed before atomic verdict publication, which requires same-filesystem hard links. "
                 "Malformed log bytes use a JSON base64 envelope named by the run record's encoding field. "
