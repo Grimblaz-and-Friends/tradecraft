@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 # Both jobs run code taken from the pull request's own branch, so the default
 # token is scoped down here rather than left at the repository default (which
