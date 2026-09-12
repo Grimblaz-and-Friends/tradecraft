@@ -112,8 +112,71 @@ def test_scratch_in_checkout_is_refused_before_pytest(tmp_path, monkeypatch, exp
     def unexpected(*args, **kwargs):
         pytest.fail("pytest must not run with scratch inside the checkout")
     monkeypatch.setattr(dev.subprocess, "run", unexpected)
-    with pytest.raises(RuntimeError, match="outside this checkout"):
+    with pytest.raises(RuntimeError, match="outside .*checkout"):
         dev.run_checks(tmp_path, Path(sys.executable), "test", [])
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("layout", ["enclosing", "unrelated", "linked"])
+def test_scratch_with_git_ancestry_is_refused(tmp_path, monkeypatch, explicit, layout):
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", str(repository)], stdin=subprocess.DEVNULL,
+                   capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
+         "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "Baseline"],
+        cwd=repository, stdin=subprocess.DEVNULL, capture_output=True, check=True,
+    )
+    root = repository / ".claude/worktrees/task"
+    subprocess.run(["git", "worktree", "add", "--detach", str(root)],
+                   cwd=repository, stdin=subprocess.DEVNULL, capture_output=True, check=True)
+    if layout == "enclosing":
+        scratch = repository / "scratch"
+    elif layout == "unrelated":
+        other = tmp_path / "other"
+        subprocess.run(["git", "init", str(other)], stdin=subprocess.DEVNULL,
+                       capture_output=True, check=True)
+        scratch = other / "scratch"
+    else:
+        other = tmp_path / "linked"
+        subprocess.run(["git", "worktree", "add", "--detach", str(other)],
+                       cwd=repository, stdin=subprocess.DEVNULL, capture_output=True, check=True)
+        assert (other / ".git").is_file()
+        scratch = other / "scratch"
+    scratch.mkdir()
+    sentinel = scratch / "consumer-work"
+    sentinel.write_text("keep", encoding="utf-8")
+    assert not scratch.is_relative_to(root)
+    probe = tmp_path / "test_checkout_discovery.py"
+    probe.write_text(
+        "def test_no_repository_above_fixture(tmp_path):\n"
+        "    assert not any((p / '.git').exists() for p in (tmp_path, *tmp_path.parents))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
+    if explicit:
+        monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(scratch))
+    else:
+        monkeypatch.setattr(dev.tempfile, "gettempdir", lambda: str(scratch))
+    with pytest.raises(RuntimeError, match="outside .*Git checkout"):
+        dev.run_checks(root, Path(sys.executable), "test", [str(probe), "-q"])
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_external_scratch_keeps_real_fixtures_outside_git(tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    subprocess.run(["git", "init", str(root)], stdin=subprocess.DEVNULL,
+                   capture_output=True, check=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(scratch))
+    probe = tmp_path / "test_checkout_discovery.py"
+    probe.write_text(
+        "def test_no_repository_above_fixture(tmp_path):\n"
+        "    assert not any((p / '.git').exists() for p in (tmp_path, *tmp_path.parents))\n",
+        encoding="utf-8",
+    )
+    assert dev.run_checks(root, Path(sys.executable), "test", [str(probe), "-q"]) == 0
 
 
 def test_nested_test_runs_have_separate_scratch_and_forward_arguments(tmp_path, monkeypatch):

@@ -95,13 +95,14 @@ def run_checks(root: Path, python: Path, action: str, extra: list[str]) -> int:
                 return result.returncode
         if action == "lint":
             return 0
-    # Stay outside the checkout: fixtures testing non-repository behavior must
-    # not discover this worktree's .git by walking up from their scratch path.
+    # Fixtures discover any ancestor's .git, including an enclosing checkout
+    # when this worktree lives below it. Git worktrees use a file marker.
     # Each invocation owns its parent, so parallel cleanup cannot cross runs.
     scratch = Path(os.environ.get("PYTEST_DEBUG_TEMPROOT") or tempfile.gettempdir()).resolve()
-    if scratch.is_relative_to(root.resolve()):
+    if (scratch.is_relative_to(root.resolve())
+            or any((parent / ".git").exists() for parent in (scratch, *scratch.parents))):
         raise RuntimeError(
-            "Test temporary storage must be outside this checkout. "
+            "Test temporary storage must be outside this checkout and every Git checkout. "
             "Set PYTEST_DEBUG_TEMPROOT to an external writable directory."
         )
     with tempfile.TemporaryDirectory(prefix="tradecraft-pytest-", dir=scratch) as base:

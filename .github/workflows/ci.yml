@@ -15,6 +15,11 @@ permissions:
 
 jobs:
   lint-and-test:
+    # Body/title edits need the declaration job, not another test matrix.
+    # Retargeting the base changes the integration tree and still runs both OSes.
+    # A skipped job must not replace either required OS check with a success.
+    name: ${{ github.event.action == 'edited' && github.event.changes.base.ref.from == '' && 'metadata-only (code checks retained)' || format('lint-and-test ({0})', matrix.os) }}
+    if: github.event.action != 'edited' || github.event.changes.base.ref.from != ''
     strategy:
       fail-fast: false
       matrix:

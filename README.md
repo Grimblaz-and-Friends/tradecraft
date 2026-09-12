@@ -27,7 +27,7 @@ from the repository root. It creates this worktree's `.venv` and installs
 Run `python tools/dev.py check` for lint, the version check and the test suite,
 or `python tools/dev.py test tools/tests/test_dev.py -q` for selected tests.
 The commands use the worktree's interpreter without activation and give each
-test run separate temporary storage outside the checkout.
+test run separate temporary storage outside every Git checkout.
 Codex's local environment runs setup when a worktree is created and exposes
 these validation actions. Setup requires package-download access; checks do not
 install dependencies. An existing incompatible `.venv` is reported, never deleted.
