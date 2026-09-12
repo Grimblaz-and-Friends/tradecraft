@@ -25,16 +25,15 @@ import math
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable, Mapping
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
+from vendor_cli import CliError as CompatError, resolve_codex  # noqa: E402
 
 # The cell-body strip is the engine's, not this script's. The hand-rolled
 # `text.split("---", 2)[2]` that stood here kept the two newlines after the
@@ -80,44 +79,6 @@ nothing else. It must have exactly these keys:
 Do not use code fences. If the charter is unavailable, respond instead with
 TRADECRAFT_COMPAT_FAIL followed by a short reason.
 """
-
-
-class CompatError(RuntimeError):
-    """A compatibility precondition or probe failed."""
-
-
-def resolve_codex(
-    explicit: str | None,
-    *,
-    env: Mapping[str, str] | None = None,
-    path_lookup: Callable[[str], str | None] = shutil.which,
-    platform: str = os.name,
-) -> Path:
-    """Resolve Codex explicitly, from PATH, or from the Windows app bundle."""
-    if explicit:
-        candidate = Path(explicit).expanduser()
-        if candidate.is_file():
-            return candidate.resolve()
-        raise CompatError(f"--codex does not name a file: {candidate}")
-
-    on_path = path_lookup("codex")
-    if on_path and Path(on_path).is_file():
-        return Path(on_path).resolve()
-
-    values = os.environ if env is None else env
-    if platform == "nt" and values.get("LOCALAPPDATA"):
-        bundle = Path(values["LOCALAPPDATA"]) / "OpenAI" / "Codex" / "bin"
-        candidates = [path for path in bundle.glob("*/codex.exe") if path.is_file()]
-        if candidates:
-            return max(
-                candidates,
-                key=lambda path: (path.stat().st_mtime_ns, str(path).casefold()),
-            ).resolve()
-
-    raise CompatError(
-        "Codex CLI not found: pass --codex, put it on PATH, or install the "
-        "Windows Codex app bundle"
-    )
 
 
 def _capture(
