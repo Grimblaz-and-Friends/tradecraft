@@ -1,0 +1,15 @@
+version = 1
+name = "tradecraft"
+
+[setup]
+script = "python tools/dev.py setup"
+
+[[actions]]
+name = "Check"
+icon = "test"
+command = "python tools/dev.py check"
+
+[[actions]]
+name = "Test"
+icon = "test"
+command = "python tools/dev.py test"
