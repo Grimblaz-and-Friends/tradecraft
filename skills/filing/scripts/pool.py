@@ -254,15 +254,10 @@ def load_policy(path: Path) -> dict:
 
 
 def _tie_break_keys() -> str:
-    """The tie-break vocabulary, as a refusal shows it.
+    """Name the recency key and its meaning in a policy refusal.
 
-    **A vocabulary and never a value to paste.** The refusals above are met by
-    exactly one audience -- a repository whose override predates the field --
-    and a bare list printed a sentence after `most significant first` reads as
-    the sequence to write. `sorted()` is alphabetical, so what such a reader
-    would have copied is the reverse of what this repository ships, loading
-    clean and ordering by recency while they believed otherwise. Each key is
-    given with what it means and the sequence is named as theirs.
+    Recency is the only supported key; an empty list omits that tie-break.
+    The refusal describes the vocabulary rather than supplying a policy value.
     """
     keys = ", ".join(f"{name} ({TIE_BREAKS[name][0]})" for name in sorted(TIE_BREAKS))
     return (f"Its keys are {keys}, and the sequence you write is the order "
