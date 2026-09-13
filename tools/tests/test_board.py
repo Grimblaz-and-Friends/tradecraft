@@ -773,26 +773,23 @@ def test_sync_dry_run_shows_the_archive_list_before_it_refuses(monkeypatch, caps
     assert "framed: 0" in out
 
 
-def test_sync_names_the_crossing_check_a_refresher_runs_next(monkeypatch, capsys):
-    """The refresh's next obliged step, with a path the prose cannot give it.
-
-    The `board` cell obliges a crossing check and names no invocation, because
-    `sideways-dep` refuses a cell naming another cell's files by rooted path.
-    The `filing` cell's own spelling is relative to itself -- right for an
-    adopter who installed that cell, and resolving to nothing from this
-    repository's root, which is where a session sent here by the board cell is
-    standing. A consumer performing a refresh searched the tree for it.
-    """
+def test_sync_names_valid_pool_steps_a_refresher_runs_next(monkeypatch, capsys):
+    """Printed steps must parse, and preview must not mask a missing write step."""
     monkeypatch.setattr(q.Board, "members", lambda self: [1, 2, 3])
     board = board_without_network()
     monkeypatch.setattr(q, "Board", lambda: board)
     monkeypatch.setattr(q, "framed_issues", lambda: {})
     assert q.cmd_sync(dry_run=True) == 0
     out = capsys.readouterr().out
-    assert "next in the refresh: python skills/filing/scripts/pool.py pushed" in out, out
-    # Both, because the refresh obliges both and printing one is what [D-522]'s
-    # review found: a pin naming only `pushed` went green over the gap.
-    assert "python skills/filing/scripts/pool.py cycle" in out, out
+    invocation = f"python {q.POOL_INVOCATION} "
+    commands = [line.partition(invocation)[2].split()
+                for line in out.splitlines() if invocation in line]
+    assert ["fade", "--dry-run"] in commands, out
+    assert ["fade"] in commands, out
+    assert ["shortlist"] in commands, out
+    parser = q.pool_engine().build_parser()
+    for command in commands:
+        parser.parse_args(command)
 
 
 def test_the_invocation_it_prints_resolves_to_a_file():

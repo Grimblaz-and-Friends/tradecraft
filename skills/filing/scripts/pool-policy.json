@@ -1,5 +1,5 @@
 {
-  "_note": "Defaults for the pool. A repository overrides them with a file of this name at its own root; the script reads that one instead and never merges the two, so an override states the whole policy -- which is every field below, since the script defaults none of them and refuses one that is missing by name. There is deliberately no list of those fields here: the last one went stale the first time a field was added, and the file itself is the list. The script writes no label this file does not name. A few operational bounds -- how many issues and labels a read may return -- are the script's own.",
+  "_note": "Defaults for the pool. A repository's root pool-policy.json replaces this whole file; retained fields are required and no defaults merge in. Retired assessment, accrual and push fields are ignored and their old labels are left intact. The script writes only labels named by the retained policy.",
   "axes": {
     "severity": {
       "meaning": "how bad this is if nothing is done, 4 the worst",
@@ -26,9 +26,8 @@
     "severity",
     "urgency"
   ],
-  "_tie_break": "What orders items the axes above leave equal, most significant first, with the issue number as the last resort once these are exhausted -- so that a few raised out of a tie are a judgment rather than the accident of ascending issue number. The keys are the script's rather than this file's, each one being a computation: `symptoms`, how many open sub-issues are linked under the item, most first; and `recent`, the issue's own updatedAt, most recently touched first, an item with no stamp sorting last on that key because it has no evidence of activity to win a tie on. Both are read where the accrual and the fade are read and neither is ever written back. An empty list is lawful and leaves equals to the issue number, which the shortlist then says it did. A key this script cannot compute is refused rather than ignored. Note that `recent` reads the same signal the fade reads, so anything that touches an issue moves it up -- including this script's own label writes.",
+  "_tie_break": "Implemented keys ordering equal rating proposals, most significant first. 'recent' reads updatedAt; the issue number is last. An empty list is lawful. Legacy 'symptoms' is ignored with a migration message; instances now extend pitches as comments.",
   "tie_break": [
-    "symptoms",
     "recent"
   ],
   "framed": {
@@ -41,34 +40,10 @@
     "color": "B60205",
     "meaning": "observed cause of the issues linked under it as sub-issues; not a task split into parts"
   },
-  "assessed": {
-    "label": "assessed:no-cause",
-    "color": "C5DEF5",
-    "meaning": "asked whether it has a cause, and it is its own; an issue never asked carries nothing"
-  },
-  "raised": {
-    "label": "raised",
-    "color": "5319E7",
-    "meaning": "put to the owner unasked, because it crossed the push line"
-  },
   "shortlist_size": 5,
-  "_accrual": "A cause is at least as bad as the worst thing it produces on the first axis in order, and climbs on the second as they accumulate -- one band per symptoms_per_band, so below that number a symptom moves nothing. Both are read at list time from the sub-issue links; neither is ever written back, so a cause's own labels stay what a person proposed, and an axis nobody rated or rated twice stays that way rather than being filled in from the symptoms.",
-  "accrual": {
-    "symptoms_per_band": 2
-  },
-  "_fade": "The second axis in order falls one band per quiet window, read from the issue's own updatedAt so that nothing has to be stored -- and so that the fade never writes, since a write would reset the very signal quiet is read from. The first axis in order has no decay term, which is why it never falls: with the order shipped here that is severity, and a repository that reorders these axes moves which one decays. At the floor an item is named; it is closed only where closes is true, as not planned, leaving the body and every comment in place so the evidence is kept and the next symptom can reopen it.",
+  "_fade": "An explicit fade closes an unframed open pitch after one full quiet window, regardless of ratings. Quiet is read from updatedAt and nothing stores a second clock. A dry run or closes=false writes nothing. The close keeps the issue's text and comments and records its reason; no command reopens it automatically.",
   "fade": {
     "quiet_days": 30,
-    "closes": false
-  },
-  "_assessment": "Most of the pool has never been asked whether it has a cause. The shortlist refuses over an unassessed top so that what it raises are causes, and each cycle names a bounded few more so the backlog is worked through without anyone paying for it at once. before_shortlist is at least 1: the gate is not switchable off from here, and --unassessed is the per-invocation escape.",
-  "assessment": {
-    "before_shortlist": 5,
-    "per_cycle": 5
-  },
-  "_push": "An item whose effective rating reaches the threshold on EVERY axis is put to the owner unasked, which is the push half of the two ways work leaves the pool. The threshold is at or above, not above, so a line at the top band can fire at all. Every axis in order must be named: an item that is catastrophic but not urgent, or urgent but trivial, is what the pull is for. Reaching the line does not raise anything by itself -- pushed names what crossed, a session puts the ask, and raise marks it so the pool does not ask twice.",
-  "push": {
-    "severity": 4,
-    "urgency": 4
+    "closes": true
   }
 }

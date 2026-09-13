@@ -1,6 +1,6 @@
 ---
 name: filing
-description: How work gets into the pool and how it leaves — the search that runs before a new issue is created, the ties that put its relationship to the board on the record at birth, the findings a cause carries as comments until its fix disposes of them, and the line between the evidence a filing carries and the design it leaves for whoever picks it up. Use when about to create an issue, when deciding whether something belongs on one that already exists, when deciding whether a finding about governing prose has earned one, or when asking whether anything has got bad enough to put to the owner unasked; not for the pre-implementation artifact written when the work is picked up.
+description: How evidence becomes a pitch for work and how the owner buys it from the pool. Use when creating or extending an issue, deciding whether a finding earns a pitch, reading or shortlisting the pool, or closing quiet pitches; not for the pre-implementation artifact written when work is picked up.
 ---
 
 # filing

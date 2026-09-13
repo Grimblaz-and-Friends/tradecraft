@@ -2,6 +2,8 @@
 
 **Loaded when** you are writing the tie block of a new issue or an extending comment, or setting or reading the cause link between two issues.
 
+**The cause-link instructions here serve existing numbered groups.** Read and preserve those links; a new instance of an open pitch extends it as a comment and never creates a symptom issue.
+
 **A tie name earns its place by changing what a ranking does with the pair.** That is what keeps the set closed, and the test any addition to it must pass.
 
 | tie | what it asserts | what a ranking does with it |

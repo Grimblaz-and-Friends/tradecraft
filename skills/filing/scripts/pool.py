@@ -1,74 +1,18 @@
 #!/usr/bin/env python3
-"""The pool's transport: what has been filed but not yet decided on (issue #434).
+"""The pool: pitches waiting for the owner to buy work.
 
-A filing used to become work the moment it landed -- onto the board, ranked
-beside things somebody had actually decided to do, with no way to tell the two
-apart. The pool is the state between noticing and doing. An open issue is in it
-unless it carries the framed label, so nothing has to be written to put a
-filing there and a filer who forgets cannot lose one; framing is the single
-write that moves an issue onto the board.
+An open issue is pooled unless it carries the policy's framed label. Ratings
+are proposals, ordered by the policy; they neither accrue nor decay. The
+explicit `fade` command closes quiet unframed pitches as not planned, with
+`--dry-run` for a preview. Reads and shortlisting never close anything.
 
-The session supplies the judgment -- what a filing's ratings should be, which
-of the raised few is worth doing, what the case against each one is. This
-supplies everything that is not judgment.
+Run `python scripts/pool.py --help` for the commands. Global `--repo` and
+`--policy` options precede the subcommand: the former steers GitHub, the latter
+the vocabulary and closing policy. A repository's whole-file policy overrides
+the shipped default, and every command prints the policy it resolved.
 
-**Every label name, every rating value, the ordering, the tie-break, the
-shortlist size and the accrual, fade, assessment and push numbers live in the
-policy file.**
-`pool-policy.json` beside this script carries the defaults; a repository
-overrides them with a file of that name at its own root, and the override is
-read instead of the default rather than merged into it, so what a repository
-states is the whole policy and no field it did not write can surprise it later.
-
-**No label the policy does not name is ever written.** `writable_labels` is the
-only place that set is computed, and every command that edits an issue's labels
-routes through `edit_labels`, which enforces it. `cmd_labels` creates labels
-rather than editing an issue, so it does not route through that function; what
-makes it safe is that it can only ever offer names `label_specs` derived from
-the same policy.
-
-**`--repo` and `--policy` go before the subcommand**, being options of the
-top-level parser. **They belong together:** `--repo` steers only the wire, while
-the policy is resolved from the working directory, so reading another repository
-without naming its policy partitions its issues by this one's labels. Every
-command prints the policy it resolved for that reason.
-
-Usage:  python scripts/pool.py [--repo OWNER/REPO] [--policy PATH] <command>
-
-        python scripts/pool.py list      [--limit N]
-        python scripts/pool.py show      N
-        python scripts/pool.py shortlist [--count N] [--unassessed]
-        python scripts/pool.py pushed
-        python scripts/pool.py raise     N
-        python scripts/pool.py cycle     [--dry-run]
-        python scripts/pool.py assess    N --none
-        python scripts/pool.py framed
-        python scripts/pool.py policy
-        python scripts/pool.py labels    [--dry-run]
-        python scripts/pool.py rate      N --rating LABEL [--rating LABEL]
-        python scripts/pool.py frame     N
-        python scripts/pool.py unframe   N
-        python scripts/pool.py unraise   N
-
-  list       the pool, highest-rated first, with each item's ratings
-  show       one issue: whether it is framed, and what it is rated
-  shortlist  the few worth raising, at the policy's size; refuses over an
-             unassessed top, so that what it raises are causes
-  pushed     what crossed the push line and has not been put to the owner
-  raise      record that a crossing was put, so it is not raised twice
-  cycle      what has risen from its symptoms, what has faded to the floor, and
-             the next bounded few to assess
-  assess     record that an issue was asked and is its own cause
-  framed     the framed set, which is what the board holds
-  policy     the resolved policy and the file it came from
-  labels     create the policy's labels in the repository, idempotently
-  rate       set an issue's rating on one axis or on every axis
-  frame      record that this is decided work
-  unframe    return a framed issue to the pool
-  unraise    take the raised mark off, which is asking the push to name it again
-
-  In a listing, `?` marks an issue nobody has asked the cause question of, and
-  `!` marks one the push has already put to the owner.
+Only labels named by the retained policy are written. Retired assessment and
+push state on existing issues is left intact and no longer read or written.
 """
 from __future__ import annotations
 
@@ -101,40 +45,14 @@ ISSUE_READ_LIMIT = 1000
 # through with an error blaming the wrong thing.
 LABEL_READ_LIMIT = 500
 
-# The causation read pages 100 issues at a time. This bounds it, so a
-# `hasNextPage` that never goes false is a refusal rather than a hang.
-PAGE_LIMIT = 100
-
 UNRATED = "-"
 
 # The width of the issue-number column, shared by the header and every row.
 ISSUE_COL = 8
 
-# What orders items the axes leave equal, keyed by the word a policy names and
-# carrying the plain words the shortlist says it in.
-#
-# **The vocabulary is the script's and the sequence is the policy's.** Each key
-# is a computation, so a repository cannot write a new one into a JSON file;
-# what it owns is which of these run and in what order. A key this table does
-# not have is refused by name on load rather than ignored, because ignoring it
-# would leave a repository believing it had set an order it did not get.
-#
-# Each key is a name, a sort term and a way to show its own value. The term is
-# smaller-first: `symptoms` negates the count so more symptoms sorts higher, and
-# `recent` negates the stamp so the most recently touched sorts higher. An item
-# with no stamp takes `inf` -- last on that key rather than first, because an
-# item with no evidence of activity cannot win a tie on activity; it falls
-# through to the next key. That is the one place this differs from
-# `quiet_windows`, which reads a missing stamp as no fade: there the absence
-# withholds a penalty, and here there is no neutral position to withhold into,
-# an ordering having no middle.
-#
-# The third element is what the shortlist prints beside the key it names; why
-# the margin travels with the claim is D-523's.
+# The policy chooses among implemented tie-break keys; the issue number
+# supplies a total order after those keys. Missing activity sorts last.
 TIE_BREAKS = {
-    "symptoms": ("symptoms under it",
-                 lambda it: -len(it.get("symptoms") or ()),
-                 lambda it: str(len(it.get("symptoms") or ()))),
     "recent": ("most recently touched",
                lambda it: -it["updated_at"].timestamp()
                if it.get("updated_at") else math.inf,
@@ -263,14 +181,11 @@ def load_policy(path: Path) -> dict:
             f"rating on axis '{seen[framed['label']]}'"
         )
 
-    for key in ("cause", "assessed", "raised"):
+    for key in ("cause",):
         block = policy.get(key)
         if not isinstance(block, dict) or not isinstance(block.get("label"), str):
             raise PoolError(
-                f"{path}: '{key}' must carry a 'label' naming one label. A policy "
-                f"written before the accrual, the fade and the push landed does "
-                f"not have it: add 'cause', 'assessed', 'raised', 'accrual', "
-                f"'fade', 'assessment' and 'push'"
+                f"{path}: '{key}' must carry a 'label' naming one label"
             )
         _check_label_name(path, block["label"])
         if block["label"] in seen or block["label"] == framed["label"]:
@@ -284,51 +199,10 @@ def load_policy(path: Path) -> dict:
     if not isinstance(size, int) or isinstance(size, bool) or size < 1:
         raise PoolError(f"{path}: 'shortlist_size' must be a whole number of at least 1")
 
-    _whole(policy, path, "accrual", "symptoms_per_band", least=1)
     _whole(policy, path, "fade", "quiet_days", least=1)
-    # `least=1`, not 0. Zero is the value a repository reaches for to switch the
-    # gate off, and it loaded without complaint while `max(len(raised), 0)`
-    # discarded it and every shortlist went on refusing -- a floor the validator
-    # invited and the mechanism did not honour. The gate is not switchable off
-    # per-policy; `--unassessed` is the per-invocation escape and the refusal
-    # names it.
-    _whole(policy, path, "assessment", "before_shortlist", least=1)
-    _whole(policy, path, "assessment", "per_cycle", least=1)
-
-    push = policy.get("push")
-    if not isinstance(push, dict):
-        raise PoolError(
-            f"{path}: 'push' must be an object naming a threshold per axis. A "
-            f"policy written before the push landed does not have it: add "
-            f"'raised' and 'push'"
-        )
-    # **Every axis in `order`, never a subset.** The brief's push fires on
-    # something crossing a line on *both* ratings, so a policy naming one axis
-    # would silently push on that axis alone -- and a repository adding a third
-    # axis would get a line it never wrote. Refused, not defaulted, on [D-441]
-    # decision 8's ground.
-    missing = [name for name in policy["order"] if name not in push]
-    extra = [name for name in push if name not in axes]
-    if missing or extra:
-        raise PoolError(
-            f"{path}: 'push' must name a threshold for every axis and no others. "
-            f"Missing: {', '.join(missing) or 'none'}. Not an axis: "
-            f"{', '.join(extra) or 'none'}"
-        )
-    for name, band in push.items():
-        allowed = sorted(axes[name]["values"].values())
-        if not isinstance(band, int) or isinstance(band, bool) or band not in allowed:
-            raise PoolError(
-                f"{path}: 'push.{name}' is {band!r}, which axis '{name}' does "
-                f"not have. Its bands are {allowed}"
-            )
 
     tie_break = policy.get("tie_break")
-    # Refused, not defaulted, on the same ground as `push` above: this file
-    # states the whole policy and nothing merges the shipped one into an
-    # override, so a defaulted field would be that merge by another name. The
-    # comment sits on the absence check because absence is the only case where
-    # defaulting is even a question; an unknown key has nothing to default to.
+    # An override states its whole retained policy; no shipped defaults merge in.
     if tie_break is None:
         raise PoolError(
             f"{path}: 'tie_break' is missing. It lists the keys that order "
@@ -349,6 +223,11 @@ def load_policy(path: Path) -> dict:
             f"most significant first -- [] to leave them to the issue number. "
             f"{_tie_break_keys()}"
         )
+    if "symptoms" in tie_break:
+        print(f"pool: {path}: tie_break 'symptoms' is retired and ignored; "
+              "remove it from this policy", file=sys.stderr)
+        tie_break = [key for key in tie_break if key != "symptoms"]
+        policy["tie_break"] = tie_break
     unknown = [key for key in tie_break if key not in TIE_BREAKS]
     if unknown:
         raise PoolError(
@@ -375,15 +254,10 @@ def load_policy(path: Path) -> dict:
 
 
 def _tie_break_keys() -> str:
-    """The tie-break vocabulary, as a refusal shows it.
+    """Name the recency key and its meaning in a policy refusal.
 
-    **A vocabulary and never a value to paste.** The refusals above are met by
-    exactly one audience -- a repository whose override predates the field --
-    and a bare list printed a sentence after `most significant first` reads as
-    the sequence to write. `sorted()` is alphabetical, so what such a reader
-    would have copied is the reverse of what this repository ships, loading
-    clean and ordering by recency while they believed otherwise. Each key is
-    given with what it means and the sequence is named as theirs.
+    Recency is the only supported key; an empty list omits that tie-break.
+    The refusal describes the vocabulary rather than supplying a policy value.
     """
     keys = ", ".join(f"{name} ({TIE_BREAKS[name][0]})" for name in sorted(TIE_BREAKS))
     return (f"Its keys are {keys}, and the sequence you write is the order "
@@ -391,24 +265,13 @@ def _tie_break_keys() -> str:
 
 
 def _whole(policy: dict, path: Path, block: str, key: str, *, least: int) -> None:
-    """One policy number, validated where every other one is.
-
-    Named rather than inlined four times because the message a repository reads
-    when it edits this file wrongly is the whole value of validating on load.
-    """
+    """Validate a required whole-number setting before a command acts."""
     values = policy.get(block)
     if not isinstance(values, dict):
-        raise PoolError(
-            f"{path}: '{block}' must be an object. A policy written before the "
-            f"blocks that were added to it does not have this one: the blocks "
-            f"beyond the original shape are 'cause', 'assessed', 'raised', "
-            f"'accrual', 'fade', 'assessment' and 'push'"
-        )
+        raise PoolError(f"{path}: '{block}' must be an object")
     value = values.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value < least:
-        raise PoolError(
-            f"{path}: '{block}.{key}' must be a whole number of at least {least}"
-        )
+        raise PoolError(f"{path}: '{block}.{key}' must be a whole number of at least {least}")
 
 
 def _check_label_name(path: Path, label: str) -> None:
@@ -434,28 +297,9 @@ def _check_label_name(path: Path, label: str) -> None:
 
 
 def writable_labels(policy: dict) -> frozenset[str]:
-    """Every label this script may write, and the only place that set is computed.
-
-    The brief's rail is that no label outside the policy is ever written. One
-    function rather than a check at each call site: a command added later
-    routes through `edit_labels` and inherits the rail, where a per-site rule
-    would be inherited only by whoever remembered it.
-    """
+    """The only labels issue-edit commands may write, including removals."""
     names = {label for axis in policy["axes"].values() for label in axis["values"]}
     names.add(policy["framed"]["label"])
-    # `assess` writes this one, so the rail has to admit it or the one write
-    # stage two adds is refused by the guard stage one built.
-    names.add(policy["assessed"]["label"])
-    # And `raise` writes this one.
-    #
-    # **The mark an ask carries is deliberately NOT here, and is not named
-    # anywhere in this script.** That mark belongs to the `engagement` cell,
-    # which lets an adopting repository rename it in its own doctrine; naming it
-    # here would give it a second governing home, which is the shape [D-441]
-    # decision 4 recorded for the cause label -- a rename in one place leaving a
-    # guard reading the old name silently. The session putting the ask applies
-    # it; this script never sees it, and a test greps to keep that true.
-    names.add(policy["raised"]["label"])
     return frozenset(names)
 
 
@@ -516,9 +360,7 @@ def open_issues(repo: str | None = None) -> list[dict]:
 
     `updatedAt` is here because **two** mechanisms are read from it: the fade,
     and the `recent` tie-break key that orders items the ratings leave equal.
-    It is the one field that makes a decay derivable with nothing stored:
-    GitHub maintains it, and a decay that had to be written would bump the very
-    field it reads. **Dropping it does not fail loudly** -- every `recent` term
+    GitHub maintains it; no separate activity record is written. **Dropping it does not fail loudly** -- every `recent` term
     becomes `math.inf`, every pair ties on that key, the ordering falls back to
     the issue number, and the shortlist reports that collapse as a fact rather
     than as a broken read. The tests stub this function, so the pin on the
@@ -544,97 +386,16 @@ def issue_labels(number: int, repo: str | None = None) -> list[str]:
     return [lb["name"] for lb in json.loads(raw).get("labels", [])]
 
 
-def causal_parents(policy: dict, repo: str | None = None) -> dict[int, int]:
-    """Open symptom -> its open, labelled cause, paged.
-
-    GraphQL rather than `gh issue list`: neither `parent` nor `issueType` is in
-    that command's field set, so the one-call read above cannot carry this.
-
-    **A repository's own board transport may perform the same read, and the
-    repetition is the wall rather than an oversight.** Such a transport is
-    repo-only and this script ships, so it may not be imported from here. The
-    label's name is in the policy this reads, and a repo-only transport may read
-    it from there too -- **this repository's has not been changed to**, so the
-    name still has more than one home and a repository renaming it in its policy
-    would get an accrual on the new name beside a guard reading the old one. A parent that is closed,
-    or carries no cause label, yields nothing -- the first because a closed
-    cause accrues nothing, the second because an unlabelled link is an ordinary
-    task decomposition and means something else entirely.
-    """
-    owner_repo = repo or _infer_repo()
-    owner, _, name = owner_repo.partition("/")
-    label = policy["cause"]["label"]
-    parents: dict[int, int] = {}
-    # **The cursor is a variable, and the loop is bounded.** Interpolating the
-    # server's `endCursor` into the query string puts a value this script does
-    # not control into the query it sends; `_graphql` already passes variables
-    # over `-f` and explains why, so the cursor goes the same way. And the loop
-    # had no bound at all, where the issue read above refuses at a limit rather
-    # than running on: a `hasNextPage` that stays true with a null `endCursor`
-    # asks for `after:"None"` forever, and a hang says less than a refusal.
-    cursor: str | None = None
-    pages = 0
-    while True:
-        pages += 1
-        if pages > PAGE_LIMIT:
-            raise PoolError(
-                f"the causation read passed {PAGE_LIMIT} pages of 100 issues "
-                f"without finishing, which it should never do -- treat this as "
-                f"the read failing rather than as a very large repository"
-            )
-        data = _graphql(
-            "query($o:String!,$r:String!,$after:String){repository(owner:$o,name:$r){"
-            "issues(states:OPEN,first:100,after:$after){pageInfo{hasNextPage endCursor}"
-            "nodes{number parent{number state labels(first:50){nodes{name}}}}}}}",
-            o=owner, r=name, after=cursor,
-        )["repository"]["issues"]
-        for node in data["nodes"]:
-            parent = node.get("parent")
-            if not parent or parent["state"] != "OPEN":
-                continue
-            if label in {lb["name"] for lb in parent["labels"]["nodes"]}:
-                parents[node["number"]] = parent["number"]
-        cursor = data["pageInfo"]["endCursor"]
-        if not data["pageInfo"]["hasNextPage"] or cursor is None:
-            return parents
-
-
 def _infer_repo() -> str:
-    """OWNER/REPO for the checkout, when no --repo was given.
-
-    A checkout with no remote cannot answer. Raw `gh` says only `no git remotes
-    found`; what names a command the caller never typed is this script's own
-    `gh()` wrapper, which prefixes every failure with the arguments it sent. So
-    the refusal below adds what could not be worked out and what to pass
-    instead, and the wrapper's shape survives inside it -- the general repair
-    belongs at `gh()` and is not this one call site's to make.
-    """
+    """Name the checkout's repository for callers that compare local and remote state."""
     try:
         raw = gh(["repo", "view", "--json", "nameWithOwner"])
     except PoolError as exc:
         raise PoolError(
-            f"cannot work out which repository this is, so the causation read "
-            f"has nowhere to go: {exc}. Name it with --repo OWNER/REPO"
+            f"cannot work out which repository this is: {exc}. "
+            "Name it with --repo OWNER/REPO"
         ) from None
     return json.loads(raw)["nameWithOwner"]
-
-
-def _graphql(query: str, **variables: object) -> dict:
-    args = ["api", "graphql", "-f", f"query={query}"]
-    for key, value in variables.items():
-        # A `None` is left out rather than sent. `-f` stringifies, so passing it
-        # would send the four characters `None` where the query wants null --
-        # which is exactly the first page of a paged read, whose cursor is null.
-        if value is None:
-            continue
-        # -f, never -F: -F applies magic type conversion, reading a value
-        # beginning "@" as a filename and expanding {owner}/{repo} from the
-        # working directory. Every variable here is a String.
-        args += ["-f", f"{key}={value}"]
-    data = json.loads(gh(args))
-    if "errors" in data:
-        raise PoolError(f"graphql: {json.dumps(data['errors'])[:400]}")
-    return data["data"]
 
 
 def edit_labels(number: int, policy: dict, *, add: list[str], remove: list[str],
@@ -675,105 +436,45 @@ def rating_of(labels: list[str], axis: dict) -> tuple[str | None, bool]:
 
 
 def read_pool(policy: dict, repo: str | None = None) -> tuple[list[dict], list[dict]]:
-    """Partition the open set into the pool and the framed, each item rated.
-
-    Returns `(pool, framed)`. The pool is ordered; the framed set is left in
-    the order the issue list gave it, the board being what orders that half.
-    """
-    framed_label = policy["framed"]["label"]
-    assessed_label = policy["assessed"]["label"]
-    raised_label = policy["raised"]["label"]
-    pool: list[dict] = []
-    framed: list[dict] = []
-    by_number: dict[int, dict] = {}
+    """Partition open issues once; only the pool takes the advisory order."""
+    pooled, framed = [], []
     for issue in open_issues(repo):
-        labels = [lb["name"] for lb in issue.get("labels", [])]
-        item = {
-            "number": issue["number"],
-            "title": issue.get("title", ""),
-            "ratings": {},
-            "clashes": [],
-            "assessed": assessed_label in labels,
-            "raised": raised_label in labels,
-            "updated_at": _stamp(issue.get("updatedAt")),
-            "symptoms": [],
-        }
-        for name, axis in policy["axes"].items():
-            label, clashed = rating_of(labels, axis)
-            item["ratings"][name] = label
-            if clashed:
-                item["clashes"].append(name)
-        by_number[item["number"]] = item
-        if framed_label in labels:
-            framed.append(item)
-        else:
-            pool.append(item)
-
-    # The accrual's input, read once for the whole set rather than per item.
-    #
-    # **Unconditionally**, which this comment used to deny. It claimed the read
-    # happened "only where something might accrue"; what is conditional is the
-    # loop body, and the walk itself runs for every command that reads the pool
-    # -- including `show`, which asks about one issue and pays a `gh repo view`
-    # plus a paged GraphQL read over the whole repository to answer. Gating it
-    # costs another wire call to find out whether any cause label exists, so the
-    # cost is stated here rather than hidden or paid for twice.
-    for symptom, cause in causal_parents(policy, repo).items():
-        parent, child = by_number.get(cause), by_number.get(symptom)
-        if parent is not None and child is not None:
-            parent["symptoms"].append({"number": symptom, "values": _bare(child, policy)})
-            # **The link is an answer to the assessment question, and this is
-            # where it is read.** There are three answers -- not asked, asked and
-            # it is its own, asked and here is its cause -- and only the first
-            # two have a label, the third being the sub-issue link the `filing`
-            # cell governs. Reading the flag from the label alone made the third
-            # read as the first: the gate named the symptom, its refusal offered
-            # `link it under its cause` as the first remedy, and taking that
-            # remedy changed nothing the gate could see, so a session doing
-            # exactly as instructed looped with no exit but `--unassessed`. The
-            # only thing that cleared the item was `assess <N> --none`, which
-            # asserts the opposite of the true answer.
-            #
-            # This stores nothing and writes nothing: the link stays the sole
-            # record and `assessed` becomes a derived read of it, exactly as
-            # effective severity and the fade are derived from that same link
-            # and that same `updatedAt`. A second *representation* would be a
-            # second thing written down, which is what this cannot disagree with.
-            child["assessed"] = True
-
-    for item in (*pool, *framed):
-        item["effective"] = effective(item, policy)
-    pool.sort(key=lambda it: sort_key(it, policy))
-    return pool, framed
+        item = _item(issue, policy)
+        (framed if item["framed"] else pooled).append(item)
+    pooled.sort(key=lambda it: sort_key(it, policy))
+    return pooled, framed
 
 
-def _bare(item: dict, policy: dict) -> dict[str, int | None]:
-    """One item's own band values, with nothing derived.
-
-    A symptom contributes what a person rated it, not what it accrued: letting
-    accrual feed accrual would make a chain of causes climb without limit and
-    for no reason anybody wrote down.
-    """
-    out: dict[str, int | None] = {}
+def _item(issue: dict, policy: dict) -> dict:
+    labels = [label["name"] for label in issue.get("labels", [])]
+    item = {"number": issue["number"], "title": issue.get("title", ""),
+            "ratings": {}, "clashes": [],
+            "framed": policy["framed"]["label"] in labels,
+            "updated_at": _stamp(issue.get("updatedAt"))}
     for name, axis in policy["axes"].items():
-        label = item["ratings"].get(name)
-        out[name] = None if (label is None or name in item["clashes"]) else axis["values"][label]
-    return out
+        label, clashed = rating_of(labels, axis)
+        item["ratings"][name] = label
+        if clashed:
+            item["clashes"].append(name)
+    return item
 
 
-def _stamp(raw: str | None) -> "datetime | None":
-    """GitHub's ISO-8601 timestamp, or None where a payload carries none."""
-    if not raw:
+def rating_values(item: dict, policy: dict) -> dict[str, int | None]:
+    """Read each proposed band without resolving missing or clashing ratings."""
+    return {name: None if item["ratings"].get(name) is None or name in item["clashes"]
+            else axis["values"][item["ratings"][name]]
+            for name, axis in policy["axes"].items()}
+
+
+def _stamp(raw: str | None) -> datetime | None:
+    """An offset-bearing activity instant, or unknown; never guess a closing clock."""
+    if not isinstance(raw, str) or not raw:
         return None
     try:
         stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
-    # A stamp with no offset parses cleanly and then dies at the subtraction in
-    # `quiet_windows` with a raw `TypeError`, which escapes the refusal contract
-    # this module prints without a traceback. An older payload, or a date with
-    # no time, is the case the line above anticipates and this one survives.
-    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+    return stamp if stamp.utcoffset() is not None else None
 
 
 def quiet_windows(item: dict, policy: dict, now: datetime | None = None) -> int:
@@ -792,86 +493,6 @@ def quiet_windows(item: dict, policy: dict, now: datetime | None = None) -> int:
     return max(0, days // policy["fade"]["quiet_days"])
 
 
-def effective(item: dict, policy: dict,
-              now: datetime | None = None) -> dict[str, int | None]:
-    """The pair the pool orders by: accrual applied, then the fade.
-
-    **Neither is ever written back.** A cause's own labels stay what a person
-    proposed, and the fade in particular could not be written without resetting
-    the signal it reads.
-
-    Accrual first, then the fade, because a cause with live symptoms is rarely
-    quiet and a cause whose symptoms have all gone quiet should fade with them.
-    """
-    axes, order = policy["axes"], policy["order"]
-    values: dict[str, int | None] = {}
-    # Per axis, not over the whole clash list. Testing the list meant one
-    # clashed axis discarded every clean rating the item had, so an issue at the
-    # top of the severity scale with a stray second urgency label sorted below
-    # the mildest thing in the pool on issue number alone. The incident's lesson
-    # sits here because this is where an axis becomes unusable; everything
-    # downstream reads the answer rather than the labels.
-    for name in order:
-        label = item["ratings"].get(name)
-        if label is None or name in item["clashes"]:
-            values[name] = None
-        else:
-            values[name] = axes[name]["values"][label]
-
-    symptoms = item.get("symptoms", [])
-    if symptoms:
-        top = order[0]
-        # A cause is at least as bad as the worst thing it produces.
-        #
-        # **Only where the cause carries a band of its own.** A `None` here means
-        # one of two things -- nobody rated the axis, or somebody rated it twice
-        # -- and filling it from the symptoms resolved both. That put an issue
-        # with two severity labels at the top of the pool at a value nobody
-        # wrote, its row saying only `CLASH`, which is the one signal meaning a
-        # human still has to choose; and it made an unrated cause sort in the
-        # rated tier while `is_rated` and the header count both called it
-        # unrated. D-438 decision 3 is that two values on one axis are reported
-        # rather than resolved, since taking the higher hides that somebody has
-        # to choose, and accrual is not an exception to it. An unrated axis stays
-        # unrated: accrual raises a rating, it does not supply one.
-        worst = [s for s in (sym["values"].get(top) for sym in symptoms) if s is not None]
-        if worst and values.get(top) is not None:
-            values[top] = max(values[top], max(worst))
-        # And it climbs on the second axis as they accumulate.
-        if len(order) > 1:
-            second = order[1]
-            if values.get(second) is not None:
-                bands = len(symptoms) // policy["accrual"]["symptoms_per_band"]
-                cap = max(axes[second]["values"].values())
-                values[second] = min(cap, values[second] + bands)
-
-    if len(order) > 1:
-        second = order[1]
-        if values.get(second) is not None:
-            floor = min(axes[second]["values"].values())
-            values[second] = max(floor, values[second] - quiet_windows(item, policy, now))
-    return values
-
-
-def at_floor(item: dict, policy: dict, values: dict[str, int | None],
-             now: datetime | None = None) -> bool:
-    """Whether the fade has taken this item to the bottom of the decaying axis.
-
-    Takes the same clock its sibling does. Without it this re-derived quiet
-    against the wall while judging values computed at an injected `now`, so the
-    two disagreed about one item: `effective(item, policy, now=X)` floored it and
-    `at_floor` handed those very values denied it.
-    """
-    order = policy["order"]
-    if len(order) < 2:
-        return False
-    second = order[1]
-    if values.get(second) is None:
-        return False
-    floor = min(policy["axes"][second]["values"].values())
-    return values[second] <= floor and quiet_windows(item, policy, now) > 0
-
-
 def rating_key(item: dict, policy: dict) -> tuple:
     """The part of the order the ratings decide: everything before the tie-break.
 
@@ -885,11 +506,11 @@ def rating_key(item: dict, policy: dict) -> tuple:
     one that sorts.
     """
     order = policy["order"]
-    derived = item.get("effective") or effective(item, policy)
+    derived = rating_values(item, policy)
     values = []
     complete = True
     for name in order:
-        # Per axis. Which axes are unusable is `effective`'s to say, and this
+        # Per axis. Which axes are unusable is `rating_values`'s to say; this
         # reads its answer one axis at a time rather than re-deriving it.
         value = derived.get(name)
         if value is None:
@@ -926,57 +547,25 @@ def is_rated(item: dict, policy: dict) -> bool:
 
 
 def _widths(policy: dict) -> list[int]:
-    """One column per axis, wide enough for the axis name and every label it has.
-
-    Computed from the policy rather than fixed, because a repository naming its
-    axes or its values differently would otherwise get a header that no longer
-    sits over the column it names.
-    """
-    return [max(len(name), len("CLASH"),
-                *(len(f"{v}>{max(policy['axes'][name]['values'].values())}")
-                  for v in policy["axes"][name]["values"]))
+    return [max(len(name), len("CLASH"), *(len(v) for v in policy["axes"][name]["values"]))
             for name in policy["order"]]
 
 
 def _line(item: dict, policy: dict) -> str:
     cells = []
-    derived = item.get("effective") or effective(item, policy)
     for name, width in zip(policy["order"], _widths(policy)):
-        label = item["ratings"].get(name) or UNRATED
-        if name in item["clashes"]:
-            label = "CLASH"
-        elif label != UNRATED:
-            # An arrow where the derived value differs from the labelled one,
-            # so a rating a reader sees is explained by the row rather than by
-            # having read the policy. **It explains the ratings and not the
-            # whole order**: neither tie-break key is on a row, so equals print
-            # identical cells in an order the row cannot account for, and
-            # `shortlist`'s own line is the only place that order is reported.
-            own = policy["axes"][name]["values"][label]
-            if derived.get(name) is not None and derived[name] != own:
-                label = f"{label}>{derived[name]}"
+        label = "CLASH" if name in item["clashes"] else item["ratings"].get(name) or UNRATED
         cells.append(label.ljust(width))
-    # In its own column, under its own header. Appended to the joined cells it
-    # sat under no header, hard against the last rating where it read as part of
-    # that value, and moved the title two columns between an assessed row and an
-    # unassessed one.
-    mark = " " if item.get("assessed") else "?"
-    # The second mark, in its own column beside the first. Without it the one
-    # state the push turns on was invisible in every listing the tool prints:
-    # `shortlist` does not filter what has been raised and its first sort axis
-    # has no decay, so a crossing the owner declined sits at the top of every
-    # later shortlist with nothing on the row saying it was already put.
-    put = "!" if item.get("raised") else " "
     prefix = f"#{item['number']:<{ISSUE_COL - 2}} "
-    return f"{prefix}{'  '.join(cells)}  {mark}  {put}  {item['title'][:70]}"
+    stamp = _stamp_shown(item.get("updated_at"))
+    return (f"{prefix}{'  '.join(cells)}  {stamp:<27}  "
+            f"{fade_status(item, policy):<8}  {item['title'][:70]}")
 
 
 def _header(policy: dict) -> str:
-    # `ISSUE_COL`, not a literal run of spaces: the header read `"issue    "`
-    # against a row prefix of `#` plus six, so every column heading sat one to
-    # the right of the column it named. One constant, so they cannot drift.
     cells = [name.ljust(width) for name, width in zip(policy["order"], _widths(policy))]
-    return "issue".ljust(ISSUE_COL) + "  ".join(cells) + "  ?  !  title"
+    return ("issue".ljust(ISSUE_COL) + "  ".join(cells)
+            + "  " + "last activity (UTC)".ljust(27) + "  fade      title")
 
 
 def cmd_list(policy: dict, repo: str | None, limit: int | None) -> int:
@@ -1019,47 +608,23 @@ def cmd_show(policy: dict, repo: str | None, number: int) -> int:
 
 
 def _print_ratings(item: dict, policy: dict) -> None:
-    """One issue as `list` reads it, in sentences rather than columns.
-
-    **Everything `list` distinguishes, this distinguishes** -- with one
-    asymmetry, stated so it is not read as a gap: `list` fills the raised column
-    on every row because a column has to be filled, and this prints that mark
-    only where it is set, the unraised state being the whole pool's default
-    rather than an answer anybody gave. It printed the labelled value alone, so
-    two issues differing only in the assessment read byte-identical here and a
-    faded issue asserted its label as its current value -- while the row for the
-    same issue in `list` carried both the arrow and the mark. `show` is the command a session runs about one issue, which
-    made it the one place in the tool that answered the question it exists to
-    answer with the one fact that had changed left out.
-    """
-    derived = item.get("effective") or effective(item, policy)
+    """Show the proposal and the activity the fade uses for this issue."""
     for name in policy["order"]:
         label = item["ratings"].get(name)
         axis = policy["axes"][name]
-        meaning = axis.get("meaning", name)
         if name in item["clashes"]:
             print(f"  {name}: CLASH -- more than one of {sorted(axis['values'])}")
         elif label is None:
-            print(f"  {name}: unrated ({meaning})")
+            print(f"  {name}: unrated ({axis.get('meaning', name)})")
         else:
-            own, now = axis["values"][label], derived.get(name)
-            moved = "" if now is None or now == own else f" -- reads as {now} now"
-            print(f"  {name}: {label} = {own} ({meaning}){moved}")
-    if item.get("assessed"):
-        print("  assessed: asked whether it has a cause")
-    else:
-        print("  not assessed: nobody has asked whether it has a cause")
-    if item.get("raised"):
-        print("  raised: the push put it to the owner, so it will not be named "
-              "again until `unraise`")
-    if item.get("symptoms"):
-        under = " ".join(f"#{s['number']}" for s in item["symptoms"])
-        print(f"  {len(item['symptoms'])} open symptom(s) under it: {under}")
+            print(f"  {name}: {label} = {axis['values'][label]} ({axis.get('meaning', name)})")
+    print(f"  last activity: {_stamp_shown(item.get('updated_at'))}")
+    print(f"  fade: {fade_status(item, policy)}; quiet window {policy['fade']['quiet_days']} days; "
+          f"closes={policy['fade']['closes']}")
     print(f"  {item['title']}")
 
 
-def cmd_shortlist(policy: dict, repo: str | None, count: int | None,
-                  unassessed: bool = False) -> int:
+def cmd_shortlist(policy: dict, repo: str | None, count: int | None) -> int:
     # `shortlist_size` is validated on load; the flag that overrides it was not,
     # and a negative sliced from the end -- raising most of the pool under a
     # header saying it was raising a few, with the unrated caveat suppressed
@@ -1068,29 +633,8 @@ def cmd_shortlist(policy: dict, repo: str | None, count: int | None,
         raise PoolError("--count must be a whole number of at least 1")
     size = count if count is not None else policy["shortlist_size"]
     pool, _ = read_pool(policy, repo)
-    # `few`, not `raised`: this is the pull's shortlist, and `raised` names the
-    # push's durable mark everywhere else in this module -- including on the
-    # very items this slice can contain, since nothing filters them out of it.
     few = pool[:size]
 
-    # The amendment has the pool work out the causes behind the highest-rated
-    # unassessed things BEFORE a session brings the owner a few, so that what it
-    # brings are causes. An advisory line does not do that -- a session reads it
-    # and raises the symptoms anyway -- so this refuses, names exactly which
-    # items block and the command that answers for each, and leaves `--unassessed`
-    # as the stated escape. Bounded to what is being raised, at least as deep as
-    # the policy says, so `--count` cannot outrun the gate.
-    depth = max(len(few), policy["assessment"]["before_shortlist"])
-    blocking = [it for it in pool[:depth] if not it["assessed"]]
-    if blocking and not unassessed:
-        listed = " ".join(f"#{it['number']}" for it in blocking)
-        raise PoolError(
-            f"{len(blocking)} of the top {min(depth, len(pool))} in the pool have "
-            f"never been asked whether they have a cause: {listed}. A shortlist "
-            f"raised over them raises symptoms. Ask why for each, then either link "
-            f"it under its cause as a sub-issue or record that it is its own with "
-            f"`assess <N> --none`. To raise them anyway, pass --unassessed"
-        )
     rated = [it for it in pool if is_rated(it, policy)]
     # Against what is actually being raised, not against the size asked for: a
     # pool of two fully-rated items under a size of five is not partly unrated,
@@ -1102,16 +646,15 @@ def cmd_shortlist(policy: dict, repo: str | None, count: int | None,
             "fewer rated items than the shortlist holds, so what follows is "
             "partly unrated filings rather than the highest-rated -- ordered "
             "among themselves by the policy's tie-break like everything else, "
-            "not by age. Rate what belongs in contention before reading this "
-            "as a ranking."
+            "not by age. These are candidates for judgment, not purchases."
         )
     print(_header(policy))
     for item in few:
         print(_line(item, policy))
     print(cut_line(pool, few, policy))
     print("")
-    print("Each of these is put to the owner with its one-line case and the "
-          "case against; neither is this script's to write.")
+    print("When there is room, choose the strongest pitches to put to the owner "
+          "with the case for and against; this shortlist buys nothing.")
     return 0
 
 
@@ -1142,10 +685,6 @@ def cut_line(pool: list[dict], few: list[dict], policy: dict) -> str:
         return (f"nothing is tied at the cut: the ratings alone chose these "
                 f"{len(few)}")
     tied = [it for it in pool if rating_key(it, policy) == tie]
-    # `here`, not `raised`: `raised` is the push's durable mark everywhere else
-    # in this module, and a reader who took "of them raised" for that mark
-    # would read the few as already put to the owner. The sibling comment in
-    # `cmd_shortlist` refuses the same word for the same reason.
     here = [it for it in few if rating_key(it, policy) == tie]
     # `tie[0]` is the tier, which is 0 only where every axis carries a usable
     # band. Below it are the items nobody rated and the ones rated twice, and
@@ -1188,31 +727,15 @@ def cmd_policy(policy: dict, source: Path) -> int:
 
 
 def label_specs(policy: dict) -> list[tuple[str, str, str]]:
-    """Name, colour and description for every label the policy names.
-
-    **Every one, including the ones no more than a single command ever
-    writes.** `cause` is read rather than written, `assessed` is written only by
-    `assess`, and `raised` only by `raise` -- but a label a command needs and
-    does not create is a setup step nobody is told about:
-    the gate instructs `assess <N> --none`, which fails at the wire against a
-    label the repository does not have, and the accrual reads a `cause` label
-    that has to be hand-made before anything accrues. Creating a label is not
-    the same act as writing one onto an issue, and the write rail is
-    `writable_labels`, which is deliberately narrower than this.
-    """
+    """Provision ratings, framing, and the cause label used by existing board groups."""
     specs = []
     for name, axis in policy["axes"].items():
-        meaning = axis.get("meaning", name)
-        colour = axis.get("color", "")
         for label, value in sorted(axis["values"].items(), key=lambda kv: kv[1]):
-            specs.append((label, colour, f"Pool rating -- {meaning} ({value})"))
-    for key, fallback in (("framed", "decided work, on the board"),
-                          ("cause", "observed cause of the issues linked under it"),
-                          ("assessed", "asked whether it has a cause, and it is its own"),
-                          ("raised", "put to the owner unasked, having crossed the push line")):
+            specs.append((label, axis.get("color", ""),
+                          f"Pool rating -- {axis.get('meaning', name)} ({value})"))
+    for key in ("framed", "cause"):
         block = policy[key]
-        specs.append((block["label"], block.get("color", ""),
-                      block.get("meaning", fallback)))
+        specs.append((block["label"], block.get("color", ""), block.get("meaning", key)))
     return specs
 
 
@@ -1321,215 +844,54 @@ def cmd_rate(policy: dict, repo: str | None, number: int,
     return 0
 
 
-def cmd_assess(policy: dict, repo: str | None, number: int) -> int:
-    """Record that an issue was asked whether it has a cause, and is its own.
-
-    Only this half is a label. Where the answer is that it *has* a cause, the
-    record is the sub-issue link the `filing` cell governs, and duplicating that
-    here would give one relationship two representations that could disagree.
-
-    There is no third state: an issue never asked carries nothing, exactly as an
-    issue in the pool carries nothing. The difference between asked-and-none and
-    never-asked is what the amendment required be visible, and it is the presence
-    or absence of this one label.
-    """
-    edit_labels(number, policy, add=[policy["assessed"]["label"]], remove=[], repo=repo)
-    print(f"#{number} assessed: asked, and it is its own cause")
-    return 0
+def fade_status(item: dict, policy: dict, now: datetime | None = None) -> str:
+    """Closing eligibility is independent of ratings and excludes bought work."""
+    if item.get("framed"):
+        return "framed"
+    stamp = item.get("updated_at")
+    moment = now or datetime.now(timezone.utc)
+    if stamp is None:
+        return "unknown"
+    if stamp > moment:
+        return "future"
+    return "due" if quiet_windows(item, policy, moment) >= 1 else "active"
 
 
-def crosses(item: dict, policy: dict) -> bool:
-    """Whether an item's effective pair reaches the push line on every axis.
-
-    **At or above, not above.** The shipped line is the top band, and a strict
-    comparison against a top band can never fire at all -- so a threshold nobody
-    edited would be a mechanism that silently does nothing.
-
-    **Every axis, never a subset.** The brief's push is something crossing a
-    line on *both* ratings; an item catastrophic but not urgent, or urgent but
-    trivial, is what the pull is for. An unrated or clashed axis reads `None`
-    and cannot reach anything, which is the same answer `at_floor` gives.
-    """
-    values = item.get("effective") or effective(item, policy)
-    for name, band in policy["push"].items():
-        value = values.get(name)
-        if value is None or value < band:
-            return False
-    return True
-
-
-def cmd_pushed(policy: dict, repo: str | None) -> int:
-    """What has crossed the push line and has not been put to the owner yet.
-
-    **This writes nothing.** It is the read half; `raise` is the write half, and
-    they are separate because the mark means *the ask was put* and the only
-    thing that knows an ask was put is the session that posted it. A command
-    that printed and marked in one breath would make the mark mean *this was
-    printed once*: running it twice would silence the pool, and a refresh
-    abandoned halfway would silence items no ask was ever put for.
-
-    **Not gated on assessment.** [D-441] decision 5 gates `shortlist`, and the
-    amendment that ordered it scopes the gate to the pull -- the pool works out
-    causes *before a session brings you a few*. A push is not a session choosing
-    what to bring; it is a line being crossed, and gating it would silence an
-    unassessed catastrophe precisely because nobody has got to it yet. The row
-    carries its `?` mark, so whoever writes the ask knows the question is open.
-    """
-    pool, _ = read_pool(policy, repo)
-    crossed = [it for it in pool if crosses(it, policy)]
-    over = [it for it in crossed if not it["raised"]]
-    # `policy["order"]`, not `push`'s own key order: every other printer in this
-    # module reads the axes in the order the policy states, and `load_policy`
-    # refuses a `push` whose keys are not exactly `order`'s, so the two can
-    # never disagree about which axes -- only about the sequence they print in.
-    line = ", ".join(f"{name} {policy['push'][name]}" for name in policy["order"])
-    print(f"pool: {len(pool)}   over the line ({line}): {len(crossed)}   "
-          f"not yet raised: {len(over)}")
-    if not over:
-        print("")
-        # Two states, not one, and they are opposites. A repository that
-        # obliges a refresh note carrying what crossed had a run where every
-        # crossing was already put to the owner writing "nothing has crossed"
-        # into that standing record -- and the header above carries the threshold
-        # and the unraised count, so the number of crossings appeared nowhere.
-        if crossed:
-            print(f"all {len(crossed)} over the line have already been put to the "
-                  f"owner, so there is nothing to ask again")
-        else:
-            print("nothing has crossed, so there is nothing to put to the owner unasked")
-        return 0
-    print(_header(policy))
-    for item in over:
-        print(_line(item, policy))
-    print("")
-    print("For each: put the ask where the `engagement` cell says -- an ask block "
-          "on the issue, marked -- then `raise <N>` so this does not ask twice.")
-    return 0
-
-
-def cmd_raise(policy: dict, repo: str | None, number: int) -> int:
-    """Record that a crossing was put to the owner. Run it after the ask exists.
-
-    The label is the pool's own, and it is durable on purpose: when the owner
-    answers, the ask's own mark comes off and this one stays. A framed item has
-    left the pool; a declined one keeps this and stops asking, until `unraise`
-    takes the label off, which is the act of saying *ask me again*.
-
-    **It checks the label exists before it writes.** This is the last of three
-    steps a refresh performs, and the first two -- reading what crossed and
-    posting the ask -- have already happened by the time it runs. A write that
-    fails at the wire therefore leaves the item asked but unmarked, which is
-    the one state the mark exists to prevent: the next refresh names it again
-    and the owner is asked twice. A repository that has not run `labels` hits
-    exactly that on its first crossing, so the refusal names the command.
-    """
-    label = policy["raised"]["label"]
-    if label not in existing_labels(repo):
-        raise PoolError(
-            f"this repository has no '{label}' label, so marking #{number} "
-            f"would fail at the wire and leave it asked but unmarked -- the "
-            f"state that asks the owner twice. Run `pool.py labels` once, then "
-            f"this again"
-        )
-    edit_labels(number, policy, add=[label], remove=[], repo=repo)
-    print(f"#{number} is marked raised -- it was put to the owner, so the push "
-          f"will not name it again")
-    return 0
-
-
-def cmd_unraise(policy: dict, repo: str | None, number: int) -> int:
-    """Take the mark off, which is the act of asking the push to name it again.
-
-    The mark is durable by design, so without this the only way back is a
-    hand-edit on GitHub -- the shape `frame` and `unframe` already refused to
-    leave. It is the command for a mark put on the wrong issue, and for a
-    crossing the owner declined and later wants raised again.
-
-    No existence check, unlike `raise`: `gh issue edit --remove-label` on a
-    label the repository does not have fails, but the state it would leave is
-    the one the caller is asking for.
-    """
-    edit_labels(number, policy, add=[],
-                remove=[policy["raised"]["label"]], repo=repo)
-    print(f"#{number} is no longer marked raised -- the push names it again if "
-          f"it is still over the line")
-    return 0
-
-
-def cmd_cycle(policy: dict, repo: str | None, dry_run: bool = False) -> int:
-    """The fade, the accrual and the assessment bound, in one pass.
-
-    It writes nothing except the closes `fade.closes` licenses, and it names
-    every one of those before it makes it -- but only within a single run, which
-    is no use to somebody deciding whether to turn the switch on. `--dry-run`
-    is how that list is read first, as `labels` has one and the board's `apply`
-    has one; a command whose only write is a close and which had neither was the
-    odd one out.
-    """
-    pool, _ = read_pool(policy, repo)
-    order = policy["order"]
-    # Carrying a symptom is not rising, and neither is having moved. The first
-    # spelling of this listed every item with a symptom, so items the accrual
-    # had not touched printed under a heading saying what rose. The second
-    # tested `effective != _bare`, which is worse in a way the first was not:
-    # `effective` applies the fade after the accrual, so an item with one
-    # symptom (zero bands) that has been quiet for a window differs from its
-    # bare pair by having gone *down*, and printed as risen. What rising means
-    # is an increase, so that is what this asks.
-    def _rose(item: dict) -> bool:
-        bare = _bare(item, policy)
-        return any(item["effective"].get(name) is not None
-                   and bare.get(name) is not None
-                   and item["effective"][name] > bare[name]
-                   for name in order)
-
-    risen = [it for it in pool if it.get("symptoms") and _rose(it)]
-    floored = [it for it in pool if at_floor(it, policy, it["effective"])]
-    unassessed = [it for it in pool if not it["assessed"]]
-    nxt = unassessed[:policy["assessment"]["per_cycle"]]
-
-    print(f"pool: {len(pool)}   risen: {len(risen)}   at the floor: {len(floored)}   "
-          f"never assessed: {len(unassessed)}")
-
-    if risen:
-        print("")
-        print("risen, from the symptoms under them:")
-        for item in risen:
-            print(f"  {_line(item, policy)}   ({len(item['symptoms'])} open)")
-
-    if floored:
-        print("")
-        # `order[1]`, not `order[-1]`: with two axes they are the same and
-        # with three they are not, so this header named an axis that had not
-        # moved over rows the fade had floored on a different one.
-        print(f"at the floor of {order[1]}, having been quiet:")
-        for item in floored:
-            print(f"  {_line(item, policy)}")
-
-    if nxt:
-        print("")
-        print(f"next to assess, {len(nxt)} of {len(unassessed)} never asked:")
-        for item in nxt:
-            print(f"  {_line(item, policy)}")
-        print("  ask why for each, then link it under its cause or "
-              "`assess <N> --none`")
-
-    print("")
-    if not floored:
-        print("nothing has reached the floor, so nothing is closable")
-    elif not policy["fade"]["closes"]:
-        print("fade.closes is false, so nothing above was closed. A repository "
-              "that wants the fade to close sets it true in its own policy")
-    elif dry_run:
-        for item in floored:
+def cmd_fade(policy: dict, repo: str | None, dry_run: bool = False) -> int:
+    """Preview or close quiet pitches, rechecking each candidate before writing."""
+    pooled, _ = read_pool(policy, repo)
+    due = [it for it in pooled if fade_status(it, policy) == "due"]
+    for item in pooled:
+        status = fade_status(item, policy)
+        if status in {"unknown", "future"}:
+            print(f"#{item['number']} skipped: {status} activity; no closing clock")
+    print(f"pool: {len(pooled)}   due: {len(due)}   quiet window: {policy['fade']['quiet_days']} days")
+    for item in due:
+        print(f"#{item['number']} due: last activity {_stamp_shown(item['updated_at'])}")
+    if dry_run or not policy["fade"]["closes"]:
+        for item in due:
             print(f"would close #{item['number']} as not planned")
-        print("--dry-run, so nothing above was closed")
-    else:
-        for item in floored:
-            print(f"closing #{item['number']} as not planned; its body and every "
-                  f"comment stay, so the next symptom reopens it")
-            gh(["issue", "close", str(item["number"]), *_repo_args(repo),
-                "--reason", "not planned"])
+        print("--dry-run: nothing closed" if dry_run else "fade.closes is false: nothing closed")
+        return 0
+    for item in due:
+        number = item["number"]
+        fresh = json.loads(gh(["issue", "view", str(number), *_repo_args(repo),
+                              "--json", "number,title,state,labels,updatedAt"]))
+        if fresh.get("number") != number or not isinstance(fresh.get("labels"), list):
+            raise PoolError(f"#{number}: incomplete issue reread; nothing closed for this item")
+        if fresh.get("state") != "OPEN":
+            print(f"#{number} skipped: no longer open, or state unavailable")
+            continue
+        current = _item(fresh, policy)
+        status = fade_status(current, policy)
+        if status != "due":
+            print(f"#{number} skipped after reread: {status}")
+            continue
+        reason = (f"Lapsed: no activity for at least {policy['fade']['quiet_days']} days "
+                  f"(last activity {_stamp_shown(current['updated_at'])}); no work was purchased.")
+        gh(["issue", "close", str(number), *_repo_args(repo),
+            "--reason", "not planned", "--comment", reason])
+        print(f"#{number} closed as not planned. {reason}")
     return 0
 
 
@@ -1569,23 +931,8 @@ def build_parser() -> argparse.ArgumentParser:
     shortlist = sub.add_parser(
         "shortlist", help="the few worth putting to the owner")
     shortlist.add_argument("--count", type=int, help="override the policy's size")
-    shortlist.add_argument("--unassessed", action="store_true",
-                           help="raise even where the top of the pool is unassessed")
-
-    cycle = sub.add_parser(
-        "cycle", help="what has risen, what has floored, what to assess next")
-    cycle.add_argument("--dry-run", action="store_true",
-                       help="name the closes fade.closes would make, and make none")
-
-    sub.add_parser("pushed", help="what crossed the push line and is not yet raised")
-
-    raised = sub.add_parser("raise", help="record that a crossing was put to the owner")
-    raised.add_argument("number", type=int)
-
-    assess = sub.add_parser("assess", help="record that an issue is its own cause")
-    assess.add_argument("number", type=int)
-    assess.add_argument("--none", action="store_true", required=True,
-                        help="the answer: it was asked, and it has no cause but itself")
+    fade = sub.add_parser("fade", help="close quiet unframed pitches as not planned")
+    fade.add_argument("--dry-run", action="store_true", help="preview without closing")
 
     sub.add_parser("framed", help="the framed set, which is what the board holds")
     sub.add_parser("policy", help="the resolved policy and where it came from")
@@ -1604,9 +951,6 @@ def build_parser() -> argparse.ArgumentParser:
     unframe = sub.add_parser("unframe", help="return a framed issue to the pool")
     unframe.add_argument("number", type=int)
 
-    unraise = sub.add_parser(
-        "unraise", help="take the raised mark off, so the push names it again")
-    unraise.add_argument("number", type=int)
     return parser
 
 
@@ -1627,17 +971,9 @@ def dispatch(args: argparse.Namespace) -> int:
     if args.command == "show":
         return cmd_show(policy, args.repo, args.number)
     if args.command == "shortlist":
-        return cmd_shortlist(policy, args.repo, args.count, args.unassessed)
-    if args.command == "pushed":
-        return cmd_pushed(policy, args.repo)
-    if args.command == "raise":
-        return cmd_raise(policy, args.repo, args.number)
-    if args.command == "unraise":
-        return cmd_unraise(policy, args.repo, args.number)
-    if args.command == "cycle":
-        return cmd_cycle(policy, args.repo, args.dry_run)
-    if args.command == "assess":
-        return cmd_assess(policy, args.repo, args.number)
+        return cmd_shortlist(policy, args.repo, args.count)
+    if args.command == "fade":
+        return cmd_fade(policy, args.repo, args.dry_run)
     if args.command == "labels":
         return cmd_labels(policy, args.repo, args.dry_run)
     if args.command == "frame":

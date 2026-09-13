@@ -1,8 +1,8 @@
 # What a review records
 
-**Loaded when** you are recording a review's outcome — appending its row, appending an entry for a ruling of `record`, or reading either back.
+**Loaded when** you are recording a review's outcome — appending its index row or reading the index back.
 
-Every review appends one row to `docs/reviews.jsonl`, and every `record` ruling one entry to `docs/recorded-findings.jsonl` **and nothing else — no filing into the pool**. The entry is the review's accounting and what the next review's dispatch fetches. Neither is maintained afterwards, and rows already written are not migrated: an entry carrying an `issue` from when the ruling also filed one keeps it, that filing having happened, and what moved is where a ruling goes from now, not what the record holds. Beyond the fields the practice's own `the-record.md`, in the `adversarial-review` cell, names, a row here carries one more field, `cost`, and one more key on each entry of `highs`.
+Every review appends one row to `docs/reviews.jsonl`. Rows already written are not migrated or maintained. Beyond the fields the practice's own `the-record.md`, in the `adversarial-review` cell, names, a row here carries one more field, `cost`, and one more key on each entry of `highs`.
 
 **`cost` — what the review took to run**, as `{"dispatches": n, "subagent_tokens": n}`.
 
