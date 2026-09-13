@@ -12,7 +12,7 @@ showing it was read (#423).
 
 **What is checked is presence, never truth.** Whether an unmarked ask is buried
 in a body is a content judgement, and a guard grepping for question-shaped
-prose would fire on nearly every body in this repository -- the affirmed brief
+prose would fire on nearly every body in this repository -- the affirmed implementation brief
 rejected that shape before it was offered. So this asks only that the author
 answered the question, and a green check is not evidence the answer is right.
 

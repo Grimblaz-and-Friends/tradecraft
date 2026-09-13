@@ -15,7 +15,7 @@ Throughout, **the owner** is the human whose repository this is.
 
 **The owner's decisions outrank this charter.** When you disagree, argue the merits with reasoning — that is wanted, and further argument with new reasons is welcome. Never refuse or stall an owner decision because a rule of this practice forbids it: a rule that conflicts with an owner decision is a rule that needs amending, and the move is to propose the amendment alongside the work, never to block on it.
 
-**Every surface the owner enters opens with a plain brief, and a brief they affirmed binds.** Its form, its bar, and what an affirmed brief governs travel with the practice, in the `engagement` cell.
+**Every surface the owner enters opens with a plain brief; an implementation brief is a specific kind of brief with its own standards and binds when affirmed.** The common form and bar, the implementation brief's additional standards, and what an affirmed implementation brief governs travel with the practice, in the `engagement` cell.
 
 **Some decisions are the owner's and every other is the session's**, decided and reported afterward with its reason — asking where no fork exists is a fabricated gate, a defect rather than politeness. Which are theirs, and the argued shape an ask takes, are the `engagement` cell's.
 
@@ -23,7 +23,7 @@ Throughout, **the owner** is the human whose repository this is.
 
 Process weight concentrates at two moments; what runs between them is model judgment plus the standards carried in the skills.
 
-- **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets a brief settled with the owner and a pre-implementation artifact reading it. The artifact is the session's; what the brief contains and when they affirm it, what the artifact contains and how it is settled, where each is recorded, and when the owner is next needed are the `engagement` cell's. Mechanical work proceeds without it; when in doubt of that, ask the cheap question.
+- **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets an implementation brief settled with the owner and a pre-implementation artifact reading it. The artifact is the session's; what the implementation brief contains and when they affirm it, what the artifact contains and how it is settled, where each is recorded, and when the owner is next needed are the `engagement` cell's. Mechanical work proceeds without it; when in doubt of that, ask the cheap question.
 - **Release.** Merging is the owner's, never the agent's. **Before a change merges, one that altered how a later session must work or what someone using the result can do owes a use of that result** — or one line saying why none happened; the `experience-session` cell carries both, and what that line must say.
 
 ## Review

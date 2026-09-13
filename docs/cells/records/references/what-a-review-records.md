@@ -13,7 +13,7 @@ Every review appends one row to `docs/reviews.jsonl`. Rows already written are n
 
 **`target` — the surface each sustained high hit**, carried on the high itself: `highs` entries are `{"high": "...", "target": "..."}`. Read from the site the finding cites, exactly as its `arbitration.md` reads consequence shape, **and decided in this order, first match governing**:
 
-1. **`record`** — this change's own paperwork, wherever it sits: its decision entry, its own index row, its pull request body, its commit message, its review report, its pre-implementation artifact and the brief that artifact carries. First, because the two of those that are in the tree sit in the repo-only zone and a zone test would swallow them. A row or entry landed by *earlier* work is not this change's paperwork and falls through.
+1. **`record`** — this change's own paperwork, wherever it sits: its decision entry, its own index row, its pull request body, its commit message, its review report, its pre-implementation artifact and the implementation brief that artifact carries. First, because the two of those that are in the tree sit in the repo-only zone and a zone test would swallow them. A row or entry landed by *earlier* work is not this change's paperwork and falls through.
 2. **`shipped`** — what an adopter installs: the shipped zone `siting` names, or a generated mirror of it, which takes its source's label.
 3. **`repo`** — everything else **in this tree**, by residue rather than by list, so every site in it has a lawful label.
 

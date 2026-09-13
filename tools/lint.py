@@ -214,7 +214,8 @@ Checks:
     goes to the board's refresh note): nothing is charged against a body now, so
     there is no re-arming finding to own there.
 28. settling index: docs/settling.jsonl parses and every row carries the
-    keys the `records` cell names. The record is append-only and doctrine
+    keys the `records` cell names, including the implementation brief link
+    under the key its nonblank position requires. The record is append-only and doctrine
     forbids repairing a landed row, so a malformed one is permanent; when it
     shipped, invalid JSON there landed green while the identical append to
     docs/admissions.jsonl was reported. Required keys, not exact keys -- a
@@ -1067,9 +1068,9 @@ FACING_FIELDS = ("artifact", "apparatus")
 #
 # Grandfathered by POSITION, not by date. A date cutoff was written first and an
 # experience session found the hole in it within eight tool calls: the session's
-# hand reached for "today" before re-reading its brief, and a row dated one day
+# hand reached for "today" before re-reading its implementation brief, and a row dated one day
 # early takes both new fields as optional, passes lint in silence, and lands
-# pre-schema in a file nobody may edit. It got it right by copying its brief,
+# pre-schema in a file nobody may edit. It got it right by copying its implementation brief,
 # not by understanding. Position cannot be missed by a typo -- the rows that
 # existed when this landed are exempt, everything appended after is not.
 REVIEW_ROWS_GRANDFATHERED = 20
@@ -1871,7 +1872,7 @@ def check_charter_roster(root: Path) -> list[str]:
     """Every shipped cell but the charter has a line in the charter's roster.
 
     **The router is half of what #404 bought and was held by prose alone.**
-    The affirmed brief prefers a check in code wherever the ground is stable,
+    The affirmed implementation brief prefers a check in code wherever the ground is stable,
     and this ground is as stable as this repository has: the cell set is
     `roster.cell_sources`, which `check_project_roster` already derives a set
     from, and the roster is a bullet list in the reserved form. Adding a cell
@@ -3620,7 +3621,7 @@ LIVE_RECORDS = frozenset({
     # byte guard still covers it, where a lone carriage return is corruption
     # of the row's own format rather than content. [#334]
     "docs/admissions.jsonl",
-    # `scoring_pass` and `notes` are prose about a brief -- what the pass
+    # `scoring_pass` and `notes` are prose about an implementation brief -- what the pass
     # removed, and why a row is shaped as it is -- so a row quoting a
     # whitespace-only span holds exactly what the prose guard reports, and
     # append-only makes it a red no lawful edit clears. Measured rather than
@@ -5300,6 +5301,9 @@ def check_admissions(root: Path) -> list[str]:
 
 
 
+SETTLING_ROWS_BRIEF_GRANDFATHERED = 26
+
+
 def check_settling_index(root: Path) -> list[str]:
     """Every settling row parses and carries the keys the `records` cell names.
 
@@ -5314,6 +5318,11 @@ def check_settling_index(root: Path) -> list[str]:
     guard first. What it may not do is omit what a reader needs to find the
     row's own sources.
 
+    **The implementation-brief link changes forward-only by nonblank row
+    position.** The 26 rows at ed69ada keep `brief`; every row appended after
+    them requires `implementation_brief`. Position cannot be evaded with a
+    mistyped date, and blank lines do not move the boundary.
+
     **A required key may be `null`**, which is how a successor reconstructing
     an affirmation it was not present for records a figure nobody holds. An
     absent key and a null one say different things: absent is an omission, null
@@ -5322,12 +5331,14 @@ def check_settling_index(root: Path) -> list[str]:
     path = root / "docs" / "settling.jsonl"
     if not path.exists():
         return []
-    required = ("date", "issue", "brief", "puts", "amendments",
+    required = ("date", "issue", "puts", "amendments",
                 "corrected_before_posted", "scoring_pass", "cold_seat")
     findings = []
+    row_position = 0
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
+        row_position += 1
         try:
             row = json.loads(line)
         except json.JSONDecodeError as exc:
@@ -5342,7 +5353,12 @@ def check_settling_index(root: Path) -> list[str]:
                 f"settling-index: docs/settling.jsonl:{number} is not an object"
             )
             continue
-        missing = [key for key in required if key not in row]
+        link_key = (
+            "brief"
+            if row_position <= SETTLING_ROWS_BRIEF_GRANDFATHERED
+            else "implementation_brief"
+        )
+        missing = [key for key in (*required, link_key) if key not in row]
         if missing:
             findings.append(
                 f"settling-index: docs/settling.jsonl:{number} is missing "

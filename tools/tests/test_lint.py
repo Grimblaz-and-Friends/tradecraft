@@ -174,6 +174,76 @@ def test_clean_tree_passes(tmp_path):
     assert lint.run(tmp_path) == []
 
 
+# --- settling index -------------------------------------------------------
+
+
+def _settling_row(link_key: str) -> dict:
+    row = {
+        "date": "2026-09-13",
+        "issue": 1,
+        "puts": 1,
+        "amendments": 0,
+        "corrected_before_posted": 0,
+        "scoring_pass": "nothing removed",
+        "cold_seat": {"rounds": 1, "verdicts": ["would"], "route": "would"},
+    }
+    row[link_key] = "https://example.invalid/brief"
+    return row
+
+
+def _write_settling(root: Path, *rows: dict) -> None:
+    docs = root / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "settling.jsonl").write_text(
+        NL.join(json.dumps(row) for row in rows) + NL,
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def test_a_legacy_settling_row_keeps_the_brief_key(tmp_path):
+    make_clean_tree(tmp_path)
+    _write_settling(tmp_path, _settling_row("brief"))
+    assert lint.check_settling_index(tmp_path) == []
+
+
+def test_the_first_post_boundary_settling_row_uses_the_specific_key(
+        tmp_path, monkeypatch):
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "SETTLING_ROWS_BRIEF_GRANDFATHERED", 1)
+    _write_settling(
+        tmp_path,
+        _settling_row("brief"),
+        _settling_row("implementation_brief"),
+    )
+    assert lint.check_settling_index(tmp_path) == []
+
+
+def test_a_post_boundary_brief_only_row_names_the_missing_specific_key(
+        tmp_path, monkeypatch):
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "SETTLING_ROWS_BRIEF_GRANDFATHERED", 1)
+    _write_settling(tmp_path, _settling_row("brief"), _settling_row("brief"))
+    findings = lint.check_settling_index(tmp_path)
+    assert len(findings) == 1
+    assert "implementation_brief" in findings[0]
+
+
+def test_blank_lines_do_not_move_the_settling_key_boundary(tmp_path, monkeypatch):
+    make_clean_tree(tmp_path)
+    monkeypatch.setattr(lint, "SETTLING_ROWS_BRIEF_GRANDFATHERED", 2)
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    (docs / "settling.jsonl").write_text(
+        json.dumps(_settling_row("brief")) + NL + NL + NL
+        + json.dumps(_settling_row("brief")) + NL
+        + json.dumps(_settling_row("implementation_brief")) + NL,
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert lint.check_settling_index(tmp_path) == []
+
+
 # --- zone wall -------------------------------------------------------------
 
 def test_charter_cell_fires_when_the_charter_is_missing(tmp_path):
@@ -2359,7 +2429,7 @@ def test_grandfathered_rows_need_neither(tmp_path, monkeypatch):
 
 def test_the_obligation_cannot_be_dodged_by_the_date_written(tmp_path, monkeypatch):
     """It was gated on the row's own date first. An experience session found
-    that hole by reaching for "today" before re-reading its brief: one day
+    that hole by reaching for "today" before re-reading its implementation brief: one day
     early and both fields go optional, silently, in a file nobody may edit.
     Position is not typo-able."""
     make_clean_tree(tmp_path)
@@ -5727,7 +5797,7 @@ def test_the_charter_row_names_both_budgets_that_bind_it():
     The charter's body is a term in every always-on row and in the adopter
     total, so `check_always_on_budget` reds on it at the same command -- it is
     enforced today while absent from `CELL_BODY_CEILING_CHARS`. A row reading
-    `no budget` would be false, and would be false about the half of the brief
+    `no budget` would be false, and would be false about the half of the implementation brief
     that promises to say which cells have no limit. Both constants are named
     because the binding one is the adopter total, which a reader reaches
     second.
@@ -6844,7 +6914,7 @@ def test_a_fresh_index_is_never_told_it_is_a_mangled_copy(tmp_path):
 def test_a_cell_body_over_its_ceiling_is_reported_and_never_refuses(tmp_path):
     """The ratchet reports; it does not redden.
 
-    #455's affirmed brief carries the owner's words: the standard is splitting
+    #455's affirmed implementation brief carries the owner's words: the standard is splitting
     and the ceiling directs to filing, not cutting content, and it "can't be
     something that at all tells the agent not to add text to the skill". So the
     lawful arm here is not "a cell at its ceiling passes" -- it is that a cell
