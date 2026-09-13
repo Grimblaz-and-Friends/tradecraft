@@ -2,7 +2,7 @@
 
 **Loaded when** you are writing a review's fix batch, discharging what it owes once it has landed, a pull request is open and an automated reviewer may have posted on it, or you invoked a review tool yourself. The three standards in the first section bind every stage, as they did when the cell body held them; **the rest of this file** a review's seats, defense and judge do not need.
 
-On the unattended stretch, the holder returns the ruled batch to the continuing implementer under the `engagement` cell's ownership rule.
+On the unattended stretch, the holder follows the `engagement` cell's dependence rule: a prescribed remedy goes to a fresh implementer, while a finding disputing the builder's choice without supplying one returns to that builder.
 
 ## While the fixes are written
 

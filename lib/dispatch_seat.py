@@ -12,24 +12,25 @@ executable probe evidence in the dispatch. The dispatch owns its job context.
 from __future__ import annotations
 
 import argparse
-import base64
-from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
-import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 
+import dispatch_record as records
 from vendor_cli import CliError, CliNotFound, resolve_command
 from seat_process import run_process
 from winio import utf8_stdio
 
 VENDORS = ("codex", "claude")
-DEFAULTS = {"codex": ("gpt-6-astra", "xhigh"), "claude": ("opus", "max")}
+DEFAULTS = {"codex": ("gpt-6-astra", "xhigh"), "claude": ("opus", "xhigh")}
+CLAUDE_EFFORTS = {"ordinary": "xhigh", "cold": "max", "terminal": "max"}
 FILE_TOOLS = "Read,Glob,Grep"
 
 
@@ -178,66 +179,24 @@ def interpret(vendor, result, last_message):
     return "error", f"{vendor} failed or returned no valid final result (exit {result.returncode}); see logs", ""
 
 
-def sidecar(output: Path, suffix: str) -> Path:
-    return output.with_name(output.name + suffix)
+sidecar = records.sidecar
 
 
-def write_bytes(path: Path, content: bytes) -> None:
-    with path.open("xb") as stream:
-        stream.write(content)
-
-
-def publish_verdict(path: Path, content: bytes) -> None:
-    """Publish complete bytes atomically, refusing any existing destination."""
-    with tempfile.TemporaryDirectory(prefix=".tradecraft-publish-", dir=path.parent) as temporary:
-        staged = Path(temporary) / "verdict"
-        write_bytes(staged, content)
-        # A same-filesystem link creates the final name atomically and, unlike
-        # POSIX rename/replace, never overwrites a concurrent caller's file.
-        os.link(staged, path)
-
-
-@contextmanager
-def reserve_bundle(destinations, output):
-    """Prove exact-path creation before usage, keeping sidecars reserved."""
-    streams = {}
-    created = []
-    ready = False
-    try:
-        for path in destinations:
-            streams[path] = path.open("xb")
-            created.append(path)
-        # This empty preflight reservation carries no response; remove it
-        # before a runtime starts. Only the completed verdict is published.
-        streams.pop(output).close()
-        with tempfile.TemporaryDirectory(prefix=".tradecraft-publish-", dir=output.parent) as temporary:
-            os.link(output, Path(temporary) / "probe")
-        output.unlink()
-        ready = True
-        yield streams
-    finally:
-        for stream in streams.values():
-            stream.close()
-        if not ready:
-            for path in created:
-                path.unlink(missing_ok=True)
-
-
-def log_bytes(raw):
-    try:
-        return raw.decode("utf-8").replace("\r\n", "\n").encode("utf-8"), "utf-8"
-    except UnicodeError:
-        encoded = {"encoding": "base64", "data": base64.b64encode(raw).decode("ascii")}
-        return (json.dumps(encoded) + "\n").encode("utf-8"), "base64-json"
+def selected_effort(args, vendor):
+    if vendor == "claude" and args.claude_effort is None:
+        return CLAUDE_EFFORTS[args.classification]
+    return getattr(args, vendor + "_effort")
 
 
 def run_dispatch(args, *, now=None) -> int:
     dispatch = args.dispatch.expanduser().resolve()
     root = args.root.expanduser().resolve()
-    output = args.output.expanduser().absolute()
+    output = records.resolved_output(args.output, args.work, args.stage)
+    args.output = output
     hold_file = args.hold_file.expanduser().resolve()
     if not root.is_dir():
         raise DispatchError(f"Root is not a directory: {root}")
+    records.require_output_outside_root(output, root)
     prompt = dispatch.read_bytes()
     if not prompt.decode("utf-8").strip():
         raise DispatchError(f"Dispatch is empty: {dispatch}")
@@ -245,13 +204,17 @@ def run_dispatch(args, *, now=None) -> int:
         raise DispatchError("--timeout-seconds must be finite and positive")
     read_holds(hold_file)
     for vendor in VENDORS:
-        if not getattr(args, vendor + "_model").strip() or not getattr(args, vendor + "_effort").strip():
+        effort = selected_effort(args, vendor)
+        if not getattr(args, vendor + "_model").strip() or not effort.strip():
             raise DispatchError(f"{vendor} model and effort must be nonempty")
         explicit = getattr(args, vendor)
         if explicit:
             resolve_command(vendor, explicit)  # invalid overrides fail before spending
     record_path = sidecar(output, ".run.json")
-    destinations = [output, record_path, *[
+    request_path = sidecar(output, ".request.json")
+    input_path = sidecar(output, ".dispatch.bin")
+    source_path = sidecar(output, ".source.bin")
+    destinations = [output, record_path, request_path, input_path, source_path, *[
         sidecar(output, f".{vendor}.{stream}.log")
         for vendor in VENDORS for stream in ("stdout", "stderr")
     ]]
@@ -261,10 +224,30 @@ def run_dispatch(args, *, now=None) -> int:
         if path.exists() or path.is_symlink():
             raise DispatchError(f"Refusing existing output: {path}. Choose a new --output path.")
     output.parent.mkdir(parents=True, exist_ok=True)
-    with reserve_bundle(destinations, output) as streams:
+    with records.reserve_bundle(destinations, output) as streams:
         record_stream = streams[record_path]
-        record = {"requested_vendor": args.vendor, "own_vendor": args.own_vendor,
-                  "actual_vendor": None, "fallback_reason": None, "attempts": []}
+        request = records.request_record(
+            dispatch_id=uuid.uuid4().hex, work=args.work, stage=args.stage,
+            settings_source=args.settings_source, settings_scope=args.settings_scope,
+            vendor=args.vendor,
+            model=getattr(args, args.vendor + "_model"), effort=selected_effort(args, args.vendor),
+            continuity="fresh", permission_boundary="read-only judging seat",
+            root=root, classification=args.classification, retry_of=args.retry_of,
+        )
+        request["revision_before"] = records.git_revision(root)
+        request["input"] = str(input_path)
+        streams[request_path].write(records.json_bytes(request))
+        streams[request_path].flush()
+        streams[input_path].write(prompt)
+        streams[input_path].flush()
+        record = {"schema_version": records.SCHEMA_VERSION,
+                  "dispatch_id": request["dispatch_id"], "request": str(request_path),
+                  "requested_vendor": args.vendor, "own_vendor": args.own_vendor,
+                  "actual_vendor": None, "fallback_reason": None, "attempts": [],
+                  "result": {"source_output": None,
+                             "source_output_unavailable_reason": "no successful final source return",
+                             "published_output": str(output),
+                             "assessment": "unassessed"}}
         pending_logs = {}
         verdict = None
 
@@ -279,9 +262,12 @@ def run_dispatch(args, *, now=None) -> int:
                 vendors.append(args.own_vendor)
             for vendor in vendors:
                 model = getattr(args, vendor + "_model")
-                effort = getattr(args, vendor + "_effort")
+                effort = selected_effort(args, vendor)
                 attempt = {"vendor": vendor, "model": model, "effort": effort,
+                           "classification": args.classification, "launched": False,
                            "exit_code": None, "outcome": "error", "reason": ""}
+                attempt["runtime_version"] = None
+                attempt["runtime_version_unavailable_reason"] = "attempt was not launched"
                 record["attempts"].append(attempt)
                 reset = read_holds(hold_file).get(vendor)
                 current = now if now is not None else datetime.now(timezone.utc)
@@ -297,7 +283,14 @@ def run_dispatch(args, *, now=None) -> int:
                         with tempfile.TemporaryDirectory(prefix="tradecraft-seat-") as temp:
                             last_message = Path(temp) / "last.txt"
                             command = build_command(vendor, executable, root, last_message, model, effort)
+                            attempt["command"] = command
+                            attempt["runtime_version"] = records.runtime_version(executable)
+                            attempt["runtime_version_unavailable_reason"] = (
+                                None if attempt["runtime_version"] else "runtime version command returned no value"
+                            )
+                            attempt["launched"] = True
                             returned = False
+                            started = time.monotonic()
                             try:
                                 result = run_process(command, input=prompt, cwd=root, timeout=args.timeout_seconds)
                             except subprocess.TimeoutExpired as exc:
@@ -314,15 +307,31 @@ def run_dispatch(args, *, now=None) -> int:
                                 ) from exc
                             else:
                                 returned = True
+                            elapsed = time.monotonic() - started
                             attempt["exit_code"] = result.returncode
                             for stream in ("stdout", "stderr"):
                                 log = sidecar(output, f".{vendor}.{stream}.log")
-                                pending_logs[log], encoding = log_bytes(getattr(result, stream))
+                                pending_logs[log], encoding = records.log_bytes(getattr(result, stream))
                                 attempt[stream] = str(log)
                                 attempt[stream + "_encoding"] = encoding
                             if returned:
                                 outcome, reason, message = interpret(vendor, result, last_message)
+                            records.add_runtime_evidence(
+                                attempt, vendor, result.stdout, "fresh", elapsed
+                            )
                 attempt.update(outcome=outcome, reason=reason)
+                if "observed" not in attempt:
+                    attempt["observed"] = {
+                        "source": None, "raw": None, "normalized": None,
+                        "normalized_unavailable_reason": reason,
+                        "reported_models": [],
+                        "reported_models_unavailable_reason": reason,
+                        "reported_effort": None,
+                        "reported_effort_unavailable_reason": reason,
+                        "thread_ids": [], "turn_ids": [],
+                        "runtime_cost": None,
+                        "runtime_cost_unavailable_reason": reason,
+                    }
                 if outcome == "success":
                     record["actual_vendor"] = vendor
                     if record["fallback_reason"]:
@@ -347,12 +356,26 @@ def run_dispatch(args, *, now=None) -> int:
             try:
                 flush_logs()
             finally:
+                record["completed_at"] = datetime.now(timezone.utc).isoformat()
+                record["revision_after"] = records.git_revision(root)
+                if verdict is not None:
+                    record["outcome"] = "success"
+                    streams[source_path].write(verdict)
+                    streams[source_path].flush()
+                    record["result"]["source_output"] = str(source_path)
+                    record["result"]["source_output_unavailable_reason"] = None
+                elif record.get("error") or any(
+                    attempt["outcome"] == "error" for attempt in record["attempts"]
+                ):
+                    record["outcome"] = "error"
+                else:
+                    record["outcome"] = "unavailable"
                 record_stream.write((json.dumps(record, ensure_ascii=True, indent=2) + "\n").encode("utf-8"))
                 record_stream.flush()
                 for stream in streams.values():
                     stream.close()
         if verdict is not None:
-            publish_verdict(output, verdict)
+            records.publish_output(output, verdict)
             print(f"seat: {vendor} ({model}, {effort}) -> {output}")
             return 0
         return 1
@@ -380,13 +403,24 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--root", type=Path, required=True)
     cli.add_argument("--vendor", choices=VENDORS, required=True)
     cli.add_argument("--own-vendor", choices=VENDORS, required=True)
-    cli.add_argument("--output", type=Path, required=True)
+    cli.add_argument("--work", required=True, help="issue or other work identifier")
+    cli.add_argument("--stage", required=True, help="dispatch stage")
+    cli.add_argument("--settings-source", required=True, help="issue comment or named default")
+    cli.add_argument("--settings-scope", required=True,
+                     help="stages and vendor reached by the issue choice or named default")
+    cli.add_argument("--retry-of", help="dispatch id of an earlier whole-invocation retry")
+    cli.add_argument("--classification", choices=records.CLASSIFICATIONS, default="ordinary",
+                     help="ordinary, protected cold, or terminal judgment")
+    cli.add_argument("--output", type=Path,
+                     help="result path; defaults to the machine-local dispatch store")
     cli.add_argument("--hold-file", type=Path, default=default_hold_file(), help="shared availability holds")
     cli.add_argument("--timeout-seconds", type=float, default=900, help="timeout per launched seat")
     for vendor, (model, effort) in DEFAULTS.items():
         cli.add_argument("--" + vendor, help="explicit CLI executable")
         cli.add_argument("--" + vendor + "-model", default=model, help="requested model")
-        cli.add_argument("--" + vendor + "-effort", default=effort, help="requested reasoning effort")
+        default_effort = None if vendor == "claude" else effort
+        cli.add_argument("--" + vendor + "-effort", default=default_effort,
+                         help="requested reasoning effort; Claude defaults from classification")
     return cli
 
 
@@ -394,7 +428,7 @@ def main(argv=None) -> int:
     utf8_stdio()
     try:
         return run_dispatch(parser().parse_args(argv))
-    except (OSError, UnicodeError, CliError, DispatchError) as exc:
+    except (OSError, UnicodeError, CliError, records.RecordError, DispatchError) as exc:
         print(f"seat: {exc}", file=sys.stderr)
         return 1
 

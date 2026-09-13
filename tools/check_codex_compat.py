@@ -19,6 +19,7 @@ Usage: python tools/check_codex_compat.py [--codex PATH] [--timeout-seconds N]
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import importlib.util
 import json
 import math
@@ -28,11 +29,13 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
+import dispatch_record as records  # noqa: E402
 from vendor_cli import CliError as CompatError, resolve_codex  # noqa: E402
 
 # The cell-body strip is the engine's, not this script's. The hand-rolled
@@ -167,6 +170,7 @@ def build_probe_command(
         "exec",
         "--ephemeral",
         "--sandbox", "read-only",
+        "--json",
         "--model", model,
         "-c", f'model_reasoning_effort="{reasoning}"',
         "-C", str(consumer),
@@ -273,7 +277,22 @@ def run_probe(
     model: str,
     reasoning: str,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    record_output: Path | None = None,
+    runtime_version: str | None = None,
 ) -> None:
+    output = records.resolved_output(record_output, "tradecraft-compat", "codex")
+    request_path = records.sidecar(output, ".request.json")
+    run_path = records.sidecar(output, ".run.json")
+    stdout_path = records.sidecar(output, ".codex.stdout.log")
+    stderr_path = records.sidecar(output, ".codex.stderr.log")
+    input_path = records.sidecar(output, ".dispatch.bin")
+    source_path = records.sidecar(output, ".source.bin")
+    destinations = [
+        output, request_path, run_path, input_path, source_path, stdout_path, stderr_path
+    ]
+    if any(path.exists() or path.is_symlink() for path in destinations):
+        raise CompatError(f"compatibility dispatch output already exists: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="tradecraft-codex-compat-") as raw:
         base = Path(raw)
         if _is_within(base, ROOT):
@@ -284,29 +303,115 @@ def run_probe(
         consumer = base / "consumer"
         consumer.mkdir()
         _init_consumer(consumer)
+        records.require_output_outside_root(output, base)
         marker = "TRADECRAFT_CODEX_COMPAT_" + secrets.token_hex(16).upper()
         write_adoption_file(consumer, marker)
         last_message = base / "last-message.txt"
         command = build_probe_command(
             codex, consumer, last_message, model=model, reasoning=reasoning
         )
-        try:
-            result = _capture(command, cwd=consumer, timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            raise CompatError(
-                "nested Codex session timed out after "
-                f"{timeout_seconds:g} seconds before returning a result"
-            ) from exc
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            raise CompatError(f"nested Codex session failed ({result.returncode}): {detail}")
-        if not last_message.is_file():
-            raise CompatError("nested Codex session wrote no final-message record")
-        try:
-            answer = last_message.read_bytes().decode("utf-8").strip()
-        except UnicodeDecodeError as exc:
-            raise CompatError(f"nested Codex result is not UTF-8: {exc}") from exc
-        _assert_probe_answer(answer, marker)
+        request = records.request_record(
+            dispatch_id=secrets.token_hex(16), work="tradecraft-compat", stage="codex",
+            settings_source="compatibility probe defaults or explicit CLI arguments",
+            settings_scope="the Codex compatibility probe",
+            vendor="codex", model=model, effort=reasoning, continuity="fresh",
+            permission_boundary="ephemeral read-only Codex session", root=consumer,
+            classification="ordinary", command=command,
+        )
+        request["runtime_version"] = runtime_version
+        request["runtime_version_unavailable_reason"] = (
+            None if runtime_version else "caller supplied no verified runtime version"
+        )
+        request["revision_before"] = records.git_revision(consumer)
+        request["input"] = str(input_path)
+        failure: CompatError | None = None
+        answer_bytes = b""
+        with records.reserve_bundle(destinations, output) as streams:
+            streams[request_path].write(records.json_bytes(request))
+            streams[request_path].flush()
+            streams[input_path].write(PROMPT.encode("utf-8"))
+            streams[input_path].flush()
+            started = time.monotonic()
+            try:
+                result = _capture(command, cwd=consumer, timeout=timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                stdout = exc.stdout or b""
+                stderr = exc.stderr or b""
+                stdout = stdout.encode("utf-8") if isinstance(stdout, str) else stdout
+                stderr = stderr.encode("utf-8") if isinstance(stderr, str) else stderr
+                result = subprocess.CompletedProcess(command, -1, stdout, stderr)
+                failure = CompatError(
+                    "nested Codex session timed out after "
+                    f"{timeout_seconds:g} seconds before returning a result"
+                )
+            except CompatError as exc:
+                result = subprocess.CompletedProcess(
+                    command, -1, b"", str(exc).encode("utf-8")
+                )
+                failure = exc
+            else:
+                stdout = result.stdout.encode("utf-8")
+                stderr = result.stderr.encode("utf-8")
+                result = subprocess.CompletedProcess(command, result.returncode, stdout, stderr)
+            elapsed = time.monotonic() - started
+            for path, content in ((stdout_path, result.stdout), (stderr_path, result.stderr)):
+                logged, _ = records.log_bytes(content)
+                streams[path].write(logged)
+                streams[path].flush()
+            attempt = {
+                "vendor": "codex", "launched": True, "exit_code": result.returncode,
+                "outcome": "error", "reason": "", "stdout": str(stdout_path),
+                "stderr": str(stderr_path),
+            }
+            records.add_runtime_evidence(attempt, "codex", result.stdout, "fresh", elapsed)
+            if failure is None and result.returncode != 0:
+                detail = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+                failure = CompatError(f"nested Codex session failed ({result.returncode}): {detail}")
+            if failure is None and not last_message.is_file():
+                failure = CompatError("nested Codex session wrote no final-message record")
+            if last_message.is_file():
+                answer_bytes = last_message.read_bytes()
+                try:
+                    answer = answer_bytes.decode("utf-8").strip()
+                except UnicodeDecodeError as exc:
+                    failure = CompatError(f"nested Codex result is not UTF-8: {exc}")
+                else:
+                    if failure is None:
+                        try:
+                            _assert_probe_answer(answer, marker)
+                        except CompatError as exc:
+                            failure = exc
+            if failure is None:
+                attempt.update(outcome="success", reason="")
+                outcome = "success"
+            else:
+                attempt.update(outcome="semantic_failure" if answer_bytes else "error",
+                               reason=str(failure))
+                outcome = attempt["outcome"]
+            if answer_bytes:
+                streams[source_path].write(answer_bytes)
+                streams[source_path].flush()
+            run = {
+                "schema_version": records.SCHEMA_VERSION,
+                "dispatch_id": request["dispatch_id"], "request": str(request_path),
+                "outcome": outcome, "attempts": [attempt],
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "revision_after": records.git_revision(consumer),
+                "result": {"source_output": str(source_path) if answer_bytes else None,
+                           "source_output_unavailable_reason": (
+                               None if answer_bytes else "runtime returned no final source text"
+                           ),
+                           "published_output": str(output),
+                           "assessment": "compatibility assertion", "passed": failure is None},
+            }
+            streams[run_path].write(records.json_bytes(run))
+            streams[run_path].flush()
+            for stream in streams.values():
+                stream.close()
+        if answer_bytes:
+            records.publish_output(output, answer_bytes.replace(b"\r\n", b"\n"))
+        if failure is not None:
+            raise failure
 
 
 def _positive_timeout(value: str) -> float:
@@ -331,6 +436,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex", help="Exact Codex executable; discovery is the default.")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--reasoning", default=DEFAULT_REASONING)
+    parser.add_argument(
+        "--record-output", type=Path,
+        help="retained result path; defaults to the machine-local dispatch store",
+    )
     parser.add_argument(
         "--timeout-seconds",
         type=_positive_timeout,
@@ -363,8 +472,10 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             reasoning=args.reasoning,
             timeout_seconds=args.timeout_seconds,
+            record_output=args.record_output,
+            runtime_version=version,
         )
-    except CompatError as exc:
+    except (CompatError, records.RecordError, OSError, UnicodeError) as exc:
         print(f"codex-compat: FAIL: {exc}", file=sys.stderr)
         return 1
     print(
