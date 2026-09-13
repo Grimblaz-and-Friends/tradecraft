@@ -6,7 +6,11 @@
 
 **The session that holds the affirmed brief owns the whole stretch for that change.** It dispatches every stage and receives every return, remaining the owner's counterpart through the reviewed pull request and its posted report. One holding session per change, never one for many, because its context grows with every stage. It edits no file in the implementation tree and takes no judging seat.
 
+**The material handing a party its job states the tools and permission or approval route it must be started with to perform it**, because instructions cannot supply a capability the launch withholds.
+
 **The holder dispatches one implementer in its own worktree and resumes that same agent** to write the artifact, take the cold reader's points, build from the settled artifact, and take the review's fix batch. The implementer returns at the extent its dispatch names. A recipient needing another party for this pipeline returns that need to the holder; recipients dispatch no stage of this pipeline, so the next stage and its return stay with the party holding the whole change. Each instrument retains its own ordering, evidence, isolation and settlement rules.
+
+**For a Codex implementer**, use the launch core `codex exec --cd DIR --approve-for-me`, replacing `DIR` with its worktree and supplying its dispatch. The approval flag selects workspace-write and automatic review; it cannot be combined with `--sandbox`. The dispatch tells the implementer to report a sandbox refusal and request approval to retry the denied command, since stopping at the first failure suppresses that route. Resume the same persisted thread with the approval route available, so the implementer can continue committing its own work. If approval is rejected or unavailable, report that inability to the holder. The [spike](https://github.com/Grimblaz-and-Friends/tradecraft/issues/593#issuecomment-5653831839) demonstrates the launch and resume.
 
 ## Staffing judgment
 
