@@ -1,12 +1,12 @@
 # Holding the unattended stretch
 
-**Loaded when** coordinating the stretch from an affirmed brief to release readiness, taking one of its dispatched stages, or staffing a judging seat.
+**Loaded when** coordinating the stretch from an affirmed brief to release readiness, taking one of its dispatched stages, staffing a judging seat, or preparing its reports and records.
 
 ## The holder and the implementer
 
 **The session that holds the affirmed brief owns the whole stretch for that change.** It dispatches every stage and receives every return, remaining the owner's counterpart through the reviewed pull request and its posted report. One holding session per change, never one for many, because its context grows with every stage. It edits no file in the implementation tree and takes no judging seat.
 
-**The holder dispatches one implementer in its own worktree and resumes that same agent** to write the artifact, take the cold reader's points, build from the settled artifact, and take the review's fix batch. The implementer returns at the extent its dispatch names. A recipient needing another party returns that need to the holder; recipients dispatch nothing themselves, so the next stage and its return stay with the party holding the whole change. Each instrument retains its own ordering, evidence, isolation and settlement rules.
+**The holder dispatches one implementer in its own worktree and resumes that same agent** to write the artifact, take the cold reader's points, build from the settled artifact, and take the review's fix batch. The implementer returns at the extent its dispatch names. A recipient needing another party for this pipeline returns that need to the holder; recipients dispatch no stage of this pipeline, so the next stage and its return stay with the party holding the whole change. Each instrument retains its own ordering, evidence, isolation and settlement rules.
 
 ## Staffing judgment
 
@@ -14,7 +14,7 @@
 
 **The experience consumer also runs on the runtime the change's users run.** Both requirements apply. Where no qualifying consumer can be supplied, record the missing use and why under the instrument's omission route.
 
-**Staffing is read from the actual returned vendor.** A fallback onto the implementer's vendor cannot supply a qualifying judgment. Keep its return and fallback provenance, then obtain a qualifying seat or record the unavailable check under the instrument's existing route; a transport success does not settle that question.
+**Staffing is read from the actual returned vendor.** A fallback onto the implementer's vendor cannot supply a qualifying judgment. Keep its return and fallback provenance, then obtain a qualifying seat or record the unavailable check under the instrument's truncation or omission route; a transport success does not settle that question.
 
 ## Returns and records
 
