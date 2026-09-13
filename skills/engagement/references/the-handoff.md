@@ -2,7 +2,7 @@
 
 **Loaded when** you are handing work on at the affirmation, arriving at work whose brief a session before you settled, or holding a belief that an affirmed brief you were handed is wrong.
 
-**The session that settles the brief and the session that builds from it are routinely not the same**, and the issue is all that crosses between them.
+**The session that settles the brief and the holder that takes it forward are routinely not the same**, and the issue is all that crosses between them.
 
 **Before it leaves, the session that settled the brief makes the issue carry three things.** The first two go in the issue body's opening block, alongside the ties already there, because the ordinary read of an issue returns the body and no comments — so a brief posted only as a comment is invisible to a successor who does not already know to look for it. **Where the brief covers a set, it is posted on the cause's issue and every other issue in the set carries the pointer, and its own mark of what the brief replaced in it** — one term for the set, and the issue that lands first has one too. Each filing was written separately and each is superseded separately.
 
