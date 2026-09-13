@@ -26,7 +26,7 @@ deliberately -- was wrong about its own measurement.
 `#195` names `hooks/emit_charter.py` and is genuine rot, and `#265` names a
 filename invented inside a probe. A close on a predicate with that false-positive
 rate would discard live filings, so it reports and a person reads. The only close
-the fade performs is the one at the floor, where quiet is measured from
+the fade performs is after its quiet window, measured from
 `updatedAt` rather than inferred from a pattern; `fade.closes` does not reach
 this command.
 
@@ -239,7 +239,7 @@ def cmd_rot(repo: str | None) -> int:
     # filings that survive every narrowing, one is genuine rot and one names a
     # filename invented inside a probe. One in two would discard a live filing.
     # So this reports and a person decides, and the only close the fade performs
-    # is the one at the floor, where quiet is measured rather than inferred.
+    # is after the quiet window, where activity is measured rather than inferred.
     # `fade.closes` does not reach this command.
     print("nothing above was closed. A filing may name a path deliberately -- one "
           "it proposes, or one whose moving is what it is about -- so this reports "

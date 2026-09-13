@@ -6,8 +6,7 @@ The note is posted as a project status update, dated and kept, and read back wit
 
 - **The deltas** — what moved, what arrived, what closed, each with its one-line reason. Not a restatement of the board. **A refresh that changed nothing says so**, in one line.
 - **The watch-items** — what the board as a whole is trending toward, which no single item shows. Rate of arrival against rate of closure, and any single item whose settling would reshape everything behind it.
-- **The assessments** — the answers the cycle (`../references/refreshing-it.md`) produced, and which it left.
-- **What crossed** — what the `pushed` run named, and what each crossing then took (`../references/refreshing-it.md`).
+- **The hearing and lapses** — which pitches were put when there was room, what the owner bought, and what the fade closed, each with its reason.
 - **The rot rows** — what `python tools/pool_rot.py` named, or that it named nothing.
 - **The drift look**, below.
 - **The reach line** — the charter's row from `python tools/lint.py`'s pointer-reach block, beside the figure the last note to carry one gave and that note's date. It covers the charter and the shipped cells it reaches, so repo-only prose here can grow without moving it. [D-522]

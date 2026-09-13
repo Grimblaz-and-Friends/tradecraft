@@ -946,23 +946,11 @@ def cmd_sync(dry_run: bool, allow_empty: bool = False) -> int:
     print(f"board: {len(members)}   framed: {len(target)}")
     print(f"to add:     {to_add or 'none'}")
     print(f"to archive: {to_archive or 'none'}", flush=True)
-    # The refresh obliges a crossing check next, and the cell cannot give the
-    # path: a cell naming another cell's files by rooted path is refused by
-    # `sideways-dep`, and the `filing` cell's own spelling is relative to
-    # itself, so `python scripts/pool.py` -- correct for an adopter who
-    # installed that cell -- resolves to nothing from this root. A consumer
-    # performing a refresh searched the tree for it. This is the one place the
-    # refresher is certain to be standing beforehand, and the path is already
-    # printed a few functions down for the same reason.
-    #
-    # **All three the refresh obliges, not just the crossing check.** [D-522]
-    # added the assessment cycle and its answers to the refresh, and the
-    # comment above -- every clause of it -- applies to those as much as to
-    # `pushed`: the cell cannot give their path either. Printing one of three
-    # left the other two with no invocation anywhere a refresher stands.
-    print(f"next in the refresh: python {POOL_INVOCATION} pushed")
-    print(f"                     python {POOL_INVOCATION} cycle"
-          f"   (then `assess <N> --none`, or link the symptom under its cause)")
+    # Give the refresher runnable paths from this root; the shipped cell's
+    # own command paths resolve relative to that cell instead.
+    print(f"next in the refresh: python {POOL_INVOCATION} fade --dry-run")
+    print(f"                     python {POOL_INVOCATION} fade")
+    print(f"when there is room:  python {POOL_INVOCATION} shortlist")
     if dry_run:
         return 0
     # An empty framed set with a populated board is the shape a setup mistake
@@ -1163,14 +1151,10 @@ def cmd_next(count: int) -> int:
             # The board answers out of decided work, so running out of it is not
             # a ranking problem. The `board` cell says the move is to raise a
             # shortlist; this is where a session actually meets the state.
-            # The gate refuses while the top of the pool is unassessed, which
-            # at ship is all of it -- so the bare command is a dead end at the
-            # one moment a session meets this line. Both halves are printed.
             print("raise a shortlist out of the pool and put it to the owner: "
                   "python skills/filing/scripts/pool.py shortlist")
-            print("  it refuses while the top of the pool has never been asked "
-                  "whether it has a cause, and names what answers for each; "
-                  "--unassessed raises anyway and gives up the guarantee")
+            print("  choose the strongest pitches and sell the case for and against; "
+                  "the shortlist buys nothing")
         return 0
     held = [r for r in rows if r.status in UNAVAILABLE][:count]
     first, rest = available[0], available[1:count + 1]

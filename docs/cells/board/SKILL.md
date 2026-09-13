@@ -12,7 +12,7 @@ The board is a GitHub Projects v2 project titled `tradecraft board`, linked to t
 ## Where this cell's depth lives
 
 - **Refreshing the board after it moved, clearing a symptom's hold when its cause closes, or looking at the board in the browser** → `references/refreshing-it.md`: where the board is in the browser and what its `Queue` view cannot be restored to, what the three fields mean and who writes them, what reaches the board and what moves the pool between refreshes, the cause-and-symptom bundle and the two guards `apply` enforces over a plan, the owner's exception and the form it takes, reconciling against settling, the commands in the order they run, and the trial run that is the one case that order does not fit.
-- **Writing a refresh note, or reading one to see what it should have carried** → `references/the-refresh-note.md`: what a note owes — the deltas, the watch-items, the assessments, what crossed, the rot rows, the drift look, the reach line and the ceiling line — the rule that a figure in it carries the command that derives it, and the look at recently closed work that `docs/values.md` asks for, with the commands the look is derived from.
+- **Writing a refresh note, or reading one to see what it should have carried** → `references/the-refresh-note.md`: what a note owes — the deltas, the watch-items, the hearing and lapses, the rot rows, the drift look, the reach line and the ceiling line — the rule that a figure in it carries the command that derives it, and the look at recently closed work that `docs/values.md` asks for, with the commands the look is derived from.
 
 ## Reading it
 
@@ -32,7 +32,7 @@ python tools/board.py notes    # the last refresh notes, newest first
 
 ## What is not on it
 
-**Every other open issue is in the pool: filed and not yet decided on.** The board answers *what next* out of decided work, so when it runs out the move is not to rank harder -- it is to raise a shortlist out of the pool and put it to the owner. **That shortlist is gated**: it refuses while anything at the top of the pool has never been asked whether it has a cause, naming which items block and what answers for each, so the move begins with those questions rather than with the shortlist. `--unassessed` shortlists anyway and gives up the guarantee. The pool, its ratings and the script that lists it are the `filing` cell's; the form that ask takes is the `engagement` cell's.
+**Every other open issue is in the pool: pitched and not yet bought.** When there is room, bring the owner the strongest few pitches with the case for and against. The pool, its advisory ratings and commands are the `filing` cell's; the argued form is the `engagement` cell's.
 
 ## Refreshing it
 
