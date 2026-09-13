@@ -14,7 +14,7 @@
 
 **The experience consumer also runs on the runtime the change's users run.** Both requirements apply. Where no qualifying consumer can be supplied, record the missing use and why under the instrument's omission route.
 
-**Staffing is read from the actual returned vendor.** A fallback onto the implementer's vendor cannot supply a qualifying judgment. Keep its return and fallback provenance, then obtain a qualifying seat or record the unavailable check under the instrument's truncation or omission route; a transport success does not settle that question.
+**Staffing is read from the actual returned vendor.** A fallback onto the implementer's vendor supplies a qualifying judgment; its staffing value names the fallback and its reason in the `fable (cold-read), opus (rest)` spelling.
 
 ## Returns and records
 
