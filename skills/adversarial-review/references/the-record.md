@@ -2,7 +2,9 @@
 
 **Loaded when** you are closing a review: writing its final report, appending its row to the review index — **or writing the dispatches whose output the report reads**, which is a job before the terminal ruling that needs this file.
 
-**Four of the fields below this stage cannot produce for itself, and each has its own producer.** A seat's raw count, and the revision and tree each recipient reports, are asked for in the dispatch (`../references/dispatch.md`). Each high's finders are credited at the merge (`../references/arbitration.md`). What the review cost is read off what each dispatch returned rather than from any stage's report, so it is captured rather than asked of anyone. **A field nobody asked for is silently empty here**, and reads exactly like a field that had nothing to say.
+The holder authors the final report and supplies the index row for the implementer to commit, under the `engagement` cell's ownership rule.
+
+**The report reads each field from its producer.** A seat's raw count, and the revision and tree each recipient reports, are asked for in the dispatch (`../references/dispatch.md`). Each high's finders are credited at the merge (`../references/arbitration.md`). The holder captures what the review cost from each dispatch's return as it arrives, rather than asking a stage to report it. **A field nobody asked for is silently empty here**, and reads exactly like a field that had nothing to say.
 
 The final report, posted to the PR or issue, carries:
 
