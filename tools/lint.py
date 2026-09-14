@@ -421,7 +421,7 @@ CELL_BODY_CEILING_CHARS = {
     "skills/engagement/SKILL.md": 12_208,
     "skills/filing/SKILL.md": 5_235,
     "docs/cells/board/SKILL.md": 5_106,
-    "skills/spikes/SKILL.md": 8_358,
+    "skills/spikes/SKILL.md": 7_200,
     "skills/experience-session/SKILL.md": 3_611,
     "skills/adversarial-review/SKILL.md": 8_114,
     "skills/authoring/SKILL.md": 7_129,
