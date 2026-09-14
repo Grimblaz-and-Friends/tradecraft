@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import re
 import subprocess
 import sys
@@ -19,9 +20,9 @@ from winio import utf8_stdio  # noqa: E402
 
 
 _HARNESS_NAMES = (
-    "CLAUDE_" "PLUGIN_ROOT|CLAUDE_" "PLUGIN_DATA|CLAUDE_" "PROJECT_DIR"
-    "|CLAUDE_" "SKILL_DIR|CLAUDE_" "CONFIG_DIR|CLAUDE_" "WORKING_DIR"
-    "|PLUGIN_" "ROOT|PLUGIN_" "DATA|CODEX_" "HOME"
+    "CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|CLAUDE_PROJECT_DIR|"
+    "CLAUDE_SKILL_DIR|CLAUDE_CONFIG_DIR|CLAUDE_WORKING_DIR|"
+    "PLUGIN_ROOT|PLUGIN_DATA|CODEX_HOME"
 )
 HARNESS_TOKENS = re.compile(
     rf"\$\{{?(?:{_HARNESS_NAMES})\}}?"
@@ -38,25 +39,31 @@ def _read_text(path: Path) -> str | None:
         return None
     if b"\0" in data[:1024]:
         return None
-    return data.decode("utf-8", errors="replace")
+    return data.decode("utf-8-sig", errors="replace")
 
 
 def _iter_files(base: Path):
     """Yield every ordinary file below base in a stable order."""
-    for path in sorted(base.rglob("*")):
-        if path.is_file():
-            yield path
+    paths = []
+    for parent, directories, filenames in os.walk(base):
+        directories[:] = [name for name in directories if name != ".git"]
+        paths.extend(Path(parent, name) for name in filenames)
+    yield from sorted(path for path in paths if path.is_file())
 
 
 def _python_files(base: Path):
     """Yield every Python file below base in a stable order."""
-    for path in sorted(base.rglob("*.py")):
-        if path.is_file():
-            yield path
+    paths = []
+    for parent, directories, filenames in os.walk(base):
+        directories[:] = [name for name in directories if name != ".git"]
+        paths.extend(Path(parent, name) for name in filenames if name.endswith(".py"))
+    yield from sorted(path for path in paths if path.is_file())
 
 
 def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
-    """Return paths ignored by git, or none when git cannot answer."""
+    """Return ignored paths, or none when git cannot answer; UTF-8 input avoids
+    a locale-encoded write timing out at 60 seconds and treating every path as unignored.
+    """
     if not paths:
         return set()
     try:
@@ -109,6 +116,15 @@ def _true_lineno(text: str, node: ast.Constant, char: str) -> int:
     return node.lineno
 
 
+def _unparseable_finding(check: str, rel_file: str, exc: SyntaxError) -> str:
+    at = f":{exc.lineno}" if exc.lineno is not None else ""
+    return (
+        f"{check}: {rel_file}{at} does not parse ({exc.msg}) -- an unparseable "
+        f"file is not checked, and a check that skips in silence cannot be told "
+        f"apart from a clean tree"
+    )
+
+
 def check_emitted_ascii(root: Path) -> list[str]:
     """Report non-ASCII Python string constants outside docstrings."""
     findings = []
@@ -135,12 +151,7 @@ def check_emitted_ascii(root: Path) -> list[str]:
         try:
             tree = ast.parse(text)
         except SyntaxError as exc:
-            at = f":{exc.lineno}" if exc.lineno is not None else ""
-            findings.append(
-                f"emitted-ascii: {rel_file}{at} does not parse ({exc.msg}) "
-                f"-- an unparseable file is not checked, and a check that skips in "
-                f"silence cannot be told apart from a clean tree"
-            )
+            findings.append(_unparseable_finding("emitted-ascii", rel_file, exc))
             continue
         docstrings = _docstring_constants(tree)
         seen = set()
@@ -164,8 +175,8 @@ def check_emitted_ascii(root: Path) -> list[str]:
                 f"in a non-docstring string constant -- machine-read output "
                 f"stays ASCII, because Windows encodes it to the locale "
                 f"codepage and a captured non-ASCII byte garbles. If this "
-                f"string is data rather than output, it still stays ASCII "
-                f"here: build the character with chr() as the fixtures do"
+                f"string is data rather than output, build its non-ASCII "
+                f"character at runtime rather than storing it in a string constant"
             )
     return findings
 
@@ -177,11 +188,12 @@ def check_docstring_not_piped(root: Path) -> list[str]:
         text = _read_text(path)
         if text is None:
             continue
+        rel_file = path.relative_to(root).as_posix()
         try:
             tree = ast.parse(text)
-        except SyntaxError:
+        except SyntaxError as exc:
+            findings.append(_unparseable_finding("docstring-piped", rel_file, exc))
             continue
-        rel_file = path.relative_to(root).as_posix()
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -199,6 +211,87 @@ def check_docstring_not_piped(root: Path) -> list[str]:
     return findings
 
 
+def _imported_stream_names(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
+    modules, streams = set(), {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sys":
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "sys":
+            for alias in node.names:
+                if alias.name in ("stdout", "stderr"):
+                    streams[alias.asname or alias.name] = alias.name
+    return modules, streams
+
+
+def _configured_stream(
+        statement: ast.stmt, modules: set[str], streams: dict[str, str]) -> str | None:
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return None
+    call = statement.value
+    if not isinstance(call.func, ast.Attribute) or call.func.attr != "reconfigure":
+        return None
+    receiver = call.func.value
+    if isinstance(receiver, ast.Attribute) and isinstance(receiver.value, ast.Name):
+        stream = receiver.attr if receiver.value.id in modules else None
+    elif isinstance(receiver, ast.Name):
+        stream = streams.get(receiver.id)
+    else:
+        stream = None
+    options = {
+        keyword.arg: keyword.value.value
+        for keyword in call.keywords
+        if keyword.arg is not None and isinstance(keyword.value, ast.Constant)
+    }
+    encoding = options.get("encoding")
+    if stream not in ("stdout", "stderr"):
+        return None
+    if not isinstance(encoding, str) or encoding.casefold() != "utf-8":
+        return None
+    if options.get("newline") != "":
+        return None
+    return stream
+
+
+def _manually_wired(body: list[ast.stmt], tree: ast.AST) -> bool:
+    modules, streams = _imported_stream_names(tree)
+    configured = {_configured_stream(statement, modules, streams) for statement in body[:2]}
+    if configured == {"stdout", "stderr"}:
+        return True
+    if not body or not isinstance(body[0], ast.For) or not isinstance(body[0].target, ast.Name):
+        return False
+    loop = body[0]
+    if not isinstance(loop.iter, (ast.List, ast.Tuple)) or not loop.body:
+        return False
+    loop_streams = set()
+    for member in loop.iter.elts:
+        if isinstance(member, ast.Attribute) and isinstance(member.value, ast.Name):
+            stream = member.attr if member.value.id in modules else None
+        elif isinstance(member, ast.Name):
+            stream = streams.get(member.id)
+        else:
+            stream = None
+        loop_streams.add(stream)
+    call = loop.body[0].value if isinstance(loop.body[0], ast.Expr) else None
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+        return False
+    if not isinstance(call.func.value, ast.Name) or call.func.value.id != loop.target.id:
+        return False
+    options = {
+        keyword.arg: keyword.value.value
+        for keyword in call.keywords
+        if keyword.arg is not None and isinstance(keyword.value, ast.Constant)
+    }
+    return (
+        call.func.attr == "reconfigure"
+        and isinstance(options.get("encoding"), str)
+        and options["encoding"].casefold() == "utf-8"
+        and options.get("newline") == ""
+        and loop_streams == {"stdout", "stderr"}
+    )
+
+
 def check_stdio_wired(root: Path) -> list[str]:
     """Report scripts whose main does not wire UTF-8 streams first."""
     findings = []
@@ -206,14 +299,21 @@ def check_stdio_wired(root: Path) -> list[str]:
         text = _read_text(path)
         if text is None:
             continue
+        rel_file = path.relative_to(root).as_posix()
         try:
             tree = ast.parse(text)
-        except SyntaxError:
+        except SyntaxError as exc:
+            findings.append(_unparseable_finding("stdio-unwired", rel_file, exc))
             continue
-        main = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+        main = next(
+            (
+                node for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
+            ),
+            None,
+        )
         if main is None:
             continue
-        rel_file = path.relative_to(root).as_posix()
         body = list(main.body)
         if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
             body = body[1:]
@@ -233,17 +333,19 @@ def check_stdio_wired(root: Path) -> list[str]:
             )
             for node in ast.walk(tree)
         )
-        if not called or not imported:
-            missing = "does not call it first" if imported else (
-                "calls it first but never imports it" if called else "neither imports nor calls it first"
+        manual = _manually_wired(body, tree)
+        if not (called and imported) and not manual:
+            missing = "calls utf8_stdio first but never imports it" if called else (
+                "neither calls an imported utf8_stdio first nor configures both streams first"
             )
             findings.append(
                 f"stdio-unwired: {rel_file}:{main.lineno} defines main() and "
                 f"{missing} -- runtime data the target repository did not write "
                 f"reaches the stream unprotected, and a call placed later is "
-                f"one that --help has outrun. Import utf8_stdio from lib/winio.py, "
-                f"resolving lib/ against this file's own directory rather than "
-                f"the working directory, and call it as the first statement"
+                f"one that --help has outrun. Either import a repository-local "
+                f"utf8_stdio and call it as the first statement, or make main's "
+                f"first work configure both stdout and stderr with encoding UTF-8 "
+                f"and newline=''"
             )
     return findings
 
@@ -305,9 +407,11 @@ def check_subprocess_streams(root: Path) -> list[str]:
         text = _read_text(path)
         if text is None:
             continue
+        rel_file = path.relative_to(root).as_posix()
         try:
             tree = ast.parse(text)
-        except SyntaxError:
+        except SyntaxError as exc:
+            findings.append(_unparseable_finding("subprocess-streams", rel_file, exc))
             continue
         modules = {name: "subprocess" for name in _module_aliases(tree, "subprocess")}
         modules.update({name: "os" for name in _module_aliases(tree, "os")})
@@ -316,7 +420,6 @@ def check_subprocess_streams(root: Path) -> list[str]:
             if isinstance(node, ast.ImportFrom) and node.module in ("subprocess", "os"):
                 for alias in node.names:
                     bare[alias.asname or alias.name] = (node.module, alias.name)
-        rel_file = path.relative_to(root).as_posix()
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -364,9 +467,12 @@ def check_subprocess_streams(root: Path) -> list[str]:
 
 
 def check_harness_tokens(root: Path, contract_roots: Iterable[Path] | None = None) -> list[str]:
-    """Report harness-owned path tokens in calling-contract material."""
+    """Report harness-owned tokens in portable contracts, not native `.claude` config."""
     if contract_roots is None:
-        candidates = [path for path in _iter_files(root) if ".git" not in path.parts]
+        candidates = [
+            path for path in _iter_files(root)
+            if ".claude" not in path.relative_to(root).parts
+        ]
         ignored = _git_ignored(root, candidates)
         paths = [path for path in candidates if path not in ignored]
     else:
@@ -404,13 +510,13 @@ CHECKS = (
 )
 
 
-def _where(root: Path, exc: BaseException) -> str:
+def _where(exc: BaseException) -> str:
     for frame in reversed(traceback.extract_tb(exc.__traceback__)):
         try:
-            return Path(frame.filename).resolve().relative_to(root).as_posix() + f":{frame.lineno}"
+            return Path(frame.filename).resolve().relative_to(PLUGIN_ROOT).as_posix() + f":{frame.lineno}"
         except (ValueError, OSError):
             continue
-    return "no frame inside the target repository"
+    return "no frame inside the shipped guard"
 
 
 def run(root: Path) -> list[str]:
@@ -422,7 +528,7 @@ def run(root: Path) -> list[str]:
         except Exception as exc:  # noqa: BLE001 -- a failed guard is a finding
             findings.append(
                 f"check-raised: {check.__name__} raised {type(exc).__name__} "
-                f"at {_where(root, exc)} ({exc}) -- that check reported nothing, "
+                f"at {_where(exc)} ({exc}) -- that check reported nothing, "
                 f"so what it covers is unchecked and this run does not say the "
                 f"tree is clean. Every other check's findings stand and are listed "
                 f"with this one"
@@ -430,14 +536,23 @@ def run(root: Path) -> list[str]:
     return findings
 
 
+def _repository_root(value: str) -> Path:
+    root = Path(value)
+    if not root.is_dir():
+        raise argparse.ArgumentTypeError(
+            "repository-root must name an existing directory; no tree was checked"
+        )
+    return root.resolve()
+
+
 def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(
         description="Run portable substrate guards against a repository."
     )
-    parser.add_argument("repository_root", metavar="repository-root")
+    parser.add_argument("repository_root", metavar="repository-root", type=_repository_root)
     args = parser.parse_args(argv)
-    findings = run(Path(args.repository_root).resolve())
+    findings = run(args.repository_root)
     for finding in findings:
         print(finding)
     print(f"lint: {len(findings)} finding(s)")

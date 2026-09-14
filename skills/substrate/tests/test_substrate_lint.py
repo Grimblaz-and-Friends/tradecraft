@@ -76,6 +76,33 @@ def test_clean_target_is_clean(tmp_path):
     assert _assert_ascii(result).endswith("lint: 0 finding(s)\n")
 
 
+def test_cli_refuses_a_missing_or_file_repository_root(tmp_path):
+    target_file = tmp_path / "target-file"
+    target_file.write_text("not a directory\n", encoding="utf-8")
+
+    for target in (tmp_path / "missing", target_file):
+        result = _run(SCRIPT, target, cwd=tmp_path)
+
+        assert result.returncode == 2
+        assert result.stdout == b""
+        assert b"repository-root must name an existing directory" in result.stderr
+        assert b"no tree was checked" in result.stderr
+
+
+def test_native_runtime_settings_are_not_a_portable_calling_contract(tmp_path):
+    target = tmp_path / "target"
+    token = "$" + "{CLAUDE_PROJECT_DIR}"
+    _write(
+        target / ".claude" / "settings.json",
+        '{"hooks": {"PreToolUse": [{"command": "' + token + '/hook.py"}]}}\n',
+    )
+
+    result = _run(SCRIPT, target, cwd=tmp_path)
+
+    assert result.returncode == 0
+    assert _assert_ascii(result).endswith("lint: 0 finding(s)\n")
+
+
 def test_every_guard_reports_a_planted_violation_and_leaves_a_lawful_sibling(tmp_path):
     target = tmp_path / "target"
     dash = chr(0x2014)
@@ -248,7 +275,38 @@ def test_traveling_tests_run_after_relocation(tmp_path):
         env=environment,
     )
 
-    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert result.returncode == 0, (result.stdout + result.stderr).decode("utf-8", "replace")
+
+
+def test_run_names_a_raised_check_inside_the_shipped_guard(tmp_path, monkeypatch):
+    def broken(_root):
+        raise RuntimeError("probe")
+
+    monkeypatch.setattr(lint, "CHECKS", (broken,))
+
+    findings = lint.run(tmp_path)
+
+    assert len(findings) == 1, findings
+    assert "no frame inside" not in findings[0]
+    assert "skills/substrate/" in findings[0]
+
+
+def test_traversal_prunes_git_and_keeps_every_other_directory(tmp_path):
+    _write(tmp_path / ".git" / "hidden.py", "VALUE = 'hidden'\n")
+    _write(tmp_path / ".venv" / "kept.py", "VALUE = 'kept'\n")
+
+    python_files = {path.relative_to(tmp_path).as_posix() for path in lint._python_files(tmp_path)}
+    all_files = {path.relative_to(tmp_path).as_posix() for path in lint._iter_files(tmp_path)}
+
+    assert ".git/hidden.py" not in python_files | all_files
+    assert ".venv/kept.py" in python_files
+    assert ".venv/kept.py" in all_files
+
+
+def test_run_moment_includes_portable_calling_contracts():
+    text = (ROOT / "skills" / "substrate" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "Before committing Python work or a calling contract governed by this cell" in text
 
 
 # --- check_emitted_ascii ---------------------------------------------------
@@ -278,6 +336,15 @@ def test_emitted_ascii_catches_a_message_that_cannot_survive_capture(tmp_path):
     assert "guard.py:2" in findings[0]
     assert "U+2014" in findings[0] and "EM DASH" in findings[0]
     assert findings[0].isascii(), "the finding cannot itself carry what it forbids"
+
+
+def test_emitted_ascii_remedy_does_not_depend_on_this_repositorys_fixtures(tmp_path):
+    _py(tmp_path, "message.py", "VALUE = " + repr("a " + EM_DASH) + chr(10))
+
+    finding = lint.check_emitted_ascii(tmp_path)[0]
+
+    assert "fixtures" not in finding
+    assert "at runtime" in finding
 
 
 def test_emitted_ascii_leaves_docstrings_and_comments_alone(tmp_path):
@@ -325,7 +392,7 @@ def test_emitted_ascii_ignores_a_directory_named_like_a_module(tmp_path):
 
 
 def _zoned(root: Path, rel: str, body: str) -> None:
-    """Write a module inside a zone the zone-scoped checks actually walk."""
+    """Write a module where the target-root checks will walk it."""
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
@@ -387,6 +454,35 @@ def test_stdio_wired_first_is_left_alone(tmp_path):
            + "    utf8_stdio()" + chr(10)
            + "    print('x')" + chr(10))
     assert lint.check_stdio_wired(tmp_path) == []
+
+
+def test_hand_rolled_stdio_setup_is_left_alone(tmp_path):
+    """An adopter can set both stream properties without importing our helper."""
+    _zoned(tmp_path, "src/script.py",
+           "import sys" + chr(10)
+           + "def main():" + chr(10)
+           + "    sys.stdout.reconfigure(encoding='utf-8', newline='')" + chr(10)
+           + "    sys.stderr.reconfigure(encoding='utf-8', newline='')" + chr(10))
+
+    assert lint.check_stdio_wired(tmp_path) == []
+
+    _zoned(tmp_path, "src/loop.py",
+           "import sys" + chr(10)
+           + "def main():" + chr(10)
+           + "    for stream in (sys.stdout, sys.stderr):" + chr(10)
+           + "        stream.reconfigure(encoding='utf-8', newline='')" + chr(10))
+
+    assert lint.check_stdio_wired(tmp_path) == []
+
+
+def test_async_main_is_held_to_the_stream_rule(tmp_path):
+    _zoned(tmp_path, "src/script.py",
+           "async def main():" + chr(10) + "    print('x')" + chr(10))
+
+    findings = lint.check_stdio_wired(tmp_path)
+
+    assert len(findings) == 1, findings
+    assert "stdio-unwired" in findings[0]
 
 
 def test_a_module_without_main_is_not_asked(tmp_path):
@@ -742,8 +838,8 @@ def test_os_popen_is_caught_through_every_import_spelling(tmp_path):
 def test_this_repository_names_its_streams_at_every_launch():
     """The tree this exists for, not a restatement of the guard.
 
-    The guard proves the shape; this proves the shipped and repo-only trees are
-    in it -- which is the claim #229 found false and nothing was checking."""
+    The guard proves the shape; this source-tree check proves the Python files
+    it sees are in it -- which is the claim #229 found false and nothing was checking."""
     assert lint.check_subprocess_streams(ROOT) == []
 
 
@@ -814,6 +910,28 @@ def test_emitted_ascii_sees_through_a_utf8_bom(tmp_path):
         chr(0xFEFF).encode("utf-8") + ("X = " + repr("a " + EM_DASH) + chr(10)).encode("utf-8"))
     findings = lint.check_emitted_ascii(tmp_path)
     assert len(findings) == 1 and "U+2014" in findings[0], findings
+
+
+def test_every_ast_guard_reads_a_utf8_bom(tmp_path):
+    source = (
+        '"""Module prose."""' + chr(10)
+        + "import argparse" + chr(10)
+        + "import subprocess" + chr(10)
+        + "def main():" + chr(10)
+        + "    argparse.ArgumentParser(description=__doc__)" + chr(10)
+        + "    subprocess.run(['x'], capture_output=True)" + chr(10)
+    )
+    (tmp_path / "bommed.py").write_bytes(chr(0xFEFF).encode("utf-8") + source.encode("utf-8"))
+
+    findings = (
+        lint.check_docstring_not_piped(tmp_path)
+        + lint.check_stdio_wired(tmp_path)
+        + lint.check_subprocess_streams(tmp_path)
+    )
+
+    assert [finding.split(":", 1)[0] for finding in findings] == [
+        "docstring-piped", "stdio-unwired", "subprocess-streams",
+    ]
 
 
 def test_emitted_ascii_reports_a_file_that_is_not_utf8(tmp_path):

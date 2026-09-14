@@ -15,9 +15,9 @@ When one idea needs both a shipped standard and a local application, the standar
 
 ## The four materials, for a rule
 
-**A rule leaves prose for a guard or a script's own message only where the reader who loses the sentence receives that guard or script** — otherwise the move replaces a rule with silence.
-
 Prose binds only a reader who read it first, and a rule reaches only the case it names — so a rule written as prose is charged to every session and spent on the one that happened to remember it. Four materials, cheapest first:
+
+**A rule leaves prose for a guard or a script's own message only where the reader who loses the sentence receives that guard or script** — otherwise the move replaces a rule with silence.
 
 - **A guard.** What can be checked is a lint, a schema, a test. What survives in prose is the concept, plus the guard's name so a reader knows the check exists; restating the guard's reasoning is paying twice for one answer.
 - **A script's own message.** What a session must not get wrong about running something is said by that thing at the moment of the mistake, not in a paragraph read two days earlier.

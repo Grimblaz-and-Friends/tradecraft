@@ -12,6 +12,7 @@ repo-only directory in reach.
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shutil
@@ -60,6 +61,25 @@ def _skills_with_scripts():
 
 def _scripts_of(skill: Path):
     return sorted((skill / "scripts").glob("*.py"))
+
+
+def test_substrate_lint_test_copies_the_declared_shipped_zone():
+    source = ROOT / "skills" / "substrate" / "tests" / "test_substrate_lint.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "SHIPPED_DIRS" for target in node.targets)
+    )
+
+    assert ast.literal_eval(assignment.value) == lint.SHIPPED_DIRS
+
+
+def test_repository_siting_routes_substrate_checks_through_the_wrapper():
+    text = (ROOT / "docs" / "cells" / "siting" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "`python tools/lint.py`" in text
+    assert "shipped implementations" in text
 
 
 @pytest.fixture(scope="module")
