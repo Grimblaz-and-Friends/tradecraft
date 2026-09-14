@@ -6,19 +6,9 @@
 
 On Windows `subprocess._get_handles` opens with `if stdin is None and stdout is None and stderr is None: return (-1, ...)`. A launch that redirects **nothing** never asks `GetStdHandle` anything, so it cannot fail this way. Redirect one stream and the other two resolve through the process's std-handle table — which can still name a handle something has since closed. `DuplicateHandle` on that raises `OSError: [WinError 6] The handle is invalid`, out of a call that has nothing to do with the command being run.
 
-So *"name your stdin"* is the wrong rule, and wrong in the direction that costs: applied to a launch redirecting nothing, it converts an immune call into a failing one. Measured under a test runner's default capture, twenty launches per case in a fresh process each: `run(cmd)` failed 0/20, `run(cmd, stdin=DEVNULL)` failed 20/20, `run(cmd, stdin=DEVNULL, capture_output=True)` failed 0/20.
+So *"name your stdin"* is the wrong rule, and wrong in the direction that costs: applied to a launch redirecting nothing, it converts an immune call into a failing one.
 
-## The compliant forms
-
-- `run(cmd, stdin=DEVNULL, capture_output=True)` — a program given nothing to read, whose output you want. Nearly everything.
-- `run(cmd, input=payload, capture_output=True)` — a program you feed; `input=` implies `stdin=PIPE`, so it covers that stream. On `run` alone, `input=None` does **not**: it never reaches `run`'s `if input is not None`, so it leaves stdin inherited while looking named.
-- `run(cmd)` — a program run purely for its side effects, output going wherever the caller's went. Lawful, and adding a keyword to it is the mistake above.
-- **`check_output` redirects `stdout` before you pass anything**, since it is `run(*popenargs, stdout=PIPE, ...)`. So `check_output(cmd)` is *not* the lawful bare form above — it is a partial redirect, measured failing 20 times in 20. Its compliant form is `check_output(cmd, stdin=DEVNULL, stderr=DEVNULL)`; naming all three is impossible, because supplying `stdout=` raises `ValueError`. It also rewrites `input=None` to `b''` before calling `run`, so unlike `run` it pipes stdin either way.
-- **`getoutput`, `getstatusoutput` and `os.popen` have no compliant form at all.** Each redirects a stream by construction *and* exposes no stdin parameter, so nothing you can pass satisfies the rule. Do not use them.
-
-`stdin=None` is the default spelled out, so it redirects nothing and covers nothing.
-
-**Read a launcher against its own source, not against `run`'s.** The two bullets above are both cases where a wrapper's behaviour is not `run`'s, and both were missed by people reasoning from `run` — including, three times over, by reviewers proposing fixes for the first two.
+**Read a launcher against its own source, not against `run`'s.** `check_output` redirects `stdout` before you pass it anything, so its bare call is a partial redirect rather than the lawful bare form, and its compliant form names `stdin` and `stderr`.
 
 ## Why it fails intermittently, and why green CI says nothing
 
@@ -28,4 +18,4 @@ Windows recycles handle values. When some unrelated object in the process happen
 
 ## The guard, and what it cannot see
 
-A call-site check reads this off one call and needs no guess about what reaches where. **What it reads is the callee and its keyword arguments; a second positional argument, a splat of either kind, and a non-literal `capture_output` are unread, and unread is silence. A stream keyword whose value is not the literal `None` is read as a redirect — including a name that happens to be `None` at run time.** Silence is deliberate where the redirection is genuinely unknown, and a guard that reddened there would block lawful work, which fails as hard as passing unlawful work. The last clause is the one to carry away: a call-site check cannot know what a name evaluates to, so `stdout=NL` where `NL = None` reads as covered and is not.
+A call-site check reads this off one call — the callee and its keyword arguments — and where that leaves the redirection genuinely unknown it stays silent, because a guard that reddened there would block lawful work, which fails as hard as passing unlawful work.
