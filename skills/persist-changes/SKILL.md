@@ -23,14 +23,14 @@ python scripts/persist.py -m "<message>" <path> [<path> ...]
 
 It operates on **the repository containing your current directory**, and **paths are resolved from that repository's root** no matter where you invoke it from.
 
-What the script refuses, and why, is below; each refusal is said again on the line where it stops. [D-627]
+What the script's own logic refuses, and why, is below; each refusal is said again on the line where it stops. [D-627]
 
 - **Broad staging is refused, not just avoided**: name the files or directories. Broad staging committed compiled cache artifacts in tradecraft's own skeleton commit ([30fb484](https://github.com/Grimblaz-and-Friends/tradecraft/commit/30fb48482448ded6f45ccd9a2eb6ddb413bdee10) shipped `__pycache__` files).
 - **A pre-loaded index is refused**: silently inheriting someone else's staged changes is how unrelated work ends up in your commit.
-- **The push goes to the branch's tracked remote**: it is never guessed, because a guess pushes to and then verifies the wrong remote.
+- **The push goes to the branch's tracked remote**: the upstream remote if configured, the sole remote otherwise; with multiple remotes and no upstream it refuses rather than guessing, because a guess pushes to and then verifies the wrong remote.
 - **The push is verified, not assumed**: success is claimed only when the remote head is the new commit.
 - **Force-push does not exist here**: no flag, no environment override. A rejected push is information, not an obstacle.
-- **Detached HEAD, wrong branch, and absent remote branches are refused**.
+- **Detached HEAD, wrong branch, and absent remote branches are refused**: detached HEAD and absent remote branches are unconditional refusals, while `--expect-branch <name>` arms the wrong-branch refusal by naming the intended branch.
 
 ## The judgment part — yours
 
