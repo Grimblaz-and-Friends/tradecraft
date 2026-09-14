@@ -4,13 +4,17 @@
 
 ## What was decided
 
-The `substrate` cell keeps every concept it carried and sheds what a guard, a script's own message, or a decision entry already holds. Twenty passages stay verbatim, ten are sharpened to their concept, and eight leave whole for another material. The pre-implementation artifact settled all 38 dispositions sentence by sentence before anything was built, and one cold seat on the other vendor returned `would` with no points against it.
+The `substrate` cell keeps every concept it carried and sheds what a guard, a script's own message, or a decision entry already holds. Twenty passages stay verbatim, ten are sharpened to their concept, and eight leave whole for another material; four of the ten sharpened lines also shed a sentence, and those are classed too. The pre-implementation artifact settled all 38 dispositions sentence by sentence before anything was built, and one cold seat on the other vendor returned `would` with no points against it.
 
 **Why this cell's shed is unusual: it has two readers and only one of them gets the guards.** A session inside this repository meets five checks in `tools/lint.py` that already read these rules and say the right thing at the moment of the mistake. A session in an adopting repository receives the cell and none of them, and the wall forbids a shipped cell naming `tools/`. So *to guard* here means the rule is already what a guard reads and says, and the shipped prose keeps the concept an adopter needs in order to write its own — never a pointer at this repository's.
 
 ## Every passage that left, and which material took it
 
-As the brief requires: the change that removes a rule says which it was. The first eight rows are the passages that leave whole. **The ninth is not one of them** — it is a sharpened line, counted among the ten, whose narration left while its concept stayed; it is listed because a sentence was deleted there and the brief's requirement is about deletions, not about rows.
+As the brief requires: the change that removes a rule says which it was. **Deletions fall in two places and both are tabled below** — eight passages that leave whole, and four sentences cut out of lines the sweep classes as sharpened. The brief's requirement is about deletions, not about rows, so both tables are owed.
+
+### The eight passages that leave whole
+
+Nine rows for eight passages: `text-mode.md:8`'s fifth-and-sixth sentences are split across two rows because their halves went to different materials, which is itself what this change's review found.
 
 | passage | class | where it went |
 | --- | --- | --- |
@@ -18,13 +22,24 @@ As the brief requires: the change that removes a rule says which it was. The fir
 | `subprocess-streams.md:19` — *"`stdin=None` is the default spelled out"* | to guard | `_redirected` reads a literal `None` as no redirect. A case the concept decides. |
 | `subprocess-streams.md:29-31` — the enumeration of what a call-site check cannot see (a second positional argument, a splat, a non-literal `capture_output`, `stdout=NL` where `NL = None`) | to guard, and to entry | `_redirected`'s docstring states it as a criterion; [D-232] holds the bound verbatim together with the three wrong statements of it. The prose keeps one sentence — a call-site check reads the callee and its keyword arguments and stays silent where the redirect is genuinely unknown, because reddening there blocks lawful work. |
 | `subprocess-streams.md:9` — the measurement table (`run(cmd)` 0/20, `stdin=DEVNULL` 20/20, `stdin=DEVNULL, capture_output=True` 0/20) | to entry | [D-232]. Evidence, not concept. The prose keeps the sentence the figures were evidence *for*: the stdin-only rule converts an immune call into a failing one, which is why the rule is about the whole call. |
-| `subprocess-streams.md:21` — *"both were missed by people reasoning from `run` — including, three times over, by reviewers proposing fixes for the first two"* — **the narration inside a sharpened line, not a passage that left whole** | sharpen; narration to entry | [D-232]. Reviewer narration. The concept — read a launcher against its own source — stays, now carrying the single `check_output` example the principle allows in place of the forms list. |
-| `text-mode.md:8`, sentences 5-6 — *"The two properties are the rule; a helper is only how a practice discharges them"* and the reach-for-it / do-not-shadow instruction | to script message | `check_stdio_wired`'s finding already says to import `utf8_stdio` from `lib/winio.py`, resolving `lib/` against the file's own directory rather than the working directory, and to call it as the first statement; its docstring holds the no-op-shadow case, and [D-252] holds why. One sentence replaces them, naming `lib/winio.py`'s `utf8_stdio()` as this tree's setup. |
+| `text-mode.md:8`, sentences 5-6 — *"The two properties are the rule; a helper is only how a practice discharges them"* and the reach-for-it instruction | to script message | `check_stdio_wired`'s finding already says to import `utf8_stdio` from `lib/winio.py`, resolving `lib/` against the file's own directory rather than the working directory, and to call it as the first statement. One sentence replaces them, naming `lib/winio.py`'s `utf8_stdio()` as this tree's setup. |
+| `text-mode.md:8`, sentence 6's second half — *"neither redefine nor shadow the name: a local no-op with the right name satisfies a call site while setting nothing up"* | to entry (a recorded incident) | **Not to the guard's message, which never mentions shadowing.** [D-252]`:42` records the guard reading only that a name arrived by an import — not its source module, and not that the call still resolves to it — and [#254](https://github.com/Grimblaz-and-Friends/tradecraft/issues/254) is that incident filed with both reproductions and their negative controls. The owner read #254 at his hearing of 2026-09-12 and closed it **not planned**: *"a guard for a class with no instance is bought when the instance arrives."* So the rule's material is the recorded incident, which is one of the brief's four, and the guard is deliberately unchanged. |
 | `text-mode.md:25` — *"Say so where you state the rule. Leave it unsaid and whoever notices their redirected output changed goes hunting their editor…"* | to entry | [D-186], whose own text carries the incident. A writing instruction whose entire content was the incident. |
 | `text-mode.md:27-29` — the byte-comparison narration (a guard reported every file out of step on a tree version control called clean, because the harness had rewritten one side in text mode) | to entry | [D-232]. The prose keeps one sentence: the third rule is not about encoding, and it has fired on a real tree. |
 | `text-mode.md:8`, sentence 8 — *"A guard that reads the import binding is a proxy for this and never a substitute…"* | cut, unwritten | A second statement in the same file of the bound `:19` already carries. Not a concept; a duplicate. |
 
-**The other nine sharpened lines are not in this table**, because no sentence in them went to another material: each was reduced to the concept and its reason, and the diff is the record of what went.
+### The four sentences cut out of sharpened lines
+
+A line classed *sharpen* keeps its concept and its reason. Four of the ten also had a whole sentence removed, and each of those is a deletion the brief requires be classed. **This table was missing from the entry as first written, and both the review's `revision-diff` seat and its defense established that; the entry's earlier claim that no sharpened line sent a sentence elsewhere was false.**
+
+| sentence cut | from | to |
+| --- | --- | --- |
+| the enumeration of what a literal check flags and misses — *"a filename or a regex source"*, `chr()`, a format call, a `__str__` | base `text-mode.md:15` | `check_emitted_ascii`'s **docstring**, which names each case; its **message** carries the operative half — *"in a non-docstring string constant"*, the wording [D-186]`:57-62` records was chosen because the first version claimed a property it never computed. The enumeration is the docstring's, not the message's |
+| *"and that objection is why a helper is sometimes rejected outright"* | base `text-mode.md:19` | [D-186]`:22`, a recorded incident; it is history, not concept |
+| *"Ban the construction rather than reasoning about whether the stream happens to be set up: the ban keeps the exemption honest, which is a warrant that survives changes to how streams are configured."* | base `text-mode.md:35` | `check_docstring_not_piped`'s docstring, which states the warrant and why it survives; [D-186]`:33` holds it |
+| *"both were missed by people reasoning from `run` — including, three times over, by reviewers proposing fixes for the first two"* | base `subprocess-streams.md:21` | [D-232]`:60`. The concept stays and now carries the single `check_output` example the principle allows, in place of the forms list |
+
+**The remaining six sharpened lines sent no sentence to another material**: each was reduced to its concept and its reason, and the diff is the whole record of what went. The one further deletion among them — *"So state the two halves apart"* at base `text-mode.md:31` — is a writing instruction whose halves follow it, and it is unwritten rather than moved.
 
 ## Three calls the sweep made, stated so a later sweep does not re-make them
 
