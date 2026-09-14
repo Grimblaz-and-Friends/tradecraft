@@ -30,6 +30,7 @@ def job(tmp_path, monkeypatch):
         "--dispatch", str(dispatch), "--root", str(root), "--vendor", "claude",
         "--own-vendor", "codex", "--output", str(tmp_path / "verdict.md"),
         "--work", "issue-592", "--stage", "cold-read",
+        "--classification", "ordinary",
         "--settings-source", "issuecomment-5655702442",
         "--settings-scope", "Codex turns after the artifact",
         "--hold-file", str(tmp_path / "holds"), "--timeout-seconds", "10",
@@ -138,7 +139,13 @@ def test_unavailable_falls_back_once_and_records_reason(job, monkeypatch, vendor
     assert log["fallback_reason"]
     assert base64.b64decode(seen(args, args.own_vendor)["stdin"]) == args.dispatch.read_bytes()
     fallback = log["attempts"][1]
-    assert (fallback["model"], fallback["effort"]) == seat.DEFAULTS[args.own_vendor]
+    expected_effort = (
+        seat.CLAUDE_EFFORTS[args.classification]
+        if args.own_vendor == "claude" else seat.DEFAULT_CODEX_EFFORT
+    )
+    assert (fallback["model"], fallback["effort"]) == (
+        seat.DEFAULT_MODELS[args.own_vendor], expected_effort
+    )
     assert (args.hold_file.read_bytes() if args.hold_file.exists() else None) == before
 
 
@@ -509,3 +516,78 @@ def test_unsupported_atomic_publication_fails_before_usage(job, monkeypatch):
     assert not args.output.exists()
     assert not seat.sidecar(args.output, ".run.json").exists()
     assert not list(args.output.parent.glob(".tradecraft-publish-*"))
+
+
+def test_classification_is_required_by_the_cli(job):
+    args, _ = job
+    argv = [
+        "--dispatch", str(args.dispatch), "--root", str(args.root),
+        "--vendor", "claude", "--own-vendor", "codex",
+        "--work", "issue", "--stage", "cold-read",
+        "--settings-source", "brief", "--settings-scope", "cold seat",
+    ]
+    with pytest.raises(SystemExit):
+        seat.parser().parse_args(argv)
+
+
+def test_skipped_attempt_has_unknown_elapsed_with_reason(job):
+    args, _ = job
+    args.hold_file.write_bytes(b"claude 2026-09-13T00:00:00Z\ncodex 2026-09-13T00:00:00Z\n")
+    assert seat.run_dispatch(args, now=NOW) == 1
+    for attempt in record(args)["attempts"]:
+        assert attempt["elapsed_seconds"] is None
+        assert attempt["elapsed_seconds_unavailable_reason"] == attempt["reason"]
+
+
+def test_interpretation_failure_still_completes_the_attempt(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(
+        seat, "interpret", lambda *_: (_ for _ in ()).throw(UnicodeError("bad final text"))
+    )
+    with pytest.raises(UnicodeError, match="bad final text"):
+        seat.run_dispatch(args)
+    logged = record(args)
+    attempt = logged["attempts"][0]
+    assert logged["error"] == "bad final text"
+    assert attempt["reason"] == "could not interpret claude return: bad final text"
+    assert attempt["observed"]["raw"] is not None
+    assert attempt["elapsed_seconds"] >= 0
+
+
+def test_fallback_cannot_read_primary_transcript_until_it_finishes(job, monkeypatch):
+    args, _ = job
+    configure(job, {"claude": {"message": "Not logged in"}})
+    original = seat.run_process
+    calls = 0
+    def checked(command, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            assert seat.sidecar(args.output, ".claude.stdout.log").read_bytes() == b""
+            assert seat.sidecar(args.output, ".claude.stderr.log").read_bytes() == b""
+        return original(command, **kwargs)
+    monkeypatch.setattr(seat, "run_process", checked)
+    assert seat.run_dispatch(args) == 0
+    assert calls == 2
+    assert seat.sidecar(args.output, ".claude.stdout.log").read_bytes()
+
+
+def test_setting_sources_name_classification_and_default_model(job):
+    args, _ = job
+    assert seat.run_dispatch(args) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    sources = request["requested"]["sources"]
+    assert sources["classification"] == "issuecomment-5655702442"
+    assert sources["model"] == "dispatch_seat default"
+    assert sources["effort"] == "classification mapping"
+
+
+def test_failed_dispatch_prints_its_id_and_bundle_path(job, capsys):
+    args, _ = job
+    configure(job, {"claude": {"exit": 2, "stderr": "bad option"}})
+    assert seat.run_dispatch(args) == 1
+    logged = record(args)
+    assert logged["result"]["published_output"] is None
+    output = capsys.readouterr().out
+    assert logged["dispatch_id"] in output
+    assert str(args.output) in output

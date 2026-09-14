@@ -89,18 +89,19 @@ def _capture(
     *,
     cwd: Path | None = None,
     timeout: float | None = None,
+    binary: bool = False,
 ) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(
-            command,
-            cwd=str(cwd) if cwd else None,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        options = {
+            "cwd": str(cwd) if cwd else None,
+            "stdin": subprocess.DEVNULL,
+            "capture_output": True,
+            "text": not binary,
+            "timeout": timeout,
+        }
+        if not binary:
+            options.update(encoding="utf-8", errors="strict")
+        return subprocess.run(command, **options)
     except OSError as exc:
         binary = command[0] if command else "<empty command>"
         raise CompatError(f"cannot launch {binary}: {exc}") from exc
@@ -317,6 +318,14 @@ def run_probe(
             vendor="codex", model=model, effort=reasoning, continuity="fresh",
             permission_boundary="ephemeral read-only Codex session", root=consumer,
             classification="ordinary", command=command,
+            setting_sources={
+                "vendor": "compatibility probe route",
+                "model": "compatibility probe argument/default resolution",
+                "effort": "compatibility probe argument/default resolution",
+                "classification": "compatibility probe route",
+                "continuity": "compatibility probe route (fresh)",
+                "permission_boundary": "compatibility probe route",
+            },
         )
         request["runtime_version"] = runtime_version
         request["runtime_version_unavailable_reason"] = (
@@ -331,9 +340,12 @@ def run_probe(
             streams[request_path].flush()
             streams[input_path].write(PROMPT.encode("utf-8"))
             streams[input_path].flush()
+            streams.mark_ready()
+            print(f"codex-compat: dispatch {request['dispatch_id']} -> {output}")
             started = time.monotonic()
+            launched = False
             try:
-                result = _capture(command, cwd=consumer, timeout=timeout_seconds)
+                result = _capture(command, cwd=consumer, timeout=timeout_seconds, binary=True)
             except subprocess.TimeoutExpired as exc:
                 stdout = exc.stdout or b""
                 stderr = exc.stderr or b""
@@ -344,26 +356,33 @@ def run_probe(
                     "nested Codex session timed out after "
                     f"{timeout_seconds:g} seconds before returning a result"
                 )
+                launched = True
             except CompatError as exc:
                 result = subprocess.CompletedProcess(
                     command, -1, b"", str(exc).encode("utf-8")
                 )
                 failure = exc
             else:
-                stdout = result.stdout.encode("utf-8")
-                stderr = result.stderr.encode("utf-8")
-                result = subprocess.CompletedProcess(command, result.returncode, stdout, stderr)
+                launched = True
             elapsed = time.monotonic() - started
-            for path, content in ((stdout_path, result.stdout), (stderr_path, result.stderr)):
-                logged, _ = records.log_bytes(content)
+            encodings = {}
+            for path, content, name in (
+                (stdout_path, result.stdout, "stdout"), (stderr_path, result.stderr, "stderr")
+            ):
+                logged, encoding = records.log_bytes(content)
                 streams[path].write(logged)
                 streams[path].flush()
+                encodings[name] = encoding
             attempt = {
-                "vendor": "codex", "launched": True, "exit_code": result.returncode,
+                "vendor": "codex", "launched": launched, "exit_code": result.returncode,
                 "outcome": "error", "reason": "", "stdout": str(stdout_path),
-                "stderr": str(stderr_path),
+                "stderr": str(stderr_path), "stdout_encoding": encodings["stdout"],
+                "stderr_encoding": encodings["stderr"],
             }
-            records.add_runtime_evidence(attempt, "codex", result.stdout, "fresh", elapsed)
+            if launched:
+                records.add_runtime_evidence(attempt, "codex", result.stdout, "fresh", elapsed)
+            else:
+                records.add_unobserved(attempt, str(failure))
             if failure is None and result.returncode != 0:
                 detail = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
                 failure = CompatError(f"nested Codex session failed ({result.returncode}): {detail}")
@@ -401,14 +420,17 @@ def run_probe(
                            "source_output_unavailable_reason": (
                                None if answer_bytes else "runtime returned no final source text"
                            ),
-                           "published_output": str(output),
+                           "published_output": str(output) if failure is None else None,
+                           "published_output_unavailable_reason": (
+                               None if failure is None else str(failure)
+                           ),
                            "assessment": "compatibility assertion", "passed": failure is None},
             }
             streams[run_path].write(records.json_bytes(run))
             streams[run_path].flush()
             for stream in streams.values():
                 stream.close()
-        if answer_bytes:
+        if failure is None and answer_bytes:
             records.publish_output(output, answer_bytes.replace(b"\r\n", b"\n"))
         if failure is not None:
             raise failure

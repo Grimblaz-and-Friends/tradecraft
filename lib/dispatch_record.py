@@ -46,8 +46,8 @@ def _slug(value: str) -> str:
     return cleaned[:48] or "dispatch"
 
 
-def default_output_path(work: str, stage: str, root: Path | None = None) -> Path:
-    parent = (root or default_record_root()).expanduser().resolve()
+def default_output_path(work: str, stage: str) -> Path:
+    parent = default_record_root().expanduser().resolve()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     name = f"{stamp}-{_slug(work)}-{_slug(stage)}-{uuid.uuid4().hex[:12]}"
     return parent / name / "result.md"
@@ -121,12 +121,30 @@ def publish_output(path: Path, content: bytes) -> None:
         os.link(staged, path)
 
 
+class ReservedBundle:
+    """Reserved sidecar streams whose immutable request is not yet complete."""
+
+    def __init__(self, streams: dict[Path, object]):
+        self.streams = streams
+        self.ready = False
+
+    def __getitem__(self, path: Path):
+        return self.streams[path]
+
+    def values(self):
+        return self.streams.values()
+
+    def mark_ready(self) -> None:
+        """Keep the bundle after its request and dispatch input are durable."""
+        self.ready = True
+
+
 @contextmanager
 def reserve_bundle(destinations: list[Path], output: Path):
     """Prove exact-path creation before usage, keeping sidecars reserved."""
     streams: dict[Path, object] = {}
     created: list[Path] = []
-    ready = False
+    reservation = ReservedBundle(streams)
     try:
         for path in destinations:
             streams[path] = path.open("xb")
@@ -135,12 +153,11 @@ def reserve_bundle(destinations: list[Path], output: Path):
         with tempfile.TemporaryDirectory(prefix=".tradecraft-publish-", dir=output.parent) as temporary:
             os.link(output, Path(temporary) / "probe")
         output.unlink()
-        ready = True
-        yield streams
+        yield reservation
     finally:
         for stream in streams.values():
             stream.close()
-        if not ready:
+        if not reservation.ready:
             for path in created:
                 path.unlink(missing_ok=True)
 
@@ -169,6 +186,7 @@ def request_record(
     classification: str | None = None,
     requested_session_id: str | None = None,
     command: list[str] | None = None,
+    setting_sources: dict[str, str] | None = None,
     retry_of: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
@@ -190,6 +208,9 @@ def request_record(
         raise RecordError("fresh continuity cannot request an existing session id")
     if retry_of is not None and not retry_of.strip():
         raise RecordError("retry dispatch id must be nonempty")
+    for name, source in (setting_sources or {}).items():
+        if not name.strip() or not source.strip():
+            raise RecordError("setting source names and values must be nonempty")
     when = now or datetime.now(timezone.utc)
     return {
         "schema_version": SCHEMA_VERSION,
@@ -208,6 +229,7 @@ def request_record(
             "session_id": requested_session_id,
             "permission_boundary": permission_boundary,
             "command": command,
+            "sources": setting_sources or {},
         },
         "root": str(root.resolve()) if root is not None else None,
         "launched_at": when.astimezone(timezone.utc).isoformat(),
@@ -265,10 +287,11 @@ def _codex_evidence(raw: bytes, continuity: str) -> dict[str, object]:
         "turn_ids": turn_ids,
         "runtime_cost": None,
         "runtime_cost_unavailable_reason": "Codex JSONL returned no monetary field",
+        "runtime_cost_scope_unavailable_reason": "Codex JSONL returned no monetary field",
     }
 
 
-def _claude_evidence(raw: bytes) -> dict[str, object]:
+def _claude_evidence(raw: bytes, continuity: str) -> dict[str, object]:
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError):
@@ -287,6 +310,7 @@ def _claude_evidence(raw: bytes) -> dict[str, object]:
             "turn_ids": [],
             "runtime_cost": None,
             "runtime_cost_unavailable_reason": "runtime returned no valid JSON result",
+            "runtime_cost_scope_unavailable_reason": "runtime returned no valid JSON result",
         }
     model_usage = payload.get("modelUsage")
     models: dict[str, dict[str, int | float]] = {}
@@ -298,19 +322,31 @@ def _claude_evidence(raw: bytes) -> dict[str, object]:
     cost = _number(payload.get("total_cost_usd"))
     effort = payload.get("effort") if isinstance(payload.get("effort"), str) else None
     session_id = payload.get("session_id") if isinstance(payload.get("session_id"), str) else None
+    normalized = {"scope": "invocation", "models": models} if models else None
+    normalized_reason = None if models else "runtime returned no modelUsage values"
+    cost_scope = "invocation"
+    cost_scope_reason = None
+    if continuity == "resume":
+        normalized = None
+        normalized_reason = "resume usage scope is not established for this runtime version"
+        cost_scope = "unestablished"
+        cost_scope_reason = "resume cost scope is not established for this runtime version"
     return {
         "source": "claude JSON result.modelUsage",
         "raw": model_usage,
-        "normalized": {"scope": "invocation", "models": models} if models else None,
-        "normalized_unavailable_reason": None if models else "runtime returned no modelUsage values",
+        "normalized": normalized,
+        "normalized_unavailable_reason": normalized_reason,
         "reported_models": sorted(models),
         "reported_models_unavailable_reason": None if models else "runtime returned no modelUsage identifiers",
         "reported_effort": effort,
         "reported_effort_unavailable_reason": None if effort else "runtime returned no effort field",
         "thread_ids": [session_id] if session_id else [],
         "turn_ids": [],
-        "runtime_cost": {"currency": "USD", "amount": cost, "source": "total_cost_usd"} if cost is not None else None,
+        "runtime_cost": {
+            "currency": "USD", "amount": cost, "source": "total_cost_usd", "scope": cost_scope,
+        } if cost is not None else None,
         "runtime_cost_unavailable_reason": None if cost is not None else "runtime returned no total_cost_usd",
+        "runtime_cost_scope_unavailable_reason": cost_scope_reason,
     }
 
 
@@ -318,7 +354,7 @@ def runtime_evidence(vendor: str, raw_stdout: bytes, continuity: str) -> dict[st
     if vendor == "codex":
         return _codex_evidence(raw_stdout, continuity)
     if vendor == "claude":
-        return _claude_evidence(raw_stdout)
+        return _claude_evidence(raw_stdout, continuity)
     return {
         "source": "native tool return",
         "raw": None,
@@ -332,6 +368,7 @@ def runtime_evidence(vendor: str, raw_stdout: bytes, continuity: str) -> dict[st
         "turn_ids": [],
         "runtime_cost": None,
         "runtime_cost_unavailable_reason": "no extractor for this tool",
+        "runtime_cost_scope_unavailable_reason": "no extractor for this tool",
     }
 
 
@@ -339,6 +376,21 @@ def add_runtime_evidence(attempt: dict[str, object], vendor: str, raw_stdout: by
                          continuity: str, elapsed_seconds: float) -> None:
     attempt["observed"] = runtime_evidence(vendor, raw_stdout, continuity)
     attempt["elapsed_seconds"] = elapsed_seconds
+
+
+def add_unobserved(attempt: dict[str, object], reason: str) -> None:
+    """Complete an attempt that never reached a runtime observation."""
+    attempt["observed"] = {
+        "source": None, "raw": None, "normalized": None,
+        "normalized_unavailable_reason": reason,
+        "reported_models": [], "reported_models_unavailable_reason": reason,
+        "reported_effort": None, "reported_effort_unavailable_reason": reason,
+        "thread_ids": [], "turn_ids": [],
+        "runtime_cost": None, "runtime_cost_unavailable_reason": reason,
+        "runtime_cost_scope_unavailable_reason": reason,
+    }
+    attempt["elapsed_seconds"] = None
+    attempt["elapsed_seconds_unavailable_reason"] = reason
 
 
 def _attachment_paths(output: Path, kind: str) -> tuple[Path, Path]:
@@ -358,8 +410,6 @@ def attach_file(output: Path, source: Path, kind: str) -> Path:
     request = json.loads(request_path.read_bytes())
     content_path, metadata_path = _attachment_paths(output, kind)
     content_path.parent.mkdir(parents=True, exist_ok=True)
-    if content_path.exists() or content_path.is_symlink() or metadata_path.exists() or metadata_path.is_symlink():
-        raise RecordError(f"refusing existing attachment: {metadata_path}")
     write_bytes(content_path, source.read_bytes())
     import hashlib
     write_json(metadata_path, {
@@ -388,6 +438,11 @@ def begin_native(args: argparse.Namespace) -> Path:
         permission_boundary=args.permission_boundary, root=args.root,
         classification=args.classification, requested_session_id=args.session_id,
         retry_of=args.retry_of,
+        setting_sources={
+            name: args.settings_source for name in (
+                "vendor", "model", "effort", "classification", "continuity", "permission_boundary"
+            )
+        },
     )
     request["runtime_version"] = args.runtime_version
     request["runtime_version_unavailable_reason"] = (
@@ -418,8 +473,12 @@ def finish_native(args: argparse.Namespace) -> Path:
     if raw_path.exists() or run_path.exists() or source_path.exists() or output.exists():
         raise RecordError(f"refusing completed or colliding dispatch output: {output}")
     write_bytes(raw_path, returned)
-    final = args.final_file.expanduser().resolve().read_bytes() if args.final_file else returned
-    write_bytes(source_path, final)
+    succeeded = args.outcome == "success"
+    final = (
+        args.final_file.expanduser().resolve().read_bytes() if args.final_file else returned
+    ) if succeeded else None
+    if final is not None:
+        write_bytes(source_path, final)
     request = json.loads(request_path.read_bytes())
     evidence = runtime_evidence(args.vendor, returned, request["requested"]["continuity"])
     completed = datetime.now(timezone.utc)
@@ -428,6 +487,7 @@ def finish_native(args: argparse.Namespace) -> Path:
         elapsed = max(0.0, (completed - launched).total_seconds())
     except (KeyError, TypeError, ValueError):
         elapsed = None
+    launched = args.outcome != "unavailable"
     write_json(run_path, {
         "schema_version": SCHEMA_VERSION,
         "dispatch_id": request["dispatch_id"],
@@ -436,14 +496,21 @@ def finish_native(args: argparse.Namespace) -> Path:
         "completed_at": completed.isoformat(),
         "revision_after": git_revision(Path(request["root"])) if request.get("root") else None,
         "attempts": [{
-            "vendor": args.vendor, "launched": True, "outcome": args.outcome,
+            "vendor": args.vendor, "launched": launched, "outcome": args.outcome,
             "observed": evidence, "source_return": str(raw_path),
-            "elapsed_seconds": elapsed,
+            "elapsed_seconds": elapsed if launched else None,
+            "elapsed_seconds_unavailable_reason": None if launched else "native outcome was unavailable",
         }],
-        "result": {"source_output": str(source_path), "published_output": str(output),
-                   "assessment": "unassessed"},
+        "result": {
+            "source_output": str(source_path) if succeeded else None,
+            "source_output_unavailable_reason": None if succeeded else f"native outcome was {args.outcome}",
+            "published_output": str(output) if succeeded else None,
+            "published_output_unavailable_reason": None if succeeded else f"native outcome was {args.outcome}",
+            "assessment": "unassessed",
+        },
     })
-    publish_output(output, final)
+    if final is not None:
+        publish_output(output, final)
     return run_path
 
 
@@ -485,7 +552,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         if args.command == "begin":
-            print(begin_native(args))
+            output = begin_native(args)
+            request = json.loads(sidecar(output, ".request.json").read_bytes())
+            print(f"dispatch-record: dispatch {request['dispatch_id']} -> {output}")
         elif args.command == "finish":
             print(finish_native(args))
         else:

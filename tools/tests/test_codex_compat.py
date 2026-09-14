@@ -154,6 +154,17 @@ def test_capture_translates_launch_failure(monkeypatch):
         compat._capture(["codex", "--version"])
 
 
+def test_binary_capture_preserves_non_utf8_bytes(monkeypatch):
+    raw = b"good\xffbytes"
+    monkeypatch.setattr(
+        compat.subprocess, "run",
+        lambda *_a, **kwargs: subprocess.CompletedProcess(["codex"], 0, raw, b"\xfe"),
+    )
+    result = compat._capture(["codex"], binary=True)
+    assert result.stdout == raw
+    assert result.stderr == b"\xfe"
+
+
 def test_nested_session_timeout_is_a_named_failure(tmp_path, monkeypatch):
     class FixedTemporaryDirectory:
         def __init__(self, **_kwargs):
@@ -165,7 +176,7 @@ def test_nested_session_timeout_is_a_named_failure(tmp_path, monkeypatch):
         def __exit__(self, *_args):
             return False
 
-    def captured(command, *, cwd=None, timeout=None):
+    def captured(command, *, cwd=None, timeout=None, binary=False):
         if command[:2] == ["git", "init"]:
             assert timeout is None
             return subprocess.CompletedProcess(command, 0, "", "")
@@ -184,6 +195,11 @@ def test_nested_session_timeout_is_a_named_failure(tmp_path, monkeypatch):
             Path("codex"), model="gpt-5.6-sol", reasoning="high", timeout_seconds=17,
             record_output=record_output,
         )
+    run = json.loads(compat.records.sidecar(record_output, ".run.json").read_bytes())
+    assert run["outcome"] == "error"
+    assert run["attempts"][0]["reason"].startswith("nested Codex session timed out")
+    assert run["attempts"][0]["stdout_encoding"] == "utf-8"
+    assert run["result"]["published_output"] is None
 
 
 def test_nested_session_success_pins_completion_and_timeout_scope(tmp_path, monkeypatch):
@@ -206,7 +222,7 @@ def test_nested_session_success_pins_completion_and_timeout_scope(tmp_path, monk
     )
     timeouts = []
 
-    def captured(command, *, cwd=None, timeout=None):
+    def captured(command, *, cwd=None, timeout=None, binary=False):
         timeouts.append(timeout)
         if command[:2] == ["git", "init"]:
             return subprocess.CompletedProcess(command, 0, "", "")
@@ -217,7 +233,7 @@ def test_nested_session_success_pins_completion_and_timeout_scope(tmp_path, monk
             json.dumps(compat._expected_probe_payload(marker), ensure_ascii=False),
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
 
     monkeypatch.setattr(compat.tempfile, "TemporaryDirectory", FixedTemporaryDirectory)
     monkeypatch.setattr(compat, "_capture", captured)
@@ -228,6 +244,51 @@ def test_nested_session_success_pins_completion_and_timeout_scope(tmp_path, monk
         record_output=record_output,
     )
     assert timeouts == [None, 17]
+    run = json.loads(compat.records.sidecar(record_output, ".run.json").read_bytes())
+    assert run["outcome"] == "success"
+    assert run["attempts"][0]["stdout_encoding"] == "utf-8"
+    assert Path(run["result"]["source_output"]).read_bytes()
+    assert Path(run["result"]["published_output"]).read_bytes()
+
+
+def test_semantic_failure_is_retained_and_not_published(tmp_path, monkeypatch):
+    class FixedTemporaryDirectory:
+        def __init__(self, **_kwargs):
+            pass
+        def __enter__(self):
+            return str(tmp_path)
+        def __exit__(self, *_args):
+            return False
+
+    source = tmp_path / "source"
+    charter = source / "skills" / "charter" / "SKILL.md"
+    charter.parent.mkdir(parents=True)
+    charter.write_text(
+        (compat.ROOT / "skills" / "charter" / "SKILL.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    def captured(command, *, cwd=None, timeout=None, binary=False):
+        if command[:2] == ["git", "init"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        last_message = Path(command[command.index("--output-last-message") + 1])
+        last_message.write_bytes(b'{"wrong":"answer"}')
+        return subprocess.CompletedProcess(command, 0, b'{"type":"turn.completed"}\n', b"")
+
+    monkeypatch.setattr(compat.tempfile, "TemporaryDirectory", FixedTemporaryDirectory)
+    monkeypatch.setattr(compat, "_capture", captured)
+    monkeypatch.setattr(compat, "ROOT", source)
+    record_output = tmp_path.parent / f"{tmp_path.name}-semantic-records" / "semantic.md"
+    with pytest.raises(compat.CompatError, match="did not match"):
+        compat.run_probe(
+            Path("codex"), model="gpt-5.6-sol", reasoning="high",
+            record_output=record_output,
+        )
+    run = json.loads(compat.records.sidecar(record_output, ".run.json").read_bytes())
+    assert run["outcome"] == "semantic_failure"
+    assert Path(run["result"]["source_output"]).read_bytes() == b'{"wrong":"answer"}'
+    assert run["result"]["published_output"] is None
+    assert not record_output.exists()
 
 
 def test_probe_answer_rejects_a_truncated_charter_tail():

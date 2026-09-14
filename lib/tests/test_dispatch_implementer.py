@@ -139,3 +139,57 @@ def test_relocated_implementer_has_no_repo_only_dependency(tmp_path):
     )
     assert result.returncode == 0
     assert b"--settings-source" in result.stdout
+
+
+def test_launch_failure_is_a_complete_observed_attempt(job, monkeypatch, capsys):
+    args, _ = job
+    monkeypatch.setattr(
+        implementer, "run_process", lambda *_a, **_k: (_ for _ in ()).throw(OSError("launch broke"))
+    )
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    attempt = logged["attempts"][0]
+    assert logged["outcome"] == "error"
+    assert logged["error"] == "cannot launch codex: launch broke"
+    assert attempt["launched"] is False
+    assert attempt["reason"] == logged["error"]
+    assert attempt["observed"]["normalized"] is None
+    assert attempt["elapsed_seconds"] is None
+    assert logged["result"]["published_output"] is None
+    output = capsys.readouterr().out
+    assert logged["dispatch_id"] in output
+    assert str(args.output) in output
+
+
+def test_invalid_request_leaves_no_zero_byte_bundle(job):
+    args, _ = job
+    args.work = ""
+    with pytest.raises(implementer.records.RecordError, match="work must be nonempty"):
+        implementer.run_implementer(args)
+    assert not list(args.output.parent.glob("result.md*"))
+
+
+def test_stderr_session_header_is_retained_when_jsonl_has_no_thread_event(job):
+    args, _ = job
+    session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    configure(job, {
+        "stdout": json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}),
+        "stderr": f"session id: {session}\n",
+        "message": "built\n",
+    })
+    assert implementer.run_implementer(args) == 0
+    observed = record(args)["attempts"][0]["observed"]
+    assert observed["session_id"] == session
+    assert observed["session_id_source"] == "codex stderr session id header"
+
+
+def test_setting_sources_distinguish_defaults_from_explicit_values(job):
+    args, _ = job
+    args.effort = "high"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    assert implementer.run_implementer(args) == 0
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    sources = request["requested"]["sources"]
+    assert sources["model"] == "dispatch_implementer default"
+    assert sources["effort"] == "issuecomment-5655702442"
+    assert sources["continuity"] == "launcher route (fresh)"

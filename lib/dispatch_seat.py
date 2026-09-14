@@ -2,7 +2,9 @@
 """Dispatch a fresh, bounded seat and publish its final message.
 
 Usage: python <plugin>/lib/dispatch_seat.py --dispatch FILE --root DIR
-       --vendor claude --own-vendor codex --output NEW_FILE
+       --vendor claude --own-vendor codex --work ISSUE --stage NAME
+       --settings-source SOURCE --settings-scope SCOPE --classification cold
+       [--output NEW_FILE]
 
 Availability is discovered by trying or reading a machine-local expiring hold.
 Only availability failures permit one attempt on the caller's own vendor.
@@ -29,7 +31,8 @@ from seat_process import run_process
 from winio import utf8_stdio
 
 VENDORS = ("codex", "claude")
-DEFAULTS = {"codex": ("gpt-6-astra", "xhigh"), "claude": ("opus", "xhigh")}
+DEFAULT_MODELS = {"codex": "gpt-6-astra", "claude": "opus"}
+DEFAULT_CODEX_EFFORT = "xhigh"
 CLAUDE_EFFORTS = {"ordinary": "xhigh", "cold": "max", "terminal": "max"}
 FILE_TOOLS = "Read,Glob,Grep"
 
@@ -185,7 +188,31 @@ sidecar = records.sidecar
 def selected_effort(args, vendor):
     if vendor == "claude" and args.claude_effort is None:
         return CLAUDE_EFFORTS[args.classification]
+    if vendor == "codex" and args.codex_effort is None:
+        return DEFAULT_CODEX_EFFORT
     return getattr(args, vendor + "_effort")
+
+
+def selected_model(args, vendor):
+    return getattr(args, vendor + "_model") or DEFAULT_MODELS[vendor]
+
+
+def setting_sources(args, vendor):
+    return {
+        "vendor": args.settings_source,
+        "model": (
+            args.settings_source if getattr(args, vendor + "_model") is not None
+            else "dispatch_seat default"
+        ),
+        "effort": (
+            args.settings_source if getattr(args, vendor + "_effort") is not None
+            else "classification mapping" if vendor == "claude"
+            else "dispatch_seat default"
+        ),
+        "classification": args.settings_source,
+        "continuity": "dispatch_seat route (fresh)",
+        "permission_boundary": "dispatch_seat route",
+    }
 
 
 def run_dispatch(args, *, now=None) -> int:
@@ -205,7 +232,7 @@ def run_dispatch(args, *, now=None) -> int:
     read_holds(hold_file)
     for vendor in VENDORS:
         effort = selected_effort(args, vendor)
-        if not getattr(args, vendor + "_model").strip() or not effort.strip():
+        if not selected_model(args, vendor).strip() or not effort.strip():
             raise DispatchError(f"{vendor} model and effort must be nonempty")
         explicit = getattr(args, vendor)
         if explicit:
@@ -230,9 +257,10 @@ def run_dispatch(args, *, now=None) -> int:
             dispatch_id=uuid.uuid4().hex, work=args.work, stage=args.stage,
             settings_source=args.settings_source, settings_scope=args.settings_scope,
             vendor=args.vendor,
-            model=getattr(args, args.vendor + "_model"), effort=selected_effort(args, args.vendor),
+            model=selected_model(args, args.vendor), effort=selected_effort(args, args.vendor),
             continuity="fresh", permission_boundary="read-only judging seat",
             root=root, classification=args.classification, retry_of=args.retry_of,
+            setting_sources=setting_sources(args, args.vendor),
         )
         request["revision_before"] = records.git_revision(root)
         request["input"] = str(input_path)
@@ -240,13 +268,16 @@ def run_dispatch(args, *, now=None) -> int:
         streams[request_path].flush()
         streams[input_path].write(prompt)
         streams[input_path].flush()
+        streams.mark_ready()
+        print(f"seat: dispatch {request['dispatch_id']} -> {output}")
         record = {"schema_version": records.SCHEMA_VERSION,
                   "dispatch_id": request["dispatch_id"], "request": str(request_path),
                   "requested_vendor": args.vendor, "own_vendor": args.own_vendor,
                   "actual_vendor": None, "fallback_reason": None, "attempts": [],
                   "result": {"source_output": None,
                              "source_output_unavailable_reason": "no successful final source return",
-                             "published_output": str(output),
+                             "published_output": None,
+                             "published_output_unavailable_reason": "no successful final source return",
                              "assessment": "unassessed"}}
         pending_logs = {}
         verdict = None
@@ -261,11 +292,12 @@ def run_dispatch(args, *, now=None) -> int:
             if args.own_vendor != args.vendor:
                 vendors.append(args.own_vendor)
             for vendor in vendors:
-                model = getattr(args, vendor + "_model")
+                model = selected_model(args, vendor)
                 effort = selected_effort(args, vendor)
                 attempt = {"vendor": vendor, "model": model, "effort": effort,
                            "classification": args.classification, "launched": False,
-                           "exit_code": None, "outcome": "error", "reason": ""}
+                           "exit_code": None, "outcome": "error", "reason": "",
+                           "setting_sources": setting_sources(args, vendor)}
                 attempt["runtime_version"] = None
                 attempt["runtime_version_unavailable_reason"] = "attempt was not launched"
                 record["attempts"].append(attempt)
@@ -288,7 +320,6 @@ def run_dispatch(args, *, now=None) -> int:
                             attempt["runtime_version_unavailable_reason"] = (
                                 None if attempt["runtime_version"] else "runtime version command returned no value"
                             )
-                            attempt["launched"] = True
                             returned = False
                             started = time.monotonic()
                             try:
@@ -296,17 +327,23 @@ def run_dispatch(args, *, now=None) -> int:
                             except subprocess.TimeoutExpired as exc:
                                 result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
                                 outcome, reason = "error", f"{vendor} timed out after {args.timeout_seconds:g}s; no fallback"
+                                attempt["launched"] = True
                             except FileNotFoundError as exc:
                                 result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
                                 outcome, reason = "unavailable", f"{vendor} executable disappeared before launch"
                             except OSError as exc:
-                                raise DispatchError(
+                                reason = (
                                     f"Cannot launch {vendor}: {exc}. From native Codex on Windows, "
                                     "use approval-managed host execution for the user's CLI/login. "
                                     "The script never elevates itself."
-                                ) from exc
+                                )
+                                outcome = "error"
+                                attempt.update(outcome=outcome, reason=reason)
+                                records.add_unobserved(attempt, reason)
+                                raise DispatchError(reason) from exc
                             else:
                                 returned = True
+                                attempt["launched"] = True
                             elapsed = time.monotonic() - started
                             attempt["exit_code"] = result.returncode
                             for stream in ("stdout", "stderr"):
@@ -315,23 +352,22 @@ def run_dispatch(args, *, now=None) -> int:
                                 attempt[stream] = str(log)
                                 attempt[stream + "_encoding"] = encoding
                             if returned:
-                                outcome, reason, message = interpret(vendor, result, last_message)
-                            records.add_runtime_evidence(
-                                attempt, vendor, result.stdout, "fresh", elapsed
-                            )
+                                try:
+                                    outcome, reason, message = interpret(vendor, result, last_message)
+                                except (UnicodeError, ValueError) as exc:
+                                    reason = f"could not interpret {vendor} return: {exc}"
+                                    attempt.update(outcome="error", reason=reason)
+                                    records.add_runtime_evidence(
+                                        attempt, vendor, result.stdout, "fresh", elapsed
+                                    )
+                                    raise
+                            if attempt["launched"]:
+                                records.add_runtime_evidence(
+                                    attempt, vendor, result.stdout, "fresh", elapsed
+                                )
                 attempt.update(outcome=outcome, reason=reason)
                 if "observed" not in attempt:
-                    attempt["observed"] = {
-                        "source": None, "raw": None, "normalized": None,
-                        "normalized_unavailable_reason": reason,
-                        "reported_models": [],
-                        "reported_models_unavailable_reason": reason,
-                        "reported_effort": None,
-                        "reported_effort_unavailable_reason": reason,
-                        "thread_ids": [], "turn_ids": [],
-                        "runtime_cost": None,
-                        "runtime_cost_unavailable_reason": reason,
-                    }
+                    records.add_unobserved(attempt, reason)
                 if outcome == "success":
                     record["actual_vendor"] = vendor
                     if record["fallback_reason"]:
@@ -349,7 +385,7 @@ def run_dispatch(args, *, now=None) -> int:
                         print("seat: On native Windows Codex, use approval-managed host execution.", file=sys.stderr)
             # No later seat can read this attempt's transcript from its tree.
             flush_logs()
-        except (OSError, UnicodeError, CliError, DispatchError) as exc:
+        except (OSError, UnicodeError, ValueError, CliError, DispatchError) as exc:
             record["error"] = str(exc)
             raise
         finally:
@@ -364,6 +400,8 @@ def run_dispatch(args, *, now=None) -> int:
                     streams[source_path].flush()
                     record["result"]["source_output"] = str(source_path)
                     record["result"]["source_output_unavailable_reason"] = None
+                    record["result"]["published_output"] = str(output)
+                    record["result"]["published_output_unavailable_reason"] = None
                 elif record.get("error") or any(
                     attempt["outcome"] == "error" for attempt in record["attempts"]
                 ):
@@ -390,12 +428,14 @@ def parser() -> argparse.ArgumentParser:
                 "Read/Glob/Grep in safe mode (no commands or OS sandbox); put required context "
                 "and probe evidence in the dispatch. --bare is omitted to preserve OAuth. "
                 "From native Windows Codex use approval-managed host execution for login. "
-                "Outputs must be new: verdict, .run.json, and per-vendor .stdout.log/.stderr.log. "
+                "Outputs must be new: verdict, .request.json, .dispatch.bin, .source.bin, "
+                ".run.json, and per-vendor .stdout.log/.stderr.log. "
                 "Sidecar suffixes append to the full --output filename, including its extension. "
                 "Sidecars are reserved before launch; transcript contents appear after the last attempt. "
                 "The run record is flushed before atomic verdict publication, which requires same-filesystem hard links. "
                 "Malformed log bytes use a JSON base64 envelope named by the run record's encoding field. "
-                "Runtime model and usage data remain in the logs. Unknown failures and timeouts "
+                "The run record normalizes runtime model and usage where their scope is known; "
+                "the source-native values remain in the logs. Unknown failures and timeouts "
                 "do not fall back. The launcher does not elevate or buy credits."),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -409,18 +449,18 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--settings-scope", required=True,
                      help="stages and vendor reached by the issue choice or named default")
     cli.add_argument("--retry-of", help="dispatch id of an earlier whole-invocation retry")
-    cli.add_argument("--classification", choices=records.CLASSIFICATIONS, default="ordinary",
+    cli.add_argument("--classification", choices=records.CLASSIFICATIONS, required=True,
                      help="ordinary, protected cold, or terminal judgment")
     cli.add_argument("--output", type=Path,
                      help="result path; defaults to the machine-local dispatch store")
     cli.add_argument("--hold-file", type=Path, default=default_hold_file(), help="shared availability holds")
     cli.add_argument("--timeout-seconds", type=float, default=900, help="timeout per launched seat")
-    for vendor, (model, effort) in DEFAULTS.items():
+    for vendor, model in DEFAULT_MODELS.items():
         cli.add_argument("--" + vendor, help="explicit CLI executable")
-        cli.add_argument("--" + vendor + "-model", default=model, help="requested model")
-        default_effort = None if vendor == "claude" else effort
-        cli.add_argument("--" + vendor + "-effort", default=default_effort,
-                         help="requested reasoning effort; Claude defaults from classification")
+        cli.add_argument("--" + vendor + "-model", help=f"requested model (default: {model})")
+        effort_default = "classification" if vendor == "claude" else DEFAULT_CODEX_EFFORT
+        cli.add_argument("--" + vendor + "-effort",
+                         help=f"requested reasoning effort (default: {effort_default})")
     return cli
 
 

@@ -119,7 +119,10 @@ cold session with this tree's charter. None of those evidence values appears in
 the prompt. On
 Windows it can find the Codex app-bundle executable even when `codex` is absent
 from `PATH`; `--codex PATH` pins an exact executable on any platform, and
-`--timeout-seconds N` changes the default 300-second launch bound.
+`--timeout-seconds N` changes the default 300-second launch bound. The probe
+writes its dispatch bundle to the persistent machine-local
+`.tradecraft/dispatches` store; `--record-output PATH` selects a different new
+bundle path.
 
 **What does not reach you, by design.** Everything under `docs/`, `tools/`, and
 `.github/` is this repository's own machinery. A git-source install clones the

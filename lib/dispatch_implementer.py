@@ -2,7 +2,8 @@
 """Launch or resume a Codex implementer and retain the dispatch evidence.
 
 Usage: python <plugin>/lib/dispatch_implementer.py --dispatch FILE --root DIR
-       --work ISSUE --stage NAME --settings-source SOURCE [--resume SESSION_ID]
+       --work ISSUE --stage NAME --settings-source SOURCE --settings-scope SCOPE
+       [--resume SESSION_ID]
 
 Every invocation is a separate record. ``--resume`` is explicit; ``--last`` and
 ``--ephemeral`` are deliberately absent because either can defeat continuity.
@@ -66,6 +67,10 @@ def _thread_id(events: list[dict[str, object]], stderr: bytes) -> tuple[str | No
 
 
 def run_implementer(args: argparse.Namespace) -> int:
+    model_defaulted = args.model is None
+    effort_defaulted = args.effort is None
+    args.model = args.model or DEFAULT_MODEL
+    args.effort = args.effort or DEFAULT_EFFORT
     root = args.root.expanduser().resolve()
     dispatch = args.dispatch.expanduser().resolve()
     if not root.is_dir():
@@ -109,6 +114,13 @@ def run_implementer(args: argparse.Namespace) -> int:
                 permission_boundary="workspace-write with automatic approval review (--approve-for-me)",
                 root=root, requested_session_id=args.resume, command=command,
                 retry_of=args.retry_of,
+                setting_sources={
+                    "vendor": "dispatch_implementer route",
+                    "model": "dispatch_implementer default" if model_defaulted else args.settings_source,
+                    "effort": "dispatch_implementer default" if effort_defaulted else args.settings_source,
+                    "continuity": f"launcher route ({continuity})",
+                    "permission_boundary": "dispatch_implementer route",
+                },
             )
             request["runtime_version"] = records.runtime_version(executable)
             request["runtime_version_unavailable_reason"] = (
@@ -120,8 +132,10 @@ def run_implementer(args: argparse.Namespace) -> int:
             streams[request_path].flush()
             streams[input_path].write(prompt)
             streams[input_path].flush()
+            streams.mark_ready()
+            print(f"implementer: dispatch {request['dispatch_id']} -> {output}")
             attempt: dict[str, object] = {
-                "vendor": "codex", "launched": True, "exit_code": None,
+                "vendor": "codex", "launched": False, "exit_code": None,
                 "outcome": "error", "reason": "",
                 "stdout": str(stdout_path), "stderr": str(stderr_path),
             }
@@ -131,7 +145,8 @@ def run_implementer(args: argparse.Namespace) -> int:
                 "actual_vendor": "codex", "attempts": [attempt],
                 "result": {"source_output": None,
                            "source_output_unavailable_reason": "no completed final source return",
-                           "published_output": str(output),
+                           "published_output": None,
+                           "published_output_unavailable_reason": "no completed final source return",
                            "assessment": "unassessed"},
             }
             verdict: bytes | None = None
@@ -143,8 +158,14 @@ def run_implementer(args: argparse.Namespace) -> int:
                 except subprocess.TimeoutExpired as exc:
                     result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
                     reason = f"codex timed out after {args.timeout_seconds:g}s"
+                    attempt["launched"] = True
+                except OSError as exc:
+                    result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
+                    reason = f"cannot launch codex: {exc}"
+                    record["error"] = reason
                 else:
                     reason = ""
+                    attempt["launched"] = True
                 elapsed = time.monotonic() - started
                 attempt["exit_code"] = result.returncode
                 for path, raw, name in (
@@ -158,7 +179,10 @@ def run_implementer(args: argparse.Namespace) -> int:
                 completed = any(event.get("type") == "turn.completed" for event in events)
                 failed = any(event.get("type") in {"turn.failed", "error"} for event in events)
                 session_id, session_source = _thread_id(events, result.stderr)
-                records.add_runtime_evidence(attempt, "codex", result.stdout, continuity, elapsed)
+                if attempt["launched"]:
+                    records.add_runtime_evidence(attempt, "codex", result.stdout, continuity, elapsed)
+                else:
+                    records.add_unobserved(attempt, reason)
                 attempt["observed"]["session_id"] = session_id
                 attempt["observed"]["session_id_source"] = session_source or None
                 if args.resume and session_id and session_id != args.resume:
@@ -187,9 +211,14 @@ def run_implementer(args: argparse.Namespace) -> int:
                     streams[source_path].flush()
                     record["result"]["source_output"] = str(source_path)
                     record["result"]["source_output_unavailable_reason"] = None
-                record["revision_after"] = records.git_revision(root)
+                    record["result"]["published_output"] = str(output)
+                    record["result"]["published_output_unavailable_reason"] = None
             finally:
                 record.setdefault("outcome", "error")
+                if not attempt["reason"]:
+                    attempt["reason"] = str(record.get("error") or "implementer did not complete")
+                if "observed" not in attempt:
+                    records.add_unobserved(attempt, attempt["reason"])
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 record["revision_after"] = records.git_revision(root)
                 streams[record_path].write(records.json_bytes(record))
@@ -225,8 +254,8 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--retry-of", help="dispatch id of an earlier whole-invocation retry")
     cli.add_argument("--output", type=Path)
     cli.add_argument("--resume")
-    cli.add_argument("--model", default=DEFAULT_MODEL)
-    cli.add_argument("--effort", default=DEFAULT_EFFORT)
+    cli.add_argument("--model", help=f"requested model (default: {DEFAULT_MODEL})")
+    cli.add_argument("--effort", help=f"requested effort (default: {DEFAULT_EFFORT})")
     cli.add_argument("--codex", help="explicit Codex CLI executable")
     cli.add_argument("--timeout-seconds", type=float, default=3600)
     return cli

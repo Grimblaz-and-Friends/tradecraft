@@ -29,7 +29,7 @@ def test_claude_usage_keeps_models_and_returned_cost_without_double_counting():
         "cacheCreationInputTokens": 10, "outputTokens": 20,
     }
     assert evidence["runtime_cost"] == {
-        "currency": "USD", "amount": 1.25, "source": "total_cost_usd"
+        "currency": "USD", "amount": 1.25, "source": "total_cost_usd", "scope": "invocation"
     }
     assert "total" not in evidence["normalized"]
 
@@ -41,6 +41,19 @@ def test_missing_usage_is_unknown_rather_than_zero():
     assert evidence["normalized"] is None
     assert evidence["raw"] == []
     assert "no turn.completed usage" in evidence["normalized_unavailable_reason"]
+
+
+def test_claude_resume_usage_and_cost_keep_their_scope_unestablished():
+    payload = {
+        "type": "result", "total_cost_usd": 1.25,
+        "modelUsage": {"opus": {"inputTokens": 100, "outputTokens": 20}},
+    }
+    evidence = records.runtime_evidence("claude", json.dumps(payload).encode(), "resume")
+    assert evidence["raw"] == payload["modelUsage"]
+    assert evidence["normalized"] is None
+    assert "resume usage scope is not established" in evidence["normalized_unavailable_reason"]
+    assert evidence["runtime_cost"]["scope"] == "unestablished"
+    assert "resume cost scope is not established" in evidence["runtime_cost_scope_unavailable_reason"]
 
 
 def test_native_begin_finish_and_attachment_survive_source_removal(tmp_path):
@@ -101,6 +114,62 @@ def test_native_completion_refuses_to_overwrite(tmp_path):
     args.input_file.write_bytes(b"dispatch")
     with pytest.raises(records.RecordError, match="refusing existing"):
         records.begin_native(args)
+
+
+def _native_job(tmp_path, outcome):
+    output = tmp_path / f"{outcome}.md"
+    dispatch = tmp_path / f"{outcome}-dispatch.md"
+    dispatch.write_bytes(b"dispatch")
+    begin = argparse.Namespace(
+        output=output, work="issue", stage="stage", settings_source="explicit fixture",
+        settings_scope="stage", vendor="claude", model="opus", effort="xhigh",
+        continuity="fresh", classification="ordinary", session_id=None,
+        permission_boundary="native tool", root=None, retry_of=None,
+        runtime_version="fixture", input_file=dispatch,
+    )
+    records.begin_native(begin)
+    returned = tmp_path / f"{outcome}-return.json"
+    returned.write_bytes(b'{"type":"result","modelUsage":{"opus":{"inputTokens":1}}}')
+    final = tmp_path / f"{outcome}-final.md"
+    final.write_bytes(b"consumer result\n")
+    finish = argparse.Namespace(
+        output=output, vendor="claude", return_file=returned,
+        final_file=final, outcome=outcome,
+    )
+    return output, finish
+
+
+@pytest.mark.parametrize("outcome,launched", [("error", True), ("unavailable", False)])
+def test_native_failed_completion_retains_return_without_publishing(tmp_path, outcome, launched):
+    output, finish = _native_job(tmp_path, outcome)
+    run_path = records.finish_native(finish)
+    run = json.loads(run_path.read_bytes())
+    attempt = run["attempts"][0]
+    assert attempt["launched"] is launched
+    assert Path(attempt["source_return"]).read_bytes().startswith(b'{"type":"result"')
+    assert run["result"]["source_output"] is None
+    assert run["result"]["published_output"] is None
+    assert not output.exists()
+    assert not records.sidecar(output, ".source.bin").exists()
+
+
+def test_native_finish_refuses_collisions_after_a_successful_begin(tmp_path):
+    output, finish = _native_job(tmp_path, "success")
+    collision = records.sidecar(output, ".run.json")
+    collision.write_bytes(b"existing completion")
+    with pytest.raises(records.RecordError, match="colliding dispatch output"):
+        records.finish_native(finish)
+    assert collision.read_bytes() == b"existing completion"
+
+
+def test_attachment_uuid_does_not_need_an_unreachable_existence_guard(monkeypatch, tmp_path):
+    output, finish = _native_job(tmp_path, "success")
+    records.finish_native(finish)
+    source = tmp_path / "attachment.md"
+    source.write_bytes(b"attachment")
+    monkeypatch.setattr(records.uuid, "uuid4", lambda: type("Fixed", (), {"hex": "a" * 32})())
+    metadata = records.attach_file(output, source, "product")
+    assert metadata.is_file()
 
 
 def test_native_output_inside_recipient_root_is_rejected(tmp_path):
