@@ -226,8 +226,8 @@ def write_new_bundle(path: Path, bundle: dict[str, Any]) -> bytes:
 
 
 def replay_command(path: Path) -> str:
-    """Print the documented relative invocation in the active host's shell syntax."""
-    arguments = ["python", "../scripts/external_pass.py", "verify", str(path)]
+    """Print an invocation that resolves from the report reader's directory."""
+    arguments = ["python", str(Path(__file__).resolve()), "verify", str(path)]
     if os.name == "nt":
         return subprocess.list2cmdline(arguments)
     return shlex.join(arguments)

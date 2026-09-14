@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -13,6 +14,7 @@ import pytest
 
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "external_pass.py"
+ROOT = SCRIPT.parents[3]
 
 spec = importlib.util.spec_from_file_location("external_pass", SCRIPT)
 external_pass = importlib.util.module_from_spec(spec)
@@ -112,6 +114,28 @@ def test_collect_accepts_empty_and_single_page_sources(monkeypatch, tmp_path, ca
     output, _, captured = collect(monkeypatch, tmp_path, capsys, data)
     assert output.is_file()
     assert "total: 1" in captured.out
+
+
+def test_receipt_replay_command_names_the_script_a_reader_can_run_from_the_root(
+        tmp_path):
+    """A receipt travels to reports, whose reader is not in references/."""
+    missing = tmp_path / "does-not-exist.json"
+    command = external_pass.replay_command(missing)
+    assert str(SCRIPT.resolve()) in command
+    assert "../scripts/external_pass.py" not in command
+
+    # The named script reaches the command's own diagnostic from the repository
+    # root, instead of Python failing before the verifier starts.
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT.resolve()), "verify", str(missing)],
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 1
+    assert result.stderr.startswith("external-pass: cannot read bundle")
 
 
 @pytest.mark.parametrize("kind", [
