@@ -420,7 +420,7 @@ CELL_BODY_CEILING_CHARS = {
     "skills/persist-changes/SKILL.md": 5_549,
     "docs/cells/landing/SKILL.md": 3_194,
     "docs/cells/siting/SKILL.md": 4_034,
-    "skills/substrate/SKILL.md": 3_046,
+    "skills/substrate/SKILL.md": 2_922,
 }
 
 
