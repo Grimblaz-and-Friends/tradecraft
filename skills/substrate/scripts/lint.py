@@ -25,21 +25,28 @@ _HARNESS_NAMES = (
     "PLUGIN_ROOT|PLUGIN_DATA|CODEX_HOME"
 )
 HARNESS_TOKENS = re.compile(
-    rf"\$\{{?(?:{_HARNESS_NAMES})\}}?"
-    rf"|(?i:\$env:(?:{_HARNESS_NAMES}))"
+    rf"\$\{{(?:{_HARNESS_NAMES})\}}"
+    rf"|\$(?:{_HARNESS_NAMES})(?!\w)"
+    rf"|(?i:\$env:(?:{_HARNESS_NAMES}))(?!\w)"
     rf"|(?i:%(?:{_HARNESS_NAMES})%)"
 )
 
 
 def _read_text(path: Path) -> str | None:
     """Return decoded text, or None for binary and unreadable files."""
+    text, _ = _read_text_result(path)
+    return text
+
+
+def _read_text_result(path: Path) -> tuple[str | None, OSError | None]:
+    """Return decoded text plus the read error, if an OS error prevented it."""
     try:
         data = path.read_bytes()
-    except OSError:
-        return None
+    except OSError as error:
+        return None, error
     if b"\0" in data[:1024]:
-        return None
-    return data.decode("utf-8-sig", errors="replace")
+        return None, None
+    return data.decode("utf-8-sig", errors="replace"), None
 
 
 def _iter_files(base: Path):
@@ -484,12 +491,18 @@ def check_harness_tokens(root: Path, contract_roots: Iterable[Path] | None = Non
                 paths.extend(_iter_files(candidate))
     findings = []
     for path in paths:
-        text = _read_text(path)
-        if text is None:
-            continue
         try:
             rel_file = path.relative_to(root).as_posix()
         except ValueError:
+            continue
+        text, error = _read_text_result(path)
+        if error is not None:
+            findings.append(
+                f"harness-token: {rel_file} could not be read ({error}) -- it is unchecked, "
+                f"and a check that skips in silence cannot be told apart from a clean tree"
+            )
+            continue
+        if text is None:
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
             for match in HARNESS_TOKENS.finditer(line):

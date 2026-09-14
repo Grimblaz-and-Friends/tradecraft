@@ -209,6 +209,11 @@ def test_git_ignored_violation_is_not_judged(tmp_path):
         ("$" + "CLAUDE_" + "PLUGIN_ROOT", 1),
         ("$" + "{PLUGIN_" + "ROOT}", 1),
         ("$" + "CODEX_" + "HOME", 1),
+        ("$" + "PLUGIN_ROOT" + "_SUFFIX", 0),
+        ("$" + "{CODEX_HOME" + "_BACKUP}", 0),
+        ("$" + "env:CLAUDE_CONFIG_DIR" + "_EXTRA", 0),
+        ("$" + "{CLAUDE_PLUGIN_ROOT}", 1),
+        ("$" + "CLAUDE_PROJECT_DIR", 1),
     ],
 )
 def test_harness_token_spellings_keep_their_polarities(tmp_path, spelling, expected):
@@ -251,6 +256,28 @@ def test_read_helper_answers_none_for_missing_files_and_emitted_ascii_reports_un
     findings = lint.check_emitted_ascii(tmp_path)
     assert len(findings) == 1
     assert "could not be read" in findings[0] and "module.py" in findings[0]
+
+
+def test_harness_tokens_report_unreadable_contracts_but_leave_binary_contracts_skipped(
+        tmp_path, monkeypatch):
+    unreadable = tmp_path / "unreadable.md"
+    _write(unreadable, "ordinary contract text\n")
+    binary = tmp_path / "binary.contract"
+    binary.write_bytes(b"data\0" + ("$" + "CLAUDE_PROJECT_DIR").encode("ascii"))
+    real_read_bytes = Path.read_bytes
+
+    def denied(path, *args, **kwargs):
+        if path == unreadable:
+            raise PermissionError(13, "Permission denied")
+        return real_read_bytes(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+
+    findings = lint.check_harness_tokens(tmp_path)
+
+    assert len(findings) == 1, findings
+    assert "could not be read" in findings[0] and "unreadable.md" in findings[0]
+    assert "binary.contract" not in findings[0]
 
 
 def test_traveling_tests_run_after_relocation(tmp_path):
