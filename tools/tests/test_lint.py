@@ -207,6 +207,18 @@ def test_a_legacy_settling_row_keeps_the_brief_key(tmp_path):
     assert lint.check_settling_index(tmp_path) == []
 
 
+def test_a_legacy_settling_row_missing_both_link_keys_names_brief(tmp_path):
+    make_clean_tree(tmp_path)
+    row = _settling_row("brief")
+    del row["brief"]
+    _write_settling(tmp_path, row)
+    assert lint.check_settling_index(tmp_path) == [
+        "settling-index: docs/settling.jsonl:1 is missing brief. Rows through "
+        f"nonblank position {lint.SETTLING_ROWS_BRIEF_GRANDFATHERED} require "
+        "that link key"
+    ]
+
+
 def test_the_first_post_boundary_settling_row_uses_the_specific_key(
         tmp_path, monkeypatch):
     make_clean_tree(tmp_path)
@@ -225,8 +237,11 @@ def test_a_post_boundary_brief_only_row_names_the_missing_specific_key(
     monkeypatch.setattr(lint, "SETTLING_ROWS_BRIEF_GRANDFATHERED", 1)
     _write_settling(tmp_path, _settling_row("brief"), _settling_row("brief"))
     findings = lint.check_settling_index(tmp_path)
-    assert len(findings) == 1
-    assert "implementation_brief" in findings[0]
+    assert findings == [
+        "settling-index: docs/settling.jsonl:2 carries brief but is missing "
+        "implementation_brief. The settling link is renamed on rows after "
+        "nonblank position 1; use implementation_brief instead of brief"
+    ]
 
 
 def test_blank_lines_do_not_move_the_settling_key_boundary(tmp_path, monkeypatch):
@@ -2429,7 +2444,7 @@ def test_grandfathered_rows_need_neither(tmp_path, monkeypatch):
 
 def test_the_obligation_cannot_be_dodged_by_the_date_written(tmp_path, monkeypatch):
     """It was gated on the row's own date first. An experience session found
-    that hole by reaching for "today" before re-reading its implementation brief: one day
+    that hole by reaching for "today" before re-reading its brief: one day
     early and both fields go optional, silently, in a file nobody may edit.
     Position is not typo-able."""
     make_clean_tree(tmp_path)

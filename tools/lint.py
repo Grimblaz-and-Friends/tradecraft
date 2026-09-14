@@ -1068,9 +1068,9 @@ FACING_FIELDS = ("artifact", "apparatus")
 #
 # Grandfathered by POSITION, not by date. A date cutoff was written first and an
 # experience session found the hole in it within eight tool calls: the session's
-# hand reached for "today" before re-reading its implementation brief, and a row dated one day
+# hand reached for "today" before re-reading its brief, and a row dated one day
 # early takes both new fields as optional, passes lint in silence, and lands
-# pre-schema in a file nobody may edit. It got it right by copying its implementation brief,
+# pre-schema in a file nobody may edit. It got it right by copying its brief,
 # not by understanding. Position cannot be missed by a typo -- the rows that
 # existed when this landed are exempt, everything appended after is not.
 REVIEW_ROWS_GRANDFATHERED = 20
@@ -5312,11 +5312,12 @@ def check_settling_index(root: Path) -> list[str]:
     invalid JSON landed green while the identical append to `admissions.jsonl`
     was reported. That asymmetry is what this closes.
 
-    **Required keys, not exact keys.** A row may carry more -- the first one
-    carries `set`, `brief`, `history` and `notes` beyond the required list --
-    because a later session with more to record should not have to change a
-    guard first. What it may not do is omit what a reader needs to find the
-    row's own sources.
+    **Required keys, not exact keys.** Nonblank rows at positions through
+    `SETTLING_ROWS_BRIEF_GRANDFATHERED` require `brief` alongside the common
+    list below. A row may carry more -- the first one carries `set`, `history`,
+    `notes` and `reversed` beyond that list -- because a later session with
+    more to record should not have to change a guard first. What it may not do
+    is omit what a reader needs to find the row's own sources.
 
     **The implementation-brief link changes forward-only by nonblank row
     position.** The 26 rows at ed69ada keep `brief`; every row appended after
@@ -5360,11 +5361,26 @@ def check_settling_index(root: Path) -> list[str]:
         )
         missing = [key for key in (*required, link_key) if key not in row]
         if missing:
-            findings.append(
-                f"settling-index: docs/settling.jsonl:{number} is missing "
-                f"{', '.join(missing)}. A required figure nobody can supply is "
-                f"written as null, never omitted -- the two say different things"
-            )
+            if missing == ["brief"]:
+                findings.append(
+                    f"settling-index: docs/settling.jsonl:{number} is missing "
+                    f"brief. Rows through nonblank position "
+                    f"{SETTLING_ROWS_BRIEF_GRANDFATHERED} require that link key"
+                )
+            elif missing == ["implementation_brief"] and "brief" in row:
+                findings.append(
+                    f"settling-index: docs/settling.jsonl:{number} carries brief "
+                    f"but is missing implementation_brief. The settling link is "
+                    f"renamed on rows after nonblank position "
+                    f"{SETTLING_ROWS_BRIEF_GRANDFATHERED}; use "
+                    f"implementation_brief instead of brief"
+                )
+            else:
+                findings.append(
+                    f"settling-index: docs/settling.jsonl:{number} is missing "
+                    f"{', '.join(missing)}. A required figure nobody can supply is "
+                    f"written as null, never omitted -- the two say different things"
+                )
     return findings
 
 
