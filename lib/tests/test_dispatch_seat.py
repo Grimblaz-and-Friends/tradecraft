@@ -29,11 +29,16 @@ def job(tmp_path, monkeypatch):
     args = seat.parser().parse_args([
         "--dispatch", str(dispatch), "--root", str(root), "--vendor", "claude",
         "--own-vendor", "codex", "--output", str(tmp_path / "verdict.md"),
+        "--work", "issue-592", "--stage", "cold-read",
+        "--classification", "ordinary",
+        "--settings-source", "issuecomment-5655702442",
+        "--settings-scope", "Codex turns after the artifact",
         "--hold-file", str(tmp_path / "holds"), "--timeout-seconds", "10",
     ])
     def resolver(vendor, explicit):
         return [sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)]
     monkeypatch.setattr(seat, "resolve_command", resolver)
+    monkeypatch.setattr(seat.records, "runtime_version", lambda *_: "fixture-cli 1.0")
     return args, scenario
 
 
@@ -62,7 +67,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor):
     assert Path(observed["cwd"]) == args.root.resolve()
     flags = observed["argv"]
     if vendor == "claude":
-        assert flags == ["-p", "--model", "opus", "--effort", "max", "--output-format", "json",
+        assert flags == ["-p", "--model", "opus", "--effort", "xhigh", "--output-format", "json",
                          "--no-session-persistence", "--safe-mode", "--tools", "Read,Glob,Grep",
                          "--allowedTools", "Read,Glob,Grep", "--permission-mode", "dontAsk", "--strict-mcp-config"]
     else:
@@ -73,6 +78,30 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor):
         assert not Path(last).exists()
     assert args.output.read_bytes().startswith(b"would not\n")
     assert len(record(args)["attempts"]) == 1
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    assert request["work"] == "issue-592"
+    assert request["stage"] == "cold-read"
+
+
+@pytest.mark.parametrize("classification,expected", [
+    ("ordinary", "xhigh"), ("cold", "max"), ("terminal", "max"),
+])
+def test_claude_effort_defaults_from_judgment_classification(job, classification, expected):
+    args, _ = job
+    args.classification = classification
+    assert seat.run_dispatch(args) == 0
+    flags = seen(args, "claude")["argv"]
+    assert flags[flags.index("--effort") + 1] == expected
+    assert record(args)["attempts"][0]["classification"] == classification
+
+
+def test_explicit_claude_effort_overrides_classification(job):
+    args, _ = job
+    args.classification = "cold"
+    args.claude_effort = "medium"
+    assert seat.run_dispatch(args) == 0
+    flags = seen(args, "claude")["argv"]
+    assert flags[flags.index("--effort") + 1] == "medium"
 
 
 @pytest.mark.parametrize("vendor", seat.VENDORS)
@@ -110,7 +139,13 @@ def test_unavailable_falls_back_once_and_records_reason(job, monkeypatch, vendor
     assert log["fallback_reason"]
     assert base64.b64decode(seen(args, args.own_vendor)["stdin"]) == args.dispatch.read_bytes()
     fallback = log["attempts"][1]
-    assert (fallback["model"], fallback["effort"]) == seat.DEFAULTS[args.own_vendor]
+    expected_effort = (
+        seat.CLAUDE_EFFORTS[args.classification]
+        if args.own_vendor == "claude" else seat.DEFAULT_CODEX_EFFORT
+    )
+    assert (fallback["model"], fallback["effort"]) == (
+        seat.DEFAULT_MODELS[args.own_vendor], expected_effort
+    )
     assert (args.hold_file.read_bytes() if args.hold_file.exists() else None) == before
 
 
@@ -376,14 +411,17 @@ def test_fallback_cannot_read_discarded_transcript_but_caller_can(job, monkeypat
     )
     monkeypatch.setattr(seat, "resolve_command", lambda vendor, explicit: [
         sys.executable, "-c", first if vendor == "claude" else second])
-    for inside in (True, False):
-        # Separate roots prevent a completed earlier bundle becoming input.
-        args.root = args.root.parent / ("inside" if inside else "outside")
-        args.root.mkdir()
-        args.output = (args.root if inside else args.root.parent) / ("in.md" if inside else "out.md")
-        assert seat.run_dispatch(args) == 0
-        assert args.output.read_text(encoding="utf-8").endswith("False")
-        assert b"DISCARDED_PARTIAL_VERDICT" in seat.sidecar(args.output, ".claude.stdout.log").read_bytes()
+    args.root = args.root.parent / "recipient"
+    args.root.mkdir()
+    args.output = args.root / "in.md"
+    with pytest.raises(seat.records.RecordError, match="outside the recipient root"):
+        seat.run_dispatch(args)
+    assert not list(args.root.glob("seen-*"))
+
+    args.output = args.root.parent / "out.md"
+    assert seat.run_dispatch(args) == 0
+    assert args.output.read_text(encoding="utf-8").endswith("False")
+    assert b"DISCARDED_PARTIAL_VERDICT" in seat.sidecar(args.output, ".claude.stdout.log").read_bytes()
 
 
 def test_timeout_stops_a_started_descendant(job, monkeypatch):
@@ -428,7 +466,13 @@ def test_record_failure_never_publishes_a_verdict(job, monkeypatch, failure):
     def opened(path, mode="r", *a, **kw):
         stream = original(path, mode, *a, **kw)
         return FailingRecord(stream) if path == record_path and mode == "xb" else stream
-    monkeypatch.setattr(Path, "open", opened)
+    if failure == "close":
+        monkeypatch.setattr(Path, "open", opened)
+    else:
+        monkeypatch.setattr(
+            seat.records, "finalize_reserved_json",
+            lambda *_args: (_ for _ in ()).throw(OSError(f"record {failure} failed")),
+        )
     with pytest.raises(OSError, match="record"):
         seat.run_dispatch(args)
     assert not args.output.exists()
@@ -440,7 +484,7 @@ def test_partial_verdict_write_is_not_published(job, monkeypatch):
         with path.open("xb") as stream:
             stream.write(content[:3])
         raise OSError("verdict write failed")
-    monkeypatch.setattr(seat, "write_bytes", partial)
+    monkeypatch.setattr(seat.records, "write_bytes", partial)
     with pytest.raises(OSError, match="verdict write failed"):
         seat.run_dispatch(args)
     assert not args.output.exists()
@@ -448,20 +492,25 @@ def test_partial_verdict_write_is_not_published(job, monkeypatch):
     assert record(args)["attempts"][0]["outcome"] == "success"
 
 
-def test_verdict_publication_follows_complete_record_and_refuses_a_race(job, monkeypatch):
+def test_verdict_publication_race_is_recorded_without_a_false_success(job, monkeypatch):
     args, _ = job
     link = os.link
     def raced(source, destination):
         if source == args.output:
             return link(source, destination)
-        assert record(args)["actual_vendor"] == "claude"
+        assert seat.sidecar(args.output, ".run.json").read_bytes() == b""
         assert Path(source).read_bytes()
         destination.write_bytes(b"another caller")
         link(source, destination)
-    monkeypatch.setattr(seat.os, "link", raced)
+    monkeypatch.setattr(seat.records.os, "link", raced)
     with pytest.raises(FileExistsError):
         seat.run_dispatch(args)
     assert args.output.read_bytes() == b"another caller"
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert logged["result"]["published_output"] is None
+    source = Path(logged["result"]["source_output"])
+    assert source.read_bytes().startswith(b"would not\n")
     assert not list(args.output.parent.glob(".tradecraft-publish-*"))
 
 
@@ -476,3 +525,102 @@ def test_unsupported_atomic_publication_fails_before_usage(job, monkeypatch):
     assert not args.output.exists()
     assert not seat.sidecar(args.output, ".run.json").exists()
     assert not list(args.output.parent.glob(".tradecraft-publish-*"))
+
+
+def test_classification_is_required_by_the_cli(job):
+    args, _ = job
+    argv = [
+        "--dispatch", str(args.dispatch), "--root", str(args.root),
+        "--vendor", "claude", "--own-vendor", "codex",
+        "--work", "issue", "--stage", "cold-read",
+        "--settings-source", "brief", "--settings-scope", "cold seat",
+    ]
+    with pytest.raises(SystemExit):
+        seat.parser().parse_args(argv)
+
+
+def test_skipped_attempt_has_unknown_elapsed_with_reason(job):
+    args, _ = job
+    args.hold_file.write_bytes(b"claude 2026-09-13T00:00:00Z\ncodex 2026-09-13T00:00:00Z\n")
+    assert seat.run_dispatch(args, now=NOW) == 1
+    for attempt in record(args)["attempts"]:
+        assert attempt["elapsed_seconds"] is None
+        assert attempt["elapsed_seconds_unavailable_reason"] == attempt["reason"]
+
+
+def test_interpretation_failure_still_completes_the_attempt(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(
+        seat, "interpret", lambda *_: (_ for _ in ()).throw(UnicodeError("bad final text"))
+    )
+    with pytest.raises(UnicodeError, match="bad final text"):
+        seat.run_dispatch(args)
+    logged = record(args)
+    attempt = logged["attempts"][0]
+    assert logged["error"] == "bad final text"
+    assert attempt["reason"] == "could not interpret claude return: bad final text"
+    assert attempt["observed"]["raw"] is not None
+    assert attempt["elapsed_seconds"] >= 0
+
+
+def test_fallback_cannot_read_primary_transcript_until_it_finishes(job, monkeypatch):
+    args, _ = job
+    configure(job, {"claude": {"message": "Not logged in"}})
+    original = seat.run_process
+    calls = 0
+    def checked(command, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            assert seat.sidecar(args.output, ".claude.stdout.log").read_bytes() == b""
+            assert seat.sidecar(args.output, ".claude.stderr.log").read_bytes() == b""
+        return original(command, **kwargs)
+    monkeypatch.setattr(seat, "run_process", checked)
+    assert seat.run_dispatch(args) == 0
+    assert calls == 2
+    assert seat.sidecar(args.output, ".claude.stdout.log").read_bytes()
+
+
+def test_setting_sources_name_classification_and_default_model(job):
+    args, _ = job
+    assert seat.run_dispatch(args) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    sources = request["requested"]["sources"]
+    assert sources["classification"] == "issuecomment-5655702442"
+    assert sources["model"] == "dispatch_seat default"
+    assert sources["effort"] == "classification mapping"
+
+
+def test_failed_dispatch_prints_its_id_and_bundle_path(job, capsys):
+    args, _ = job
+    configure(job, {"claude": {"exit": 2, "stderr": "bad option"}})
+    assert seat.run_dispatch(args) == 1
+    logged = record(args)
+    assert logged["result"]["published_output"] is None
+    output = capsys.readouterr().out
+    assert logged["dispatch_id"] in output
+    assert str(args.output) in output
+
+
+def test_explicit_empty_model_is_rejected_without_a_bundle(job):
+    args, _ = job
+    args.claude_model = ""
+    with pytest.raises(seat.DispatchError, match="claude model and effort must be nonempty"):
+        seat.run_dispatch(args)
+    assert not list(args.output.parent.glob("verdict.md*"))
+
+
+def test_publication_failure_is_recorded_without_a_false_published_path(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(
+        seat.records, "publish_output",
+        lambda *_args: (_ for _ in ()).throw(OSError("hard link failed")),
+    )
+    with pytest.raises(OSError, match="hard link failed"):
+        seat.run_dispatch(args)
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert logged["attempts"][0]["outcome"] == "success"
+    assert logged["result"]["published_output"] is None
+    assert "hard link failed" in logged["result"]["published_output_unavailable_reason"]
+    assert not args.output.exists()

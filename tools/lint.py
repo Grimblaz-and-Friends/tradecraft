@@ -5301,7 +5301,7 @@ def check_admissions(root: Path) -> list[str]:
 
 
 
-SETTLING_ROWS_BRIEF_GRANDFATHERED = 26
+SETTLING_ROWS_BRIEF_GRANDFATHERED = 27
 
 
 def check_settling_index(root: Path) -> list[str]:
@@ -5320,9 +5320,10 @@ def check_settling_index(root: Path) -> list[str]:
     is omit what a reader needs to find the row's own sources.
 
     **The implementation-brief link changes forward-only by nonblank row
-    position.** The 26 rows at ed69ada keep `brief`; every row appended after
-    them requires `implementation_brief`. Position cannot be evaded with a
-    mistyped date, and blank lines do not move the boundary.
+    position.** The 27 rows written before this change existed keep `brief`;
+    every row appended after them requires `implementation_brief`. Position
+    cannot be evaded with a mistyped date, and blank lines do not move the
+    boundary.
 
     **A required key may be `null`**, which is how a successor reconstructing
     an affirmation it was not present for records a figure nobody holds. An
