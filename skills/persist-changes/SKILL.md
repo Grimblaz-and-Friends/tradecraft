@@ -23,7 +23,7 @@ python scripts/persist.py -m "<message>" <path> [<path> ...]
 
 It operates on **the repository containing your current directory**, and **paths are resolved from that repository's root** no matter where you invoke it from.
 
-What the script refuses, and why, is below; each refusal is said again on the line where it stops.
+What the script refuses, and why, is below; each refusal is said again on the line where it stops. [D-627]
 
 - **Broad staging is refused, not just avoided**: name the files or directories. Broad staging committed compiled cache artifacts in tradecraft's own skeleton commit ([30fb484](https://github.com/Grimblaz-and-Friends/tradecraft/commit/30fb48482448ded6f45ccd9a2eb6ddb413bdee10) shipped `__pycache__` files).
 - **A pre-loaded index is refused**: silently inheriting someone else's staged changes is how unrelated work ends up in your commit.
