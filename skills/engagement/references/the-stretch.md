@@ -1,10 +1,10 @@
 # Holding the unattended stretch
 
-**Loaded when** coordinating the stretch from an affirmed brief to release readiness, taking one of its dispatched stages, staffing a judging seat, or preparing its reports and records.
+**Loaded when** coordinating the stretch from an affirmed implementation brief to release readiness, taking one of its dispatched stages, staffing a judging seat, or preparing its reports and records.
 
 ## The holder and the implementer
 
-**The session that holds the affirmed brief owns the whole stretch for that change.** It dispatches every stage and receives every return, remaining the owner's counterpart through the reviewed pull request and its posted report. One holding session per change, never one for many, because its context grows with every stage. It edits no file in the implementation tree and takes no judging seat.
+**The session that holds the affirmed implementation brief owns the whole stretch for that change.** It dispatches every stage and receives every return, remaining the owner's counterpart through the reviewed pull request and its posted report. One holding session per change, never one for many, because its context grows with every stage. It edits no file in the implementation tree and takes no judging seat.
 
 **The material handing a party its job states the tools and permission or approval route it must be started with to perform it**, because instructions cannot supply a capability the launch withholds. [D-597]
 
@@ -14,7 +14,7 @@
 
 ## Staffing judgment
 
-**Every judging seat is a fresh dispatch on the other vendor from the implementer's**, with only the history its instrument permits: the artifact's cold reader, review seats, defense, judge, and the experience session's consumer. By default Claude holds the brief, Codex implements, and Claude staffs judging seats. The comparison is with the implementer, whatever vendor holds the brief. Each launch names its model and reasoning effort; freshness does not erase the predecessor evidence a role is meant to receive.
+**Every judging seat is a fresh dispatch on the other vendor from the implementer's**, with only the history its instrument permits: the artifact's cold reader, review seats, defense, judge, and the experience session's consumer. By default Claude holds the implementation brief, Codex implements, and Claude staffs judging seats. The comparison is with the implementer, whatever vendor holds the implementation brief. Each launch names its model and reasoning effort; freshness does not erase the predecessor evidence a role is meant to receive.
 
 **The experience consumer also runs on the runtime the change's users run.** Both requirements apply. Where no qualifying consumer can be supplied, record the missing use and why under the instrument's omission route.
 
