@@ -173,6 +173,29 @@ def test_script_runs_from_the_relocated_root(script: Path, installed: Path):
             ) from None
 
 
+def test_substrate_lint_runs_against_an_external_target_from_the_relocated_zone(
+        installed: Path, tmp_path):
+    """The portable guard has no dependency on this repository's other zone."""
+    script = installed / "skills" / "substrate" / "scripts" / "lint.py"
+    target = tmp_path / "target"
+    source = target / "src" / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 'ASCII'\n", encoding="utf-8")
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+
+    result = subprocess.run(
+        [sys.executable, str(script), str(target)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        env=_clean_env(),
+        cwd=str(unrelated),
+    )
+
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert result.stdout.decode("ascii").endswith("lint: 0 finding(s)\n")
+
+
 def test_no_shipped_skill_names_a_harness_token(installed: Path):
     """The contract that broke, stated where a reader of the tests will see it."""
     token = lint.HARNESS_TOKENS

@@ -110,6 +110,13 @@ def make_clean_tree(root: Path) -> None:
     roster.write(root)
 
 
+def _zoned(root: Path, rel: str, body: str) -> None:
+    """Write a module in the repository-shaped fixture population."""
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
 def _wire_charter(root: Path) -> None:
     """The single charter source, wired the way the repository carries it."""
     charter = root / "skills" / "charter"
@@ -172,6 +179,31 @@ def _write_marketplace(root: Path, source) -> None:
 def test_clean_tree_passes(tmp_path):
     make_clean_tree(tmp_path)
     assert lint.run(tmp_path) == []
+
+
+def test_harness_adapter_uses_shipped_and_repo_cell_contract_populations(tmp_path):
+    """The wrapper supplies scope; the shipped predicate supplies detection."""
+    make_clean_tree(tmp_path)
+    token = "$" + "{CLAUDE_" + "PLUGIN_ROOT}"
+    _write_cell(
+        tmp_path / "skills" / "example-skill",
+        "The shipped contract names " + token + ".\n",
+    )
+    cell = tmp_path / "docs" / "cells" / "repo-cell"
+    cell.mkdir(parents=True)
+    (cell / "SKILL.md").write_text("The local contract names " + token + ".\n", encoding="utf-8")
+    history = tmp_path / "docs" / "history.md"
+    history.write_text("Frozen history names " + token + ".\n", encoding="utf-8")
+
+    findings = lint.check_harness_tokens(tmp_path)
+
+    assert len(findings) == 2, findings
+    assert all("history.md" not in finding for finding in findings)
+
+
+def test_this_repository_names_its_streams_at_every_launch():
+    """The wrapper runs the shipped stream predicate against this repository."""
+    assert lint.check_subprocess_streams(Path(__file__).resolve().parents[2]) == []
 
 
 # --- settling index -------------------------------------------------------
@@ -344,41 +376,6 @@ def test_marketplace_source_reports_a_failed_read(tmp_path, monkeypatch):
     assert "cannot be read" in findings[0] and "probe denied" in findings[0]
 
 
-def test_harness_token_fires_on_powershell_and_cmd_spellings_any_case(tmp_path):
-    """`$env:` and `%VAR%` are case-insensitive in the shells that read them.
-
-    The first widening matched `$[Ee]nv:` only, so `$ENV:` -- an ordinary
-    spelling on the platform half of CI runs on -- slipped both guards.
-    """
-    make_clean_tree(tmp_path)
-    skill = tmp_path / "skills" / "example-skill"
-    _write_cell(skill, "python $ENV:CLAUDE_PLUGIN_ROOT/scripts/run.py" + chr(10)
-        + "python $eNv:CLAUDE_PLUGIN_ROOT/scripts/run.py" + chr(10)
-        + "python %claude_plugin_root%/scripts/run.py" + chr(10))
-    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
-    assert len(findings) == 3
-
-
-def test_harness_token_case_insensitivity_does_not_reach_the_posix_form(tmp_path):
-    """`${VAR}` is case-sensitive in POSIX shells, so a blanket flag would
-    fire on a genuinely different lowercase name."""
-    make_clean_tree(tmp_path)
-    skill = tmp_path / "skills" / "example-skill"
-    _write_cell(skill, "python ${claude_plugin_root}/scripts/run.py" + chr(10))
-    assert [f for f in lint.run(tmp_path) if "harness-token" in f] == []
-
-
-def test_harness_token_covers_the_other_path_roots(tmp_path):
-    """Only path roots belong here: a variable that names a port or an
-    entrypoint cannot make a calling contract non-portable."""
-    make_clean_tree(tmp_path)
-    skill = tmp_path / "skills" / "example-skill"
-    _write_cell(skill, "python ${CLAUDE_CONFIG_DIR}/scripts/run.py" + chr(10)
-        + "python $CLAUDE_WORKING_DIR/scripts/run.py" + chr(10))
-    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
-    assert len(findings) == 2
-
-
 def test_doctrine_import_fires_when_agents_md_stops_importing_the_charter(tmp_path):
     make_clean_tree(tmp_path)
     agents = tmp_path / "AGENTS.md"
@@ -475,47 +472,6 @@ def test_sideways_dep_names_the_directory_it_came_from(tmp_path):
     )
     findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
     assert len(findings) == 1 and "from hooks/" in findings[0]
-
-
-def test_harness_token_fires_on_a_shipped_calling_contract(tmp_path):
-    make_clean_tree(tmp_path)
-    skill = tmp_path / "skills" / "example-skill"
-    _write_cell(skill, 'python "${CLAUDE_PLUGIN_ROOT}/skills/example-skill/scripts/run.py"\n')
-    findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "harness-token" in findings[0]
-
-
-def test_harness_token_fires_on_the_bare_and_codex_forms(tmp_path):
-    make_clean_tree(tmp_path)
-    skill = tmp_path / "skills" / "example-skill"
-    _write_cell(skill, "python $CLAUDE_PLUGIN_ROOT/scripts/run.py\n"
-        "python ${PLUGIN_ROOT}/scripts/run.py\n"
-        "python $CODEX_HOME/scripts/run.py\n")
-    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
-    assert len(findings) == 3
-
-
-def test_harness_token_has_no_hook_exemption(tmp_path):
-    """A hook fallback would fork the adoption flow, so it gets no exception."""
-    make_clean_tree(tmp_path)
-    hooks = tmp_path / "hooks"
-    hooks.mkdir()
-    (hooks / "hooks.json").write_text(
-        '{"hooks": {"SessionStart": [{"matcher": "*", "hooks": [{"type": '
-        '"command", "command": "cat ${CLAUDE_PLUGIN_ROOT}/skills/charter/SKILL.md"'
-        "}]}]}}\n",
-        encoding="utf-8",
-    )
-    findings = [f for f in lint.run(tmp_path) if "harness-token" in f]
-    assert len(findings) == 1
-
-
-def test_harness_token_stays_quiet_on_the_relative_contract(tmp_path):
-    make_clean_tree(tmp_path)
-    skill = tmp_path / "skills" / "example-skill"
-    _write_cell(skill, "The script sits beside this file at scripts/run.py; invoke it by that\n"
-        "path resolved against the directory this file is in.\n")
-    assert lint.run(tmp_path) == []
 
 
 def test_zone_wall_fires_on_rooted_reference(tmp_path):
@@ -3084,620 +3040,6 @@ def test_cell_frontmatter_checks_cells_other_than_the_charter(tmp_path):
     assert len(findings) == 1 and "example-skill" in findings[0], findings
 
 
-# --- check_emitted_ascii ---------------------------------------------------
-#
-# Both polarities, because a guard that blocks lawful work fails as hard as one
-# that passes unlawful work -- and here the lawful case is the interesting one:
-# this repository's prose style is full of em dashes, and only the ones that
-# can reach a stream are the rule's business.
-#
-# The fixtures build their non-ASCII character with chr() rather than writing
-# it, so this file stays lawful under the check it is testing.
-
-EM_DASH = chr(0x2014)
-
-
-def _py(root: Path, name: str, body: str) -> None:
-    (root / name).write_text(body, encoding="utf-8")
-
-
-def test_emitted_ascii_catches_a_message_that_cannot_survive_capture(tmp_path):
-    """The failing case from #147: a guard's own message, garbled when piped."""
-    _py(tmp_path, "guard.py",
-        "def fail():" + chr(10)
-        + "    print('version-bump: 1 file changed " + EM_DASH + " bump the version')" + chr(10))
-    findings = [f for f in lint.check_emitted_ascii(tmp_path) if "emitted-ascii" in f]
-    assert len(findings) == 1, findings
-    assert "guard.py:2" in findings[0]
-    assert "U+2014" in findings[0] and "EM DASH" in findings[0]
-    assert findings[0].isascii(), "the finding cannot itself carry what it forbids"
-
-
-def test_emitted_ascii_leaves_docstrings_and_comments_alone(tmp_path):
-    """Neither reaches a stream, so the house style is free in both."""
-    _py(tmp_path, "prose.py",
-        '"""A module docstring ' + EM_DASH + ' with an em dash."""' + chr(10)
-        + "# A comment " + EM_DASH + " also with one." + chr(10)
-        + "def f():" + chr(10)
-        + '    """A function docstring ' + EM_DASH + ' and another."""' + chr(10)
-        + "    return 1" + chr(10))
-    assert lint.check_emitted_ascii(tmp_path) == []
-
-
-def test_emitted_ascii_catches_the_escaped_form(tmp_path):
-    """The check reads decoded values, so writing the escape does not evade it.
-
-    This is not hypothetical: one of the messages this change rewrote was
-    written as the six-character escape and was invisible to a search for the
-    character, while reaching the stream as the character all the same.
-    """
-    _py(tmp_path, "escaped.py",
-        "print('decision-index: no row " + chr(92) + "u2014 unreachable')" + chr(10))
-    findings = lint.check_emitted_ascii(tmp_path)
-    assert len(findings) == 1, findings
-    assert "U+2014" in findings[0]
-
-
-def test_emitted_ascii_ignores_a_directory_named_like_a_module(tmp_path):
-    """`rglob('*.py')` matches directories too, and reading one raises.
-
-    Found by an unrelated delivery test that creates exactly this shape. A
-    guard that crashes on a tree is worse than one that misses a finding: it
-    takes every other check down with it.
-    """
-    (tmp_path / "notamodule.py").mkdir()
-    assert lint.check_emitted_ascii(tmp_path) == []
-
-
-# --- check_docstring_not_piped, check_stdio_wired ---------------------------
-#
-# Both polarities again, and for check 12 the lawful polarity that was missing
-# the first time: a non-docstring string that is data rather than output. Its
-# absence is not a hypothetical gap -- it is why a fixture got rewritten wrong
-# and a regression test went inert while the suite stayed green.
-
-
-def _zoned(root: Path, rel: str, body: str) -> None:
-    """Write a module inside a zone the zone-scoped checks actually walk."""
-    path = root / rel
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body, encoding="utf-8")
-
-
-def test_docstring_piped_to_argparse_is_caught(tmp_path):
-    """--help writes __doc__ to stdout before any stream setup can run."""
-    _zoned(tmp_path, "tools/script.py",
-           '"""Module prose."""' + chr(10)
-           + "import argparse" + chr(10)
-           + "def main():" + chr(10)
-           + "    utf8_stdio()" + chr(10)
-           + "    argparse.ArgumentParser(description=__doc__)" + chr(10))
-    findings = lint.check_docstring_not_piped(tmp_path)
-    assert len(findings) == 1, findings
-    assert "tools/script.py" in findings[0] and "docstring-piped" in findings[0]
-
-
-def test_an_explicit_description_is_left_alone(tmp_path):
-    """The lawful form: help text written as help text."""
-    _zoned(tmp_path, "tools/script.py",
-           '"""Module prose."""' + chr(10)
-           + "import argparse" + chr(10)
-           + "def main():" + chr(10)
-           + "    utf8_stdio()" + chr(10)
-           + '    argparse.ArgumentParser(description="What it does.")' + chr(10))
-    assert lint.check_docstring_not_piped(tmp_path) == []
-
-
-def test_stdio_unwired_main_is_caught(tmp_path):
-    """A script whose entry point never sets its streams up."""
-    _zoned(tmp_path, "tools/script.py",
-           "def main():" + chr(10) + "    print('x')" + chr(10))
-    findings = lint.check_stdio_wired(tmp_path)
-    assert len(findings) == 1, findings
-    assert "stdio-unwired" in findings[0]
-
-
-def test_stdio_wired_late_is_still_unwired(tmp_path):
-    """Ordering is the point: --help exits inside parse_args.
-
-    A call placed after argument parsing is a call the help path never reaches,
-    which is exactly how one script here kept a helper and leaked anyway.
-    """
-    _zoned(tmp_path, "tools/script.py",
-           "def main():" + chr(10)
-           + "    args = parse()" + chr(10)
-           + "    utf8_stdio()" + chr(10))
-    findings = lint.check_stdio_wired(tmp_path)
-    assert len(findings) == 1, findings
-
-
-def test_stdio_wired_first_is_left_alone(tmp_path):
-    """The lawful form, including past a docstring."""
-    _zoned(tmp_path, "tools/script.py",
-           "from winio import utf8_stdio" + chr(10)
-           + "def main():" + chr(10)
-           + '    """What it does."""' + chr(10)
-           + "    utf8_stdio()" + chr(10)
-           + "    print('x')" + chr(10))
-    assert lint.check_stdio_wired(tmp_path) == []
-
-
-def test_a_module_without_main_is_not_asked(tmp_path):
-    """Not every module is a script, and a library owes no stream setup."""
-    _zoned(tmp_path, "tools/helper.py", "def helper():" + chr(10) + "    return 1" + chr(10))
-    assert lint.check_stdio_wired(tmp_path) == []
-
-
-# --- check_subprocess_streams -----------------------------------------------
-#
-# The rule is *redirect nothing, or name all three*, and the first version of
-# this check asked only for stdin -- which flagged immune launches and
-# prescribed the edit that breaks them (PR #232 review, M1). So the polarities
-# here are three, not two: the partial redirect caught, the bare launch left
-# alone, and the fully-named launch left alone. Every spelling below that
-# escaped the first version is pinned, because each was found by a seat or an
-# external reviewer rather than anticipated: the module alias, `stdin=None`,
-# `input=None`, and the `getoutput` family. [D-232]
-
-
-def _streams(root):
-    return lint.check_subprocess_streams(root)
-
-
-def test_a_partial_redirect_is_caught(tmp_path):
-    """The shape #229 actually measured: stdout and stderr redirected, stdin
-    left to resolve through a std-handle table that may name a closed handle."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.run(["git", "status"], capture_output=True)' + chr(10))
-    findings = _streams(tmp_path)
-    assert len(findings) == 1, findings
-    assert "subprocess-streams" in findings[0]
-    assert "tools/script.py:2" in findings[0]
-    assert "stdin unnamed" in findings[0]
-
-
-def test_a_launch_that_redirects_nothing_is_left_alone(tmp_path):
-    """The polarity the first version got wrong, and the reason it mattered.
-
-    `_get_handles` returns early when all three are None, so this launch never
-    asks `GetStdHandle` anything. Requiring `stdin=` here reddened a call that
-    could not fail and prescribed the one edit that makes it fail -- 0/20
-    against 20/20 under real pytest capture. A guard that blocks lawful work
-    fails as hard as one that passes unlawful work."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.run(["git", "add", "-A"], check=True)' + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_all_three_named_is_left_alone(tmp_path):
-    """The compliant form every launch in this repository uses."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.run(["git"], stdin=subprocess.DEVNULL,' + chr(10)
-           + "               capture_output=True)" + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_the_shipped_zone_is_walked_too(tmp_path):
-    """`persist.py` and `figures.py` are shipped, and a consumer running one
-    on Windows hits this before any test does. A check that only walked the
-    repo-only zone would have left the half that reaches consumers open."""
-    _zoned(tmp_path, "skills/thing/scripts/thing.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.Popen(["git"], stdout=subprocess.PIPE)' + chr(10))
-    findings = _streams(tmp_path)
-    assert len(findings) == 1, findings
-    assert "skills/thing/scripts/thing.py" in findings[0]
-
-
-def test_the_module_alias_is_caught(tmp_path):
-    """`import subprocess as sp` -- the hole the first version shipped.
-
-    Three seats and both external reviewers found it independently, which is
-    what makes it worth a pin rather than a line in a bounds list."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess as sp" + chr(10)
-           + 'sp.run(["git", "status"], capture_output=True)' + chr(10))
-    findings = _streams(tmp_path)
-    assert len(findings) == 1, findings
-    assert "sp.run" in findings[0]
-
-
-def test_the_bare_imported_name_is_caught(tmp_path):
-    """`from subprocess import run` binds a name no attribute match reaches."""
-    _zoned(tmp_path, "tools/script.py",
-           "from subprocess import run" + chr(10)
-           + 'run(["git", "status"], capture_output=True)' + chr(10))
-    findings = _streams(tmp_path)
-    assert len(findings) == 1, findings
-    assert "calls run redirecting" in findings[0]
-
-
-def test_the_bare_name_remedy_does_not_name_a_module_it_lacks(tmp_path):
-    """The message must not prescribe `subprocess.DEVNULL` into a file with no
-    `subprocess` binding.
-
-    It did: the remedied file passed the lint and raised `NameError` on its
-    first call, so a green lint positively confirmed a broken edit. [PR #232
-    review, M15]"""
-    _zoned(tmp_path, "tools/script.py",
-           "from subprocess import run" + chr(10)
-           + 'run(["git"], capture_output=True)' + chr(10))
-    finding = _streams(tmp_path)[0]
-    assert "subprocess.DEVNULL" not in finding
-    assert "import from subprocess" in finding
-
-
-def test_an_alias_remedy_names_the_alias(tmp_path):
-    """The other half of the same rule: where the module is bound, the message
-    names the binding the file actually has."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess as sp" + chr(10)
-           + 'sp.run(["git"], capture_output=True)' + chr(10))
-    assert "sp.DEVNULL" in _streams(tmp_path)[0]
-
-
-def test_stdin_none_does_not_satisfy_it(tmp_path):
-    """`stdin=None` is the default spelled out; it redirects nothing.
-
-    Read as merely *named*, it satisfied the first version while meaning
-    inherit -- 10/10 failures under a stale table. [PR #232 review, M3]"""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.run(["git"], stdin=None, capture_output=True)' + chr(10))
-    assert len(_streams(tmp_path)) == 1
-
-
-def test_input_none_does_not_satisfy_it(tmp_path):
-    """`input=None` never reaches `run`'s `if input is not None`, so no PIPE.
-
-    An external reviewer contested this with a cited answer saying `input=None`
-    behaves as `input=b''`. `subprocess.run`'s own source says otherwise, and
-    the probes agree at 10/10 -- so this pins the source, not the answer."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.run(["git"], input=None, capture_output=True)' + chr(10))
-    assert len(_streams(tmp_path)) == 1
-
-
-def test_a_real_input_covers_stdin(tmp_path):
-    """`input=` with something to read implies `stdin=PIPE`.
-
-    Not an accommodation: `check_ignored` in `tools/lint.py` feeds
-    `git check-ignore --stdin` exactly this way, and it is one of the sites
-    #229 never saw fail."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.run(["git"], input="x", capture_output=True)' + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_capture_output_false_redirects_nothing(tmp_path):
-    """The literal is read, not merely the keyword: `capture_output=False`
-    leaves stdout and stderr inherited, so this launch redirects nothing."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.run(["git"], capture_output=False)' + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_the_no_stdin_wrappers_are_named(tmp_path):
-    """`getoutput`, `getstatusoutput` and `os.popen` redirect a stream and take
-    no stdin argument, so the rule has no compliant form for them.
-
-    Silence there read as permission, and the cell's rule was unsatisfiable
-    rather than merely unenforced. [PR #232 review, M4]"""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + "import os" + chr(10)
-           + 'subprocess.getoutput("git rev-parse HEAD")' + chr(10)
-           + 'subprocess.getstatusoutput("git status")' + chr(10)
-           + 'os.popen("git status").read()' + chr(10))
-    findings = _streams(tmp_path)
-    assert len(findings) == 3, findings
-    assert all("takes no stdin argument" in f for f in findings)
-
-
-def test_every_launcher_name_is_reached(tmp_path):
-    """All five, not the two the first version's fixtures exercised.
-
-    Narrowing `_LAUNCHERS` to `("run", "Popen")` left the whole suite green,
-    so the coverage the docstring claimed was asserted and not held. [PR #232
-    review, M12]"""
-    body = "import subprocess" + chr(10)
-    for name in ("run", "Popen", "call", "check_call", "check_output"):
-        body += f'subprocess.{name}(["git"], stdout=subprocess.PIPE)' + chr(10)
-    _zoned(tmp_path, "tools/script.py", body)
-    findings = _streams(tmp_path)
-    assert len(findings) == 5, findings
-    for name in ("run", "Popen", "call", "check_call", "check_output"):
-        assert any(f"subprocess.{name}" in f for f in findings), name
-
-
-def test_the_message_offers_input_to_nobody_that_rejects_it(tmp_path):
-    """`Popen`, `call` and `check_call` take no `input` argument.
-
-    The first version's message offered it to all five, and D-232 rejects an
-    alternative design on exactly that ground -- a remedy raising `TypeError`.
-    [PR #232 review, M14]"""
-    body = "import subprocess" + chr(10)
-    for name in ("Popen", "call", "check_call"):
-        body += f'subprocess.{name}(["git"], stdout=subprocess.PIPE)' + chr(10)
-    _zoned(tmp_path, "tools/script.py", body)
-    for finding in _streams(tmp_path):
-        assert "input=" not in finding, finding
-
-
-def test_a_kwargs_forwarder_is_left_alone(tmp_path):
-    """The guard's stated bound, held as a test rather than left to the prose.
-
-    Whether a stream is redirected cannot be read off the call, and a guard
-    that reddened here would block lawful work -- the polarity the substrate
-    cell says fails as hard as the other."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + "def launch(cmd, **kwargs):" + chr(10)
-           + "    return subprocess.run(cmd, **kwargs)" + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_an_unreadable_capture_output_is_left_alone(tmp_path):
-    """The bound's other half: a non-literal `capture_output` leaves the guard
-    unable to say whether two streams are redirected, and unreadable is
-    silence."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + "def launch(cmd, quiet):" + chr(10)
-           + "    return subprocess.run(cmd, capture_output=quiet)" + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_something_else_named_run_is_not_a_launch(tmp_path):
-    """`lint.run` exists in this repository and redirects nothing."""
-    _zoned(tmp_path, "tools/script.py",
-           "import other" + chr(10)
-           + "other.run(1, capture_output=True)" + chr(10)
-           + "run(2, capture_output=True)" + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_check_output_bare_is_partial_not_bare(tmp_path):
-    """`check_output` is `run(*popenargs, stdout=PIPE, ...)`, so it redirects a
-    stream before any keyword is read.
-
-    The cycle-one guard read "redirects nothing" off the keywords and certified
-    this call, which measures 20/20 failures under real capture -- the shape
-    the shipped cell calls lawful, reproduced inside the batch that closed the
-    class. [PR #232 post-fix, P1]"""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.check_output(["git", "rev-parse", "HEAD"])' + chr(10))
-    findings = _streams(tmp_path)
-    assert len(findings) == 1, findings
-    assert "stdin, stderr unnamed" in findings[0]
-
-
-def test_check_output_naming_the_other_two_is_left_alone(tmp_path):
-    """Its compliant form, measured 0/20 -- and the polarity that disproved the
-    remedy of flagging `check_output` unconditionally."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.check_output(["git"], stdin=subprocess.DEVNULL,' + chr(10)
-           + "                        stderr=subprocess.DEVNULL)" + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_check_output_is_never_told_to_name_all_three(tmp_path):
-    """Naming `stdout` on `check_output` raises `ValueError`, and offering to
-    redirect none of them is not on offer either."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.check_output(["git"])' + chr(10))
-    finding = _streams(tmp_path)[0]
-    assert "redirect none of them" not in finding
-    assert "stdout" not in finding.split("--")[0]
-
-
-def test_input_none_pipes_on_check_output_but_not_on_run(tmp_path):
-    """`check_output` rewrites `input=None` to `b''` before calling `run`, so
-    unlike `run` it pipes stdin either way.
-
-    Read uniformly, this reddened a call measured safe at 0/20. [PR #232
-    post-fix, D1]"""
-    _zoned(tmp_path, "tools/co.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.check_output(["git"], input=None,' + chr(10)
-           + "                        stderr=subprocess.DEVNULL)" + chr(10))
-    assert _streams(tmp_path) == []
-    _zoned(tmp_path, "tools/r.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.run(["git"], input=None, capture_output=True)' + chr(10))
-    findings = [f for f in _streams(tmp_path) if "tools/r.py" in f]
-    assert len(findings) == 1, findings
-
-
-def test_capture_output_is_credited_on_run_alone(tmp_path):
-    """`Popen`, `call` and `check_call` reject `capture_output` with a
-    `TypeError`, so crediting it there certified a call that cannot run.
-    [PR #232 post-fix, P3]"""
-    body = "import subprocess" + chr(10)
-    for name in ("Popen", "call", "check_call"):
-        body += (f'subprocess.{name}(["git"], stdin=subprocess.DEVNULL,'
-                 + " capture_output=True)" + chr(10))
-    _zoned(tmp_path, "tools/script.py", body)
-    findings = _streams(tmp_path)
-    assert len(findings) == 3, findings
-
-
-def test_a_positional_stream_is_unread_rather_than_absent(tmp_path):
-    """`_redirected` reads keywords, so a positionally-passed stream is unread.
-
-    Silence here is the deliberate kind, and the fixture is chosen so the two
-    versions of the guard disagree: with a keyword alongside the positional
-    streams, the old predicate saw one covered stream and reported a partial
-    redirect, having read none of the positional ones. It reached the right
-    verdict on the fixture without them only by luck -- `Popen(cmd, -1, None,
-    DEVNULL)` measured 20/20 failures with the guard silent.
-
-    **The trade is stated rather than hidden**: this call is genuinely unsafe
-    and the guard now says nothing about it, where before it said something
-    accidentally. Silence is the ruled remedy because the alternative reddens
-    calls whose redirection cannot be read. [PR #232 post-fix, P2]"""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + 'subprocess.run(["git"], -1, None, None, subprocess.PIPE,' + chr(10)
-           + "               stdin=subprocess.DEVNULL)" + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_a_splatted_argument_list_is_unread(tmp_path):
-    """The other half of the same criterion."""
-    _zoned(tmp_path, "tools/script.py",
-           "import subprocess" + chr(10)
-           + "def launch(args):" + chr(10)
-           + "    return subprocess.run(*args, capture_output=True)" + chr(10))
-    assert _streams(tmp_path) == []
-
-
-def test_os_popen_is_caught_through_every_import_spelling(tmp_path):
-    """`from os import popen` and `import os.path` both bind names the cycle-one
-    resolution missed -- M2's class, on code the cycle-one fix added.
-    [PR #232 post-fix, P2]"""
-    _zoned(tmp_path, "tools/a.py",
-           "from os import popen" + chr(10) + 'popen("git status")' + chr(10))
-    _zoned(tmp_path, "tools/b.py",
-           "import os.path" + chr(10) + 'os.popen("git status")' + chr(10))
-    findings = _streams(tmp_path)
-    assert len(findings) == 2, findings
-    assert all("takes no stdin argument" in f for f in findings)
-
-
-def test_this_repository_names_its_streams_at_every_launch():
-    """The tree this exists for, not a restatement of the guard.
-
-    The guard proves the shape; this proves the shipped and repo-only trees are
-    in it -- which is the claim #229 found false and nothing was checking."""
-    assert lint.check_subprocess_streams(Path(__file__).resolve().parents[2]) == []
-
-
-def test_emitted_ascii_reports_the_line_carrying_the_character(tmp_path):
-    """Not the line the constant opens on.
-
-    CPython folds implicit concatenation into one node, which is the shape of
-    nearly every message here. Reporting the opening line sent a reader to a
-    line with nothing wrong on it -- 12 of the 44 findings on the tree that
-    motivated this check.
-    """
-    _py(tmp_path, "wrapped.py",
-        "MSG = (" + chr(10)
-        + '    "first line is clean "' + chr(10)
-        + '    "second line has ' + EM_DASH + ' one"' + chr(10)
-        + ")" + chr(10))
-    findings = lint.check_emitted_ascii(tmp_path)
-    assert len(findings) == 1, findings
-    assert "wrapped.py:3" in findings[0], findings[0]
-
-
-def test_emitted_ascii_reports_in_line_order(tmp_path):
-    """`ast.walk` is breadth-first, so depth beat line and output was unsorted."""
-    _py(tmp_path, "many.py",
-        "A = " + repr("one " + EM_DASH) + chr(10)
-        + "B = [" + repr("two " + EM_DASH) + "]" + chr(10)
-        + "C = {'k': [" + repr("three " + EM_DASH) + "]}" + chr(10))
-    # Not f.split(":")[1] -- that yields the filename, and on Windows an
-    # absolute path would yield the drive letter. The cold consumer who
-    # first used this check made exactly that mistake reading its output.
-    findings = lint.check_emitted_ascii(tmp_path)
-    lines = [int(re.search(r"many\.py:(\d+) ", f).group(1)) for f in findings]
-    assert lines == sorted(lines), lines
-
-
-def test_emitted_ascii_leaves_a_non_emitting_data_string_flagged_but_says_so(tmp_path):
-    """The lawful-polarity case the first version of this check never probed.
-
-    A filename fixture cannot reach a stream, and the check flags it anyway --
-    it reads literals, not reachability. That is allowed to be true; what is
-    not allowed is the message claiming otherwise, because a session that
-    believes it reasons about the wrong thing and rewrites the wrong code.
-    """
-    _py(tmp_path, "data.py", "NAME = " + repr("caf" + chr(0xE9) + ".md") + chr(10))
-    findings = lint.check_emitted_ascii(tmp_path)
-    assert len(findings) == 1, findings
-    assert "non-docstring string constant" in findings[0]
-    assert "reach a stream" not in findings[0], (
-        "the message must not claim a reachability property the check never computes"
-    )
-
-
-def test_emitted_ascii_reports_a_file_it_cannot_parse(tmp_path):
-    """A silent skip is indistinguishable from a clean tree."""
-    _py(tmp_path, "broken.py", "def (:" + chr(10))
-    findings = lint.check_emitted_ascii(tmp_path)
-    assert len(findings) == 1 and "does not parse" in findings[0], findings
-
-
-def test_emitted_ascii_sees_through_a_utf8_bom(tmp_path):
-    """A BOM made `ast.parse` raise, and the file was skipped in silence.
-
-    The compensating control claimed at the time -- that the suite fails on a
-    module it cannot import -- was false: CPython strips the BOM when reading
-    from disk, so the module ran and emitted the byte.
-    """
-    (tmp_path / "bommed.py").write_bytes(
-        chr(0xFEFF).encode("utf-8") + ("X = " + repr("a " + EM_DASH) + chr(10)).encode("utf-8"))
-    findings = lint.check_emitted_ascii(tmp_path)
-    assert len(findings) == 1 and "U+2014" in findings[0], findings
-
-
-def test_emitted_ascii_reports_a_file_that_is_not_utf8(tmp_path):
-    """Reported as undecodable, not as stating U+FFFD.
-
-    `errors="replace"` made the check name a character that appears nowhere in
-    the file, so the reader had nothing to search for.
-    """
-    (tmp_path / "latin.py").write_bytes(
-        b"# -*- coding: latin-1 -*-" + chr(10).encode() + b"X = 'caf\xe9'" + chr(10).encode())
-    findings = lint.check_emitted_ascii(tmp_path)
-    assert len(findings) == 1, findings
-    assert "not valid UTF-8" in findings[0] and "FFFD" not in findings[0]
-
-def test_a_local_utf8_stdio_does_not_satisfy_the_wiring_check(tmp_path):
-    """Position was exact; identity was not, and the prose claimed both.
-
-    A module defining its own no-op utf8_stdio satisfied the call site while
-    setting nothing up -- so the guard reported green on precisely the tree it
-    exists to catch, and the likeliest route to writing that stub is a reader
-    who could not work out the import from the finding message.
-    """
-    _zoned(tmp_path, "tools/impostor.py",
-           "def utf8_stdio():" + chr(10)
-           + "    pass" + chr(10)
-           + "def main():" + chr(10)
-           + "    utf8_stdio()" + chr(10))
-    findings = lint.check_stdio_wired(tmp_path)
-    assert len(findings) == 1, findings
-    assert "never imports it" in findings[0], findings[0]
-
-
-def test_epilog_piped_to_argparse_is_caught(tmp_path):
-    """argparse writes epilog to stdout exactly as it writes description.
-
-    It is also the conventional home for the long-form prose a module
-    docstring holds, so it is the compliant-looking route to the same defect.
-    """
-    _zoned(tmp_path, "tools/script.py",
-           '"""Module prose."""' + chr(10)
-           + "import argparse" + chr(10)
-           + "def main():" + chr(10)
-           + "    utf8_stdio()" + chr(10)
-           + "    argparse.ArgumentParser(epilog=__doc__)" + chr(10))
-    findings = lint.check_docstring_not_piped(tmp_path)
-    assert len(findings) == 1, findings
-    assert "epilog" in findings[0], findings[0]
-
-
 # --- the qualitative row -----------------------------------------------------
 
 def _qualitative_row(**overrides):
@@ -4226,45 +3568,6 @@ def test_docstring_control_chars_reports_every_character_not_only_the_first(tmp_
     assert {"U+000B", "U+000D"} == {f.split("holds ")[1][:6] for f in findings}
 
 
-def test_git_ignored_survives_a_non_ascii_path(tmp_path):
-    """The ignore filter feeds three checks, and nothing pinned it.
-
-    `text=True` alone encodes stdin with the locale codepage, so on Windows one
-    non-ASCII path anywhere raised `UnicodeEncodeError` inside subprocess's
-    writer thread -- where it is swallowed. stdin never closed, the call ran to
-    its full timeout, and the filter then returned empty: every check using it
-    silently scanned ignored trees after a minute's stall. The substrate cell's
-    stream rule, at a site three checks share.
-    """
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / ".gitignore").write_bytes(("skip" + chr(10)).encode("utf-8"))
-    (tmp_path / "skip").mkdir()
-    plain = tmp_path / "skip" / "plain.py"
-    plain.write_bytes(b"x = 1" + chr(10).encode())
-    # chr(20013) rather than the character: this file is read by a check that
-    # bans non-ASCII in non-docstring literals.
-    exotic = tmp_path / (chr(20013) + ".py")
-    exotic.write_bytes(b"y = 2" + chr(10).encode())
-    ignored = lint._git_ignored(tmp_path, [plain, exotic])
-    assert plain in ignored, (
-        "the ignored path must still be filtered when a non-ASCII path is present"
-    )
-    assert exotic not in ignored
-
-
-def test_git_ignored_filters_an_ordinary_tree(tmp_path):
-    """The other polarity: the lawful case still filters, so the fix above is
-    not the filter quietly turning itself off.
-    """
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / ".gitignore").write_bytes(("skip" + chr(10)).encode("utf-8"))
-    (tmp_path / "skip").mkdir()
-    hidden = tmp_path / "skip" / "a.py"; hidden.write_bytes(b"x = 1" + chr(10).encode())
-    shown = tmp_path / "b.py"; shown.write_bytes(b"y = 2" + chr(10).encode())
-    ignored = lint._git_ignored(tmp_path, [hidden, shown])
-    assert ignored == {hidden}
-
-
 def _raising(message="simulated: any check that raises"):
     """A check-shaped callable that raises, for the isolation tests below."""
     def check(root):
@@ -4687,14 +3990,6 @@ def test_hollow_code_span_honours_gitignore_at_its_own_call_site(tmp_path):
     assert len(findings) == 1 and "shown.md" in findings[0]
 
 
-def test_read_text_answers_none_for_a_file_it_cannot_open(tmp_path):
-    """D1: unreadable is None, not an exception. With the read unguarded, one
-    vanished or locked file cost the calling check its entire territory and
-    named a frame inside the standard library.
-    """
-    assert lint._read_text(tmp_path / "not-there.md") is None
-
-
 def test_hollow_code_span_survives_a_file_that_vanishes_under_it(tmp_path):
     """The same property through the check, which is where it is reached: the
     walk collects paths and the read happens later.
@@ -4969,27 +4264,6 @@ def test_the_carriage_return_remedy_does_not_assume_the_file_is_text(tmp_path):
     _git_repo_with(tmp_path, "note.md", ("row" + CR + "orphan" + NL).encode("utf-8"))
     finding = lint.check_committed_carriage_return(tmp_path)[0]
     assert "if it is text, rewrite it with line feeds" in finding
-
-
-def test_emitted_ascii_reports_a_file_it_cannot_read(tmp_path, monkeypatch):
-    """Post-fix 5: `_read_text` learned to answer rather than raise, and these
-    two checks read bytes directly and did not. One locked or vanished file
-    took the whole check's territory with it.
-    """
-    (tmp_path / "mod.py").write_text("x = 1" + NL, encoding="utf-8", newline="")
-    real = Path.read_bytes
-
-    def denied(self, *args, **kwargs):
-        if self.name == "mod.py":
-            raise PermissionError(13, "Permission denied")
-        return real(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_bytes", denied)
-    findings = lint.check_emitted_ascii(tmp_path)
-    assert len(findings) == 1
-    assert "could not be read" in findings[0] and "mod.py" in findings[0]
-    # and its sibling on the same walk stays silent rather than raising
-    assert lint.check_docstring_control_chars(tmp_path) == []
 
 
 def test_hollow_code_span_caps_an_opening_fence_at_three_spaces(tmp_path):
