@@ -27,6 +27,25 @@ def test_codex_discovery_priorities_and_invalid_explicit(tmp_path):
     assert not isinstance(caught.value, cli.CliNotFound)
 
 
+def test_automatic_codex_skips_an_unusable_path_shim_for_a_native_bundle(tmp_path):
+    shim = file(tmp_path / "path" / "codex.cmd")
+    native_path = file(tmp_path / "path" / "codex.exe")
+    usable_shim = file(tmp_path / "usable" / "codex.cmd")
+    usable_payload = file(tmp_path / "usable" / "node_modules/@openai/codex/bin/codex.exe")
+    bundled = file(tmp_path / "OpenAI/Codex/bin/build/codex.exe")
+    opts = dict(env={"LOCALAPPDATA": str(tmp_path)}, platform="nt")
+
+    assert cli.resolve_command("codex", None, path_lookup=lambda _: str(native_path), **opts) == [str(native_path)]
+    assert cli.resolve_command("codex", None, path_lookup=lambda _: str(usable_shim), **opts) == [str(usable_payload)]
+    assert cli.resolve_command("codex", None, path_lookup=lambda _: str(shim), **opts) == [str(bundled)]
+    with pytest.raises(cli.CliError, match="Cannot resolve codex's Windows shim"):
+        cli.resolve_command("codex", str(shim), path_lookup=lambda _: str(native_path), **opts)
+
+    bundled.unlink()
+    with pytest.raises(cli.CliError, match="Cannot resolve codex's Windows shim"):
+        cli.resolve_command("codex", None, path_lookup=lambda _: str(shim), **opts)
+
+
 def test_missing_is_unavailable_but_not_a_broken_override(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.shutil, "which", lambda _: None)
     with pytest.raises(cli.CliNotFound):

@@ -96,6 +96,26 @@ def executable_command(vendor: str, path: Path, *, platform: str = os.name) -> l
     )
 
 
-def resolve_command(vendor: str, explicit: str | None) -> list[str]:
-    path = resolve_codex(explicit) if vendor == "codex" else resolve_claude(explicit)
-    return executable_command(vendor, path)
+def resolve_command(
+    vendor: str,
+    explicit: str | None,
+    *,
+    env: Mapping[str, str] | None = None,
+    path_lookup: Callable[[str], str | None] = which_on_path,
+    platform: str = os.name,
+) -> list[str]:
+    if vendor != "codex":
+        return executable_command(vendor, resolve_claude(explicit), platform=platform)
+    path = resolve_codex(explicit, env=env, path_lookup=path_lookup, platform=platform)
+    try:
+        return executable_command(vendor, path, platform=platform)
+    except CliError as shim_error:
+        if explicit:
+            raise
+        try:
+            bundled = resolve_codex(
+                None, env=env, path_lookup=lambda _: None, platform=platform,
+            )
+        except CliNotFound:
+            raise shim_error from None
+        return executable_command(vendor, bundled, platform=platform)

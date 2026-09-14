@@ -18,10 +18,28 @@ from vendor_cli import CliNotFound
 NOW = datetime(2026, 9, 12, 12, tzinfo=timezone.utc)
 
 
+def git(root, *arguments):
+    return subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        check=True,
+    )
+
+
+def detached_repository(root):
+    root.mkdir()
+    git(root, "init")
+    (root / "fixture.txt").write_bytes(b"fixture\n")
+    git(root, "add", "fixture.txt")
+    git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "fixture")
+    git(root, "checkout", "--detach")
+
+
 @pytest.fixture
 def job(tmp_path, monkeypatch):
     root = tmp_path / "root with spaces"
-    root.mkdir()
+    detached_repository(root)
     dispatch = tmp_path / "dispatch.txt"
     dispatch.write_bytes(b"Read the supplied artifact and return your verdict.\n")
     scenario = tmp_path / "scenario.json"
@@ -31,6 +49,7 @@ def job(tmp_path, monkeypatch):
         "--own-vendor", "codex", "--output", str(tmp_path / "verdict.md"),
         "--work", "issue-592", "--stage", "cold-read",
         "--classification", "ordinary",
+        "--requires", "read",
         "--settings-source", "issuecomment-5655702442",
         "--settings-scope", "Codex turns after the artifact",
         "--hold-file", str(tmp_path / "holds"), "--timeout-seconds", "10",
@@ -54,11 +73,14 @@ def seen(args, vendor):
     return json.loads((args.root / f"seen-{vendor}.json").read_bytes())
 
 
-@pytest.mark.parametrize("vendor", seat.VENDORS)
-def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor):
+@pytest.mark.parametrize(("vendor", "required_capability"), [
+    ("claude", "read"), ("claude", "execute"), ("codex", "read"),
+])
+def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, required_capability):
     args, _ = job
     args.vendor = vendor
     args.own_vendor = "claude" if vendor == "codex" else "codex"
+    args.requires = required_capability
     prompt = (("quoted ' \" $() ` & | ; % ! " + chr(0x1F680) + "\n") * 2500).encode()
     args.dispatch.write_bytes(prompt)
     assert seat.run_dispatch(args) == 0
@@ -67,9 +89,10 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor):
     assert Path(observed["cwd"]) == args.root.resolve()
     flags = observed["argv"]
     if vendor == "claude":
+        tools = "Read,Glob,Grep,Bash" if required_capability == "execute" else "Read,Glob,Grep"
         assert flags == ["-p", "--model", "opus", "--effort", "xhigh", "--output-format", "json",
-                         "--no-session-persistence", "--safe-mode", "--tools", "Read,Glob,Grep",
-                         "--allowedTools", "Read,Glob,Grep", "--permission-mode", "dontAsk", "--strict-mcp-config"]
+                         "--no-session-persistence", "--safe-mode", "--tools", tools,
+                         "--allowedTools", tools, "--permission-mode", "dontAsk", "--strict-mcp-config"]
     else:
         last = flags[flags.index("--output-last-message") + 1]
         assert flags == ["exec", "--ephemeral", "--sandbox", "read-only", "--json", "--color", "never",
@@ -81,6 +104,81 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor):
     request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
     assert request["work"] == "issue-592"
     assert request["stage"] == "cold-read"
+    assert request["requested"]["required_capability"] == required_capability
+
+
+def test_execute_capability_refuses_codex_before_resolving_or_reserving(job, monkeypatch):
+    args, _ = job
+    args.vendor = "codex"
+    args.own_vendor = "claude"
+    args.requires = "execute"
+    calls = []
+    monkeypatch.setattr(seat, "resolve_command", lambda *values: calls.append(values))
+    with pytest.raises(
+        seat.DispatchError,
+        match="codex cannot supply required capability execute; no process was launched",
+    ):
+        seat.run_dispatch(args)
+    assert calls == []
+    assert not list(args.output.parent.glob("verdict.md*"))
+
+
+def test_execute_capability_fallback_records_its_unequipped_refusal(job, monkeypatch):
+    args, _ = job
+    args.requires = "execute"
+    configure(job, {"claude": {"message": "Not logged in"}})
+    calls = []
+    resolver = seat.resolve_command
+
+    def tracked(chosen, explicit):
+        calls.append(chosen)
+        return resolver(chosen, explicit)
+
+    monkeypatch.setattr(seat, "resolve_command", tracked)
+    assert seat.run_dispatch(args) == 1
+    logged = record(args)
+    claude, codex = logged["attempts"]
+    assert calls == ["claude"]
+    assert "Read,Glob,Grep,Bash" in seen(args, "claude")["argv"]
+    assert claude["permission_boundary"] is not None
+    assert claude["permission_boundary_unavailable_reason"] is None
+    assert codex["permission_boundary"] is None
+    assert codex["permission_boundary_unavailable_reason"] == codex["reason"]
+    assert codex["reason"] == "codex cannot supply required capability execute; no process was launched"
+
+
+def test_root_guard_changes_only_when_the_same_worktree_detaches(job, monkeypatch):
+    args, _ = job
+    calls = []
+    resolver = seat.resolve_command
+
+    def tracked(chosen, explicit):
+        calls.append(chosen)
+        return resolver(chosen, explicit)
+
+    monkeypatch.setattr(seat, "resolve_command", tracked)
+    git(args.root, "checkout", "-B", "attached")
+    with pytest.raises(seat.DispatchError, match="Root must be the top level of a detached Git worktree"):
+        seat.run_dispatch(args)
+    assert calls == []
+    git(args.root, "checkout", "--detach")
+    assert seat.run_dispatch(args) == 0
+    assert calls == ["claude"]
+
+
+def test_root_guard_rejects_plain_directory_and_worktree_subdirectory(job, tmp_path, monkeypatch):
+    args, _ = job
+    calls = []
+    monkeypatch.setattr(seat, "resolve_command", lambda *values: calls.append(values))
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    subdirectory = args.root / "subdirectory"
+    subdirectory.mkdir()
+    for root in (plain, subdirectory):
+        args.root = root
+        with pytest.raises(seat.DispatchError, match="Root must be the top level of a detached Git worktree"):
+            seat.run_dispatch(args)
+    assert calls == []
 
 
 @pytest.mark.parametrize("classification,expected", [
@@ -411,8 +509,6 @@ def test_fallback_cannot_read_discarded_transcript_but_caller_can(job, monkeypat
     )
     monkeypatch.setattr(seat, "resolve_command", lambda vendor, explicit: [
         sys.executable, "-c", first if vendor == "claude" else second])
-    args.root = args.root.parent / "recipient"
-    args.root.mkdir()
     args.output = args.root / "in.md"
     with pytest.raises(seat.records.RecordError, match="outside the recipient root"):
         seat.run_dispatch(args)
@@ -533,6 +629,18 @@ def test_classification_is_required_by_the_cli(job):
         "--dispatch", str(args.dispatch), "--root", str(args.root),
         "--vendor", "claude", "--own-vendor", "codex",
         "--work", "issue", "--stage", "cold-read",
+        "--settings-source", "brief", "--settings-scope", "cold seat",
+    ]
+    with pytest.raises(SystemExit):
+        seat.parser().parse_args(argv)
+
+
+def test_capability_is_required_by_the_cli(job):
+    args, _ = job
+    argv = [
+        "--dispatch", str(args.dispatch), "--root", str(args.root),
+        "--vendor", "claude", "--own-vendor", "codex",
+        "--work", "issue", "--stage", "cold-read", "--classification", "ordinary",
         "--settings-source", "brief", "--settings-scope", "cold seat",
     ]
     with pytest.raises(SystemExit):
