@@ -193,3 +193,29 @@ def test_setting_sources_distinguish_defaults_from_explicit_values(job):
     assert sources["model"] == "dispatch_implementer default"
     assert sources["effort"] == "issuecomment-5655702442"
     assert sources["continuity"] == "launcher route (fresh)"
+
+
+@pytest.mark.parametrize("field", ["model", "effort"])
+def test_explicit_empty_setting_is_rejected_without_a_bundle(job, field):
+    args, _ = job
+    setattr(args, field, "")
+    with pytest.raises(implementer.ImplementerError, match=f"--{field} must be nonempty"):
+        implementer.run_implementer(args)
+    assert not list(args.output.parent.glob("result.md*"))
+
+
+def test_publication_failure_is_recorded_without_a_false_published_path(job, monkeypatch):
+    args, _ = job
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    monkeypatch.setattr(
+        implementer.records, "publish_output",
+        lambda *_args: (_ for _ in ()).throw(OSError("hard link failed")),
+    )
+    with pytest.raises(OSError, match="hard link failed"):
+        implementer.run_implementer(args)
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert logged["attempts"][0]["outcome"] == "success"
+    assert logged["result"]["published_output"] is None
+    assert "hard link failed" in logged["result"]["published_output_unavailable_reason"]
+    assert not args.output.exists()

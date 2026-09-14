@@ -69,8 +69,12 @@ def _thread_id(events: list[dict[str, object]], stderr: bytes) -> tuple[str | No
 def run_implementer(args: argparse.Namespace) -> int:
     model_defaulted = args.model is None
     effort_defaulted = args.effort is None
-    args.model = args.model or DEFAULT_MODEL
-    args.effort = args.effort or DEFAULT_EFFORT
+    if args.model is not None and not args.model.strip():
+        raise ImplementerError("--model must be nonempty when supplied")
+    if args.effort is not None and not args.effort.strip():
+        raise ImplementerError("--effort must be nonempty when supplied")
+    args.model = DEFAULT_MODEL if model_defaulted else args.model
+    args.effort = DEFAULT_EFFORT if effort_defaulted else args.effort
     root = args.root.expanduser().resolve()
     dispatch = args.dispatch.expanduser().resolve()
     if not root.is_dir():
@@ -150,6 +154,9 @@ def run_implementer(args: argparse.Namespace) -> int:
                            "assessment": "unassessed"},
             }
             verdict: bytes | None = None
+            source_ready = False
+            publication_error: OSError | None = None
+            published = False
             return_code = 1
             started = time.monotonic()
             try:
@@ -209,10 +216,9 @@ def run_implementer(args: argparse.Namespace) -> int:
                 if verdict is not None:
                     streams[source_path].write(verdict)
                     streams[source_path].flush()
+                    source_ready = True
                     record["result"]["source_output"] = str(source_path)
                     record["result"]["source_output_unavailable_reason"] = None
-                    record["result"]["published_output"] = str(output)
-                    record["result"]["published_output_unavailable_reason"] = None
             finally:
                 record.setdefault("outcome", "error")
                 if not attempt["reason"]:
@@ -221,12 +227,33 @@ def run_implementer(args: argparse.Namespace) -> int:
                     records.add_unobserved(attempt, attempt["reason"])
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 record["revision_after"] = records.git_revision(root)
-                streams[record_path].write(records.json_bytes(record))
-                streams[record_path].flush()
+                record_stream = streams.streams.pop(record_path)
+                record_stream.close()
                 for stream in streams.values():
                     stream.close()
-            if verdict is not None:
-                records.publish_output(output, verdict)
+                streams.streams.clear()
+                if source_ready:
+                    try:
+                        records.publish_output(output, verdict)
+                    except OSError as exc:
+                        publication_error = exc
+                        record["outcome"] = "error"
+                        record["error"] = f"could not publish implementer result: {exc}"
+                        record["result"]["published_output_unavailable_reason"] = record["error"]
+                        return_code = 1
+                    else:
+                        published = True
+                        record["result"]["published_output"] = str(output)
+                        record["result"]["published_output_unavailable_reason"] = None
+                try:
+                    records.finalize_reserved_json(record_path, record)
+                except Exception:
+                    if published:
+                        output.unlink(missing_ok=True)
+                    raise
+            if publication_error is not None:
+                raise publication_error
+            if source_ready:
                 session_note = attempt["observed"].get("session_id") or "unavailable"
                 print(f"implementer: codex ({args.model}, {args.effort}) session {session_note} -> {output}")
             else:

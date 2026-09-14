@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -183,7 +184,9 @@ def test_nested_session_timeout_is_a_named_failure(tmp_path, monkeypatch):
         assert timeout == 17
         raise subprocess.TimeoutExpired(command, timeout)
 
-    monkeypatch.setattr(compat.tempfile, "TemporaryDirectory", FixedTemporaryDirectory)
+    monkeypatch.setattr(
+        compat, "tempfile", types.SimpleNamespace(TemporaryDirectory=FixedTemporaryDirectory)
+    )
     monkeypatch.setattr(compat, "_capture", captured)
     monkeypatch.setattr(compat, "ROOT", tmp_path / "source")
     record_output = tmp_path.parent / f"{tmp_path.name}-timeout-records" / "timeout.md"
@@ -235,7 +238,9 @@ def test_nested_session_success_pins_completion_and_timeout_scope(tmp_path, monk
         )
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
-    monkeypatch.setattr(compat.tempfile, "TemporaryDirectory", FixedTemporaryDirectory)
+    monkeypatch.setattr(
+        compat, "tempfile", types.SimpleNamespace(TemporaryDirectory=FixedTemporaryDirectory)
+    )
     monkeypatch.setattr(compat, "_capture", captured)
     monkeypatch.setattr(compat, "ROOT", source)
     record_output = tmp_path.parent / f"{tmp_path.name}-success-records" / "success.md"
@@ -275,7 +280,9 @@ def test_semantic_failure_is_retained_and_not_published(tmp_path, monkeypatch):
         last_message.write_bytes(b'{"wrong":"answer"}')
         return subprocess.CompletedProcess(command, 0, b'{"type":"turn.completed"}\n', b"")
 
-    monkeypatch.setattr(compat.tempfile, "TemporaryDirectory", FixedTemporaryDirectory)
+    monkeypatch.setattr(
+        compat, "tempfile", types.SimpleNamespace(TemporaryDirectory=FixedTemporaryDirectory)
+    )
     monkeypatch.setattr(compat, "_capture", captured)
     monkeypatch.setattr(compat, "ROOT", source)
     record_output = tmp_path.parent / f"{tmp_path.name}-semantic-records" / "semantic.md"
@@ -289,6 +296,76 @@ def test_semantic_failure_is_retained_and_not_published(tmp_path, monkeypatch):
     assert Path(run["result"]["source_output"]).read_bytes() == b'{"wrong":"answer"}'
     assert run["result"]["published_output"] is None
     assert not record_output.exists()
+
+
+def test_execution_failure_with_a_bad_answer_keeps_the_execution_reason(tmp_path, monkeypatch):
+    class FixedTemporaryDirectory:
+        def __init__(self, **_kwargs):
+            pass
+        def __enter__(self):
+            return str(tmp_path)
+        def __exit__(self, *_args):
+            return False
+
+    def captured(command, *, cwd=None, timeout=None, binary=False):
+        if command[:2] == ["git", "init"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        last_message = Path(command[command.index("--output-last-message") + 1])
+        last_message.write_bytes(b"\xff")
+        return subprocess.CompletedProcess(command, 2, b"", b"bad option")
+
+    monkeypatch.setattr(
+        compat, "tempfile", types.SimpleNamespace(TemporaryDirectory=FixedTemporaryDirectory)
+    )
+    monkeypatch.setattr(compat, "_capture", captured)
+    monkeypatch.setattr(compat, "ROOT", tmp_path / "source")
+    record_output = tmp_path.parent / f"{tmp_path.name}-execution-records" / "failure.md"
+    with pytest.raises(compat.CompatError, match=r"failed \(2\): bad option"):
+        compat.run_probe(
+            Path("codex"), model="gpt-5.6-sol", reasoning="high",
+            record_output=record_output,
+        )
+    run = json.loads(compat.records.sidecar(record_output, ".run.json").read_bytes())
+    assert run["outcome"] == "error"
+    assert run["attempts"][0]["reason"] == "nested Codex session failed (2): bad option"
+
+
+def test_publication_failure_is_recorded_before_the_probe_raises(tmp_path, monkeypatch):
+    class FixedTemporaryDirectory:
+        def __init__(self, **_kwargs):
+            pass
+        def __enter__(self):
+            return str(tmp_path)
+        def __exit__(self, *_args):
+            return False
+
+    def captured(command, *, cwd=None, timeout=None, binary=False):
+        if command[:2] == ["git", "init"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        last_message = Path(command[command.index("--output-last-message") + 1])
+        last_message.write_bytes(b"{}")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(
+        compat, "tempfile", types.SimpleNamespace(TemporaryDirectory=FixedTemporaryDirectory)
+    )
+    monkeypatch.setattr(compat, "_capture", captured)
+    monkeypatch.setattr(compat, "_assert_probe_answer", lambda *_args: None)
+    monkeypatch.setattr(compat, "ROOT", tmp_path / "source")
+    monkeypatch.setattr(
+        compat.records, "publish_output",
+        lambda *_args: (_ for _ in ()).throw(OSError("hard link failed")),
+    )
+    record_output = tmp_path.parent / f"{tmp_path.name}-publication-records" / "failure.md"
+    with pytest.raises(compat.CompatError, match="could not publish.*hard link failed"):
+        compat.run_probe(
+            Path("codex"), model="gpt-5.6-sol", reasoning="high",
+            record_output=record_output,
+        )
+    run = json.loads(compat.records.sidecar(record_output, ".run.json").read_bytes())
+    assert run["outcome"] == "error"
+    assert run["result"]["published_output"] is None
+    assert "hard link failed" in run["result"]["published_output_unavailable_reason"]
 
 
 def test_probe_answer_rejects_a_truncated_charter_tail():

@@ -388,28 +388,44 @@ def run_probe(
                 failure = CompatError(f"nested Codex session failed ({result.returncode}): {detail}")
             if failure is None and not last_message.is_file():
                 failure = CompatError("nested Codex session wrote no final-message record")
+            semantic_failure = False
             if last_message.is_file():
                 answer_bytes = last_message.read_bytes()
                 try:
                     answer = answer_bytes.decode("utf-8").strip()
                 except UnicodeDecodeError as exc:
-                    failure = CompatError(f"nested Codex result is not UTF-8: {exc}")
+                    failure = failure or CompatError(f"nested Codex result is not UTF-8: {exc}")
                 else:
                     if failure is None:
                         try:
                             _assert_probe_answer(answer, marker)
                         except CompatError as exc:
                             failure = exc
+                            semantic_failure = True
             if failure is None:
                 attempt.update(outcome="success", reason="")
                 outcome = "success"
             else:
-                attempt.update(outcome="semantic_failure" if answer_bytes else "error",
+                attempt.update(outcome="semantic_failure" if semantic_failure else "error",
                                reason=str(failure))
                 outcome = attempt["outcome"]
             if answer_bytes:
                 streams[source_path].write(answer_bytes)
                 streams[source_path].flush()
+            record_stream = streams.streams.pop(run_path)
+            record_stream.close()
+            for stream in streams.values():
+                stream.close()
+            streams.streams.clear()
+            published = False
+            if failure is None and answer_bytes:
+                try:
+                    records.publish_output(output, answer_bytes.replace(b"\r\n", b"\n"))
+                except OSError as exc:
+                    failure = CompatError(f"could not publish compatibility result: {exc}")
+                    outcome = "error"
+                else:
+                    published = True
             run = {
                 "schema_version": records.SCHEMA_VERSION,
                 "dispatch_id": request["dispatch_id"], "request": str(request_path),
@@ -420,18 +436,20 @@ def run_probe(
                            "source_output_unavailable_reason": (
                                None if answer_bytes else "runtime returned no final source text"
                            ),
-                           "published_output": str(output) if failure is None else None,
+                           "published_output": str(output) if published else None,
                            "published_output_unavailable_reason": (
-                               None if failure is None else str(failure)
+                               None if published else str(failure)
                            ),
                            "assessment": "compatibility assertion", "passed": failure is None},
             }
-            streams[run_path].write(records.json_bytes(run))
-            streams[run_path].flush()
-            for stream in streams.values():
-                stream.close()
-        if failure is None and answer_bytes:
-            records.publish_output(output, answer_bytes.replace(b"\r\n", b"\n"))
+            if failure is not None and outcome == "error":
+                run["error"] = str(failure)
+            try:
+                records.finalize_reserved_json(run_path, run)
+            except Exception:
+                if published:
+                    output.unlink(missing_ok=True)
+                raise
         if failure is not None:
             raise failure
 

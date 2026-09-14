@@ -194,7 +194,8 @@ def selected_effort(args, vendor):
 
 
 def selected_model(args, vendor):
-    return getattr(args, vendor + "_model") or DEFAULT_MODELS[vendor]
+    value = getattr(args, vendor + "_model")
+    return DEFAULT_MODELS[vendor] if value is None else value
 
 
 def setting_sources(args, vendor):
@@ -281,6 +282,8 @@ def run_dispatch(args, *, now=None) -> int:
                              "assessment": "unassessed"}}
         pending_logs = {}
         verdict = None
+        publication_error = None
+        published = False
 
         def flush_logs():
             for path in list(pending_logs):
@@ -400,22 +403,40 @@ def run_dispatch(args, *, now=None) -> int:
                     streams[source_path].flush()
                     record["result"]["source_output"] = str(source_path)
                     record["result"]["source_output_unavailable_reason"] = None
-                    record["result"]["published_output"] = str(output)
-                    record["result"]["published_output_unavailable_reason"] = None
                 elif record.get("error") or any(
                     attempt["outcome"] == "error" for attempt in record["attempts"]
                 ):
                     record["outcome"] = "error"
                 else:
                     record["outcome"] = "unavailable"
-                record_stream.write((json.dumps(record, ensure_ascii=True, indent=2) + "\n").encode("utf-8"))
-                record_stream.flush()
+                streams.streams.pop(record_path)
+                record_stream.close()
                 for stream in streams.values():
                     stream.close()
+                streams.streams.clear()
+                if verdict is not None:
+                    try:
+                        records.publish_output(output, verdict)
+                    except OSError as exc:
+                        publication_error = exc
+                        record["outcome"] = "error"
+                        record["error"] = f"could not publish seat result: {exc}"
+                        record["result"]["published_output_unavailable_reason"] = record["error"]
+                    else:
+                        published = True
+                        record["result"]["published_output"] = str(output)
+                        record["result"]["published_output_unavailable_reason"] = None
+                try:
+                    records.finalize_reserved_json(record_path, record)
+                except Exception:
+                    if published:
+                        output.unlink(missing_ok=True)
+                    raise
+        if publication_error is not None:
+            raise publication_error
         if verdict is not None:
-            records.publish_output(output, verdict)
             print(f"seat: {vendor} ({model}, {effort}) -> {output}")
-            return 0
+            return 0 if published else 1
         return 1
 
 
@@ -432,7 +453,8 @@ def parser() -> argparse.ArgumentParser:
                 ".run.json, and per-vendor .stdout.log/.stderr.log. "
                 "Sidecar suffixes append to the full --output filename, including its extension. "
                 "Sidecars are reserved before launch; transcript contents appear after the last attempt. "
-                "The run record is flushed before atomic verdict publication, which requires same-filesystem hard links. "
+                "The source verdict is flushed before atomic publication, which requires same-filesystem hard links. "
+                "The run record claims publication only after it succeeds and removes the verdict if finalizing the record fails. "
                 "Malformed log bytes use a JSON base64 envelope named by the run record's encoding field. "
                 "The run record normalizes runtime model and usage where their scope is known; "
                 "the source-native values remain in the logs. Unknown failures and timeouts "

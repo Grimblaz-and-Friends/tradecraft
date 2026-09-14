@@ -466,7 +466,13 @@ def test_record_failure_never_publishes_a_verdict(job, monkeypatch, failure):
     def opened(path, mode="r", *a, **kw):
         stream = original(path, mode, *a, **kw)
         return FailingRecord(stream) if path == record_path and mode == "xb" else stream
-    monkeypatch.setattr(Path, "open", opened)
+    if failure == "close":
+        monkeypatch.setattr(Path, "open", opened)
+    else:
+        monkeypatch.setattr(
+            seat.records, "finalize_reserved_json",
+            lambda *_args: (_ for _ in ()).throw(OSError(f"record {failure} failed")),
+        )
     with pytest.raises(OSError, match="record"):
         seat.run_dispatch(args)
     assert not args.output.exists()
@@ -486,13 +492,13 @@ def test_partial_verdict_write_is_not_published(job, monkeypatch):
     assert record(args)["attempts"][0]["outcome"] == "success"
 
 
-def test_verdict_publication_follows_complete_record_and_refuses_a_race(job, monkeypatch):
+def test_verdict_publication_race_is_recorded_without_a_false_success(job, monkeypatch):
     args, _ = job
     link = os.link
     def raced(source, destination):
         if source == args.output:
             return link(source, destination)
-        assert record(args)["actual_vendor"] == "claude"
+        assert seat.sidecar(args.output, ".run.json").read_bytes() == b""
         assert Path(source).read_bytes()
         destination.write_bytes(b"another caller")
         link(source, destination)
@@ -500,7 +506,10 @@ def test_verdict_publication_follows_complete_record_and_refuses_a_race(job, mon
     with pytest.raises(FileExistsError):
         seat.run_dispatch(args)
     assert args.output.read_bytes() == b"another caller"
-    source = Path(record(args)["result"]["source_output"])
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert logged["result"]["published_output"] is None
+    source = Path(logged["result"]["source_output"])
     assert source.read_bytes().startswith(b"would not\n")
     assert not list(args.output.parent.glob(".tradecraft-publish-*"))
 
@@ -591,3 +600,27 @@ def test_failed_dispatch_prints_its_id_and_bundle_path(job, capsys):
     output = capsys.readouterr().out
     assert logged["dispatch_id"] in output
     assert str(args.output) in output
+
+
+def test_explicit_empty_model_is_rejected_without_a_bundle(job):
+    args, _ = job
+    args.claude_model = ""
+    with pytest.raises(seat.DispatchError, match="claude model and effort must be nonempty"):
+        seat.run_dispatch(args)
+    assert not list(args.output.parent.glob("verdict.md*"))
+
+
+def test_publication_failure_is_recorded_without_a_false_published_path(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(
+        seat.records, "publish_output",
+        lambda *_args: (_ for _ in ()).throw(OSError("hard link failed")),
+    )
+    with pytest.raises(OSError, match="hard link failed"):
+        seat.run_dispatch(args)
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert logged["attempts"][0]["outcome"] == "success"
+    assert logged["result"]["published_output"] is None
+    assert "hard link failed" in logged["result"]["published_output_unavailable_reason"]
+    assert not args.output.exists()
