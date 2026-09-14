@@ -65,10 +65,14 @@ A line classed *sharpen* keeps its concept and its reason. Four of the ten also 
 
 ## Figures
 
-Stated as commands with both endpoints pinned, never as outputs.
+Stated as commands with both endpoints pinned, never as outputs. **`tools/figures.py` reads the working tree and has no option naming a tip**, so the tip is pinned by the checkout the command runs in, not by a flag — cut one and run there:
 
-- **Shipped prose delta** (the brief's own measure): `python tools/figures.py --base 76ea486` from the repository root, comparing base `76ea486` against this change's tip `c475289`. The raw form is `find skills -name "*.md" -exec cat {} + | wc -c`, run on each of the two commits.
-- **The cell's body against its ceiling:** `python tools/figures.py --cell skills/substrate/SKILL.md` at `c475289`, and `python tools/lint.py`, which reads the constant back.
-- **What the diff touches:** `git diff --stat 76ea486 c475289`, and `git diff 76ea486 c475289 -- tools/lint.py` for the single constant.
+```
+git worktree add --detach <path> c475289
+```
+
+- **Shipped prose delta** (the brief's own measure), from that checkout's root: `python tools/figures.py --base 76ea486 --cell skills/substrate/SKILL.md --cell-budget 2922`. `--cell` refuses without `--cell-budget`, and the budget given must equal the enforced one or the script says so. This prints the prose delta against the base and the cell's body against its ceiling in one run. The raw form of the delta alone is `find skills -name "*.md" -exec cat {} + | wc -c`, run once on each of `76ea486` and `c475289`, which needs no checkout because both endpoints are named.
+- **The ceiling the body is measured against:** `python tools/lint.py` in that same checkout, which reads the constant back and reports any cell over where it stood.
+- **What the diff touches:** `git diff --stat 76ea486 c475289`, and `git diff 76ea486 c475289 -- tools/lint.py` for the single constant. These name both commits and run from any checkout of the repository.
 
 [D-575] [D-232] [D-186] [D-252] [D-156] [D-376]
