@@ -2,11 +2,11 @@
 
 **Loaded when** you are closing a review: writing its final report, appending its row to the review index — **or writing the dispatches whose output the report reads**, which is a job before the terminal ruling that needs this file.
 
-The holder authors the final report and supplies the index row to the fresh record installer after the builder's batch, under the **Returns and records** rule in the `engagement` cell's stretch depth.
+The holder authors the final report, sends its draft through the `engagement` cell's **Source-verification rule** before posting it, and supplies dependent record content only after the posted report gives it a source URL. Where an external pass applies, the draft carries its outcome, final complete receipt block — bundle path, SHA-256, each source count, combined count, and replay command — and a durable link to its uncommitted bundle; a report carrying that receipt is posted to the linked work issue, never the reviewed pull request's issue thread, so posting the account does not move its own source. That check compares the holder's factual account with its producers; it does not make the report another review subject or reopen the terminal ruling, resolving the retired lens at the account boundary rather than by adding a stage.
 
 **The report reads each field from its producer.** A seat's raw count, and the revision and tree each recipient reports, are asked for in the dispatch (`../references/dispatch.md`). Each high's finders are credited at the merge (`../references/arbitration.md`). The holder captures what the review cost from each dispatch's return as it arrives, rather than asking a stage to report it. **A field nobody asked for is silently empty here**, and reads exactly like a field that had nothing to say.
 
-The final report, posted to the PR or issue, carries:
+The final report, posted to the review's chosen issue — the linked work issue when it carries an external-pass receipt — carries:
 
 - The lane and why, and the purpose statement judged against.
 - **Per-seat counts** — raw / merged / sustained, highs broken out — with each seat's model, effort and runtime. **The raw count is the seat's own to report**; the rest this stage derives. A seat's `merged` counts its own findings surviving the merge. **Its `high` counts the sustained highs that seat is credited on, so the column carries credits and never distinct highs** [D-185]. The unit counted throughout is the finding as originated and dispositioned, never a row of a ruling table.
@@ -15,7 +15,6 @@ The final report, posted to the PR or issue, carries:
 - **Every finding's disposition**, bought, pitched, or lapsed, with its one-line reason and the issue for each pitch; also each uncarried seat entry's ruling and one-line reason, with like entries grouped as arbitration states.
 - **What the review cost to run, and where each sustained high landed**, wherever the repository's index records either — so the row's values have a prior statement to be read against, which is what every other field on that row already has.
 - Any lens retired, and the evidence that earned it.
-- The external pass's outcome, and any commissioned pass's.
 - **The split by consequence shape** (`../references/arbitration.md`), and whether a session note was carried.
 - **What the executable floor returned** (`../references/after-the-fix.md`), and which sustained findings it could not reach.
 - **The experience session the fix batch bought**, or the one line declining it.
