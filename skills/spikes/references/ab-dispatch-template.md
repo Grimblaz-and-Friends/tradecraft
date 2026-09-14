@@ -1,6 +1,6 @@
 **Loaded when** you are writing the dispatch for one seat in a cold-seat A/B.
 
-Copy the template below whole; fill every placeholder before dispatch.
+Copy every field below and fill each placeholder before dispatch. **The labels are the dispatcher's; what reaches the seat is the filled content, in this order, worded to name no spike, arm, plant or template.**
 
 # Cold-seat A/B dispatch
 
