@@ -66,6 +66,7 @@ def endpoint_wire(snapshots, calls):
 def collect(monkeypatch, tmp_path, capsys, data=None):
     """Collect one stable receipt with a small page size that exposes paging."""
     monkeypatch.setattr(external_pass, "PAGE_SIZE", 2)
+    monkeypatch.setattr(external_pass, "COMMAND_ROOT", tmp_path)
     data = data or source_data()
     calls = []
     monkeypatch.setattr(external_pass, "gh_api", endpoint_wire([data, data], calls))
@@ -101,7 +102,7 @@ def test_collect_preserves_every_raw_object_proves_terminal_pages_and_prints_rec
     assert "review_comments: 2" in captured.out
     assert "reviews: 1" in captured.out
     assert "total: 6" in captured.out
-    assert "verify" in captured.out and str(output) in captured.out
+    assert "verify" in captured.out and output.name in captured.out
     assert captured.err == ""
 
 
@@ -116,18 +117,24 @@ def test_collect_accepts_empty_and_single_page_sources(monkeypatch, tmp_path, ca
     assert "total: 1" in captured.out
 
 
-def test_receipt_replay_command_names_the_script_a_reader_can_run_from_the_root(
-        tmp_path):
-    """A receipt travels to reports, whose reader is not in references/."""
-    missing = tmp_path / "does-not-exist.json"
-    command = external_pass.replay_command(missing)
-    assert str(SCRIPT.resolve()) in command
-    assert "../scripts/external_pass.py" not in command
+def test_receipt_replay_command_is_root_portable_and_binds_the_bundle_digest():
+    """A report reader can replay a root-stored, immutable receipt."""
+    bundle = ROOT / "external-pass-17.json"
+    digest = "a" * 64
+    command = external_pass.replay_command(bundle, digest)
+    assert command == (
+        "python skills/adversarial-review/scripts/external_pass.py verify "
+        "external-pass-17.json --expected-sha256 " + digest
+    )
+    assert str(ROOT) not in command
 
-    # The named script reaches the command's own diagnostic from the repository
-    # root, instead of Python failing before the verifier starts.
+    # The printed command's paths resolve from the repository root, rather
+    # than from a per-change worktree or the references directory.
     result = subprocess.run(
-        [sys.executable, str(SCRIPT.resolve()), "verify", str(missing)],
+        [
+            sys.executable, "skills/adversarial-review/scripts/external_pass.py",
+            "verify", "does-not-exist.json", "--expected-sha256", digest,
+        ],
         cwd=ROOT,
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -137,15 +144,20 @@ def test_receipt_replay_command_names_the_script_a_reader_can_run_from_the_root(
     assert result.returncode == 1
     assert result.stderr.startswith("external-pass: cannot read bundle")
 
-
-@pytest.mark.parametrize("kind", [
-    "gh failure", "malformed JSON", "non-list JSON", "missing id",
-    "duplicate id", "safety ceiling", "unstable second drain",
+@pytest.mark.parametrize("kind, diagnostic", [
+    ("gh failure", "issue_comments page 1: gh api failed: unavailable"),
+    ("malformed JSON", "issue_comments page 1 returned malformed JSON"),
+    ("non-list JSON", "issue_comments page 1 returned JSON that is not a list"),
+    ("missing id", "issue_comments page 1 item 1 has no stable id"),
+    ("duplicate id", "issue_comments repeats id 1 before its terminal page"),
+    ("safety ceiling", "issue_comments reached safety ceiling"),
+    ("unstable second drain", "reviews was unstable between complete drains: changed: 301"),
 ])
 def test_collect_refuses_unlawful_sources_without_creating_a_bundle(
-        monkeypatch, tmp_path, capsys, kind):
+        monkeypatch, tmp_path, capsys, kind, diagnostic):
     output = tmp_path / "must-not-exist.json"
     monkeypatch.setattr(external_pass, "PAGE_SIZE", 2)
+    monkeypatch.setattr(external_pass, "COMMAND_ROOT", tmp_path)
 
     if kind == "gh failure":
         def wire(endpoint):
@@ -178,10 +190,20 @@ def test_collect_refuses_unlawful_sources_without_creating_a_bundle(
     assert not output.exists()
     assert captured.err.startswith("external-pass:")
     assert "Traceback" not in captured.err
-    if kind == "unstable second drain":
-        assert "reviews" in captured.err and "changed" in captured.err
-    if kind == "safety ceiling":
-        assert "issue_comments" in captured.err and "safety ceiling" in captured.err
+    assert diagnostic in captured.err
+
+
+def test_collect_refuses_a_missing_output_directory_before_fetching(
+        monkeypatch, tmp_path, capsys):
+    """A typo must not spend two complete GitHub drains before failing."""
+    output = tmp_path / "missing" / "receipt.json"
+    monkeypatch.setattr(external_pass, "COMMAND_ROOT", tmp_path)
+    monkeypatch.setattr(external_pass, "gh_api", lambda endpoint: pytest.fail("must not fetch"))
+    assert external_pass.main([
+        "collect", "--repo", "owner/repo", "--pr", "17", "--output", str(output),
+    ]) == 1
+    assert "output directory does not exist" in capsys.readouterr().err
+    assert not output.exists()
 
 
 def test_collect_refuses_an_existing_destination_without_replacing_it(
@@ -189,6 +211,7 @@ def test_collect_refuses_an_existing_destination_without_replacing_it(
     output = tmp_path / "already-there.json"
     before = b"previous receipt"
     output.write_bytes(before)
+    monkeypatch.setattr(external_pass, "COMMAND_ROOT", tmp_path)
     monkeypatch.setattr(external_pass, "gh_api", lambda endpoint: pytest.fail("must not fetch"))
     assert external_pass.main([
         "collect", "--repo", "owner/repo", "--pr", "17", "--output", str(output),
@@ -197,11 +220,32 @@ def test_collect_refuses_an_existing_destination_without_replacing_it(
     assert "already exists" in capsys.readouterr().err
 
 
+def test_bundle_install_refuses_a_destination_created_after_its_precheck(
+        monkeypatch, tmp_path):
+    """The competing writer's bytes survive the install race."""
+    output = tmp_path / "raced.json"
+    monkeypatch.setattr(external_pass, "COMMAND_ROOT", tmp_path)
+    original_link = external_pass.os.link
+
+    def race(source, destination):
+        Path(destination).write_bytes(b"racer receipt")
+        original_link(source, destination)
+
+    monkeypatch.setattr(external_pass.os, "link", race)
+    with pytest.raises(external_pass.ExternalPassError, match="could not install bundle"):
+        external_pass.write_new_bundle(output, {"receipt": "ours"})
+    assert output.read_bytes() == b"racer receipt"
+
+
 @pytest.mark.parametrize("mutation, expected", [
     (lambda data: data["issue_comments"].append({"id": 104, "body": "new"}), "added: 104"),
     (lambda data: data["review_comments"].pop(), "removed: 202"),
     (lambda data: data["reviews"].__setitem__(0, {"id": 301, "body": "edited", "state": "COMMENTED"}),
      "changed: 301"),
+    (lambda data: data["reviews"].__setitem__(0, {
+        "id": 301, "body": "submitted review", "state": "COMMENTED", "reactions": {"+1": 1},
+    }), "changed: 301"),
+    (lambda data: data["issue_comments"].reverse(), "moved: 103, 101"),
 ])
 def test_verify_matches_or_reports_source_drift_without_rewriting_the_receipt(
         monkeypatch, tmp_path, capsys, mutation, expected):
@@ -211,7 +255,15 @@ def test_verify_matches_or_reports_source_drift_without_rewriting_the_receipt(
     unchanged = source_data()
     monkeypatch.setattr(external_pass, "gh_api", endpoint_wire([unchanged, unchanged], []))
     assert external_pass.main(["verify", str(output)]) == 0
-    assert hashlib.sha256(before).hexdigest() in capsys.readouterr().out
+    verified = capsys.readouterr().out
+    assert verified.splitlines()[0] == (
+        f"external-pass: verified {output} sha256: {hashlib.sha256(before).hexdigest()}"
+    )
+    assert "issue_comments: 3" in verified
+    assert "review_comments: 2" in verified
+    assert "reviews: 1" in verified
+    assert "total: 6" in verified
+    assert "verify: python skills/adversarial-review/scripts/external_pass.py verify" in verified
 
     changed = source_data()
     mutation(changed)
@@ -221,6 +273,84 @@ def test_verify_matches_or_reports_source_drift_without_rewriting_the_receipt(
     assert "source drift" in captured.err
     assert expected in captured.err
     assert output.read_bytes() == before
+
+
+def test_verify_rejects_a_bundle_replaced_after_its_receipt_was_printed(
+        monkeypatch, tmp_path, capsys):
+    """The replay command identifies both bytes and live source content."""
+    output, _, captured = collect(monkeypatch, tmp_path, capsys)
+    expected = hashlib.sha256(output.read_bytes()).hexdigest()
+    unchanged = source_data()
+    monkeypatch.setattr(external_pass, "gh_api", endpoint_wire([unchanged, unchanged], []))
+    assert external_pass.main([
+        "verify", str(output), "--expected-sha256", expected,
+    ]) == 0
+    assert expected in capsys.readouterr().out
+    replacement = external_pass.bundle_for("owner/repo", 18, {
+        label: {
+            "endpoint": external_pass.source_endpoint("owner/repo", 18, source),
+            "completeness": {"page_size": 2, "page_lengths": [0], "terminal_page": 1},
+            "objects": [],
+        }
+        for source in external_pass.SOURCES
+        for label in [source["label"]]
+    })
+    output.write_bytes(external_pass.canonical_json(replacement) + b"\n")
+    monkeypatch.setattr(external_pass, "gh_api", lambda endpoint: pytest.fail("must not fetch"))
+    assert external_pass.main([
+        "verify", str(output), "--expected-sha256", expected,
+    ]) == 1
+    assert "does not match expected sha256" in capsys.readouterr().err
+    assert "--expected-sha256" in captured.out
+
+
+@pytest.mark.parametrize("proof, expected", [
+    ({"page_size": 0, "page_lengths": [0], "terminal_page": 1}, "page_size"),
+    ({"page_size": 2, "page_lengths": [], "terminal_page": 1}, "page_lengths"),
+    ({"page_size": 2, "page_lengths": [2], "terminal_page": 1}, "terminal page"),
+    ({"page_size": 2, "page_lengths": [1, 0], "terminal_page": 1}, "terminal_page"),
+    ({"page_size": 2, "page_lengths": [2, 0], "terminal_page": 2}, "object count"),
+])
+def test_verify_refuses_self_contradicting_completeness_proofs(
+        monkeypatch, tmp_path, capsys, proof, expected):
+    """A stored proof must prove the objects it admits, not merely have keys."""
+    output, _, _ = collect(monkeypatch, tmp_path, capsys)
+    bundle = json.loads(output.read_bytes())
+    bundle["sources"]["issue_comments"]["completeness"] = proof
+    output.write_bytes(external_pass.canonical_json(bundle) + b"\n")
+    monkeypatch.setattr(external_pass, "gh_api", lambda endpoint: pytest.fail("must not fetch"))
+    assert external_pass.main(["verify", str(output)]) == 1
+    assert expected in capsys.readouterr().err
+
+
+def test_source_endpoint_rejects_a_repository_that_can_escape_its_three_sources():
+    """A repository identity cannot inject its own path and query string."""
+    with pytest.raises(external_pass.ExternalPassError, match="OWNER/REPO"):
+        external_pass.source_endpoint(
+            "owner/repo/issues/17/comments?per_page=1&page=1#", 17, external_pass.SOURCES[0],
+        )
+
+
+def test_verify_applies_the_repository_guard_to_a_crafted_bundle(
+        monkeypatch, tmp_path, capsys):
+    """Stored metadata cannot make verify compare injected partial endpoints."""
+    output = tmp_path / "crafted.json"
+    repository = "owner/repo/issues/17/comments?per_page=1&page=1#"
+    output.write_bytes(external_pass.canonical_json({
+        "schema": external_pass.SCHEMA,
+        "repository": repository,
+        "pull_request": 17,
+        "sources": {
+            source["label"]: {
+                "endpoint": "crafted", "objects": [],
+                "completeness": {"page_size": 1, "page_lengths": [0], "terminal_page": 1},
+            }
+            for source in external_pass.SOURCES
+        },
+    }) + b"\n")
+    monkeypatch.setattr(external_pass, "gh_api", lambda endpoint: pytest.fail("must not fetch"))
+    assert external_pass.main(["verify", str(output)]) == 1
+    assert "repository must be an OWNER/REPO name" in capsys.readouterr().err
 
 
 def test_verify_distinguishes_a_source_failure_from_drift(monkeypatch, tmp_path, capsys):

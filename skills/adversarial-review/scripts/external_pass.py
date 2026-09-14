@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -23,6 +24,11 @@ from winio import utf8_stdio  # noqa: E402
 SCHEMA = "tradecraft.external-pass.v1"
 PAGE_SIZE = 100
 MAX_PAGES = 1000
+COMMAND_ROOT = Path(__file__).resolve().parents[3]
+COMMAND_SCRIPT = Path(__file__).resolve().relative_to(COMMAND_ROOT).as_posix()
+REPOSITORY_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z"
+)
 SOURCES = (
     {"label": "issue_comments", "path": "issues/{pr}/comments"},
     {"label": "review_comments", "path": "pulls/{pr}/comments"},
@@ -43,6 +49,8 @@ def canonical_json(value: Any) -> bytes:
 
 def source_endpoint(repository: str, pull_request: int, source: dict[str, str]) -> str:
     """The REST collection named by one source label."""
+    if not isinstance(repository, str) or not REPOSITORY_PATTERN.fullmatch(repository):
+        raise ExternalPassError("repository must be an OWNER/REPO name")
     return f"repos/{repository}/{source['path'].format(pr=pull_request)}"
 
 
@@ -201,12 +209,28 @@ def bundle_for(repository: str, pull_request: int, sources: dict[str, dict[str, 
     }
 
 
-def write_new_bundle(path: Path, bundle: dict[str, Any]) -> bytes:
-    """Publish complete canonical bytes atomically without replacing a receipt."""
+def root_relative_path(path: Path) -> str:
+    """Name a receipt from the command root without publishing local paths."""
+    try:
+        return path.resolve().relative_to(COMMAND_ROOT.resolve()).as_posix()
+    except ValueError:
+        raise ExternalPassError(
+            f"bundle must be under the command root: {path}"
+        ) from None
+
+
+def checked_output_path(path: Path) -> None:
+    """Refuse unusable or nonportable destinations before any source read."""
     if os.path.lexists(path):
         raise ExternalPassError(f"output already exists: {path}")
+    root_relative_path(path)
     if not path.parent.is_dir():
         raise ExternalPassError(f"output directory does not exist: {path.parent}")
+
+
+def write_new_bundle(path: Path, bundle: dict[str, Any]) -> bytes:
+    """Publish complete canonical bytes atomically without replacing a receipt."""
+    checked_output_path(path)
     data = canonical_json(bundle) + b"\n"
     temporary_name: str | None = None
     try:
@@ -214,7 +238,9 @@ def write_new_bundle(path: Path, bundle: dict[str, Any]) -> bytes:
                 mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as temporary:
             temporary_name = temporary.name
             temporary.write(data)
-        os.replace(temporary_name, path)
+        os.link(temporary_name, path)
+        Path(temporary_name).unlink()
+        temporary_name = None
     except OSError as exc:
         if temporary_name:
             try:
@@ -225,9 +251,12 @@ def write_new_bundle(path: Path, bundle: dict[str, Any]) -> bytes:
     return data
 
 
-def replay_command(path: Path) -> str:
+def replay_command(path: Path, digest: str) -> str:
     """Print an invocation that resolves from the report reader's directory."""
-    arguments = ["python", str(Path(__file__).resolve()), "verify", str(path)]
+    arguments = [
+        "python", COMMAND_SCRIPT, "verify", root_relative_path(path),
+        "--expected-sha256", digest,
+    ]
     if os.name == "nt":
         return subprocess.list2cmdline(arguments)
     return shlex.join(arguments)
@@ -235,8 +264,9 @@ def replay_command(path: Path) -> str:
 
 def print_receipt(path: Path, data: bytes, sources: dict[str, dict[str, Any]]) -> None:
     """Print the legible cross-check and the command that replays its sources."""
-    print(f"external-pass: bundle: {path}")
-    print(f"external-pass: sha256: {hashlib.sha256(data).hexdigest()}")
+    digest = hashlib.sha256(data).hexdigest()
+    print(f"external-pass: bundle: {root_relative_path(path)}")
+    print(f"external-pass: sha256: {digest}")
     total = 0
     for source in SOURCES:
         label = source["label"]
@@ -244,7 +274,34 @@ def print_receipt(path: Path, data: bytes, sources: dict[str, dict[str, Any]]) -
         total += count
         print(f"external-pass: {label}: {count}")
     print(f"external-pass: total: {total}")
-    print(f"external-pass: verify: {replay_command(path)}")
+    print(f"external-pass: verify: {replay_command(path, digest)}")
+
+
+def require_completeness_proof(
+        proof: Any, objects: list[dict[str, Any]], path: Path, label: str) -> None:
+    """Ensure stored page evidence still proves its stored source objects."""
+    prefix = f"bundle {path} has invalid completeness proof for {label}"
+    if not isinstance(proof, dict):
+        raise ExternalPassError(f"{prefix}: not an object")
+    page_size = proof.get("page_size")
+    page_lengths = proof.get("page_lengths")
+    terminal_page = proof.get("terminal_page")
+    if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size < 1:
+        raise ExternalPassError(f"{prefix}: page_size must be a positive integer")
+    if not isinstance(page_lengths, list) or not page_lengths:
+        raise ExternalPassError(f"{prefix}: page_lengths must be a nonempty list")
+    if any(isinstance(length, bool) or not isinstance(length, int) or length < 0
+           or length > page_size for length in page_lengths):
+        raise ExternalPassError(f"{prefix}: page_lengths contain an invalid page length")
+    if isinstance(terminal_page, bool) or not isinstance(terminal_page, int) \
+            or terminal_page != len(page_lengths):
+        raise ExternalPassError(f"{prefix}: terminal_page must name the final page")
+    if any(length != page_size for length in page_lengths[:-1]):
+        raise ExternalPassError(f"{prefix}: a page before terminal page is not full")
+    if page_lengths[-1] >= page_size:
+        raise ExternalPassError(f"{prefix}: terminal page is not short")
+    if sum(page_lengths) != len(objects):
+        raise ExternalPassError(f"{prefix}: object count does not match page_lengths")
 
 
 def required_bundle(path: Path) -> tuple[dict[str, Any], bytes]:
@@ -272,27 +329,25 @@ def required_bundle(path: Path) -> tuple[dict[str, Any], bytes]:
             raise ExternalPassError(f"bundle {path} lacks objects for {label}")
         if saved.get("endpoint") != source_endpoint(repository, pull_request, source):
             raise ExternalPassError(f"bundle {path} has the wrong endpoint for {label}")
-        proof = saved.get("completeness")
-        if not isinstance(proof, dict) or not isinstance(proof.get("page_size"), int) \
-                or not isinstance(proof.get("page_lengths"), list) \
-                or not isinstance(proof.get("terminal_page"), int):
-            raise ExternalPassError(f"bundle {path} lacks completeness proof for {label}")
+        require_completeness_proof(saved.get("completeness"), saved["objects"], path, label)
         ids_by_source(saved["objects"], label)
     return bundle, raw
 
 
 def collect(repository: str, pull_request: int, output: Path) -> None:
     """Collect stable sources, then install and receipt their one immutable bundle."""
-    if os.path.lexists(output):
-        raise ExternalPassError(f"output already exists: {output}")
+    checked_output_path(output)
     sources = collect_stable_sources(repository, pull_request)
     data = write_new_bundle(output, bundle_for(repository, pull_request, sources))
     print_receipt(output, data, sources)
 
 
-def verify(path: Path) -> None:
+def verify(path: Path, expected_digest: str | None = None) -> None:
     """Re-read the receipt's sources and report equality or source drift."""
     bundle, raw = required_bundle(path)
+    digest = hashlib.sha256(raw).hexdigest()
+    if expected_digest is not None and digest != expected_digest:
+        raise ExternalPassError(f"bundle {path} does not match expected sha256")
     try:
         current = collect_stable_sources(bundle["repository"], bundle["pull_request"])
     except ExternalPassError as exc:
@@ -302,7 +357,8 @@ def verify(path: Path) -> None:
         difference = source_difference(bundle["sources"][label]["objects"], current[label]["objects"], label)
         if difference:
             raise ExternalPassError(f"source drift in {label}: {difference}")
-    print(f"external-pass: verified {path} sha256: {hashlib.sha256(raw).hexdigest()}")
+    print(f"external-pass: verified {path} sha256: {digest}")
+    print_receipt(path, raw, bundle["sources"])
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -315,6 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser.add_argument("--output", required=True, type=Path, metavar="BUNDLE.json")
     verify_parser = commands.add_parser("verify")
     verify_parser.add_argument("bundle", type=Path, metavar="BUNDLE.json")
+    verify_parser.add_argument("--expected-sha256", metavar="DIGEST")
     return parser
 
 
@@ -328,7 +385,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise ExternalPassError("--pr must be at least 1")
             collect(args.repo, args.pr, args.output)
         else:
-            verify(args.bundle)
+            if args.expected_sha256 is not None and not re.fullmatch(
+                    r"[0-9a-f]{64}", args.expected_sha256):
+                raise ExternalPassError("--expected-sha256 must be a lowercase SHA-256 digest")
+            verify(args.bundle, args.expected_sha256)
     except ExternalPassError as exc:
         print(f"external-pass: {exc}", file=sys.stderr)
         return 1
