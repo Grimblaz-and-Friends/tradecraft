@@ -7,6 +7,7 @@ import pytest
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import dispatch_implementer as implementer
+import vendor_cli
 
 
 @pytest.fixture
@@ -81,6 +82,31 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     assert request["settings_source"] == "issuecomment-5655702442"
     assert args.output.read_bytes() == b"built\n"
     assert Path(logged["result"]["source_output"]).read_bytes() == b"built\n"
+
+
+def test_implementer_runs_the_shared_automatic_resolution_result(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    dispatch = tmp_path / "dispatch.md"
+    dispatch.write_bytes(b"Build the settled artifact and report the result.\n")
+    scenario = tmp_path / "scenario.json"
+    scenario.write_bytes(json.dumps({"codex": {"stdout": success_events(), "message": "built\n"}}).encode())
+    output = tmp_path / "records" / "result.md"
+    args = implementer.parser().parse_args([
+        "--dispatch", str(dispatch), "--root", str(root), "--work", "issue-609", "--stage", "build",
+        "--settings-source", "brief", "--settings-scope", "shared resolver", "--output", str(output),
+    ])
+    automatic_result = [sys.executable, str(LIB / "tests/seat_cli.py"), "codex", str(scenario)]
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: automatic_result)
+    monkeypatch.setattr(
+        vendor_cli,
+        "resolve_codex",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("do not bypass shared resolution")),
+    )
+    monkeypatch.setattr(implementer.records, "runtime_version", lambda *_: "codex-cli test")
+    assert implementer.run_implementer(args) == 0
+    assert seen(args)["argv"][:3] == ["exec", "--approve-for-me", "--json"]
+    assert output.read_bytes() == b"built\n"
 
 
 def test_resume_names_exact_session_and_keeps_usage_scope_unknown(job):

@@ -4,12 +4,14 @@
 Usage: python <plugin>/lib/dispatch_seat.py --dispatch FILE --root DIR
        --vendor claude --own-vendor codex --work ISSUE --stage NAME
        --settings-source SOURCE --settings-scope SCOPE --classification cold
-       [--output NEW_FILE]
+       --requires read|execute [--output NEW_FILE]
 
 Availability is discovered by trying or reading a machine-local expiring hold.
 Only availability failures permit one attempt on the caller's own vendor.
-Claude exposes file-reading tools, not a shell or an OS sandbox; provide any
-executable probe evidence in the dispatch. The dispatch owns its job context.
+Every job declares whether it requires reading or execution. Claude read mode
+exposes Read,Glob,Grep; Claude execute mode also exposes Bash. Claude supplies
+no OS sandbox in either mode. The launcher verifies a detached recipient root
+and records each attempted boundary. The dispatch owns its job context.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -34,7 +37,9 @@ VENDORS = ("codex", "claude")
 DEFAULT_MODELS = {"codex": "gpt-6-astra", "claude": "opus"}
 DEFAULT_CODEX_EFFORT = "xhigh"
 CLAUDE_EFFORTS = {"ordinary": "xhigh", "cold": "max", "terminal": "max"}
-FILE_TOOLS = "Read,Glob,Grep"
+CLAUDE_READ_TOOLS = "Read,Glob,Grep"
+CLAUDE_EXECUTE_TOOLS = "Read,Glob,Grep,Bash"
+GIT_ENVIRONMENT_KEYS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
 
 
 class DispatchError(RuntimeError):
@@ -68,16 +73,98 @@ def read_holds(path: Path) -> dict[str, datetime]:
     return holds
 
 
-def build_command(vendor, executable, root, last_message, model, effort):
+def build_command(vendor, executable, root, last_message, model, effort, required_capability):
     if vendor == "codex":
         return [*executable, "exec", "--ephemeral", "--sandbox", "read-only",
                 "--json", "--color", "never", "--model", model,
                 "-c", f'model_reasoning_effort="{effort}"', "-C", str(root),
                 "--skip-git-repo-check", "--output-last-message", str(last_message), "-"]
+    if required_capability == "read":
+        tools = CLAUDE_READ_TOOLS
+    elif required_capability == "execute":
+        tools = CLAUDE_EXECUTE_TOOLS
+    else:
+        raise DispatchError(f"unknown required capability: {required_capability}")
     return [*executable, "-p", "--model", model, "--effort", effort,
             "--output-format", "json", "--no-session-persistence", "--safe-mode",
-            "--tools", FILE_TOOLS, "--allowedTools", FILE_TOOLS,
+            "--tools", tools, "--allowedTools", tools,
             "--permission-mode", "dontAsk", "--strict-mcp-config"]
+
+
+def can_supply(vendor, required_capability):
+    if required_capability == "read":
+        return True
+    if required_capability == "execute":
+        return vendor == "claude"
+    raise DispatchError(f"unknown required capability: {required_capability}")
+
+
+def capability_refusal(vendor, required_capability):
+    return f"{vendor} cannot supply required capability {required_capability}; no process was launched"
+
+
+def permission_boundary(vendor, required_capability, root):
+    if vendor == "claude":
+        if required_capability == "read":
+            tools = CLAUDE_READ_TOOLS
+        elif required_capability == "execute":
+            tools = CLAUDE_EXECUTE_TOOLS
+        else:
+            raise DispatchError(f"unknown required capability: {required_capability}")
+        return (
+            f"Claude tools={tools}; safe_mode=true; permission_mode=dontAsk; "
+            f"strict_mcp_config=true; os_sandbox=none; detached_root_verified={root}"
+        )
+    return (
+        "Codex sandbox=read-only; connector_surface=not_constrained_by_dispatch_seat; "
+        f"detached_root_verified={root}"
+    )
+
+
+def git_environment():
+    return {key: value for key, value in os.environ.items() if key not in GIT_ENVIRONMENT_KEYS}
+
+
+def git_diagnostic(raw: bytes) -> str:
+    text = raw.decode("utf-8", errors="backslashreplace").strip()
+    return text.encode("ascii", errors="backslashreplace").decode("ascii")
+
+
+def detached_worktree_root(root):
+    """Return None for a lawful root, otherwise the reason for its refusal."""
+    try:
+        toplevel = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            env=git_environment(),
+        )
+        head = subprocess.run(
+            ["git", "-C", str(root), "symbolic-ref", "-q", "HEAD"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            env=git_environment(),
+        )
+    except subprocess.TimeoutExpired:
+        return "Git root probe timed out"
+    except OSError as exc:
+        detail = str(exc).encode("ascii", errors="backslashreplace").decode("ascii")
+        return f"Git root probe could not start: {detail}"
+    if toplevel.returncode != 0:
+        diagnostic = git_diagnostic(toplevel.stderr)
+        if "not a git repository" in diagnostic.lower():
+            return "root is not a Git worktree"
+        return f"Git root probe failed: {diagnostic or f'exit {toplevel.returncode}'}"
+    try:
+        reported_root = Path(toplevel.stdout.decode("utf-8").strip()).resolve()
+    except (UnicodeError, OSError):
+        return "Git root probe returned an unreadable worktree path"
+    if reported_root != root:
+        return f"root is not the worktree top level (Git reports {reported_root})"
+    if head.returncode == 0:
+        return "HEAD is attached to a branch"
+    if head.returncode != 1:
+        diagnostic = git_diagnostic(head.stderr)
+        return f"Git HEAD probe failed: {diagnostic or f'exit {head.returncode}'}"
+    return None
 
 
 def diagnostic_reason(text: str) -> str | None:
@@ -212,7 +299,8 @@ def setting_sources(args, vendor):
         ),
         "classification": args.settings_source,
         "continuity": "dispatch_seat route (fresh)",
-        "permission_boundary": "dispatch_seat route",
+        "permission_boundary": args.settings_source,
+        "required_capability": args.settings_source,
     }
 
 
@@ -224,6 +312,13 @@ def run_dispatch(args, *, now=None) -> int:
     hold_file = args.hold_file.expanduser().resolve()
     if not root.is_dir():
         raise DispatchError(f"Root is not a directory: {root}")
+    root_refusal = detached_worktree_root(root)
+    if root_refusal:
+        raise DispatchError(f"Root must be the top level of a detached Git worktree: {root}; {root_refusal}")
+    if not can_supply(args.vendor, args.requires) and (
+        args.own_vendor == args.vendor or not can_supply(args.own_vendor, args.requires)
+    ):
+        raise DispatchError(capability_refusal(args.vendor, args.requires))
     records.require_output_outside_root(output, root)
     prompt = dispatch.read_bytes()
     if not prompt.decode("utf-8").strip():
@@ -236,7 +331,7 @@ def run_dispatch(args, *, now=None) -> int:
         if not selected_model(args, vendor).strip() or not effort.strip():
             raise DispatchError(f"{vendor} model and effort must be nonempty")
         explicit = getattr(args, vendor)
-        if explicit:
+        if explicit and can_supply(vendor, args.requires):
             resolve_command(vendor, explicit)  # invalid overrides fail before spending
     record_path = sidecar(output, ".run.json")
     request_path = sidecar(output, ".request.json")
@@ -259,10 +354,12 @@ def run_dispatch(args, *, now=None) -> int:
             settings_source=args.settings_source, settings_scope=args.settings_scope,
             vendor=args.vendor,
             model=selected_model(args, args.vendor), effort=selected_effort(args, args.vendor),
-            continuity="fresh", permission_boundary="read-only judging seat",
+            continuity="fresh",
+            permission_boundary=permission_boundary(args.vendor, args.requires, root),
             root=root, classification=args.classification, retry_of=args.retry_of,
             setting_sources=setting_sources(args, args.vendor),
         )
+        request["requested"]["required_capability"] = args.requires
         request["revision_before"] = records.git_revision(root)
         request["input"] = str(input_path)
         streams[request_path].write(records.json_bytes(request))
@@ -300,6 +397,8 @@ def run_dispatch(args, *, now=None) -> int:
                 attempt = {"vendor": vendor, "model": model, "effort": effort,
                            "classification": args.classification, "launched": False,
                            "exit_code": None, "outcome": "error", "reason": "",
+                           "permission_boundary": None,
+                           "permission_boundary_unavailable_reason": "attempt was not launched",
                            "setting_sources": setting_sources(args, vendor)}
                 attempt["runtime_version"] = None
                 attempt["runtime_version_unavailable_reason"] = "attempt was not launched"
@@ -307,7 +406,9 @@ def run_dispatch(args, *, now=None) -> int:
                 reset = read_holds(hold_file).get(vendor)
                 current = now if now is not None else datetime.now(timezone.utc)
                 message = ""
-                if reset and reset > current:
+                if not can_supply(vendor, args.requires):
+                    outcome, reason = "unavailable", capability_refusal(vendor, args.requires)
+                elif reset and reset > current:
                     outcome, reason = "unavailable", f"owner hold until {reset.isoformat()}"
                 else:
                     try:
@@ -317,7 +418,10 @@ def run_dispatch(args, *, now=None) -> int:
                     else:
                         with tempfile.TemporaryDirectory(prefix="tradecraft-seat-") as temp:
                             last_message = Path(temp) / "last.txt"
-                            command = build_command(vendor, executable, root, last_message, model, effort)
+                            command = build_command(
+                                vendor, executable, root, last_message, model, effort, args.requires
+                            )
+                            boundary = permission_boundary(vendor, args.requires, root)
                             attempt["command"] = command
                             attempt["runtime_version"] = records.runtime_version(executable)
                             attempt["runtime_version_unavailable_reason"] = (
@@ -331,6 +435,8 @@ def run_dispatch(args, *, now=None) -> int:
                                 result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
                                 outcome, reason = "error", f"{vendor} timed out after {args.timeout_seconds:g}s; no fallback"
                                 attempt["launched"] = True
+                                attempt["permission_boundary"] = boundary
+                                attempt["permission_boundary_unavailable_reason"] = None
                             except FileNotFoundError as exc:
                                 result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
                                 outcome, reason = "unavailable", f"{vendor} executable disappeared before launch"
@@ -342,11 +448,14 @@ def run_dispatch(args, *, now=None) -> int:
                                 )
                                 outcome = "error"
                                 attempt.update(outcome=outcome, reason=reason)
+                                attempt["permission_boundary_unavailable_reason"] = reason
                                 records.add_unobserved(attempt, reason)
                                 raise DispatchError(reason) from exc
                             else:
                                 returned = True
                                 attempt["launched"] = True
+                                attempt["permission_boundary"] = boundary
+                                attempt["permission_boundary_unavailable_reason"] = None
                             elapsed = time.monotonic() - started
                             attempt["exit_code"] = result.returncode
                             for stream in ("stdout", "stderr"):
@@ -369,6 +478,8 @@ def run_dispatch(args, *, now=None) -> int:
                                     attempt, vendor, result.stdout, "fresh", elapsed
                                 )
                 attempt.update(outcome=outcome, reason=reason)
+                if attempt["permission_boundary"] is None:
+                    attempt["permission_boundary_unavailable_reason"] = reason
                 if "observed" not in attempt:
                     records.add_unobserved(attempt, reason)
                 if outcome == "success":
@@ -442,12 +553,17 @@ def run_dispatch(args, *, now=None) -> int:
 
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(
-        description="Run a fresh seat; unavailable vendors fall back once to --own-vendor.",
+        description=(
+            "Run a fresh capability-declaring seat; an unavailable vendor falls back once only "
+            "when the fallback can supply that capability."
+        ),
         epilog=("Holds: one row per vendor, for example 'claude 2026-09-13T00:00:00Z'. "
                 "Timezone required; no comments; expired holds are ignored. Keep this file "
-                "machine-local and uncommitted. The script only reads it. Claude uses only "
-                "Read/Glob/Grep in safe mode (no commands or OS sandbox); put required context "
-                "and probe evidence in the dispatch. --bare is omitted to preserve OAuth. "
+                "machine-local and uncommitted. The script only reads it. Both modes use safe mode, "
+                "permission mode dontAsk and strict MCP configuration, "
+                "and neither has an OS sandbox. Put the job and any evidence already available in the "
+                "dispatch; an execute job may produce its own probe evidence. --bare is omitted to "
+                "preserve OAuth. "
                 "From native Windows Codex use approval-managed host execution for login. "
                 "Outputs must be new: verdict, .request.json, .dispatch.bin, .source.bin, "
                 ".run.json, and per-vendor .stdout.log/.stderr.log. "
@@ -473,10 +589,22 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--retry-of", help="dispatch id of an earlier whole-invocation retry")
     cli.add_argument("--classification", choices=records.CLASSIFICATIONS, required=True,
                      help="ordinary, protected cold, or terminal judgment")
+    cli.add_argument(
+        "--requires", choices=("read", "execute"), required=True,
+        help=(
+            "Capability the job consumes: read supplies file tools only; execute also supplies command "
+            "execution. Existing callers must add --requires read unless the governing lens or assignment "
+            "requires commands, in which case add --requires execute. Omission is an error, not a "
+            "compatibility default."
+        ),
+    )
     cli.add_argument("--output", type=Path,
                      help="result path; defaults to the machine-local dispatch store")
     cli.add_argument("--hold-file", type=Path, default=default_hold_file(), help="shared availability holds")
-    cli.add_argument("--timeout-seconds", type=float, default=900, help="timeout per launched seat")
+    cli.add_argument(
+        "--timeout-seconds", type=float, default=900,
+        help="timeout per launched seat; size execute work beyond the default where its job needs it",
+    )
     for vendor, model in DEFAULT_MODELS.items():
         cli.add_argument("--" + vendor, help="explicit CLI executable")
         cli.add_argument("--" + vendor + "-model", help=f"requested model (default: {model})")
