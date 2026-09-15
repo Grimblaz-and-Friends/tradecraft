@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
+import sys
 from typing import Callable, Mapping
 
 
@@ -73,7 +74,13 @@ def resolve_claude(explicit: str | None) -> Path:
     raise CliNotFound("Claude CLI not found: install Claude or pass --claude PATH")
 
 
-def executable_command(vendor: str, path: Path, *, platform: str = os.name) -> list[str]:
+def executable_command(
+    vendor: str,
+    path: Path,
+    *,
+    path_lookup: Callable[[str], str | None] = which_on_path,
+    platform: str = os.name,
+) -> list[str]:
     """Resolve npm's Windows launcher to its payload; never invoke a batch shell."""
     if platform != "nt" or path.suffix.lower() not in {".cmd", ".bat", ".ps1"}:
         return [str(path)]
@@ -85,7 +92,7 @@ def executable_command(vendor: str, path: Path, *, platform: str = os.name) -> l
         return [str(native)]
     script = package / ("cli.js" if vendor == "claude" else "bin/codex.js")
     node = path.parent / "node.exe"
-    node_path = str(node) if node.is_file() else which_on_path("node")
+    node_path = str(node) if node.is_file() else path_lookup("node")
     if node_path and Path(node_path).suffix.lower() in {".cmd", ".bat", ".ps1"}:
         raise CliError("Node must be a native executable; batch shells are not used.")
     if script.is_file() and node_path:
@@ -105,10 +112,12 @@ def resolve_command(
     platform: str = os.name,
 ) -> list[str]:
     if vendor != "codex":
+        if env is not None or path_lookup is not which_on_path:
+            raise CliError("env and path_lookup are only supported for automatic Codex resolution")
         return executable_command(vendor, resolve_claude(explicit), platform=platform)
     path = resolve_codex(explicit, env=env, path_lookup=path_lookup, platform=platform)
     try:
-        return executable_command(vendor, path, platform=platform)
+        return executable_command(vendor, path, path_lookup=path_lookup, platform=platform)
     except CliError as shim_error:
         if explicit:
             raise
@@ -118,4 +127,8 @@ def resolve_command(
             )
         except CliNotFound:
             raise shim_error from None
-        return executable_command(vendor, bundled, platform=platform)
+        command = executable_command(vendor, bundled, path_lookup=path_lookup, platform=platform)
+        shim = str(path).encode("ascii", errors="backslashreplace").decode("ascii")
+        chosen = str(bundled).encode("ascii", errors="backslashreplace").decode("ascii")
+        print(f"codex: skipped unusable PATH shim {shim}; using app-bundle executable {chosen}", file=sys.stderr)
+        return command

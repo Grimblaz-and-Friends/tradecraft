@@ -26,20 +26,22 @@ def git(root, *arguments):
     )
 
 
-def detached_repository(root):
-    root.mkdir()
-    git(root, "init")
-    (root / "fixture.txt").write_bytes(b"fixture\n")
-    git(root, "add", "fixture.txt")
-    git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+def linked_detached_worktree(root):
+    primary = root.parent / "primary"
+    primary.mkdir()
+    git(primary, "init")
+    (primary / "fixture.txt").write_bytes(b"fixture\n")
+    git(primary, "add", "fixture.txt")
+    git(primary, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "fixture")
-    git(root, "checkout", "--detach")
+    git(primary, "worktree", "add", "--detach", str(root))
+    return primary
 
 
 @pytest.fixture
 def job(tmp_path, monkeypatch):
     root = tmp_path / "root with spaces"
-    detached_repository(root)
+    primary = linked_detached_worktree(root)
     dispatch = tmp_path / "dispatch.txt"
     dispatch.write_bytes(b"Read the supplied artifact and return your verdict.\n")
     scenario = tmp_path / "scenario.json"
@@ -58,7 +60,8 @@ def job(tmp_path, monkeypatch):
         return [sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)]
     monkeypatch.setattr(seat, "resolve_command", resolver)
     monkeypatch.setattr(seat.records, "runtime_version", lambda *_: "fixture-cli 1.0")
-    return args, scenario
+    yield args, scenario
+    git(primary, "worktree", "remove", "--force", str(root))
 
 
 def configure(job, config):
@@ -107,10 +110,25 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     assert request["requested"]["required_capability"] == required_capability
 
 
+@pytest.mark.parametrize(
+    ("vendor", "required_capability", "expected"),
+    [
+        ("claude", "read", "Claude tools=Read,Glob,Grep; safe_mode=true; permission_mode=dontAsk; strict_mcp_config=true; os_sandbox=none"),
+        ("claude", "execute", "Claude tools=Read,Glob,Grep,Bash; safe_mode=true; permission_mode=dontAsk; strict_mcp_config=true; os_sandbox=none"),
+        ("codex", "read", "Codex sandbox=read-only; connector_surface=not_constrained_by_dispatch_seat"),
+    ],
+)
+def test_permission_boundary_states_the_selected_vendor_mode_and_root(job, vendor, required_capability, expected):
+    args, _ = job
+    assert seat.permission_boundary(vendor, required_capability, args.root.resolve()) == (
+        f"{expected}; detached_root_verified={args.root.resolve()}"
+    )
+
+
 def test_execute_capability_refuses_codex_before_resolving_or_reserving(job, monkeypatch):
     args, _ = job
     args.vendor = "codex"
-    args.own_vendor = "claude"
+    args.own_vendor = "codex"
     args.requires = "execute"
     calls = []
     monkeypatch.setattr(seat, "resolve_command", lambda *values: calls.append(values))
@@ -121,6 +139,30 @@ def test_execute_capability_refuses_codex_before_resolving_or_reserving(job, mon
         seat.run_dispatch(args)
     assert calls == []
     assert not list(args.output.parent.glob("verdict.md*"))
+
+
+def test_execute_capability_skips_incapable_primary_and_tries_capable_fallback(job, monkeypatch):
+    args, _ = job
+    args.vendor = "codex"
+    args.own_vendor = "claude"
+    args.requires = "execute"
+    calls = []
+    resolver = seat.resolve_command
+
+    def tracked(chosen, explicit):
+        calls.append(chosen)
+        return resolver(chosen, explicit)
+
+    monkeypatch.setattr(seat, "resolve_command", tracked)
+    assert seat.run_dispatch(args) == 0
+    logged = record(args)
+    codex, claude = logged["attempts"]
+    assert calls == ["claude"]
+    assert codex["launched"] is False
+    assert codex["permission_boundary"] is None
+    assert codex["reason"] == "codex cannot supply required capability execute; no process was launched"
+    assert claude["launched"] is True
+    assert logged["actual_vendor"] == "claude"
 
 
 def test_execute_capability_fallback_records_its_unequipped_refusal(job, monkeypatch):
@@ -145,6 +187,26 @@ def test_execute_capability_fallback_records_its_unequipped_refusal(job, monkeyp
     assert codex["permission_boundary"] is None
     assert codex["permission_boundary_unavailable_reason"] == codex["reason"]
     assert codex["reason"] == "codex cannot supply required capability execute; no process was launched"
+
+
+def test_execute_capability_does_not_preflight_an_irrelevant_explicit_fallback(job, monkeypatch):
+    args, _ = job
+    args.requires = "execute"
+    args.codex = str(args.output.with_name("missing-codex.exe"))
+    configure(job, {"claude": {"message": "Not logged in"}})
+    calls = []
+    resolver = seat.resolve_command
+
+    def tracked(chosen, explicit):
+        calls.append((chosen, explicit))
+        return resolver(chosen, explicit)
+
+    monkeypatch.setattr(seat, "resolve_command", tracked)
+    assert seat.run_dispatch(args) == 1
+    assert calls == [("claude", None)]
+    assert record(args)["attempts"][1]["reason"] == (
+        "codex cannot supply required capability execute; no process was launched"
+    )
 
 
 def test_root_guard_changes_only_when_the_same_worktree_detaches(job, monkeypatch):
@@ -179,6 +241,56 @@ def test_root_guard_rejects_plain_directory_and_worktree_subdirectory(job, tmp_p
         with pytest.raises(seat.DispatchError, match="Root must be the top level of a detached Git worktree"):
             seat.run_dispatch(args)
     assert calls == []
+
+
+def test_linked_detached_worktree_is_accepted_by_the_root_guard(job):
+    args, _ = job
+    assert seat.detached_worktree_root(args.root.resolve()) is None
+
+
+def test_root_guard_reasons_distinguish_attached_subdirectory_and_nonrepository(job, tmp_path):
+    args, _ = job
+    git(args.root, "checkout", "-B", "attached")
+    assert "HEAD is attached" in seat.detached_worktree_root(args.root.resolve())
+    git(args.root, "checkout", "--detach")
+    subdirectory = args.root / "subdirectory"
+    subdirectory.mkdir()
+    assert "not the worktree top level" in seat.detached_worktree_root(subdirectory.resolve())
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert "not a Git worktree" in seat.detached_worktree_root(plain.resolve())
+
+
+def test_root_guard_keeps_a_lawful_root_when_git_trace_writes_stderr(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setenv("GIT_TRACE", "1")
+    assert seat.detached_worktree_root(args.root.resolve()) is None
+
+
+def test_root_guard_ignores_inherited_git_directory_variables(job, tmp_path, monkeypatch):
+    args, _ = job
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(args.root / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(plain))
+    monkeypatch.setenv("GIT_COMMON_DIR", str(args.root / ".git"))
+    try:
+        assert "not a Git worktree" in seat.detached_worktree_root(plain.resolve())
+    finally:
+        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+            monkeypatch.delenv(name, raising=False)
+
+
+def test_root_guard_surfaces_a_git_probe_failure(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(
+        seat.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 128, b"", b"fatal: fixture Git failure"),
+    )
+    assert "Git root probe failed: fatal: fixture Git failure" in seat.detached_worktree_root(
+        args.root.resolve()
+    )
 
 
 @pytest.mark.parametrize("classification,expected", [
@@ -424,6 +536,7 @@ def test_relocated_library_has_no_repository_dependency(tmp_path):
                               stdin=subprocess.DEVNULL, capture_output=True)
     assert help_run.returncode == 0
     assert b"--own-vendor" in help_run.stdout
+    assert b"--requires {read,execute}" in help_run.stdout
     suite = subprocess.run([sys.executable, "-m", "pytest", str(copied / "tests"), "-q", "-k", "not relocated"],
                            cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True)
     assert suite.returncode == 0, suite.stdout.decode(errors="replace") + suite.stderr.decode(errors="replace")
@@ -635,7 +748,7 @@ def test_classification_is_required_by_the_cli(job):
         seat.parser().parse_args(argv)
 
 
-def test_capability_is_required_by_the_cli(job):
+def test_capability_is_required_by_the_cli(job, capsys):
     args, _ = job
     argv = [
         "--dispatch", str(args.dispatch), "--root", str(args.root),
@@ -645,6 +758,7 @@ def test_capability_is_required_by_the_cli(job):
     ]
     with pytest.raises(SystemExit):
         seat.parser().parse_args(argv)
+    assert "--requires" in capsys.readouterr().err
 
 
 def test_skipped_attempt_has_unknown_elapsed_with_reason(job):
@@ -697,6 +811,17 @@ def test_setting_sources_name_classification_and_default_model(job):
     assert sources["classification"] == "issuecomment-5655702442"
     assert sources["model"] == "dispatch_seat default"
     assert sources["effort"] == "classification mapping"
+    assert sources["required_capability"] == "issuecomment-5655702442"
+
+
+def test_unknown_capability_does_not_fall_through_to_read_mode(job):
+    args, _ = job
+    with pytest.raises(seat.DispatchError, match="unknown required capability"):
+        seat.can_supply("claude", "network")
+    with pytest.raises(seat.DispatchError, match="unknown required capability"):
+        seat.build_command("claude", ["claude"], args.root, args.output, "opus", "xhigh", "network")
+    with pytest.raises(seat.DispatchError, match="unknown required capability"):
+        seat.permission_boundary("claude", "network", args.root)
 
 
 def test_failed_dispatch_prints_its_id_and_bundle_path(job, capsys):

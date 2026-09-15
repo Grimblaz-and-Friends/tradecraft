@@ -19,6 +19,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -38,6 +39,7 @@ DEFAULT_CODEX_EFFORT = "xhigh"
 CLAUDE_EFFORTS = {"ordinary": "xhigh", "cold": "max", "terminal": "max"}
 CLAUDE_READ_TOOLS = "Read,Glob,Grep"
 CLAUDE_EXECUTE_TOOLS = "Read,Glob,Grep,Bash"
+GIT_ENVIRONMENT_KEYS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
 
 
 class DispatchError(RuntimeError):
@@ -77,7 +79,12 @@ def build_command(vendor, executable, root, last_message, model, effort, require
                 "--json", "--color", "never", "--model", model,
                 "-c", f'model_reasoning_effort="{effort}"', "-C", str(root),
                 "--skip-git-repo-check", "--output-last-message", str(last_message), "-"]
-    tools = CLAUDE_EXECUTE_TOOLS if required_capability == "execute" else CLAUDE_READ_TOOLS
+    if required_capability == "read":
+        tools = CLAUDE_READ_TOOLS
+    elif required_capability == "execute":
+        tools = CLAUDE_EXECUTE_TOOLS
+    else:
+        raise DispatchError(f"unknown required capability: {required_capability}")
     return [*executable, "-p", "--model", model, "--effort", effort,
             "--output-format", "json", "--no-session-persistence", "--safe-mode",
             "--tools", tools, "--allowedTools", tools,
@@ -85,7 +92,11 @@ def build_command(vendor, executable, root, last_message, model, effort, require
 
 
 def can_supply(vendor, required_capability):
-    return required_capability == "read" or vendor == "claude"
+    if required_capability == "read":
+        return True
+    if required_capability == "execute":
+        return vendor == "claude"
+    raise DispatchError(f"unknown required capability: {required_capability}")
 
 
 def capability_refusal(vendor, required_capability):
@@ -94,7 +105,12 @@ def capability_refusal(vendor, required_capability):
 
 def permission_boundary(vendor, required_capability, root):
     if vendor == "claude":
-        tools = CLAUDE_EXECUTE_TOOLS if required_capability == "execute" else CLAUDE_READ_TOOLS
+        if required_capability == "read":
+            tools = CLAUDE_READ_TOOLS
+        elif required_capability == "execute":
+            tools = CLAUDE_EXECUTE_TOOLS
+        else:
+            raise DispatchError(f"unknown required capability: {required_capability}")
         return (
             f"Claude tools={tools}; safe_mode=true; permission_mode=dontAsk; "
             f"strict_mcp_config=true; os_sandbox=none; detached_root_verified={root}"
@@ -105,29 +121,50 @@ def permission_boundary(vendor, required_capability, root):
     )
 
 
+def git_environment():
+    return {key: value for key, value in os.environ.items() if key not in GIT_ENVIRONMENT_KEYS}
+
+
+def git_diagnostic(raw: bytes) -> str:
+    text = raw.decode("utf-8", errors="backslashreplace").strip()
+    return text.encode("ascii", errors="backslashreplace").decode("ascii")
+
+
 def detached_worktree_root(root):
+    """Return None for a lawful root, otherwise the reason for its refusal."""
     try:
         toplevel = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            env=git_environment(),
         )
         head = subprocess.run(
             ["git", "-C", str(root), "symbolic-ref", "-q", "HEAD"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            env=git_environment(),
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+    except subprocess.TimeoutExpired:
+        return "Git root probe timed out"
+    except OSError as exc:
+        detail = str(exc).encode("ascii", errors="backslashreplace").decode("ascii")
+        return f"Git root probe could not start: {detail}"
+    if toplevel.returncode != 0:
+        diagnostic = git_diagnostic(toplevel.stderr)
+        if "not a git repository" in diagnostic.lower():
+            return "root is not a Git worktree"
+        return f"Git root probe failed: {diagnostic or f'exit {toplevel.returncode}'}"
     try:
         reported_root = Path(toplevel.stdout.decode("utf-8").strip()).resolve()
     except (UnicodeError, OSError):
-        return False
-    return (
-        toplevel.returncode == 0
-        and reported_root == root
-        and head.returncode == 1
-        and not head.stdout
-        and not head.stderr
-    )
+        return "Git root probe returned an unreadable worktree path"
+    if reported_root != root:
+        return f"root is not the worktree top level (Git reports {reported_root})"
+    if head.returncode == 0:
+        return "HEAD is attached to a branch"
+    if head.returncode != 1:
+        diagnostic = git_diagnostic(head.stderr)
+        return f"Git HEAD probe failed: {diagnostic or f'exit {head.returncode}'}"
+    return None
 
 
 def diagnostic_reason(text: str) -> str | None:
@@ -262,7 +299,8 @@ def setting_sources(args, vendor):
         ),
         "classification": args.settings_source,
         "continuity": "dispatch_seat route (fresh)",
-        "permission_boundary": "dispatch_seat route",
+        "permission_boundary": args.settings_source,
+        "required_capability": args.settings_source,
     }
 
 
@@ -274,9 +312,12 @@ def run_dispatch(args, *, now=None) -> int:
     hold_file = args.hold_file.expanduser().resolve()
     if not root.is_dir():
         raise DispatchError(f"Root is not a directory: {root}")
-    if not detached_worktree_root(root):
-        raise DispatchError(f"Root must be the top level of a detached Git worktree: {root}")
-    if not can_supply(args.vendor, args.requires):
+    root_refusal = detached_worktree_root(root)
+    if root_refusal:
+        raise DispatchError(f"Root must be the top level of a detached Git worktree: {root}; {root_refusal}")
+    if not can_supply(args.vendor, args.requires) and (
+        args.own_vendor == args.vendor or not can_supply(args.own_vendor, args.requires)
+    ):
         raise DispatchError(capability_refusal(args.vendor, args.requires))
     records.require_output_outside_root(output, root)
     prompt = dispatch.read_bytes()
@@ -518,10 +559,8 @@ def parser() -> argparse.ArgumentParser:
         ),
         epilog=("Holds: one row per vendor, for example 'claude 2026-09-13T00:00:00Z'. "
                 "Timezone required; no comments; expired holds are ignored. Keep this file "
-                "machine-local and uncommitted. The script only reads it. Every invocation names "
-                "--requires read|execute. Existing callers use read unless the governing lens or "
-                "assignment requires commands. Claude read mode uses Read,Glob,Grep; execute mode "
-                "adds Bash. Both use safe mode, permission mode dontAsk and strict MCP configuration, "
+                "machine-local and uncommitted. The script only reads it. Both modes use safe mode, "
+                "permission mode dontAsk and strict MCP configuration, "
                 "and neither has an OS sandbox. Put the job and any evidence already available in the "
                 "dispatch; an execute job may produce its own probe evidence. --bare is omitted to "
                 "preserve OAuth. "
@@ -562,7 +601,10 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--output", type=Path,
                      help="result path; defaults to the machine-local dispatch store")
     cli.add_argument("--hold-file", type=Path, default=default_hold_file(), help="shared availability holds")
-    cli.add_argument("--timeout-seconds", type=float, default=900, help="timeout per launched seat")
+    cli.add_argument(
+        "--timeout-seconds", type=float, default=900,
+        help="timeout per launched seat; size execute work beyond the default where its job needs it",
+    )
     for vendor, model in DEFAULT_MODELS.items():
         cli.add_argument("--" + vendor, help="explicit CLI executable")
         cli.add_argument("--" + vendor + "-model", help=f"requested model (default: {model})")
