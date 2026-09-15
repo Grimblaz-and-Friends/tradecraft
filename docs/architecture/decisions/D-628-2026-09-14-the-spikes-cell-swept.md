@@ -1,6 +1,6 @@
 # D-628 — The spikes cell swept: the concepts stay, what a session copies goes to two templates, and five passages the owner held
 
-**Landed by** [PR #628](https://github.com/Grimblaz-and-Friends/tradecraft/pull/628). Closes [#584](https://github.com/Grimblaz-and-Friends/tradecraft/issues/584). Governed by the implementation brief affirmed on [#571](https://github.com/Grimblaz-and-Friends/tradecraft/issues/571#issuecomment-5627498365) on 2026-09-10, which commissions each cell's sweep as its own reviewed change without a fresh affirmation; [D-575] landed the principle. Evidence pinned at `2e9b643` unless stated, over base `6376ccb`.
+**Landed by** [PR #628](https://github.com/Grimblaz-and-Friends/tradecraft/pull/628). Closes [#584](https://github.com/Grimblaz-and-Friends/tradecraft/issues/584). Governed by the implementation brief affirmed on [#571](https://github.com/Grimblaz-and-Friends/tradecraft/issues/571#issuecomment-5627498365) on 2026-09-10, which commissions each cell's sweep as its own reviewed change without a fresh affirmation; [D-575] landed the principle. Evidence pinned at `5f9dcad` unless stated, over base `6376ccb`.
 
 ## What was decided
 
@@ -10,7 +10,7 @@ The `spikes` cell keeps every concept it carried. What leaves is the enumerated 
 
 ## Every deletion, and which material took it
 
-As the brief requires: the change that removes a rule says which it was. **Deletions fall in two places and both are tabled** — three passages that leave whole, the last of them two sentences leaving a line the table otherwise classes as *sharpened*, and the further sentences and clauses cut out of sharpened lines. The brief's requirement is about deletions, not about rows, so both tables are owed, and the second is the one [D-611]'s review found missing from that entry.
+As the brief requires: the change that removes a rule says which it was. **Deletions fall in two places and both are tabled** — three passages that leave whole, the last of them two sentences leaving a line the table otherwise classes as *sharpened*, and the further sentences and clauses cut out of sharpened lines. **What the tables do not enumerate is the compression inside an index entry or a pointer précis**, where a trigger clause or a phrase naming what a depth file holds was shortened in place; those lines are classed as rewritten and the diff is the whole record of them. The brief's requirement is about deletions, not about rows, so both tables are owed, and the second is the one [D-611]'s review found missing from that entry.
 
 ### The three passages that leave whole
 
@@ -32,6 +32,7 @@ A line classed *sharpen* keeps its concept and its reason. These are what left t
 | *"the two questions the seats are asked, how a silence is read, and the bounds only the dispatch can impose"* and, in the depth-index entry, *"the two questions the seats are asked and the order they are asked in"* and *"the bounds a dispatch has to impose because a seat cannot infer them"* | `skills/spikes/SKILL.md:39` and `:12` | to template — these are the dispatch template's, and the précis now names it |
 | *"a review's own output is posted, not reviewed — the report is posted with it"* and *"the change it drives is reviewed like any other change, and where it drives none the report is the whole of what covers it"* | `skills/spikes/SKILL.md:45` | cut, unwritten — cases the kept concept decides: where the carrier is not itself reviewed, coverage falls where the result is acted on |
 | *"which is the case a silent session leaves indistinguishable from never having looked"* | `skills/spikes/SKILL.md:55` | cut, unwritten — a copy of line 37's silence sentence |
+| *"writing the dispatch,"*, from the index entry's trigger clause | `skills/spikes/SKILL.md:12` | cut, unwritten — the new index row at `:15` takes that trigger, and `cold-seat-ab.md:3`'s own load condition still names it. **Added after the review**: the `revision-diff` seat found it in neither table, and it is the one span of the three the terminal stage sustained that the fix batch did not put back |
 | *"A premise about what is in the material, or about whether a mechanism whose executor is not a reader fires — a guard, a script — does not need it: the cell body carries when a spike fires, the bound and the report every one takes, and that a spike commits nothing."* | `skills/spikes/references/cold-seat-ab.md:3` | cut, unwritten — the body's index is the authority on when depth opens (`skills/authoring/references/cell-structure.md`, third bullet), and the first sentence already keys the file to reader premises |
 | *"A pair sharing all of it is still dispatchable and is read by arm attribution instead, on the second measure the scoring rules carry."* | `skills/spikes/references/cold-seat-ab.md:11` | cut, unwritten — a restatement of `licensing-a-deletion.md:15`'s second measure, which owns it |
 | the plan instruction — *"Ask for the seat's plan before it executes — every step, its reason, and the text it relied on — and stop it there"* | `skills/spikes/references/cold-seat-ab.md:12` | to template — the concept (the measurement is the seat's plan, a stated intention rather than conduct) and the conduct exception stay |
@@ -92,11 +93,15 @@ One wording followed from the narrowing and is the only thing added on its accou
 
 The cell cited [D-173] and [D-320] at the base and cites eight entries at the tip. Each destination line was read and holds what the prose sends it: [D-80]`:25` the clock rejected as the bound; [D-132]`:38` the no-index argument; [D-173]`:36` the docket's actor condition; [D-320] at `:21` the citation distinction, `:23` the cost asymmetry, `:25` the plant's shape, `:27` the void gate and *certifies the run, not the item*, `:31` isolation-is-no-repository, `:57` the exclusion-item incident; [D-337]`:21` the forced walk's ruled ordering; [D-347] at the decision log's README`:109` (*"a record hit keeps and stops the dispatch"*) and `:37-39` the licence-untouched and further-arm paragraphs; [D-352] at `:15` the substitution shape and `:19` the owner's seat-by-seat ruling; [D-366] at `:33` the two measures licensing adoption by neither and `:61` the declined threshold.
 
-**One divergence from the artifact's table, made deliberately.** The row for `cold-seat-ab.md:18` asks for [D-352] at two places in that line, both crediting D-352`:15`. The build placed it once, at the seat-by-seat sentence, and put the other [D-352] at the substitution *shape* in `cold-seat-ab.md:10`, which is what D-352`:15` holds. The citation-union criterion passes either way.
+**One divergence from the artifact's table, made deliberately.** The row for `cold-seat-ab.md:18` asks for [D-352] at two places in that line — at *"seat by seat as well as arm by arm"*, crediting D-352`:19`, and at the substitution's reading, crediting D-352`:15`. The build placed it once, at the seat-by-seat sentence. It did not relocate the second: `cold-seat-ab.md:10`'s [D-352] is the marker the artifact's own row for `:10` asks for at the substitution *shape*, which is what D-352`:15` holds, so the divergence is a single marker asked for at `:18` and not placed. The citation-union criterion passes either way. **This paragraph as first written said both places credited D-352`:15` and described `:10`'s marker as the relocated one; the review's `revision-diff` seat and the terminal stage each found half of that wrong.**
 
 ## The ceiling followed the body down
 
 `CELL_BODY_CEILING_CHARS["skills/spikes/SKILL.md"]` is re-baselined from `8_358` to `7_200`, the body's size at this change's tip. The constant's own comment prescribes this for a cell that sheds depth, and a ceiling left where it stood would measure nothing until the body regrew to meet it. The alternative — leave it — is rejected because the brief's measure is that the sweeps delete, and the ratchet is the one instrument that holds a body where a sweep left it.
+
+## One meaning change the sweep made in passing, named
+
+The record-search stop at `skills/spikes/references/licensing-a-deletion.md:7` read *"Such a hit keeps the text, and the run is not dispatched"* at the base — unconditional, with the substitution carve-out sitting alone at `:15`. It now reads *"stops any run that would remove it"*. Read as *ablates it in an arm* the scope is the base's exactly; read as *whose output is a removal* it exempts a confirm run measuring whether a sentence binds. The sweep made that narrowing while folding `:15`'s carve-out into the rule, and the artifact named the fold but not the scoping. Named here because `skills/authoring/references/revising.md` asks that every meaning change be named where amendments are recorded, and because the review's `cold-read` seat found it named nowhere. **What the rule turns on either way is unchanged**: a hit keeps the text, and a substitution's hit neither keeps nor stops.
 
 ## No settling row, and the reason
 
@@ -106,17 +111,25 @@ The cell cited [D-173] and [D-320] at the base and cites eight entries at the ti
 
 No guard and no script: every candidate swept here is a judgment a seat exercises on a run's output, which no lint reads, and [D-575] admits a mechanism only for a concept the prose already states in one sentence. Nothing was added on #574's subject. The frontmatter `description` was not touched, which is also why [#321](https://github.com/Grimblaz-and-Friends/tradecraft/issues/321) — the trigger and fence disagreeing inside that description — does not close with this change. Extending the isolated-tree procedure to two arms plus planted material is `experience-session`'s ([D-491]`:41`), which is why [#495](https://github.com/Grimblaz-and-Friends/tradecraft/issues/495) does not close either. No copy of this cell's concerns was cut from another cell: a search for them across `skills/` found only sentences naming a spike as a destination, a usage class or an exhibit, and the charter's roster line — no copy of a rule this cell owns.
 
+## The review put five reasons back, and that is the sweep's own lesson
+
+The routine lane's two seats and its terminal stage bought twelve findings. **Six were shipped prose, and five of those were restorations of clauses this sweep had removed** — the record's scope and the substitution's *neither keeps nor stops* half at `skills/spikes/references/licensing-a-deletion.md:7`, the asymmetric-item reason at `skills/spikes/references/cold-seat-ab.md:9`, the plan-stop's premise at `:12`, and the comparability clause at `:16` that this entry had classed *to template* and that the template did not hold. The sixth removed the word `whole` from `cold-seat-ab.md:3`, the surviving half of a leak two experience-session consumers had already found in the template itself.
+
+**Every one of the five took a concept's *reason* rather than a decided case.** [D-575]'s principle is that governing prose states the concept **and its reason**; the brief's form test licenses removing a sentence that is *"not a concept, a check, a script's message or an incident"*, and a reason is part of the concept. So none of the five was ever licensed by the form test, and putting them back corrects this sweep's compliance rather than deciding anything new — which is why the terminal stage ruled restoration outside the bound that keeps a fix batch from adding governing sentences on a finding alone. **The lesson for the sweeps that follow: under this principle the easiest thing to cut wrongly is the *because* clause**, and a row that keeps "the concept" while dropping the sentence that says why is the shape to look for.
+
+One finding was lapsed on that bound rather than on its merits: `spike-report-template.md` nowhere says the copied block is the whole of the report, which is a real gap, and no prose states it, so the batch said so rather than added it.
+
 ## Figures
 
 Stated as commands with both endpoints pinned, never as outputs. **`tools/figures.py` reads the working tree and has no option naming a tip**, so the tip is pinned by the checkout the command runs in — cut one and run there:
 
 ```
-git worktree add --detach <path> 2e9b643
+git worktree add --detach <path> 5f9dcad
 ```
 
-- **Shipped prose delta** (the brief's own measure), from that checkout's root: `python tools/figures.py --base 6376ccb --cell skills/spikes/SKILL.md --cell-budget 7200`. `--cell` refuses without `--cell-budget`, and the budget given must equal the enforced one. The raw form of the delta alone is `find skills -name "*.md" -exec cat {} + | wc -c`, run once on each of `6376ccb` and `2e9b643`, which needs no checkout because both endpoints are named; the cell's own share is the same command over `skills/spikes`.
+- **Shipped prose delta** (the brief's own measure), from that checkout's root: `python tools/figures.py --base 6376ccb --cell skills/spikes/SKILL.md --cell-budget 7200`. `--cell` refuses without `--cell-budget`, and the budget given must equal the enforced one. The raw form of the delta alone is `find skills -name "*.md" -exec cat {} + | wc -c`, run once on each of `6376ccb` and `5f9dcad`, which needs no checkout because both endpoints are named; the cell's own share is the same command over `skills/spikes`.
 - **The body against its re-baselined ceiling:** `python tools/lint.py` in that same checkout, which reads the constant back and reports any cell over where it stood.
-- **What the diff touches:** `git diff --stat 6376ccb 2e9b643`, and `git diff 6376ccb 2e9b643 -- tools/lint.py` for the single constant.
-- **The five held rows, measured rather than asserted:** `git diff 6376ccb 2e9b643 -- skills/spikes/references/cold-seat-ab.md skills/spikes/references/licensing-a-deletion.md`, read against the table above.
+- **What the diff touches:** `git diff --stat 6376ccb 5f9dcad`, and `git diff 6376ccb 5f9dcad -- tools/lint.py` for the single constant.
+- **The five held rows, measured rather than asserted:** `git diff 6376ccb 5f9dcad -- skills/spikes/references/cold-seat-ab.md skills/spikes/references/licensing-a-deletion.md`, read against the table above.
 
 [D-575] [D-320] [D-337] [D-347] [D-352] [D-366] [D-173] [D-80] [D-132] [D-491] [D-261]
