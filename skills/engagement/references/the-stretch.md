@@ -16,7 +16,7 @@
 
 **From the start of build onward, a surprise is compared first with Shape and then with the reader cells of the affirmed implementation brief.** If Shape is wrong, stop: the term no longer covers the change. If a reader cell would now read differently, write only the affected row as a proposed contingent row, carry the recommendation and its strongest case against, and continue the run on that recommendation. Put it to the owner at once when they are present; otherwise post and mark its ask, and put it first at release if it is still open. If no cell changes, report the surprise with the session's reason and continue.
 
-The posted row uses the ask block and mark in `../references/the-ask.md`; it is an amendment proposed to the owner, not an edit to the affirmed item. The holder gives the builder the affected row, the recommendation, and the contingent alternative, so continuing never turns into choosing silently.
+The posted row uses the ask block and mark in `../references/the-ask.md`; as the reading amendment in `../references/the-brief.md`, it carries the contingent row's criteria into the settled artifact without buying a fresh verdict, and is not an edit to the affirmed item. The holder gives the builder the affected row, the recommendation, and the contingent alternative, so continuing never turns into choosing silently.
 
 **A seat judges a contingent row on both readings.** Its surviving criteria must be falsifiable whether the owner keeps the affirmed row or accepts the proposed one.
 

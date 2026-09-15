@@ -15,17 +15,17 @@
 
 **An implementation brief is the whole item the owner affirms before a non-mechanical change is built: one Shape sentence; the Readers named once; each decision that matters as a row carrying its Why and one cell per reader; and Not this.** A blank cell is visible and unlawful; `unchanged` is a filled cell.
 
-The Readers name the owner, the holding session that designs with them and runs the stretch, the builder that writes the artifact and builds, and a judging seat, cold or review or consumer. A shipped cell names the adopting repository's owner and sessions once when that cell is identical across the rows. Each row states the decision, its reason, and what every reader gets. Session-owned execution choices — implementation approach, file layout, tools, and work order — stay out and belong in the artifact and build.
+The Readers name the owner, the holding session that designs with them and runs the stretch, the builder that writes the artifact and builds, and a judging seat, cold or review or consumer. For shipped work, the adopter's owner and sessions are one reader when their outcome is identical in every row. Each row states the decision, its reason, and what every reader gets. Session-owned execution choices — implementation approach, file layout, tools, and work order — stay out and belong in the artifact and build.
 
 **The affirmed item is the exact text kept from affirmation onward; none of it needs to have been typed by the owner.** When a push changes a row, the affirmation record quotes that push once, while the revised row in the affirmed item is the term the builder reads.
+
+**For an implementation brief affirmed in the earlier paragraph form, its agreed terms are read as its rows, and the seat judges whether the artifact delivers what that brief agreed.**
 
 An item that put a question to the owner is re-put whole carrying their answer: each ruling written in as settled, and anything ruled out stated so the item stands without the conversation.
 
 ## Designing, putting, and recording the item
 
 **Where the work picked up is a problem rather than a want, the implementation brief is for its systemic cause.** Before the first turn, ask why until the cause is systemic — one whose fix would have prevented this instance and its open siblings. The siblings the test found are tied to the cause before the whole item is put, so what the fix covers is on the record and not in the session's head. The instance falls out of the fix, or the implementation brief says why it does not; fixing the instance alone is the owner's exception, ruled in the implementation brief with its reason. **Where those symptoms are already tied to a cause and the why-chain reaches a different one, the implementation brief disputes that parentage and recommends the new one.** The disputed symptoms are not re-tied until the owner rules; their ruling is what re-ties them. A cause still a hypothesis when the asking stops is a premise that could make the implementation brief wrong. A bundle is one set with one cause. A want that would make something currently wrong stop being wrong is a problem.
-
-**Every non-mechanical change is designed in the turns `../references/design-sitting.md` carries.** No trigger chooses that form; the turns build the item until the session judges the concept done.
 
 **The session judges the concept done when the next turn would add execution detail rather than a decision, then puts the whole implementation brief for affirmation.** Before putting it, check that every decision row has its reason, every reader cell is filled, and no row is execution detail. The owner affirms the whole item or pushes it; the design ends only on affirmation, never on running row-by-row approval.
 

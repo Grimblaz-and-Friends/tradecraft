@@ -8,7 +8,7 @@ The form draws out what only the owner has — the problem's real shape, recogni
 
 ## What a turn carries
 
-**A turn adds one decision-bearing layer and hands the work back.** The session holds the pen: it drafts the item and asks the owner for the idea or judgment only they can supply, never for prose it could have written itself. Each turn carries the built-so-far line; a question carries the session's guess, a recommendation its strongest case against, the altitude is named, a hunch is treated as data, and a small build replaces abstract argument where one is reasonable. Divergence arrives one shape at a time, or as two when both are live; the fork, not each option, is the one thing the turn adds.
+**A turn adds one decision-bearing layer and hands the work back.** The session holds the pen: it drafts the item and asks the owner for the idea or judgment only they can supply, never for prose it could have written itself. Divergence arrives one shape at a time, or as two when both are live; the fork, not each option, is the one thing the turn adds. A live fork beyond what the turn carries waits for a later turn; the bound paces divergence and never licenses closing a fork that is the owner's.
 
 **Name the altitude being argued on — purpose, shape, mechanism, wording — and say aloud when it drops.** Unnamed, the two argue past each other, and the drop to wording is where a shape question quietly stops being asked.
 
