@@ -1,6 +1,6 @@
 ---
 name: engagement
-description: How a session and the owner work together — which decisions are whose, the plain brief that opens their surfaces, the implementation brief and artifact that bind a change, and how dispatched work is staffed and retained. Use when deciding what a change is for or whose call something is, drafting or scoring a plain brief, settling, recording or handing work across an implementation brief, putting or reporting a decision, writing or settling an artifact, dispatching an agent or retaining its return, delivering a review outcome, handing work back after time away, or when the owner cannot be reached; not for writing skills or governing documents.
+description: How a session and owner work together — which decisions are whose, the plain brief opening their surfaces, design turns and the affirmed implementation brief, the artifact that reads it, and how dispatched work is staffed and retained. Use when deciding what a change is for or whose call it is, designing a non-mechanical change in turns, drafting or scoring a plain brief, settling, recording or handing off an implementation brief, putting or reporting a decision, writing or settling an artifact, dispatching or retaining an agent, delivering a review outcome, handing work back after time away, or when the owner cannot be reached; not for writing skills or governing documents.
 ---
 
 # engagement
