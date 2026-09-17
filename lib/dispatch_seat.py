@@ -37,7 +37,7 @@ VENDORS = ("codex", "claude")
 # Each default names what it rests on. A default no comparison supports stands
 # as un-compared, which is a fact about the evidence and not a finding for it.
 DEFAULT_MODELS = {
-    "codex": "gpt-5.6-sol",  # preferred blind over gpt-6-astra and gpt-5.6-terra on artifacts [D-NNN]
+    "codex": "gpt-5.6-sol",  # preferred blind over gpt-6-astra and gpt-5.6-terra on artifacts [D-645]
     "claude": "opus",        # un-compared: nothing has been run against any Claude sibling
 }
 DEFAULT_CODEX_EFFORT = "xhigh"
