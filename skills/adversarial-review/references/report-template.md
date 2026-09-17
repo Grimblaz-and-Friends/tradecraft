@@ -1,0 +1,37 @@
+# Final report template
+
+**Loaded when** you are writing a review's final report. Copy this file whole and fill every field; `../references/the-record.md` says what the report is for and where it is posted.
+
+> **In plain terms:** `<the plain brief, in the form the engagement cell states>`
+
+- **Artifact and revision:** `<what was reviewed; the revision under review>`.
+- **Purpose statement judged against:** `<verbatim, or by link>`.
+- **Lane, and why, in one line:** `<routine | panel — what bought it>`.
+
+## Staffing and returns
+
+- **Per recipient** — `<seat>`: raw `<n>` / merged `<n>` / sustained `<n>`, high `<n>`; `<model>`/`<effort>` on `<runtime>`; worked at `<sha, or none stated>`; tree `<own | shared>`. `<Raw is the seat's own figure; merged is its findings surviving the merge; high is the sustained highs it is credited on. One line per recipient, a panel being one stage and four or five seats; the defense and the terminal stage each get one.>`
+- **Achieved width:** `<the roster required; the seats with capability-matched usable returns; each missing seat with its reason. A refused or unusable seat does not count toward achieved width.>`
+
+## Findings
+
+- **Each sustained high's finders:** `<primary first; a merge-added co-finder labeled as the merge's; or the stage that originated it; or that the merge carried it with no finder list>`.
+- **Every finding's fate:** `<bought | pitched #N | lapsed — one-line reason each>`.
+- **Every uncarried seat entry's ruling:** `<one line each, like entries grouped>`.
+- **Split by consequence shape:** `<artifact-facing n / apparatus-facing n>`; **session note carried:** `<yes | no>`.
+- **Lens retired:** `<which, and the evidence that earned it — or "none">`.
+
+## External and commissioned passes
+
+- **External pass:** `<what configured automation posted, or that nothing did>`; the receipt block as `../scripts/external_pass.py` printed it — bundle path, sha256, each source count, combined count, verify command — and a durable link to the bundle; each external finding's disposition: `<duplicate of <finding> | sustained and fixed | pitched #N | lapsed — reason>`.
+- **Commissioned pass:** `<the tool run, what it returned, each disposition — or "none">`.
+
+## After the batch
+
+- **Executable floor:** `<what ran and what it returned; which sustained findings it could not reach>`.
+- **Departures from an ordered remedy:** `<the ordered shape and the reason, or "none">`.
+- **Experience session the batch bought:** `<link — or the one line declining it, as the experience-session cell states>`.
+- **Residual risk accepted, and what is expected to catch it:** `<one line>`.
+- **Cost to run:** `<where the repository's index records it, stated here first>`.
+
+**Terminal fitness ruling:** `<fit for purpose | fit once the named fixes land | not fit>`.
