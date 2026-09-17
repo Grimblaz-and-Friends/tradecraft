@@ -36,9 +36,11 @@ from winio import utf8_stdio
 VENDORS = ("codex", "claude")
 # Each default names what it rests on. A default no comparison supports stands
 # as un-compared, which is a fact about the evidence and not a finding for it.
+# Codex was preferred blind on artifact authorship over gpt-6-astra and
+# gpt-5.6-terra; the owner's code-task pilot separated none of the three [D-645].
 DEFAULT_MODELS = {
-    "codex": "gpt-5.6-sol",  # preferred blind over gpt-6-astra and gpt-5.6-terra on artifacts [D-645]
-    "claude": "opus",        # un-compared: nothing has been run against any Claude sibling
+    "codex": "gpt-5.6-sol",
+    "claude": "opus",  # un-compared: no run has compared it with any Claude sibling
 }
 DEFAULT_CODEX_EFFORT = "xhigh"
 CLAUDE_EFFORTS = {"ordinary": "xhigh", "cold": "max", "terminal": "max"}

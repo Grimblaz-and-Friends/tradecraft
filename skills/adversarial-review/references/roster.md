@@ -1,6 +1,6 @@
-# Staffing the panel — the roster, the seats, and the tier each gets
+# Staffing the panel — the roster, the seats, and where model advantage is concentrated
 
-**Loaded when** you are choosing who sits on a review — the panel's seats, the defense, the judge — or deciding what model tier staffs them. A recipient carrying out a brief it was handed does not need it.
+**Loaded when** you are choosing who sits on a review — the panel's seats, the defense, the judge — or where to concentrate a model advantage within that staffing. A recipient carrying out a brief it was handed does not need it.
 
 ## The roster — five names, four or five seated
 
