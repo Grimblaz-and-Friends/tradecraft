@@ -31,5 +31,7 @@ After creation: `python ../scripts/pool.py rate <N> --rating sev:<1-4> --rating 
 
 **Evidence:** <the probe command and its output; or the incident or the run>
 
+**Provenance:** <review | use | owner | session | instrument> — <which review, run, instruction or check, and when>
+
 **Value:** <what this changes about the offer; or: nothing — one more instance>
 ```

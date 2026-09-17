@@ -28,4 +28,4 @@ gh issue list --repo OWNER/REPO --state all --limit 1000 --search "post-fix"
 
 **New pitches name their ties at birth.** Where the evidence in hand shares one observed cause, sell that work as one pitch carrying the evidence together; shared location or origin alone does not make one cause.
 
-**An extending comment meets the same floor as a pitch** (`../references/what-a-filing-carries.md`), inherits its host's incident-or-run admission, and takes the host as its tie. It may argue that the new evidence changes the offer's value; it does not overwrite the filer's ratings. Its shape is `../references/pitch-template.md`'s.
+**An extending comment meets the same floor as a pitch** (`../references/what-a-filing-carries.md`), inherits its host's incident-or-run admission, and takes the host as its tie. It may argue that the new evidence changes the offer's value; it does not silently overwrite the filer's ratings. Its shape is `../references/pitch-template.md`'s.

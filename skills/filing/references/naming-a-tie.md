@@ -22,6 +22,7 @@ The label is the pool policy's, and `python ../scripts/pool.py labels` creates i
 gh api graphql -f query='mutation{addSubIssue(input:{issueId:"<cause id>",
   subIssueId:"<symptom id>"}){subIssue{number parent{number}}}}'
 #   node ids: gh issue view <N> --json id
+#   parent label: gh issue edit <cause N> --add-label cause; pool.py labels creates it but writes it onto no issue
 #   no gh subcommand sets the link as of gh 2.80.0; check gh issue create --help for --parent first, an absence claim about a tool being only as old as the version it was checked against
 #   re-parenting: removeSubIssue first, the second addSubIssue being refused while the first link stands
 ```

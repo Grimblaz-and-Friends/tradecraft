@@ -81,6 +81,8 @@ The base control `20260917T012453Z-633-criterion-7-base` met criterion 7's contr
 
 The base control `20260917T012450Z-633-criterion-6-base` falsified criterion 6 by the criterion's own terms. A fresh seat at `c679fd5` produced an issue body already carrying all four named features in the same positions: a first tie or no-tie line, keyed provenance, evidence with the probe and output, and value with a case against. The criterion did not discriminate. The template is justified by the other half of the artifact's item 3: it states the fields once where a session copies them instead of four times across prose.
 
+The terminal stage ruled that the template stands on the discriminating check criterion 6 lacked: each field form now appears once, in the template, and nowhere in prose.
+
 ## Eight ownership calls
 
 1. The naming-file-relative calling contract remains here as this cell's application; its reason belongs to `substrate`, with no pointer added.

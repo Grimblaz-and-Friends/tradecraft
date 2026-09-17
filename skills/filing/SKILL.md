@@ -13,7 +13,7 @@ description: How evidence becomes a pitch for work and how the owner buys it fro
 - **Writing the tie block or reading cause links between existing issues** → `references/naming-a-tie.md`: the tie vocabulary, the sub-issue link, and what a ranking does with them.
 - **Writing a pitch or deciding whether its evidence earns one** → `references/what-a-filing-carries.md`: the argued offer, the evidence floor and governing-prose bar, and what design stays with pickup.
 - **Copying the shape of a pitch body or an extending comment** → `references/pitch-template.md`: the fields to copy whole, the tie block first among them; the other files here are the standard those fields meet.
-- **Reading, rating, shortlisting or framing pooled work, or closing quiet pitches** → `references/the-pool.md`: the owner's purchase, the advisory ratings, and the commands that read the pool and apply its quiet window.
+- **Reading, rating, shortlisting or framing pooled work, or closing quiet pitches** → `references/the-pool.md`: the shortlist, the policy path, and the commands that read the pool and apply its quiet window.
 
 ## Work is bought, never owed
 
