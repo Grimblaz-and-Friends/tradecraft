@@ -24,7 +24,7 @@ Throughout, **the owner** is the human whose repository this is.
 Process weight concentrates at two moments; what runs between them is model judgment plus the standards carried in the skills.
 
 - **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets an implementation brief settled with the owner and a pre-implementation artifact reading it. The artifact is the session's; what the implementation brief contains and when they affirm it, what the artifact contains and how it is settled, where each is recorded, and when the owner is next needed are the `engagement` cell's. Mechanical work proceeds without it; when in doubt of that, ask the cheap question.
-- **Release.** Merging is the owner's, never the agent's. **Before a change merges, one that altered how a later session must work or what someone using the result can do owes a use of that result** — or one line saying why none happened; the `experience-session` cell carries both, and what that line must say.
+- **Release.** Merging is the owner's, never the agent's. **Before a change merges, one of the kind the `experience-session` cell's description names owes a use of that result** — or one line saying why none happened; that cell carries both, and what that line must say.
 
 ## Review
 
@@ -34,12 +34,12 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 
 ## Where content goes
 
-- **Methodology** — how any work is done → the skill that governs it. Which home a piece belongs in, and the standard its prose meets there, are the `authoring` cell's — this section states where content goes, not how to decide a hard case.
-- **A binding always-on rule** → the adopting repository's own doctrine, which is the surface it can edit and version. This charter is the practice's own always-on surface; in a repository that installed it as a plugin the charter arrives read-only from the plugin cache, and there, on a conflict between the two, that repository's own doctrine wins.
+- **Methodology** — how any work is done → the skill that governs it. Which home a piece belongs in, and the standard its prose meets there, are the `authoring` cell's.
+- **What must hold before any context loads** → an always-on surface: this charter, or the adopting repository's own root doctrine, which is the surface it can edit and version. In a repository that installed the practice as a plugin the charter arrives read-only from the plugin cache, and there, on a conflict between the two, that doctrine wins.
 - **Rationale** — why a shape was chosen, what was rejected → a decision entry.
 - **Review evidence** → the review report.
 
-**Nothing reaches this charter that a cell can hold.** What belongs here is what must hold before any context loads; everything else is stated by the cell that owns it and named from here, because a second copy of a rule is the thing that drifts.
+**Nothing reaches this charter that a cell can hold.** What a cell can hold is stated by the cell that owns it and named from here, because a second copy of a rule is the thing that drifts.
 
 **Decisions inform, never bind.** A prior decision is superseded by reading it, not obeyed; what a reviser owes a cited entry is the `authoring` cell's.
 
@@ -47,7 +47,7 @@ Every reviewable artifact states its purpose, audience, and success criteria —
 
 ## The cells this practice ships
 
-Every cell this practice ships but this one, which you are reading already — so a session that does not yet know which cell owns what sees the whole set rather than taking a partial list for it. **When to load each is its own description's to say**, and every description loads in every session beside its name — so the condition is stated where it is already read, and not a second time here.
+Every cell this practice ships but this one, which you are reading already — so a session that does not yet know which cell owns what sees the whole set rather than taking a partial list for it.
 
 - `adversarial-review` cell
 - `authoring` cell
