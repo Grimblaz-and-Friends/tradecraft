@@ -6,7 +6,7 @@
 
 **Role separation, judging-seat staffing and the record of every launch are the `engagement` cell's; the judge is also never a finder.** The job declares its capability.
 
-**A dispatch whose subject is text the change edits gets a working root whose copy of that text is the change's own**, and is told that any always-on text reaching it otherwise is not its governing text: a runtime injects the repository's own doctrine and charter into every session it starts, from wherever it resolves them, so a recipient can read the rule the change replaced and rule against it, and naming the root alone has not stopped it [D-222] [D-NNN].
+**A dispatch whose subject is text the change edits gets a working root whose copy of that text is the change's own**, and is told that any always-on text reaching it otherwise is not its governing text: a runtime injects the repository's own doctrine and charter into every session it starts, from wherever it resolves them, so a recipient can read the rule the change replaced and rule against it, and naming the root alone has not stopped it [D-222] [D-646].
 
 **The dispatch names its revision and landing route.** A root is not a revision: a tool-cut root otherwise opens on the default rather than the text under review. Building a tree at a revision, for any instrument's run, is the `experience-session` cell's; the one line a recipient runs on a root it cannot rebuild, and what to do when that line fails, are the template's. A tool-cut attached root is **seat-launcher-incompatible**: this launcher refuses it before checkout, so use one that permits recipient positioning.
 
