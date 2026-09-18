@@ -10,12 +10,14 @@
 
 ## Staffing and returns
 
-- **Per recipient** — `<seat>`: raw `<n>` / merged `<n>` / sustained `<n>`, high `<n>`; `<model>`/`<effort>` on `<runtime>`; worked at `<sha, or none stated>`; tree `<own | shared>`. `<Raw is the seat's own figure; merged is its findings surviving the merge; high is the sustained highs it is credited on. One line per recipient, a panel being one stage and four or five seats; the defense and the terminal stage each get one.>`
+- **Per recipient** — `<seat>`: raw `<n>` / merged `<n>` / sustained `<n>`, high `<n>`; `<model>`/`<effort>` on `<runtime>`; capability `<read | execute>`; worked at `<sha, or none stated>`; tree `<own | shared>`; cleanliness `<clean | as received | unverified>`. `<Raw is the seat's own figure; merged is its findings surviving the merge; high is the sustained highs it is credited on. One line per recipient, a panel being one stage and four or five seats; the defense and the terminal stage each get one.>`
 - **Achieved width:** `<the roster required; the seats with capability-matched usable returns; each missing seat with its reason. A refused or unusable seat does not count toward achieved width.>`
+- **Truncation:** `<none | what was tried; missing stage; undecided docket>`.
 
 ## Findings
 
 - **Each sustained high's finders:** `<primary first; a merge-added co-finder labeled as the merge's; or the stage that originated it; or that the merge carried it with no finder list>`.
+- **Each sustained high's target:** `<the surface or site it hit>`.
 - **Every finding's fate:** `<bought | pitched #N | lapsed — one-line reason each>`.
 - **Every uncarried seat entry's ruling:** `<one line each, like entries grouped>`.
 - **Split by consequence shape:** `<artifact-facing n / apparatus-facing n>`; **session note carried:** `<yes | no>`.
@@ -34,4 +36,4 @@
 - **Residual risk accepted, and what is expected to catch it:** `<one line>`.
 - **Cost to run:** `<where the repository's index records it, stated here first>`.
 
-**Terminal fitness ruling:** `<fit for purpose | fit once the named fixes land | not fit>`.
+**Terminal fitness ruling:** `<fit for purpose | fit once the named fixes land | not fit | review incomplete; no fitness ruling claimed>`.

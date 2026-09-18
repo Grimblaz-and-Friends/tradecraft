@@ -28,11 +28,11 @@ As the brief requires: the change that removes a rule says which it was. Deletio
 | --- | --- | --- |
 | `roster.md:14-30` at `6376ccb` — the width paragraph, the three-row retention table, and its five following paragraphs | to entry | Quoted verbatim below, pinned. [D-336] records what the recomputation settled but does **not** hold the table. Prose keeps the concept — the width rests on this repository's record, the fifth chair buys the other shape seat, worth-it is a judgement and not a measurement, the corpus predates the deletion lens — and the two links the recipe lives at. No figure was altered or re-derived; they left shipped prose for this entry. |
 | `dispatch.md:9`'s observed-evidence clause and its two observed-incident sentences at `6376ccb` | to entry | Quoted verbatim below, pinned. [D-222] holds neither. Prose keeps the concept — the root's copy is the change's, the recipient told injected always-on text is not governing — with its reason and the fact that naming the root alone has not stopped it. |
-| `dispatch.md:11` at `6376ccb`, the positioning procedure | to another cell + to template | Building a tree at a revision, for any instrument's run, is the `experience-session` cell's (D-491 decision 3); the one line a recipient runs on a root it cannot rebuild, and its failure case, are `dispatch-template.md`'s. |
+| `dispatch.md:11` at `6376ccb`, the positioning procedure | to another cell + to template | The sweep routed the generic isolation procedure to the `experience-session` cell (D-491 decision 3) and the recipient's fallback to `dispatch-template.md`. Review found that route cannot cut the detached worktree this contract requires, so the dispatcher's `git worktree add --detach <path> <sha>` line also returned to the template. |
 | `after-the-fix.md:5`, the holder-resumes sentence and the Source-verification pointer | to another cell | `skills/engagement/references/the-stretch.md`. Prose keeps one pointer sentence. |
 | `the-record.md:9-21`, the eleven-field list of the final report | to template | `report-template.md`. Prose keeps the concept — the report is the review's whole evidence to a reader who was not in it; per-seat counts are credits [D-185]; the unit is the finding as originated and dispositioned. |
 | `the-record.md:23` — "**The review closes here.** There is no further pass to rule on — a review is one round (`../references/after-the-fix.md`) — so the report names the residual risk accepted and what is expected to catch it instead: the experience session on the fixed tree, and friction met under the merged material once it is in use." — that path as the line wrote it, at `6376ccb` | cut, unwritten | The third intra-cell copy of *a review is one round*, which `SKILL.md` and `after-the-fix.md` each state. What catches the residual risk is the standing intake, already stated; the residual-risk field is `report-template.md`'s. |
-| `the-record.md:29`, the bot-comment-is-not-a-seat sentence | to template | The concept is `after-the-fix.md`'s definition of a commissioned pass; what remained was a hint on a key, now in `index-row-template.md`. |
+| `the-record.md:29`, the bot-comment-is-not-a-seat sentence | to template | The commissioned-pass half remains in `after-the-fix.md` and the `external` hint in `index-row-template.md`; the configured-automation half of *neither ever reaches staffing* is now on that template's `staffing` hint. The earlier entry collapsed the two halves and falsely recorded only one destination. |
 | The three new depth-index entries' clause `, copied whole and filled` | cut, unwritten — **classed here, not by the artifact** | **A deletion this change made of its own new text.** The artifact's table classes the three new entries as *to template* and supplies no class for this clause, because the clause did not exist when the table was written; §6's last bullet requires this entry to class any line the table missed, and this is that class. Ruled during the build and reasoned in *The ceiling call* below. Each template already opens with the instruction in its own words. |
 
 ### The sentences and clauses cut out of sharpened lines
@@ -45,7 +45,7 @@ A line classed *sharpen* keeps its concept and its reason. These are what left t
 | `SKILL.md:10` | *"the live options, each with pros and cons, and a recommendation among them"* | to another cell — the ask's argued form is `engagement`'s `the-ask.md` |
 | `SKILL.md:10` | *"Safe in attended and unattended lanes alike"* | armour |
 | `SKILL.md:24` | *"Each stage's own machinery is one hop away, and the pointer says when to open it — a session on one step of the pipeline has no use for the rest"* | to another cell — the cell's shape is `authoring`'s `cell-structure.md`, restated here |
-| `SKILL.md:37` | *"Load hides in absence claims, universals, superlatives, and counts — check those first"* | a how the definition already decides |
+| `SKILL.md:37` | *"Load hides in absence claims, universals, superlatives, and counts — check those first"* | restored after review — the terminal stage refused its retirement because the sentence changes the order of a review's checks rather than merely explaining the definition |
 | `SKILL.md:37` | the six-cycle exhibit link | to entry — [D-371], now the citation |
 | `SKILL.md:38` | "**Severity is reached too**, because a high against governing prose whose harm claim is behavioral is settleable, where a probe is cheap, before a fix is priced on it; a high in the executable class — a red lint, a guard that cannot fail — arrives with its probe and is not re-probed" | a case lines 36, 38 and 41 decide together |
 | `SKILL.md:39` | *"a returned need is stage output, not an owner question"* | typed-halt decides it |
@@ -59,7 +59,7 @@ A line classed *sharpen* keeps its concept and its reason. These are what left t
 | `roster.md:32` | *"The dispatch names this explicit exception to assignment identity"* | the dispatch contract and the template already say it |
 | `roster.md:32` | *"The judge's separation from finders is in the dispatch contract"* | an unwritten pointer; `dispatch.md` states it |
 | `roster.md:38` | *"Each launch names its model and reasoning effort explicitly; a runtime default is not review evidence"* | to another cell — `engagement`'s `dispatch-records.md` |
-| `roster.md:38` | "The report records which model, effort and runtime staffed each seat, so per-runtime evidence can accumulate; how that value is spelled is the record's (`../references/the-record.md`), and one spelling per runtime is what makes it a query." — that path as the line wrote it, at `6376ccb` | to template — the field and its hint; the reason stays once in `the-record.md` |
+| `roster.md:38` | "The report records which model, effort and runtime staffed each seat, so per-runtime evidence can accumulate; how that value is spelled is the record's (`../references/the-record.md`), and one spelling per runtime is what makes it a query." — that path as the line wrote it, at `6376ccb` | to template — the field and its hint; the queryability reason was dropped because the sweep treated it as template-owned with the field while this entry mistakenly claimed a surviving copy in `the-record.md`. The review found no copy. The stranded reason is said here, not restored as a governing sentence. |
 | `dispatch.md:5` | every field enumeration of the shared block | to template — `dispatch-template.md` |
 | `dispatch.md:5` | *"A proved-empty bundle is evidence too"* | kept at `after-the-fix.md:25`, where the bundle is defined |
 | `dispatch.md:5` | *"Writing either per recipient is how a dispatcher ends up repeating a byte-identical section outside the block whose definition is that it is byte-identical"* | armour |
@@ -69,6 +69,7 @@ A line classed *sharpen* keeps its concept and its reason. These are what left t
 | `dispatch.md:15` | the flag-by-flag explanation of `git worktree add --detach <path> <base>` | to template; the contract decides the case |
 | `dispatch.md:15` | *"At a named revision the flag changes nothing observable, which is why a check over the two forms proves nothing"* | armour |
 | `dispatch.md:15` | "**Detached, the base may be the change under review** — a seat probing that change has to hold it" | a case the contract decides |
+| `dispatch.md:15` | *"omit it and git puts the tree on one, carrying the change's own content where the base was the change, so a pull request opened from it re-proposes the reviewed change under an unrelated title"* → *"a branch made at the change re-proposes it wherever that branch is next pushed"* | restored after review — the replacement overstated the mechanism; opening a pull request from the branch is what re-proposes the reviewed change |
 | `dispatch.md:17` | the incident narration of the removal taken while a cold seat was verifying | to entry — [D-392]`:19` holds it |
 | `dispatch.md:17` | *"and whether the tree was cut with `--detach` is not what decides it"* | armour |
 | `arbitration.md:5` | *"The account is read off the seat's report itself, never off a total the seat states about itself"* | D-102's index concept decides it; D-453 argues it |
@@ -87,7 +88,7 @@ A line classed *sharpen* keeps its concept and its reason. These are what left t
 | `after-the-fix.md:21` | *"and nothing further"* | **resolves finding §1.3** — this cell no longer says what the repair batch buys beyond the floor, which `when-one-fires.md` decides |
 | `after-the-fix.md:25` | *"The holder's external-pass job starts in a shell with authenticated `gh`, network access, and its supplied permission or approval route"* | to script message — what `external_pass.py` says at the moment |
 | `after-the-fix.md:25` | *"Retry a failed collection or verification"* | to script message |
-| `after-the-fix.md:25` | *"A stale receipt cannot close the review"* | drift-buys-a-new-bundle decides it |
+| `after-the-fix.md:25` | *"A stale receipt cannot close the review"* | overcut, corrected after review — drift can be holder traffic rather than a change in the bundle's source, so the qualifying clause that a match confirms both the recorded bytes and source returned. An author-aware verifier remains a pitched script change, not a governing sentence added here. |
 | `after-the-fix.md:25` | "Record what actually posted even when it produced nothing; configured reviewers stub, rate-limit, and skip." and the `external` booking | to template — `index-row-template.md` |
 | `after-the-fix.md:25` | the four external dispositions enumerated | to template — `report-template.md` |
 | `after-the-fix.md:27` | *"none of the availability states above can apply to it"* | armour |
@@ -142,10 +143,10 @@ The line's concept and its reason stayed in the cell; what left is the evidence 
 Applied without re-deciding, each settled elsewhere: the dispatch contract's cold-seat half → `engagement`, its review half → this cell (#577); the isolation procedure → `experience-session` (D-491 decision 3); the second-run trigger and the declining line → `experience-session` (#583); the row's repo-only side, `cost` and `target` → `records` (#612); the site-read rule → `arbitration.md:7` (records call 5). Made here:
 
 1. **The dispatch's fields are this cell's, stated once in `dispatch-template.md`**; the launch record — model, effort, permission boundary, and the source of each — is `engagement`'s, and `dispatch.md:7`'s and `roster.md:38`'s copies go.
-2. **What isolation *is* for a review recipient stays here** (D-392) — its own detached tree at the revision, a write boundary where it writes, removable at the review's close; **how** a tree is built at a revision is `experience-session`'s (D-491); the one line for a root that cannot be rebuilt, and its failure case, are the template's, no other cell stating them.
+2. **What isolation *is* for a review recipient stays here** (D-392) — its own detached tree at the revision, a write boundary where it writes, removable at the review's close. The generic isolation procedure remains `experience-session`'s (D-491); review found its history-free method cannot satisfy this contract, so the dispatcher's detached-worktree command and the recipient's fallback are both the template's.
 3. **The report's fields are this cell's, stated once in `report-template.md`**, and the report opens with the plain brief whose form is `engagement`'s.
 4. **The row's shipped keys and spellings are this cell's, stated once in `index-row-template.md`**; the licence that a repository states which dispatches its cost counts stays in `the-record.md`'s prose, because the `records` cell reads it there.
-5. **"Governing prose" is defined once, at `SKILL.md:18`**; `roster.md:12`'s second definition goes, and a docstring stating a calling contract is a case the one definition decides.
+5. **"Governing prose" is defined at `SKILL.md:18`.** Review restored `roster.md:12`'s anti-narrowing scope for the dispatched `revision-diff` lens — including a docstring stating a calling contract and excluding confinement to always-on surfaces and cells — because the lens brief otherwise lost those cases.
 6. **What buys the fifth chair is `the-shape.md:6`'s**; `roster.md:7` and `:12` lose their copies.
 7. **Cost as evidence and never a ceiling is `the-shape.md:7`'s**; `the-record.md` keeps only that cost is read off returns and points at the shape page.
 8. **Which surface records an amendment is `authoring`'s**; `roster.md:12`'s parenthetical goes.
@@ -159,7 +160,7 @@ Applied without re-deciding, each settled elsewhere: the dispatch contract's col
 ## The findings this sweep resolved, and the reading each took
 
 - **§1.3** — what a repair batch buys beyond the floor. Resolved by this cell no longer saying: *"and nothing further"* is cut from `after-the-fix.md:21`, and `experience-session`'s `when-one-fires.md` decides it.
-- **§2.3** — two definitions of *governing prose*. Resolved to one, at `SKILL.md:18`; `roster.md:12`'s goes. `grep -rn "prose a later session is expected to act on" skills/adversarial-review` returns exactly one line.
+- **§2.3** — two definitions of *governing prose*. The sweep resolved them to one at `SKILL.md:18`; terminal review restored the anti-narrowing scope to `roster.md:12` because a dispatched lens receives that brief, not the cell body's definition. `grep -rn "prose a later session is expected to act on" skills/adversarial-review` now returns those two sites.
 - **§3.9** — the report's field list carried no plain brief, while `engagement` says the report is a surface the owner enters. Resolved by `report-template.md` opening with the plain-brief line and naming the form as that cell's.
 - **§4.2** — the dispatch's fields spread through three files. Resolved to `dispatch-template.md`.
 - **§4.3** — the report's and the row's fields interleaved with the history of retired counts. Resolved to `report-template.md` and `index-row-template.md`; the retirement's reason stays in prose, the schema does not.
@@ -167,15 +168,17 @@ Applied without re-deciding, each settled elsewhere: the dispatch contract's col
 
 ## The route named for `dispatch.md:11`, and the residue
 
-The positioning procedure's route is: the sentence in `dispatch.md` → the `experience-session` cell's own depth index → `skills/experience-session/references/isolation.md`, whose load condition covers **whichever instrument's run it is**.
+The sweep's named route for the positioning procedure was: the sentence in `dispatch.md` → the `experience-session` cell's own depth index → `skills/experience-session/references/isolation.md`, whose load condition covers **whichever instrument's run it is**.
 
-**The residue, stated rather than hidden.** `skills/experience-session/references/running-one.md:5`, which the sweep's findings and the #583 artifact both cite for positioning, no longer holds it — D-591 replaced that line with the holder-charters sentence. And `isolation.md` builds a tree at a commit without naming a tool-cut root. That is why the one-line remedy for a root a recipient cannot rebuild stayed in this cell's template rather than becoming a pointer: at `6376ccb` no other cell stated it.
+**The residue, stated rather than hidden.** `skills/experience-session/references/running-one.md:5`, which the sweep's findings and the #583 artifact both cite for positioning, no longer holds it — D-591 replaced that line with the holder-charters sentence. And `isolation.md` builds a history-free tree whose method cannot satisfy the detached-worktree contract. Terminal review therefore restored the dispatcher's worktree command beside the recipient's fallback in this cell's template: at `6376ccb` no other cell stated either line.
 
 ## Cross-cell copies of this cell's concerns, left standing on purpose
 
-Named here by file so the next sweeps do not re-find them, each belonging to its own change: `skills/engagement/references/cold-seat.md` and `skills/spikes/references/cold-seat-ab.md` (positioning — the `engagement` artifact already routes its copy); `docs/cells/landing/SKILL.md` (the experience-session line); `docs/cells/records/references/what-a-review-records.md`, which points here lawfully.
+Named here by file so the next sweeps do not re-find them, each belonging to its own change: `skills/engagement/references/cold-seat.md` and `skills/spikes/references/cold-seat-ab.md` (positioning — the `engagement` artifact already routes its copy); `docs/cells/landing/SKILL.md` (the experience-session line); `docs/cells/records/references/what-a-review-records.md`, whose lawful pointer now names `index-row-template.md` as the schema owner.
 
 **The shift the `records` sweep must know:** the licence sentence its settled artifact reads as `the-record.md:28` — "**A repository recording it says in its own material which dispatches it counts**" — lands at **`the-record.md:13`** after this change. `grep -n "which dispatches it counts" skills/adversarial-review/references/the-record.md` finds it there.
+
+The same sweep also re-aims `what-a-review-records.md`'s schema pointer from `the-record.md`'s removed field enumeration to `index-row-template.md`, where the schema now lives.
 
 ## Citations added by this change
 
@@ -193,7 +196,9 @@ The artifact drafted a body of 8,104 against a re-baselined ceiling of 8,104, le
 
 Re-baselining to 8,126 was refused. The ratchet's own comment prescribes re-baselining for a cell that *sheds*, and a constant left above a smaller body measures nothing until the body regrows to it; the artifact records making the same refusal once already in its probe, at 8,429, and sweeping three more body passages instead. So more body shed here: **the clause `, copied whole and filled` left all three template index entries**, since each template already opens with that instruction in its own words, so one rule stood written six times across the cell. It is the only redundancy this change introduced — the three entries are new here — so cutting it relitigated nothing the artifact settled, where cutting any other body passage would have, every one being a keep row or an already-sharpened one.
 
-Three clauses at 25 characters each brought the body to **8,051**, and `CELL_BODY_CEILING_CHARS["skills/adversarial-review/SKILL.md"]` in `tools/lint.py` was re-baselined from `8_114` to `8_051` in the same change, so the ratchet follows the shed down rather than standing above it.
+Three clauses at 25 characters each brought the body to **8,051**, and `CELL_BODY_CEILING_CHARS["skills/adversarial-review/SKILL.md"]` in `tools/lint.py` was re-baselined from `8_114` to `8_051` in the same change, so the ratchet followed the shed down rather than standing above it.
+
+The terminal review then refused the retirement of *"Load hides in absence claims, universals, superlatives, and counts — check those first"* and ordered that sentence restored. The fix batch moved the ceiling with the restoration, from **8,051** to the re-derived body of **8,139**, leaving zero headroom. This is an explicit upward move rather than a silent re-baseline: shedding another settled passage would relitigate the artifact to pay for a revert the review required, while moving the constant exactly to the restored body creates no unargued room.
 
 ## The owner's sentences, and what was not touched
 
