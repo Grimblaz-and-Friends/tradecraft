@@ -72,7 +72,7 @@ from winio import utf8_stdio  # noqa: E402
 TRIAL_OPENED = "2026-09-04T22:34:00Z"
 BASELINE_WEEKS = 3
 
-# The closed list of origins `skills/filing/references/what-a-filing-carries.md` states, and the classes a
+# The closed list of origins `skills/filing/references/pitch-template.md` states, and the classes a
 # row may take. The origins are the first five: `ambiguous` and `unstated` are
 # what the classifier says about a body, never what a body says about itself.
 ORIGINS = ("use", "review", "owner", "session", "instrument")
@@ -82,7 +82,7 @@ CLASSES = ORIGINS + ("ambiguous", "unstated")
 # `.` as well as `:` on the heading, because bodies here already write both, and
 # a classifier that refused one would report the filer's punctuation as a
 # missing origin. A leading list marker and an origin on the *following* line
-# are accepted too: the rule says "one line under the heading", which is the
+# are accepted too: the heading and its content can be separate in the
 # ordinary markdown reading of a heading with its content beneath, and a filer
 # who takes it produced `unstated` -- the one class the element exists to end.
 # A blockquote marker is deliberately not accepted, because `>` is how a quoted

@@ -204,6 +204,20 @@ The terminal review then refused the retirement of *"Load hides in absence claim
 
 Four passages are the owner's and none is sharpened: `arbitration.md`'s truncation-and-fallback rule whole (the term affirmed on #581, as #630 rewrote it), **Work is bought, never owed** whole and **The affirmed implementation brief is the budget** whole (both D-590), and `roster.md`'s three tier sentences (D-601). Not marked, and why: D-617's *"external pass only"* bounds the enumerator rather than a sentence in this cell, and the three-collections sentence is the review's qualification and was sharpened.
 
+**One of those four no longer exists, and the merge is why.** This change preserved
+`roster.md`'s first tier sentence verbatim as D-601's — *"Every seat runs at the strongest model tier
+the runtime's budget bears unless the owner's recorded choice for the change says otherwise"* — and
+acceptance criterion 3(d) required `grep -F -c` to find it exactly once at this change's tip. It did,
+at `948e88d`. **PR #644 then deleted that sentence on `main` before this change merged**, replacing it
+with *"**Where one model's advantage over another is real but scarce, concentrate it**"*, and PR #645
+landed the model-default decision it belongs to. This change's merge takes `main`'s wording: #644 is
+the later landed change and its rewrite is its own affirmed decision, where this change's job was to
+preserve the sentence as it stood, not to outrank a subsequent decision about it. **So criterion 3(d)
+held against the tree this change built and does not survive the merge** — a fact about the merge
+rather than a failure of the build, recorded here because an entry silent about it would leave a later
+reader checking this section against a tree that no longer holds one of its four. The merge keeps this
+change's own cuts to the rest of that paragraph, which #644 did not touch and did not decide.
+
 Also untouched, each for its own reason: the `filing` cell (its own sweep); `arbitration.md:7`'s consequence-shape axis (#377 and #456 own it); `the-shape.md:6`'s panel triggers and `roster.md:38`'s tiers, both what-preferences the owner has not stated; the frontmatter description, so no roster regeneration; `scripts/`, `tests/`, `lib/` and every guard. Nothing was built for #595 — the report template carries `pitched #N` as a fate and leaves a pitch section to add.
 
 **No settling row is appended.** The brief is #571's, affirmed once for every sweep, and its row already stands on `docs/settling.jsonl`. A second row would record the same affirmation twice. This is the same call the settled sweeps made, so the sweeps agree; the `records` cell's own sweep may decide otherwise for all of them at once.

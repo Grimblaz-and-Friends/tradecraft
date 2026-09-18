@@ -419,11 +419,11 @@ CELL_BODY_CEILING_CHARS = {
     # every always-on row, so check_always_on_budget sizes it and an entry
     # here would be the smuggled second limit that test pins against.
     "skills/engagement/SKILL.md": 12_208,
-    "skills/filing/SKILL.md": 5_235,
+    "skills/filing/SKILL.md": 2_739,
     "docs/cells/board/SKILL.md": 5_106,
     "skills/spikes/SKILL.md": 7_200,
     "skills/experience-session/SKILL.md": 3_611,
-    "skills/adversarial-review/SKILL.md": 8_139,
+    "skills/adversarial-review/SKILL.md": 8_165,
     "skills/authoring/SKILL.md": 7_129,
     "docs/cells/records/SKILL.md": 2_744,
     "skills/persist-changes/SKILL.md": 3_551,
