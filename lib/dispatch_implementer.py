@@ -27,7 +27,9 @@ from seat_process import run_process
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
 
-DEFAULT_MODEL = "gpt-6-astra"
+# gpt-5.6-sol: preferred blind over gpt-6-astra and gpt-5.6-terra on artifact
+# authorship, and separated from neither on the owner's code-task pilot [D-645].
+DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_EFFORT = "xhigh"
 SESSION = re.compile(r"(?im)^session id:\s*([0-9a-f]{8}-[0-9a-f-]{27,})\s*$")
 

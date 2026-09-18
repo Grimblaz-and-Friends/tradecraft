@@ -99,7 +99,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     else:
         last = flags[flags.index("--output-last-message") + 1]
         assert flags == ["exec", "--ephemeral", "--sandbox", "read-only", "--json", "--color", "never",
-                         "--model", "gpt-6-astra", "-c", 'model_reasoning_effort="xhigh"', "-C", str(args.root),
+                         "--model", "gpt-5.6-sol", "-c", 'model_reasoning_effort="xhigh"', "-C", str(args.root),
                          "--skip-git-repo-check", "--output-last-message", last, "-"]
         assert not Path(last).exists()
     assert args.output.read_bytes().startswith(b"would not\n")
