@@ -1,6 +1,6 @@
-# Staffing the panel — the roster, the seats, and the tier each gets
+# Staffing the panel — the roster, the seats, and where model advantage is concentrated
 
-**Loaded when** you are choosing who sits on a review — the panel's seats, the defense, the judge — or deciding what model tier staffs them. A recipient carrying out a brief it was handed does not need it.
+**Loaded when** you are choosing who sits on a review — the panel's seats, the defense, the judge — or where to concentrate a model advantage within that staffing. A recipient carrying out a brief it was handed does not need it.
 
 ## The roster — five names, four or five seated
 
@@ -35,6 +35,6 @@ The corpus is the highs the **round-one panel itself originated**, so the five-s
 
 ## Staffing
 
-The `engagement` cell owns judging-seat freshness and vendor assignment, including how the holder treats an actual-vendor fallback. The tier choice below applies within that staffing.
+The `engagement` cell owns judging-seat freshness, vendor assignment — including how the holder treats an actual-vendor fallback — and **how a standing default model is chosen**. What is below applies within that staffing.
 
-Every seat runs at the strongest model tier the runtime's budget bears unless the owner's recorded choice for the change says otherwise. Where the top tier is scarce, concentrate it where open-ended perception lives — the `cold-read` — and where single dispatches carry the most leverage — the judge. On Claude, ordinary seats and a panel's nonterminal defense run at `xhigh`; the `cold-read` and the terminal stage run at `max`, which makes a routine defense `max` and a panel defense `xhigh`. Each launch names its model and reasoning effort explicitly; a runtime default is not review evidence. The report records which model, effort and runtime staffed each seat, so per-runtime evidence can accumulate; how that value is spelled is the record's (`../references/the-record.md`), and one spelling per runtime is what makes it a query.
+**Where one model's advantage over another is real but scarce, concentrate it** where open-ended perception lives — the `cold-read` — and where single dispatches carry the most leverage — the judge. On Claude, ordinary seats and a panel's nonterminal defense run at `xhigh`; the `cold-read` and the terminal stage run at `max`, which makes a routine defense `max` and a panel defense `xhigh`. Each launch names its model and reasoning effort explicitly; a runtime default is not review evidence. The report records which model, effort and runtime staffed each seat, so per-runtime evidence can accumulate; how that value is spelled is the record's (`../references/the-record.md`), and one spelling per runtime is what makes it a query.

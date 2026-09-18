@@ -34,7 +34,14 @@ from seat_process import run_process
 from winio import utf8_stdio
 
 VENDORS = ("codex", "claude")
-DEFAULT_MODELS = {"codex": "gpt-6-astra", "claude": "opus"}
+# Each default names what it rests on. A default no comparison supports stands
+# as un-compared, which is a fact about the evidence and not a finding for it.
+# Codex was preferred blind on artifact authorship over gpt-6-astra and
+# gpt-5.6-terra; the owner's code-task pilot separated none of the three [D-645].
+DEFAULT_MODELS = {
+    "codex": "gpt-5.6-sol",
+    "claude": "opus",  # un-compared: no run has compared it with any Claude sibling
+}
 DEFAULT_CODEX_EFFORT = "xhigh"
 CLAUDE_EFFORTS = {"ordinary": "xhigh", "cold": "max", "terminal": "max"}
 CLAUDE_READ_TOOLS = "Read,Glob,Grep"
