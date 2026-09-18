@@ -2,7 +2,7 @@
 
 **Loaded when** you are recording a review's outcome — appending its index row or reading the index back.
 
-Every review appends one row to `docs/reviews.jsonl`. Rows already written are not migrated or maintained. Beyond the fields the practice's own `the-record.md`, in the `adversarial-review` cell, names, a row here carries one more field, `cost`, and one more key on each entry of `highs`.
+Every review appends one row to `docs/reviews.jsonl`. Rows already written are not migrated or maintained. Beyond the fields the practice's own `index-row-template.md`, in the `adversarial-review` cell, names, a row here carries one more field, `cost`, and one more key on each entry of `highs`.
 
 **`cost` — what the review took to run**, as `{"dispatches": n, "subagent_tokens": n}`.
 
