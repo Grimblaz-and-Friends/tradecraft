@@ -704,8 +704,8 @@ def test_the_board_asks_for_the_framed_set_and_not_the_open_set(monkeypatch):
 
 
 def test_framed_issues_refuses_a_read_that_came_back_at_its_limit(monkeypatch):
-    """The completeness check the pool's own read performs, on the read the
-    board's whole membership comes from. Without it `reconcile` computes the
+    """The completeness check the board's own read performs, on the read its
+    whole membership comes from. Without it `reconcile` computes the
     archive set over a short target and `sync` reports success."""
     full = json.dumps([{"number": i, "id": f"I{i}"} for i in range(q.ISSUE_READ_LIMIT)])
     monkeypatch.setattr(q, "gh", lambda args: full)
