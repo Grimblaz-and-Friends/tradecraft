@@ -732,7 +732,36 @@ def test_a_rename_into_the_doctrine_is_reported_once_through_run(gh, monkeypatch
 # A real git tree, because the arm reads blobs at revisions and a stub of that
 # would be a stub of the one thing under test.
 
+# Built once per module and copied per test: `init` plus two `config` calls are
+# three `git` launches that make an identical, empty repository every time, and
+# on Windows a launch costs an order of magnitude more than the copy. The cells
+# differ per test, so `add` and `commit` stay where they are. Each test still
+# gets its own repository, observable by nothing else. Module-scoped because CI
+# runs the suite under `--dist loadfile`, which keeps a module on one worker, so
+# the template is built once however many workers there are. [#649]
+_SEED = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _seed_repository(tmp_path_factory):
+    """Install the template `_repo` copies. Autouse so the helper's eleven
+    callers keep their signatures."""
+    global _SEED
+    import subprocess
+    seed = tmp_path_factory.mktemp("callout-seed")
+    for args in (("init", "-q"),
+                 ("config", "user.email", "t@example.invalid"),
+                 ("config", "user.name", "T")):
+        out = subprocess.run(["git", "-C", str(seed), *args],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+    _SEED = seed
+    yield
+    _SEED = None
+
+
 def _repo(tmp_path, cells: dict[str, str]):
+    import shutil
     import subprocess
 
     def git(*args):
@@ -742,9 +771,7 @@ def _repo(tmp_path, cells: dict[str, str]):
         assert out.returncode == 0, f"git {' '.join(args)}: {out.stderr}"
         return out.stdout
 
-    git("init", "-q")
-    git("config", "user.email", "t@example.invalid")
-    git("config", "user.name", "T")
+    shutil.copytree(_SEED, tmp_path, dirs_exist_ok=True)
     _write(tmp_path, cells)
     git("add", "-A")
     git("commit", "-qm", "base")

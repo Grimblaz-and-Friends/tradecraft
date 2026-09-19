@@ -46,9 +46,20 @@ jobs:
         shell: bash
         run: python tools/check_version_bump.py --base "origin/$BASE_REF"
       - name: Tests
+        # `-n auto` because the suite is overwhelmingly waiting on subprocesses
+        # rather than computing: about nine tenths of its wall is inside
+        # `subprocess`, and almost all of that is `git` starting up, which costs
+        # an order of magnitude more per launch on Windows than on Linux.
+        #
+        # `--dist loadfile` is not a tuning choice. Several modules build their
+        # git fixture once per module and copy it per test; under the default
+        # `--dist load` a module's tests scatter across workers and each worker
+        # rebuilds that fixture, paying those launches once per worker instead
+        # of once. Keeping a module's tests on one worker is what makes the
+        # once-per-module fixture actually cost once.
         run: |
           python -m pip install -r requirements-dev.txt
-          python -m pytest tools/tests skills lib/tests -q
+          python -m pytest tools/tests skills lib/tests -q -n auto --dist loadfile
 
   # The owner reads the doctrine diff himself before merging -- AGENTS.md,
   # CLAUDE.md, the shipped charter, or any repo-only cell under docs/cells/,
