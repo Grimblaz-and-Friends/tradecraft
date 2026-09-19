@@ -473,11 +473,26 @@ def check_subprocess_streams(root: Path) -> list[str]:
     return findings
 
 
+# The zone a calling contract lives in. A token only matters where something
+# resolves it; a record, a frozen entry or a repository's own tooling names one
+# in prose and resolves nothing, so walking a whole repository reports findings
+# its reader cannot act on -- and some of them sit in files this practice
+# forbids editing, which makes the guard's first run on a real repository
+# mostly noise and its second run never happen.
+CONTRACT_DIRS = ("skills", "lib", "commands", "agents", "hooks", ".claude-plugin")
+
+
 def check_harness_tokens(root: Path, contract_roots: Iterable[Path] | None = None) -> list[str]:
     """Report harness-owned tokens in portable contracts, not native `.claude` config."""
     if contract_roots is None:
+        # Where the tree has a contract zone, that zone is the scope. Where it
+        # has none, the caller pointed at something specific and means all of
+        # it -- so the walk widens rather than going quiet, and no caller that
+        # aimed this at a directory of its own loses its check.
+        present = [root / name for name in CONTRACT_DIRS if (root / name).is_dir()]
+        bases = present or [root]
         candidates = [
-            path for path in _iter_files(root)
+            path for base in bases for path in _iter_files(base)
             if ".claude" not in path.relative_to(root).parts
         ]
         ignored = _git_ignored(root, candidates)

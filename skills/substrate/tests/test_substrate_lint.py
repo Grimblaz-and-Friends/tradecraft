@@ -224,6 +224,41 @@ def test_harness_token_spellings_keep_their_polarities(tmp_path, spelling, expec
     assert len(findings) == expected, findings
 
 
+def test_a_contract_zone_scopes_the_walk_away_from_records_and_entries(tmp_path):
+    """The defect: run at a repository root, the guard reported tokens named in
+    records and frozen entries -- prose that resolves nothing, some of
+    it in files this practice forbids editing. An adopter's first run was then
+    mostly findings they could not act on, and a guard like that gets turned
+    off.
+    """
+    token = "$" + "{CLAUDE_PLUGIN_ROOT}"
+    _write(tmp_path / "skills" / "contract.md", "run " + token + "/script.py\n")
+    _write(tmp_path / "records" / "reviews.jsonl", '{"note": "names ' + token + ' in prose"}\n')
+    _write(tmp_path / "records" / "entries" / "E-1-frozen.md",
+           "The retired hook read " + token + " and is quoted here.\n")
+    _write(tmp_path / "internal" / "repo_only.py", "# a comment naming " + token + "\n")
+
+    findings = lint.check_harness_tokens(tmp_path)
+
+    assert len(findings) == 1, findings
+    assert "skills/contract.md" in findings[0]
+    for outside in ("reviews.jsonl", "E-1-frozen.md", "repo_only.py"):
+        assert outside not in "".join(findings), outside
+
+
+def test_a_tree_with_no_contract_zone_is_walked_whole(tmp_path):
+    """The other polarity, and the reason the scope is not a refusal: a caller
+    that aims this at a directory of its own means all of it, and a guard that
+    went quiet there would check nothing while printing a clean line."""
+    token = "$" + "{CLAUDE_PLUGIN_ROOT}"
+    _write(tmp_path / "contract.md", "run " + token + "/script.py\n")
+    _write(tmp_path / "nested" / "other.md", "also " + token + "\n")
+
+    findings = lint.check_harness_tokens(tmp_path)
+
+    assert len(findings) == 2, findings
+
+
 def test_git_ignore_filter_handles_unicode_paths_and_ordinary_paths(tmp_path):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     _write(tmp_path / ".gitignore", "skip\n")
