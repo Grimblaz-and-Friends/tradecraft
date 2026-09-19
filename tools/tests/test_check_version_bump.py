@@ -69,8 +69,8 @@ def _repo_template(tmp_path_factory):
 
     Module-scoped rather than session-scoped because CI runs the suite under
     `--dist loadfile`, which keeps one module's tests on one worker. The
-    template is then built once per module however many workers there are, so
-    the suite's launch count does not depend on how the suite was run. [#649]
+    template is then built once per module however many workers there are,
+    rather than once per worker. [#649]
     """
     template = tmp_path_factory.mktemp("version-bump-template")
     _run(template, "init", "-q", "-b", "main")
