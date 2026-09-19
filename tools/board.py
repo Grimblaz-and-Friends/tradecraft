@@ -819,7 +819,11 @@ def cmd_init() -> int:
     )
     print(f"created project #{project['number']} titled {BOARD_TITLE!r}, linked to {OWNER}/{REPO}")
     print(f"fields: Band {BANDS}, Bundle, Status {STATUSES}")
-    return 0
+    # `frame` shells out to `gh issue edit --add-label`, which fails outright
+    # when the label does not exist -- so a board created without them cannot
+    # place its first issue. Provisioning here rather than leaving it to a
+    # step the setup prose would have to remember.
+    return cmd_labels(dry_run=False)
 
 
 def options_payload(existing: list[dict], new_names: list[str]) -> str:

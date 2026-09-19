@@ -462,8 +462,37 @@ def test_init_proceeds_when_no_board_carries_that_title(monkeypatch):
     monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": "something else"}])
     calls = []
     monkeypatch.setattr(q, "gql", lambda query, **kw: calls.append(query) or _init_payload(query))
+    # init also provisions the labels; stubbed so this test keeps its own subject.
+    monkeypatch.setattr(q, "existing_labels", lambda: set(q.LABEL_SPECS))
+    monkeypatch.setattr(q, "gh", lambda args: "")
     assert q.cmd_init() == 0
     assert any("createProjectV2" in c for c in calls), "it got past the guard and created"
+
+
+def test_init_provisions_the_labels_a_fresh_board_cannot_frame_without(monkeypatch):
+    """A board created without its labels cannot place its first issue.
+
+    `cmd_frame` shells out to `gh issue edit --add-label`, which fails outright
+    when the label does not exist, and the documented fresh setup runs `init`
+    alone. Found by a connected reviewer on #654.
+    """
+    monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": "something else"}])
+    monkeypatch.setattr(q, "gql", lambda query, **kw: _init_payload(query))
+    monkeypatch.setattr(q, "existing_labels", lambda: set())
+    created = []
+    monkeypatch.setattr(q, "gh", lambda args: created.append(args[2]) or "")
+    assert q.cmd_init() == 0
+    assert created == [q.FRAMED_LABEL, q.CAUSE_LABEL, q.REVIEWERS_LABEL], (
+        "init must leave every label the board's own commands add to an issue")
+
+
+def test_init_does_not_disturb_labels_that_already_exist(monkeypatch):
+    """The other polarity: init is re-runnable against a repository that has them."""
+    monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": "something else"}])
+    monkeypatch.setattr(q, "gql", lambda query, **kw: _init_payload(query))
+    monkeypatch.setattr(q, "existing_labels", lambda: set(q.LABEL_SPECS))
+    monkeypatch.setattr(q, "gh", lambda args: pytest.fail(f"unexpected label write: {args}"))
+    assert q.cmd_init() == 0
 
 
 def _init_payload(query):

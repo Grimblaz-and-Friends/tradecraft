@@ -480,12 +480,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.dump:
         args.dump.write_bytes(json.dumps(issues, indent=1).encode("ascii"))
+    # The clamp below reads the WHOLE corpus, before any filter. Filtering
+    # first would clamp the baseline to the earliest issue that survives the
+    # filter, dropping the leading stretch in which the filtered class simply
+    # did not occur -- which shortens the baseline window and inflates its
+    # rate, biasing the before-and-after this report exists to produce.
+    first = earliest_created(issues)
     if args.shipped_only:
         issues = shipped_issues(issues)
 
     # A baseline that begins before the repository's first issue counts days
     # with nothing to file in; clamp to the earliest issue and say so.
-    first = earliest_created(issues)
     clamped_from = None
     if first is not None and first > baseline_start:
         clamped_from, baseline_start = baseline_start, first

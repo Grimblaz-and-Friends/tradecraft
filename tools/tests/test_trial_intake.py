@@ -293,6 +293,38 @@ def test_the_header_prints_the_full_instants_and_the_clamp(tmp_path: Path, capsy
     assert "clamped" not in capsys.readouterr().out
 
 
+def test_the_clamp_reads_the_whole_corpus_not_the_filtered_one(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    # Filtering before the clamp moved the baseline's start to the first issue
+    # that SURVIVED the filter, dropping the leading stretch in which the
+    # filtered class simply had not occurred yet -- a shorter baseline over
+    # the same count is a higher baseline rate, biasing the very comparison
+    # this report exists to produce. Found by a connected reviewer on #654.
+    dump = tmp_path / "issues.json"
+    # The corpus opens with a repo-only filing; the first shipped one is a
+    # fortnight later. The clamp must land on the repo-only one.
+    dump.write_text(json.dumps([
+        _issue(90, "2026-08-20T00:00:00Z", USE_BODY + "\ndocs/cells/board/SKILL.md\n"),
+        _issue(91, "2026-09-03T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+    ]), encoding="utf-8")
+    args = ["--from-file", str(dump), "--opened", "2026-09-05T00:00:00Z",
+            "--until", "2026-09-06T00:00:00Z", "--baseline-weeks", "4"]
+
+    assert ti.main([*args, "--shipped-only"]) == 0
+    filtered = capsys.readouterr().out
+    assert ti.main(args) == 0
+    whole = capsys.readouterr().out
+
+    # The baseline boundary is a property of the corpus, so the filter must
+    # not move it: both runs clamp to the repo-only issue that opens the set.
+    assert "== baseline: 2026-08-20T00:00:00+00:00" in filtered
+    assert "== baseline: 2026-08-20T00:00:00+00:00" in whole
+    # And the filter still does its own job inside that fixed window.
+    assert ti.main([*args, "--shipped-only", "--rows"]) == 0
+    rows = capsys.readouterr().out
+    assert "#91" in rows and "#90" not in rows
+
+
 def test_basis_is_explained_where_it_is_printed(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     dump = tmp_path / "issues.json"
     dump.write_text(json.dumps([_issue(70, "2026-09-05T00:00:00Z", USE_BODY)]), encoding="utf-8")

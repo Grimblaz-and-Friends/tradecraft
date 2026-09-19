@@ -38,7 +38,7 @@ The owner may rule a symptom worked on its own while its cause is open; that exc
 
 ## The commands, in the order they run
 
-If the board does not exist yet, `python tools/board.py init` creates it and its fields once. It refuses when a project of that title already exists, because a second one leaves the title ambiguous and every command refusing.
+If the board does not exist yet, `python tools/board.py init` creates it, its fields and its labels once — the labels because `frame` adds one to an issue and `gh` refuses a label that does not exist, so a board created without them cannot place its first item. It refuses when a project of that title already exists, because a second one leaves the title ambiguous and every command refusing.
 
 ```
 python tools/board.py sync --dry-run        # what it would add and archive
