@@ -19,8 +19,13 @@ following it leaves a number in the tree that no longer describes the suite,
 which is the same defect as a count that rises -- the file stops meaning
 anything. A pull request that reduces launches is already editing this file.
 
-**Per platform**, because the two legs of the matrix need not agree and nothing
-has measured whether they do. The bound must not depend on their agreeing.
+**Per platform**, because the two legs of the matrix need not agree, and measured
+they do not: 2,854 on Linux against 2,849 on Windows at the same commit.
+
+**Enforced in CI and reported everywhere else**, because the same measurement
+shows a count is deterministic per machine and not across them -- a local
+Windows checkout of that commit counted 2,851 against CI's 2,849. See
+`enforced_here`.
 
 **Nothing here is shipped.** This module and the root `conftest.py` that loads it
 sit outside the shipped zone, so a repository that installs the practice as a
@@ -29,6 +34,7 @@ plugin receives neither.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 from pathlib import Path
@@ -70,13 +76,37 @@ def read_baseline(path: Path = BASELINE_PATH) -> dict:
         return {}
 
 
-def verdict(measured: int, baseline: dict, system: str, collected_all: bool) -> tuple[bool, str]:
+def enforced_here(environ=None) -> bool:
+    """Is this the environment the baseline describes?
+
+    The baseline records the CI legs, and it is enforced there. It is **not**
+    enforced on a developer's machine, because the count is deterministic per
+    machine and not identical across machines: the CI Windows leg counted 2,849
+    where a local Windows checkout of the same commit counted 2,851. Enforcing a
+    CI number everywhere would fail honest local runs of a correct tree -- and
+    the landing flow has every session run the whole suite before every commit,
+    so that trap would spring constantly. What the row bought is that a pull
+    request goes red before it merges, and CI is where that happens. [#649]
+    """
+    environ = os.environ if environ is None else environ
+    return bool(environ.get("CI"))
+
+
+def verdict(measured: int, baseline: dict, system: str, collected_all: bool,
+            enforced: bool = True) -> tuple[bool, str]:
     """(ok, one line for the reader). Never raises: a guard that dies is a guard
     that stops guarding, and this one runs after every suite run there is.
     """
     if not collected_all:
         return True, (f"suite-launches: {measured} launches, not compared -- this run did not "
                       f"collect the whole suite, and the baseline describes all of it")
+    if not enforced:
+        recorded = baseline.get(system)
+        against = (f" The recorded {system} leg is {recorded}."
+                   if recorded is not None else "")
+        return True, (f"suite-launches: {measured} launches on {system}, not compared -- the "
+                      f"baseline records the CI legs, where it is enforced, and a count is "
+                      f"deterministic per machine rather than across machines.{against}")
     expected = baseline.get(system)
     if expected is None:
         return True, (f"suite-launches: {measured} launches on {system}, not compared -- no "
@@ -162,6 +192,7 @@ class Plugin:
             read_baseline(),
             platform.system(),
             whole_suite(config.args, config.option),
+            enforced_here(),
         )
         # Written through the terminal reporter so it survives capture and lands
         # with the rest of the run's summary rather than ahead of it.

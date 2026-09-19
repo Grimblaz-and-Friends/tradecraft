@@ -151,3 +151,39 @@ def test_a_second_install_does_not_wrap_the_wrapper():
         counter.uninstall()
     assert counter.launches == 1
     assert subprocess.Popen.__init__ is original
+
+
+# --- where it is enforced ----------------------------------------------------
+
+def test_ci_is_where_the_baseline_binds():
+    assert sl.enforced_here({"CI": "true"}) is True
+
+
+def test_a_developers_machine_is_not():
+    assert sl.enforced_here({}) is False
+    assert sl.enforced_here({"CI": ""}) is False
+
+
+def test_outside_ci_a_deviation_reports_and_does_not_refuse():
+    """The count is deterministic per machine and not across machines, so a CI
+    number enforced locally would fail an honest run of a correct tree -- and
+    the landing flow runs the whole suite before every commit."""
+    ok, line = sl.verdict(2851, {"Windows": 2849}, "Windows",
+                          collected_all=True, enforced=False)
+    assert ok is True
+    assert "2851" in line and "not compared" in line
+    assert "2849" in line, "the recorded leg is still shown, so the number can be eyeballed"
+
+
+def test_outside_ci_a_platform_with_no_baseline_says_so_without_the_write_instruction():
+    ok, line = sl.verdict(10, {}, "Darwin", collected_all=True, enforced=False)
+    assert ok is True
+    assert "not compared" in line
+    assert "Write" not in line, "only a CI run may source a baseline"
+
+
+def test_inside_ci_the_same_deviation_refuses():
+    """The polarity that makes the two tests above a pair rather than a hole."""
+    ok, _ = sl.verdict(2851, {"Windows": 2849}, "Windows",
+                       collected_all=True, enforced=True)
+    assert ok is False
