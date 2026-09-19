@@ -2,7 +2,7 @@
 
 **Loaded when** configuring a connected reviewer, marking a pull request ready, dispositioning what one posted, or buying a second look after a non-mechanical fix.
 
-Every connected reviewer fires once per pull request, when the pull request is marked ready, never per push. Open the pull request as a draft; run the executable floor and the required experience session, or post its declining line; then mark ready and apply the `reviewers` label. Codex fires on ready without that label. A repository with no connected reviewer owes nothing here.
+Every connected reviewer fires once per pull request, when the pull request is marked ready, never per push. Open the pull request as a draft; run the executable floor and the required experience session, or post its declining line; then mark ready and apply the `reviewers` label. **Mechanical work owes neither the session nor the declining line**, so it is marked ready once the floor has run. Codex fires on ready without that label. A repository with no connected reviewer owes nothing here.
 
 The `reviewers` label gates Greptile and CodeRabbit. Removing and re-adding it may buy a second look after a non-mechanical fix; that look is permitted, not owed, and a mechanical fix buys none.
 

@@ -293,6 +293,38 @@ def test_the_header_prints_the_full_instants_and_the_clamp(tmp_path: Path, capsy
     assert "clamped" not in capsys.readouterr().out
 
 
+def test_an_empty_baseline_says_so_rather_than_vanishing(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    # A before-and-after whose "before" is silently absent reads like a report
+    # with no baseline rather than one whose baseline was empty, and the
+    # decision this feeds is taken on the pair. Found by a connected reviewer
+    # on #654.
+    dump = tmp_path / "issues.json"
+    dump.write_text(json.dumps([
+        _issue(99, "2026-09-20T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+    ]), encoding="utf-8")
+    args = ["--from-file", str(dump), "--opened", "2026-09-15T00:00:00Z",
+            "--until", "2026-09-25T00:00:00Z", "--baseline-weeks", "2", "--per-week"]
+
+    assert ti.main(args) == 0
+    out = capsys.readouterr().out
+    assert "== baseline: EMPTY" in out, "an absent baseline must announce itself"
+    assert "no days in it" in out
+
+    # It reaches the JSON consumer too, which is what the close-out reads.
+    assert ti.main([*args, "--json"]) == 0
+    assert "empty" in json.loads(capsys.readouterr().out)["baseline"]
+
+    # Negative control: a corpus that does reach back before the open gets a
+    # real baseline and no notice.
+    dump.write_text(json.dumps([
+        _issue(98, "2026-09-01T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+        _issue(99, "2026-09-20T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+    ]), encoding="utf-8")
+    assert ti.main(args) == 0
+    assert "== baseline: EMPTY" not in capsys.readouterr().out
+
+
 def test_the_clamp_reads_the_whole_corpus_not_the_filtered_one(
         tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     # Filtering before the clamp moved the baseline's start to the first issue

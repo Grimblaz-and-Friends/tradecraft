@@ -18,7 +18,7 @@ The affirmed brief's seven rows land as affirmed. The default instruments become
 
 ### The retired paths, and the one-command restore
 
-Row 5 retires by deletion rather than by switching off, because switched-off code is still measured, tested, swept and reviewed, and git is the archive. **Every path below last stood at `a04e641`**, and `git show a04e641:<path>` restores any of them. Each restore was run before this entry was written.
+Row 5 retires by deletion rather than by switching off, because switched-off code is still measured, tested, swept and reviewed, and git is the archive. **Every path below last stood at `a04e641`**, and `git restore --source=a04e641 -- <path>` brings any of them back into the working tree — one command over as many paths as you name. `git show a04e641:<path>` prints the blob and restores nothing, which is the check that was run against every path here, not the restore. The restore itself was run against `skills/filing/scripts/pool.py` at `a04e641` and returned it at the 44,903 bytes this table gives.
 
 | retired path, with the commit it last stood at | bytes |
 | --- | --- |

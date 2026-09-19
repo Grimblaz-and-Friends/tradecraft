@@ -495,6 +495,14 @@ def main(argv: list[str] | None = None) -> int:
     if first is not None and first > baseline_start:
         clamped_from, baseline_start = baseline_start, first
 
+    # An empty baseline must SAY it is empty. Where the corpus's first issue
+    # postdates the window's open, the clamp leaves the baseline with no days
+    # in it and every renderer below simply emits nothing for it -- a
+    # before-and-after whose "before" is silently absent reads like a report
+    # with no baseline rather than one whose baseline was empty, and the
+    # decision this feeds is taken on the pair. Found by a connected reviewer
+    # on #654.
+    empty_baseline = baseline_start >= opened
     windows = {
         "baseline": (baseline_start, opened),
         "trial": (opened, until),
@@ -509,9 +517,17 @@ def main(argv: list[str] | None = None) -> int:
             result[name] = {"summary": summarize(rows, start, end, clamped_from=clamp),
                             "rows": rows}
 
+    if empty_baseline:
+        result["baseline"]["empty"] = (
+            f"no baseline: the earliest issue in the corpus is {baseline_start.isoformat()}, "
+            f"at or after the window's open at {opened.isoformat()}, so the baseline has no days in it"
+        )
     if args.json:
         print(json.dumps(result, indent=2))
         return 0
+    if empty_baseline:
+        print(f"== baseline: EMPTY -- {result['baseline']['empty']}")
+        print()
     reports = []
     for name in ("baseline", "trial"):
         named_reports = result[name]["weeks"] if args.per_week else [result[name]]
