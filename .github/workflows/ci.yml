@@ -46,9 +46,21 @@ jobs:
         shell: bash
         run: python tools/check_version_bump.py --base "origin/$BASE_REF"
       - name: Tests
+        # `-n auto` because the suite is overwhelmingly waiting on subprocesses
+        # rather than computing: about nine tenths of its wall is inside
+        # `subprocess`, and almost all of that is `git` starting up, which costs
+        # an order of magnitude more per launch on Windows than on Linux.
+        #
+        # `--dist loadfile` is not a tuning choice. Several modules build their
+        # git fixture once per module and copy it per test; under the default
+        # `--dist load` a module's tests scatter across workers and each worker
+        # rebuilds that fixture, so the suite's launch count would depend on how
+        # many workers ran it. Keeping a module on one worker makes the count the
+        # same serially and in parallel, which is what the baseline below is
+        # compared against.
         run: |
           python -m pip install -r requirements-dev.txt
-          python -m pytest tools/tests skills lib/tests -q
+          python -m pytest tools/tests skills lib/tests -q -n auto --dist loadfile
 
   # The owner reads the doctrine diff himself before merging -- AGENTS.md,
   # CLAUDE.md, the shipped charter, or any repo-only cell under docs/cells/,

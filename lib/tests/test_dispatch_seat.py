@@ -26,22 +26,41 @@ def git(root, *arguments):
     )
 
 
-def linked_detached_worktree(root):
-    primary = root.parent / "primary"
-    primary.mkdir()
-    git(primary, "init")
-    (primary / "fixture.txt").write_bytes(b"fixture\n")
-    git(primary, "add", "fixture.txt")
-    git(primary, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+@pytest.fixture(scope="module")
+def primary_template(tmp_path_factory):
+    """The primary repository below, built once and copied per test.
+
+    Three `git` launches make it, and on Windows each costs an order of
+    magnitude more than the copy that reproduces it. Nothing is shared between
+    tests as a result: each still gets its own primary, byte-identical and
+    observable by nothing else. A repository with one ordinary commit records
+    no absolute path, so the copy is valid wherever it lands.
+
+    The worktree is **not** part of the template and cannot be: `.git` and
+    `worktrees/<name>/gitdir` hold absolute paths, so a copied worktree points
+    back at the directory it came from. `worktree add` and its teardown stay
+    per test. [#649]
+    """
+    template = tmp_path_factory.mktemp("primary-template")
+    git(template, "init")
+    (template / "fixture.txt").write_bytes(b"fixture\n")
+    git(template, "add", "fixture.txt")
+    git(template, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "fixture")
+    return template
+
+
+def linked_detached_worktree(root, template):
+    primary = root.parent / "primary"
+    shutil.copytree(template, primary)
     git(primary, "worktree", "add", "--detach", str(root))
     return primary
 
 
 @pytest.fixture
-def job(tmp_path, monkeypatch):
+def job(tmp_path, monkeypatch, primary_template):
     root = tmp_path / "root with spaces"
-    primary = linked_detached_worktree(root)
+    primary = linked_detached_worktree(root, primary_template)
     dispatch = tmp_path / "dispatch.txt"
     dispatch.write_bytes(b"Read the supplied artifact and return your verdict.\n")
     scenario = tmp_path / "scenario.json"

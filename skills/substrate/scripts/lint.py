@@ -67,12 +67,33 @@ def _python_files(base: Path):
     yield from sorted(path for path in paths if path.is_file())
 
 
+# One invocation asks git each distinct question once. Keyed on the exact path
+# list rather than on `root`, because the callers ask three different questions
+# -- every .py file, that set without tests, and (in the repository wrapper) the
+# prose files -- and a root-keyed answer would hand one caller the ignored-set
+# computed for another's population, changing what the lint finds. Cleared at
+# the top of `run()` rather than held for the process: a caller drives the lint
+# in-process many times over trees it mutates between runs, and a `functools`
+# cache would answer the second run from the first. [#649]
+_IGNORED_MEMO: dict[tuple[str, tuple[str, ...]], set[Path]] = {}
+
+
+def reset_ignored_memo() -> None:
+    """Drop the per-invocation ignored-set memo. `run()` calls this first."""
+    _IGNORED_MEMO.clear()
+
+
 def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
     """Return ignored paths, or none when git cannot answer; UTF-8 input avoids
     a locale-encoded write timing out at 60 seconds and treating every path as unignored.
     """
     if not paths:
         return set()
+    key = (str(root), tuple(str(path) for path in paths))
+    if key in _IGNORED_MEMO:
+        # Copied out, so a caller mutating what it gets back cannot poison the
+        # answer the next caller receives.
+        return set(_IGNORED_MEMO[key])
     try:
         proc = subprocess.run(
             ["git", "check-ignore", "--stdin", "-z"],
@@ -84,10 +105,17 @@ def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
             timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
-        return set()
-    if proc.returncode not in (0, 1):
-        return set()
-    return {Path(name) for name in proc.stdout.split("\0") if name}
+        result: set[Path] = set()
+    else:
+        result = (
+            {Path(name) for name in proc.stdout.split("\0") if name}
+            if proc.returncode in (0, 1) else set()
+        )
+    # The degradation is memoised with the answer. Asking again inside one
+    # invocation would fail the same way, and one invocation giving two callers
+    # two different answers about the same paths is the worse outcome.
+    _IGNORED_MEMO[key] = result
+    return set(result)
 
 
 def _target_python_files(root: Path, *, include_tests: bool = True) -> list[Path]:
@@ -534,6 +562,7 @@ def _where(exc: BaseException) -> str:
 
 def run(root: Path) -> list[str]:
     """Run every guard independently and return findings in report order."""
+    reset_ignored_memo()
     findings: list[str] = []
     for check in CHECKS:
         try:
