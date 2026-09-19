@@ -32,7 +32,7 @@ python tools/board.py notes    # the last refresh notes, newest first
 
 ## What is not on it
 
-**The board holds work the owner decided to do and follow-ups whose issues state their fix.** An open issue outside both classes is legacy: it goes to the owner once rather than being ranked or silently turned into work. The `filing` cell carries what an issue states; the argued form for the owner's decision is the `engagement` cell's.
+**The board holds work the owner bought, and nothing else.** An agent puts nothing here he has not bought; what it would once have filed goes to the release report's ask instead, and his answer is what creates an issue. An open issue predating that rule is legacy: it goes to him once rather than being ranked or silently turned into work. The `filing` cell carries what an issue states; the argued form for the owner's decision is the `engagement` cell's.
 
 ## Refreshing it
 

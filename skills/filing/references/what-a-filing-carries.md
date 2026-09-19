@@ -2,7 +2,7 @@
 
 **Loaded when** you are writing the body of an issue or an extending comment, or deciding whether a finding about governing prose has earned a number of its own. The fields are `../references/issue-template.md`'s; this file is the standard they meet.
 
-**An issue states work somebody decided to do.** Owner-decided work carries the want and leaves design framing, remedy design and the pre-implementation artifact to pickup. A follow-up a session decides carries the concrete fix it will make, because a follow-up with no fix is an undecided offer rather than work. Observed evidence survives a change in vocabulary; an invented solution does not substitute for it.
+**An issue states work the owner bought.** It carries the want and leaves design framing, remedy design and the pre-implementation artifact to pickup. Where they bought it from a finding the report put to them, it carries the fix that was put — what they said yes to is what it states, because an issue whose fix drifts from the one they bought is work nobody decided. Observed evidence survives a change in vocabulary; an invented solution does not substitute for it.
 
 **Where the evidence is itself a rule, the rule's own sentence is the observation.** Quote it with its location, because the quote survives the file moving. Which rule is breached is evidence; what replaces it is design, and stays out.
 

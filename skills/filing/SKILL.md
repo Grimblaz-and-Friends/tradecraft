@@ -1,11 +1,11 @@
 ---
 name: filing
-description: How evidence becomes an issue that states decided work or a follow-up's fix. Use when creating or extending an issue, deciding whether a finding earns one, or routing an unfixed finding to its permitted end; not for deciding what work is worth doing, and not for the pre-implementation artifact written when work is picked up.
+description: How evidence becomes an issue stating work the owner bought. Use when creating or extending an issue, deciding whether a finding earns one, or routing an unfixed finding to one of its two ends; not for deciding what work is worth doing, and not for the pre-implementation artifact written when work is picked up.
 ---
 
 # filing
 
-**Purpose:** make each issue a useful statement of work somebody decided to do, and give every unfixed finding one of three ends. **Audience:** a session creating or extending an issue, or routing a finding it will not fix in the current change. **Success:** every issue carries evidence and its ties, every follow-up states its fix, new instances extend the open issue they support, and no undecided offer is filed for somebody else to triage.
+**Purpose:** make each issue a useful statement of work the owner bought, and give every unfixed finding one of two ends. **Audience:** a session creating or extending an issue, or routing a finding it will not fix in the current change. **Success:** every issue carries evidence and its ties, every open issue is work the owner bought, new instances extend the open issue they support, and nothing an agent proposed is filed for somebody else to triage.
 
 ## Where this cell's depth lives
 
@@ -14,12 +14,13 @@ description: How evidence becomes an issue that states decided work or a follow-
 - **Writing an issue or deciding whether its evidence earns one** → `references/what-a-filing-carries.md`: the evidence floor and governing-prose bar, what a follow-up states, and what design stays with pickup.
 - **Copying the shape of an issue body or an extending comment** → `references/issue-template.md`: the fields to copy whole, the tie block first among them; the other files here are the standard those fields meet.
 
-## Three ends for an unfixed finding
+## Two ends for an unfixed finding
 
 An unfixed finding takes exactly one of these ends:
 
-- **Its own pull request now**, where the fix is mechanical.
-- **An issue**, where the owner decided the work or a follow-up states the fix it will make.
-- **The release report's ask to the owner, once**, where the decision is theirs. Do not create an issue to carry that ask.
+- **Fixed now** — in the current change where it caused the finding, otherwise in one immediate follow-up pull request carrying the rest together, which keeps the cost one pass rather than one per finding.
+- **The release report's ask to the owner, once**, carrying the fix and its cost, so their answer is *do it*, *buy it for later*, or *drop it*.
+
+**No issue is created for work the owner has not bought.** *Buy it for later* creates one; *drop it* creates nothing and is a decline recorded on the work. **Deferred attention is attention, taken twice** — once to pick the item up, once to agree its brief — so a queue of agent-proposed work costs what asking costs, paid later by someone who did not choose to pay it.
 
 **An issue records work rather than a decision somebody still has to make.** Search first, because new evidence belongs on the open issue it supports rather than in a second number. A repository chooses how it marks and orders the work it decided; this cell owns only what the issue itself carries.

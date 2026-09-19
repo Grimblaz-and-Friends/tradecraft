@@ -24,7 +24,7 @@ Throughout, **the owner** is the human whose repository this is.
 Process weight concentrates at two moments; what runs between them is model judgment plus the standards carried in the skills.
 
 - **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets an implementation brief settled with the owner and a pre-implementation artifact reading it. The artifact is the session's; what the implementation brief contains and when they affirm it, what the artifact contains and how it is settled, where each is recorded, and when the owner is next needed are the `engagement` cell's. Mechanical work proceeds without it; when in doubt of that, ask the cheap question.
-- **Release.** Merging is the owner's, never the agent's. **Before a change merges it is proven by running it** — what executes against the tree it produces, every connected reviewer once, and a use of that result of the kind the `experience-session` cell names, or one line saying why none happened. Mechanical work owes neither. A panel is bought by asking; the `adversarial-review` cell carries what one is and what a connected reviewer's comment owes.
+- **Release.** Merging is the owner's, never the agent's. **Before a change merges it is proven by running it** — what executes against the tree it produces, every connected reviewer once, and a use of that result of the kind the `experience-session` cell names, or one line saying why none happened. A panel is bought by asking; the `adversarial-review` cell carries what one is and what a connected reviewer's comment owes.
 
 ## Review
 
