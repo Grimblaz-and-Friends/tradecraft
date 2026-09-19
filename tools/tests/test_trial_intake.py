@@ -297,8 +297,7 @@ def test_an_empty_baseline_says_so_rather_than_vanishing(
         tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     # A before-and-after whose "before" is silently absent reads like a report
     # with no baseline rather than one whose baseline was empty, and the
-    # decision this feeds is taken on the pair. Found by a connected reviewer
-    # on #654.
+    # decision this feeds is taken on the pair.
     dump = tmp_path / "issues.json"
     dump.write_text(json.dumps([
         _issue(99, "2026-09-20T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
@@ -331,7 +330,7 @@ def test_the_clamp_reads_the_whole_corpus_not_the_filtered_one(
     # that SURVIVED the filter, dropping the leading stretch in which the
     # filtered class simply had not occurred yet -- a shorter baseline over
     # the same count is a higher baseline rate, biasing the very comparison
-    # this report exists to produce. Found by a connected reviewer on #654.
+    # this report exists to produce.
     dump = tmp_path / "issues.json"
     # The corpus opens with a repo-only filing; the first shipped one is a
     # fortnight later. The clamp must land on the repo-only one.

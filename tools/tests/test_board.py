@@ -474,7 +474,7 @@ def test_init_provisions_the_labels_a_fresh_board_cannot_frame_without(monkeypat
 
     `cmd_frame` shells out to `gh issue edit --add-label`, which fails outright
     when the label does not exist, and the documented fresh setup runs `init`
-    alone. Found by a connected reviewer on #654.
+    alone.
     """
     monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": "something else"}])
     monkeypatch.setattr(q, "gql", lambda query, **kw: _init_payload(query))

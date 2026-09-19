@@ -500,8 +500,7 @@ def main(argv: list[str] | None = None) -> int:
     # in it and every renderer below simply emits nothing for it -- a
     # before-and-after whose "before" is silently absent reads like a report
     # with no baseline rather than one whose baseline was empty, and the
-    # decision this feeds is taken on the pair. Found by a connected reviewer
-    # on #654.
+    # decision this feeds is taken on the pair.
     empty_baseline = baseline_start >= opened
     windows = {
         "baseline": (baseline_start, opened),
