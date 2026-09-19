@@ -26,3 +26,7 @@
 ## The rest of this repository's mechanics
 
 Repo-only cells under `docs/cells/` carry them, loaded on demand in both runtimes and never loaded by an adopter: `board`, `landing`, `records`, `siting`. Every cell's own description loads in every session here and states what it covers, so the names route on their own. [D-327]
+
+## Code Review Rules
+
+Review pull requests only when they are marked ready; skip drafts. Post only P0/P1 findings a consumer would act on wrongly. Name the wrong action, not the wording. Where this repository's own convention contradicts a general rule, the convention wins and the comment says so. A deletion is as good a finding as an addition.

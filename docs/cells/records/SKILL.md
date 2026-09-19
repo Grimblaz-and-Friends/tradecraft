@@ -1,6 +1,6 @@
 ---
 name: records
-description: This repository's append-only records and its decision log — which record each kind of outcome appends to, the admission that lands a needed item over a ceiling, where a decision entry lives and what freezes about it on landing, and the rule that no record here is ever maintained after its append. Use when appending to a record in this repository, when a needed item will not fit under a ceiling, when writing or citing a decision entry, when recording a review's outcome, or when tempted to correct or reconcile something already recorded; not for how a review reaches the outcome being recorded, and not for deciding where a rule or document belongs.
+description: This repository's append-only records and its decision log — which record each kind of outcome appends to, the admission that lands a needed item over a ceiling, where a decision entry lives and what freezes about it on landing, and the rule that no record here is ever maintained after its append. Use when appending to a record in this repository, when a needed item will not fit under a ceiling, when writing or citing a decision entry, or when tempted to correct or reconcile something already recorded; not for deciding where a rule or document belongs.
 ---
 
 # records
@@ -9,7 +9,6 @@ description: This repository's append-only records and its decision log — whic
 
 ## Where this cell's depth lives
 
-- **Recording a review's outcome, or reading one back** → `references/what-a-review-records.md`: the row every review appends to `docs/reviews.jsonl`, and the two things this repository adds beyond what the practice's own record names — `cost`, a field on the row, with what it counts and what it excludes, and `target`, a key on each entry of `highs`, naming the three surfaces a sustained high is read against in order.
 - **Landing a change that owed an implementation brief** → `references/the-settling-row.md`: the row `docs/settling.jsonl` takes at landing, the three places it is read off rather than recalled, the keys it carries and what a figure nobody can supply is written as, and why a reversal is a later append.
 - **A needed item that will not fit under a ceiling, or a surface that has come back under one** → `references/admissions-at-a-ceiling.md`: the row `docs/admissions.jsonl` takes, one per ceiling the item exceeds; why an admission is not a raise and the constant does not move; why a cell body is not such a surface at all, its passing being reported rather than admitted; and the bank row that returns the space, which the tripwire does not reach.
 
@@ -21,4 +20,4 @@ description: This repository's append-only records and its decision log — whic
 
 Records are append-only and never maintained: no backfilling, no reconciling, no re-dispositioning, ever. A PR whose only content is record bookkeeping is the tripwire: delete the record it books. **Two records carve an exception and each states its own** — a reversal row on `docs/settling.jsonl` (`references/the-settling-row.md`) and a bank row on `docs/admissions.jsonl` (`references/admissions-at-a-ceiling.md`). `docs/ledger.jsonl`, `docs/seat-record.jsonl`, and the pre-reset constitution under `docs/architecture/` (statute, ADRs, evidence registry) are a frozen archive — readable history, never binding. [D-74]
 
-**The held-findings store `docs/recorded-findings.jsonl` is closed history.** Nothing appends to it or reads it for subsequent work; its existing bytes remain. Findings now end in the report or the pitch, not in an entry held for another review.
+**The review index `docs/reviews.jsonl` and held-findings store `docs/recorded-findings.jsonl` are closed history.** Nothing appends to either or reads either for subsequent work; their existing bytes remain. Findings now end in the pull request thread, their fix, an issue that states work, or the release report's ask.

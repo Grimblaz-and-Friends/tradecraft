@@ -1,6 +1,6 @@
 ---
 name: filing
-description: How evidence becomes a pitch for work and how the owner buys it from the pool. Use when creating or extending an issue, deciding whether a finding earns a pitch, reading or shortlisting the pool, or closing quiet pitches; not for the pre-implementation artifact written when work is picked up.
+description: How evidence becomes an issue that states decided work or a follow-up's fix. Use when creating or extending an issue, deciding whether a finding earns one, or routing an unfixed finding to its permitted end; not for deciding what work is worth doing, and not for the pre-implementation artifact written when work is picked up.
 ---
 
 # filing

@@ -31,6 +31,9 @@ is the gate that everything downstream waits on.
 Usage:  python tools/board.py show   [--plan PATH]
         python tools/board.py sync   [--dry-run] [--allow-empty]
         python tools/board.py apply  --plan PATH [--dry-run]
+        python tools/board.py labels [--dry-run]
+        python tools/board.py frame N
+        python tools/board.py unframe N
         python tools/board.py note   --body PATH
         python tools/board.py next
         python tools/board.py notes  [--limit N]
@@ -47,7 +50,6 @@ Usage:  python tools/board.py show   [--plan PATH]
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import re
 import os
@@ -58,42 +60,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
-
-# The pool's transport ships in the filing skill; this reads its policy to
-# learn which label marks decided work, because the board's membership is
-# now that set. Repo-only code importing shipped code is the lawful
-# direction, and resolving from this file rather than the working directory
-# is what lets the script run from any cwd. One owner for the label name:
-# a second copy here would drift from the policy the pool actually reads.
-#
-# Loaded on demand rather than at import. At module level a tree without
-# `skills/` -- a partial checkout, a sparse clone -- gave every command a raw
-# `FileNotFoundError` traceback before argparse ran, `--help` included, where
-# every other failure here is a typed `BoardError` naming what to do.
-_POOL_PATH = Path(__file__).resolve().parent.parent / "skills" / "filing" / "scripts" / "pool.py"
-# The same path as a repository-root-relative string, which is how a session
-# types it. Derived from `_POOL_PATH` rather than written twice, so the two
-# cannot drift -- the failure this whole change kept meeting in prose.
-POOL_INVOCATION = _POOL_PATH.relative_to(_POOL_PATH.parent.parent.parent.parent).as_posix()
-_pool = None
-
-
-def pool_engine():
-    """The shipped pool script, loaded once, with a typed refusal if it is absent."""
-    global _pool
-    if _pool is None:
-        if not _POOL_PATH.is_file():
-            raise BoardError(
-                f"the pool's transport is missing at {_POOL_PATH}. The board's "
-                f"membership is the framed set, and the label that marks it is "
-                f"the pool policy's, so this cannot run without the shipped "
-                f"skill. A partial checkout is the usual cause"
-            )
-        spec = importlib.util.spec_from_file_location("filing_pool", _POOL_PATH)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _pool = module
-    return _pool
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -110,6 +76,23 @@ BOARD_TITLE = os.environ.get("TRADECRAFT_BOARD_TITLE", "tradecraft board")
 # `gh issue list` returns at most what it is asked for and says nothing about
 # what it left behind, so a read that comes back exactly full may be short.
 ISSUE_READ_LIMIT = 1000
+LABEL_READ_LIMIT = 500
+
+# The board owns the repository-specific labels its commands create and write.
+# A label is one string at every call site; colour and meaning live beside it so
+# `labels` can create the same contract every time without rewriting labels an
+# owner already customised.
+FRAMED_LABEL = "framed"
+CAUSE_LABEL = "cause"
+REVIEWERS_LABEL = "reviewers"
+LABEL_SPECS = {
+    FRAMED_LABEL: ("0E8A16", "decided work: it is on the board"),
+    CAUSE_LABEL: (
+        "B60205",
+        "observed cause of the issues linked under it as sub-issues; not a task split into parts",
+    ),
+    REVIEWERS_LABEL: ("5319E7", "connected reviewers run when a pull request is marked ready"),
+}
 
 BANDS = ["Standing", "Front", "Bundles", "Review-set", "Tail"]
 STATUSES = ["Queued", "In progress", "In flight", "Blocked", "Deferred"]
@@ -150,8 +133,6 @@ BUNDLE_CHARS = re.compile(r"^[A-Za-z0-9 #/_.()-]+$")
 # is backwards for a cause whose fix may leave symptoms standing. The label is
 # what says this edge is the other kind, so it is what the guard reads: an
 # unlabelled parent is ordinary decomposition and none of the board's business.
-CAUSE_LABEL = "cause"
-
 BLOCKED = "Blocked"
 
 # The owner may rule that a symptom is worked while its cause is open. A guard
@@ -365,7 +346,7 @@ def reconcile(board: list[int], target: list[int]) -> tuple[list[int], list[int]
 
     Never raises. A framed issue absent from the board is ordinary work -- it
     is the normal state after any pick -- and a board item that is no longer
-    framed, because it closed or was returned to the pool, is ordinary too. The
+    framed, because it closed or was taken off the board, is ordinary too. The
     caller does both and does not stop for either.
     """
     board_set, target_set = set(board), set(target)
@@ -526,29 +507,20 @@ def gql(query: str, **variables: object) -> dict:
 def framed_issues() -> dict[int, str]:
     """The target membership, number -> node id, in one call.
 
-    **The framed set, not the open set.** An open issue is in the pool until
-    somebody decides it is worth doing, and the board holds what has been
-    decided on; the label that records that decision is the pool policy's, read
-    rather than restated here. Everything else about this read is unchanged and
-    for the same reason: always the issue list, never the board's own count,
+    **The framed set, not the open set.** The board holds work somebody decided
+    to do; the label that records that decision is this transport's constant.
+    Everything else about this read is unchanged and for the same reason:
+    always the issue list, never the board's own count,
     because the board's ordered connection reports a short list and a matching
     short `totalCount` together and so cannot be asked whether it is complete.
     """
-    pool = pool_engine()
-    try:
-        label = pool.load_policy(pool.find_policy(ROOT))["framed"]["label"]
-    except pool.PoolError as exc:
-        # A malformed override is a supported configuration error, so it comes
-        # back as this transport's own refusal rather than as a traceback from
-        # a module the operator did not know was involved.
-        raise BoardError(f"the pool policy could not be read: {exc}") from None
     raw = gh([
         "issue", "list", "--repo", f"{OWNER}/{REPO}", "--state", "open",
-        "--label", label, "--limit", str(ISSUE_READ_LIMIT), "--json", "number,id",
+        "--label", FRAMED_LABEL, "--limit", str(ISSUE_READ_LIMIT), "--json", "number,id",
     ])
     issues = json.loads(raw)
-    # The completeness check the pool's own read performs, on the read this
-    # board's whole membership comes from. Without it a truncated list makes
+    # The completeness check on the read this board's whole membership comes
+    # from. Without it a truncated list makes
     # `reconcile` compute the archive set over a short target, and `sync`
     # archives every framed issue past the limit while reporting success.
     if len(issues) >= ISSUE_READ_LIMIT:
@@ -924,6 +896,56 @@ def ensure_options(board: "Board", field: str, values: list[str]) -> None:
     board.fields = board._read_fields()
 
 
+def existing_labels() -> set[str]:
+    """Every repository label, refusing a read that may be short."""
+    raw = json.loads(gh([
+        "label", "list", "--repo", f"{OWNER}/{REPO}", "--limit",
+        str(LABEL_READ_LIMIT), "--json", "name",
+    ]))
+    if len(raw) >= LABEL_READ_LIMIT:
+        raise BoardError(
+            f"the label read came back at its limit of {LABEL_READ_LIMIT}, so "
+            f"an existing label may read as missing. Raise LABEL_READ_LIMIT and run again"
+        )
+    return {item["name"] for item in raw}
+
+
+def cmd_labels(dry_run: bool) -> int:
+    """Create the three board/reviewer labels that are missing; change no existing label."""
+    present = existing_labels()
+    missing = [name for name in LABEL_SPECS if name not in present]
+    print(f"already present: {', '.join(sorted(set(LABEL_SPECS) & present)) or 'none'}")
+    print(f"to create:       {', '.join(missing) or 'none'}")
+    if dry_run:
+        return 0
+    for name in missing:
+        colour, meaning = LABEL_SPECS[name]
+        gh([
+            "label", "create", name, "--repo", f"{OWNER}/{REPO}",
+            "--description", meaning, "--color", colour,
+        ])
+        print(f"created {name}")
+    return 0
+
+
+def cmd_frame(number: int) -> int:
+    gh([
+        "issue", "edit", str(number), "--repo", f"{OWNER}/{REPO}",
+        "--add-label", FRAMED_LABEL,
+    ])
+    print(f"#{number} is framed as decided work; sync places it on the board if it is open")
+    return 0
+
+
+def cmd_unframe(number: int) -> int:
+    gh([
+        "issue", "edit", str(number), "--repo", f"{OWNER}/{REPO}",
+        "--remove-label", FRAMED_LABEL,
+    ])
+    print(f"#{number} is no longer framed; sync takes it off the board")
+    return 0
+
+
 def cmd_show(plan_path: Path | None) -> int:
     text = format_plan(Board().rows())
     if plan_path:
@@ -946,15 +968,10 @@ def cmd_sync(dry_run: bool, allow_empty: bool = False) -> int:
     print(f"board: {len(members)}   framed: {len(target)}")
     print(f"to add:     {to_add or 'none'}")
     print(f"to archive: {to_archive or 'none'}", flush=True)
-    # Give the refresher runnable paths from this root; the shipped cell's
-    # own command paths resolve relative to that cell instead.
-    print(f"next in the refresh: python {POOL_INVOCATION} fade --dry-run")
-    print(f"                     python {POOL_INVOCATION} fade")
-    print(f"when there is room:  python {POOL_INVOCATION} shortlist")
     if dry_run:
         return 0
     # An empty framed set with a populated board is the shape a setup mistake
-    # takes -- the pool's labels never created, or nothing framed yet -- and
+    # takes -- the framed label was never created, or nothing is framed yet -- and
     # the shape a legitimate empty board takes, when the last framed issue
     # closes. The two are indistinguishable from here, and one of them archives
     # the whole board. So it is refused and the operator says which it is.
@@ -968,9 +985,8 @@ def cmd_sync(dry_run: bool, allow_empty: bool = False) -> int:
             f"this sync would archive all of them, as the summary above lists. "
             f"The board holds decided work; if that is genuinely none, run "
             f"`sync --dry-run --allow-empty` to confirm the list and then "
-            f"`sync --allow-empty`. If it is not, the pool's labels may never "
-            f"have been created, or what is already decided may never have "
-            f"been framed"
+            f"`sync --allow-empty`. If it is not, the {FRAMED_LABEL!r} label may "
+            f"not exist, or decided work may not carry it"
         )
     # Resolved before the adds, because the adds are what make the ordered read
     # short. Reading afterwards can miss an archive target, skip it silently,
@@ -1081,7 +1097,7 @@ def cmd_causes() -> int:
 
     **Parentage spans the whole open set; the board holds the framed subset.**
     So this is not, despite an earlier version of this docstring, "the groups
-    the guard reads": a symptom sitting in the pool never reaches the guard,
+    the guard reads": a symptom not on the board never reaches the guard,
     because that runs over plan rows. Each member is marked, and the closing
     instruction is conditioned, because the unmarked form told a refresher to
     give a board status to issues with no board row -- which `apply` then
@@ -1096,23 +1112,23 @@ def cmd_causes() -> int:
     for symptom, cause in parents.items():
         groups.setdefault(cause, []).append(symptom)
     on_board = set(framed_issues())
-    pooled = False
+    off_board = False
     for cause in sorted(groups):
         symptoms = ", ".join(
-            f"#{s}" + ("" if s in on_board else " (pool)")
+            f"#{s}" + ("" if s in on_board else " (not on board)")
             for s in sorted(groups[cause])
         )
-        pooled = pooled or any(s not in on_board for s in groups[cause])
-        head = f"#{cause}" + ("" if cause in on_board else " (pool)")
-        pooled = pooled or cause not in on_board
+        off_board = off_board or any(s not in on_board for s in groups[cause])
+        head = f"#{cause}" + ("" if cause in on_board else " (not on board)")
+        off_board = off_board or cause not in on_board
         print(f"{head} causes {len(groups[cause])}: {symptoms}")
     print()
     print("each symptom above that the board holds needs a status that takes it out "
           "of contention, and a position below its cause")
-    if pooled:
-        print("(pool) marks an issue that is not framed, so it has no board row: it "
-              "is neither ranked nor blocked, and writing a plan row for it is "
-              "refused")
+    if off_board:
+        print("(not on board) marks an issue with no board row: it is neither ranked "
+              "nor blocked, is routed under the three ends for an unfixed finding, "
+              "and writing a plan row for it is refused")
     return 0
 
 
@@ -1137,9 +1153,8 @@ def cmd_next(count: int) -> int:
     if not available:
         unplaced = sum(1 for r in rows if r.status == EMPTY)
         if not rows:
-            print("the board holds no items at all. It holds framed work, so sync places "
-                  "what has been framed and nothing else -- if nothing has, the answer is "
-                  "in the pool")
+            print("the board holds no items at all. It holds decided work, so sync places "
+                  "what has been framed and nothing else")
         elif unplaced:
             print(f"nothing on the board is available: {unplaced} of {len(rows)} items have no "
                   "status yet, so they are unranked rather than available. Run apply with a plan "
@@ -1149,12 +1164,9 @@ def cmd_next(count: int) -> int:
                   "blocked or deferred")
         if not rows or not unplaced:
             # The board answers out of decided work, so running out of it is not
-            # a ranking problem. The `board` cell says the move is to raise a
-            # shortlist; this is where a session actually meets the state.
-            print("raise a shortlist out of the pool and put it to the owner: "
-                  "python skills/filing/scripts/pool.py shortlist")
-            print("  choose the strongest pitches and sell the case for and against; "
-                  "the shortlist buys nothing")
+            # a ranking problem. This is where a session actually meets the
+            # state and learns whose decision comes next.
+            print("no decided work is available; the next decision is the owner's")
         return 0
     held = [r for r in rows if r.status in UNAVAILABLE][:count]
     first, rest = available[0], available[1:count + 1]
@@ -1196,7 +1208,10 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("next", "show", "sync", "apply", "note", "notes", "init", "causes"):
+    for name in (
+        "next", "show", "sync", "apply", "note", "notes", "init", "causes",
+        "labels", "frame", "unframe",
+    ):
         p = sub.add_parser(name)
         if name == "notes":
             p.add_argument("--limit", type=int, default=3)
@@ -1208,8 +1223,12 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--body", type=Path, required=True)
         if name in ("sync", "apply"):
             p.add_argument("--dry-run", action="store_true")
+        if name == "labels":
+            p.add_argument("--dry-run", action="store_true")
         if name == "sync":
             p.add_argument("--allow-empty", action="store_true")
+        if name in ("frame", "unframe"):
+            p.add_argument("number", type=int)
 
     args = parser.parse_args(argv)
     try:
@@ -1217,6 +1236,12 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_init()
         if args.command == "causes":
             return cmd_causes()
+        if args.command == "labels":
+            return cmd_labels(args.dry_run)
+        if args.command == "frame":
+            return cmd_frame(args.number)
+        if args.command == "unframe":
+            return cmd_unframe(args.number)
         if args.command == "next":
             return cmd_next(args.count)
         if args.command == "show":

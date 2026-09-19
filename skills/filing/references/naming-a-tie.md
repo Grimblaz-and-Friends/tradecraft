@@ -1,6 +1,6 @@
 # Naming a tie
 
-**Loaded when** you are writing the tie block of a new issue or an extending comment, or setting or reading the cause link between two issues. The block's form is `../references/pitch-template.md`'s; this file is what its lines mean.
+**Loaded when** you are writing the tie block of a new issue or an extending comment, or setting or reading the cause link between two issues. The block's form is `../references/issue-template.md`'s; this file is what its lines mean.
 
 **A tie name earns its place by changing what a ranking does with the pair.** That is what keeps the set closed, and the test any addition to it must pass.
 
@@ -16,23 +16,23 @@ Each paired relationship **written as a verb** is written in both directions; `b
 
 **The cause relationship is not a verb at all: it is GitHub's sub-issue link, the cause as parent, the parent carrying a `cause` label.** [D-429] The link means a task split into parts everywhere else, and the label is the only thing saying this one means causation — **an unlabelled parent is invisible to everything downstream**, which is a silent failure rather than a loud one.
 
-The label is the pool policy's, and `python ../scripts/pool.py labels` creates it. The link is a mutation over the two issues' node ids:
+The repository creates the `cause` label before using it. The link is a mutation over the two issues' node ids:
 
 ```bash
 gh api graphql -f query='mutation{addSubIssue(input:{issueId:"<cause id>",
   subIssueId:"<symptom id>"}){subIssue{number parent{number}}}}'
 #   node ids: gh issue view <N> --json id
-#   parent label: gh issue edit <cause N> --add-label cause; pool.py labels creates it but writes it onto no issue
+#   parent label: gh issue edit <cause N> --add-label cause; create the label first if the repository lacks it
 #   no gh subcommand sets the link as of gh 2.80.0; check gh issue create --help for --parent first, an absence claim about a tool being only as old as the version it was checked against
 #   re-parenting: removeSubIssue first, the second addSubIssue being refused while the first link stands
 ```
 
 A causal relationship you believe but cannot set — the cause in another repository, or no access — goes in the tie block as flagged prose that **says which it is**: nobody will ever link it, so the prose is the record; or it is waiting on access, so the prose comes out when the link goes in. Nothing else tells them apart afterwards, and neither is a candidate for the tie set — causation has a home already.
 
-**A pass that creates more than one issue is not done until each of them names the others.** The numbers do not exist until creation, so the first filing's tie block is completed inside the same pass, by editing its body (`gh issue edit`) — a tie in a comment lands where nobody ranking the board will reach it.
+**A pass that creates more than one issue is not done until each of them names the others.** The numbers do not exist until creation, so the first issue's tie block is completed inside the same pass, by editing its body (`gh issue edit`) — a tie in a comment lands where nobody ranking the work will reach it.
 
 **The same five relationships apply whether the tied issue is open or closed; there is no separate closed-issue vocabulary.**
 
-**The ties are the first element of the issue body, before any heading or prose**, because consistent placement is what lets a session ranking the board find them without reading every body — [#33](https://github.com/Grimblaz-and-Friends/tradecraft/issues/33) named [#20](https://github.com/Grimblaz-and-Friends/tradecraft/issues/20) and [#52](https://github.com/Grimblaz-and-Friends/tradecraft/issues/52) named #35, both truthfully, and both in a closing line nobody ranking the board would reach.
+**The ties are the first element of the issue body, before any heading or prose**, because consistent placement is what lets a session ranking the work find them without reading every body — [#33](https://github.com/Grimblaz-and-Friends/tradecraft/issues/33) named [#20](https://github.com/Grimblaz-and-Friends/tradecraft/issues/20) and [#52](https://github.com/Grimblaz-and-Friends/tradecraft/issues/52) named #35, both truthfully, and both in a closing line nobody ranking the work would reach.
 
-Where the search turned up nothing that earns a tie, the block says so **as a fact about the board**, because that is what a ranking uses.
+Where the search turned up nothing that earns a tie, the block says so as a fact about the searched issue set, because that is what a ranking uses.

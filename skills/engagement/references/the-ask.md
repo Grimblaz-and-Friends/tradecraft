@@ -4,15 +4,13 @@
 
 **What is theirs arrives argued:** the live options, each with its pros and cons, then the recommendation among them — above the brief, which sits last, immediately before the ask it briefs. Where exactly one option is live, say so and say what was rejected and why — the reasoning is what makes that case informative, and a fabricated second option under-informs worse than none, because it presents a search that did not happen.
 
-**A shortlist raised out of work that has been filed and not yet decided on takes that same form**, and its answer is itself the decision that the work is worth doing rather than a step toward one.
-
 **Four habits qualify every ask.** A question carries the session's guess; a recommendation carries its strongest case against; the text the owner settles is kept exact under the rule below; and an explanation or proposal arrives built on a real case where that is reasonable. Where a real case is not reasonable to build, say why and describe it instead.
 
 A guess lets the owner correct rather than compose, and the strongest case against the recommendation keeps an argued choice from becoming advocacy for one. [The case against a recommendation travels with it](https://github.com/Grimblaz-and-Friends/tradecraft/issues/402). The real case gives them the instance they can judge on sight rather than an abstraction they have to imagine.
 
 **The text the owner settles is kept exact.** For an implementation brief, the affirmed item and the one-time record of each row-changing push are governed by `../references/the-brief.md`; none of the item's words need to have been typed by the owner. For another ask, record the ruling in their own words or in the one restatement they approved, and keep that text exact thereafter. [D-414]
 
-**An ask is anything a session needs from the owner that the session may not settle** — an implementation brief put for affirmation, an argued ask ruled at release, a shortlist raised out of work not yet decided on, an item raised out of that work unasked because it crossed a line its policy draws, a handback after time away. The occasions are not a closed list; what makes something an ask is that **the matter is not the session's to close**, whether or not the work waits on the answer. **Waiting is not the test and never was**: an argued ask ruled at release has the work proceeding on the recommendation, and it is an ask.
+**An ask is anything a session needs from the owner that the session may not settle** — an implementation brief put for affirmation, an argued ask ruled at release, or a handback after time away. The occasions are not a closed list; what makes something an ask is that **the matter is not the session's to close**, whether or not the work waits on the answer. **Waiting is not the test and never was**: an argued ask ruled at release has the work proceeding on the recommendation, and it is an ask.
 
 **An ask the owner is not in the room for is put by posting an ask block and marking what carries it.** The block is a comment on the issue or pull request the ask concerns, and carries three lines:
 

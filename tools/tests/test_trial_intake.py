@@ -579,6 +579,52 @@ def test_windows_split_on_the_opened_instant_and_count_per_day():
     assert s["per_day"]["review"] == 0.5
 
 
+def test_shipped_paths_reuse_the_proved_path_narrowings():
+    body = """Names skills/filing/SKILL.md and lib/winio.py twice: lib/winio.py.
+```text
+commands/invented.py
+```
+Placeholder: hooks/FILE.py. Repo-only: docs/cells/board/SKILL.md.
+"""
+    assert ti.named_shipped_paths(body) == ["skills/filing/SKILL.md", "lib/winio.py"]
+    assert ti.named_shipped_paths("No extension: skills/filing and no path at all") == []
+
+
+def test_new_flags_compose_with_opened_baseline_file_rows_and_json(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    dump = tmp_path / "issues.json"
+    dump.write_text(json.dumps([
+        _issue(80, "2026-09-01T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+        _issue(81, "2026-09-08T00:00:00Z", REVIEW_BODY + "\nlib/winio.py\n"),
+        _issue(82, "2026-09-14T00:00:00Z", USE_BODY + "\ndocs/cells/board/SKILL.md\n"),
+        _issue(83, "2026-09-15T00:00:00Z", OWNER_BODY + "\ncommands/review.md\n"),
+        _issue(84, "2026-09-22T00:00:00Z", UNSTATED_BODY + "\nhooks/stop.py\n"),
+    ]), encoding="utf-8")
+    args = [
+        "--from-file", str(dump), "--opened", "2026-09-15T00:00:00Z",
+        "--until", "2026-09-23T00:00:00Z", "--baseline-weeks", "2",
+        "--per-week", "--shipped-only",
+    ]
+
+    assert ti.main([*args, "--rows"]) == 0
+    out = capsys.readouterr().out
+    assert all(f"== {window} week {week}:" in out
+               for window in ("baseline", "trial") for week in (1, 2))
+    assert all(f"#{number}" in out for number in (80, 81, 83, 84))
+    assert "#82" not in out
+    assert "== baseline:" not in out and "== trial:" not in out
+
+    assert ti.main([*args, "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert set(data) == {"baseline", "trial"}
+    assert len(data["baseline"]["weeks"]) == 2
+    assert len(data["trial"]["weeks"]) == 2
+    assert data["baseline"]["weeks"][0]["summary"]["counts"]["use"] == 1
+    assert data["baseline"]["weeks"][1]["summary"]["counts"]["review"] == 1
+    assert data["trial"]["weeks"][0]["rows"][0]["number"] == 83
+    assert data["trial"]["weeks"][1]["rows"][0]["number"] == 84
+
+
 def test_cli_reads_a_fixture_file_and_reports_both_windows(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     dump = tmp_path / "issues.json"
     dump.write_text(json.dumps([

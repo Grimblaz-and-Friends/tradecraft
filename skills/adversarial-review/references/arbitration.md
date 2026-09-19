@@ -16,7 +16,7 @@
 
 **The affirmed implementation brief is the budget.** A real failure of what it agreed is already bought and fixed. Beyond that undertaking, where the implementation brief did not put the work out, the seat sells the fix to this stage on its value and price: what it touches, what it obliges later consumers to do, and whether it changes what this change is. The stage buys it into the batch or lets the offer lapse. What the owner explicitly put outside the implementation brief, or what would change what the change is for, is theirs: pitch it as an issue in the argued form the `charter` cell routes to. A pitch asks for a purchase; it does not authorize the batch to build it.
 
-**Role separation is the `engagement` cell's.** The builder may fix a finding without permission. [D-230] Outside a review too, a lapse needs an independent ruling recorded on the work. The report and the issue keep the fate and its reason; nothing writes a held-findings entry or asks a later review to meet it again.
+**Role separation is the `engagement` cell's.** The builder may fix a finding without permission. [D-230] The report and the issue keep the fate and its reason; nothing writes a held-findings entry or asks a later review to meet it again.
 
 **A pitch meets the filing standard**, which the `filing` cell owns — the search, the evidence bar, and what fresh evidence on an open pitch does. Where the evidence does not earn a pitch, the offer lapses with that reason.
 
@@ -24,4 +24,4 @@
 
 **The holder posts the rulings to the PR or issue before returning the fix batch to the implementer** — a ruling that lives only in a session cannot be read by the stage that follows it.
 
-What the ruling then owes — the executable floor, and the external pass reconciled on the tree the rulings were made against — is stated with the floor (`../references/after-the-fix.md`).
+What the ruling then owes — the executable floor and the connected-reviewer dispositions on the tree the rulings were made against — is stated with the floor (`../references/after-the-fix.md`).

@@ -23,9 +23,8 @@
 - **Split by consequence shape:** `<artifact-facing n / apparatus-facing n>`; **session note carried:** `<yes | no>`.
 - **Lens retired:** `<which, and the evidence that earned it — or "none">`.
 
-## External and commissioned passes
+## Commissioned pass
 
-- **External pass:** `<what configured automation posted, or that nothing did>`; the receipt block as `../scripts/external_pass.py` printed it — bundle path, sha256, each source count, combined count, verify command — and a durable link to the bundle; each external finding's disposition: `<duplicate of <finding> | sustained and fixed | pitched #N | lapsed — reason>`.
 - **Commissioned pass:** `<the tool run, what it returned, each disposition — or "none">`.
 
 ## After the batch
@@ -34,6 +33,4 @@
 - **Departures from an ordered remedy:** `<the ordered shape and the reason, or "none">`.
 - **Experience session the batch bought:** `<link — or the one line declining it, as the experience-session cell states>`.
 - **Residual risk accepted, and what is expected to catch it:** `<one line>`.
-- **Cost to run:** `<where the repository's index records it, stated here first>`.
-
 **Terminal fitness ruling:** `<fit for purpose | fit once the named fixes land | not fit | review incomplete; no fitness ruling claimed>`.
