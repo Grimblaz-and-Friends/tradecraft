@@ -467,10 +467,14 @@ def cells_over_ceiling(root: Path) -> list[tuple[str, int, int]]:
 # "ceilings ratchet to just under their limit and stay there", and that claim
 # is withdrawn -- `ratchet` is D-184's word for the opposite move, lowering a
 # constant to what the tree measures, and the empirical claim is falsified by
-# what `python tools/lint.py` prints on any run: `authoring`'s body sits a
-# fifth below its ceiling, and most cell descriptions carry room. What is
-# true of this tree is that the surfaces which actually bind sit tight, and
-# that same command says which those are. The history of what
+# what `python tools/lint.py` prints on any run, which is the whole of the
+# evidence here and is re-derived rather than quoted: read its cell-body
+# lines and its description figures and see how many sit at their mark. A
+# frozen number here would be a claim about a tree that moves under it --
+# this one said a body sat a fifth below its ceiling while that body was
+# over, so the sentence's own support contradicted it. What is true of this
+# tree is that the surfaces which actually bind sit tight, and that same
+# command says which those are. The history of what
 # happened to headroom after a raise here is on #260 and is not checkable
 # from inside this repository. An admission adds exactly the characters
 # its row names, spent by the
