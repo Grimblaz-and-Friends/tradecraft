@@ -82,8 +82,9 @@ def read_holds(path: Path) -> dict[str, datetime]:
 
 def build_command(vendor, executable, root, last_message, model, effort, required_capability):
     if vendor == "codex":
-        return [*executable, "exec", "--ephemeral", "--sandbox", "read-only",
+        return [*executable, "exec", "--strict-config", "--ephemeral", "--sandbox", "read-only",
                 "--json", "--color", "never", "--model", model,
+                "-c", "apps._default.enabled=false",
                 "-c", f'model_reasoning_effort="{effort}"', "-C", str(root),
                 "--skip-git-repo-check", "--output-last-message", str(last_message), "-"]
     if required_capability == "read":
@@ -123,7 +124,7 @@ def permission_boundary(vendor, required_capability, root):
             f"strict_mcp_config=true; os_sandbox=none; detached_root_verified={root}"
         )
     return (
-        "Codex sandbox=read-only; connector_surface=not_constrained_by_dispatch_seat; "
+        "Codex sandbox=read-only; apps=disabled-by-config; "
         f"detached_root_verified={root}"
     )
 

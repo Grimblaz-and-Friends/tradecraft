@@ -98,16 +98,29 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
                          "--allowedTools", tools, "--permission-mode", "dontAsk", "--strict-mcp-config"]
     else:
         last = flags[flags.index("--output-last-message") + 1]
-        assert flags == ["exec", "--ephemeral", "--sandbox", "read-only", "--json", "--color", "never",
-                         "--model", "gpt-5.6-sol", "-c", 'model_reasoning_effort="xhigh"', "-C", str(args.root),
+        assert flags == ["exec", "--strict-config", "--ephemeral", "--sandbox", "read-only",
+                         "--json", "--color", "never", "--model", "gpt-5.6-sol",
+                         "-c", "apps._default.enabled=false",
+                         "-c", 'model_reasoning_effort="xhigh"', "-C", str(args.root),
                          "--skip-git-repo-check", "--output-last-message", last, "-"]
         assert not Path(last).exists()
     assert args.output.read_bytes().startswith(b"would not\n")
-    assert len(record(args)["attempts"]) == 1
+    logged = record(args)
+    assert len(logged["attempts"]) == 1
     request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
     assert request["work"] == "issue-592"
     assert request["stage"] == "cold-read"
     assert request["requested"]["required_capability"] == required_capability
+    for boundary in (
+        request["requested"]["permission_boundary"],
+        logged["attempts"][0]["permission_boundary"],
+    ):
+        if vendor == "codex":
+            assert "sandbox=read-only" in boundary
+            assert "apps=disabled-by-config" in boundary
+            assert "connector_surface=not_constrained_by_dispatch_seat" not in boundary
+        else:
+            assert "apps=disabled-by-config" not in boundary
 
 
 @pytest.mark.parametrize(
@@ -115,7 +128,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     [
         ("claude", "read", "Claude tools=Read,Glob,Grep; safe_mode=true; permission_mode=dontAsk; strict_mcp_config=true; os_sandbox=none"),
         ("claude", "execute", "Claude tools=Read,Glob,Grep,Bash; safe_mode=true; permission_mode=dontAsk; strict_mcp_config=true; os_sandbox=none"),
-        ("codex", "read", "Codex sandbox=read-only; connector_surface=not_constrained_by_dispatch_seat"),
+        ("codex", "read", "Codex sandbox=read-only; apps=disabled-by-config"),
     ],
 )
 def test_permission_boundary_states_the_selected_vendor_mode_and_root(job, vendor, required_capability, expected):
