@@ -1131,7 +1131,7 @@ def cmd_causes() -> int:
           "of contention, and a position below its cause")
     if off_board:
         print("(not on board) marks an issue with no board row: it is neither ranked "
-              "nor blocked, is routed under the three ends for an unfixed finding, "
+              "nor blocked, is routed under the two ends for an unfixed finding, "
               "and writing a plan row for it is refused")
     return 0
 

@@ -18,7 +18,7 @@
 
 - **Each sustained high's finders:** `<primary first; a merge-added co-finder labeled as the merge's; or the stage that originated it; or that the merge carried it with no finder list>`.
 - **Each sustained high's target:** `<the surface or site it hit>`.
-- **Every finding's fate:** `<bought | pitched #N | lapsed — one-line reason each>`.
+- **Every finding's fate:** `<bought | lapsed — one-line reason each>`.
 - **Every uncarried seat entry's ruling:** `<one line each, like entries grouped>`.
 - **Split by consequence shape:** `<artifact-facing n / apparatus-facing n>`; **session note carried:** `<yes | no>`.
 - **Lens retired:** `<which, and the evidence that earned it — or "none">`.
