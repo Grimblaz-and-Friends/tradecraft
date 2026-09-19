@@ -9,7 +9,7 @@ This file is the charter principle applied: governing prose states the concept a
 - **Methodology** — how work is done, what to consider, in what order, to what standard → a skill. A piece is its own skill when it has an independent trigger: a situation where it should fire without the parent job underway. Where the trigger is not independent and a cell already serves it, it is a `references/` file inside that skill. Where no cell serves it at all, the answer is a new cell — the burden sits on cramming rather than on creating.
 - **What must hold before any context loads** → the practice's always-on surface: a shipped charter where it travels to every repository that adopts the practice, the repo's own root doctrine where it does not. Budget at least one of them, because a budget is what forces the routing decision to be real; both are the last resort, after a guard and after skill prose.
 - **Rationale** — why this shape was chosen, what was rejected → the repo's decision log, one frozen entry per decision, written in the change that lands it. Rationale informs future judgment; it never binds it.
-- **What happened** → append-only exhaust: a review report, an index row. Never create a record that must be maintained after its append.
+- **What happened** → append-only exhaust: a report. Never create a record that must be maintained after its append.
 
 When one idea needs both a shipped standard and a local application, the standard ships — in the skill that teaches it, or in the practice's own always-on surface where it must bind before any skill fires — and the repo's own files carry the application, never the reverse, and never duplicated prose that can drift.
 

@@ -462,8 +462,37 @@ def test_init_proceeds_when_no_board_carries_that_title(monkeypatch):
     monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": "something else"}])
     calls = []
     monkeypatch.setattr(q, "gql", lambda query, **kw: calls.append(query) or _init_payload(query))
+    # init also provisions the labels; stubbed so this test keeps its own subject.
+    monkeypatch.setattr(q, "existing_labels", lambda: set(q.LABEL_SPECS))
+    monkeypatch.setattr(q, "gh", lambda args: "")
     assert q.cmd_init() == 0
     assert any("createProjectV2" in c for c in calls), "it got past the guard and created"
+
+
+def test_init_provisions_the_labels_a_fresh_board_cannot_frame_without(monkeypatch):
+    """A board created without its labels cannot place its first issue.
+
+    `cmd_frame` shells out to `gh issue edit --add-label`, which fails outright
+    when the label does not exist, and the documented fresh setup runs `init`
+    alone.
+    """
+    monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": "something else"}])
+    monkeypatch.setattr(q, "gql", lambda query, **kw: _init_payload(query))
+    monkeypatch.setattr(q, "existing_labels", lambda: set())
+    created = []
+    monkeypatch.setattr(q, "gh", lambda args: created.append(args[2]) or "")
+    assert q.cmd_init() == 0
+    assert created == [q.FRAMED_LABEL, q.CAUSE_LABEL, q.REVIEWERS_LABEL], (
+        "init must leave every label the board's own commands add to an issue")
+
+
+def test_init_does_not_disturb_labels_that_already_exist(monkeypatch):
+    """The other polarity: init is re-runnable against a repository that has them."""
+    monkeypatch.setattr(q, "org_projects", lambda: [{"id": "P", "title": "something else"}])
+    monkeypatch.setattr(q, "gql", lambda query, **kw: _init_payload(query))
+    monkeypatch.setattr(q, "existing_labels", lambda: set(q.LABEL_SPECS))
+    monkeypatch.setattr(q, "gh", lambda args: pytest.fail(f"unexpected label write: {args}"))
+    assert q.cmd_init() == 0
 
 
 def _init_payload(query):
@@ -662,23 +691,15 @@ def test_the_board_asks_for_the_framed_set_and_not_the_open_set(monkeypatch):
 
     The board used to hold every open issue, so a filing became work the moment
     it landed. It now holds what somebody decided to do, and the label that
-    records that decision is the pool policy's rather than a second copy here --
-    so this pins both halves: that the read is filtered at all, and that what it
-    filters by is what the policy names.
+    records that decision is the board transport's constant -- so this pins
+    both halves: that the read is filtered and that the filter uses the one
+    constant every command shares.
     """
-    pool = q.pool_engine()
     asked = []
     monkeypatch.setattr(q, "gh", lambda args: asked.append(args) or "[]")
-    # A label no default names, reached through the policy the transport
-    # resolves. The earlier form computed the expected value with the same
-    # expression as the code under test, so replacing that expression with a
-    # literal "framed" passed -- which is the one refactor the cross-zone
-    # import exists to prevent.
-    monkeypatch.setattr(pool, "load_policy",
-                        lambda path: {"framed": {"label": "not-a-default-name"}})
     q.framed_issues()
     assert "--label" in asked[0]
-    assert asked[0][asked[0].index("--label") + 1] == "not-a-default-name"
+    assert asked[0][asked[0].index("--label") + 1] == q.FRAMED_LABEL
     assert "--state" in asked[0] and "open" in asked[0]
 
 
@@ -700,29 +721,43 @@ def test_framed_issues_accepts_a_read_below_its_limit(monkeypatch):
     assert len(q.framed_issues()) == 5
 
 
-def test_a_malformed_pool_policy_is_a_board_refusal_not_a_traceback(monkeypatch):
-    """A supported configuration error reaches the operator as this transport's
-    own one-line refusal, not as a traceback from a module they did not know
-    was involved."""
-    pool = q.pool_engine()
-
-    def broken(path):
-        raise pool.PoolError("'axes' must be a non-empty object")
-
-    monkeypatch.setattr(pool, "load_policy", broken)
-    with pytest.raises(q.BoardError) as caught:
-        q.framed_issues()
-    assert "pool policy could not be read" in str(caught.value)
+def test_the_three_label_constants_carry_colours_and_meanings():
+    assert set(q.LABEL_SPECS) == {q.FRAMED_LABEL, q.CAUSE_LABEL, q.REVIEWERS_LABEL}
+    for colour, meaning in q.LABEL_SPECS.values():
+        assert len(colour) == 6 and all(ch in "0123456789ABCDEF" for ch in colour)
+        assert meaning.strip()
 
 
-def test_a_missing_pool_script_refuses_by_name_rather_than_by_traceback(monkeypatch):
-    """A partial checkout used to give every command, `--help` included, a raw
-    FileNotFoundError before argparse ran."""
-    monkeypatch.setattr(q, "_pool", None)
-    monkeypatch.setattr(q, "_POOL_PATH", Path("no", "such", "pool.py"))
-    with pytest.raises(q.BoardError) as caught:
-        q.pool_engine()
-    assert "pool's transport is missing" in str(caught.value)
+def test_labels_creates_exactly_the_missing_three_and_preserves_existing(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(q, "existing_labels", lambda: {q.CAUSE_LABEL, "custom"})
+    monkeypatch.setattr(q, "gh", lambda args: calls.append(args) or "")
+    assert q.cmd_labels(dry_run=False) == 0
+    created = [args[2] for args in calls]
+    assert created == [q.FRAMED_LABEL, q.REVIEWERS_LABEL]
+    assert all("--force" not in args for args in calls)
+    out = capsys.readouterr().out
+    assert q.CAUSE_LABEL in out and "custom" not in out
+
+
+def test_labels_dry_run_writes_nothing(monkeypatch):
+    monkeypatch.setattr(q, "existing_labels", lambda: set())
+    monkeypatch.setattr(q, "gh", lambda args: pytest.fail(f"unexpected write: {args}"))
+    assert q.cmd_labels(dry_run=True) == 0
+
+
+@pytest.mark.parametrize(
+    "command,flag",
+    [(q.cmd_frame, "--add-label"), (q.cmd_unframe, "--remove-label")],
+)
+def test_frame_and_unframe_write_only_the_framed_label(monkeypatch, command, flag):
+    calls = []
+    monkeypatch.setattr(q, "gh", lambda args: calls.append(args) or "")
+    assert command(652) == 0
+    assert calls == [[
+        "issue", "edit", "652", "--repo", f"{q.OWNER}/{q.REPO}",
+        flag, q.FRAMED_LABEL,
+    ]]
 
 
 
@@ -773,33 +808,14 @@ def test_sync_dry_run_shows_the_archive_list_before_it_refuses(monkeypatch, caps
     assert "framed: 0" in out
 
 
-def test_sync_names_valid_pool_steps_a_refresher_runs_next(monkeypatch, capsys):
-    """Printed steps must parse, and preview must not mask a missing write step."""
+def test_sync_names_no_retired_pool_steps(monkeypatch, capsys):
     monkeypatch.setattr(q.Board, "members", lambda self: [1, 2, 3])
     board = board_without_network()
     monkeypatch.setattr(q, "Board", lambda: board)
     monkeypatch.setattr(q, "framed_issues", lambda: {})
     assert q.cmd_sync(dry_run=True) == 0
-    out = capsys.readouterr().out
-    invocation = f"python {q.POOL_INVOCATION} "
-    commands = [line.partition(invocation)[2].split()
-                for line in out.splitlines() if invocation in line]
-    assert ["fade", "--dry-run"] in commands, out
-    assert ["fade"] in commands, out
-    assert ["shortlist"] in commands, out
-    parser = q.pool_engine().build_parser()
-    for command in commands:
-        parser.parse_args(command)
-
-
-def test_the_invocation_it_prints_resolves_to_a_file():
-    """Derived from the path the module already resolves, so the two cannot
-    drift -- which is the failure this change kept meeting in prose, four
-    enumerations going stale in one pass with every guard green."""
-    assert q._POOL_PATH.is_file(), q._POOL_PATH
-    root = q.Path(__file__).resolve().parent.parent.parent
-    assert (root / q.POOL_INVOCATION).resolve() == q._POOL_PATH
-    assert chr(92) not in q.POOL_INVOCATION, q.POOL_INVOCATION
+    out = capsys.readouterr().out.lower()
+    assert "pool" not in out and "shortlist" not in out and "fade" not in out
 
 
 def test_sync_refuses_to_empty_a_populated_board_on_an_empty_framed_set(monkeypatch, capsys):
@@ -1223,7 +1239,7 @@ def test_cmd_causes_reports_the_groups_the_guard_reads(monkeypatch, capsys):
     printed = capsys.readouterr().out
     assert "#404 causes 2: #349, #350" in printed
     assert "#600 causes 1: #500" in printed
-    assert "(pool)" not in printed
+    assert "(not on board)" not in printed
 
 
 def test_cmd_causes_marks_a_symptom_the_board_does_not_hold(monkeypatch, capsys):
@@ -1234,12 +1250,12 @@ def test_cmd_causes_marks_a_symptom_the_board_does_not_hold(monkeypatch, capsys)
     monkeypatch.setattr(q, "framed_issues", lambda: {404: "a", 349: "b"})
     assert q.cmd_causes() == 0
     printed = capsys.readouterr().out
-    assert "#350 (pool)" in printed
+    assert "#350 (not on board)" in printed
     assert "no board row" in printed
     assert "that the board holds" in printed
 
 
-def test_next_points_an_empty_board_at_the_pool(monkeypatch, capsys):
+def test_next_sends_an_empty_board_to_the_owners_next_decision(monkeypatch, capsys):
     """The one code path where the membership inversion reaches an operator. It
     used to say "Run sync to place the open issues on it", which after the
     inversion places nothing at all."""
@@ -1248,30 +1264,31 @@ def test_next_points_an_empty_board_at_the_pool(monkeypatch, capsys):
     monkeypatch.setattr(q, "gh", lambda args: "[]")
     assert q.cmd_next(5) == 0
     out = capsys.readouterr().out
-    assert "pool.py shortlist" in out
-    assert "open issues" not in out
+    assert "next decision is the owner's" in out
+    assert "pool" not in out and "shortlist" not in out
 
 
-def test_next_points_a_saturated_board_at_the_pool_too(monkeypatch, capsys):
+def test_next_sends_a_saturated_board_to_the_owners_next_decision_too(monkeypatch, capsys):
     """Running out of decided work is not a ranking problem either."""
     rows = [q.Row(1, "Front", "-", "In progress")]
     monkeypatch.setattr(q.Board, "__init__", lambda self: None)
     monkeypatch.setattr(q.Board, "rows", lambda self: rows)
     monkeypatch.setattr(q, "gh", lambda args: "[]")
     assert q.cmd_next(5) == 0
-    assert "pool.py shortlist" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "next decision is the owner's" in out
+    assert "pool" not in out and "shortlist" not in out
 
 
-def test_next_does_not_point_an_unranked_board_at_the_pool(monkeypatch, capsys):
-    """The lawful polarity. Unplaced rows are a plan problem, not an empty pool
-    -- pointing there would send a session to raise work it already has."""
+def test_next_does_not_ask_for_a_decision_on_an_unranked_board(monkeypatch, capsys):
+    """The lawful polarity. Unplaced rows are a plan problem, not an empty board."""
     rows = [q.Row(i, q.EMPTY, q.EMPTY, q.EMPTY) for i in (1, 2)]
     monkeypatch.setattr(q.Board, "__init__", lambda self: None)
     monkeypatch.setattr(q.Board, "rows", lambda self: rows)
     monkeypatch.setattr(q, "gh", lambda args: "[]")
     assert q.cmd_next(5) == 0
     out = capsys.readouterr().out
-    assert "unranked" in out and "pool.py shortlist" not in out
+    assert "unranked" in out and "next decision" not in out
 
 
 def test_cmd_causes_says_so_when_there_are_none(monkeypatch, capsys):

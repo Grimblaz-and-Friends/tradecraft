@@ -1,26 +1,26 @@
 ---
 name: filing
-description: How evidence becomes a pitch for work and how the owner buys it from the pool. Use when creating or extending an issue, deciding whether a finding earns a pitch, reading or shortlisting the pool, or closing quiet pitches; not for the pre-implementation artifact written when work is picked up.
+description: How evidence becomes an issue stating work the owner bought. Use when creating or extending an issue, deciding whether a finding earns one, or routing an unfixed finding to one of its two ends; not for deciding what work is worth doing, and not for the pre-implementation artifact written when work is picked up.
 ---
 
 # filing
 
-**Purpose:** make a pitch worth the owner's attention and useful to the session that picks it up. **Audience:** a session creating or extending an issue, or bringing pooled work to the owner. **Success:** a pitch sells its value on evidence, arrives with its ties, and becomes work only when bought; new instances extend an open pitch, and unbought offers lapse without a debt to re-file them.
+**Purpose:** make each issue a useful statement of work the owner bought, and give every unfixed finding one of two ends. **Audience:** a session creating or extending an issue, or routing a finding it will not fix in the current change. **Success:** every issue carries evidence and its ties, every open issue is work the owner bought, new instances extend the open issue they support, and nothing an agent proposed is filed for somebody else to triage.
 
 ## Where this cell's depth lives
 
-- **Creating or extending a pitch, or deciding whether a match covers the evidence in hand** → `references/the-search.md`: the search across open and closed issues, the extension that takes no new number, and the ties a new pitch carries.
+- **Creating or extending an issue, or deciding whether a match covers the evidence in hand** → `references/the-search.md`: the search across open and closed issues, the extension that takes no new number, and the ties a new issue carries.
 - **Writing the tie block or reading cause links between existing issues** → `references/naming-a-tie.md`: the tie vocabulary, the sub-issue link, and what a ranking does with them.
-- **Writing a pitch or deciding whether its evidence earns one** → `references/what-a-filing-carries.md`: the argued offer, the evidence floor and governing-prose bar, and what design stays with pickup.
-- **Copying the shape of a pitch body or an extending comment** → `references/pitch-template.md`: the fields to copy whole, the tie block first among them; the other files here are the standard those fields meet.
-- **Reading, rating, shortlisting or framing pooled work, or closing quiet pitches** → `references/the-pool.md`: the shortlist, the policy path, and the commands that read the pool and apply its quiet window.
+- **Writing an issue or deciding whether its evidence earns one** → `references/what-a-filing-carries.md`: the evidence floor and governing-prose bar, what a follow-up states, and what design stays with pickup.
+- **Copying the shape of an issue body or an extending comment** → `references/issue-template.md`: the fields to copy whole, the tie block first among them; the other files here are the standard those fields meet.
 
-## Work is bought, never owed
+## Two ends for an unfixed finding
 
-**An issue is a pitch.** Whoever wants work done makes the case to the owner who pays for it; the argued form is the `engagement` cell's. Evidence makes the offer real, and value makes it worth buying. Search first, because new evidence belongs on the open pitch it supports rather than in a second number.
+An unfixed finding takes exactly one of these ends:
 
-**The pool holds pitches waiting to be heard; the board holds purchased work.** An open issue is pooled unless it carries the framed label. What the owner filed or instructed a session to file is decided work and is framed at birth, with the owner's instruction recorded on it; a session may not frame its own proposal.
+- **Fixed now** — in the current change where it caused the finding, otherwise in one immediate follow-up pull request carrying the rest together, which keeps the cost one pass rather than one per finding.
+- **The release report's ask to the owner, once**, carrying the fix and its cost, so their answer is *do it*, *buy it for later*, or *drop it*.
 
-**When there is room, bring the owner a few strong pitches and the case against each.** The owner's pick buys the work; the implementation brief settled at pickup determines what it is for. Ratings are the filer's advisory proposal on severity and urgency, not a score the owner must confirm. A pitch left quiet for the policy's window lapses through the explicit fade command. Closed pitches and review reports are memory, not obligations on the next session.
+**No issue is created for work the owner has not bought.** *Buy it for later* creates one; *drop it* creates nothing and is a decline recorded on the work. **Deferred attention is attention, taken twice** — once to pick the item up, once to agree its brief — so a queue of agent-proposed work costs what asking costs, paid later by someone who did not choose to pay it.
 
-The script is `scripts/pool.py`, and every path this cell writes resolves against the directory of the file naming it.
+**An issue records work rather than a decision somebody still has to make.** Search first, because new evidence belongs on the open issue it supports rather than in a second number. A repository chooses how it marks and orders the work it decided; this cell owns only what the issue itself carries.

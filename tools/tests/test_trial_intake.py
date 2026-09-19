@@ -293,6 +293,69 @@ def test_the_header_prints_the_full_instants_and_the_clamp(tmp_path: Path, capsy
     assert "clamped" not in capsys.readouterr().out
 
 
+def test_an_empty_baseline_says_so_rather_than_vanishing(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    # A before-and-after whose "before" is silently absent reads like a report
+    # with no baseline rather than one whose baseline was empty, and the
+    # decision this feeds is taken on the pair.
+    dump = tmp_path / "issues.json"
+    dump.write_text(json.dumps([
+        _issue(99, "2026-09-20T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+    ]), encoding="utf-8")
+    args = ["--from-file", str(dump), "--opened", "2026-09-15T00:00:00Z",
+            "--until", "2026-09-25T00:00:00Z", "--baseline-weeks", "2", "--per-week"]
+
+    assert ti.main(args) == 0
+    out = capsys.readouterr().out
+    assert "== baseline: EMPTY" in out, "an absent baseline must announce itself"
+    assert "no days in it" in out
+
+    # It reaches the JSON consumer too, which is what the close-out reads.
+    assert ti.main([*args, "--json"]) == 0
+    assert "empty" in json.loads(capsys.readouterr().out)["baseline"]
+
+    # Negative control: a corpus that does reach back before the open gets a
+    # real baseline and no notice.
+    dump.write_text(json.dumps([
+        _issue(98, "2026-09-01T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+        _issue(99, "2026-09-20T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+    ]), encoding="utf-8")
+    assert ti.main(args) == 0
+    assert "== baseline: EMPTY" not in capsys.readouterr().out
+
+
+def test_the_clamp_reads_the_whole_corpus_not_the_filtered_one(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    # Filtering before the clamp moved the baseline's start to the first issue
+    # that SURVIVED the filter, dropping the leading stretch in which the
+    # filtered class simply had not occurred yet -- a shorter baseline over
+    # the same count is a higher baseline rate, biasing the very comparison
+    # this report exists to produce.
+    dump = tmp_path / "issues.json"
+    # The corpus opens with a repo-only filing; the first shipped one is a
+    # fortnight later. The clamp must land on the repo-only one.
+    dump.write_text(json.dumps([
+        _issue(90, "2026-08-20T00:00:00Z", USE_BODY + "\ndocs/cells/board/SKILL.md\n"),
+        _issue(91, "2026-09-03T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+    ]), encoding="utf-8")
+    args = ["--from-file", str(dump), "--opened", "2026-09-05T00:00:00Z",
+            "--until", "2026-09-06T00:00:00Z", "--baseline-weeks", "4"]
+
+    assert ti.main([*args, "--shipped-only"]) == 0
+    filtered = capsys.readouterr().out
+    assert ti.main(args) == 0
+    whole = capsys.readouterr().out
+
+    # The baseline boundary is a property of the corpus, so the filter must
+    # not move it: both runs clamp to the repo-only issue that opens the set.
+    assert "== baseline: 2026-08-20T00:00:00+00:00" in filtered
+    assert "== baseline: 2026-08-20T00:00:00+00:00" in whole
+    # And the filter still does its own job inside that fixed window.
+    assert ti.main([*args, "--shipped-only", "--rows"]) == 0
+    rows = capsys.readouterr().out
+    assert "#91" in rows and "#90" not in rows
+
+
 def test_basis_is_explained_where_it_is_printed(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     dump = tmp_path / "issues.json"
     dump.write_text(json.dumps([_issue(70, "2026-09-05T00:00:00Z", USE_BODY)]), encoding="utf-8")
@@ -577,6 +640,52 @@ def test_windows_split_on_the_opened_instant_and_count_per_day():
     assert s["total"] == 2 and s["days"] == 2.0
     assert s["counts"]["review"] == 1 and s["counts"]["owner"] == 1
     assert s["per_day"]["review"] == 0.5
+
+
+def test_shipped_paths_reuse_the_proved_path_narrowings():
+    body = """Names skills/filing/SKILL.md and lib/winio.py twice: lib/winio.py.
+```text
+commands/invented.py
+```
+Placeholder: hooks/FILE.py. Repo-only: docs/cells/board/SKILL.md.
+"""
+    assert ti.named_shipped_paths(body) == ["skills/filing/SKILL.md", "lib/winio.py"]
+    assert ti.named_shipped_paths("No extension: skills/filing and no path at all") == []
+
+
+def test_new_flags_compose_with_opened_baseline_file_rows_and_json(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    dump = tmp_path / "issues.json"
+    dump.write_text(json.dumps([
+        _issue(80, "2026-09-01T00:00:00Z", USE_BODY + "\nskills/filing/SKILL.md\n"),
+        _issue(81, "2026-09-08T00:00:00Z", REVIEW_BODY + "\nlib/winio.py\n"),
+        _issue(82, "2026-09-14T00:00:00Z", USE_BODY + "\ndocs/cells/board/SKILL.md\n"),
+        _issue(83, "2026-09-15T00:00:00Z", OWNER_BODY + "\ncommands/review.md\n"),
+        _issue(84, "2026-09-22T00:00:00Z", UNSTATED_BODY + "\nhooks/stop.py\n"),
+    ]), encoding="utf-8")
+    args = [
+        "--from-file", str(dump), "--opened", "2026-09-15T00:00:00Z",
+        "--until", "2026-09-23T00:00:00Z", "--baseline-weeks", "2",
+        "--per-week", "--shipped-only",
+    ]
+
+    assert ti.main([*args, "--rows"]) == 0
+    out = capsys.readouterr().out
+    assert all(f"== {window} week {week}:" in out
+               for window in ("baseline", "trial") for week in (1, 2))
+    assert all(f"#{number}" in out for number in (80, 81, 83, 84))
+    assert "#82" not in out
+    assert "== baseline:" not in out and "== trial:" not in out
+
+    assert ti.main([*args, "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert set(data) == {"baseline", "trial"}
+    assert len(data["baseline"]["weeks"]) == 2
+    assert len(data["trial"]["weeks"]) == 2
+    assert data["baseline"]["weeks"][0]["summary"]["counts"]["use"] == 1
+    assert data["baseline"]["weeks"][1]["summary"]["counts"]["review"] == 1
+    assert data["trial"]["weeks"][0]["rows"][0]["number"] == 83
+    assert data["trial"]["weeks"][1]["rows"][0]["number"] == 84
 
 
 def test_cli_reads_a_fixture_file_and_reports_both_windows(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: Adversarial review of an artifact against its stated purpose — a differentiated panel (or a cold pass for routine changes), an evidence-bound defense, a terminal stage and an executable floor. Use when a change is ready for review, when deciding review depth for an artifact, when dispositioning what an automated reviewer posted on a pull request or what a review tool you invoked returned, or when deciding whether another pass is worth running; not for choosing what to build, and not for committing and pushing the fixes afterward.
+description: Adversarial review of an artifact against its stated purpose — a panel the owner buys by asking on a pull request, and the once-per-PR contract for connected reviewers. Use when the owner asks for a panel, when choosing or running that panel's lane, seats, defense or terminal stage, when dispositioning a connected reviewer's comment or what a review tool you invoked returned, or when deciding whether another bought pass is worth running; not for choosing what to build, not for a panel nobody asked for, and not for committing and pushing fixes afterward.
 ---
 
 # adversarial-review

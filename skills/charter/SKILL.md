@@ -24,11 +24,11 @@ Throughout, **the owner** is the human whose repository this is.
 Process weight concentrates at two moments; what runs between them is model judgment plus the standards carried in the skills.
 
 - **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets an implementation brief settled with the owner and a pre-implementation artifact reading it. The artifact is the session's; what the implementation brief contains and when they affirm it, what the artifact contains and how it is settled, where each is recorded, and when the owner is next needed are the `engagement` cell's. Mechanical work proceeds without it; when in doubt of that, ask the cheap question.
-- **Release.** Merging is the owner's, never the agent's. **Before a change merges, one of the kind the `experience-session` cell names owes a use of that result** — or one line saying why none happened; that cell carries both, and what that line must say.
+- **Release.** Merging is the owner's, never the agent's. **Before a change merges it is proven by running it** — what executes against the tree it produces, every connected reviewer once, and a use of that result of the kind the `experience-session` cell names, or one line saying why none happened. A panel is bought by asking; the `adversarial-review` cell carries what one is and what a connected reviewer's comment owes.
 
 ## Review
 
-Every reviewable artifact states its purpose, audience, and success criteria — the `authoring` cell carries that header's standard. The review judges against that statement; its own charter, roster, evidence standards and dispositions travel with it, in the `adversarial-review` cell, including what a finding earns outside a review.
+Every reviewable artifact states its purpose, audience, and success criteria — the `authoring` cell carries that header's standard. A review is bought when the owner asks for one on the pull request; once bought, it judges against that statement, and its charter, roster, evidence standards and dispositions travel with it in the `adversarial-review` cell, including what a finding earns outside a review.
 
 **Outside a review, a decline is recorded on the work itself** — no stage exists there to rule one, and naming a finding in conversation is not a disposition.
 

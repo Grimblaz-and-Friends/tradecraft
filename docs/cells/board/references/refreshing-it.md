@@ -8,25 +8,19 @@
 
 `Band` records where in the board's own shape an item sits — `Standing`, `Front`, `Bundles`, `Review-set`, `Tail`. **It is not availability**, with one exception the transport enforces: `Standing` claims an item is out of contention, so a `Standing` row must carry a status that says so, and a plan pairing `Standing` with `Queued` is refused. `Bundle` names the group an issue is worked as part of, so a session can see what belongs together without reading any prose. **The test is what one change would take, or one cause the group carries a tie to, and shared origin is not a bundle** — issues that merely came out of the same review, or name the same issue in a tie that is not the cause link, are related and not grouped; labelling them as one tells the next ranking session to plan one pull request for unrelated mechanisms. Three shapes are lawful and the name should say which: a **prospective pull request**, where one change closes the whole group; a **cause-led group**, where one issue is the cause the rest are linked under as sub-issues; and a **cluster**, where the group moves and is deferred together but a change may take only part of it — `PR #322` closed three of one five-item cluster and left two open, which is that shape working rather than failing. **Where a filer had them all in hand under one cause they could point at, they should have been one number rather than several**, which is the `filing` cell's batch rule; a bundle of that shape on the board is a filing that was split and is worth re-reading as one. `Status` is availability; the board's built-in `Linked pull requests` column is what a refresher reads to keep `In flight` true.
 
-## What reaches the board, and what moves the pool
+## What reaches the board
 
-**Nothing reaches this board that has not been framed.** The `filing` cell owns who may frame work and how a pitch becomes a purchase. `sync` refuses to empty a populated board on an empty framed set rather than reading a setup mistake as a decision; `sync --allow-empty` states that the emptiness is real.
+**Nothing reaches this board that has not been framed.** The `filing` cell owns what an issue states; `python tools/board.py frame N` records the decision that places it here, and an agent-created follow-up is framed only where its issue states the fix. `sync` refuses to empty a populated board on an empty framed set rather than reading a setup mistake as a decision; `sync --allow-empty` states that the emptiness is real.
 
 ## What a refresh runs before it ranks
-
-**When there is room for work, read the pool and bring the owner the strongest few pitches.** Use the `filing` cell's shortlist as input to judgment, sell the value and the case against, and frame the owner's picks. A refresh need not ask the owner to rank the pool or confirm its ratings. Record what was heard and bought in the note.
-
-**Run the `filing` cell's fade explicitly during the refresh, previewing the closes first.** It closes quiet unframed pitches and names the reason for each; the note carries what lapsed. Its clock and controls belong to that cell. This is the ordinary window, not a substitute for a hearing the owner commissioned over a particular set.
-
-**Run `python tools/pool_rot.py` and put its findings in the note.** It reports paths a filing names that the tree no longer holds, and closes nothing: a filing can name a missing path deliberately, so the result needs a reading rather than an automatic close.
 
 ## Writing the plan: the bundle, the two guards `apply` enforces, and the owner's exception
 
 **Start from what is on the board.** Move what a named board change justifies and leave the rest. This is not a restriction on what you may move; you may move anything you can argue for. It is that rebuilding the order from a blank page re-rolls the bundling judgment — the expensive part, and the part that varies most between sessions — and costs the board roughly an order of magnitude more writes than adjusting what changed.
 
-**A cause and its framed open symptoms are one bundle, and the refresh reads it off the sub-issue links rather than re-deriving it.** A symptom sitting in the pool is not on the board at all, so it is neither ranked nor blocked and never reaches the guard below. Name the bundle for the cause, rank the cause above every symptom, and give each symptom a status that takes it out of contention while the cause is open — `Blocked` ordinarily, and `In flight` for a symptom that has a pull request open against it, whether that fix came out of the cause or not — the body's reading rule being unable to see `Bundle` or position. [D-415] [D-429] **`apply` refuses a plan that leaves a symptom in contention, or ranks one above its cause**, so those two are checked rather than remembered and the refusal names the symptom, its cause and what to do; **the bundle name is not checked** and is yours to get right.
+**A cause and its framed open symptoms are one bundle, and the refresh reads it off the sub-issue links rather than re-deriving it.** A symptom not on the board is neither ranked nor blocked and never reaches the guard below; it takes one of the `filing` cell's three ends. Name the bundle for the cause, rank the cause above every symptom, and give each symptom a status that takes it out of contention while the cause is open — `Blocked` ordinarily, and `In flight` for a symptom that has a pull request open against it, whether that fix came out of the cause or not — the body's reading rule being unable to see `Bundle` or position. [D-415] [D-429] **`apply` refuses a plan that leaves a symptom in contention, or ranks one above its cause**, so those two are checked rather than remembered and the refusal names the symptom, its cause and what to do; **the bundle name is not checked** and is yours to get right.
 
-**`causes` prints the cause groups over the open set, marking each member the board does not hold**, so the parentage is in hand before the plan is written rather than discovered by being refused. It is not the set the guard reads: the guard runs over plan rows, so a symptom in the pool never reaches it, and a plan row written for one is refused.
+**`causes` prints the cause groups over the open set, marking each member `(not on board)` where the board does not hold it**, so the parentage is in hand before the plan is written rather than discovered by being refused. It is not the set the guard reads: the guard runs over plan rows, so a symptom not on the board never reaches it, and a plan row written for one is refused.
 
 ```bash
 python tools/board.py causes
@@ -44,7 +38,7 @@ The owner may rule a symptom worked on its own while its cause is open; that exc
 
 ## The commands, in the order they run
 
-If the board does not exist yet, `python tools/board.py init` creates it and its fields once. It refuses when a project of that title already exists, because a second one leaves the title ambiguous and every command refusing.
+If the board does not exist yet, `python tools/board.py init` creates it, its fields and its labels once — the labels because `frame` adds one to an issue and `gh` refuses a label that does not exist, so a board created without them cannot place its first item. It refuses when a project of that title already exists, because a second one leaves the title ambiguous and every command refusing.
 
 ```
 python tools/board.py sync --dry-run        # what it would add and archive

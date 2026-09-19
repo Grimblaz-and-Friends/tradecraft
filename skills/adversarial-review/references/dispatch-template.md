@@ -15,7 +15,6 @@
 - **Diff:** `<whole, or by link>`.
 - **Executable probe evidence:** `<commands, revisions, results, and every execution gap>`.
 - **Predecessor stages' output:** `<each whole, never summarised; none for a seat>`.
-- **External pass:** `<the bundle by file or link and its complete receipt block as the script printed it, replay command included; or the receipt of a proved-empty bundle. Withheld from cold-read, and that dispatch says so here.>`
 - **An execution need you cannot meet is returned, never ruled on.**
 
 ## Dispatcher's note — labeled as such, additive; no seat takes one

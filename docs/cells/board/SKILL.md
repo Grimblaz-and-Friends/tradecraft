@@ -5,14 +5,14 @@ description: This repository's ranked board and the standing answer to what to p
 
 # board
 
-**Purpose:** keep a standing, honest answer to *what should I pick up next* between conversations, so the judgment that produced it is inherited rather than re-rolled. **Audience:** any session here reading the board for its next piece of work, or refreshing it after the board moved. **Success:** a session can read the answer off the board without ranking anything; a session that finds nothing available on it knows the answer comes from the pool rather than from ranking harder; a refresh moves what changed and says what it moved and why; and no refresh ever writes an ordering from a read it could not confirm was complete.
+**Purpose:** keep a standing, honest answer to *what should I pick up next* between conversations, so the judgment that produced it is inherited rather than re-rolled. **Audience:** any session here reading the board for its next piece of work, or refreshing it after the board moved. **Success:** a session can read the answer off the board without ranking anything; a session that finds nothing available knows no decided work is available and that the next decision is the owner's; a refresh moves what changed and says what it moved and why; and no refresh ever writes an ordering from a read it could not confirm was complete.
 
-The board is a GitHub Projects v2 project titled `tradecraft board`, linked to this repository. **It holds the framed issues and only those** — the work somebody decided to do. A refresh archives an item whose issue has closed or has gone back to the pool, so the board is not where to look for what was already decided or tried, and it is not where a filing lands. `tools/board.py` is its transport: it does everything that is not judgment, so judgment is what your context is spent on. Every command runs from the repository root and needs `gh` carrying both the `project` and `repo` scopes. `TRADECRAFT_BOARD_TITLE` points the transport at a different board — a scratch one for a trial run — and `TRADECRAFT_BOARD_OWNER` and `_REPO` move it to another repository; two projects sharing a title is refused rather than guessed at.
+The board is a GitHub Projects v2 project titled `tradecraft board`, linked to this repository. **It holds the framed issues and only those** — the work somebody decided to do. A refresh archives an item whose issue has closed or is no longer on the board, so the board is not where to look for what was already decided or tried, and it is not where an issue first lands. `tools/board.py` is its transport: it does everything that is not judgment, so judgment is what your context is spent on. Every command runs from the repository root and needs `gh` carrying both the `project` and `repo` scopes. `TRADECRAFT_BOARD_TITLE` points the transport at a different board — a scratch one for a trial run — and `TRADECRAFT_BOARD_OWNER` and `_REPO` move it to another repository; two projects sharing a title is refused rather than guessed at.
 
 ## Where this cell's depth lives
 
-- **Refreshing the board after it moved, clearing a symptom's hold when its cause closes, or looking at the board in the browser** → `references/refreshing-it.md`: where the board is in the browser and what its `Queue` view cannot be restored to, what the three fields mean and who writes them, what reaches the board and what moves the pool between refreshes, the cause-and-symptom bundle and the two guards `apply` enforces over a plan, the owner's exception and the form it takes, reconciling against settling, the commands in the order they run, and the trial run that is the one case that order does not fit.
-- **Writing a refresh note, or reading one to see what it should have carried** → `references/the-refresh-note.md`: what a note owes — the deltas, the watch-items, the hearing and lapses, the rot rows, the drift look, the reach line and the ceiling line — the rule that a figure in it carries the command that derives it, and the look at recently closed work that `docs/values.md` asks for, with the commands the look is derived from.
+- **Refreshing the board after it moved, clearing a symptom's hold when its cause closes, or looking at the board in the browser** → `references/refreshing-it.md`: where the board is in the browser and what its `Queue` view cannot be restored to, what the three fields mean and who writes them, what reaches the board, the cause-and-symptom bundle and the two guards `apply` enforces over a plan, the owner's exception and the form it takes, reconciling against settling, the commands in the order they run, and the trial run that is the one case that order does not fit.
+- **Writing a refresh note, or reading one to see what it should have carried** → `references/the-refresh-note.md`: what a note owes — the deltas, the watch-items, the drift look, the reach line and the ceiling line — the rule that a figure in it carries the command that derives it, and the look at recently closed work that `docs/values.md` asks for, with the commands the look is derived from.
 
 ## Reading it
 
@@ -32,11 +32,11 @@ python tools/board.py notes    # the last refresh notes, newest first
 
 ## What is not on it
 
-**Every other open issue is in the pool: pitched and not yet bought.** When there is room, bring the owner the strongest few pitches with the case for and against. The pool, its advisory ratings and commands are the `filing` cell's; the argued form is the `engagement` cell's.
+**The board holds work the owner bought, and nothing else.** An agent puts nothing here he has not bought; what it would once have filed goes to the release report's ask instead, and his answer is what creates an issue. An open issue predating that rule is legacy: it goes to him once rather than being ranked or silently turned into work. The `filing` cell carries what an issue states; the argued form for the owner's decision is the `engagement` cell's.
 
 ## Refreshing it
 
-Run a refresh when the board moved — an issue framed or returned to the pool, an issue closed, a pull request merged, a dependency shifted. A filing no longer moves it.
+Run a refresh when the board moved — an issue framed or taken off the board, an issue closed, a pull request merged, a dependency shifted. Filing an issue no longer moves it.
 
 What a refresh runs before it ranks, what it reconciles and settles before it writes, and the guards over the plan: `references/refreshing-it.md`. What the note it ends on owes its reader: `references/the-refresh-note.md`.
 

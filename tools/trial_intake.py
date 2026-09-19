@@ -72,11 +72,26 @@ from winio import utf8_stdio  # noqa: E402
 TRIAL_OPENED = "2026-09-04T22:34:00Z"
 BASELINE_WEEKS = 3
 
-# The closed list of origins `skills/filing/references/pitch-template.md` states, and the classes a
+# The closed list of origins `skills/filing/references/issue-template.md` states, and the classes a
 # row may take. The origins are the first five: `ambiguous` and `unstated` are
 # what the classifier says about a body, never what a body says about itself.
 ORIGINS = ("use", "review", "owner", "session", "instrument")
 CLASSES = ORIGINS + ("ambiguous", "unstated")
+
+# The shipped half of the tree. `--shipped-only` reads a filing's named paths
+# with the same three narrowings the retired pool-rot check proved: a path is
+# rooted in a known zone and ends in an extension, fenced examples do not
+# count, and placeholder segments are not paths.
+SHIPPED_ROOTS = ("skills", "lib", "commands", "agents", "hooks", ".claude-plugin")
+PATH_RE = re.compile(
+    r"(?<![\w/.-])((?:%s)/[\w./-]*[\w]+\.[\w]+)(?::\d+)?"
+    % "|".join(re.escape(root) for root in SHIPPED_ROOTS)
+)
+PATH_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+PLACEHOLDER_TOKENS = ("NAME", "OWNER", "REPO", "PATH", "FILE", "N", "X")
+PLACEHOLDER_RE = re.compile(
+    r"(^|/)(?:%s|<[^>]+>)(?=[./]|$)" % "|".join(PLACEHOLDER_TOKENS)
+)
 
 # The element itself. The heading, then the origin as the first word after it.
 # `.` as well as `:` on the heading, because bodies here already write both, and
@@ -330,6 +345,24 @@ def load_issues(path: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def named_shipped_paths(body: str) -> list[str]:
+    """Shipped repository paths named outside fences, deduplicated."""
+    seen: set[str] = set()
+    paths: list[str] = []
+    for match in PATH_RE.finditer(PATH_FENCE_RE.sub(" ", body or "")):
+        path = match.group(1)
+        if path in seen or PLACEHOLDER_RE.search(path):
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def shipped_issues(issues: list[dict]) -> list[dict]:
+    """Only filings that name at least one path in the shipped tree."""
+    return [issue for issue in issues if named_shipped_paths(issue.get("body") or "")]
+
+
 def window_rows(issues: list[dict], start: datetime, end: datetime) -> list[dict]:
     rows = []
     for issue in issues:
@@ -357,6 +390,25 @@ def summarize(rows: list[dict], start: datetime, end: datetime, *, clamped_from:
         "total": len(rows), "counts": counts,
         "per_day": {name: round(n / days, 3) for name, n in counts.items()},
     }
+
+
+def weekly_reports(issues: list[dict], start: datetime, end: datetime, *,
+                   clamped_from: datetime | None = None) -> list[dict]:
+    """One report for each consecutive seven-day bucket, with a final partial bucket."""
+    reports = []
+    bucket_start = start
+    while bucket_start < end:
+        bucket_end = min(bucket_start + timedelta(days=7), end)
+        rows = window_rows(issues, bucket_start, bucket_end)
+        reports.append({
+            "summary": summarize(
+                rows, bucket_start, bucket_end,
+                clamped_from=clamped_from if bucket_start == start else None,
+            ),
+            "rows": rows,
+        })
+        bucket_start = bucket_end
+    return reports
 
 
 def earliest_created(issues: list[dict]) -> datetime | None:
@@ -403,6 +455,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--until", metavar="ISO8601", help="end of the trial window (default: now)")
     parser.add_argument("--baseline-weeks", type=int, default=BASELINE_WEEKS,
                         help=f"weeks before --opened that form the baseline (default {BASELINE_WEEKS})")
+    parser.add_argument("--per-week", action="store_true",
+                        help="report each window in consecutive seven-day buckets instead of as a total")
+    parser.add_argument("--shipped-only", action="store_true",
+                        help="keep only issues whose body names a path under a shipped root")
     parser.add_argument("--rows", action="store_true", help="print every issue with the phrase it matched")
     parser.add_argument("--only", metavar="CLASS", choices=list(CLASSES),
                         help="with --rows, print only rows of this class; the counts still cover every row")
@@ -424,33 +480,63 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.dump:
         args.dump.write_bytes(json.dumps(issues, indent=1).encode("ascii"))
+    # The clamp below reads the WHOLE corpus, before any filter. Filtering
+    # first would clamp the baseline to the earliest issue that survives the
+    # filter, dropping the leading stretch in which the filtered class simply
+    # did not occur -- which shortens the baseline window and inflates its
+    # rate, biasing the before-and-after this report exists to produce.
+    first = earliest_created(issues)
+    if args.shipped_only:
+        issues = shipped_issues(issues)
 
     # A baseline that begins before the repository's first issue counts days
     # with nothing to file in; clamp to the earliest issue and say so.
-    first = earliest_created(issues)
     clamped_from = None
     if first is not None and first > baseline_start:
         clamped_from, baseline_start = baseline_start, first
 
+    # An empty baseline must SAY it is empty. Where the corpus's first issue
+    # postdates the window's open, the clamp leaves the baseline with no days
+    # in it and every renderer below simply emits nothing for it -- a
+    # before-and-after whose "before" is silently absent reads like a report
+    # with no baseline rather than one whose baseline was empty, and the
+    # decision this feeds is taken on the pair.
+    empty_baseline = baseline_start >= opened
     windows = {
         "baseline": (baseline_start, opened),
         "trial": (opened, until),
     }
     result = {}
     for name, (start, end) in windows.items():
-        rows = window_rows(issues, start, end)
-        result[name] = {"summary": summarize(rows, start, end,
-                                             clamped_from=clamped_from if name == "baseline" else None),
-                        "rows": rows}
+        clamp = clamped_from if name == "baseline" else None
+        if args.per_week:
+            result[name] = {"weeks": weekly_reports(issues, start, end, clamped_from=clamp)}
+        else:
+            rows = window_rows(issues, start, end)
+            result[name] = {"summary": summarize(rows, start, end, clamped_from=clamp),
+                            "rows": rows}
 
+    if empty_baseline:
+        result["baseline"]["empty"] = (
+            f"no baseline: the earliest issue in the corpus is {baseline_start.isoformat()}, "
+            f"at or after the window's open at {opened.isoformat()}, so the baseline has no days in it"
+        )
     if args.json:
         print(json.dumps(result, indent=2))
         return 0
-    for name in ("baseline", "trial"):
-        print(render(name, result[name]["summary"], result[name]["rows"], verbose=args.rows, only=args.only))
+    if empty_baseline:
+        print(f"== baseline: EMPTY -- {result['baseline']['empty']}")
         print()
-    ambiguous = sum(result[n]["summary"]["counts"]["ambiguous"] for n in result)
-    unstated = sum(result[n]["summary"]["counts"]["unstated"] for n in result)
+    reports = []
+    for name in ("baseline", "trial"):
+        named_reports = result[name]["weeks"] if args.per_week else [result[name]]
+        for index, report in enumerate(named_reports, 1):
+            label = f"{name} week {index}" if args.per_week else name
+            print(render(label, report["summary"], report["rows"], verbose=args.rows, only=args.only))
+            print()
+            reports.append(report)
+    ambiguous = sum(report["summary"]["counts"]["ambiguous"] for report in reports)
+    unstated = sum(report["summary"]["counts"]["unstated"] for report in reports)
     print(f"{ambiguous} ambiguous and {unstated} unstated rows need a reader; "
           f"run with --rows to see the phrases each row matched.")
     print(CAVEAT)
