@@ -7,6 +7,7 @@ import importlib.util
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,15 +30,38 @@ def cli(cwd, *args):
     return run([sys.executable, str(SCRIPT), *args], cwd=cwd)
 
 
-def make_repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    run(["git", "init", "-b", "main"], cwd=repo)
-    run(["git", "config", "user.email", "t@example.com"], cwd=repo)
-    run(["git", "config", "user.name", "tester"], cwd=repo)
+# Four `git` launches make an identical, empty repository every time, so it is
+# built once per module and copied per test. On Windows a launch costs an order
+# of magnitude more than the copy, and this module spent about seven in ten of
+# its launches here. Nothing is shared: each test still gets its own repository,
+# byte-identical and observable by nothing else, and a freshly initialised
+# repository records no absolute path. Module-scoped because CI runs the suite
+# under `--dist loadfile`, which keeps a module on one worker, so the template is
+# built once however many workers there are. [#649]
+_SEED = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _seed_repository(tmp_path_factory):
+    """Install the template `make_repo` copies. Autouse so the helper's callers
+    keep their signatures."""
+    global _SEED
+    seed = tmp_path_factory.mktemp("figures-seed") / "repo"
+    seed.mkdir()
+    run(["git", "init", "-b", "main"], cwd=seed)
+    run(["git", "config", "user.email", "t@example.com"], cwd=seed)
+    run(["git", "config", "user.name", "tester"], cwd=seed)
     # core.autocrlf off so the bytes committed are the bytes written — the
     # delta figure's whole claim is that its count is checkout-independent.
-    run(["git", "config", "core.autocrlf", "false"], cwd=repo)
+    run(["git", "config", "core.autocrlf", "false"], cwd=seed)
+    _SEED = seed
+    yield
+    _SEED = None
+
+
+def make_repo(tmp_path):
+    repo = tmp_path / "repo"
+    shutil.copytree(_SEED, repo)
     return repo
 
 

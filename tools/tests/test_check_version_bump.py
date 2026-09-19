@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -54,18 +55,40 @@ def _manifest(repo: Path, version: str, description: str = "d") -> None:
         encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def _repo_template(tmp_path_factory):
+    """The repository below, built once and copied per test.
+
+    Six `git` launches make it, and on Windows each launch costs an order of
+    magnitude more than the file copy that reproduces it -- 247ms against 22ms,
+    measured on the tree that introduced this. The copy preserves exactly what
+    the per-test fixture bought: every test still gets its own private
+    directory, byte-identical and observable by nothing else. A freshly
+    initialised repository records no absolute path, so it is a valid
+    repository wherever it is copied to.
+
+    Module-scoped rather than session-scoped because CI runs the suite under
+    `--dist loadfile`, which keeps one module's tests on one worker. The
+    template is then built once per module however many workers there are, so
+    the suite's launch count does not depend on how the suite was run. [#649]
+    """
+    template = tmp_path_factory.mktemp("version-bump-template")
+    _run(template, "init", "-q", "-b", "main")
+    _run(template, "config", "user.email", "t@example.com")
+    _run(template, "config", "user.name", "t")
+    _manifest(template, "1.0.0")
+    (template / "skills").mkdir()
+    (template / "skills" / "a.md").write_text("base\n", encoding="utf-8")
+    _run(template, "add", "-A")
+    _run(template, "commit", "-qm", "base")
+    _run(template, "checkout", "-q", "-b", "work")
+    return template
+
+
 @pytest.fixture
-def repo(tmp_path, monkeypatch):
+def repo(_repo_template, tmp_path, monkeypatch):
     """A real git repo with a `main` and a branch off it."""
-    _run(tmp_path, "init", "-q", "-b", "main")
-    _run(tmp_path, "config", "user.email", "t@example.com")
-    _run(tmp_path, "config", "user.name", "t")
-    _manifest(tmp_path, "1.0.0")
-    (tmp_path / "skills").mkdir()
-    (tmp_path / "skills" / "a.md").write_text("base\n", encoding="utf-8")
-    _run(tmp_path, "add", "-A")
-    _run(tmp_path, "commit", "-qm", "base")
-    _run(tmp_path, "checkout", "-q", "-b", "work")
+    shutil.copytree(_repo_template, tmp_path, dirs_exist_ok=True)
     monkeypatch.setattr(cvb, "ROOT", tmp_path)
     return tmp_path
 

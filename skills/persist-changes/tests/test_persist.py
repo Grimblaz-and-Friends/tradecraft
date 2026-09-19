@@ -5,9 +5,12 @@ exist because the 2026-08-15 adversarial review proved the original suite
 structurally could not reach those shapes (ledger findings M7/M8/M10/M38)."""
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "persist.py"
 
@@ -21,11 +24,29 @@ def persist(cwd, *args):
     return run([sys.executable, str(SCRIPT), *args], cwd=cwd)
 
 
-def make_repo(tmp_path, origin_name="origin.git"):
-    origin = tmp_path / origin_name
-    run(["git", "init", "--bare", "-b", "main", str(origin)], cwd=tmp_path)
-    work = tmp_path / "work"
-    run(["git", "clone", str(origin), str(work)], cwd=tmp_path)
+# A bare origin plus a seeded clone costs eight `git` launches and comes out
+# identical every time, so it is built once per module and copied per test. On
+# Windows a launch costs an order of magnitude more than the copy. The one thing
+# a copy cannot carry is the clone's `remote.origin.url`, which holds the
+# template's absolute path: left alone, every test would push into the template's
+# origin and see the others' commits. Rewriting it is the single launch
+# `make_repo` still spends, and it is what keeps each test's origin its own.
+# Module-scoped because CI runs the suite under `--dist loadfile`, which keeps a
+# module on one worker, so the template is built once however many workers there
+# are. [#649]
+_SEED = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _seed_repository(tmp_path_factory):
+    """Install the template `make_repo` copies. Autouse so the helper's callers
+    keep their signatures."""
+    global _SEED
+    seed = tmp_path_factory.mktemp("persist-seed")
+    origin = seed / "origin.git"
+    run(["git", "init", "--bare", "-b", "main", str(origin)], cwd=seed)
+    work = seed / "work"
+    run(["git", "clone", str(origin), str(work)], cwd=seed)
     run(["git", "config", "user.email", "t@example.com"], cwd=work)
     run(["git", "config", "user.name", "tester"], cwd=work)
     run(["git", "checkout", "-b", "main"], cwd=work)
@@ -33,6 +54,17 @@ def make_repo(tmp_path, origin_name="origin.git"):
     run(["git", "add", "README.md"], cwd=work)
     run(["git", "commit", "-m", "seed commit"], cwd=work)
     run(["git", "push", "-u", "origin", "main"], cwd=work)
+    _SEED = seed
+    yield
+    _SEED = None
+
+
+def make_repo(tmp_path, origin_name="origin.git"):
+    origin = tmp_path / origin_name
+    shutil.copytree(_SEED / "origin.git", origin)
+    work = tmp_path / "work"
+    shutil.copytree(_SEED / "work", work)
+    run(["git", "remote", "set-url", "origin", str(origin)], cwd=work)
     return work
 
 
