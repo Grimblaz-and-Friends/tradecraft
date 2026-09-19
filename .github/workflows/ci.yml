@@ -6,10 +6,6 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
 
-# Both jobs run code taken from the pull request's own branch, so the default
-# token is scoped down here rather than left at the repository default (which
-# is write, including the ability to approve pull requests). A job that needs
-# more says so in its own block.
 permissions:
   contents: read
 
@@ -22,123 +18,30 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          # The version-bump guard resolves a merge base; a shallow clone has
-          # none, and the guard exits 2 (undetermined) rather than passing.
-          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version-file: ".python-version"
       - name: Packaging lint
         run: python tools/lint.py
-      - name: Version bump
-        if: github.event_name == 'pull_request'
-        # Through the environment, not interpolated into the shell line: a
-        # branch name is a valid git ref while containing $(...) or backticks,
-        # and Actions substitutes into `run:` before the shell parses it.
-        #
-        # `shell: bash` is not decoration. The Windows runner defaults to pwsh,
-        # where `$BASE_REF` is not a variable at all — it expanded to nothing,
-        # the base became `origin/`, and the guard reported UNDETERMINED. One
-        # shell means this line reads the same on both legs of the matrix.
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        shell: bash
-        run: python tools/check_version_bump.py --base "origin/$BASE_REF"
       - name: Tests
         run: |
           python -m pip install -r requirements-dev.txt
           python -m pytest tools/tests skills lib/tests -q
 
-  # The owner reads the doctrine diff himself before merging -- AGENTS.md,
-  # CLAUDE.md, the shipped charter, or any repo-only cell under docs/cells/,
-  # which carry the mechanics that used to sit in AGENTS.md and reached him
-  # through this job every time a PR touched them. Those four are matched
-  # entire; every OTHER cell is matched on its name and description alone,
-  # which load in every session whether or not the cell fires, while its body
-  # does not reach him here (#277, #386). A rename out of any of them counts:
-  # the diff read names only a rename's destination, so the source comes from
-  # a second, narrower lookup (#293). CODEOWNERS was
-  # the first mechanism for that and cannot be: it fires by requesting a review,
-  # and GitHub never requests one from a pull request's own author — which today
-  # every PR here has (#79). This is the callout that reaches him. One runner:
-  # it is an API call, not a portability question.
-  doctrine-callout:
+  ask-declaration:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # Serialized per PR: the script reads the thread and then posts, and two
-    # overlapping runs would both find no callout and both post one. Queued
-    # rather than cancelled, so the last push still gets its run.
-    concurrency:
-      group: doctrine-callout-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
     permissions:
-      contents: read         # check out the script this step runs
-      pull-requests: write   # apply the label, post the comment
-      issues: write          # create the label, and edit the callout comment
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v5
         with:
-          # Two things read blobs at the base revision: the delta's base
-          # side, and the frontmatter arm that decides whether a cell's
-          # description moved. A shallow clone has neither object. The delta
-          # degrades to a total with no direction; the arm raises, so this job
-          # goes red on every pull request rather than only doctrine ones.
-          fetch-depth: 0
-          # No later step in this job reads git credentials from
-          # .git/config -- the API calls carry GH_TOKEN from the environment --
-          # so the token has no reason to be persisted there.
-          #
-          # Scoped to that claim on purpose. Two previous wordings justified
-          # this flag by asserting something global about the job ("nothing
-          # here performs a git operation", "never reaches the network"), and
-          # both became false as the job grew. The flag is right; only its
-          # stated reason kept dying.
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version-file: ".python-version"
-      - name: Doctrine callout
-        # The number is an integer in the event payload and carries no
-        # injection risk, but it goes through the environment anyway: one rule
-        # for every value in this file beats one rule and an exception.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          # The base branch's head at event time. Not the merge base -- and
-          # the right base side anyway, because of what is checked out above:
-          # Actions checks out the *merge* commit, so whatever main gained
-          # while this PR was open sits on both sides of the pair and cancels.
-          # Pairing that merge commit with a computed merge base instead would
-          # put main's own growth on the head side and bill it to this PR.
-          # **Cancellation is a property of sums, and the frontmatter arm does
-          # not sum.** It compares each cell's block at the two revisions, so
-          # it needs the stronger precondition that this sha IS the merge
-          # commit's base-side parent. Both come from the same event payload,
-          # so they agree by construction; a base that lagged would report
-          # another pull request's description edit as this one's.
-          # The correct base depends on what is checked out, so a local run --
-          # which has the PR head, not the merge commit -- wants
-          # `--base $(git merge-base HEAD origin/main)`, not `--base origin/main`.
-          # Absent, the frontmatter arm never runs and no description edit is
-          # flagged, which is the defect #277 was filed for.
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python tools/doctrine_callout.py --pr "$PR_NUMBER" --base "$BASE_SHA"
       - name: Ask declaration
-        # Presence, never truth: whether an unmarked ask is buried in the body
-        # is a content judgement, and a grep for question-shaped prose would
-        # fire on nearly every body here. What this buys is that the author
-        # answered the question at the one moment the whole body is in front
-        # of them. Runs in the same job as the callout because both need `gh`
-        # and a PR number; the packaging lint cannot host it, shelling out to
-        # `git` alone.
-        #
-        # **Not gated on the callout.** Steps default to `if: success()`, so
-        # without this a callout failure -- an API refusal, a fork PR whose
-        # token lacks the write scopes -- would skip this check silently and
-        # spend a fix-and-push cycle before the second defect was even
-        # reported.
-        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

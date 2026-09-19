@@ -14,7 +14,7 @@
 
 Each paired relationship **written as a verb** is written in both directions; `blocks` exists because a filing that unblocks an existing issue would otherwise have to edit that issue to record the order.
 
-**The cause relationship is not a verb at all: it is GitHub's sub-issue link, the cause as parent, the parent carrying a `cause` label.** [D-429] The link means a task split into parts everywhere else, and the label is the only thing saying this one means causation — **an unlabelled parent is invisible to everything downstream**, which is a silent failure rather than a loud one.
+**The cause relationship is not a verb at all: it is GitHub's sub-issue link, the cause as parent, the parent carrying a `cause` label.** The link means a task split into parts everywhere else, and the label is the only thing saying this one means causation — **an unlabelled parent is invisible to everything downstream**, which is a silent failure rather than a loud one.
 
 The repository creates the `cause` label before using it. The link is a mutation over the two issues' node ids:
 

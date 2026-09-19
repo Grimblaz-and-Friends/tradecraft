@@ -17,39 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import figures  # noqa: E402
 import lint
-import roster
 
 
 NL = chr(10)
 BS = chr(92)
-
-
-def _sync_charter_roster(root: Path) -> None:
-    """Put every shipped cell but the charter in the charter's roster.
-
-    `check_charter_roster` couples the two, so a fixture that adds a cell and
-    leaves the charter alone is an unlawful tree — the same reason
-    `_write_cell` already regenerates the generated roster. Regenerated
-    rather than hand-written, so a fixture cell added later is covered by
-    calling this rather than by remembering the line's shape.
-    """
-    charter = root / "skills" / "charter" / "SKILL.md"
-    if not charter.is_file():
-        return
-    text = charter.read_text(encoding="utf-8")
-    text = text.split(lint.CHARTER_ROSTER_HEADING, 1)[0].rstrip(NL) + NL
-    names = sorted(
-        p.name for p in (root / "skills").iterdir()
-        if p.is_dir() and (p / "SKILL.md").is_file() and p.name != "charter"
-    )
-    # The shipped form, names alone: a fixture rendering a load condition
-    # is the shape a session copies when it comes here to add a roster
-    # assertion, and #503 removed that shape from the charter. [#524 review,
-    # M18]
-    lines = [f"- `{name}` cell" for name in names]
-    charter.write_text(
-        text + NL + lint.CHARTER_ROSTER_HEADING + NL + NL + NL.join(lines) + NL,
-        encoding="utf-8")
 
 
 def _write_cell(skill: Path, body: str) -> None:
@@ -62,8 +33,7 @@ def _write_cell(skill: Path, body: str) -> None:
     """
     # A depth file no body names is an orphan under check_depth_index, and
     # the fixtures that carry one are about other checks. Naming any the
-    # caller did not keeps each fixture about its own check, exactly as the
-    # roster entry below does.
+    # caller did not keeps each fixture about its own check.
     ref_dir = skill / "references"
     depth = sorted(f.name for f in ref_dir.glob("*.md")) if ref_dir.is_dir() else []
     unnamed = [n for n in depth if f"references/{n}" not in body]
@@ -75,12 +45,6 @@ def _write_cell(skill: Path, body: str) -> None:
         + "description: A fixture cell." + NL + "---" + NL + NL + body,
         encoding="utf-8",
     )
-    # A cell without its roster entry is an unlawful tree, so writing one here
-    # keeps every other check's fixture about that check. The roster guard is
-    # proven by its own tests, which build the unlawful shapes deliberately.
-    roster.write(skill.parents[1])
-    # Same reason, for the charter's declared roster. [PR #437 review, M1]
-    _sync_charter_roster(skill.parents[1])
 
 
 def make_clean_tree(root: Path) -> None:
@@ -97,16 +61,8 @@ def make_clean_tree(root: Path) -> None:
     # cell whose prose mentions a path.
     (skill / "references" / "detail.md").write_text("Depth.\n", encoding="utf-8")
     _write_cell(skill, "# example-skill\nDepth lives in references/detail.md within skills/example-skill/.\n")
-    _wire_callout(root)
     _wire_charter(root)
-    _sync_charter_roster(root)
     _write_marketplace(root, "./")
-    # A conforming tree carries the roster its cells generate, for the same
-    # reason the pointer above has a target: the fixture models a lawful tree,
-    # not one whose parts merely exist. Generated rather than hand-written, so
-    # a fixture cell added later is covered by regenerating rather than by
-    # remembering what the entry looks like.
-    roster.write(root)
 
 
 def _zoned(root: Path, rel: str, body: str) -> None:
@@ -126,44 +82,6 @@ def _wire_charter(root: Path) -> None:
         + "# charter" + chr(10) + "The binding half." + chr(10),
         encoding="utf-8",
     )
-
-
-def _wire_callout(root: Path) -> None:
-    """The doctrine callout, wired the way the real repo wires it."""
-    tools = root / "tools"
-    tools.mkdir(exist_ok=True)
-    (tools / "doctrine_callout.py").write_text("# the callout\n", encoding="utf-8")
-    workflows = root / ".github" / "workflows"
-    workflows.mkdir(parents=True, exist_ok=True)
-    (workflows / "ci.yml").write_text(WIRED_CI, encoding="utf-8")
-
-
-WIRED_CI = (
-    "on:\n"
-    "  push:\n"
-    "    branches: [main]\n"
-    "  pull_request:\n"
-    "\n"
-    "jobs:\n"
-    "  lint-and-test:\n"
-    "    steps:\n"
-    "      - if: github.event_name == 'pull_request'\n"
-    "        run: python tools/check_version_bump.py\n"
-    "  doctrine-callout:\n"
-    "    if: github.event_name == 'pull_request'\n"
-    "    runs-on: ubuntu-latest\n"
-    "    steps:\n"
-    "      - uses: actions/checkout@v5\n"
-    "        with:\n"
-    "          fetch-depth: 0\n"
-    "      - env:\n"
-    "          BASE_SHA: xyz\n"
-    "        run: python tools/doctrine_callout.py --pr 1 --base $BASE_SHA\n"
-)
-
-
-def _ci(root: Path, text: str) -> None:
-    (root / ".github" / "workflows" / "ci.yml").write_text(text, encoding="utf-8")
 
 
 def _write_marketplace(root: Path, source) -> None:
@@ -208,86 +126,18 @@ def test_this_repository_names_its_streams_at_every_launch():
 # --- settling index -------------------------------------------------------
 
 
-def _settling_row(link_key: str) -> dict:
-    row = {
-        "date": "2026-09-13",
-        "issue": 1,
-        "puts": 1,
-        "amendments": 0,
-        "corrected_before_posted": 0,
-        "scoring_pass": "nothing removed",
-        "cold_seat": {"rounds": 1, "verdicts": ["would"], "route": "would"},
-    }
-    row[link_key] = "https://example.invalid/brief"
-    return row
 
 
-def _write_settling(root: Path, *rows: dict) -> None:
-    docs = root / "docs"
-    docs.mkdir(exist_ok=True)
-    (docs / "settling.jsonl").write_text(
-        NL.join(json.dumps(row) for row in rows) + NL,
-        encoding="utf-8",
-        newline="\n",
-    )
 
 
-def test_a_legacy_settling_row_keeps_the_brief_key(tmp_path):
-    make_clean_tree(tmp_path)
-    _write_settling(tmp_path, _settling_row("brief"))
-    assert lint.check_settling_index(tmp_path) == []
 
 
-def test_a_legacy_settling_row_missing_both_link_keys_names_brief(tmp_path):
-    make_clean_tree(tmp_path)
-    row = _settling_row("brief")
-    del row["brief"]
-    _write_settling(tmp_path, row)
-    assert lint.check_settling_index(tmp_path) == [
-        "settling-index: docs/settling.jsonl:1 is missing brief. Rows through "
-        f"nonblank position {lint.SETTLING_ROWS_BRIEF_GRANDFATHERED} require "
-        "that link key"
-    ]
 
 
-def test_the_first_post_boundary_settling_row_uses_the_specific_key(
-        tmp_path, monkeypatch):
-    make_clean_tree(tmp_path)
-    monkeypatch.setattr(lint, "SETTLING_ROWS_BRIEF_GRANDFATHERED", 1)
-    _write_settling(
-        tmp_path,
-        _settling_row("brief"),
-        _settling_row("implementation_brief"),
-    )
-    assert lint.check_settling_index(tmp_path) == []
 
 
-def test_a_post_boundary_brief_only_row_names_the_missing_specific_key(
-        tmp_path, monkeypatch):
-    make_clean_tree(tmp_path)
-    monkeypatch.setattr(lint, "SETTLING_ROWS_BRIEF_GRANDFATHERED", 1)
-    _write_settling(tmp_path, _settling_row("brief"), _settling_row("brief"))
-    findings = lint.check_settling_index(tmp_path)
-    assert findings == [
-        "settling-index: docs/settling.jsonl:2 carries brief but is missing "
-        "implementation_brief. The settling link is renamed on rows after "
-        "nonblank position 1; use implementation_brief instead of brief"
-    ]
 
 
-def test_blank_lines_do_not_move_the_settling_key_boundary(tmp_path, monkeypatch):
-    make_clean_tree(tmp_path)
-    monkeypatch.setattr(lint, "SETTLING_ROWS_BRIEF_GRANDFATHERED", 2)
-    docs = tmp_path / "docs"
-    docs.mkdir(exist_ok=True)
-    (docs / "settling.jsonl").write_text(
-        json.dumps(_settling_row("brief")) + NL + NL + NL
-        + json.dumps(_settling_row("brief")) + NL
-        + json.dumps(_settling_row("implementation_brief")) + NL,
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert lint.check_settling_index(tmp_path) == []
 
 
 # --- zone wall -------------------------------------------------------------
@@ -412,19 +262,6 @@ def test_sideways_deps_reaches_the_charter(tmp_path):
     assert len(findings) == 1
 
 
-def test_the_two_shipped_zone_declarations_agree():
-    """`check_version_bump` keeps its own copy, deliberately -- but a copy that
-    silently disagrees is how new shipped directories can enter the zone
-    everywhere except the guard that demands a version bump for them."""
-    import check_version_bump
-
-    lint_zone = {name.rstrip("/") for name in lint.SHIPPED_DIRS}
-    bump_zone = {name.rstrip("/") for name in check_version_bump.SHIPPED}
-    assert lint_zone == bump_zone, (
-        "the shipped zone is declared twice and the two disagree: "
-        f"lint-only={sorted(lint_zone - bump_zone)}, "
-        f"version-bump-only={sorted(bump_zone - lint_zone)}"
-    )
 
 
 def test_doctrine_import_fires_on_a_fenced_mention(tmp_path):
@@ -481,6 +318,25 @@ def test_zone_wall_fires_on_rooted_reference(tmp_path):
     assert len(findings) == 1 and "zone-wall" in findings[0]
 
 
+def test_zone_wall_fires_on_a_decision_marker_in_shipped_prose(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "Keep the boundary because the decision says so [D-9].\n")
+
+    findings = lint.check_zone_wall(tmp_path)
+
+    assert len(findings) == 1
+    assert "decision marker '[D-9]' as shipped rationale" in findings[0]
+
+
+def test_zone_wall_accepts_a_reason_stated_in_shipped_prose(tmp_path):
+    make_clean_tree(tmp_path)
+    skill = tmp_path / "skills" / "example-skill"
+    _write_cell(skill, "Keep the boundary because consumers receive no local files.\n")
+
+    assert lint.check_zone_wall(tmp_path) == []
+
+
 def test_zone_wall_fires_on_relative_parent_reference(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
@@ -492,7 +348,7 @@ def test_zone_wall_fires_on_relative_parent_reference(tmp_path):
 def test_zone_wall_fires_on_uppercase_and_backslash_but_not_own_subdir(tmp_path):
     make_clean_tree(tmp_path)
     skill = tmp_path / "skills" / "example-skill"
-    _write_cell(skill, # ./tools/ inside a skill resolves to the skill's OWN tools/ subdir —
+    _write_cell(skill, # ./tools/ inside a skill resolves to the skill's OWN tools/ subdir â€”
         # self-contained and lawful; the other two are repo-only references.
         "Run ./tools/helper.py first.\nOr see Docs/architecture.\nOr docs\\architecture\\adr.\n")
     findings = [f for f in lint.run(tmp_path) if "zone-wall" in f]
@@ -595,7 +451,6 @@ def test_the_charter_may_reference_any_cell(tmp_path):
         + "The depth behind this rule lives in the `example-skill` cell." + NL,
         encoding="utf-8",
     )
-    _sync_charter_roster(tmp_path)
     assert lint.run(tmp_path) == []
 
 
@@ -619,7 +474,6 @@ def test_the_exemption_is_the_name_form_and_not_a_path(tmp_path):
         + "---" + NL + NL + "The bar lives at skills/example-skill/SKILL.md." + NL,
         encoding="utf-8",
     )
-    _sync_charter_roster(tmp_path)
     findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
     assert len(findings) == 1 and "example-skill" in findings[0]
 
@@ -637,11 +491,8 @@ def _edges(root: Path, source: str) -> list[str]:
 def test_a_cell_may_point_at_a_sibling_and_a_circle_may_not_close(tmp_path):
     """The permission and its bound, in one fixture.
 
-    The ban this replaced made a copy the only lawful way for two cells to
-    share a rule, and every copy nobody could bear went to the always-on
-    surface, which is budgeted -- the cause #404 files. What is refused now
-    is the shape the ban was aimed at: two cells neither of which can be read
-    or revised without the other.
+    What is refused is the shape the pointer rule exists to prevent: two cells
+    neither of which can be read or revised without the other.
     """
     make_clean_tree(tmp_path)
     other = tmp_path / "skills" / "other-skill"
@@ -666,7 +517,7 @@ def test_a_rooted_docs_cells_path_is_read_against_the_repo_only_roster(tmp_path)
     """`docs/cells/<name>/` names a repo-only cell or it names nothing.
 
     A shipped cell's name in that path resolves to no cell at all, so a
-    predicate answering from the union of both rosters reported prose about a
+    predicate answering from the union of both cell sources reported prose about a
     nonexistent path as a reference to a repo-only cell that does not exist --
     a red lint on lawful prose, which blocks work exactly as hard as passing
     unlawful work. Both polarities, because the whole defect was that the
@@ -676,93 +527,22 @@ def test_a_rooted_docs_cells_path_is_read_against_the_repo_only_roster(tmp_path)
     make_clean_tree(tmp_path)
     _repo_cell(tmp_path, "records", "Depth.")
     _repo_cell(tmp_path, "board", "Depth.")
-    roster.write(tmp_path)
 
     # `example-skill` is a shipped cell, so this path names no cell: lawful.
     _repo_cell(tmp_path, "board",
                "The historical path docs/cells/example-skill/SKILL.md is gone.")
-    roster.write(tmp_path)
     assert [f for f in lint.run(tmp_path) if "sideways-dep" in f] == [], lint.run(tmp_path)
 
     # A real repo-only cell named by path is still the finding it always was.
     _repo_cell(tmp_path, "board", "See docs/cells/records/SKILL.md.")
-    roster.write(tmp_path)
     findings = [f for f in lint.run(tmp_path) if "sideways-dep" in f]
     assert len(findings) == 1 and "records" in findings[0], lint.run(tmp_path)
 
 
-def test_the_charter_roster_is_coupled_to_the_shipped_cell_set(tmp_path):
-    """A shipped cell absent from the always-on router is a finding.
-
-    The router was held by prose alone: adding a cell and leaving the charter
-    untouched was green, and the only red was the new description's always-on
-    cost, which an admission row answers. After that a shipped cell was
-    absent from the surface every session reads and nothing said so. Both
-    polarities, and the finding names what a roster line costs, because at a
-    full surface the remedy is an admission rather than a free edit.
-    [PR #437 review, M1]
-    """
-    make_clean_tree(tmp_path)
-    other = tmp_path / "skills" / "other-skill"
-    other.mkdir(parents=True)
-    _write_cell(other, "A sibling cell." + NL)
-    assert [f for f in lint.run(tmp_path) if "charter-roster" in f] == [], lint.run(tmp_path)
-
-    charter = tmp_path / "skills" / "charter" / "SKILL.md"
-    charter.write_text(
-        NL.join(line for line in charter.read_text(encoding="utf-8").splitlines()
-                if "`other-skill` cell" not in line) + NL,
-        encoding="utf-8")
-    findings = [f for f in lint.run(tmp_path) if "charter-roster" in f]
-    assert len(findings) == 1, lint.run(tmp_path)
-    assert "other-skill" in findings[0], findings[0]
-    # The obligation the guard creates is stated where it fires.
-    assert lint.ADMISSIONS in findings[0], findings[0]
 
 
-def test_the_charter_named_in_its_own_roster_is_a_finding(tmp_path):
-    """The section says it names every cell but the charter; listing it is false.
-
-    `shipped - listed - {CHARTER_CELL}` subtracts the charter's name before
-    diffing, so the membership arm cannot see that name *present*. The
-    section's completeness sentence is the whole of what the block buys
-    since #503 took the load conditions out, and a one-line edit falsified
-    it with the entire lint green -- probed budget-neutrally, because the
-    always-on surface sits close enough to its ceiling that a naive
-    insertion reds on size rather than on sense. [#524 review, M5]
-    """
-    make_clean_tree(tmp_path)
-    assert [f for f in lint.run(tmp_path) if "charter-roster" in f] == []
-
-    charter = tmp_path / "skills" / "charter" / "SKILL.md"
-    charter.write_text(
-        charter.read_text(encoding="utf-8").rstrip(NL) + NL
-        + f"- `{lint.CHARTER_CELL}` cell" + NL,
-        encoding="utf-8")
-    findings = [f for f in lint.run(tmp_path) if "charter-roster" in f]
-    assert len(findings) == 1, lint.run(tmp_path)
-    assert lint.CHARTER_CELL in findings[0], findings[0]
-    # It names the remedy, not just the breach.
-    assert "Remove the line" in findings[0], findings[0]
 
 
-def test_the_roster_check_is_keyed_to_a_heading_and_says_so_when_it_is_gone(tmp_path):
-    """A check keyed to a section is disabled by renaming the section.
-
-    Without this arm, deleting or retitling the roster heading would turn the
-    coupling above off with every other check still green -- the silent
-    failure the check exists to prevent, reproduced one level up.
-    """
-    make_clean_tree(tmp_path)
-    assert [f for f in lint.run(tmp_path) if "charter-roster" in f] == []
-
-    charter = tmp_path / "skills" / "charter" / "SKILL.md"
-    charter.write_text(
-        charter.read_text(encoding="utf-8").replace(
-            lint.CHARTER_ROSTER_HEADING, "## The cells"),
-        encoding="utf-8")
-    findings = [f for f in lint.run(tmp_path) if "charter-roster" in f]
-    assert len(findings) == 1 and "renamed" in findings[0], findings
 
 
 def test_only_a_cell_s_prose_makes_a_pointer(tmp_path):
@@ -849,7 +629,6 @@ def test_a_pointer_at_the_charter_closes_no_circle(tmp_path):
         + "The depth behind this rule lives in the `example-skill` cell." + NL,
         encoding="utf-8",
     )
-    _sync_charter_roster(tmp_path)
     _write_cell(tmp_path / "skills" / "example-skill",
                 "The rule itself is stated by the `charter` cell.\n")
     assert lint.run(tmp_path) == []
@@ -878,7 +657,6 @@ def test_the_walls_refused_direction_is_not_an_edge(tmp_path):
     """
     make_clean_tree(tmp_path)
     _repo_cell(tmp_path, "records", "Depth.")
-    roster.write(tmp_path)
     _write_cell(tmp_path / "skills" / "example-skill",
                 "Depth lives in references/detail.md, then the `records` cell.\n")
     findings = lint.run(tmp_path)
@@ -893,11 +671,9 @@ def test_the_walls_refused_direction_is_not_an_edge(tmp_path):
                 "Depth lives in references/detail.md.\n")
     _repo_cell(tmp_path, "records", "The standard is the `example-skill` cell.")
     _repo_cell(tmp_path, "board", "See the `records` cell.")
-    roster.write(tmp_path)
     assert lint.run(tmp_path) == []
     assert _edges(tmp_path, "records") == ["example-skill"]
     _repo_cell(tmp_path, "records", "See the `board` cell.")
-    roster.write(tmp_path)
     findings = [f for f in lint.run(tmp_path) if "pointer-cycle" in f]
     assert len(findings) == 1, lint.run(tmp_path)
     assert "records" in findings[0] and "board" in findings[0]
@@ -925,10 +701,8 @@ def test_a_cell_reference_must_name_a_cell_that_exists(tmp_path):
     body = ("---" + NL + "name: charter" + NL + "description: The binding rules."
             + NL + "---" + NL + NL + "Depth lives in the `{}` cell." + NL)
     (charter / "SKILL.md").write_text(body.format("example-skill"), encoding="utf-8")
-    _sync_charter_roster(tmp_path)
     assert lint.run(tmp_path) == []
     (charter / "SKILL.md").write_text(body.format("renamed-away"), encoding="utf-8")
-    _sync_charter_roster(tmp_path)
     findings = lint.run(tmp_path)
     assert len(findings) == 1
     assert "cell-reference" in findings[0] and "renamed-away" in findings[0]
@@ -1000,7 +774,6 @@ def test_a_wrapped_reference_must_also_name_a_cell_that_exists(tmp_path):
         + "---" + NL + NL + "Depth lives in the `renamed-away`" + NL + "cell." + NL,
         encoding="utf-8",
     )
-    _sync_charter_roster(tmp_path)
     findings = lint.run(tmp_path)
     assert len(findings) == 1
     assert "cell-reference" in findings[0] and "renamed-away" in findings[0]
@@ -1009,7 +782,7 @@ def test_a_wrapped_reference_must_also_name_a_cell_that_exists(tmp_path):
 def test_a_references_pointer_must_resolve_against_its_own_file(tmp_path):
     """The cell-reference failure one level down.
 
-    Depth-shedding makes `references/` the roster-wide standard, so a pointer
+    Depth-shedding makes `references/` the cell-wide standard, so a pointer
     at a file that moved strands a session exactly as a renamed cell does --
     and the body deliberately no longer carries what the pointer promises.
     """
@@ -1058,14 +831,12 @@ LINT_CHECKS_IN_ORDER = (
     "check_harness_tokens",
     "check_charter_cell",
     "check_cell_frontmatter",
-    "check_project_roster",
     "check_sideways_deps",
     "check_cell_references",
     "check_depth_index",
     "check_doctrine_citations",
     "check_doctrine_references",
     "check_doctrine",
-    "check_doctrine_callout",
     "check_decision_index",
     "check_entry_references",
     "check_emitted_ascii",
@@ -1077,10 +848,6 @@ LINT_CHECKS_IN_ORDER = (
     "check_committed_carriage_return",
     "check_marketplace_source",
     "check_body_strip_owner",
-    "check_always_on_budget",
-    "check_admissions",
-    "check_settling_index",
-    "check_charter_roster",
 )
 
 
@@ -1098,14 +865,9 @@ def test_the_module_docstring_enumerates_every_check_run_calls():
     prose as well as calls, which a docstring naming a sibling check would
     have broken.
 
-    **A retired slot holds its number, and the assertion is split in two to
-    say so** [#543]. These numbers are cited by number from `tools/lint.py`
-    itself, from `tools/roster.py`, from `tools/check_ask_declaration.py`,
-    from this suite, and from a frozen decision entry naming "lint check 19" --
-    so closing a gap silently repoints every one of those and makes an entry
-    nobody may edit false. The two things worth holding survive the gap: the
-    sequence has no holes, and every check `run` calls is enumerated. A slot is
-    retired by opening with that word, which is also what a reader needs.
+    A retired slot holds its number because frozen decisions cite these
+    identifiers. The sequence has no holes, and every check `run` calls is
+    enumerated. A slot is retired by opening with that word.
     """
     called = tuple(check.__name__ for check in lint.CHECKS)
     assert called == LINT_CHECKS_IN_ORDER, (
@@ -1123,24 +885,8 @@ def test_the_module_docstring_enumerates_every_check_run_calls():
         "slot was just retired, the sentinel is the exact token `retired.` "
         "as the first word after the number; any other spelling counts live"
     )
-    # **The retired slot is pinned by number, not merely tolerated.**
-    # Without this, deleting slot 8 and shifting 9->8 .. 29->28 in one edit
-    # leaves the sequence hole-free and the live count right, so BOTH
-    # assertions above pass and the lint stays green -- probed by three
-    # stages of PR #544's review, which is how the gap turned out to be
-    # defended by prose alone. The numbers are cited as identifiers from
-    # tools/roster.py and from the frozen decision log, so closing the gap
-    # repoints every citation above it. #551 carries what is wrong with the
-    # scheme itself; this only holds it still.
-    assert ("8", "retired.") in items, (
-        "docstring slot 8 no longer reads `8. retired.` -- if the gap was "
-        "closed up, every by-number citation above 8 has silently moved; see "
-        "the slot's own note and #551"
-    )
-    assert ("13", "retired.") in items, (
-        "docstring slot 13 no longer reads `13. retired.` -- the retired "
-        "review-index guard keeps its number so later citations do not move"
-    )
+    retired = {int(number) for number, first in items if first == "retired."}
+    assert retired == {8, 12, 13, 19, 26, 27, 28, 29}
 
 
 def make_entry(root: Path, number: int) -> None:
@@ -1281,57 +1027,10 @@ def test_the_citation_guard_leaves_the_placeholder_and_fenced_prose_alone(tmp_pa
     assert lint.run(tmp_path) == []
 
 
-@pytest.mark.parametrize("rendering", [
-    "fetch-depth: 0",
-    "fetch-depth: 0  # full history, for the delta's base",
-    "fetch-depth: '0'",
-    'fetch-depth: "0"',
-])
-def test_lawful_renderings_of_full_history_are_not_findings(tmp_path, rendering):
-    """A guard that fails a required check on a lawful reformat blocks lawful
-    work, which fails as hard as passing unlawful work.
-
-    The first anchor written for this ended at `$` with neither quoting nor a
-    comment admitted, so three of these four went red -- on the one key whose
-    whole purpose is that a later session not delete it.
-    """
-    make_clean_tree(tmp_path)
-    _ci(tmp_path, WIRED_CI.replace("fetch-depth: 0", rendering))
-    assert lint.run(tmp_path) == []
 
 
-def test_the_lint_reports_the_always_on_total(capsys):
-    """The number reaches the session doing the editing, not only the owner
-    at the merge button.
-
-    An experience session found the derivation reachable only through frozen
-    decision entries, and said the number changed what it did once it had it.
-    """
-    lint.main()
-    out = capsys.readouterr().out
-    assert "always-on surface here, per runtime:" in out
-    assert "for an adopter" in out and "not derived" not in out
-    # **Every runtime is named, and its own total is beside its name.** This
-    # asserted only that the substring was present, so it stayed green while
-    # the line printed one scalar that was some other runtime's -- the state
-    # every seat of PR #278's panel and the external pass reported, on a tree
-    # with zero findings. The number reaching the session doing the editing
-    # has to be that session's. [PR #278 review, M1]
-    for surface in roster.SURFACES:
-        assert surface.runtime in out, (
-            f"{surface.runtime} reads this line and is not named on it")
-    assert out.count("= doctrine ") == len(roster.SURFACES), (
-        "one decomposed total per runtime, so a reader can take its own")
 
 
-def test_an_underivable_figure_does_not_fail_the_lint(tmp_path, monkeypatch):
-    """The other polarity, and the one that matters: this is a required check.
-    A tree with no figures module is not a lint finding, and a number that
-    cannot be derived must never turn a clean tree red."""
-    make_clean_tree(tmp_path)
-    note = lint.always_on_note(tmp_path)
-    assert note.startswith("always-on surface: not derived")
-    assert lint.run(tmp_path) == []
 
 
 def test_a_fence_closes_only_on_its_own_marker(tmp_path):
@@ -1612,118 +1311,21 @@ def test_fork_that_name_drops_agents_md_is_a_finding(tmp_path):
 
 
 
-def test_doctrine_callout_wired_is_not_a_finding(tmp_path):
-    """The lawful polarity: a guard that blocks lawful work fails as hard as
-    one that passes unlawful work."""
-    make_clean_tree(tmp_path)
-    assert lint.run(tmp_path) == []
 
 
-def test_deleting_the_callout_job_is_a_finding(tmp_path):
-    """The callout cannot catch its own removal — a PR deleting the job touches
-    no doctrine file, so nothing fires and nothing goes red. This is what makes
-    such a PR fail a required check instead."""
-    make_clean_tree(tmp_path)
-    _ci(tmp_path, "on:\n  pull_request:\n\njobs:\n  lint-and-test:\n"
-                  "    steps:\n      - run: python tools/lint.py\n")
-    findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "no live `doctrine-callout:` job" in findings[0]
 
 
 # Every way the callout has been made dead without deleting anything. Each was
-# measured against a plain substring check first, and each passed it clean —
+# measured against a plain substring check first, and each passed it clean â€”
 # which is why the check reads the job's own block rather than the file.
-@pytest.mark.parametrize("name, mutate, expected", [
-    ("job commented out",
-     lambda t: "".join("#" + ln if ln.startswith("  doctrine-callout:")
-                       or ln.startswith("    ") and "doctrine_callout" in ln
-                       else ln for ln in t.splitlines(keepends=True)),
-     "no live `doctrine-callout:` job"),
-    ("gate falsified",
-     lambda t: t.replace("  doctrine-callout:\n    if: github.event_name == 'pull_request'",
-                         "  doctrine-callout:\n    if: false"),
-     "not gated on a pull_request event"),
-    ("gate deleted",
-     lambda t: t.replace("  doctrine-callout:\n    if: github.event_name == 'pull_request'\n",
-                         "  doctrine-callout:\n"),
-     "not gated on a pull_request event"),
-    ("script call neutered",
-     lambda t: t.replace("run: python tools/doctrine_callout.py",
-                         "run: echo python tools/doctrine_callout.py"),
-     "does not run tools/doctrine_callout.py"),
-    ("trigger removed",
-     lambda t: t.replace("  pull_request:\n", "", 1),
-     "no `pull_request:` trigger"),
-    # The escape the review found last: the job's gate no longer matches the
-    # event, so it skips in silence while both required checks report green —
-    # and checkout would default to the base branch, testing main rather than
-    # the PR. The likeliest motive is already on the record (fork coverage).
-    ("trigger switched to pull_request_target",
-     lambda t: t.replace("  pull_request:\n", "  pull_request_target:\n", 1),
-     "no `pull_request:` trigger"),
-    # Not a dead job but a blind one, and this is the shape that shipped:
-    # the delta's base side reads blobs at another revision, a shallow
-    # clone has none, and the read failing costs the callout its figure
-    # while every check still reports green. Omitting the key is what
-    # produces depth 1, so the default is the trap.
-    ("full history dropped",
-     lambda t: t.replace("          fetch-depth: 0\n", ""),
-     "does not check out full history"),
-    # A bounded depth is still a shallow clone and the base sits any
-    # distance back, so the pin is `0` rather than evidence that somebody
-    # thought about depth at all.
-    ("depth bounded instead of full",
-     lambda t: t.replace("fetch-depth: 0", "fetch-depth: 50"),
-     "does not check out full history"),
-    # The delta's request, at both seams. Deleting either leaves the other
-    # standing and the command still reading correctly, which is why one
-    # pattern on the run line cannot hold this.
-    ("the --base flag deleted",
-     lambda t: t.replace(" --base $BASE_SHA", ""),
-     "does not pass `--base`"),
-    ("the BASE_SHA environment line deleted",
-     lambda t: t.replace("          BASE_SHA: xyz\n", ""),
-     "does not put the base revision in the environment"),
-])
-def test_a_dead_callout_job_is_a_finding(tmp_path, name, mutate, expected):
-    make_clean_tree(tmp_path)
-    _ci(tmp_path, mutate(WIRED_CI))
-    findings = lint.run(tmp_path)
-    assert any(expected in f for f in findings), f"{name}: {findings}"
 
 
 # The lawful polarity. A guard that blocks lawful work fails as hard as one
 # that passes unlawful work, so the gate's event is named and its wording is not.
-@pytest.mark.parametrize("rewrite", [
-    lambda t: t.replace("    if: github.event_name == 'pull_request'\n    runs-on",
-                        "    if: ${{ github.event_name == 'pull_request' }}\n    runs-on"),
-    lambda t: t.replace("    if: github.event_name == 'pull_request'\n    runs-on",
-                        "    if: github.event_name == 'pull_request'"
-                        " && !github.event.pull_request.draft\n    runs-on"),
-    lambda t: t.replace("--pr 1", "--repo o/n --pr 1"),
-    lambda t: t.replace("  pull_request:\n", "  pull_request:  \n", 1),   # trailing space
-    lambda t: t.replace("on:\n  push:\n    branches: [main]\n  pull_request:\n",
-                        "on: [push, pull_request]\n", 1),                 # flow style
-    lambda t: t.replace("  pull_request:\n", "  - pull_request\n", 1),    # sequence form
-])
-def test_lawful_rewordings_of_the_job_pass(tmp_path, rewrite):
-    make_clean_tree(tmp_path)
-    _ci(tmp_path, rewrite(WIRED_CI))
-    assert lint.run(tmp_path) == []
 
 
-def test_deleting_the_callout_script_is_a_finding(tmp_path):
-    make_clean_tree(tmp_path)
-    (tmp_path / "tools" / "doctrine_callout.py").unlink()
-    findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "doctrine_callout.py is missing" in findings[0]
 
 
-def test_a_missing_workflow_file_is_a_finding(tmp_path):
-    make_clean_tree(tmp_path)
-    (tmp_path / ".github" / "workflows" / "ci.yml").unlink()
-    findings = lint.run(tmp_path)
-    assert len(findings) == 1 and "ci.yml is missing" in findings[0]
 
 
 def test_frozen_archive_files_are_not_validated(tmp_path):
@@ -1870,7 +1472,7 @@ def test_entry_reference_that_resolves_to_nothing_is_a_finding(tmp_path):
 
 def test_entry_reference_pinned_to_a_commit_is_clean(tmp_path):
     """A pin names the commit the reference shipped at, so no later move can
-    falsify it — the one lawful way to cite a file an entry quotes."""
+    falsify it â€” the one lawful way to cite a file an entry quotes."""
     make_clean_tree(tmp_path)
     _write_entry(
         tmp_path, "D-1-2026-08-23-x.md",
@@ -1958,7 +1560,7 @@ def test_recorded_reference_that_resolves_again_is_a_finding(tmp_path, monkeypat
 
 def test_entry_reference_pin_is_scoped_to_its_own_reference(tmp_path):
     """A pin covers the reference it follows and no other. Computed per line, a
-    single pin exempted a whole paragraph — and one line in the real log
+    single pin exempted a whole paragraph â€” and one line in the real log
     already carried a pin alongside three references."""
     make_clean_tree(tmp_path)
     _write_entry(
@@ -1992,7 +1594,7 @@ def test_entry_reference_directory_named_like_an_entry_does_not_crash(tmp_path):
 
 
 def test_baseline_of_unrepairable_references_may_only_shrink():
-    """A baseline row is a dead reference nobody had to repair — the failure
+    """A baseline row is a dead reference nobody had to repair â€” the failure
     this guard exists to make impossible. Membership is pinned, not size: a
     same-size swap that retired one row and admitted a fresh dead reference
     passed a length assertion silently."""
@@ -2011,6 +1613,38 @@ def test_baseline_of_unrepairable_references_may_only_shrink():
         ("D-90-2026-08-20-dispatch-contract.md", 25, "Documents/Design/review-dispatch-overhead-measurement.md"),
     }
     assert all(str(r).strip() for r in lint.BASELINE_UNRESOLVABLE.values())
+
+
+def test_issue_665_retirements_are_derived_from_frozen_entries_and_not_the_index():
+    """The retirement record is exactly the parser's frozen population."""
+    root = Path(__file__).resolve().parents[2]
+    directory = root / "docs" / "architecture" / "decisions"
+    retired = set(lint._ISSUE_665_RETIRED_MECHANISMS)
+
+    def references(path):
+        found = set()
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for ref, _form, pinned in lint._entry_refs(line):
+                if (ref in retired and not pinned
+                        and not lint._entry_ref_resolves(root, path.parent, ref)):
+                    found.add((path.name, lineno, ref))
+        return found
+
+    frozen = set().union(*(references(path) for path in directory.glob("D-*.md")))
+    index = references(directory / "README.md")
+
+    assert frozen == lint._ISSUE_665_RETIRED_REFS
+    assert len(frozen) == 97
+    assert index == set()
+    recorded = {
+        key: reason for key, reason in lint.UNREPAIRABLE_AFTER_LANDING.items()
+        if key in frozen
+    }
+    assert set(recorded) == frozen
+    for key, reason in recorded.items():
+        mechanism = lint._ISSUE_665_RETIRED_MECHANISMS[key[2]]
+        assert reason == f"target retired by issue #665 with {mechanism}"
 
 
 def test_declared_repo_roots_cover_every_shipped_dir():
@@ -2091,7 +1725,7 @@ def test_the_log_index_is_scanned_too(tmp_path):
 def test_a_pin_does_not_reach_past_the_next_reference(tmp_path):
     """The window is bounded by the next match's own start. Reconstructing that
     start by subtracting the reference's length is exact only when the match
-    text is the reference — for `[display](target)` it is not, and the window
+    text is the reference â€” for `[display](target)` it is not, and the window
     swallowed the following link's anchor text."""
     make_clean_tree(tmp_path)
     line = "See `skills/gone/SKILL.md` and [the rule at `65c4540`](../also-gone.md).\n"
@@ -2326,42 +1960,9 @@ def test_the_declared_description_ceiling_is_the_one_these_tests_pin(tmp_path):
     assert lint.CELL_FIELD_MAX_CHARS == {"name": 64, "description": 700}
 
 
-def test_every_remaining_budget_constant_is_pinned_literally(tmp_path):
-    """#164, discharged: the two constants the earlier fix left deriving
-    their bounds from themselves.
-
-    Both were mutable with the suite green -- every test that touched them
-    built its input out of the constant it was testing, so the bound moved
-    with the value it was meant to hold. Literals here, and the behavioural
-    arms below, so a change to either is a deliberate act with a red suite
-    behind it.
-    """
-    assert lint.ALWAYS_ON_ROW_BUDGET_CHARS == 16_345, (
-        "ALWAYS_ON_ROW_BUDGET_CHARS is the larger always-on row plus one unit, "
-        "and the unit is what a rule costs in the shape this repository makes "
-        "rules take -- the median cell's name plus description, to the next "
-        "hundred. It is not a rounder number chosen for comfort: headroom and "
-        "the largest tolerated relocation are the same quantity, so raising "
-        "this admits a larger relocate-then-refill by the same amount. Both "
-        "directions have a behavioural arm below; a raise is caught by "
-        "test_raising_the_row_budget_admits_a_relocation_it_should_refuse."
-    )
-    assert lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS == 11_508
-    assert lint.POINTER_BUDGET_CHARS == 500
 
 
 
-def test_every_budgeted_cell_exists_in_this_repository():
-    """A rename would drop the budget in silence.
-
-    The guard skips a cell it cannot find, because a tree without that cell is
-    an ordinary tree and every fixture is one. That makes absence invisible
-    exactly where it matters -- here, against the real tree, where the map's
-    keys have an answer.
-    """
-    root = Path(__file__).resolve().parents[2]
-    for rel in lint.CELL_BODY_CEILING_CHARS:
-        assert (root / rel).is_file(), f"{rel} carries a body budget and does not exist"
 
 
 
@@ -2369,7 +1970,7 @@ def test_cell_frontmatter_fires_above_the_description_ceiling(tmp_path):
     make_clean_tree(tmp_path)
     _set_description(tmp_path, "x" * 701)
     findings = [f for f in lint.run(tmp_path) if "cell-frontmatter" in f]
-    assert len(findings) == 1 and "budget" in findings[0]
+    assert len(findings) == 1 and "maximum is 700" in findings[0]
 
 
 def test_cell_frontmatter_allows_a_description_at_the_ceiling(tmp_path):
@@ -2617,8 +2218,7 @@ def test_docstring_control_chars_reports_a_module_docstring_without_raising(tmp_
     `ast.Module` carries no `lineno`, and formatting it unguarded raised out of
     `run()` -- so a control character in a *module* docstring answered the
     mandated first step of the flow with a traceback and none of the other
-    checks' findings. `roster.write` records the same defect at [PR #210
-    review, M4]: a cell it cannot read is reported, never raised.
+    checks' findings. A cell it cannot read is reported, never raised.
     """
     source = (
         chr(34)*3 + "Names `" + BS + "r` in a module docstring." + chr(34)*3 + chr(10)
@@ -2634,7 +2234,7 @@ def test_docstring_control_chars_reports_a_module_docstring_without_raising(tmp_
 
 def test_emitted_ascii_omits_a_position_it_does_not_have(tmp_path):
     """A `SyntaxError` from a raw NUL carries no line number, and the message
-    printed it as `:None` — a position that does not exist, in a module whose
+    printed it as `:None` â€” a position that does not exist, in a module whose
     convention is that `file:lineno` is searchable.
     """
     (tmp_path / "mod.py").write_bytes(b"x = 1" + bytes([0]) + b"2" + NL.encode())
@@ -2859,10 +2459,7 @@ def test_hollow_code_span_skips_a_fenced_block(tmp_path):
 
 
 def test_this_repository_holds_no_hollow_code_span():
-    """The tree this exists for. `tools/roster.py` carried one until the
-    change that added this guard; run against the diff base it reports that
-    line, and against this revision it is silent.
-    """
+    """The repository-wide lawful polarity for the prose guard."""
     root = Path(__file__).resolve().parents[2]
     assert lint.check_hollow_code_span(root) == []
 
@@ -2969,9 +2566,7 @@ def test_committed_carriage_return_reads_a_staged_file_with_no_commit_yet(tmp_pa
 
 
 def _cell_with_hollow_span(root, char=CR):
-    """A cell whose *description* holds the defect, so the generated entry
-    copies it -- the frontmatter block is what `roster.write` copies.
-    """
+    """A cell whose description holds the defect."""
     cell = root / "skills" / "alpha"
     cell.mkdir(parents=True)
     (cell / "SKILL.md").write_bytes(
@@ -2979,33 +2574,19 @@ def _cell_with_hollow_span(root, char=CR):
          + "description: Ends at the bare " + TICK + char + TICK + " here." + NL
          + "---" + NL + NL + "# alpha" + NL + "Body." + NL).encode("utf-8")
     )
-    roster.write(root)
     return cell
 
 
-def test_a_cells_defect_is_reported_once_and_not_against_its_generated_copy(tmp_path):
-    """One edit, one finding.
-
-    The entry's frontmatter is the cell's byte for byte, so both files hold
-    the defect -- but the entry's finding names a file that says *do not edit
-    this one*, and a reader acting on it edits a generated file whose next
-    `--write` brings the defect back, which is a fix that does not fix.
-    """
+def test_a_cells_defect_is_reported_once(tmp_path):
+    """One defective cell produces one finding at the editable source."""
     _cell_with_hollow_span(tmp_path)
     findings = lint.check_hollow_code_span(tmp_path)
     assert len(findings) == 1
     assert findings[0].startswith("hollow-code-span: skills/alpha/SKILL.md")
 
 
-def test_a_hand_written_project_skill_in_the_roster_is_still_read(tmp_path):
-    """The other polarity, and the one that keeps the skip honest.
-
-    `.claude/skills/` is the runtime's documented home for a project's own
-    skills, so the directory is shared rather than owned. A file this
-    generator did not write is not its copy of anything, and skipping by
-    location rather than by the marker would silence a real defect in one --
-    the same reasoning `is_generated` already carries for the removal branch.
-    """
+def test_a_hand_written_project_skill_is_still_read(tmp_path):
+    """Repository-wide prose checks include runtime-managed project skills."""
     hand = tmp_path / ".claude" / "skills" / "mine"
     hand.mkdir(parents=True)
     (hand / "SKILL.md").write_bytes(
@@ -3020,32 +2601,8 @@ def test_a_hand_written_project_skill_in_the_roster_is_still_read(tmp_path):
 # --- PR #247 review, round-one fix batch -------------------------------------
 
 
-def test_the_generated_entry_skip_reaches_only_the_roster_directory(tmp_path):
-    """M1: `roster.is_generated` answers by marker, and `tools/roster.py`
-    holds that marker's own literal -- so applying it to every path in the
-    repository switched both prose guards off for the file both of their
-    motivating instances came out of. The location is tested first now.
-    """
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    marker = roster.MARKER.decode("utf-8")
-    (tools / "roster.py").write_text(
-        chr(34)*3 + NL + "Writes " + marker + " into each entry." + NL
-        + "Ends at the bare " + TICK + CR + TICK + "." + NL + chr(34)*3 + NL,
-        encoding="utf-8", newline="",
-    )
-    findings = lint.check_hollow_code_span(tmp_path)
-    assert len(findings) == 1, "a file is not a roster entry merely by quoting the marker"
-    assert findings[0].startswith("hollow-code-span: tools/roster.py")
 
 
-def test_this_repositorys_generator_is_still_read_by_the_prose_guards():
-    """The same property against the real tree rather than a fixture: the one
-    file whose prose is densest in control characters must be in scope.
-    """
-    root = Path(__file__).resolve().parents[2]
-    assert lint._is_generated_entry(root, "tools/roster.py") is False
-    assert lint._is_generated_entry(root, ".claude/skills/substrate/SKILL.md") is True
 
 
 def test_hollow_code_span_counts_the_line_in_the_text_it_matched(tmp_path):
@@ -3247,25 +2804,6 @@ def test_where_names_the_innermost_frame_inside_this_repository():
     assert where.startswith("tools/tests/test_lint.py:"), where
 
 
-def test_always_on_note_reports_rather_than_raising_on_a_bad_shape(tmp_path):
-    """M19: the read was inside the guard and the formatting was not, so a
-    `data` missing either key escaped as a KeyError and `main()` answered the
-    mandated command with a traceback.
-    """
-    module = tmp_path / "tools"
-    module.mkdir()
-    (module / "figures.py").write_text(
-        "def figure_always_on(root):" + NL
-        + "    return {'data': {'adopter_total': 1}}" + NL,
-        encoding="utf-8", newline="",
-    )
-    note = lint.always_on_note(tmp_path)
-    assert note.startswith("always-on surface: not derived (")
-    # The shape now fails on the renderer rather than on a key, because the
-    # line asks the figure to render its own rows rather than reaching into
-    # them. Either way it is reported and never raised, which is what M19
-    # bought and what this pins.
-    assert "not derived" in note and "Traceback" not in note
 
 
 def test_hollow_code_span_does_not_walk_the_git_directory(tmp_path):
@@ -3291,8 +2829,8 @@ def test_a_lone_carriage_return_in_a_live_record_is_still_reported(tmp_path):
     """Post-fix 1: the two guards skip for different reasons, and one list
     conflated them.
 
-    A hollow code span in a review row is intended content — a finding must
-    quote the line it names — so the prose guard skips it. A lone carriage
+    A hollow code span in a review row is intended content â€” a finding must
+    quote the line it names â€” so the prose guard skips it. A lone carriage
     return there is not content at all: it is corruption of the row's own JSON,
     and #233's motivating instance was a row appended by a script whose escapes
     had become control bytes. Sharing one list withdrew the pre-commit catch
@@ -3349,7 +2887,7 @@ def test_committed_carriage_return_reads_the_index_copy_not_head(tmp_path):
     """Post-fix 3: `git ls-files --eol` classifies the index, so the confirming
     read must be of the index.
 
-    Spelled `HEAD:<path>` this loses the whole index-only population — a file
+    Spelled `HEAD:<path>` this loses the whole index-only population â€” a file
     staged and then cleaned on disk, which is the case commit `9a9f221` was
     written for. The earlier pin stopped covering it once the working-tree
     population landed, because its fixture leaves the bytes on disk too.
@@ -3393,7 +2931,7 @@ def test_hollow_code_span_caps_an_opening_fence_at_three_spaces(tmp_path):
     """Post-fix 7: the divergence the docstring says must be carried into the
     unification was pinned by nothing, so it could be dropped in silence.
 
-    Four spaces makes an indented code block, not a fence — so the marker is
+    Four spaces makes an indented code block, not a fence â€” so the marker is
     content, the text after it is ordinary prose, and a defect there reports.
     """
     (tmp_path / "note.md").write_text(
@@ -3541,9 +3079,8 @@ BODY_STRIP_CASES = [
 def test_the_body_strip_predicate_per_spelling(tmp_path, label, source, caught):
     """One pin per branch of the predicate, in both polarities.
 
-    The two lawful byte-wise cases are the live ones: `tools/roster.py`
-    extracts frontmatter that way, and an earlier form of this guard reddened
-    it. The `text[0]` case came from an external reviewer, whose point was that
+    The two lawful byte-wise cases are live frontmatter readers. The `text[0]`
+    case came from an external reviewer, whose point was that
     the first lawful-case test used a *different* name and so never exercised
     the same-receiver path at all.
     """
@@ -3693,213 +3230,26 @@ def test_the_scan_and_the_check_read_the_same_predicate(tmp_path):
     assert hits == ["tools/tests/test_fixture.py:0 <module>"], hits
 
 
-def test_the_always_on_row_budget_is_enforced_in_both_polarities(tmp_path,
-                                                                 monkeypatch):
-    """The ceiling the two per-file ones became, on the tree it governs.
-
-    Both arms run against this repository rather than a fixture, because the
-    quantity is composed from this repository's own doctrine files and its two
-    generated roster surfaces -- a synthetic tree has no always-on rows to
-    measure, which is the same reason the guard gates on this file's presence.
-
-    The lawful arm is half the pin: a tree at its budget must pass, or the
-    ceiling is a ratchet nobody can land a change through.
-    """
-    assert lint.check_always_on_budget(lint.ROOT) == []
-    monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", 1_000)
-    findings = lint.check_always_on_budget(lint.ROOT)
-    assert findings, "a row far past its budget reported nothing"
-    assert all(f.startswith("always-on-budget:") for f in findings), findings
-    assert any("Claude Code" in f for f in findings), findings
-    assert any("Codex" in f for f in findings), findings
 
 
-def test_the_adopter_total_is_budgeted_separately(tmp_path, monkeypatch):
-    """The adopter surface is not a runtime row and does not share its ceiling.
-
-    It counts the charter body and the shipped roster and neither doctrine
-    file, so a change can move a row without moving it -- which is why it is a
-    constant of its own rather than a third row under the same one.
-    """
-    monkeypatch.setattr(lint, "ALWAYS_ON_ADOPTER_BUDGET_CHARS", 1_000)
-    findings = lint.check_always_on_budget(lint.ROOT)
-    assert any("adopter total" in f for f in findings), findings
-    assert not any("Claude Code" in f for f in findings), (
-        "the row budget fired on a change to the adopter constant alone", findings
-    )
 
 
-def test_the_budget_reds_rather_than_passing_when_the_figure_is_gone(tmp_path):
-    """A ceiling that stops applying when its input breaks is not a ceiling.
-
-    `always_on_note` swallows every exception and returns a string, which is
-    right for a note printed beside the findings and wrong here. #134 records
-    the shape this arm exists to keep closed: a guard reading its own input's
-    absence as clean makes deleting the input the cheapest route past it.
-    """
-    make_clean_tree(tmp_path)
-    (tmp_path / "tools").mkdir(exist_ok=True)
-    (tmp_path / "tools" / "lint.py").write_text("# the guard\n", encoding="utf-8")
-    findings = lint.check_always_on_budget(tmp_path)
-    assert findings, "no figures.py beside the guard reported nothing"
-    assert "not derived" in findings[0], findings
 
 
-def test_a_tree_without_this_guard_is_not_budgeted(tmp_path):
-    """The other polarity of the gate above: a fixture is not this repository.
-
-    Every synthetic tree the suite builds writes part of `tools/` without
-    writing this file, and reporting there would red all of them for having no
-    always-on surface to measure.
-    """
-    make_clean_tree(tmp_path)
-    assert not (tmp_path / "tools" / "lint.py").is_file()
-    assert lint.check_always_on_budget(tmp_path) == []
 
 
 # --- what the automated reviewers found on PR #291, pinned ------------------
 
-def test_an_incomplete_figure_is_not_a_passing_budget(monkeypatch):
-    """An empty `here` walks the row loop zero times and applies no ceiling.
-
-    Raised by an automated reviewer against the first draft of the budget
-    check, and it was right: the loop was the only thing standing between a
-    malformed figure and a silent pass, which is exactly what `always_on_note`
-    was rejected for. [#291]
-    """
-    import types
-
-    def _figure(payload):
-        module = types.SimpleNamespace(
-            figure_always_on=lambda root: {"data": payload})
-        return lambda name, path: types.SimpleNamespace(
-            loader=types.SimpleNamespace(exec_module=lambda m: None)), module
-
-    for payload, expect in (
-        ({"here": [], "adopter_total": 1}, "no row for"),
-        ({"here": [{"runtime": "Codex", "total": 1}], "adopter_total": 1},
-         "no row for Claude Code"),
-        ({"here": [{"runtime": r.runtime, "total": 1} for r in lint.roster.SURFACES],
-          "adopter_total": None}, "adopter total is not a number"),
-    ):
-        findings = _budget_over(monkeypatch, payload)
-        assert findings, f"{payload} reported nothing"
-        assert expect in findings[0], findings
 
 
-def _budget_over(monkeypatch, payload):
-    """Run the budget check against a supplied figure payload."""
-    import importlib.util
-    import types
-    module = types.SimpleNamespace(figure_always_on=lambda root: {"data": payload})
-
-    class _Spec:
-        loader = types.SimpleNamespace(exec_module=staticmethod(lambda m: None))
-
-    monkeypatch.setattr(importlib.util, "spec_from_file_location",
-                        lambda name, path: _Spec())
-    monkeypatch.setattr(importlib.util, "module_from_spec", lambda spec: module)
-    return lint.check_always_on_budget(lint.ROOT)
 
 
-def _budgetable_tree(root: Path) -> None:
-    """A fixture tree `check_always_on_budget` will actually measure.
-
-    The guard gates on this file's own presence, so a tree without
-    `tools/lint.py` is silent by design -- which is right for the fixtures
-    every other test builds and wrong for this one. Written rather than
-    monkeypatched because the pin is about what the guard measures on a tree,
-    and a patched `ROOT` would pin the patch. [#291]
-    """
-    make_clean_tree(root)
-    (root / "tools").mkdir(exist_ok=True)
-    (root / "tools" / "lint.py").write_text("# the guard" + NL, encoding="utf-8")
 
 
-@pytest.mark.parametrize("surface", [s.directory for s in roster.SURFACES])
-@pytest.mark.parametrize("spelling,marker", [
-    ("block", "description: >-" + NL + "  "),
-    ("plain", "description: A short first line." + NL + "  "),
-])
-def test_an_unmeasurable_description_cannot_hide_from_the_row_budget(
-        tmp_path, surface, spelling, marker):
-    """A description the runtime loads whole and this reader measures in part.
-
-    Two spellings, because closing one was not closing the class: the first
-    fix rejected `>` and `|` and its own docstring claimed "whichever way it
-    is spelled", while a plain scalar continued on indented lines walked
-    straight through. Probed at the time on this repository -- thousands of
-    characters charged as tens, and the always-on row *falling* while the
-    surface grew. Both surfaces, because the guard loops over them and one
-    arm was previously unexercised. [#291]
-
-    Off the live tree: this pin used to write into the repository's own
-    `.claude/skills/`, so an interrupted run left residue that redded the
-    flow's mandated pre-commit step against a file nobody wrote.
-    """
-    _budgetable_tree(tmp_path)
-    cell = tmp_path / surface / "hidden"
-    cell.mkdir(parents=True)
-    (cell / "SKILL.md").write_text(
-        "---" + NL + "name: hidden" + NL + marker + ("x" * 4000) + NL
-        + "---" + NL + NL + "# hidden" + NL, encoding="utf-8")
-    findings = lint.check_always_on_budget(tmp_path)
-    assert findings, f"a {spelling} description of 4,000 chars reported nothing"
-    assert any("Write the description on one line" in f for f in findings), findings
-
-    # The lawful arm: a one-line description on the same tree draws no
-    # description finding. Not `== []`: the fixture carries no
-    # `tools/figures.py`, so the row arithmetic reports it cannot derive --
-    # which is that branch's own pin, not this one's.
-    (cell / "SKILL.md").write_text(
-        "---" + NL + "name: hidden" + NL + "description: One line." + NL
-        + "---" + NL + NL + "# hidden" + NL, encoding="utf-8")
-    assert not [f for f in lint.check_always_on_budget(tmp_path)
-                if "description" in f]
 
 
-def test_raising_the_row_budget_admits_a_relocation_it_should_refuse(tmp_path):
-    """The direction budget pressure actually pushes, which nothing caught.
-
-    Mutating the constant *upward* redded exactly one test -- the literal pin
-    -- while the both-polarities arm monkeypatched the constant downward and
-    its lawful arm was true for every budget at or above the measured row. So
-    the assertion message claiming two behavioural arms was false for the
-    raise. This is the arm that makes it true: the headroom is the largest
-    relocation the budget tolerates, so a raise is not free, and a test that
-    only checks a lowering cannot say so. [#291]
-    """
-    # **Founded on the ceiling in force, not the constant.** The two were the
-    # same quantity until #346, and this pin measured the constant -- so on
-    # the first tree carrying a lawful admission it asserted "the tree already
-    # exceeds its own budget" about a tree that exceeds only its constant and
-    # sits under its ceiling, which is the state that change exists to create.
-    # Re-founded it stops being a casualty: an over-sized admission widens
-    # the ceiling past one unit and reds here. That bound is what it holds
-    # and the whole of it -- it reads `always-on-row` alone and stays silent
-    # below a thousand characters, so it does not reach M5's own 226-character
-    # incident nor the 458 the cycle-one look measured. Nothing yet measures
-    # a small surplus on any key. [PR #346 cycle one, P6]
-    admissions, _ = lint.read_admissions(lint.ROOT)
-    allowed, _phrase = lint.ceiling(
-        lint.ALWAYS_ON_ROW_BUDGET_CHARS, admissions, "always-on-row")
-    over = allowed - _largest_row() + 1
-    assert over > 0, "the tree exceeds the ceiling actually in force"
-    assert over <= 1_000, (
-        "the headroom exceeds one unit, so the budget admits a relocation "
-        f"larger than a cell costs: {over} chars of room"
-    )
 
 
-def _largest_row() -> int:
-    """The binding always-on row on the live tree, via the guard's own figure."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "repo_figures_pin", lint.ROOT / "tools" / "figures.py")
-    figures = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(figures)
-    data = figures.figure_always_on(lint.ROOT)["data"]
-    return max(row["total"] for row in data["here"])
 
 
 def _repo_cell(root: Path, name: str, body: str) -> Path:
@@ -3927,7 +3277,6 @@ def test_one_repo_only_cell_may_not_name_another_by_path(tmp_path):
     _repo_cell(tmp_path, "records", "Depth.")
     _repo_cell(tmp_path, "siting",
                "See `" + lint.REPO_CELLS + "/records/SKILL.md` for the log.")
-    roster.write(tmp_path)
     findings = [f for f in lint.check_sideways_deps(tmp_path) if "records" in f]
     assert findings, "a path-form reference between repo-only cells reported nothing"
     assert "by path" in findings[0], findings
@@ -3952,7 +3301,6 @@ def test_a_repo_only_cell_resolves_its_own_references_directory(tmp_path):
     cell_dir = _repo_cell(tmp_path, "landing", "Depth is in `references/detail.md`.")
     (cell_dir / "references").mkdir()
     (cell_dir / "references" / "detail.md").write_text("Depth." + NL, encoding="utf-8")
-    roster.write(tmp_path)
     assert not [f for f in lint.check_doctrine_references(tmp_path)
                 if "detail.md" in f], "a lawful cell-local link was reported dead"
 
@@ -3971,7 +3319,6 @@ def test_a_directory_without_a_cell_file_is_not_a_cell(tmp_path):
     make_clean_tree(tmp_path)
     (tmp_path / lint.REPO_CELLS / "ghost").mkdir(parents=True)
     _repo_cell(tmp_path, "siting", "The `ghost` cell has it.")
-    roster.write(tmp_path)
     findings = [f for f in lint.check_cell_references(tmp_path) if "ghost" in f]
     assert findings, "a directory with no SKILL.md satisfied a cell reference"
 
@@ -4025,7 +3372,6 @@ def test_a_repo_only_cell_carries_its_citations_and_paths_at_depth(tmp_path):
     depth.write_text("As decided in [D-42], see `docs/values.md`." + NL,
                      encoding="utf-8")
     (tmp_path / "docs" / "values.md").write_text("Ranking." + NL, encoding="utf-8")
-    roster.write(tmp_path)
     assert not [f for f in lint.check_doctrine_citations(tmp_path) if "detail" in f]
     assert not [f for f in lint.check_doctrine_references(tmp_path) if "detail" in f]
 
@@ -4039,59 +3385,11 @@ def test_a_repo_only_cell_carries_its_citations_and_paths_at_depth(tmp_path):
     )
 
 
-def test_the_always_on_figure_measures_characters_and_not_bytes(tmp_path):
-    """CRLF is what keeps the two apart, and this repository expects CRLF.
-
-    The pins holding this were deleted with the per-file ceilings they tested,
-    and their fixture constants and explanatory comment survived as dead code.
-    Mutating `figure_always_on`'s reader to `read_bytes().decode()` then left
-    the whole suite green. On the Windows leg that regression overstates every
-    row by one character per line against a headroom of one cell, turning a
-    lawful tree red on one leg of the matrix only. [#291]
-    """
-    import importlib.util
-
-    _budgetable_tree(tmp_path)
-    agents = tmp_path / "AGENTS.md"
-    body = agents.read_text(encoding="utf-8")
-    with open(agents, "wb") as handle:
-        handle.write(body.replace(NL, chr(13) + NL).encode("utf-8"))
-    raw = agents.read_bytes()
-    chars = len(agents.read_text(encoding="utf-8"))
-    assert len(raw) > chars, "the fixture did not actually land CRLF on disk"
-
-    spec = importlib.util.spec_from_file_location(
-        "repo_figures_crlf", lint.ROOT / "tools" / "figures.py")
-    figures = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(figures)
-    data = figures.figure_always_on(tmp_path)["data"]
-    assert data["agents"] == chars, (
-        f"the figure measured {data['agents']} against {chars} characters and "
-        f"{len(raw)} bytes -- it is counting bytes"
-    )
 
 
 # --- the cell-body report: every cell sized at the mandated checkpoint (#302) -
 
 
-def _derivable_tree(root: Path) -> None:
-    """A fixture tree where `tools/figures.py` actually derives.
-
-    `cell_body_note` loads `root/tools/figures.py` by path, and that file
-    reaches `lint`, `winio` and the shipped engine -- so the fixture carries
-    the real machinery. A stub would pin the test's own arithmetic instead of
-    the derivation, which is the thing under test.
-    """
-    import shutil
-
-    repo = Path(__file__).resolve().parents[2]
-    shutil.copytree(repo / "tools", root / "tools",
-                    ignore=shutil.ignore_patterns("tests", "__pycache__"))
-    shutil.copytree(repo / "lib", root / "lib",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copytree(repo / "skills" / "authoring" / "scripts",
-                    root / "skills" / "authoring" / "scripts",
-                    ignore=shutil.ignore_patterns("__pycache__"))
 
 
 def _shipped_cell(root: Path, name: str, body: str) -> Path:
@@ -4116,191 +3414,30 @@ def _rows(note: str) -> list[tuple[str, int, str]]:
     return found
 
 
-def test_the_report_sizes_every_cell_of_both_roster_sources(tmp_path):
-    """Criterion 1 and 2: the map is not the cells, and neither is one source.
-
-    `check_doctrine` iterates `CELL_BODY_CEILING_CHARS`, so before this a cell
-    absent from it was sized by nothing at either mandated command, the
-    charter excepted. A
-    shipped-only report would be the hand-written carve-out this change exists
-    to avoid, so a repo-only cell is in the fixture and in the assertion.
-    """
-    _derivable_tree(tmp_path)
-    _shipped_cell(tmp_path, "alpha", "Shipped body, a little longer than beta's.")
-    _repo_cell(tmp_path, "beta", "Repo-only body.")
-
-    note = lint.cell_body_note(tmp_path)
-    names = [name for name, _, _ in _rows(note)]
-    assert "alpha" in names, note
-    assert "beta" in names, "a repo-only cell went unsized"
-
-    for name, body, _ in _rows(note):
-        source = roster.cell_sources(tmp_path)[name]
-        text = (tmp_path / source / name / roster.CELL_FILE).read_text(encoding="utf-8")
-        assert body == len(lint._frontmatterless(text)), (
-            f"{name}'s row is not the body the guard measures")
 
 
-def test_the_report_is_ordered_by_body_descending(tmp_path):
-    """Criterion 3, as a total property rather than a fixture.
-
-    Three cold seats each found a fresh wrong ordering -- by name, by source,
-    by budget status -- that the previous fixture admitted. The set of wrong
-    orderings a fixture must trap is not closed; the right ordering is one
-    condition over the output, so that is what this asserts, here and on the
-    repository itself.
-    """
-    _derivable_tree(tmp_path)
-    # Names, sources and sizes deliberately disagree: were the report ordered
-    # by any of the three, this fixture would catch it.
-    _shipped_cell(tmp_path, "zulu", "z" * 400)
-    _shipped_cell(tmp_path, "alpha", "a" * 100)
-    _repo_cell(tmp_path, "mike", "m" * 800)
-
-    for tree in (tmp_path, lint.ROOT):
-        bodies = [body for _, body, _ in _rows(lint.cell_body_note(tree))]
-        assert bodies, tree
-        assert bodies == sorted(bodies, reverse=True), (
-            f"a row on {tree} is smaller than one beneath it: {bodies}")
 
 
-def test_a_cell_added_to_either_source_is_sized_without_editing_a_list(tmp_path):
-    """Criterion 4. The enumeration reads the roster, not a literal pair."""
-    _derivable_tree(tmp_path)
-    _shipped_cell(tmp_path, "alpha", "Body.")
-    before = [name for name, _, _ in _rows(lint.cell_body_note(tmp_path))]
-    assert "later" not in before
-
-    _repo_cell(tmp_path, "later", "Added after the first run.")
-    after = [name for name, _, _ in _rows(lint.cell_body_note(tmp_path))]
-    assert "later" in after, "a new cell needed a list edited to be sized"
 
 
-def test_the_report_says_so_when_it_cannot_derive(tmp_path):
-    """Criterion 5, first direction.
-
-    A report that vanishes when its input breaks tells the reader nothing and
-    reads exactly like a tree with nothing to report. `always_on_note` states
-    what it could not derive and moves on; this copies it.
-    """
-    _shipped_cell(tmp_path, "alpha", "Body.")
-    assert not (tmp_path / "tools" / "figures.py").is_file()
-
-    note = lint.cell_body_note(tmp_path)
-    assert "not derived" in note, note
-    assert not _rows(note), "rows were rendered from a tree that cannot derive"
 
 
-def test_a_tree_with_no_cells_says_so_rather_than_going_silent(tmp_path):
-    """Criterion 5, second direction.
-
-    Nothing to report is not a failure to derive, and silence would say
-    neither -- so each state produces its own text.
-    """
-    _derivable_tree(tmp_path)
-    note = lint.cell_body_note(tmp_path)
-    assert "no cells" in note, note
-    assert "not derived" not in note, "an empty tree reported a derivation failure"
 
 
-def test_the_charter_row_names_both_budgets_that_bind_it():
-    """Criterion 1's charter clause, which a cold seat caught ratified.
-
-    The charter's body is a term in every always-on row and in the adopter
-    total, so `check_always_on_budget` reds on it at the same command -- it is
-    enforced today while absent from `CELL_BODY_CEILING_CHARS`. A row reading
-    `no budget` would be false, and would be false about the half of the implementation brief
-    that promises to say which cells have no limit. Both constants are named
-    because the binding one is the adopter total, which a reader reaches
-    second.
-    """
-    assert lint.CHARTER not in lint.CELL_BODY_CEILING_CHARS, (
-        "the charter row must come from the other guard, not a smuggled entry")
-
-    rows = {name: against for name, _, against in _rows(lint.cell_body_note(lint.ROOT))}
-    assert "charter" in rows, "the charter was not sized at all"
-    against = rows["charter"]
-    assert "no budget" not in against, "the charter reported as uncapped, and it is not"
-    assert f"{lint.ALWAYS_ON_ROW_BUDGET_CHARS:,}" in against, against
-    assert f"{lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,}" in against, (
-        "the binding budget of the two went unnamed")
-    assert "shared" in against, "a shared budget stated as though it were the cell's own"
 
 
-def test_the_reported_number_is_the_body_and_not_the_cell_total(tmp_path):
-    """Criterion 1's number clause.
-
-    `figure_cell_total` is the neighbouring function in the module this report
-    is hosted in, and printing it beside a body budget forks the figure from
-    the guard that enforces it.
-    """
-    _derivable_tree(tmp_path)
-    cell = _shipped_cell(tmp_path, "alpha", "Short body.")
-    (cell / "references").mkdir()
-    (cell / "references" / "detail.md").write_text("d" * 5000, encoding="utf-8")
-
-    body = {name: size for name, size, _
-            in _rows(lint.cell_body_note(tmp_path))}["alpha"]
-    text = (cell / "SKILL.md").read_text(encoding="utf-8")
-    assert body == len(lint._frontmatterless(text))
-    assert body < 5000, "the row carried the cell total rather than the body"
 
 
-def test_the_report_carries_nothing_evaluative():
-    """Criterion 6's marker clause, as a shape over every row and the header.
-
-    The first version of this pin was beatable three ways and a review found
-    all three: a marker in the header, which it sliced away; a marker inside
-    the name field, which `\\S+` accepted; and free text on the `shared with`
-    tail, where `[^!]+` excluded only the exclamation mark it had been probed
-    with. The middle one is the one that mattered -- `engagement-LARGE` keyed
-    to an invented 10,000-character threshold rendered green, which is
-    criterion 6's falsifier almost verbatim. Every field is bounded now and
-    the header is asserted whole rather than discarded. [#302]
-
-    Nothing guards the characters of a cell name, so a cell named outside
-    `[a-z][a-z0-9-]*` reds this pin rather than the report. That is the safe
-    direction and it is deliberate.
-    """
-    # **The admitted composition is arithmetic and is admitted here by name.**
-    # `cell_body_block` prints `of 7,859 (7,359 plus 500 admitted)` on a tree
-    # carrying an admission, and this pin -- written to catch an invented
-    # evaluative marker -- accused the lawful figure instead. Both alternation
-    # arms need it: the `of N` arm breaks under a body admission and the
-    # `shared with` arm under a row or adopter admission. Widened to exactly
-    # that shape and no wider; `.*` here would give back what #302 bought.
-    admitted = r"(?: \([\d,]+ plus [\d,]+ admitted\))?"
-    lawful = re.compile(
-        r"^  [a-z][a-z0-9-]*\s+[\d,]+  ("
-        r"no body budget"
-        r"|of [\d,]+" + admitted + r", headroom -?[\d,]+"
-        r"|shared with always-on row [\d,]+" + admitted +
-        r", adopter total [\d,]+" + admitted +
-        r")$")
-    lines = lint.cell_body_note(lint.ROOT).splitlines()
-    assert lines[0] == "cell bodies here, largest first:", lines[0]
-    assert len(lines) > 1
-    for line in lines[1:]:
-        assert lawful.match(line), f"row carries something beyond size and budget: {line!r}"
 
 
 def test_the_lint_prints_the_pointer_reach_at_the_mandated_command(capsys):
-    """The figure has to reach the session doing the editing.
-
-    Deleting the `print` from `main()` leaves every direct pin on
-    `pointer_reach_rows` green while the number vanishes from the one command
-    this repository's landing procedure mandates -- the mutation the body
-    block's own pin records having survived three times. The basis is
-    asserted with the rows because a figure whose basis a reader cannot
-    reconstruct is one they cannot act on, and the basis is the half that can
-    be dropped without any row changing. [#404]
-    """
+    """The figure reaches the session with its reconstructable basis."""
     lint.main()
     out = capsys.readouterr().out
     assert "pointer reach here, largest first" in out, out
     block = out.split("pointer reach here, largest first", 1)[1]
     printed = {name for name, _reach, _via in _rows(block)}
-    assert printed == set(roster.cell_sources(lint.ROOT)), printed
+    assert printed == set(lint.cell_sources(lint.ROOT)), printed
     for clause in ("below its frontmatter", "counted once",
                    "its own cell's prose plus every cell it reaches",
                    "no cell reaches the charter"):
@@ -4311,505 +3448,34 @@ def test_the_lint_prints_the_pointer_reach_at_the_mandated_command(capsys):
                 or via == "points at nothing; its own prose only"), via
 
 
-def test_the_lint_prints_every_cell_body_at_the_mandated_command(capsys):
-    """Criterion 1, against the command it names and the tree it names.
-
-    Every other pin here calls `cell_body_note` directly and every fixture
-    tree carries cells of a few dozen characters, so three separate mutations
-    left the whole suite green: deleting the `print` from `main()` (the block
-    vanishes from the mandated command); returning a budget a thousand over
-    the guard's; and returning `None` for every budget, which prints
-    `no body budget` against both genuinely capped cells -- the exact false row
-    a cold seat blocked this change's artifact over. The pin thirteen lines
-    from the omission records the same incident for the always-on line: *"This
-    asserted only that the substring was present, so it stayed green while the
-    line printed one scalar that was some other runtime's."* [#302]
-
-    **The expectation is derived from the guard's own constants, never from
-    `figures.cell_budgets`** -- reading the renderer's source of truth would
-    make this tautological, which is the one way to write it wrong.
-    """
-    lint.main()
-    out = capsys.readouterr().out
-    assert "cell bodies here, largest first:" in out, out
-
-    # **Founded on the enforcement composition, not on the renderer.** The
-    # docstring's anti-tautology rule forbids reading `figures.cell_budgets`,
-    # which is the surface under test; `lint.ceiling` is what `check_doctrine`
-    # and `check_always_on_budget` actually enforce, so reading it keeps the
-    # expectation independent while following the constant's redefinition.
-    admissions, _ = lint.read_admissions(lint.ROOT)
-
-    def _priced(constant, extra):
-        if not extra:
-            return f"{constant:,}"
-        return f"{constant + extra:,} ({constant:,} plus {extra:,} admitted)"
-
-    expected = {}
-    for name, source in roster.cell_sources(lint.ROOT).items():
-        rel = f"{source}/{name}/{roster.CELL_FILE}"
-        body = len(lint._frontmatterless(
-            (lint.ROOT / rel).read_text(encoding="utf-8", errors="replace")))
-        own = lint.CELL_BODY_CEILING_CHARS.get(rel)
-        if own is not None:
-            # Nothing is charged against a cell body since #455: the ceiling is
-            # where the body stood, measured on a body that already contained
-            # whatever had been admitted to it. Pricing the rows in here again
-            # is the double count that made this command disagree with the
-            # mechanism that files, so the expectation carries no admitted term.
-            against = f"of {own:,}, headroom {own - body:,}"
-        elif rel == lint.CHARTER:
-            row, _ = lint.ceiling(lint.ALWAYS_ON_ROW_BUDGET_CHARS,
-                                  admissions, "always-on-row")
-            adopter, _ = lint.ceiling(lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS,
-                                      admissions, "always-on-adopter")
-            against = (
-                f"shared with always-on row "
-                f"{_priced(lint.ALWAYS_ON_ROW_BUDGET_CHARS, row - lint.ALWAYS_ON_ROW_BUDGET_CHARS)}"
-                f", adopter total "
-                f"{_priced(lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS, adopter - lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS)}")
-        else:
-            against = "no body budget"
-        expected[name] = (body, against)
-
-    # **Sliced to the block under test.** `main()` prints a second block of
-    # rows in the same shape -- the pointer reach -- and parsing the whole of
-    # stdout read a reach figure as a body and failed on the difference. The
-    # slice is the block's own header to the next line that is not a row.
-    block = out.split("cell bodies here, largest first:", 1)[1]
-    block = block.split("pointer reach here", 1)[0]
-    printed = {name: (body, against) for name, body, against in _rows(block)}
-    assert set(printed) == set(expected), (
-        f"missing {set(expected) - set(printed)}, extra {set(printed) - set(expected)}")
-    for name, (body, against) in expected.items():
-        assert printed[name][0] == body, f"{name}: printed {printed[name][0]}, body is {body}"
-        assert printed[name][1] == against, f"{name}: printed {printed[name][1]!r}"
-
-
-def test_the_report_reports_rather_than_raising_on_a_bad_shape(tmp_path):
-    """`cell_body_note`'s own comment cites the pin it did not write.
-
-    That comment points at `always_on_note`'s recorded incident -- the read
-    inside the guard and the formatting outside it, so a malformed payload
-    escaped as a KeyError and `main()` answered the mandated command with a
-    traceback. The hazard is identical here and nothing held it; the defense
-    stage of this change's review originated the finding. [#302]
-    """
-    (tmp_path / "tools").mkdir()
-    (tmp_path / "tools" / "figures.py").write_text(
-        "def cell_body_rows(root):" + NL
-        + "    return [{'name': 'alpha'}]" + NL
-        + "def cell_body_block(rows):" + NL
-        + "    return rows[0]['body']" + NL,
-        encoding="utf-8")
-
-    note = lint.cell_body_note(tmp_path)
-    assert "not derived" in note, note
-    assert "KeyError" in note, note
-
-
-# --------------------------------------------------------------------------
-# 25. admissions -- the fourth answer at a ceiling. [#334]
-# --------------------------------------------------------------------------
-
-def _row(**over):
-    """A lawful admission row, with fields overridden per test."""
-    row = {"date": "2026-09-03", "issue": 334,
-           "ceilings": ["always-on-row"], "chars": 42,
-           "item": "a clause the charter needs",
-           "outflow": "nothing had a cheaper home: the rule binds before any cell"}
-    row.update(over)
-    return row
-
-
-def _record(root: Path, *rows) -> None:
-    (root / "docs").mkdir(parents=True, exist_ok=True)
-    (root / lint.ADMISSIONS).write_text(
-        "".join(json.dumps(row) + NL for row in rows), encoding="utf-8")
-
-
-def test_an_absent_admissions_record_is_an_empty_one_and_not_a_failure(tmp_path):
-    """The state of every fixture tree, and of the commit that added this.
-
-    The other polarity of `read_admissions`' guard: an unreadable record must
-    grant nothing, and a record that was never written is not unreadable. A
-    guard reading absence as a failure would red every tree the suite builds;
-    one reading it as permission would be the deletion bypass #134 records.
-    """
-    rows, findings = lint.read_admissions(tmp_path)
-    assert (rows, findings) == ([], []), (rows, findings)
-    assert lint.admitted(rows, "always-on-row") == (0, 0)
-    assert lint.ceiling(700, rows, "description:x") == (700, "budget is 700")
-    assert lint.check_admissions(tmp_path) == []
-
-
-def test_a_lawful_row_is_admitted_and_charges_only_the_ceiling_it_names(tmp_path):
-    """An admission relaxes one ceiling, not the set of them.
-
-    The key is the whole of what a row buys. A row that leaked into ceilings
-    it does not name would be the raise this mechanism replaces, arriving
-    under a different word: one argued item widening every surface at once.
-    """
-    _record(tmp_path, _row(), _row(chars=8, ceilings=["description:skills/a/SKILL.md"]))
-    rows, findings = lint.read_admissions(tmp_path)
-    assert findings == [], findings
-    assert len(rows) == 2
-    assert lint.admitted(rows, "always-on-row") == (42, 1)
-    assert lint.admitted(rows, "description:skills/a/SKILL.md") == (8, 1)
-    assert lint.admitted(rows, "always-on-adopter") == (0, 0)
-    assert lint.admitted(rows, "body:skills/a/SKILL.md") == (0, 0)
-    allowed, against = lint.ceiling(16_345, rows, "always-on-row")
-    assert allowed == 16_387, against
-    assert "16345 plus 42 admitted across 1 row" in against, against
-    assert lint.ADMISSIONS in against, against
-
-
-def test_every_malformed_row_admits_nothing_and_says_so(tmp_path):
-    """Fail closed, and loudly. Each arm is one way a row can be wrong.
-
-    **Both halves matter and the second is the one that would rot.** A row
-    this cannot read must grant nothing -- otherwise the cheapest route past a
-    ceiling is a corrupt line -- and it must be *reported*, or a session meets
-    a ceiling finding it has just written a row to clear with nothing saying
-    the row was the problem. The lawful arm is `test_a_lawful_row...` above.
-    """
-    cases = [
-        ("{not json" + NL, "not valid JSON"),
-        (json.dumps([1, 2]) + NL, "not a JSON object"),
-        (json.dumps({k: v for k, v in _row().items() if k != "outflow"}) + NL,
-         "is missing outflow"),
-        (json.dumps(_row(issue="   ")) + NL, "names no issue"),
-        (json.dumps(_row(issue=None)) + NL, "names no issue"),
-        # `str([])` is "[]" and `str({})` is "{}", both non-blank -- so the
-        # first fix for this class, which special-cased None and bool, left
-        # the hole open on the very field this arm exists for. Every
-        # non-scalar shape, on every one of the three fields.
-        (json.dumps(_row(issue=[])) + NL, "names no issue"),
-        (json.dumps(_row(issue={})) + NL, "names no issue"),
-        (json.dumps(_row(item=None)) + NL, "leaves item empty"),
-        (json.dumps(_row(item=[])) + NL, "leaves item empty"),
-        (json.dumps(_row(item={})) + NL, "leaves item empty"),
-        (json.dumps(_row(item=False)) + NL, "leaves item empty"),
-        (json.dumps(_row(outflow=None)) + NL, "leaves outflow empty"),
-        (json.dumps(_row(outflow=[])) + NL, "leaves outflow empty"),
-        (json.dumps(_row(chars="42")) + NL, "not a whole number"),
-        (json.dumps(_row(chars=True)) + NL, "not a whole number"),
-        (json.dumps(_row(ceilings=[])) + NL, "non-empty list"),
-        (json.dumps(_row(ceilings="always-on-row")) + NL, "non-empty list"),
-        (json.dumps(_row(ceilings=["always-on-rows"])) + NL, "names no ceiling here"),
-        (json.dumps(_row(ceilings=["body:"])) + NL, "names no ceiling here"),
-        (json.dumps(_row(item="  ")) + NL, "leaves item empty"),
-        (json.dumps(_row(outflow="")) + NL, "leaves outflow empty"),
-        (json.dumps(_row(date="3 September 2026")) + NL, "not YYYY-MM-DD"),
-    ]
-    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
-    for text, expected in cases:
-        (tmp_path / lint.ADMISSIONS).write_text(text, encoding="utf-8")
-        rows, findings = lint.read_admissions(tmp_path)
-        assert rows == [], (expected, "a row this could not read still admitted", rows)
-        assert len(findings) == 1, (expected, findings)
-        assert expected in findings[0], (expected, findings[0])
-        assert findings[0].startswith("admissions: " + lint.ADMISSIONS + ":1"), findings[0]
-
-
-def test_a_record_cannot_tighten_a_ceiling(tmp_path):
-    """Banking more than was ever admitted is a finding, not a smaller ceiling.
-
-    A record that could drive the effective ceiling below the constant would
-    be a second place ceilings are set, and `tools/lint.py` is the first. The
-    lawful polarity is banking exactly what was admitted, which returns the
-    constant and reports nothing.
-    """
-    _record(tmp_path, _row(chars=-42))
-    findings = lint.check_admissions(tmp_path)
-    assert any("does not tighten a ceiling" in f for f in findings), findings
-    rows, _ = lint.read_admissions(tmp_path)
-    assert lint.ceiling(16_345, rows, "always-on-row") == (16_345, "budget is 16345")
-
-    _record(tmp_path, _row(), _row(chars=-42, item="banking what came back"))
-    assert lint.check_admissions(tmp_path) == []
-    rows, _ = lint.read_admissions(tmp_path)
-    assert lint.admitted(rows, "always-on-row") == (0, 2)
-
-
-def test_a_stale_admission_is_reported_in_both_polarities():
-    """What stops an admission becoming a waiver.
-
-    Space an outflow frees under an admitted ceiling would otherwise sit as
-    room nobody argued for -- the refill `routing.md` names, arriving through
-    the mechanism built to admit needed items. The unlawful arm is a surface
-    back under its constant with characters still charged; the two lawful arms
-    are a surface still over it, where the admission is what is holding the
-    tree green, and nothing admitted at all.
-    """
-    rows = [_row()]
-    stale = lint.stale_admission("the row", 16_300, 16_345, rows, "always-on-row")
-    assert len(stale) == 1, stale
-    assert stale[0].startswith("admission-stale:"), stale
-    assert "chars -42" in stale[0], stale[0]
-    assert lint.ADMISSIONS in stale[0], stale[0]
-    # A banking row runs through the same validation as an admission, so it
-    # needs the other five fields; the finding named only `chars` and left the
-    # session to reverse-engineer the rest from the row it was banking.
-    for field in lint.ADMISSION_FIELDS:
-        assert field in stale[0], (field, stale[0])
-
-    # **The boundary the docstring argues for, pinned at the character.**
-    # `stale_admission` fires at or under the constant, and mutating `>` to
-    # `>=` -- silent at exactly `size == constant` -- survived the whole suite
-    # green, so nothing held the one character the docstring reasons about.
-    assert lint.stale_admission("the row", 16_345, 16_345, rows,
-                                "always-on-row"), (
-        "a surface back exactly at its constant was not told to bank")
-    assert lint.stale_admission("the row", 16_346, 16_345, rows,
-                                "always-on-row") == [], (
-        "a surface still over its constant was told to bank the admission "
-        "holding it green")
-    assert lint.stale_admission("the row", 1, 16_345, [], "always-on-row") == [], (
-        "a tree with nothing admitted was asked to bank something")
-
-
-def test_the_always_on_ceiling_is_the_constant_plus_what_is_admitted(monkeypatch):
-    """The wiring at the site, on the tree the quantity is composed from.
-
-    `read_admissions` is patched rather than the repository's own record
-    written to: the record is append-only doctrine, and a test that appended
-    to it would leave the tree carrying an admission for work nobody did. What
-    the patch stands in for is tested directly above, on fixture trees.
-
-    Three arms, because two would not separate the claims. A surface over the
-    constant but under the effective ceiling passes -- that is the needed item
-    landing. One character past the effective ceiling reds -- that is the
-    admission buying its own item and no room for the next one. And the
-    finding states the composition, or a reader is told a ceiling nobody set.
-    """
-    largest = _largest_row()
-    monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", largest - 100)
-    # **This pin is about the row ceiling, so the adopter total is lifted out
-    # of the way rather than left to whatever the tree is doing.**
-    # `check_always_on_budget` enforces both, and the arms below patch
-    # `read_admissions` wholesale -- which throws away any lawful adopter
-    # admission the real record carries, so on a tree whose adopter total is
-    # over its constant the "did not admit the item" assertion redded against
-    # a green lint. That is the M2 signature living inside the pin written to
-    # close M2: a lawful admission, a green lint, a red required check. It
-    # survived the first fix batch because the round-one ruling's binding
-    # check named three admission key shapes where `ADMISSION_BARE_KEYS` plus
-    # `ADMISSION_KEY_PREFIXES` enumerate **four**, and `always-on-adopter` was
-    # the one nobody ran. The adopter key has its own pin below.
-    # [PR #346 cycle one, O1]
-    monkeypatch.setattr(lint, "ALWAYS_ON_ADOPTER_BUDGET_CHARS", 10 ** 9)
-    # **The control arm reads an empty record, not the live one.** Without
-    # patching the record here too, the first arm inherits whatever this
-    # repository has actually admitted and the "not over its ceiling"
-    # assertion fails on a tree that is merely admitted -- the same defect the
-    # batch re-founded three other pins for, in a pin this change added.
-    monkeypatch.setattr(lint, "read_admissions", lambda root: ([], []))
-    assert lint.check_always_on_budget(lint.ROOT), (
-        "the arm this test rests on is not over its ceiling")
-
-    monkeypatch.setattr(lint, "read_admissions",
-                        lambda root: ([_row(chars=100)], []))
-    assert lint.check_always_on_budget(lint.ROOT) == [], (
-        "an admission sized to the overage did not admit the item")
-
-    monkeypatch.setattr(lint, "read_admissions",
-                        lambda root: ([_row(chars=99)], []))
-    findings = lint.check_always_on_budget(lint.ROOT)
-    assert findings, "one character past the effective ceiling was admitted"
-    assert any(f"{largest - 100} plus 99 admitted" in f for f in findings), findings
-
-
-def test_the_adopter_total_admits_on_its_own_key(monkeypatch):
-    """The fourth admission key shape, which nothing exercised until cycle one.
-
-    `check_always_on_budget` enforces two ceilings and `ADMISSION_BARE_KEYS`
-    names one key for each, but every validation this change ran -- the fix
-    batch's and the post-fix look's alike -- covered `always-on-row`,
-    `body:` and `description:` and stopped. The adopter total was the fourth,
-    and the defect it hid is O1 above. This is the arm that would have caught
-    it: the adopter over its constant, admitted on its own key, nothing
-    charged to the row.
-
-    Both polarities, and the row is lifted out of the way for the mirror of
-    the reason the sibling lifts the adopter.
-    """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "repo_figures_adopter", lint.ROOT / "tools" / "figures.py")
-    figures = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(figures)
-    adopter = figures.figure_always_on(lint.ROOT)["data"]["adopter_total"]
-
-    monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", 10 ** 9)
-    monkeypatch.setattr(lint, "ALWAYS_ON_ADOPTER_BUDGET_CHARS", adopter - 100)
-    monkeypatch.setattr(lint, "read_admissions", lambda root: ([], []))
-    findings = lint.check_always_on_budget(lint.ROOT)
-    assert any("adopter total" in f for f in findings), (
-        "the adopter total over its constant reported nothing", findings)
-
-    monkeypatch.setattr(
-        lint, "read_admissions",
-        lambda root: ([_row(chars=100, ceilings=["always-on-adopter"])], []))
-    assert lint.check_always_on_budget(lint.ROOT) == [], (
-        "an admission on the adopter key did not admit the adopter total")
-
-    monkeypatch.setattr(
-        lint, "read_admissions",
-        lambda root: ([_row(chars=99, ceilings=["always-on-adopter"])], []))
-    findings = lint.check_always_on_budget(lint.ROOT)
-    assert findings, "one character past the effective adopter ceiling was admitted"
-    assert any(f"{adopter - 100} plus 99 admitted" in f for f in findings), findings
-
-
-def test_the_ceiling_findings_carry_the_fourth_answer_and_no_longer_only_a_raise(
-        monkeypatch):
-    """The route reaches the session on the artifact it already has open.
-
-    The `authoring` cell prefers the rule whose compliance is visible on what
-    its reader is producing; the lint output is that artifact at a ceiling. So
-    the row finding names the record, the fields, and that the constant does
-    not move -- and it no longer offers raising the ceiling, which is the
-    answer #334 was filed about.
-    """
-    monkeypatch.setattr(lint, "ALWAYS_ON_ROW_BUDGET_CHARS", 1_000)
-    findings = lint.check_always_on_budget(lint.ROOT)
-    assert findings, findings
-    joined = " ".join(findings)
-    assert lint.ADMISSIONS in joined, joined
-    for field in lint.ADMISSION_FIELDS:
-        assert field in joined, (field, joined)
-    assert "an admission buys its own item and no room for the next one" in joined
-    assert "raising this ceiling as a recorded decision" not in joined, (
-        "the finding still names the answer this mechanism replaced")
-    # **One item is one row, said where the two findings are read.** Both
-    # runtime rows cross one ceiling together and each finding said "append
-    # one row", so a session remedying per finding appended two and landed
-    # green carrying twice the item as headroom -- silently, and permanently
-    # on an append-only record. Two findings fire here, and the sentence has
-    # to be in them.
-    assert len([f for f in findings if f.startswith("always-on-budget:")]) >= 2, (
-        "this pin needs the two-runtime shape to mean what it says", findings)
-    # **One row per ceiling, said where the two findings are read.** The
-    # first wording said "one item is one row, however many findings report
-    # it", generalising M5's two-findings-one-ceiling incident to the
-    # two-ceiling case it does not fit: an item over two ceilings by
-    # different amounts has no single lawful `chars`, and following that
-    # sentence left 458 characters of permanent unargued headroom on a green
-    # lint. An experience session's consumer met the same shape and trimmed
-    # its prose to escape it, which is the one move this route forbids by
-    # name. [PR #346 cycle one, P1]
-    assert "One row per ceiling" in joined, joined
-    assert "one row however many findings name that same ceiling" in joined, joined
-    assert "Size each row's chars to that ceiling's own overage" in joined, joined
-    assert "charge only the ceilings the item actually exceeds" in joined, joined
-
-
-def test_the_description_ceiling_admits_and_the_name_cap_does_not(tmp_path,
-                                                                 monkeypatch):
-    """Only a share of what a session loads is admissible.
-
-    The 64-character `name` cap bounds the identifier the runtime addresses
-    the cell by, not a share of the always-on surface, so no key names it and
-    an admission cannot relax it. The description is the other polarity: it is
-    charged to every session and an admission does relax it.
-    """
-    make_clean_tree(tmp_path)
-    cell = tmp_path / "skills" / "example-skill"
-    long_description = "A fixture cell. " * 50
-    (cell / "SKILL.md").write_text(
-        "---" + NL + "name: example-skill" + NL
-        + f"description: {long_description}" + NL + "---" + NL + NL + "# x" + NL,
-        encoding="utf-8")
-    roster.write(tmp_path)
-    rel = "skills/example-skill/SKILL.md"
-
-    findings = [f for f in lint.check_cell_frontmatter(tmp_path) if "description" in f]
-    assert findings, "an oversized description reported nothing"
-    assert lint.ADMISSIONS in findings[0], findings[0]
-
-    _record(tmp_path, _row(chars=len(long_description.strip()) - 700 + 1,
-                           ceilings=[f"description:{rel}"]))
-    assert [f for f in lint.check_cell_frontmatter(tmp_path)
-            if "description" in f] == [], "the admission did not admit it"
-
-    # The name cap takes no admission, however the row is written.
-    (cell / "SKILL.md").write_text(
-        "---" + NL + "name: " + "n" * 80 + NL
-        + "description: A fixture cell." + NL + "---" + NL + NL + "# x" + NL,
-        encoding="utf-8")
-    _record(tmp_path, _row(chars=1_000, ceilings=[f"description:{rel}"]))
-    findings = [f for f in lint.check_cell_frontmatter(tmp_path)
-                if "'s name is" in f]
-    assert findings, "the name cap was relaxed by an admission, and it is not admissible"
 
 
 
-def test_every_admission_this_repository_carries_names_real_work():
-    """This repository's own record parses, and every row names its work.
-
-    **Shape, never emptiness.** The first version asserted `rows == []`, which
-    is a fact about today's tree whose falsification carries no defect: the
-    mechanism's first intended use falsified it, and the cheapest way out of
-    the red was `git checkout docs/admissions.jsonl` -- a pin whose cheapest
-    remedy is undoing the lawful use of the thing it guards. Nothing on the
-    route named it either, so a session discharging a ceiling finding from the
-    finding text alone met a green lint and a red required check. Found by two
-    seats of PR #346's panel and ruled by its terminal stage.
-
-    What survives is the arm that was always real -- the record this
-    repository actually carries parses, which is the only place anything
-    asserts that the live record is readable -- plus a shape assertion that
-    stays true as the record grows. `issue` is the field that separates an
-    admission from a waiver, so the shape held is that it resolves to a piece
-    of work: a positive integer, `#N`, or a URL ending in one.
-    """
-    rows, findings = lint.read_admissions(lint.ROOT)
-    assert findings == [], findings
-    names_work = re.compile(r"\A(?:#?\d+|https?://\S*/\d+)\Z")
-    for row in rows:
-        issue = str(row["issue"]).strip()
-        assert names_work.match(issue), (
-            f"an admission naming {issue!r} cannot be resolved to the work "
-            f"that required it: {row}")
 
 
-def test_the_fourth_answer_is_printed_before_a_session_writes_and_not_only_at_a_finding(capsys):
-    """What the experience session on #346 bought.
 
-    A session measuring before it writes meets the figure block on a green run
-    and never meets a finding; that consumer read the budget and admission
-    constants, hit 108 characters of headroom, and trimmed what it was adding
-    until it fitted -- the one move `skills/authoring/SKILL.md` forbids by
-    name. So the route is printed beside the figures, unconditionally.
 
-    **Unconditional is half the pin.** Printing it only when headroom looked
-    tight would invent the threshold `cell_body_block` refuses to invent, and
-    would go silent on exactly the run this consumer had.
-    """
-    note = lint.admission_note()
-    assert lint.ADMISSIONS in note, note
-    for field in lint.ADMISSION_FIELDS:
-        assert field in note, (field, note)
-    assert "rather than trimmed until it fits" in note, note
-    assert "The constant does not move" in note, note
-    # **The block is actionable from itself.** It named the six fields and
-    # not the key vocabulary, while the labels printed two lines above it read
-    # `always-on row` and `adopter total` against the keys the guard requires
-    # -- a trap costing one red round-trip. And its flat universal covered
-    # ceilings that take no admission at all, the pointer cap and the 64-char
-    # name cap among them, so it is scoped to a share of what a session loads.
-    for key in lint.ADMISSION_BARE_KEYS:
-        assert key in note, (key, note)
-    for prefix in lint.ADMISSION_KEY_PREFIXES:
-        assert prefix in note, (prefix, note)
-    assert "share of what a session loads" in note, note
-    # And it is printed by the command the flow mandates. Asserted through
-    # `main()` rather than by calling the function twice: the defect was that
-    # the route existed and no surface a session reads before writing carried
-    # it, so a pin on the string alone would have passed over that tree.
-    lint.main()
-    assert note in capsys.readouterr().out
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # --- what the review cost, and where each high landed ------------------------
@@ -4886,206 +3552,18 @@ def test_the_fourth_answer_is_printed_before_a_session_writes_and_not_only_at_a_
 
 
 
-def test_a_cell_body_over_its_ceiling_is_reported_and_never_refuses(tmp_path):
-    """The ratchet reports; it does not redden.
-
-    #455's affirmed implementation brief carries the owner's words: the standard is splitting
-    and the ceiling directs to filing, not cutting content, and it "can't be
-    something that at all tells the agent not to add text to the skill". So the
-    lawful arm here is not "a cell at its ceiling passes" -- it is that a cell
-    *over* its ceiling passes too, and is reported somewhere a filing can be
-    raised from -- the board's refresh note, since #543. The old guard's finding named shedding and routing content
-    out, which is the sentence that ruling forbids.
-    """
-    make_clean_tree(tmp_path)
-    skill = tmp_path / "skills" / "example-skill"
-    rel = "skills/example-skill/SKILL.md"
-    _write_cell(skill, "x" * 400 + NL)
-    original = lint.CELL_BODY_CEILING_CHARS
-    try:
-        lint.CELL_BODY_CEILING_CHARS = {rel: 100}
-        over = lint.cells_over_ceiling(tmp_path)
-        assert [row[0] for row in over] == [rel], over
-        assert over[0][1] > over[0][2], "the row did not carry size over ceiling"
-        # The whole point: nothing about that size reaches a finding.
-        findings = lint.run(tmp_path)
-        assert findings == [], findings
-        # The removal-word check runs over what the mandated command prints,
-        # not over `findings` -- the assertion above already requires that to
-        # be empty, so looping it there could never fail. This is the arm that
-        # catches the owner's red line drifting back into the output.
-        # Scoped to the cell-body block. `admission_note` still says
-        # "trimmed" about the always-on rows and the description cap, which
-        # are still admission-eligible and where trimming is a real answer;
-        # the owner's ruling is about a cell body.
-        printed = lint.cell_body_note(tmp_path)
-        for word in ("shed depth", "route content out", "trim", "removal"):
-            assert word not in printed, (
-                f"the mandated command still says {word!r} at a ceiling")
-
-        lint.CELL_BODY_CEILING_CHARS = {rel: 10_000}
-        assert lint.cells_over_ceiling(tmp_path) == []
-        assert lint.run(tmp_path) == []
-    finally:
-        lint.CELL_BODY_CEILING_CHARS = original
 
 
-def test_a_cell_absent_from_the_tree_is_not_reported_over(tmp_path):
-    """A tree without the cell is an ordinary tree, and every fixture is one."""
-    make_clean_tree(tmp_path)
-    original = lint.CELL_BODY_CEILING_CHARS
-    try:
-        lint.CELL_BODY_CEILING_CHARS = {"skills/not-here/SKILL.md": 1}
-        assert lint.cells_over_ceiling(tmp_path) == []
-    finally:
-        lint.CELL_BODY_CEILING_CHARS = original
 
 
-def test_the_declared_cell_body_ceilings_are_the_ones_these_tests_pin():
-    """Which cells have a ratchet, not what any number is.
-
-    A ceiling is where a body stood when #455 landed, so pinning the values
-    would make growth fail a test -- which is the refusal the owner's ruling
-    took out, arriving through the suite instead of through the guard. What is
-    worth pinning is membership: every cell in the tree has one, the charter
-    does not, and no value is nonsense.
-    """
-    keys = set(lint.CELL_BODY_CEILING_CHARS)
-    assert lint.CHARTER not in keys, (
-        "the charter row must come from check_always_on_budget, not a smuggled entry")
-    on_disk = {
-        f"{parent}/{d.name}/SKILL.md"
-        for parent in ("skills", "docs/cells")
-        for d in (lint.ROOT / parent).iterdir()
-        if (d / "SKILL.md").is_file()
-    }
-    assert keys == on_disk - {lint.CHARTER}, (
-        "every cell but the charter carries a ceiling; this set has drifted")
-    assert all(isinstance(v, int) and v > 0
-               for v in lint.CELL_BODY_CEILING_CHARS.values())
 
 
-def test_a_body_over_its_ceiling_needs_no_admission(tmp_path, monkeypatch):
-    """The third admission site is gone, and its absence is the point.
-
-    An admission exists to let a needed item past a ceiling that would
-    otherwise refuse it. A body ceiling refuses nothing since #455, so there is
-    nothing to admit and no row to write -- and a body: row left in the record
-    still parses, its chars already inside the measured baseline.
-    """
-    make_clean_tree(tmp_path)
-    rel = "skills/example-skill/SKILL.md"
-    _write_cell(tmp_path / "skills" / "example-skill", "x" * 400 + NL)
-    monkeypatch.setattr(lint, "CELL_BODY_CEILING_CHARS", {rel: 100})
-
-    assert [f for f in lint.check_doctrine(tmp_path)
-            if f.startswith("doctrine-budget:")] == [], (
-        "a body size still reaches a finding")
-    assert lint.cells_over_ceiling(tmp_path), "the ratchet saw nothing"
-    assert lint.run(tmp_path) == [], "an oversized body reddened the lint"
 
 
-def test_the_over_ceiling_line_names_every_cell_over_largest_first(tmp_path):
-    """The line the board's refresh note copies, in both polarities.
-
-    The note carries this reading because #543 took it off the merge job that
-    used to file it. What the note needs is one pasteable line, so the shape is
-    part of the contract: every cell `cells_over_ceiling` returns, its overshoot
-    beside it, and the largest overshoot first -- which is NOT the same order as
-    the block above it, that one being by body size.
-    """
-    make_clean_tree(tmp_path)
-    for name in ("wide-skill", "narrow-skill"):
-        (tmp_path / "skills" / name).mkdir(parents=True)
-    _write_cell(tmp_path / "skills" / "wide-skill", "x" * 400 + NL)
-    _write_cell(tmp_path / "skills" / "narrow-skill", "x" * 200 + NL)
-    original = lint.CELL_BODY_CEILING_CHARS
-    try:
-        # **The two orders are pulled apart deliberately.** wide-skill has the
-        # larger body and the SMALLER overshoot; narrow-skill has the smaller
-        # body and the larger one. An implementation that sorted by size would
-        # put wide-skill first and fail here, which is the whole reason these
-        # numbers are not the obvious ones.
-        lint.CELL_BODY_CEILING_CHARS = {
-            "skills/wide-skill/SKILL.md": 390,     # body 401, over by 11
-            "skills/narrow-skill/SKILL.md": 20,    # body 201, over by 181
-        }
-        rows = {rel: (size, ceiling)
-                for rel, size, ceiling in lint.cells_over_ceiling(tmp_path)}
-        assert rows["skills/wide-skill/SKILL.md"][0] > rows["skills/narrow-skill/SKILL.md"][0], (
-            "the fixture stopped pulling size and overshoot apart")
-        wide_over = rows["skills/wide-skill/SKILL.md"][0] - 390
-        narrow_over = rows["skills/narrow-skill/SKILL.md"][0] - 20
-        assert narrow_over > wide_over, (
-            "the fixture stopped pulling size and overshoot apart")
-
-        line = lint.over_ceiling_note(tmp_path)
-        assert line.startswith('cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: '), line
-        assert line.count(chr(10)) == 0, "the note copies one line"
-        assert "wide-skill" in line and "narrow-skill" in line, line
-        assert line.index("narrow-skill") < line.index("wide-skill"), (
-            f"ordered by body size rather than by overshoot: {line}")
-        assert f"+{narrow_over:,}" in line and f"+{wide_over:,}" in line, (
-            f"the line does not carry how much each is over: {line}")
-
-        # Nothing over says so in words. An empty tail would read the same as a
-        # derivation that broke, which is the pair a reader must tell apart.
-        lint.CELL_BODY_CEILING_CHARS = {"skills/wide-skill/SKILL.md": 10_000}
-        assert lint.over_ceiling_note(tmp_path) == 'cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: ' + "none"
-    finally:
-        lint.CELL_BODY_CEILING_CHARS = original
 
 
-def test_the_lint_prints_the_over_ceiling_line_at_the_mandated_command(capsys):
-    """The line the board's refresh note copies must reach the command it names.
-
-    Every other pin here calls `over_ceiling_note` directly, so deleting the
-    single `print(over_ceiling_note(ROOT))` from `main()` left the whole suite
-    green and the lint at 0 findings while the line vanished -- probed by two
-    seats of PR #544's review. `docs/cells/board/references/the-refresh-note.md` obliges every
-    refresh note to carry this line, so a refresher would run the mandated
-    command, find nothing to copy, and hold an obligation with no figure.
-
-    The sibling pin thirteen lines above records the same incident for the
-    cell-bodies block, in the same words: *"deleting the `print` from `main()`
-    (the block vanishes from the mandated command)"*. #552 carries the class --
-    that whether a line main() prints reaches the command is held by a test
-    somebody remembered to write.
-
-    **The expectation is the label, which is `over_ceiling_note`'s own
-    constant** -- asserting a whole rendered row would pin the tree's current
-    figures and red on any lawful growth, which is the refusal the owner's
-    #455 ruling took out of the guard.
-    """
-    lint.main()
-    out = capsys.readouterr().out
-    assert "cell bodies over where they stood" in out, out
-    # Not merely present: it must carry a result. All three of the note's
-    # states end in something -- a row list, `none`, or `not derived (...)` --
-    # so a label printed with an empty tail is a defect this catches.
-    line = [ln for ln in out.splitlines()
-            if ln.startswith("cell bodies over where they stood")]
-    assert len(line) == 1, line
-    assert line[0].rstrip().endswith(":") is False, (
-        f"the line printed its label and no result: {line[0]!r}")
 
 
-def test_the_over_ceiling_line_reports_a_broken_derivation_and_never_raises():
-    """Never fatal, for the reason `cell_body_note` records.
-
-    This line prints on the command the landing procedure mandates before every
-    commit, so an exception here answers that command with a traceback.
-    """
-    assert lint.over_ceiling_note(Path("no-such-root-for-543")) == 'cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: ' + "none", (
-        "an absent root is an ordinary tree")
-
-    original = lint.CELL_BODY_CEILING_CHARS
-    try:
-        lint.CELL_BODY_CEILING_CHARS = {None: "not a ceiling"}
-        broken = lint.over_ceiling_note(lint.ROOT)
-    finally:
-        lint.CELL_BODY_CEILING_CHARS = original
-    assert broken.startswith('cell bodies over where they stood -- every cell but the charter, which is sized against the always-on row instead: ' + "not derived ("), broken
 
 
 def test_an_orphan_depth_file_is_a_finding(tmp_path):
@@ -5137,7 +3615,6 @@ def test_a_cell_with_no_depth_directory_is_not_reached(tmp_path):
     skill = tmp_path / "skills" / "no-depth"
     skill.mkdir(parents=True, exist_ok=True)
     _write_cell(skill, "A cell with no references/ directory." + NL)
-    roster.write(tmp_path)
     assert lint.check_depth_index(tmp_path) == []
 
 

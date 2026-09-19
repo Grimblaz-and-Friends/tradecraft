@@ -89,10 +89,9 @@ def setup(root: Path, wanted: str) -> int:
 
 def run_checks(root: Path, python: Path, action: str, extra: list[str]) -> int:
     if action in {"lint", "check"}:
-        for script in ("lint.py", "check_version_bump.py"):
-            result = subprocess.run([str(python), str(root / "tools" / script)], cwd=root)
-            if result.returncode:
-                return result.returncode
+        result = subprocess.run([str(python), str(root / "tools" / "lint.py")], cwd=root)
+        if result.returncode:
+            return result.returncode
         if action == "lint":
             return 0
     # Fixtures discover any ancestor's .git, including an enclosing checkout

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the five portable substrate guards against one repository."""
+"""Run this repository's five substrate guards against one repository."""
 from __future__ import annotations
 
 import argparse
@@ -14,8 +14,8 @@ from collections.abc import Iterable
 from pathlib import Path
 
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
 
@@ -526,7 +526,7 @@ CHECKS = (
 def _where(exc: BaseException) -> str:
     for frame in reversed(traceback.extract_tb(exc.__traceback__)):
         try:
-            return Path(frame.filename).resolve().relative_to(PLUGIN_ROOT).as_posix() + f":{frame.lineno}"
+            return Path(frame.filename).resolve().relative_to(ROOT).as_posix() + f":{frame.lineno}"
         except (ValueError, OSError):
             continue
     return "no frame inside the shipped guard"

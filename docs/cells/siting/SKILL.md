@@ -1,6 +1,6 @@
 ---
 name: siting
-description: Where a piece of content goes in this repository and what the local tree assumes — the routing map for a rule, a binding document or review evidence; the two zones and the one-way wall between them; and the substrate, line endings and canonical doctrine file every script and edit here can rely on. Use when deciding where something belongs in this repository, when editing an always-on surface, or when writing or moving a script, guard or document here; not for the practice's general authoring and code standards, which the cells teaching them carry, and not for the landing procedure.
+description: Where a piece of content goes in this repository and what the local tree assumes — the homes for local rules, documents and review evidence; the two zones and the one-way wall between them; and the substrate and canonical doctrine file every script and edit here can rely on. Use when deciding where something belongs in this repository or when writing or moving a script, guard or document here; not for the practice's general authoring and code standards, which the cells teaching them carry, and not for the landing procedure.
 ---
 
 # siting
@@ -9,21 +9,19 @@ description: Where a piece of content goes in this repository and what the local
 
 ## Content routing, here
 
-The charter carries the routing map. Specific to here:
+The `authoring` cell carries the general routing standard. Specific to here:
 
 - **Cell structure is the `authoring` cell's standard**, whose checkable subset the lint enforces here. Shared code lives only in `lib/`.
-- **A binding rule the practice exports** → the cell that owns the standard, with the `charter` cell naming it; the charter carries the rule itself only where no cell can hold it, and then within its own job. **A rule or mechanic only this repository needs** → a repo-only cell under `docs/cells/`, whose description loads and whose body does not; the always-on doctrine carries only what must bind before any cell fires. [D-291]
-- **A binding document under `docs/`** → a file there, and a line in the doctrine that binds rather than names it; `docs/values.md` is the shape. [D-225]
+- **A binding rule the practice exports** → the cell that owns the standard; the charter carries a rule itself only when it must bind before any other cell fires. **A rule or mechanic only this repository needs** → a repo-only cell under `docs/cells/`, whose description routes the session and whose body loads on demand.
+- **A binding document under `docs/`** → a file there, and a line in the doctrine that binds rather than merely names it; `docs/values.md` is the shape.
 - **Review evidence** → the review report on the PR; a decision entry lives at the path and under the freeze this repository's records material gives.
-
-The charter names the admission order. **Every edit of an always-on surface owes an outflow**, at the budget or nowhere near it — the budget being the whole surface each runtime loads, which `python tools/lint.py` prices as it runs and `python tools/figures.py` reports — the `authoring` cell carries the moves, the form test deleting takes, and what a move may not do. [D-184] **Where the outflow frees nothing and the item is needed, it is admitted rather than trimmed to fit** — one row on `docs/admissions.jsonl`, and the ceiling constant does not move. That answer is this repository's own, so it is not among the moves that cell carries; `python tools/lint.py` prints its shape on every run, and a session that reads only the cell above at a full surface trims instead. **It reaches the always-on surfaces and a cell description, never a cell body** — a body is measured against where it stood, and passing that is reported in the board's refresh note rather than refusing anything. [#334] [#455] [D-544]
 
 
 ## Structure and substrate
 
 - **The two zones.** Shipped (`skills/`, `lib/`, `commands/`, `agents/`, `hooks/`, `.claude-plugin/`) never references repo-only (`docs/`, `tools/`, `.github/`) — not a path, not a doc link, and not a cell reference naming a repo-only cell; the lint enforces the checkable subset. Consumers must never *depend* on repo-only, which is not the same as never receiving it: the plugin's source is the repo root, so a git-source install clones everything and those files do reach a consumer's cache as inert content. General standards ship in the skill that teaches them, or in the `charter` cell where they must bind before any skill fires; repo-specific application lives in a repo-only cell. **Capability wrappers do not belong in any of them.**
-- **The calling-contract rule is the `substrate` cell's**, whose checkable subset the lint and `tools/tests/test_portability.py` hold; why a token-bearing contract is dead in one runtime is [D-156].
-- **This repository runs the substrate guards through `python tools/lint.py`**; it imports their shipped implementations and supplies the live contract population, so frozen records do not redden the repository command.
+- **The calling-contract rule is the `substrate` cell's**, whose checkable subset `tools/substrate_lint.py`, the repository lint and their tests hold.
+- **This repository runs the substrate guards through `python tools/lint.py`**; it imports the same repo-only predicates and supplies the live contract population, so one definition governs direct and integrated runs.
 - **Substrate here is Python**, tested on Linux and Windows in CI — one CI matrix, and one thing every new script can assume. PowerShell is rejected for new code. `AGENTS.md` is canonical because Codex reads it natively; `CLAUDE.md` is a pointer to it, never a fork.
 - **The predecessor** ([agent-orchestra](https://github.com/Grimblaz/agent-orchestra)) is reference material with no presumption of correctness: pull lessons, never artifacts.
 - **Vendor memory is an inbox, never an archive.** A lesson lands same-session in its home from the routing map above.

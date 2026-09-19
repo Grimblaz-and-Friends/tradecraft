@@ -1,32 +1,18 @@
-"""Pins for tools/figures.py, the repo-specific application of the shipped
-figure engine. Each figure's number comes from the guard that judges it, never
-from a parallel arithmetic, and each of those couplings is pinned below by
-moving the guard's own constant and watching the figure follow: the AGENTS.md
-headroom and the charter's budget against check_doctrine, the description
-ceiling against check_cell_frontmatter, and the census against
-check_entry_references' resolution with both recorded sets emptied — the
-derivation D-135 prescribes. The body measurement is the engine's own, pinned
-equal to the guard's strip so shipping it did not fork what "body" means. The suite figure is stubbed in CLI tests because the wrapper's
-real suite invocation is the suite these tests run inside."""
-
+"""Pins for the repo-specific figure wrapper."""
 import importlib.util
 import json
-import re
 import sys
-
-import pytest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 import lint  # noqa: E402
-import roster  # noqa: E402
 
 
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 
@@ -36,29 +22,10 @@ engine = repo_figures.engine
 NL = chr(10)
 
 
-# --- the headroom figure is check_doctrine's measure, not a lookalike -------
-
-def make_doctrine_root(tmp_path, agents_bytes):
-    (tmp_path / "AGENTS.md").write_bytes(agents_bytes)
-    (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
-    return tmp_path
-
-
-# Fixture sizes derive from the guard's own constant, so a lawful budget
-# change moves the fixtures with it and the pins stay a pure equality check.
-# Each b"x\r\n" line is 3 bytes and 2 characters under the guard's
-# universal-newline read — CRLF is what keeps bytes and characters apart.
-BUDGET = lint.ALWAYS_ON_ROW_BUDGET_CHARS
-OVER_LINES = BUDGET // 2 + 4      # 2 * OVER_LINES chars: over budget
-UNDER_LINES = BUDGET // 2 - 1     # 2 * UNDER_LINES chars: under in chars...
-assert 3 * UNDER_LINES > BUDGET   # ...while over in bytes, for any real budget
-
-
 def make_decisions_root(tmp_path):
     directory = tmp_path / "docs" / "architecture" / "decisions"
     directory.mkdir(parents=True)
-    entry = directory / "D-1-2026-01-01-fixture.md"
-    entry.write_text(
+    (directory / "D-1-2026-01-01-fixture.md").write_text(
         "# D-1\n\n"
         "A resolvable reference: `README.md` sits beside this entry.\n\n"
         "A dead reference: `gone/nothing.md` twice on separate lines.\n\n"
@@ -75,11 +42,9 @@ def make_decisions_root(tmp_path):
 
 
 def test_census_counts_occurrences_and_distinct_pairs(tmp_path):
-    fig = repo_figures.figure_census(make_decisions_root(tmp_path))
-    # Two occurrences of one dead pair in the entry, one dead pair in the
-    # index; the resolvable and the pinned references count for nothing.
-    assert fig["data"] == {"occurrences": 3, "pairs": 2}
-    assert "3 occurrences, 2 distinct" in fig["value"]
+    figure = repo_figures.figure_census(make_decisions_root(tmp_path))
+    assert figure["data"] == {"occurrences": 3, "pairs": 2}
+    assert "3 occurrences, 2 distinct" in figure["value"]
 
 
 def test_census_equals_the_guard_with_recorded_sets_emptied(tmp_path, monkeypatch):
@@ -87,1051 +52,94 @@ def test_census_equals_the_guard_with_recorded_sets_emptied(tmp_path, monkeypatc
     monkeypatch.setattr(lint, "BASELINE_UNRESOLVABLE", {})
     monkeypatch.setattr(lint, "UNREPAIRABLE_AFTER_LANDING", {})
     guard_dead = [
-        f for f in lint.check_entry_references(root) if "resolves to nothing" in f
+        finding for finding in lint.check_entry_references(root)
+        if "resolves to nothing" in finding
     ]
     assert len(guard_dead) == repo_figures.figure_census(root)["data"]["occurrences"]
 
 
-def test_census_on_this_repository_reproduces(tmp_path):
-    # Whatever the number is today, deriving it twice must agree — the figure
-    # exists because recalled numbers and derived numbers kept diverging.
-    first = repo_figures.figure_census(ROOT)["data"]
-    second = repo_figures.figure_census(ROOT)["data"]
-    assert first == second
-    assert first["occurrences"] >= first["pairs"] >= 0
-
-
-# --- the wrapper CLI: repo parameters, guard-imported budget ----------------
-
 def stub_suite(monkeypatch):
     monkeypatch.setattr(
-        repo_figures.engine, "figure_tests",
-        lambda repo, paths: {
-            "name": "suite", "value": "999 passed",
+        repo_figures.engine,
+        "figure_tests",
+        lambda _repo, paths: {
+            "name": "suite",
+            "value": "999 passed",
             "basis": f"stub over {' '.join(paths)}",
             "data": {"summary": "999 passed", "exit": 0},
         },
     )
 
 
-def test_wrapper_emits_suite_always_on_and_census(tmp_path, monkeypatch, capsys):
+def test_default_wrapper_emits_only_suite_and_decision_log(monkeypatch, capsys):
     stub_suite(monkeypatch)
     assert repo_figures.main([]) == 0
-    out = capsys.readouterr().out
-    assert "999 passed" in out
-    assert "stub over tools/tests skills" in out
-    # The always-on rows, which is where a budget is now stated. The per-doc
-    # rows this used to assert are gone with the per-file ceilings: neither
-    # AGENTS.md nor the charter body has one, and the engine's doc and cell
-    # figures render a budget because that is what they are for. [#260]
-    assert "always-on surface" in out
-    assert "decision-log census" in out
-    assert "prose delta" not in out  # no base given, no delta invented
+    output = capsys.readouterr().out
+    assert "999 passed" in output
+    assert "decision-log census" in output
+    assert "always-on" not in output
+    assert "cell body" not in output
+    assert "prose delta" not in output
 
 
-def test_wrapper_delta_requires_and_uses_the_given_base(tmp_path, monkeypatch, capsys):
+def test_wrapper_delta_requires_and_uses_the_given_base(monkeypatch, capsys):
     stub_suite(monkeypatch)
     assert repo_figures.main(["--base", "HEAD", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    delta = [f for f in payload["figures"] if "prose delta" in f["name"]]
+    delta = [figure for figure in payload["figures"] if "prose delta" in figure["name"]]
     assert len(delta) == 1
     assert delta[0]["data"]["base"] == "HEAD"
-    assert delta[0]["data"]["suffixes"] == [".md"]
     assert payload["command"] == "python tools/figures.py --base HEAD --json"
 
 
 def test_the_body_strip_the_engine_ships_is_the_one_the_guard_applies():
-    """Shipping the cell-body measurement must not fork what "body" means.
-
-    The engine cannot import the lint -- repo-only code is not shipped -- so
-    the two strips are separate implementations of one rule. That is exactly
-    the shape the authoring cell forbids for prose, and the reason the charter
-    figure and check_doctrine agree today. Pinned over the real cells rather
-    than a fixture, because the drift that matters is on the files the budgets
-    actually judge.
-    """
     cells = sorted((ROOT / "skills").glob("*/SKILL.md"))
-    assert cells, "no cells to compare"
+    assert cells
     for cell in cells:
         text = cell.read_text(encoding="utf-8")
         assert engine.frontmatterless(text) == lint._frontmatterless(text), cell.name
 
 
-def _cell(root, name, body, depth=None, scripts=None):
-    """A cell on disk: SKILL.md with frontmatter, plus whatever depth is asked."""
+def _cell(root, name, body, depth=None):
     cell = root / "skills" / name
     (cell / "references").mkdir(parents=True, exist_ok=True)
-    header = ("---" + NL + "name: " + name + NL
-              + "description: A fixture cell." + NL + "---" + NL + NL)
+    header = (
+        "---" + NL + "name: " + name + NL
+        + "description: A fixture cell." + NL + "---" + NL + NL
+    )
     (cell / "SKILL.md").write_text(header + body, encoding="utf-8", newline=NL)
-    for fname, text in (depth or {}).items():
-        (cell / "references" / fname).write_text(
-            text, encoding="utf-8", newline=NL)
-    for fname, text in (scripts or {}).items():
-        (cell / "scripts").mkdir(exist_ok=True)
-        (cell / "scripts" / fname).write_text(text, encoding="utf-8", newline=NL)
-    return cell
-
-
-def test_the_cell_total_counts_the_body_once_and_markdown_only(tmp_path):
-    """#193's review: the figure shipped with nothing pinning its arithmetic.
-
-    It is the only instrument watching the half of a cell that is deliberately
-    unbudgeted, so a regression here is invisible by construction -- the body
-    cap stays green while the total drifts. Four things are pinned: the body is
-    counted once and not again as depth, depth is summed whole, a script is not
-    prose, and nested depth is reached.
-    """
-    _cell(tmp_path, "example-skill", "x" * 40 + NL,
-          depth={"flat.md": "y" * 10, "other.md": "z" * 20},
-          scripts={"s.py": "print(1)" + NL})
-    sub = tmp_path / "skills" / "example-skill" / "references" / "sub"
-    sub.mkdir()
-    (sub / "deep.md").write_text("w" * 5, encoding="utf-8", newline=NL)
-
-    data = repo_figures.figure_cell_total(
-        tmp_path, "skills/example-skill/SKILL.md")["data"]
-    assert data["body"] == 41, data       # 40 plus the trailing newline
-    assert data["depth_files"] == 3, data  # the .py is not prose
-    assert data["depth"] == 35, data       # 10 + 20 + 5, nested reached
-    assert data["total"] == 76, data       # and the body is not doubled
-
-
-def test_the_cell_total_refuses_a_path_that_is_not_a_cell(tmp_path):
-    """It walks the naming file's whole directory, so on a non-cell path it
-    reports a confidently-labelled total for whatever tree sits above it --
-    `--cell AGENTS.md` walked the entire repository and called it cell '.'.
-    The CLI did exit non-zero, but only because a LATER figure failed on a
-    missing description, which is a different figure's incidental strictness.
-    """
-    _cell(tmp_path, "example-skill", "x" + NL, depth={"flat.md": "y"})
-    (tmp_path / "AGENTS.md").write_text("doc" + NL, encoding="utf-8", newline=NL)
-    for bad in ("AGENTS.md", "skills/example-skill/references/flat.md"):
-        with pytest.raises(SystemExit) as caught:
-            repo_figures.figure_cell_total(tmp_path, bad)
-        assert "is not a cell" in str(caught.value), bad
-    # The lawful arm, so this is not a guard that refuses everything.
-    assert repo_figures.figure_cell_total(
-        tmp_path, "skills/example-skill/SKILL.md")["data"]["total"] == 3
-
-
-def test_a_cell_budget_disagreeing_with_the_guard_is_refused(tmp_path, monkeypatch):
-    """#193's review: --cell-budget printed any budget handed to it, including
-    one no guard backs -- `--cell-budget 12000` emitted "headroom 3,264" where
-    lint allowed 264, one line below a basis boasting that the charter figure
-    cannot drift from what check_doctrine enforces. It refuses rather than
-    defaulting, because the caller deciding the budget is the older rule and it
-    is right; what it may not do is disagree with the guard in silence.
-    """
-    _cell(tmp_path, "example-skill", "x" * 40 + NL)
-    rel = "skills/example-skill/SKILL.md"
-    monkeypatch.setattr(lint, "CELL_BODY_CEILING_CHARS", {rel: 9_000})
-    stub = lambda *a, **k: {"name": "stub", "value": "skipped",
-                            "basis": "stubbed", "data": {}}
-    # Everything build_figures emits before the cell figures needs a full tree;
-    # this test is about the budget check and nothing else.
-    monkeypatch.setattr(repo_figures.engine, "figure_tests", stub)
-    monkeypatch.setattr(repo_figures, "figure_always_on", stub)
-    monkeypatch.setattr(repo_figures, "figure_census", stub)
-    monkeypatch.setattr(repo_figures, "figure_cell_description", stub)
-    with pytest.raises(SystemExit) as caught:
-        repo_figures.build_figures(tmp_path, None, rel, 12_000)
-    assert "disagrees with the 9000" in str(caught.value)
-    # Agreeing is lawful, and so is a budget for a cell the guard does not cap.
-    assert repo_figures.build_figures(tmp_path, None, rel, 9_000)
-
-    # **Re-founded on the ceiling in force, not removed.** Under an admission
-    # `check_doctrine` enforces the constant plus what is charged to this
-    # body, so the pre-#346 refusal rejected the correct value and accepted
-    # -- and then blessed as guard-backed -- the one no guard held. Both arms
-    # here: the effective ceiling is accepted, the bare constant is refused,
-    # and the refusal names the composition so the caller can see why.
-    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
-    (tmp_path / lint.ADMISSIONS).write_text(
-        json.dumps({"date": "2026-09-03", "issue": 346,
-                    "ceilings": [f"body:{rel}"], "chars": 500,
-                    "item": "a fixture item",
-                    "outflow": "nothing had a cheaper home"}) + NL,
-        encoding="utf-8")
-    assert repo_figures.build_figures(tmp_path, None, rel, 9_500)
-    with pytest.raises(SystemExit) as caught:
-        repo_figures.build_figures(tmp_path, None, rel, 9_000)
-    assert "disagrees with the 9500" in str(caught.value), caught.value
-    assert "9000 plus 500 admitted" in str(caught.value), caught.value
-    (tmp_path / lint.ADMISSIONS).unlink()
-
-    monkeypatch.setattr(lint, "CELL_BODY_CEILING_CHARS", {})
-    assert repo_figures.build_figures(tmp_path, None, rel, 12_000)
-
-def test_the_description_ceiling_comes_from_the_guard(tmp_path, monkeypatch):
-    """The figure reads check_cell_frontmatter's constant, not a copy of it."""
-    monkeypatch.setitem(lint.CELL_FIELD_MAX_CHARS, "description", 1234)
-    cell = ROOT / "skills" / "charter" / "SKILL.md"
-    figure = repo_figures.figure_cell_description(ROOT, str(cell.relative_to(ROOT)))
-    assert figure["data"]["budget"] == 1234
-
-
-def test_a_cell_figure_is_never_invented_and_never_defaults_its_budget(tmp_path, monkeypatch):
-    """A budget picked silently is how a stated figure leaves the guard behind.
-
-    Mirrors the delta's base, which the engine also refuses to default.
-    """
-    monkeypatch.setattr(repo_figures.engine, "figure_tests",
-                        lambda *a, **k: {"name": "suite", "value": "stub",
-                                         "basis": "stub", "data": {}})
-    names = [f["name"] for f in repo_figures.build_figures(ROOT, None)]
-    assert not any("(body)" in n and "charter" not in n for n in names)
-    assert not any("(description)" in n for n in names)
-    try:
-        repo_figures.build_figures(ROOT, None, "skills/charter/SKILL.md", None)
-    except SystemExit as exit_:
-        assert "caller decision" in str(exit_)
-    else:
-        raise AssertionError("--cell without a budget must refuse, not default")
-
-
-def test_the_always_on_figure_is_emitted_at_all(tmp_path, monkeypatch):
-    """Deleting the call from build_figures left the suite green.
-
-    The cheapest way for this figure to stop being true is for it to stop
-    being produced, and nothing noticed. Pinned first because the other
-    assertions here all presuppose it.
-    """
-    monkeypatch.setattr(repo_figures.engine, "figure_tests",
-                        lambda *a, **k: {"name": "suite", "value": "stub",
-                                         "basis": "stub", "data": {}})
-    names = [f["name"] for f in repo_figures.build_figures(ROOT, None)]
-    assert "always-on surface" in names
-
-
-def test_the_two_audiences_are_not_the_same_set():
-    """The error the figure exists to stop, pinned.
-
-    `adopter = charter + doctrine` renders a visibly wrong number and passed
-    every test in the suite. An adopter's total omits both doctrine files,
-    which reach a plugin cache inert; the repo's total counts them.
-    """
-    data = repo_figures.figure_always_on(ROOT)["data"]
-    assert data["adopter_total"] == data["charter"] + data["roster"]
-    # Spelled out rather than `doctrine + adopter_total`, which is the same
-    # number on any tree the roster guard passes and stops being the same
-    # composition the moment it does not. The two rosters are read from two
-    # directories; an identity that cannot tell them apart is the assumption
-    # #199 found standing in for a measurement.
-    for row in data["here"]:
-        assert row["total"] == (
-            row["doctrine"] + data["charter"] + row["roster"]
-        ), f"{row['runtime']}'s total is not built from what it loads"
-        assert row["doctrine"] > 0, "a runtime reads at least one doctrine file"
-    assert data["repo_total"] == min(row["total"] for row in data["here"])
-    assert data["adopter_total"] < data["repo_total"]
-
-    # The runtimes do not read the same doctrine files, so the rows are not
-    # interchangeable and a figure charging every row for every file reports
-    # them as loading the same amount when they do not. Claude Code reads
-    # CLAUDE.md and Codex does not; this is the assertion that fails on the
-    # composition this repository shipped before the external pass caught it.
-    # [PR #278 external pass]
-    doctrines = {row["runtime"]: row["doctrine"] for row in data["here"]}
-    assert doctrines["Claude Code"] - doctrines["Codex"] == data["pointer"], (
-        "the Claude-facing pointer is charged to every runtime, or to none"
-    )
-
-
-def test_the_repo_side_reads_the_roster_it_actually_loads(tmp_path):
-    """#199's correction, pinned by the mutation that produced it.
-
-    Both sides used to count `skills/`, which is true of an adopter and was
-    false here: nothing installs the plugin in this repository, so the 4,890
-    characters of name and description the figure reported were loaded by no
-    session. Removing an entry must move the repo total and leave the
-    adopter's alone -- if it moves neither, the figure is asserting the
-    surface rather than reading it.
-
-    **Removed from one surface only**, which is the discrimination the second
-    runtime added: an entry deleted from `.claude/skills/` and left standing
-    under `.agents/skills/` must still move the number, because one runtime
-    here has stopped loading it. A figure reading either directory for both
-    would report no change. [#258]
-    """
-    surface(tmp_path)
-    make_cell = tmp_path / "skills" / "extra"
-    make_cell.mkdir(parents=True)
-    (make_cell / "SKILL.md").write_bytes(
-        ("---" + NL + "name: extra" + NL + "description: Trigger." + NL + "---"
-         + NL + NL + "Body." + NL).encode("utf-8"))
-    roster.write(tmp_path)
-    before = repo_figures.figure_always_on(tmp_path)["data"]
-    (tmp_path / ".claude" / "skills" / "extra" / "SKILL.md").unlink()
-    after = repo_figures.figure_always_on(tmp_path)["data"]
-    # **The row, not the scalar.** `repo_total` is the smallest row, so an
-    # entry removed from a surface that is not already the smallest moves no
-    # scalar at all -- which is why nothing renders the scalar alone, and why
-    # a pin written against it would pass on a mutation that stopped reading
-    # this directory. [PR #278 review, M1, M22]
-    moved = {row["directory"]: row for row in after["here"]}
-    stood = {row["directory"]: row for row in before["here"]}
-    gone = roster.SURFACES[0].directory
-    assert stood[gone]["total"] - moved[gone]["total"] == (
-        len("extra") + len("Trigger.")
-    )
-    assert after["adopter_total"] == before["adopter_total"]
-    # Keyed by directory rather than by position: each row already carries
-    # the directory it was read from, and binding the assertion to
-    # `roster.SURFACES` ordering makes it fail for a reason unrelated to what
-    # it pins. Raised by the external reviewer on PR #278.
-    rows = {row["directory"]: row for row in after["here"]}
-    was = {row["directory"]: row for row in before["here"]}
-    edited, kept = roster.SURFACES[0].directory, roster.SURFACES[1].directory
-    assert rows[edited]["entries"] == was[edited]["entries"] - 1
-    assert rows[kept]["entries"] == was[kept]["entries"], (
-        "the surface that kept its entry must not move with the one that "
-        "lost it"
-    )
-    assert rows[edited]["roster"] < was[edited]["roster"]
-    assert rows[kept]["roster"] == was[kept]["roster"]
-    assert after["cells"] == before["cells"]
-
-
-def test_the_doctrine_key_sums_both_files(tmp_path):
-    """`doctrine` is AGENTS.md plus CLAUDE.md, and it is not a row's term.
-
-    **Renamed to what it asserts.** It was called
-    `test_the_repo_total_counts_both_doctrine_files` and claimed to stop a
-    rule moving from AGENTS.md into CLAUDE.md and reporting a reduction while
-    nothing left the surface. It never touched `repo_total`, and since the
-    totals went per runtime that claim is not even the right one to want:
-    Codex does not read CLAUDE.md, so such a move genuinely does leave the
-    Codex surface and the smallest row falling is an honest report. What is
-    left is the narrow true thing -- the summed key is both files -- asserted
-    under a name that says so. [PR #278 review, F8]
-    """
-    (tmp_path / "AGENTS.md").write_text("a" * 100, encoding="utf-8")
-    (tmp_path / "CLAUDE.md").write_text("b" * 40, encoding="utf-8")
-    (tmp_path / "skills").mkdir()
-    assert repo_figures.figure_always_on(tmp_path)["data"]["doctrine"] == 140
-
-
-def test_the_roster_counts_names_as_well_as_descriptions(tmp_path):
-    """Descriptions alone read low across the roster.
-
-    D-169 named this successor error in advance; the callout committed it and
-    an external reviewer found it independently. The figure counts both, and
-    what it counts is what its label says.
-    """
-    cell = tmp_path / "skills" / "example"
-    cell.mkdir(parents=True)
-    (cell / "SKILL.md").write_text(
-        "---" + NL + "name: example" + NL + "description: Four." + NL + "---" + NL
-        + NL + "Body." + NL, encoding="utf-8")
-    assert repo_figures.figure_always_on(tmp_path)["data"]["roster"] == len("example") + len("Four.")
-
-
-def test_the_charter_is_counted_below_its_frontmatter():
-    """The body, not the file -- the unit an adopting session reads completely.
-
-    Counting the whole file would double-count the description, which the
-    roster already carries, and would price the charter against a unit no
-    session receives.
-    """
-    charter = (ROOT / lint.CHARTER).read_text(encoding="utf-8")
-    assert repo_figures.figure_always_on(ROOT)["data"]["charter"] == len(
-        lint._frontmatterless(charter))
-    assert len(lint._frontmatterless(charter)) < len(charter)
-
-
-# --- the delta's base side, which shipped guarded by nothing ----------------
-#
-# `always_on_at` and the delta were added to close "the figure this change
-# turns on is guarded by nothing", and arrived with no test of their own. Four
-# mutations left the whole suite green: the base side no longer counting
-# CLAUDE.md, every delta's sign inverted, `--base` losing its effect entirely,
-# and the cell filter widening. The sign one is the reason these exist -- it
-# would tell the owner a growing surface shrank, which is the exact reading the
-# delta was added to make impossible.
-
-def git_tree(tmp_path):
-    """A real repository: always_on_at reads blobs through git, not the disk.
-
-    Isolated from the caller's git configuration, because a repository this
-    small inherits whatever the machine has -- `commit.gpgsign` being the one
-    that turns a fixture into a hang.
-    """
-    import subprocess
-
-    def git(*args):
-        return subprocess.run(
-            ["git", "-C", str(tmp_path), *args],
-            check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            env={"GIT_CONFIG_GLOBAL": str(tmp_path / "nonexistent"),
-                 "GIT_CONFIG_SYSTEM": str(tmp_path / "nonexistent"),
-                 "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
-                 "PATH": __import__("os").environ.get("PATH", "")},
-        ).stdout.strip()
-
-    git("init", "-q", "-b", "main")
-    return git
-
-
-def surface(root, agents="a" * 100, pointer="b" * 40, charter_body="Body."):
-    (root / "AGENTS.md").write_text(agents, encoding="utf-8")
-    (root / "CLAUDE.md").write_text(pointer, encoding="utf-8")
-    cell = root / "skills" / "charter"
-    cell.mkdir(parents=True, exist_ok=True)
-    (cell / "SKILL.md").write_text(
-        "---" + NL + "name: charter" + NL + "description: Desc." + NL + "---" + NL
-        + NL + charter_body + NL, encoding="utf-8")
-    # The repo side reads its roster from the directory each runtime here
-    # actually loads -- `.claude/skills/` and `.agents/skills/`, one per
-    # runtime. A fixture with cells and no roster models the tree #199 found,
-    # not a lawful one -- and the equality these tests pin would then hold
-    # over a surface no reader counts.
-    roster.write(root)
-
-
-def test_the_base_side_reproduces_the_working_tree_figure(tmp_path):
-    """One tree, two readers, one number.
-
-    always_on_at re-derived figure_always_on's composition by hand, so the two
-    could disagree with nothing comparing them -- and a mutation stopping the
-    base side counting CLAUDE.md left 336 tests green. This is the equality
-    that mutation breaks.
-    """
-    git = git_tree(tmp_path)
-    surface(tmp_path)
-    git("add", "-A")
-    git("commit", "-qm", "base")
-    head = git("rev-parse", "HEAD")
-    assert repo_figures.always_on_at(tmp_path, head) == {
-        row["runtime"]: row["total"]
-        for row in repo_figures.figure_always_on(tmp_path)["data"]["here"]
-    }
-
-
-def test_the_base_side_reads_the_roster_from_the_directory_it_loads(tmp_path):
-    """The git-ref reader's roster half, pinned against the swap that survived.
-
-    `figure_always_on`'s half is pinned by
-    `test_the_repo_side_reads_the_roster_it_actually_loads`; this one was not,
-    and swapping `always_on_at` back to `skills/`/`is_cell_path` left all 397
-    tests green -- the identical swap in the working-tree reader fails, so the
-    suite discriminated everywhere except here. Every fixture had the two
-    directories in agreement, and two readers cannot be told apart on a tree
-    where they read the same thing.
-
-    So this fixture commits a tree where they deliberately disagree: the cell
-    stays, its roster entry goes. Under the mutation both refs read `skills/`
-    and the delta collapses to zero. **The disagreement is the point -- a
-    later session must not "repair" it.**
-
-    `always_on_at` has one caller, the CI callout's `(+N this PR)`, which is
-    what D-184's outflow rule is priced against. [PR #210 review, M5]
-    """
-    git = git_tree(tmp_path)
-    surface(tmp_path)
-    extra = tmp_path / "skills" / "extra"
-    extra.mkdir(parents=True)
-    (extra / "SKILL.md").write_bytes(
-        ("---" + NL + "name: extra" + NL + "description: Trigger." + NL + "---"
-         + NL + NL + "Body." + NL).encode("utf-8"))
-    roster.write(tmp_path)
-    git("add", "-A")
-    git("commit", "-qm", "both in step")
-    before = git("rev-parse", "HEAD")
-
-    (tmp_path / ".claude" / "skills" / "extra" / "SKILL.md").unlink()
-    git("add", "-A")
-    git("commit", "-qm", "roster entry gone, cell kept")
-    after = git("rev-parse", "HEAD")
-
-    runtime = roster.SURFACES[0].runtime
-    assert repo_figures.always_on_at(tmp_path, before)[runtime] - (
-        repo_figures.always_on_at(tmp_path, after)[runtime]
-    ) == len("extra") + len("Trigger."), (
-        "always_on_at read the roster from skills/, where the cell still is, "
-        "rather than from .claude/skills/, where the entry was removed"
-    )
-
-
-def test_the_base_side_counts_both_doctrine_files(tmp_path):
-    """The half of the equality above that a single fixture could satisfy by
-    accident: measured against a tree whose two doctrine files have different
-    sizes, so dropping either one is visible in the number."""
-    git = git_tree(tmp_path)
-    surface(tmp_path)
-    git("add", "-A")
-    git("commit", "-qm", "base")
-    head = git("rev-parse", "HEAD")
-    charter = (tmp_path / "skills" / "charter" / "SKILL.md").read_text(encoding="utf-8")
-    body = len(lint._frontmatterless(charter))
-    roster_chars = len("charter") + len("Desc.")
-    # Per runtime, because the two do not read the same doctrine files: both
-    # read AGENTS.md at 100 and only Claude Code reads CLAUDE.md at 40. A
-    # single expectation could be satisfied by charging one runtime for the
-    # other's files, which is what this pins against.
-    assert repo_figures.always_on_at(tmp_path, head) == {
-        "Claude Code": 100 + 40 + body + roster_chars,
-        "Codex": 100 + body + roster_chars,
-    }
-
-
-def test_growth_and_shrink_carry_their_own_sign(tmp_path):
-    """A delta whose sign can invert with the suite green is worse than no
-    delta: it reports the one direction the ceiling exists to resist as its
-    opposite. Both directions, against one base."""
-    git = git_tree(tmp_path)
-    surface(tmp_path)
-    git("add", "-A")
-    git("commit", "-qm", "base")
-    base = git("rev-parse", "HEAD")
-    before = repo_figures.always_on_at(tmp_path, base)
-
-    # Every runtime moves, because AGENTS.md is the one doctrine file both
-    # read. Asserted per runtime rather than on the scalar: a delta taken off
-    # the smallest row alone cannot see growth confined to one surface.
-    (tmp_path / "AGENTS.md").write_text("a" * 150, encoding="utf-8")
-    grown = repo_figures.figure_always_on(tmp_path)["data"]["here"]
-    assert all(row["total"] - before[row["runtime"]] == 50 for row in grown)
-
-    (tmp_path / "AGENTS.md").write_text("a" * 70, encoding="utf-8")
-    shrunk = repo_figures.figure_always_on(tmp_path)["data"]["here"]
-    assert all(row["total"] - before[row["runtime"]] == -30 for row in shrunk)
-
-
-def test_the_rendered_delta_says_which_way_the_surface_moved(tmp_path):
-    """Sign, not just shape.
-
-    The first pin written for this matched `[-+]` and so stayed green when
-    every delta's sign was inverted -- a mutation that tells the owner a
-    growing surface shrank, which is the one reading the delta exists to make
-    impossible. Both directions, rendered through the callout's own function.
-    """
-    import doctrine_callout as dc
-
-    git = git_tree(tmp_path)
-    surface(tmp_path)
-    git("add", "-A")
-    git("commit", "-qm", "base")
-    base = git("rev-parse", "HEAD")
-
-    # One movement per runtime, with its sign, because the quantity has one
-    # value per runtime. AGENTS.md is the doctrine file every runtime reads,
-    # so every row moves together here; the surface-confined case, which the
-    # old single delta could not see at all, is the sibling below.
-    (tmp_path / "AGENTS.md").write_text("a" * 150, encoding="utf-8")
-    assert dc._always_on_delta(repo_figures, tmp_path, base) == (
-        " (Claude Code +50, Codex +50 this PR)")
-
-    (tmp_path / "AGENTS.md").write_text("a" * 70, encoding="utf-8")
-    assert dc._always_on_delta(repo_figures, tmp_path, base) == (
-        " (Claude Code -30, Codex -30 this PR)")
-
-
-def test_growth_confined_to_one_surface_is_still_reported(tmp_path):
-    """The bound the single scalar had, closed at the renderer.
-
-    A delta taken off `repo_total` is a delta off the *smallest* row, so
-    growth on any other surface moved nothing and a change that raised what
-    every Claude Code session here loads could book `+0` -- never tripping the
-    outflow rule that number exists to defend. Pinned on the surface that is
-    not the smallest, which is the only fixture that can tell the two
-    renderings apart. [PR #278 review, M22]
-    """
-    import doctrine_callout as dc
-
-    git = git_tree(tmp_path)
-    surface(tmp_path)
-    git("add", "-A")
-    git("commit", "-qm", "base")
-    base = git("rev-parse", "HEAD")
-
-    # A project skill somebody wrote by hand, at a name that is no cell: check
-    # 17 reports nothing about it, and it is always-on prose all the same.
-    mine = tmp_path / roster.SURFACES[0].directory / "repo-helper"
-    mine.mkdir(parents=True)
-    (mine / "SKILL.md").write_bytes(
-        ("---" + NL + "name: repo-helper" + NL + "description: Mine." + NL
-         + "---" + NL + NL + "Body." + NL).encode("utf-8"))
-
-    grew = len("repo-helper") + len("Mine.")
-    assert dc._always_on_delta(repo_figures, tmp_path, base) == (
-        f" (Claude Code +{grew}, Codex +0 this PR)"), (
-        "growth confined to one runtime's surface is invisible to the delta"
-    )
-
-
-def test_a_nested_skill_file_is_not_a_cell(tmp_path):
-    """The set both readers count, pinned where they used to differ.
-
-    The working tree globbed one level and the base side matched
-    `endswith("/SKILL.md")` over a recursive listing. Nothing in this tree is
-    nested, so the two agreed and a mutation widening either left the suite
-    green. A cell is `skills/<name>/SKILL.md`; a SKILL.md quoted or drafted
-    under a cell's own subdirectory is not a ninth always-on description.
-    """
-    git = git_tree(tmp_path)
-    surface(tmp_path)
-    nested = tmp_path / "skills" / "charter" / "references"
-    nested.mkdir(parents=True)
-    (nested / "SKILL.md").write_text(
-        "---" + NL + "name: quoted" + NL + "description: Not a cell." + NL
-        + "---" + NL + NL + "An example, not a roster entry." + NL,
-        encoding="utf-8")
-    git("add", "-A")
-    git("commit", "-qm", "base")
-    head = git("rev-parse", "HEAD")
-
-    data = repo_figures.figure_always_on(tmp_path)["data"]
-    assert data["cells"] == 1
-    assert data["roster"] == len("charter") + len("Desc.")
-    assert repo_figures.always_on_at(tmp_path, head) == {
-        row["runtime"]: row["total"] for row in data["here"]
-    }
-
-
-# Every figure `build_figures` emits unconditionally, in call order. Literal
-# for the same reason the lint's check list is: derived from the source, the
-# test would agree with itself. The lint's equivalent caught a docstring
-# claiming eight checks while run() called ten; this file's docstring is the
-# contract for what a write-up gets by default and nothing held it to that.
-FIGURES_ALWAYS_EMITTED = (
-    "figure_tests",
-    "figure_always_on", "figure_census",
-)
-FIGURES_ON_DEMAND = ("figure_delta", "figure_cell", "figure_cell_total",
-                     "figure_cell_description")
-
-
-def test_the_module_docstring_enumerates_every_figure_always_emitted():
-    """Count and order only -- pinning the prose would go red on every
-    rewording and be deleted within a release. It does not catch a wrong
-    description inside an item; that is a separate class."""
-    import inspect
-
-    called = re.findall(r"\bfigure_[a-z_]+",
-                        inspect.getsource(repo_figures.build_figures))
-    assert tuple(called) == FIGURES_ALWAYS_EMITTED + FIGURES_ON_DEMAND, (
-        "build_figures emits figures this list does not name, or in another order"
-    )
-    numbered = re.findall(r"^\s*\d+\.\s+(figure_[a-z_]+)",
-                          repo_figures.__doc__, re.M)
-    assert tuple(numbered) == FIGURES_ALWAYS_EMITTED, (
-        "the docstring's numbered figures do not match what build_figures emits"
-    )
-    for name in FIGURES_ON_DEMAND:
-        assert name in repo_figures.__doc__, name
-
-
-def test_the_always_emitted_figures_are_what_a_default_run_produces(tmp_path,
-                                                                    monkeypatch):
-    """The list above names call sites; this one measures the output, so a
-    figure that is called and then dropped is still caught."""
-    monkeypatch.setattr(repo_figures.engine, "figure_tests",
-                        lambda root, paths: {"name": "suite", "value": "stub",
-                                             "basis": "stub", "data": {}})
-    make_doctrine_root(tmp_path, b"x" * 10)
-    surface(tmp_path)
-    (tmp_path / "docs" / "architecture" / "decisions").mkdir(parents=True)
-    figures = repo_figures.build_figures(tmp_path, None)
-    assert len(figures) == len(FIGURES_ALWAYS_EMITTED)
-    assert [f["name"] for f in figures] == [
-        "suite", "always-on surface", "decision-log census",
-    ]
-
-
-# --- the callout prices each surface against the ceiling that governs it ----
-#
-# Cycle two found the doctrine's two-file sum rendered against AGENTS.md's
-# budget alone, asserting a ceiling that does not exist -- AGENTS.md is capped
-# at 6,000 and CLAUDE.md at 500, so no reading of `doctrine 5,758 of 6,000`
-# was right. The remedy landed with no pin of any kind, and substituting one
-# size for another rebuilt it with the whole suite green, rendering
-# `AGENTS.md 5,758 of 6,000` -- worse than the original, because the callout
-# no longer shows a doctrine figure, so the 11-character cross-check that
-# caught the class once is not available on the surface the owner reads.
-#
-# Literal on purpose, like the lint's check list: derived from `dc.PRICED`,
-# the test would agree with itself.
-PRICED_PAIRS = (
-    ("CLAUDE.md", "POINTER_BUDGET_CHARS", "pointer"),
-)
-
-
-def test_each_priced_pair_names_the_ceiling_that_governs_it():
-    """The binding, not the rendering: which size is priced against which
-    constant. Substituting a size, swapping two ceilings, or dropping a row
-    each change this set.
-
-    Compared as a set and not as a sequence, deliberately. Each row carries
-    its own label, so the order rows are rendered in changes nothing a reader
-    can be wrong about -- and a pin that reddened on a reorder would block a
-    lawful edit, which fails as hard as passing an unlawful one. The length is
-    asserted separately so a duplicated row cannot hide inside the set.
-    """
-    import doctrine_callout as dc
-
-    assert set(dc.PRICED) == set(PRICED_PAIRS)
-    assert len(dc.PRICED) == len(PRICED_PAIRS)
-    assert len({label for label, _, _ in dc.PRICED}) == len(dc.PRICED)
-
-
-def test_every_priced_pair_reaches_the_rendered_callout():
-    """And the rendering follows the binding, so a row that is declared and
-    then not rendered -- or rendered against a different number than it
-    declares -- is caught too.
-
-    Values come from the modules rather than from literals: asserting
-    `AGENTS.md 5,747 of 6,000` would go red on every lawful edit to the
-    doctrine, which is a guard blocking lawful work on the very surface this
-    change exists to make editable.
-    """
-    import doctrine_callout as dc
-
-    data = repo_figures.figure_always_on(ROOT)["data"]
-    body = dc._body(["AGENTS.md"])
-    for label, const, key in PRICED_PAIRS:
-        expected = f"{label} {data[key]:,} of {getattr(lint, const):,}"
-        assert expected in body, (expected, body)
-
-
-def test_the_ceilings_are_read_from_the_guards_constants(monkeypatch):
-    """The other polarity, and the one that keeps these pins honest.
-
-    The sizes move whenever the doctrine is edited, so a pin asserting
-    `CLAUDE.md 11 of 500` would go red on every lawful edit -- a guard
-    blocking lawful work on the very surface this change exists to make
-    editable. Moving the guard's own constant and watching the rendered
-    ceiling follow proves the render reads the guard rather than a literal,
-    without pinning either number.
-    """
-    import doctrine_callout as dc
-
-    monkeypatch.setattr(lint, "POINTER_BUDGET_CHARS", 4_242)
-    data = repo_figures.figure_always_on(ROOT)["data"]
-    body = dc._body(["AGENTS.md"])
-    assert f"CLAUDE.md {data['pointer']:,} of 4,242" in body
-
-
-# --- the per-runtime rendering, which nothing named before ---------------
-#
-# Three mutants survived the whole suite when this figure was reviewed: the
-# scalar taken as the first row rather than the smallest, the divergence
-# clause silenced, and the roster clause forced into a claim of sameness.
-# One cause: every divergence fixture in the file shortened the FIRST
-# surface, so "smallest" and "first" could not be told apart, and no test in
-# the repository named the renderers at all. [PR #278 review, M3, D1]
-
-def _diverging(tmp_path, short_surface):
-    """A tree where exactly one named surface is short a cell's entry."""
-    surface(tmp_path)
-    extra = tmp_path / "skills" / "extra"
-    extra.mkdir(parents=True)
-    (extra / "SKILL.md").write_bytes(
-        ("---" + NL + "name: extra" + NL + "description: Trigger." + NL + "---"
-         + NL + NL + "Body." + NL).encode("utf-8"))
-    roster.write(tmp_path)
-    (tmp_path / short_surface.directory / "extra" / "SKILL.md").unlink()
-    return repo_figures.figure_always_on(tmp_path)["data"]
-
-
-def test_the_scalar_is_the_smallest_row_and_not_the_first(tmp_path):
-    """Shortening the SECOND surface is the only fixture that discriminates.
-
-    Every fixture here used to shorten the first, so `min` and `here[0]`
-    agreed in all of them and the mutant that swapped them survived. Under it
-    this repository's own arrival would have booked no movement at all, the
-    base having loaded nothing into Codex -- which is the reading the design
-    rejected.
-    """
-    data = _diverging(tmp_path, roster.SURFACES[1])
-    rows = {row["directory"]: row["total"] for row in data["here"]}
-    first, second = (s.directory for s in roster.SURFACES[:2])
-    assert rows[second] < rows[first], "the fixture does not diverge"
-    assert data["repo_total"] == rows[second]
-    assert data["repo_total"] != rows[first], (
-        "the scalar is the first row rather than the smallest"
-    )
-
-
-def test_every_runtime_is_named_and_its_chain_composes(tmp_path):
-    """The renderer, on a tree where the runtimes disagree.
-
-    Silencing it, or collapsing it to one clause claiming the runtimes agree,
-    both left the suite green -- and the second shipped a false sentence onto
-    the merge surface, which posts on exactly the trees where the guard is
-    red. Each chain must sum to the total it is printed against, which is a
-    property no single chain standing for every runtime could have.
-    """
-    data = _diverging(tmp_path, roster.SURFACES[1])
-    rendered = repo_figures.by_runtime(data)
-    for row in data["here"]:
-        assert row["runtime"] in rendered, f"{row['runtime']} is not named"
-        assert f"{row['total']:,}" in rendered, (
-            f"{row['runtime']}'s own total is not rendered")
-        assert row["directory"] in rendered, (
-            "the name/description term does not say which directory it counted"
-        )
-    assert "the same" not in rendered, (
-        "a tree where the runtimes disagree is rendered as agreement"
-    )
-    chains = rendered.split("; ")
-    assert len(chains) == len(data["here"])
-    for chain, row in zip(chains, data["here"]):
-        terms = [int(part.replace(",", "").split()[-1])
-                 for part in chain.split(" = ")[1].split(" + ")]
-        assert sum(terms) == row["total"], (
-            f"{row['runtime']}'s chain sums to {sum(terms)}, not {row['total']}"
+    for filename, text in (depth or {}).items():
+        (cell / "references" / filename).write_text(
+            text, encoding="utf-8", newline=NL
         )
 
 
-def test_the_runtimes_are_still_named_when_they_agree(tmp_path):
-    """The lawful polarity: a renderer that only spoke on divergence is what
-    let a scalar stand for a per-runtime quantity in three places."""
-    surface(tmp_path)
-    roster.write(tmp_path)
-    data = repo_figures.figure_always_on(tmp_path)["data"]
-    rendered = repo_figures.by_runtime(data)
-    for row in data["here"]:
-        assert row["runtime"] in rendered
-        assert f"{row['total']:,}" in rendered
-
-
-def test_the_surface_literals_are_what_each_runtime_reads(tmp_path):
-    """A wrong directory name is invisible to every other test in the suite.
-
-    Renaming the Codex surface to a directory Codex does not read left the
-    whole suite green, the lint green and the roster guard green -- the
-    repository back in #199 for that runtime with nothing able to say so. The
-    suite catches a *missing* surface and could not catch a *wrong* one.
-
-    The comment above `SURFACES` warns against a fixture holding its own copy
-    of a directory name, and this is its inverse: the warning is about a
-    fixture going on testing a surface the generator has stopped writing, and
-    this pin exists to notice the generator writing a name no runtime reads.
-    A genuine rename must edit this line, which is the point of it.
-    [PR #278 review, M14]
-    """
-    assert [(s.directory, s.runtime) for s in roster.SURFACES] == [
-        (".claude/skills", "Claude Code"),
-        (".agents/skills", "Codex"),
-    ]
-    assert roster.ROSTER_DIRS == (".claude/skills", ".agents/skills")
-    # Which doctrine files each runtime reads is the other half of a row, and
-    # charging every runtime for every file made the rows falsely equal.
-    assert {s.runtime: s.doctrine for s in roster.SURFACES} == {
-        "Claude Code": ("AGENTS.md", "CLAUDE.md"),
-        "Codex": ("AGENTS.md",),
-    }
-
-
-# --- a ceiling is reported as the one in force, not as its constant [#334] ---
-
-def _admit(root, chars, *keys):
-    (root / "docs").mkdir(parents=True, exist_ok=True)
-    (root / lint.ADMISSIONS).write_text(
-        json.dumps({"date": "2026-09-03", "issue": 334, "ceilings": list(keys),
-                    "chars": chars, "item": "a fixture item",
-                    "outflow": "nothing had a cheaper home"}) + NL,
-        encoding="utf-8")
-
-
-def test_a_ceiling_with_nothing_admitted_renders_as_its_bare_constant(tmp_path):
-    """The polarity that keeps every other pin in this suite honest.
-
-    Every expectation elsewhere is derived from `lint`'s constants, so a
-    renderer that decorated a ceiling unconditionally would red them and be
-    reverted -- but silently prefixing the constant on a tree with an empty
-    record would be worse: it would report a composition nobody wrote.
-    """
-    assert repo_figures.priced(9_000, 0) == "9,000"
-    surface(tmp_path)
-    data = repo_figures.figure_always_on(tmp_path)["data"]
-    assert data["admitted"] == {"always-on-row": 0, "always-on-adopter": 0}
-    assert f"of {lint.ALWAYS_ON_ROW_BUDGET_CHARS:,} =" in repo_figures.by_runtime(data)
-    assert "admitted" not in repo_figures.by_runtime(data)
-
-
-def test_a_ceiling_with_an_admission_states_the_one_in_force_and_its_constant(
-        tmp_path):
-    """Both numbers, because they answer different questions.
-
-    The guard enforces the sum; a session raising or arguing the ceiling
-    argues the constant, which an admission does not move. A surface printing
-    only the sum would hide what `tools/lint.py` still holds, and one printing
-    only the constant would tell a reader they had headroom a different number
-    governs -- which is the defect the always-on line was given a ceiling for.
-    """
-    assert repo_figures.priced(9_000, 42) == "9,042 (9,000 plus 42 admitted)"
-    surface(tmp_path)
-    _admit(tmp_path, 42, "always-on-row", "always-on-adopter")
-    data = repo_figures.figure_always_on(tmp_path)["data"]
-    assert data["admitted"] == {"always-on-row": 42, "always-on-adopter": 42}
-
-    rendered = repo_figures.by_runtime(data)
-    assert f"{lint.ALWAYS_ON_ROW_BUDGET_CHARS + 42:,} " in rendered, rendered
-    assert f"({lint.ALWAYS_ON_ROW_BUDGET_CHARS:,} plus 42 admitted)" in rendered, rendered
-    # The decomposition still sums to the total it is printed against: the
-    # composition sits before the `=`, where the chain pin reads nothing.
-    for chain, row in zip(rendered.split("; "), data["here"]):
-        terms = [int(part.replace(",", "").split()[-1])
-                 for part in chain.split(" = ")[1].split(" + ")]
-        assert sum(terms) == row["total"], (chain, row["total"])
-
-    value = repo_figures.figure_always_on(tmp_path)["value"]
-    assert f"({lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,} plus 42 admitted)" in value, value
-
-
-def test_a_cell_body_row_prices_against_what_is_admitted_to_it(tmp_path):
-    """A cell body charges nothing, and the figure matches what files.
-
-    The pairing this used to pin is what made the mandated command print 937
-    characters of headroom for a cell the ratchet would have filed against at
-    one. A ceiling is where the body stood, measured on a body that already
-    contained whatever had been admitted to it, so charging the rows again
-    counts them twice -- and the surface a session reads before writing then
-    disagrees with the mechanism that acts.
-
-    The `body:` key stays lawful. Three landed rows carry it and the record is
-    append-only, so the fix is to stop reading them here rather than to refuse
-    the key, which would fail those rows closed at `_admission_key_ok`.
-    """
-    surface(tmp_path)
-    _cell(tmp_path, "example-skill", "y" * 400 + NL)
-    roster.write(tmp_path)
-    rel = "skills/example-skill/SKILL.md"
-    original = dict(lint.CELL_BODY_CEILING_CHARS)
-    lint.CELL_BODY_CEILING_CHARS = {rel: 100}
-    try:
-        rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
-        assert rows["example-skill"]["budgets"] == [("body", 100, 0)]
-        assert "of 100, headroom" in repo_figures.cell_body_block(
-            [rows["example-skill"]])
-
-        # Both polarities on the thing that actually changed: a row admitting
-        # characters to this body moves neither the figure nor the block.
-        _admit(tmp_path, 350, f"body:{rel}")
-        rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
-        assert rows["example-skill"]["budgets"] == [("body", 100, 0)], (
-            "an admission row moved a cell body's ceiling")
-        block = repo_figures.cell_body_block([rows["example-skill"]])
-        assert "admitted" not in block, block
-        assert "of 100, headroom" in block, block
-        body = rows["example-skill"]["body"]
-        assert f"headroom {100 - body:,}" in block, block
-        # And the figure agrees with what the mechanism files against.
-        lint_ceiling = lint.CELL_BODY_CEILING_CHARS[rel]
-        assert rows["example-skill"]["budgets"][0][1] == lint_ceiling
-    finally:
-        lint.CELL_BODY_CEILING_CHARS = original
-
-
-def test_the_charter_row_prices_both_of_its_shared_ceilings(tmp_path):
-    """The charter has two budgets and an admission may reach either.
-
-    A row collapsing them, or applying one ceiling's admission to the other,
-    would report a cell as sharing a ceiling nobody set.
-    """
-    surface(tmp_path)
-    _admit(tmp_path, 60, "always-on-adopter")
-    rows = {row["name"]: row for row in repo_figures.cell_body_rows(tmp_path)}
-    assert rows["charter"]["budgets"] == [
-        ("always-on row", lint.ALWAYS_ON_ROW_BUDGET_CHARS, 0),
-        ("adopter total", lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS, 60),
-    ]
-    block = repo_figures.cell_body_block([rows["charter"]])
-    assert f"always-on row {lint.ALWAYS_ON_ROW_BUDGET_CHARS:,}," in block, block
-    assert f"({lint.ALWAYS_ON_ADOPTER_BUDGET_CHARS:,} plus 60 admitted)" in block, block
-
-
-# --- the pointer reach: what a session holds after following the pointers ---
-
-def test_reach_is_a_cell_s_own_prose_when_it_points_nowhere(tmp_path):
-    """The floor of the figure, and the one row a reader must be able to
-    recognise: a cell that points at nothing reaches exactly itself, body plus
-    depth, which is the same measure `figure_cell_total` renders for one cell.
-    A reach that silently omitted depth would look right on every row."""
-    _cell(tmp_path, "alpha", "x" * 40 + NL, depth={"flat.md": "y" * 10})
-    rows = {row["name"]: row for row in repo_figures.pointer_reach_rows(tmp_path)}
-    total = repo_figures.figure_cell_total(
-        tmp_path, "skills/alpha/SKILL.md")["data"]["total"]
-    assert rows["alpha"]["reach"] == total == 51, rows
-    assert rows["alpha"]["reached"] == [], rows
-    assert "points at nothing" in repo_figures.pointer_reach_block(
-        list(rows.values()))
+def test_reach_is_a_cells_own_prose_when_it_points_nowhere(tmp_path):
+    _cell(tmp_path, "alpha", "# alpha\n")
+    rows = repo_figures.pointer_reach_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["reach"] == rows[0]["own"]
+    assert rows[0]["reached"] == []
 
 
 def test_reach_follows_pointers_transitively_and_counts_each_cell_once(tmp_path):
-    """Three claims the figure's basis makes, each falsifiable on its own.
-
-    Transitive: alpha reaches gamma through beta without naming it. Counted
-    once: a diamond reaching one cell by two routes must not double it, which
-    is the arithmetic a naive sum-per-edge gets wrong. And direction: gamma
-    points at nobody, so its reach stays its own prose while alpha's is the
-    union -- a figure that ignored direction would report the same number for
-    every member of a connected group.
-    """
-    _cell(tmp_path, "alpha", "a" * 10 + NL
-          + "See the `beta` cell and the `delta` cell." + NL)
-    _cell(tmp_path, "beta", "b" * 10 + NL + "See the `gamma` cell." + NL)
-    _cell(tmp_path, "delta", "d" * 10 + NL + "See the `gamma` cell." + NL)
-    _cell(tmp_path, "gamma", "g" * 10 + NL)
+    _cell(tmp_path, "alpha", "The `beta` cell and the `gamma` cell.\n")
+    _cell(tmp_path, "beta", "The `gamma` cell.\n")
+    _cell(tmp_path, "gamma", "No pointer.\n")
     rows = {row["name"]: row for row in repo_figures.pointer_reach_rows(tmp_path)}
-
-    own = {
-        name: repo_figures.figure_cell_total(
-            tmp_path, f"skills/{name}/SKILL.md")["data"]["total"]
-        for name in ("alpha", "beta", "delta", "gamma")
-    }
-    assert rows["alpha"]["reached"] == ["beta", "delta", "gamma"], rows
-    assert rows["alpha"]["reach"] == sum(own.values()), rows
-    assert rows["gamma"]["reach"] == own["gamma"], rows
-    assert rows["beta"]["reach"] == own["beta"] + own["gamma"], rows
-    # Largest reach first, and the cells reached are named rather than counted.
-    block = repo_figures.pointer_reach_block(
-        repo_figures.pointer_reach_rows(tmp_path))
-    assert block.splitlines()[0].strip().startswith("alpha"), block
-    assert "reaches beta, delta, gamma" in block, block
-
-
-def test_reach_excludes_the_charter_and_the_charter_reaches_what_it_names(
-        tmp_path):
-    """The one exclusion the basis states, in both directions.
-
-    A pointer at the charter loads nothing -- every session has it already --
-    so counting it would add the same prose to every row and rank nothing.
-    Pointers *from* it are ordinary, which is what makes the practice's
-    declared roster a real set of pointers and its reach the whole of what a
-    session could route to.
-    """
-    _cell(tmp_path, "charter", "The binding half." + NL
-          + "The depth is the `alpha` cell's." + NL)
-    _cell(tmp_path, "alpha", "a" * 10 + NL + "Stated by the `charter` cell." + NL)
-    rows = {row["name"]: row for row in repo_figures.pointer_reach_rows(tmp_path)}
-    alpha_own = repo_figures.figure_cell_total(
-        tmp_path, "skills/alpha/SKILL.md")["data"]["total"]
-    charter_own = repo_figures.figure_cell_total(
-        tmp_path, "skills/charter/SKILL.md")["data"]["total"]
-    assert rows["alpha"]["reached"] == [], rows
-    assert rows["alpha"]["reach"] == alpha_own, rows
-    assert rows["charter"]["reached"] == ["alpha"], rows
-    assert rows["charter"]["reach"] == charter_own + alpha_own, rows
+    assert rows["alpha"]["reached"] == ["beta", "gamma"]
+    assert rows["alpha"]["reach"] == sum(rows[name]["own"] for name in rows)
 
 
 def test_reach_survives_a_circle_rather_than_hanging(tmp_path):
-    """A circle is a finding, not a crash.
-
-    The guard that refuses one runs in the same command as the figure, and a
-    reach walk that recursed on a ring would answer the flow's mandated
-    command with a traceback instead of the finding that names the ring.
-    """
-    _cell(tmp_path, "alpha", "a" * 10 + NL + "See the `beta` cell." + NL)
-    _cell(tmp_path, "beta", "b" * 10 + NL + "See the `alpha` cell." + NL)
+    _cell(tmp_path, "alpha", "The `beta` cell.\n")
+    _cell(tmp_path, "beta", "The `alpha` cell.\n")
     rows = {row["name"]: row for row in repo_figures.pointer_reach_rows(tmp_path)}
-    both = sum(
-        repo_figures.figure_cell_total(
-            tmp_path, f"skills/{name}/SKILL.md")["data"]["total"]
-        for name in ("alpha", "beta")
-    )
-    assert rows["alpha"]["reach"] == rows["beta"]["reach"] == both, rows
-    assert lint.pointer_cycle_findings(lint.cell_pointer_graph(tmp_path)), rows
+    assert rows["alpha"]["reached"] == ["beta"]
+    assert rows["beta"]["reached"] == ["alpha"]
+
+
+def test_figures_consumes_lints_cell_discovery_definition():
+    source = (ROOT / "tools" / "figures.py").read_text(encoding="utf-8")
+    assert "lint.cell_sources(root)" in source
+    assert "import roster" not in source

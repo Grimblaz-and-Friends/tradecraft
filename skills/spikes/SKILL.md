@@ -30,9 +30,9 @@ description: Testing a premise by running it before you assert it — a bounded,
 
 **One spike tests one named premise.** Write the premise down before you start — the sentence you are trying to falsify, in the words you would have asserted it. That sentence is the whole bound: the spike stops the moment the premise is answered, either way.
 
-**Where it does not resolve, abandon it.** The premise then enters whatever you were writing — an artifact, a finding, a proposed wording — as a declared assumption with the falsifier that would settle it. An abandoned spike costs a paragraph; an unbounded one becomes the work. [D-173] [D-80]
+**Where it does not resolve, abandon it.** The premise then enters whatever you were writing — an artifact, a finding, a proposed wording — as a declared assumption with the falsifier that would settle it. An abandoned spike costs a paragraph; an unbounded one becomes the work.
 
-**Report on the work's issue, filing one if none exists, before the revision that relies on it.** Copy `references/spike-report-template.md` whole. Its shared heading makes every run findable with one issue-tracker search, without an index this instrument cannot commit to maintain. [D-132] Without the report, *ran and found nothing* and *never ran* are the same silence; for an abandoned spike it is the only thing whoever approves the work can weigh against a premise still declared open.
+**Report on the work's issue, filing one if none exists, before the revision that relies on it.** Copy `references/spike-report-template.md` whole. Its shared heading makes every run findable with one issue-tracker search, without an index this instrument cannot commit to maintain. Without the report, *ran and found nothing* and *never ran* are the same silence; for an abandoned spike it is the only thing whoever approves the work can weigh against a premise still declared open.
 
 **Where the premise is about what a reader does under a wording, the run is a cold-seat A/B: `references/cold-seat-ab.md`** — its six properties, plant reading and scoring route, with `references/ab-dispatch-template.md` for each seat's dispatch.
 

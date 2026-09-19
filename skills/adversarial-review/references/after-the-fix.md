@@ -12,7 +12,7 @@ The ruled batch goes to the resumed implementer, and every account the holder th
 
 ## The fix batch — what it owes, and what looks at the result
 
-**The fix batch is the round's last act** [D-371]: no further prosecution pass is bought, ruled, or recorded, and no stage names a budget for one. What reads the result instead is use, below.
+**The fix batch is the round's last act**: no further prosecution pass is bought, ruled, or recorded, and no stage names a budget for one. What reads the result instead is use, below.
 
 **The executable floor — mandatory, and never recorded or handed on in place of being run.** The resumed builder receiving the whole ruled batch runs it against the tree that batch produces: the suites, the lint, and each sustained finding's own probe re-derived against that tree. **Where a sustained finding carried no probe the floor owes nothing for it** — the floor is what executes, and a check invented at fix time is a fresh instrument answering a question no stage asked. **What the floor could not reach is named in the report**, so *nothing executable touched these fixes* and *the floor ran clean* stop being one silence.
 

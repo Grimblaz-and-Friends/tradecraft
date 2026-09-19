@@ -5,7 +5,7 @@ Text mode is the substrate's sharpest edge, and it takes three rules because it 
 ## The three rules
 
 - **Machine-read output stays ASCII.** No non-ASCII character in a string constant that is not a docstring.
-- **A stream is set to UTF-8 with LF endings before anything is written to it.** First statement of the entry point, and the ordering is not incidental: a call after argument parsing is a call that `--help` has already outrun. **It is two properties, and the second is the one that gets dropped** — the encoding is UTF-8, *and* the platform's newline translation is suppressed. The obvious hand-rolled call sets the encoding and leaves the translation in place, which satisfies the sentence and not the rule, so a reader with no helper within reach still owes both halves and not the easy one. Inside this tree that setup is `lib/winio.py`'s `utf8_stdio()`, imported by name. **Outside this tree it is not within reach, and writing both properties yourself is compliance rather than a shortfall** — an installed plugin's copy sits at a version-stamped path that stops resolving at the next release [D-156], so there is no import to reach for.
+- **A stream is set to UTF-8 with LF endings before anything is written to it.** First statement of the entry point, and the ordering is not incidental: a call after argument parsing is a call that `--help` has already outrun. **It is two properties, and the second is the one that gets dropped** — the encoding is UTF-8, *and* the platform's newline translation is suppressed. The obvious hand-rolled call sets the encoding and leaves the translation in place, which satisfies the sentence and not the rule, so a reader with no helper within reach still owes both halves and not the easy one. Inside this tree that setup is `lib/winio.py`'s `utf8_stdio()`, imported by name. **Outside this tree it is not within reach, and writing both properties yourself is compliance rather than a shortfall** — an installed plugin's copy sits at a version-stamped path that stops resolving at the next release, so there is no import to reach for.
 - **A file that will later be compared, restored or measured is written as bytes** — and **compared line endings aside**. Two questions, two answers: the write is what keeps one tree's bytes the same on every platform, while the comparison has to survive a working copy some other tool rewrote in text mode. A comparison reading raw bytes calls that rewrite a defect, which is the third section below.
 
 ## Why the first two are not a choice
@@ -16,15 +16,15 @@ A rule about characters can be **guarded exactly**, because "is this byte ASCII"
 
 A stream set to UTF-8 covers what you were **handed** — a path from version control, a filename a consumer chose, a subprocess's stderr — which no literal check can reach. That half fails hardest exactly where it matters most: outside the code page it does not garble, it *raises*, killing the report before the offending name prints, so the message naming the problem is the message that goes missing.
 
-**Guard the second at the call site, not by tracing reachability.** "Did this helper get called on this path" is undecidable from a syntax tree. It is the wrong question. The first statement of the entry point is a **position**, and a position is exact. Check the import binding too, for the reason the second rule gives — a binding is what such a check reads, not where the name resolves. [D-252]
+**Guard the second at the call site, not by tracing reachability.** "Did this helper get called on this path" is undecidable from a syntax tree. It is the wrong question. The first statement of the entry point is a **position**, and a position is exact. Check the import binding too, for the reason the second rule gives — a binding is what such a check reads, not where the name resolves.
 
 ## What setting the stream also does
 
-**It pins the line ending as well as the encoding, and that is a decision rather than a side effect.** A text stream's platform default translates a line feed on the way out; suppressing that translation means every caller now emits the same bytes on every platform — which is what a consumer comparing, diffing or hashing a captured stream needs. [D-186]
+**It pins the line ending as well as the encoding, and that is a decision rather than a side effect.** A text stream's platform default translates a line feed on the way out; suppressing that translation means every caller now emits the same bytes on every platform — which is what a consumer comparing, diffing or hashing a captured stream needs.
 
 ## The third rule, and what it is not about
 
-Not encoding at all — and it has now fired on a real tree, which is where the rule's two halves come from. [D-232]
+Not encoding at all — and it has now fired on a real tree, which is where the rule's two halves come from.
 
 **Write as bytes**, always: a text-mode write turns a line feed into a carriage return pair, version control reports the tree clean against a blob that has neither, and a validator asked about the same content can answer differently — so a harness can measure a tree its own commit does not contain. **Compare line endings aside**, wherever version control normalises them on the way in: a difference that cannot survive into a commit is not drift, and treating it as drift reddens a lawful tree. The repair belongs on the comparison; leave the write exact, so the command that regenerates the file still restores the canonical bytes.
 
