@@ -98,16 +98,21 @@ GIT_LOG_DIFF_FLAGS = {
     "--name-only", "--name-status", "--patch", "--shortstat", "--stat", "-p",
 }
 NESTED_SHELL_FLAGS = {
-    "bash": {"-c"}, "sh": {"-c"}, "zsh": {"-c"},
     "pwsh": {"-c", "-command"}, "powershell": {"-c", "-command"},
     "cmd": {"/c"},
 }
+POSIX_NESTED_SHELLS = {"bash", "sh", "zsh"}
+POSIX_NESTED_OPTION_CHARS = frozenset("celx")
+NESTED_BODY_DENIAL = (
+    "holder shell write denied: nested command body cannot be identified "
+    "or cannot be split"
+)
 DIRECTORY_COMMANDS = {"cd", "chdir", "pushd", "set-location"}
 SHELL_EFFECT = re.compile(r"(?:^|\s)(?:>|>>|<|2>|&>|tee\b|set-content\b|add-content\b|out-file\b)", re.I)
 NESTED_OR_CHAINED = re.compile(r"(?:\$\(|`|&&|\|\||;|\r|\n)")
 NESTED_SHELL_TEXT = re.compile(
     r"(?i)(?:^|\s)(?:[^\s'\"]*[\\/])?"
-    r"(?:bash|sh|zsh|pwsh|powershell|cmd)(?:\.exe)?\s+(?:-c|-command|/c)\b"
+    r"(?:bash|sh|zsh|pwsh|powershell|cmd)(?:\.exe)?(?:\s|$)"
     r"|(?:^|\s)eval\b"
 )
 WINDOWS_ABSOLUTE = re.compile(
@@ -399,22 +404,29 @@ def _read_only_shell(command: str) -> bool:
     return _read_only_command(executable, words)
 
 
-def _nested_shell_body(words: list[str]) -> tuple[str, bool] | None:
+def _nested_shell_body(words: list[str]) -> tuple[bool, str | None]:
     executable = _executable_name(words[0])
     if executable == "eval":
-        return (" ".join(words[1:]), True)
+        return True, " ".join(words[1:]) if len(words) > 1 else None
+    if executable in POSIX_NESTED_SHELLS:
+        for index, word in enumerate(words[1:], 1):
+            if not word.startswith("-") or word.startswith("--"):
+                return True, None
+            options = word[1:]
+            if not options or any(option not in POSIX_NESTED_OPTION_CHARS for option in options):
+                return True, None
+            if "c" not in options:
+                continue
+            if index + 1 >= len(words) or index + 2 != len(words):
+                return True, None
+            return True, words[index + 1]
+        return True, None
     flags = NESTED_SHELL_FLAGS.get(executable)
     if flags is None:
-        return None
-    for index, word in enumerate(words[1:], 1):
-        if word.lower() not in flags:
-            continue
-        if index + 1 >= len(words):
-            return ("", True)
-        if executable in {"bash", "sh", "zsh"}:
-            return (words[index + 1], index + 2 == len(words))
-        return (" ".join(words[index + 1:]), True)
-    return None
+        return False, None
+    if len(words) < 3 or words[1].lower() not in flags:
+        return True, None
+    return True, " ".join(words[2:])
 
 
 def _inline_interpreter_text(words: list[str], command: str) -> str | None:
@@ -452,21 +464,21 @@ def _shell_decision(command: str, cwd: Path, roots: list[Path], depth: int = 0) 
     words = _command_words(command)
     if words is None:
         if NESTED_SHELL_TEXT.search(command):
-            return "holder shell write denied: nested command body cannot be split"
+            return NESTED_BODY_DENIAL
         if _matches_root(_command_paths(command, cwd), roots):
             return "holder shell write denied under registered implementation root"
         return None
 
-    nested = _nested_shell_body(words)
-    if nested is not None:
-        body, exact = nested
-        if not body or _command_words(body) is None or _split_commands(body) is None:
-            return "holder shell write denied: nested command body cannot be split"
-        reason = _shell_decision(body, cwd, roots, depth + 1)
+    is_nested, nested_body = _nested_shell_body(words)
+    if is_nested:
+        if not nested_body:
+            return NESTED_BODY_DENIAL
+        if _command_words(nested_body) is None or _split_commands(nested_body) is None:
+            return NESTED_BODY_DENIAL
+        reason = _shell_decision(nested_body, cwd, roots, depth + 1)
         if reason:
             return reason
-        if exact:
-            return None
+        return None
 
     interpreter_text = _inline_interpreter_text(words, command)
     if interpreter_text is not None:

@@ -283,11 +283,39 @@ def test_nested_shell_entering_registered_root_is_denied(tmp_path, command):
     assert guard.decision(payload, []) is None
 
 
-def test_read_only_nested_shell_outside_root_is_allowed(roots):
+@pytest.mark.parametrize("options", ["-lc", "-ec", "-xc", "-cl", "-ce", "-cx"])
+def test_clustered_nested_shell_options_entering_registered_root_are_denied(
+        tmp_path, options):
+    protected = (tmp_path / "protected-root").resolve()
+    protected.mkdir()
+    payload = {
+        "tool_name": "Bash",
+        "cwd": str(tmp_path),
+        "tool_input": {
+            "command": f"bash {options} 'cd protected-root && printf x > owned'",
+        },
+    }
+    assert guard.decision(payload, [protected])
+    assert guard.decision(payload, []) is None
+
+
+@pytest.mark.parametrize("command", ["bash -c 'git status'", "bash -lc 'git status'"])
+def test_read_only_nested_shell_outside_root_is_allowed(roots, command):
     _protected, outside, registered = roots
     payload = {"tool_name": "Bash", "cwd": str(outside),
-               "tool_input": {"command": "bash -c 'git status'"}}
+               "tool_input": {"command": command}}
     assert guard.decision(payload, registered) is None
+
+
+def test_unknown_nested_shell_option_is_denied_when_a_root_is_registered(roots):
+    _protected, outside, registered = roots
+    payload = {
+        "tool_name": "Bash",
+        "cwd": str(outside),
+        "tool_input": {"command": "bash --unknown-option 'cd protected-root'"},
+    }
+    assert "cannot be identified" in guard.decision(payload, registered)
+    assert guard.decision(payload, []) is None
 
 
 def test_nested_body_that_cannot_be_split_is_denied_when_a_root_is_registered(roots):

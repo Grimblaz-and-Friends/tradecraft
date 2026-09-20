@@ -116,9 +116,9 @@ def test_earlier_head_thread_stays_undisposed_after_reviewer_runs_at_current_hea
     assert work.decide(fixture, RULES).stage == "review-disposition"
 
 
-def test_listed_producer_disposes_an_earlier_head_thread():
+def test_earlier_head_review_with_a_listed_disposition_reaches_release_report():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
-                    pr=True, draft=False, reviewer_ran=True)
+                    pr=True, draft=False)
     fixture.review_comments = [
         {"id": 41, "body": "earlier finding", "commit_id": "b" * 40,
          "user": {"login": REVIEWER, "type": "Bot"}},
@@ -158,14 +158,20 @@ def test_unlisted_bot_comment_does_not_count_as_connected_review():
     assert work.decide(fixture, RULES).stage == "waiting"
 
 
-def test_listed_review_on_an_old_head_does_not_count():
+def test_no_connected_reviewer_record_stays_waiting():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    assert work.decide(fixture, RULES).stage == "waiting"
+
+
+def test_listed_review_on_an_old_head_counts_once_for_the_pull_request():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
                     pr=True, draft=False)
     fixture.reviews = [{
         "body": "reviewed", "commit_id": "b" * 40,
         "user": {"login": REVIEWER, "type": "Bot"},
     }]
-    assert work.decide(fixture, RULES).stage == "waiting"
+    assert work.decide(fixture, RULES).stage == "release-report"
 
 
 def test_empty_reviewer_list_requires_no_review_and_says_so():
@@ -299,6 +305,18 @@ def test_unlabelled_issue_accepts_a_configured_product_incident_case_insensitive
     fixture = state(body)
     fixture.config = configured_work(tmp_path, ["Acme/Product-App"])
     assert work.decide(fixture, RULES).stage == "convergence"
+
+
+def test_unlisted_commenter_product_incident_is_ignored_and_named(tmp_path):
+    fixture = state()
+    fixture.issue_comments.append({
+        "body": "https://github.com/acme/product-app/issues/91",
+        "user": {"login": "unlisted-commenter"},
+    })
+    fixture.config = configured_work(tmp_path, ["acme/product-app"])
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "product-incident-required"
+    assert "ignored-product-incident-from=unlisted-commenter" in decision.reason
 
 
 def test_configured_product_list_refuses_an_unlabelled_issue_without_an_incident(tmp_path):

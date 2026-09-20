@@ -313,8 +313,9 @@ def has_product_incident(state: WorkState, product_repos: frozenset[str]) -> boo
            and int(marker.attributes["issue"]) > 0
            for marker in state.issue_markers):
         return True
-    return any(match.group(1).lower() in product_repos
-               for text, _author_name in state.issue_sources for match in ISSUE_URL.finditer(text))
+    return any(author in state.config.marker_producers
+               and match.group(1).lower() in product_repos
+               for text, author in state.issue_sources for match in ISSUE_URL.finditer(text))
 
 
 def _head_sha(state: WorkState) -> str | None:
@@ -369,18 +370,9 @@ def _checks_red(state: WorkState) -> bool:
     return any(str(check.get("conclusion") or "").lower() in RED_CONCLUSIONS for check in state.checks)
 
 
-def _review_record_at_head(state: WorkState, item: dict[str, object]) -> bool:
-    commit_id = item.get("commit_id")
-    head = _head_sha(state)
-    return commit_id is None or (isinstance(commit_id, str) and commit_id == head)
-
-
 def _reviewer_ran(state: WorkState) -> bool:
-    for item in (*state.reviews, *state.review_comments, *state.pr_comments):
-        if (_author(item) in state.config.connected_reviewers
-                and _review_record_at_head(state, item)):
-            return True
-    return False
+    return any(_author(item) in state.config.connected_reviewers
+               for item in (*state.reviews, *state.review_comments, *state.pr_comments))
 
 
 def _disposition(body: str) -> bool:
@@ -444,10 +436,22 @@ def _ignored_disposition_suffix(state: WorkState) -> str:
     return f";ignored-disposition-from={','.join(authors)}" if authors else ""
 
 
+def _ignored_product_incident_suffix(state: WorkState) -> str:
+    authors = sorted({
+        author
+        for text, author in state.issue_sources
+        if author not in state.config.marker_producers
+        and any(match.group(1).lower() in state.config.product_repositories
+                for match in ISSUE_URL.finditer(text))
+    })
+    return f";ignored-product-incident-from={','.join(authors)}" if authors else ""
+
+
 def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
                detail: str | None = None) -> Decision:
-        suffix = _ignored_marker_suffix(state) + _ignored_disposition_suffix(state)
+        suffix = (_ignored_marker_suffix(state) + _ignored_disposition_suffix(state)
+                  + _ignored_product_incident_suffix(state))
         return Decision(stage, dispatch, continuity, reason + suffix, detail)
 
     if str(state.issue.get("state") or "").lower() == "closed":
