@@ -213,6 +213,19 @@ def test_i5_c5_cost_quantities_are_separate_and_unknown_is_explicit(capsys):
     assert "actual_vendor" in output and '"amount":"0.12"' in output
 
 
+def test_i5_c5_unreadable_cost_report_is_unknown_in_all_three_columns(monkeypatch):
+    """I5-C5: an unavailable report stays unknown instead of aborting the close."""
+    def unavailable(*_arguments, **_keywords):
+        raise spb.change_cost.CostError("unrelated dispatch record is unreadable")
+
+    monkeypatch.setattr(spb.change_cost, "report", unavailable)
+    report = spb.default_cost_reader(spb.PRODUCT_REPOSITORIES[0], 11)
+    for field in (
+        "raw_usage", "dated_rate_card_equivalent", "bill_plan_status"
+    ):
+        assert report[field] is None
+
+
 def test_output_has_no_comparative_word_and_keeps_merge_order(capsys):
     """I5-C1 guard: measures do not add a comparison or change chronological ordering."""
     _transport, output = fixture_run(capsys)

@@ -41,7 +41,9 @@ The fourth measure comes from the `change-cost:v1` report produced at read
 time by `lib/change_cost.py`, keyed by product repository and pull-request
 number. Its raw usage, dated rate-card price, and bill or plan status are
 separate table columns. An absent quantity is `unknown`, never zero. The other
-three measures are counts and may lawfully be zero.
+three measures are counts and may lawfully be zero. If the read-time cost
+report itself cannot be completed, each of its three columns remains unknown
+rather than erasing the product-change rows.
 
 The final output has one change table and one close-record table linking #652,
 #360, and #653. It makes no comparative decision about repositories, changes,

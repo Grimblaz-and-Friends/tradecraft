@@ -448,15 +448,24 @@ def _repository_measures(
 
 
 def default_cost_reader(repository: str, number: int) -> dict[str, object]:
-    return change_cost.report(
-        repository,
-        number,
-        change_cost.default_dispatch_root(),
-        LIB / "rates.json",
-        change_cost.default_plan_terms(),
-        change_cost.default_gauges(repository, number),
-        change_cost.default_holder_usage(repository, number),
-    )
+    try:
+        return change_cost.report(
+            repository,
+            number,
+            change_cost.default_dispatch_root(),
+            LIB / "rates.json",
+            change_cost.default_plan_terms(),
+            change_cost.default_gauges(repository, number),
+            change_cost.default_holder_usage(repository, number),
+        )
+    except (OSError, UnicodeError, ValueError, change_cost.CostError):
+        return {
+            "marker": "change-cost:v1",
+            "change": {"repository": repository, "issue": number},
+            "raw_usage": None,
+            "dated_rate_card_equivalent": None,
+            "bill_plan_status": None,
+        }
 
 
 def collect_measures(
