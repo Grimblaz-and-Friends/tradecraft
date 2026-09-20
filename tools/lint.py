@@ -1,255 +1,51 @@
 #!/usr/bin/env python3
-"""tradecraft packaging lint — enforcement for the doctrine's checkable subset.
+"""tradecraft repository lint.
 
 Checks:
 
-  1. zone wall: no file in the shipped zone may reference the repo-only zone
-     (docs/, tools/, .github/) by any path form — rooted, relative (../ or ./),
-     backslashed, or case-shifted. Full web URLs are lawful: they resolve for
-     consumers; repo paths do not.
-  2. harness tokens: no shipped file, and no repo-only cell, names a
-     harness-specific
-     path token (${CLAUDE_PLUGIN_ROOT} and kin). Not because they fail --
-     Claude Code substitutes them into a skill's body -- but because Codex does
-     not, so any such contract binds in one runtime and is dead in the other.
-  3. charter cell: the shipped charter exists, has a body, and carries no depth
-     files whose binding prose an adopting repository would fail to load.
-  4. cell frontmatter: every cell under either source declares a name and a description the
-     runtime can parse, each within its field budget. A cell whose description
-     is absent or malformed silently never fires.
-  5. pointer graph: a cell may name the one cell that owns a rule it
-     needs, in the name form `<name>` cell, and those pointers may not run
-     in a circle -- a cycle is the finding, named member by member, the way
-     a circular dependency fails a build. That is the whole of what the name
-     form is judged on now: the ban it replaces made a copy the only lawful
-     way for two cells to share a rule, and every copy that could not be
-     borne went to the always-on surface instead, which is budgeted [#404].
-     Three things the ban carried survive it, each for its own reason.
-     Paths between cells stay findings however they are written, for a
-     reason self-containment never covered — a rooted skills/ path does not
-     resolve once installed, while the name survives relocation. lib/ and
-     hooks/ may name no cell at all, neither being a cell, so deps still
-     point down. And a shipped cell naming a repo-only one is check 6's
-     finding rather than an edge here, which is what keeps the wall's
-     refused direction out of the graph.
-     An edge whose target is the charter is not an edge, and edges *from* it
-     are kept; `cell_pointer_graph`'s docstring carries why, once.
-     The run also prints, per cell, the prose a session reaches by following
-     every pointer transitively -- a figure no surface printed before, though
-     the graph was never empty: the charter and three repo-only cells already
-     pointed under the old exemptions.
-  6. cell references: every `<name>` cell reference names a skill that
-     exists, and every references/ pointer resolves against the directory of
-     the file naming it, so renaming or deleting either cannot silently
-     strand the prose that points at it. Scanned over the shipped zone and
-     over the doctrine files, which are not cells and may name any -- but a
-     name they write strands exactly as a cell's does.
+ 1. zone wall: shipped files cannot cite repo-only paths, and shipped prose
+    cannot use a decision marker or repo-only path as a behaviour's reason.
+ 2. harness tokens: live calling contracts use no runtime-only root token.
+ 3. charter cell: the charter exists, has a body and has no depth files.
+ 4. cell frontmatter: every cell has parseable bounded name and description.
+ 5. pointer graph: named cell dependencies exist, stay lawful and are acyclic.
+ 6. cell references: cell names and relative reference paths resolve.
+ 7. depth index: every cell depth file is named and every named file exists.
+ 8. retired.
+ 9. doctrine citations: decision markers in repository doctrine resolve.
+10. doctrine references: repository paths in repository doctrine resolve.
+11. doctrine: AGENTS.md and CLAUDE.md keep their required pointer shape.
+12. retired.
+13. retired.
+14. decision index: each entry and index row has the other.
+15. entry references: frozen and editable decision references resolve, are
+    pinned to their landing commit or have a recorded retirement reason.
+16. emitted ASCII: Python output literals are safe on Windows text streams.
+17. docstring not piped: argparse does not emit an unchecked docstring.
+18. stdio wired: executable Python mains configure UTF-8 before other work.
+19. retired.
+20. marketplace source: the installable plugin source remains exactly `./`.
+21. subprocess streams: launches redirect no standard streams or all three.
+22. docstring control characters: compiled docstrings contain no unsafe control.
+23. hollow code span: inline code spans contain visible content.
+24. committed carriage return: committed text has no lone carriage returns.
+25. body strip: modules reuse the authoring engine's frontmatter parser.
+26. retired.
+27. retired.
+28. retired.
+29. retired.
 
-  Checks 5 and 6 split on form, not on check. The *name* form is read
-  outside fenced blocks only: a name inside a fence is a spelling being
-  shown, as check 11 already reasons about an import. Every *path* form is
-  read everywhere, fences included -- check 5's rooted and relative skill
-  paths and check 6's references/ pointers alike -- because a path that does
-  not resolve is broken whatever encloses it, this repository's fenced blocks
-  are calling contracts rather than examples, and checks 1 and 2 already fire
-  inside them. Both checks also read one wrap — a line ending in `<name>` whose successor
-  begins "cell" — because a reflow is a formatting edit no reviewer inspects
-  and it would otherwise silently remove a reference from both checks.
-  7. depth index: every references/ file a cell holds is named in
-     that cell's SKILL.md body, and every references/ file a body
-     names exists. An orphan routes no reader and is found only by
-     enumeration; a dangling entry reads correctly and leads nowhere.
-  8. retired. A guard holding the merge-time ceiling-filing job wired
-     stood here until PR #544 replaced that job with a line in the board's
-     refresh note, so there is no job to hold. The numbers below are NOT
-     shifted up to close the gap, because these numbers are how this file's
-     checks are cited -- from this file, from tools/roster.py, and from the
-     decision log. Closing it would repoint every citation ABOVE 8 and leave
-     those at or below it alone, silently in both cases.
-     **Do not read the scheme as sound.** It is unguarded and already wrong
-     in three places, which is #551 -- D-232's "lint check 19" names
-     item 21, and two more are recorded there. That is an argument for
-     giving citations a repair route, not for renumbering underneath them.
-     test_the_module_docstring_enumerates_every_check_run_calls pins this
-     slot by number, so closing the gap now reds.
-  9. doctrine citations: every [D-N] the doctrine writes names an entry that
-     exists. The log's own references are check 15's; a marker in the always-on
-     surface was checked by nothing, which the outflow rule makes load-bearing
-     by instructing a session to compress prose into one.
-  10. doctrine references: every repo path the doctrine writes resolves.
-     Check 15 covers the decision log, which is frozen exhaust, so the
-     surface carrying the live rules was the one nothing checked --
-     repointing the doctrine's own docs/values.md mention left lint
-     green while the identical break inside an entry fired. Scoped to
-     the doctrine files: docs/*.md needs resolver work, not a path-list
-     edit, because references there resolve relative to their file.
-  11. doctrine: AGENTS.md exists, imports the charter and imports nothing
-     else, and CLAUDE.md stays a bare pointer; CLAUDE.md exists and
-     is a live @AGENTS.md import — checked by position (first non-empty line,
-     unquoted), because Claude Code skips imports inside code spans and loads
-     nothing from an absent file.
-  12. doctrine callout: tools/doctrine_callout.py exists and ci.yml still
-     declares the job that runs it. The callout cannot catch its own removal,
-     because a PR deleting the job touches no doctrine file [D-81].
-  13. retired. The review-index schema guard stood here until issue #652
-      closed docs/reviews.jsonl to new rows. The file remains append-only
-      history, and no live schema remains to guard. The checks below keep their
-      numbers because this file, tools/roster.py and the decision log cite them.
- 14. decision index: every decision entry has a row in the log's index, and
-     every row a file.
- 15. entry references: every path reference and relative link a decision entry
-     or the log's index writes resolves, is pinned to the commit it shipped at,
-     or is recorded with a reason. Unlike check 1, this one reads shape rather
-     than any path form: `A/B` is prose, not a reference.
-16. emitted ASCII: no Python file states a non-ASCII character in a
-    non-docstring string constant. Windows encodes stdout and stderr to the
-    locale codepage, pipes included, so a captured em dash garbles in the one
-    message a guard exists to deliver. It reads literals, not reachability:
-    a filename and a regex source are flagged too, and a character built at
-    runtime is out of reach. Docstrings and comments are exempt.
-17. docstring not piped: no script passes __doc__ as an argparse
-    description. --help writes it to stdout before any stream setup runs,
-    which turns the docstring check 16 exempts into locale-encoded output.
-18. stdio wired: every script with a main() imports utf8_stdio by that name
-    and calls it as the first statement, so runtime data this repository did
-    not write reaches the stream protected. Both halves are checked: without
-    the import binding, a local no-op with the right name would satisfy the
-    call site while setting nothing up. The first statement is a position, and a position is
-    exact -- a call after parse_args is one that --help has outrun.
-19. project roster: every cell has an entry under .claude/skills/ AND under
-    .agents/skills/ carrying its frontmatter byte for byte, and no entry THIS
-    GENERATOR WROTE names a cell that is gone. A file it did not write is not
-    its business: at a name that is no cell it draws no finding at all,
-    because that is a project skill in the runtime's documented place for one;
-    at a cell's name it is reported and never overwritten. The qualifier is
-    load-bearing and was missing -- an experience session read this line,
-    concluded a hand-written entry was a finding, and had to open roster.py to
-    find it was not. Those two directories are the whole of what a session
-    working in THIS repository loads a **description** from -- one per
-    runtime, nothing here installing the plugin. They are not the whole of
-    its always-on surface, which the doctrine files and the charter body
-    dominate. A locally installed copy of the published plugin
-    adds its own descriptions on top, which no figure derived from this tree
-    can see and none claims to; that gap is conceded rather than closed, and
-    it is how a session here can be offered one cell twice, once from this
-    tree and once from a release -- so without them every trigger
-    routed to a description reaches every adopter and misses us (#199, #258).
-    A finding about a surface names both the directory it found and the
-    runtime that reads it, because neither directory reaches the other's
-    runtime and a session repairing one has not repaired the other; a finding
-    about a cell rather than a surface names neither and is reported once. The expectation is tools/roster.py's own, never recomputed
-    here: a guard holding a second definition drifts from the writer it
-    judges.
-20. marketplace source: the tradecraft entry's source stays the exact string
-    `./`, because Codex cannot discover the plugin from Claude's object form.
-21. subprocess streams: a launch redirects nothing, or names all three of
-    stdin, stdout and stderr, because on Windows an unnamed stream resolves
-    through a std-handle table that can still name a closed handle.
+Slots stay numbered because frozen decisions cite them. Checks 2, 16, 17, 18
+and 21 are implemented in tools/substrate_lint.py and imported here so the
+repository has one predicate for each substrate rule.
 
-22. docstring control characters: no docstring's compiled value holds a
-    control character other than a line feed or a tab. A docstring is not raw,
-    so a backslash followed by r, written in one, is a carriage return at
-    runtime. Named in words rather than shown, because every attempt to write
-    that escape into this repository's prose produced the character instead --
-    including one in this sentence -- so the form that cannot be lost is the
-    one that spells it out. Named rather than counted, for the reason the
-    check's own docstring gives: the count was wrong the moment the next
-    instance landed. Read from the compiled value rather than the source bytes,
-    because the instance that motivated this had clean bytes on disk and four
-    carriage returns in `__doc__` [D-231].
-
-23. hollow code span: no inline code span holds nothing but whitespace. Prose
-    here names control characters constantly, and a span written to show one
-    that no longer holds it reads as finished while saying nothing -- three
-    instances in one change, one of which reached a commit and broke a row in
-    the decision index. The predicate is *non-empty* whitespace: the
-    doubled-backtick idiom's inner span is exactly empty, so the non-empty
-    clause separates lawful prose about fences from the defect on a property
-    rather than on a list of call sites that would go stale. Fenced blocks are
-    skipped, as checks 5 and 6 skip the name form inside one, and by the same
-    closing rule -- a fence ends only on its own marker.
-24. committed carriage return: no file reaches a commit holding a lone
-    carriage return. The LF pin has one hole and git states it plainly --
-    text=auto refuses to normalize such a file, and commits every line ending
-    in it verbatim. Three populations are read, because the flow runs this
-    command before staging and reading the index alone answered a question
-    about the previous commit: the index copy of a tracked file, the working
-    copy where git classifies it differently, and untracked files git is not
-    told to ignore. What the classification flags has its bytes read before
-    anything is said, because a genuine binary reports the same way. Disjoint
-    from check 22 by the tokenizer, which folds a lone carriage return in
-    source to a line feed before a docstring compiles -- a NUL is invisible
-    there too, for its own reason, and check 16 is what reports that file.
-
-25. body strip: no module outside the authoring engine hand-rolls the strip
-    that takes a cell's body off its frontmatter. Three implementations were
-    plausible and the cheapest was wrong; the rule lived in a sibling
-    docstring, so a session going straight from the doctrine to code wrote
-    its own and everything stayed green (#190). Recorded exemptions are
-    (path, function) pairs and the suite pins that the set only shrinks.
-
-26. always-on budget: every per-runtime always-on row, and the adopter
-    total separately, inside its ceiling. Replaces the two per-file ceilings
-    on AGENTS.md and the charter body, which could not see a move between
-    two members of one row -- it read as a saving in whichever file shrank
-    while the surface a session loads had not moved (#260).
-
-27. admissions: docs/admissions.jsonl parses, every row carries all six
-    fields, and no key has banked more than was ever admitted against it.
-    The record is what lets a needed item land over a ceiling without the
-    constant moving; a row this cannot read grants nothing. The re-arming
-    finding, which fires when a surface comes back to or below its constant
-    with characters still charged, belongs to checks 4 and 26 -- the two that
-    still know a budgeted surface's size -- and not to this one (#334). It
-    reached a third, the cell body, until #455 made a body's ceiling something
-    that reports rather than refuses (it filed until PR #544; the reading now
-    goes to the board's refresh note): nothing is charged against a body now, so
-    there is no re-arming finding to own there.
-28. settling index: docs/settling.jsonl parses and every row carries the
-    keys the `records` cell names, including the implementation brief link
-    under the key its nonblank position requires. The record is append-only and doctrine
-    forbids repairing a landed row, so a malformed one is permanent; when it
-    shipped, invalid JSON there landed green while the identical append to
-    docs/admissions.jsonl was reported. Required keys, not exact keys -- a
-    later row may carry more without a guard change -- and a required figure
-    nobody can supply is written as null, since an absent key and a null one
-    say different things (#423).
-29. charter roster: every shipped cell but the charter has a line in the
-    charter's declared roster, so the always-on router cannot go stale when a
-    cell is added. Keyed by the roster's heading, which is checked too -- a
-    check keyed to a section is disabled by renaming it. The names only,
-    which since #503 is all the roster carries: the load conditions left it
-    for the descriptions that already state them, so there is no longer a
-    second copy there to read or to drift. It runs last because it is the
-    newest, not because anything orders it: the chain isolates every
-    check [#404].
-
-The frozen archive (docs/ledger.jsonl, docs/seat-record.jsonl, the pre-reset
-constitution and the ADRs beneath it) is not validated: it is history, not a
-live format (D-74). The prose guards skip the live append-only records too --
-docs/reviews.jsonl, docs/recorded-findings.jsonl and docs/admissions.jsonl --
-because a finding inside one is a red no lawful edit can clear.
-
-All shipped files are scanned regardless of extension; binary content (NUL
-byte in the first 1KB) is skipped. Invoke as `python <repo>/tools/lint.py`
-from any cwd — paths resolve from this file's own location.
-Exit 0 when clean, 1 with findings listed one per line.
-
-A check that raises is reported as a finding naming it, and every other
-check still reports: the chain isolates them one at a time, so the one
-command the flow mandates before a commit never answers with a traceback
-and never discards what the checks before it found (#239).
-
-Checks 2, 16, 17, 18 and 21 are implemented in
-skills/substrate/scripts/lint.py, the same manually runnable shipped module a
-consumer receives. This wrapper imports those checks without copying their
-predicates; its check-2 adapter alone supplies this repository's shipped and
-repo-cell contract roots.
+All shipped files are scanned regardless of extension; binary content is
+skipped. Run `python tools/lint.py` from any directory. A raised check becomes
+a finding and the remaining checks still run.
 """
 from __future__ import annotations
 
 import ast
-import datetime
 import importlib.util
 import json
 import re
@@ -268,10 +64,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from winio import utf8_stdio  # noqa: E402
 
-# The portable substrate guards are shipped with their cell. This wrapper adds
-# the one repository-specific input: its live calling-contract population.
-sys.path.insert(0, str(ROOT))
-from skills.substrate.scripts.lint import (  # noqa: E402
+# The substrate predicates live beside this repository's wrapper. The wrapper
+# adds the one repository-specific input: its live calling-contract population.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from substrate_lint import (  # noqa: E402
     HARNESS_TOKENS,
     _git_ignored,
     _iter_files,
@@ -285,24 +81,35 @@ from skills.substrate.scripts.lint import (  # noqa: E402
     reset_ignored_memo,
 )
 
-# Repo-only importing repo-only, resolved from this file rather than the
-# working directory. The roster's expected content is the generator's to
-# define; check 19 asks it rather than reproducing it.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import roster  # noqa: E402
-
 SHIPPED_DIRS = (
     "skills", "lib", "commands", "agents", "hooks", ".claude-plugin",
 )
 REPO_ONLY_NAMES = {"docs", "tools", ".github"}
 
-# The two directories a cell may live under, taken from the generator rather
-# than restated here. `tools/roster.py` is what actually decides where a cell
-# can be, since it is what makes a description load; a second copy in this file
-# would be a second definition of one fact, and they drift the moment a source
-# is added to one of them. [#260]
-SHIPPED_CELLS = roster.CELLS
-REPO_CELLS = roster.REPO_CELLS
+SHIPPED_CELLS = "skills"
+REPO_CELLS = "docs/cells"
+CELL_SOURCES = (SHIPPED_CELLS, REPO_CELLS)
+CELL_FILE = "SKILL.md"
+
+
+def names_under(root: Path, source: str) -> list[str]:
+    """Every cell under one source directory, sorted."""
+    directory = root / source
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path.name for path in directory.iterdir()
+        if (path / CELL_FILE).is_file()
+    )
+
+
+def cell_sources(root: Path) -> dict[str, str]:
+    """Every cell mapped to the first source that owns its name."""
+    found: dict[str, str] = {}
+    for source in CELL_SOURCES:
+        for name in names_under(root, source):
+            found.setdefault(name, source)
+    return dict(sorted(found.items()))
 
 
 def check_harness_tokens(root: Path) -> list[str]:
@@ -312,409 +119,11 @@ def check_harness_tokens(root: Path) -> list[str]:
     return _check_harness_tokens(root, roots)
 
 CHARTER = "skills/charter/SKILL.md"
-# The always-on surface of a cell, budgeted because every adopter pays for
-# it in every session whether or not the cell ever fires. Not #130's
-# description standard -- a ceiling is not a standard -- but the ceiling has
-# to exist, because moving the charter's budget to its body left the part
-# that is genuinely always-on bounded by nothing.
+# Cell metadata is loaded before its body, so malformed or unbounded fields
+# can make a cell undiscoverable or spend every session's context.
 CELL_FIELD_MAX_CHARS = {"name": 64, "description": 700}
 CHARTER_IMPORT = f"@{CHARTER}"
-
-# **The always-on budget is on what a session loads, not on the files it is
-# spread across.** The predecessor's root file passed 30k chars in eight months
-# because every incident defaulted to a paragraph, and a per-file ceiling was
-# the first counterweight -- but two of them, on AGENTS.md and on the charter
-# body, priced a move between those files as a reduction in the one that shrank
-# while the surface a session actually reads was unchanged. That is the failure
-# D-184 diagnosed in its own predecessor, reproduced one level up. So the
-# ceiling is now on each per-runtime row `tools/figures.py` derives, and on the
-# adopter total separately.
-#
-# **Not on `repo_total`**, which is the smallest row: a budget on the minimum
-# lets the larger runtime grow unbudgeted, and figures.py's own `_always_on`
-# records that nothing renders that scalar alone.
-#
-# **The value is the larger row this change measured plus one unit, and the
-# unit is what a rule costs in the shape this repository makes rules take.**
-# Not the headroom `AGENTS_BUDGET_CHARS` happened to carry at `81fb1d9`: that
-# measured a paragraph in a file which, after this change, no longer receives
-# paragraphs. A rule now joins an existing cell's body -- costing nothing
-# always-on -- or, where no cell fits, arrives as a new cell, whose whole
-# always-on cost is its name plus its description. Derive it with `python
-# tools/figures.py`, which reports every cell's name and description; the unit
-# is the median of those, taken to the next hundred. At 253 the previous value
-# was smaller than **every** cell in this repository, so the home the routing
-# map names for a repo-specific rule could not be used a second time without an
-# eviction -- which inverts the charter's *the burden sits on cramming, never
-# on creating*. Found by a five-seat review and ruled by the owner. [#291]
-#
-# **The trade this number makes, stated because it is not obvious.** Headroom
-# and the largest tolerated relocation are the same quantity: the budget
-# refuses a move-then-refill of block S exactly when S exceeds the headroom,
-# and admits an addition A exactly when A fits it. So raising the unit to admit
-# a cell widens, by the same amount, the relocation the budget exists to
-# refuse. There is no value that separates them; a mechanism that did would
-# have to price the two moves apart, which is the shape
-# `CELL_BODY_CEILING_CHARS`' comment argues for and this constant does not have.
-#
-# This replaces the two per-file ceilings raised under the owner approval on
-# issue #260; that approval's condition is discharged here. Find every change
-# with `git log -G "ALWAYS_ON_ROW_BUDGET_CHARS = " -- tools/lint.py` -- `-S`
-# reports a changed occurrence count and is blind to a changed value.
-ALWAYS_ON_ROW_BUDGET_CHARS = 16_345
-# The adopter surface is the charter body plus the roster this practice ships.
-# This change touches neither, so this is the total measured plus the same
-# unit rather than a reduction being banked. Lowering it is the roster
-# redesign's, not this change's.
-#
-# **The charter body has no ceiling of its own any more; it is a member of
-# every row and of this total.** So a session growing the charter and a session
-# growing a description draw on one pool and neither can read the headroom as
-# solely theirs -- which is the point, and is why the figure reports the
-# members beside each total. [#291]
-ALWAYS_ON_ADOPTER_BUDGET_CHARS = 11_508
 POINTER_BUDGET_CHARS = 500
-# The cell-body ceilings. The long block that stood here argued a sparse map of
-# enforced budgets and was left behind by #455, which made the map complete, the
-# numbers measured, and the ceiling something that reports rather than refuses --
-# it described none of that and contradicted the comment three lines below it,
-# while ending on the warrant that a session raising the constant reads here
-# first. Its history is in D-169, D-177 and D-184; its rejected reasoning is in
-# D-480, which is where rationale belongs.
-CELL_BODY_CEILING_CHARS = {
-    # Where each cell body stood when the ratchet landed (#455), measured the
-    # way check_doctrine measures a body: frontmatter stripped. Every number is
-    # read off the tree rather than argued, which is the whole of how they were
-    # chosen -- no cell's ceiling is a claim about what its body ought to be,
-    # which is #328's question and is still open.
-    #
-    # **Nothing here fails the lint.** A body over its ceiling is reported
-    # and blocks nothing: the owner ruled on #455 that the standard is
-    # splitting and the ceiling directs to filing, not cutting content, and
-    # that it may not tell a session not to add text. cells_over_ceiling()
-    # below is what reads this, and over_ceiling_note() is what carries the
-    # reading to the board's refresh note, where the owner reads it.
-    # **PR #544 amended the first half of that ruling and left the second
-    # standing.** Until then a merge-time job filed one pool item per cell
-    # over; across the eight merges it was live for it filed on two, its
-    # per-cell dedupe holding the rest, and the owner ruled the reading
-    # belongs in the refresh note rather than in an item. Nothing here
-    # refuses, trims, or holds back an addition, which is the half that did
-    # not move.
-    #
-    # A cell that sheds depth re-baselines here in the same change, so the
-    # ratchet follows the split down. The three body: rows in
-    # docs/admissions.jsonl are absorbed: an admitted body was already part of
-    # the measurement, so its ceiling carries it without a separate row.
-    # skills/charter/SKILL.md is deliberately absent: its body is a term in
-    # every always-on row, so check_always_on_budget sizes it and an entry
-    # here would be the smuggled second limit that test pins against.
-    "skills/engagement/SKILL.md": 12_208,
-    "skills/filing/SKILL.md": 2_006,
-    "docs/cells/board/SKILL.md": 5_224,
-    "skills/spikes/SKILL.md": 7_200,
-    "skills/experience-session/SKILL.md": 3_611,
-    "skills/adversarial-review/SKILL.md": 8_799,
-    "skills/authoring/SKILL.md": 7_129,
-    "docs/cells/records/SKILL.md": 2_565,
-    "skills/persist-changes/SKILL.md": 3_551,
-    "docs/cells/landing/SKILL.md": 3_358,
-    "docs/cells/siting/SKILL.md": 4_244,
-    "skills/substrate/SKILL.md": 2_922,
-}
-
-
-def cells_over_ceiling(root: Path) -> list[tuple[str, int, int]]:
-    """Every cell body above where it stood, as (path, size, ceiling).
-
-    Read by over_ceiling_note() below, which prints them as the one line the
-    board's refresh note copies, and by that alone. It returns rows and
-    never a finding, because a finding is what would make growth a refusal --
-    the thing the owner's ruling forbids.
-
-    A cell in the map that no longer exists is skipped rather than reported:
-    a tree without that cell is an ordinary tree, and every fixture is one.
-    """
-    over = []
-    for rel, ceiling_chars in sorted(CELL_BODY_CEILING_CHARS.items()):
-        cell = root / rel
-        if not cell.is_file():
-            continue
-        size = len(_frontmatterless(cell.read_text(encoding="utf-8", errors="replace")))
-        if size > ceiling_chars:
-            over.append((rel, size, ceiling_chars))
-    return over
-
-# **The fourth answer at a ceiling, and the record that carries it.** None of
-# the ceilings above offered a way to admit a needed item. The always-on row
-# finding offered three answers -- retire a cell, merge two, or raise the
-# ceiling as a recorded decision; `doctrine-budget` offered two relocations
-# and no raise; the description and adopter-total findings named no answer at
-# all. So "three" was one finding's list rather than the file's, and the
-# condition was worse than a first draft of this comment claimed. The owner ruled that a size limit exists to trigger better design
-# and must never keep out a needed item, and none of the three admits one --
-# so a needed clause was priced as a deletion somewhere else four times on
-# #303 alone, once as the examples D-141 had placed (D-184), and once as a
-# temporary owner approval that had to be granted, recorded, expired and
-# discharged as work in itself (#260).
-#
-# **An admission is not a raise, and that difference is the whole mechanism.**
-# A raise moves the constant and creates round headroom nobody argued for,
-# which nothing then has to argue for spending. An admission moves nothing.
-#
-# **What that rests on, and what it does not.** The structural half is enough
-# on its own: a raise hands the next addition room it never argued for, and
-# an admission does not. An earlier draft of this comment also claimed
-# "ceilings ratchet to just under their limit and stay there", and that claim
-# is withdrawn -- `ratchet` is D-184's word for the opposite move, lowering a
-# constant to what the tree measures, and the empirical claim is falsified by
-# what `python tools/lint.py` prints on any run, which is the whole of the
-# evidence here and is re-derived rather than quoted: read its cell-body
-# lines and its description figures and see how many sit at their mark. A
-# frozen number here would be a claim about a tree that moves under it --
-# this one said a body sat a fifth below its ceiling while that body was
-# over, so the sentence's own support contradicted it. What is true of this
-# tree is that the surfaces which actually bind sit tight, and that same
-# command says which those are. The history of what
-# happened to headroom after a raise here is on #260 and is not checkable
-# from inside this repository. An admission adds exactly the characters
-# its row names, spent by the
-# item that row names, and leaves the next addition with nothing. So the item
-# lands and the pressure survives, which is the pair the comment on
-# `ALWAYS_ON_ROW_BUDGET_CHARS` says no single value can hold: headroom and the
-# largest tolerated relocation are one quantity, and no *number* separates
-# them. An itemisation separates them because it is not a number. [#334]
-ADMISSIONS = "docs/admissions.jsonl"
-# Every field a row carries, all six required. `issue` is what makes the row
-# an admission rather than a waiver -- a needed item is needed *by* some piece
-# of work, and a row that cannot name it is one nobody can hold to anything.
-# `outflow` is the design obligation the exceedance triggers, written down:
-# what moved, what was deleted, or why nothing had a cheaper home.
-ADMISSION_FIELDS = ("date", "issue", "ceilings", "chars", "item", "outflow")
-# The keys a row may charge itself against: one per ceiling here that prices a
-# **share of a surface**. `POINTER_BUDGET_CHARS` and the 64-character `name`
-# cap are deliberately absent -- each bounds a file's or a field's shape
-# rather than its share of what a session loads, and neither has priced a
-# needed item out. Widening this set is a decision, not an edit.
-ADMISSION_BARE_KEYS = ("always-on-row", "always-on-adopter")
-ADMISSION_KEY_PREFIXES = ("description:", "body:")
-_ADMISSION_DATE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
-
-
-def _admission_blank(value: object) -> bool:
-    """Whether a row's field carries nothing a reader can act on.
-
-    **`str(value).strip()` alone is the defeated idiom.** `str(None)` is
-    `"None"` and `str([])` is `"[]"`, both non-blank, so JSON `null`, `[]`,
-    `{}` and `false` all passed a truthiness check and admitted their
-    characters. That was found for `issue` and fixed for `issue` alone, and
-    the two fields beside it kept the hole -- while `issue` itself kept it for
-    `[]` and `{}`, which is the field acceptance criterion 6 is written about,
-    so that criterion held on its literal falsifier and failed on the natural
-    reading of *empty*. One predicate now, all three fields.
-    [PR #346 review, M6, M25]
-    """
-    return (value is None or isinstance(value, bool)
-            or isinstance(value, (list, dict, tuple))
-            or not str(value).strip())
-
-
-def _admission_key_ok(key: object) -> bool:
-    """Whether a row's ceiling key names something this file enforces.
-
-    Shape, never existence. A cell renamed after a row was written strands
-    that row's key, and the record is append-only -- so a guard demanding the
-    path resolve would red a tree over history no lawful edit can clear, which
-    is the shape #224 was about.
-
-    **What that costs, stated because only the benefit was.** A key that
-    matched nothing on the run that wrote it -- a typo, a cell name where a
-    path belongs -- validates, charges nothing, and leaves the ceiling finding
-    repeating verbatim with nothing connecting the two; the row is then
-    permanent and unbankable, since a body ceiling skips an absent cell and
-    `check_admissions` reports only over-banking. Separating that case from a
-    genuinely stranded key without reinstating the #224 red is a design call
-    with no observed instance behind it, and it is recorded rather than taken
-    here. [PR #346 review, M20]
-    """
-    if not isinstance(key, str):
-        return False
-    if key in ADMISSION_BARE_KEYS:
-        return True
-    return any(key.startswith(prefix) and key[len(prefix):].strip()
-               for prefix in ADMISSION_KEY_PREFIXES)
-
-
-def read_admissions(root: Path) -> tuple[list[dict], list[str]]:
-    """The well-formed rows of the admissions record, and a finding for each that is not.
-
-    **Fail closed.** A row this cannot read grants nothing: it is dropped from
-    every sum and reported instead, so a malformed record leaves the constants
-    in force rather than admitting whatever the parse happened to salvage.
-    That is `check_always_on_budget`'s own rule -- no budget passes by being
-    unmeasurable -- applied to the thing that relaxes a budget.
-
-    **An absent record is an empty one, not a failure.** A tree that has never
-    admitted anything has no rows, which is the state of the commit that adds
-    this mechanism and of every fixture tree the suite builds.
-    """
-    rows: list[dict] = []
-    findings: list[str] = []
-    target = root / ADMISSIONS
-    if not target.is_file():
-        return rows, findings
-    text = target.read_text(encoding="utf-8", errors="replace")
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            continue
-        where = f"admissions: {ADMISSIONS}:{lineno}"
-        try:
-            row = json.loads(line)
-        except ValueError as exc:
-            findings.append(
-                f"{where} is not valid JSON ({exc}), so it admits nothing and "
-                f"the constant stays in force on whatever it was meant to "
-                f"cover. One object per line")
-            continue
-        if not isinstance(row, dict):
-            findings.append(
-                f"{where} is not a JSON object, so it admits nothing")
-            continue
-        missing = [field for field in ADMISSION_FIELDS if field not in row]
-        if missing:
-            findings.append(
-                f"{where} is missing {', '.join(missing)} -- every row carries "
-                f"all of {', '.join(ADMISSION_FIELDS)}, and it admits nothing "
-                f"until it does")
-            continue
-        if _admission_blank(row["issue"]):
-            findings.append(
-                f"{where} names no issue. An admission says which work "
-                f"required the item; a row that cannot name it is a waiver, "
-                f"and it admits nothing")
-            continue
-        if not isinstance(row["chars"], int) or isinstance(row["chars"], bool):
-            findings.append(
-                f"{where}'s chars is {row['chars']!r}, not a whole number of "
-                f"characters, so it admits nothing")
-            continue
-        keys = row["ceilings"]
-        if not isinstance(keys, list) or not keys:
-            findings.append(
-                f"{where}'s ceilings is {keys!r} -- it is a non-empty list of "
-                f"the ceilings this row is charged against, so it admits "
-                f"nothing")
-            continue
-        bad = [key for key in keys if not _admission_key_ok(key)]
-        if bad:
-            forms = " or ".join(prefix + "<path to SKILL.md>"
-                                for prefix in ADMISSION_KEY_PREFIXES)
-            findings.append(
-                f"{where} charges itself against {bad!r}, which names no "
-                f"ceiling here. Use {', '.join(ADMISSION_BARE_KEYS)}, or "
-                f"{forms} -- it admits nothing meanwhile")
-            continue
-        empty = [field for field in ("item", "outflow")
-                 if _admission_blank(row[field])]
-        if empty:
-            findings.append(
-                f"{where} leaves {', '.join(empty)} empty. The item is what "
-                f"was admitted and the outflow is what was tried first; a row "
-                f"stating neither records nothing, and it admits nothing")
-            continue
-        if not _ADMISSION_DATE.match(str(row["date"])):
-            findings.append(
-                f"{where}'s date is {row['date']!r}, not YYYY-MM-DD, so it "
-                f"admits nothing")
-            continue
-        rows.append(row)
-    return rows, findings
-
-
-def admitted(rows: list[dict], key: str) -> tuple[int, int]:
-    """The characters admitted against one ceiling, and how many rows say so.
-
-    Floored at zero for enforcement. `check_admissions` reports a set of rows
-    that has banked more than it admitted rather than letting the record
-    tighten a ceiling below its constant: a record that could tighten one
-    would be a second place constants are set, and this file is the first.
-    """
-    charged = [row for row in rows if key in row["ceilings"]]
-    return max(0, sum(row["chars"] for row in charged)), len(charged)
-
-
-def ceiling(constant: int, rows: list[dict], key: str) -> tuple[int, str]:
-    """The ceiling actually in force for one key, and how to say it.
-
-    One composition for all three enforcement sites, because three renderings
-    of "the constant plus what has been admitted against it" is three places
-    for the reported ceiling to stop being the enforced one.
-    """
-    extra, count = admitted(rows, key)
-    if not extra:
-        return constant, f"budget is {constant}"
-    return constant + extra, (
-        f"budget is {constant + extra} ({constant} plus {extra} admitted "
-        f"across {count} row{'' if count == 1 else 's'} of {ADMISSIONS})")
-
-
-def admit_route(key: str) -> str:
-    """The fourth answer, in the words of the ceiling being hit.
-
-    On the finding rather than behind a pointer: the `authoring` cell prefers
-    the rule whose compliance is visible on the artifact its reader is
-    producing, and the lint output is what a session at a ceiling already has
-    open. All three sites say it the same way because they share this.
-    """
-    return (
-        f"Where the outflow frees nothing and the item is needed, admit it "
-        f"rather than cutting, merging or raising: append ONE row to "
-        f"{ADMISSIONS} carrying date, issue (the work that required it), "
-        f'ceilings ["{key}"], chars, item, and outflow (what moved, what was '
-        f"deleted, or why nothing had a cheaper home). **One row per "
-        f"ceiling, and one row however many findings name that same "
-        f"ceiling** -- both runtime rows cross the row ceiling together, so a "
-        f"row apiece there charges the item twice and leaves the surplus as "
-        f"headroom for the next addition; but an item exceeding two different "
-        f"ceilings takes a row for each, because a row carries one chars for "
-        f"every key it names and two ceilings are seldom over by the same "
-        f"amount. **Size each row's chars to that ceiling's own overage**, "
-        f"the largest where several findings name it, and charge only the "
-        f"ceilings the item actually exceeds -- a ceiling still under its "
-        f"constant reds as a stale admission. The constant does not move: an "
-        f"admission buys its own item and no room for the next one")
-
-
-def stale_admission(label: str, size: int, constant: int,
-                    rows: list[dict], key: str) -> list[str]:
-    """A ceiling still carrying admitted characters after its surface came back under.
-
-    **This is what stops an admission becoming a waiver.** Space an outflow
-    frees under an admitted ceiling would otherwise sit as room nobody argued
-    for -- the refill `routing.md` names, arriving through the very mechanism
-    built to admit needed items. Banking it is an append naming what came
-    back, never an edit of the row it banks: the record stays append-only and
-    both rows stay readable.
-
-    **It fires at the constant, not at the effective ceiling.** Zero slack
-    would make every reword of an admitted surface a record append, which is
-    the noise the comment on `CELL_BODY_CEILING_CHARS` warns a zero-headroom
-    cap becomes. At or under the constant the surface is unambiguously back,
-    and one row settles it.
-    """
-    extra, count = admitted(rows, key)
-    if not extra or size > constant:
-        return []
-    return [
-        f"admission-stale: {label} is {size} chars, back at or under its "
-        f"{constant} ceiling, while {extra} chars stay admitted against "
-        f'"{key}" across {count} row{"" if count == 1 else "s"} -- that is '
-        f"room nobody argued for, which is the refill a ceiling exists to "
-        f"refuse. Bank it: append a row to {ADMISSIONS} with chars {-extra} "
-        f"and the same five other fields an admission carries -- date, issue, "
-        f'ceilings ["{key}"], item and outflow, where item names what came '
-        f"back and outflow names what freed it. Appending, never editing what "
-        f"it banks"]
 
 # The one cell a pointer to which costs nothing, and so the one cell that is
 # not a node in the graph below. Self-containment existed to stop loading cost
@@ -735,6 +144,7 @@ def stale_admission(label: str, size: int, constant: int,
 CHARTER_CELL = "charter"
 
 ROOTED_ZONE = re.compile(r"(docs|tools|\.github)[\\/]", re.IGNORECASE)
+DECISION_MARKER = re.compile(r"\[D-[0-9]+\]")
 ROOTED_SKILL = re.compile(r"skills[\\/]([\w-]+)[\\/]", re.IGNORECASE)
 # The same reference in the repo-only tree, by path. The name form is now a
 # lawful pointer and the path form is not, for the reason check 5's docstring
@@ -743,7 +153,7 @@ ROOTED_SKILL = re.compile(r"skills[\\/]([\w-]+)[\\/]", re.IGNORECASE)
 # Written from the generator's constant so a moved source directory moves this
 # with it. [#260]
 ROOTED_REPO_CELL = re.compile(
-    re.escape(roster.REPO_CELLS).replace("/", r"[\\/]") + r"[\\/]([\w-]+)[\\/]",
+    re.escape(REPO_CELLS).replace("/", r"[\\/]") + r"[\\/]([\w-]+)[\\/]",
     re.IGNORECASE,
 )
 # The name form of a cell reference: `engagement` cell. A skill is reached by
@@ -791,57 +201,6 @@ RELATIVE_MD_REF = re.compile(
 RELATIVE_REF = re.compile(r"(?<![\w.\\/-])(?:\.\.?[\\/])+[\w.][\w.\\/\\-]*")
 REL_PREFIX_TAIL = re.compile(r"(?:\.\.?[\\/])+$")
 
-DATE_SHAPE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
-# One form rule for every name-shaped field: a lowercase token with no
-# whitespace, so one name occupies exactly one bucket and a query over seat
-# names enumerates what is actually in use.
-TOKEN = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
-
-# The doctrine callout's wiring, matched by position rather than by substring:
-# a commented-out job still contains every substring it had when it was live.
-JOB_HEADER = "  doctrine-callout:"
-# All three lawful spellings of the trigger, and none of `pull_request_target`
-# (the `\b` cannot end before an underscore). A guard that fails a required
-# check on a lawful reformat blocks lawful work, which fails as hard as
-# passing unlawful work.
-PR_TRIGGER = re.compile(
-    r"^\s*pull_request:\s*$|^\s*-\s*pull_request\s*$|^on:.*\bpull_request\b"
-)
-RUNS_SCRIPT = re.compile(r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout\.py\b")
-# The event is named; the gate's exact wording is not, so a lawful rewrite
-# (adding `&& !draft`, or moving to ${{ }} form) does not fail a required check.
-GATED_ON_PR = re.compile(r"^\s+if:.*pull_request")
-# **The base revision is read twice, and the second read is the gate.** The
-# delta's base side reads blobs at another revision; so does the frontmatter
-# arm that decides whether a cell's description moved [#277]. A shallow clone
-# has neither object, and the two failures are not alike: the delta degrades to
-# a total with no direction, while the arm raises and the job goes red on
-# *every* pull request, not only doctrine ones. An earlier wording here said
-# the job could not go red for its own missing figure and that every check
-# stayed green -- true before the arm existed, false now. `0` and not a
-# positive depth -- a bounded depth is still a shallow clone, and the base sits
-# any distance back.
-FULL_HISTORY = re.compile(
-    r"^\s+fetch-depth:\s*['\"]?0['\"]?\s*(?:#.*)?$"
-)
-# The delta's *request*, where the pin above is only its precondition. Both
-# seams, because neither regex can see the other's: deleting `--base` leaves
-# the env line standing, and deleting the env line leaves the run line standing
-# while `--base "$BASE_SHA"` expands to `--base ""`. Four one-token deletions
-# across these two lines each rendered the callout the review had already ruled
-# an unmet criterion, with the whole suite green.
-# **The two deletions no longer fail the same way, and neither is silent.**
-# `--base ""` is not None, so `run()` hands it to the frontmatter arm, which
-# raises: the job reddens on every pull request. `--base` deleted outright
-# leaves `base is None`, which refuses only a PR touching a shipped cell. The
-# split is `if not base:` in `_always_on_delta` against `if base is None:` in
-# `run()` -- deliberate, because a figure may degrade and a gate may not, and
-# stated here because an earlier wording called the empty case silent.
-BASE_FLAG = re.compile(
-    r"^\s+(?:-\s+)?run:\s*python tools[\\/]doctrine_callout\.py\b.*--base\b"
-)
-BASE_ENV = re.compile(r"^\s+BASE_SHA:\s*\S")
-
 # A decision entry's references. Markdown links claim to resolve outright;
 # backticked paths are the form entries actually use most, and are what PR #104
 # and PR #132 stranded. An optional title is admitted in the link form, and
@@ -857,29 +216,9 @@ ENTRY_PATH = re.compile(r"`([\w.-]+(?:[\\/][\w.-]+)+(?::\d+)?)`")
 # lawful work, which is as bad as passing unlawful work, and the only escape is
 # to write the reference less precisely.
 #
-# Declared, not merely present: `lib`, `commands` and `agents` are named in the
-# doctrine's shipped zone and hold no file yet. `.claude` is deliberately
-# absent though a directory of that name exists locally -- most of it is
-# untracked and ungitignored, so resolving against it gave
-# `python tools/lint.py` two answers for the same commit depending on whether a
-# session had created `.claude/agents`, and the local answer instructed a
-# repair that reds CI.
-#
-# #199 tracked one subtree of it -- `.claude/skills`, the generated roster --
-# and that did not change this.
-#
-# `.agents` is out too, and for a different reason, because the one above does
-# not reach it: that tree is **fully tracked**, so it gives one answer per
-# commit and the two-answers defect is not in play. It stays out because
-# admitting it would be a root one directory deep -- `.agents` holds nothing
-# but `skills/` -- which is the shape rejected just above for the roster
-# alone, and because no reference here resolves through it.
-# [PR #278 review, M25] The reason is about the rest: a session can
-# still drop `.claude/agents` or `.claude/commands` into a working tree, so
-# admitting `.claude` as a root would reinstate the two-answers defect for
-# every path under it that is not the roster. Admitting the roster alone would
-# be a root that is one directory deep, which nothing else here is. Left out,
-# with the narrowed reason recorded rather than the old one left standing.
+# Declared, not merely present: `lib`, `commands` and `agents` are shipped-zone
+# roots even when empty. Runtime-managed `.claude` and `.agents` directories
+# are excluded because their local contents are not repository reference roots.
 REPO_ROOTS = frozenset(SHIPPED_DIRS) | {
     "tools", "docs", ".github", ".", "..",
 }
@@ -1054,6 +393,131 @@ UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {
         "target retired by issue #652 when the review record became closed history",
 }
 
+_ISSUE_665_RETIRED_MECHANISMS = {
+    ".claude/skills/adversarial-review/SKILL.md": "the roster mirror tree",
+    "docs/admissions.jsonl": "the admission record and always-on budgets",
+    "docs/cells/board/SKILL.md": "the board",
+    "docs/cells/board/references/refreshing-it.md": "the board refresh procedure",
+    "docs/cells/records/references/the-settling-row.md": "the settling-row procedure",
+    "docs/settling.jsonl": "the settling record",
+    "skills/substrate/scripts/lint.py": "the shipped substrate guard implementation",
+    "skills/substrate/tests/test_substrate_lint.py": "the shipped substrate guard tests",
+    "tools/board.py": "the board command",
+    "tools/check_version_bump.py": "the per-PR version-bump guard",
+    "tools/tests/test_check_version_bump.py": "the per-PR version-bump guard tests",
+    "tools/doctrine_callout.py": "the doctrine-callout job",
+    "tools/roster.py": "the roster mirror generator",
+    "tools/tests/test_roster.py": "the roster mirror generator tests",
+}
+
+_ISSUE_665_RETIRED_REFS = {
+    ("D-156-2026-08-24-installable-plugin-and-shipped-charter.md", 13, "tools/check_version_bump.py"),
+    ("D-186-2026-08-25-windows-text-mode-defaults.md", 27, "tools/check_version_bump.py"),
+    ("D-186-2026-08-25-windows-text-mode-defaults.md", 33, "tools/check_version_bump.py"),
+    ("D-186-2026-08-25-windows-text-mode-defaults.md", 33, "tools/doctrine_callout.py"),
+    ("D-186-2026-08-25-windows-text-mode-defaults.md", 62, "tools/tests/test_check_version_bump.py"),
+    ("D-186-2026-08-25-windows-text-mode-defaults.md", 71, "tools/doctrine_callout.py"),
+    ("D-210-2026-08-26-project-roster-and-the-loaded-total.md", 17, "tools/roster.py"),
+    ("D-232-2026-08-29-subprocess-stdin-and-the-roster-comparison.md", 98, "tools/roster.py"),
+    ("D-252-2026-08-30-the-standard-stops-picking-a-language.md", 19, "tools/roster.py"),
+    ("D-253-2026-08-30-guidance-on-its-readers-surface.md", 58, "tools/roster.py"),
+    ("D-262-2026-08-30-batch-at-birth-and-the-failing-run.md", 17, "tools/roster.py"),
+    ("D-270-2026-08-30-version-guard-two-bounds.md", 7, "tools/check_version_bump.py"),
+    ("D-270-2026-08-30-version-guard-two-bounds.md", 64, "tools/check_version_bump.py"),
+    ("D-270-2026-08-30-version-guard-two-bounds.md", 64, "tools/tests/test_check_version_bump.py"),
+    ("D-270-2026-08-30-version-guard-two-bounds.md", 90, "tools/check_version_bump.py"),
+    ("D-270-2026-08-30-version-guard-two-bounds.md", 90, "tools/tests/test_check_version_bump.py"),
+    ("D-278-2026-08-30-a-roster-surface-per-runtime.md", 26, "tools/roster.py"),
+    ("D-291-2026-09-01-repo-only-cells-and-a-budget-on-the-rows.md", 11, "tools/roster.py"),
+    ("D-291-2026-09-01-repo-only-cells-and-a-budget-on-the-rows.md", 27, "tools/doctrine_callout.py"),
+    ("D-295-2026-09-01-the-trigger-and-its-fix-batch-reach-the-product-consumer.md", 49, "tools/doctrine_callout.py"),
+    ("D-317-2026-09-01-the-installed-version-check-is-declined.md", 7, "tools/check_version_bump.py"),
+    ("D-317-2026-09-01-the-installed-version-check-is-declined.md", 21, ".claude/skills/adversarial-review/SKILL.md"),
+    ("D-317-2026-09-01-the-installed-version-check-is-declined.md", 21, "tools/roster.py"),
+    ("D-327-2026-09-02-board-transport.md", 11, "tools/board.py"),
+    ("D-346-2026-09-03-a-ceiling-admits-on-an-itemised-record.md", 21, "docs/admissions.jsonl"),
+    ("D-346-2026-09-03-a-ceiling-admits-on-an-itemised-record.md", 44, "docs/admissions.jsonl"),
+    ("D-346-2026-09-03-a-ceiling-admits-on-an-itemised-record.md", 46, "tools/doctrine_callout.py"),
+    ("D-365-2026-09-04-review-cost-and-target.md", 71, "docs/admissions.jsonl"),
+    ("D-371-2026-09-04-the-review-runs-once.md", 53, "docs/admissions.jsonl"),
+    ("D-376-2026-09-04-the-charter-holds-what-loads-first.md", 25, "docs/admissions.jsonl"),
+    ("D-393-2026-09-05-the-affirmation-happens-in-conversation-and-one-document-states-it.md", 55, "tools/doctrine_callout.py"),
+    ("D-394-2026-09-05-the-callout-watches-descriptions-not-bodies.md", 7, "tools/doctrine_callout.py"),
+    ("D-394-2026-09-05-the-callout-watches-descriptions-not-bodies.md", 33, "tools/doctrine_callout.py"),
+    ("D-415-2026-09-05-the-cause-tie-and-what-consumes-it.md", 9, "docs/cells/board/SKILL.md"),
+    ("D-415-2026-09-05-the-cause-tie-and-what-consumes-it.md", 13, "docs/cells/board/SKILL.md"),
+    ("D-415-2026-09-05-the-cause-tie-and-what-consumes-it.md", 33, "docs/cells/board/SKILL.md"),
+    ("D-415-2026-09-05-the-cause-tie-and-what-consumes-it.md", 39, "tools/board.py"),
+    ("D-415-2026-09-05-the-cause-tie-and-what-consumes-it.md", 49, "tools/board.py"),
+    ("D-429-2026-09-05-the-cause-relationship-becomes-a-link.md", 11, "docs/cells/board/SKILL.md"),
+    ("D-429-2026-09-05-the-cause-relationship-becomes-a-link.md", 11, "tools/board.py"),
+    ("D-429-2026-09-05-the-cause-relationship-becomes-a-link.md", 17, "tools/board.py"),
+    ("D-429-2026-09-05-the-cause-relationship-becomes-a-link.md", 19, "tools/doctrine_callout.py"),
+    ("D-429-2026-09-05-the-cause-relationship-becomes-a-link.md", 27, "docs/cells/board/SKILL.md"),
+    ("D-429-2026-09-05-the-cause-relationship-becomes-a-link.md", 47, "tools/board.py"),
+    ("D-430-2026-09-06-intake-enters-the-board-by-cause.md", 62, "tools/board.py"),
+    ("D-430-2026-09-06-intake-enters-the-board-by-cause.md", 62, "tools/doctrine_callout.py"),
+    ("D-430-2026-09-06-intake-enters-the-board-by-cause.md", 70, "docs/admissions.jsonl"),
+    ("D-431-2026-09-05-handoff-at-the-affirmation.md", 47, "docs/admissions.jsonl"),
+    ("D-436-2026-09-06-successor-stop-ordering.md", 58, "docs/admissions.jsonl"),
+    ("D-437-2026-09-06-a-cell-may-point-and-a-circle-fails.md", 35, "docs/admissions.jsonl"),
+    ("D-437-2026-09-06-a-cell-may-point-and-a-circle-fails.md", 51, "tools/roster.py"),
+    ("D-437-2026-09-06-a-cell-may-point-and-a-circle-fails.md", 51, "tools/tests/test_roster.py"),
+    ("D-438-2026-09-06-a-filing-lands-in-a-pool.md", 11, "docs/cells/board/SKILL.md"),
+    ("D-438-2026-09-06-a-filing-lands-in-a-pool.md", 11, "tools/board.py"),
+    ("D-438-2026-09-06-a-filing-lands-in-a-pool.md", 31, "tools/board.py"),
+    ("D-438-2026-09-06-a-filing-lands-in-a-pool.md", 33, "docs/cells/board/SKILL.md"),
+    ("D-438-2026-09-06-a-filing-lands-in-a-pool.md", 68, "docs/cells/board/SKILL.md"),
+    ("D-438-2026-09-06-a-filing-lands-in-a-pool.md", 74, "docs/cells/board/SKILL.md"),
+    ("D-441-2026-09-06-the-pool-moves-on-its-own.md", 9, "tools/board.py"),
+    ("D-441-2026-09-06-the-pool-moves-on-its-own.md", 25, "tools/board.py"),
+    ("D-441-2026-09-06-the-pool-moves-on-its-own.md", 66, "docs/cells/board/SKILL.md"),
+    ("D-441-2026-09-06-the-pool-moves-on-its-own.md", 67, "tools/board.py"),
+    ("D-454-2026-09-07-an-ask-announces-itself.md", 11, "tools/doctrine_callout.py"),
+    ("D-454-2026-09-07-an-ask-announces-itself.md", 35, "docs/settling.jsonl"),
+    ("D-481-2026-09-07-the-push-line.md", 52, "docs/cells/board/SKILL.md"),
+    ("D-481-2026-09-07-the-push-line.md", 72, "docs/settling.jsonl"),
+    ("D-522-2026-09-08-the-refresh-owns-the-cycle.md", 7, "docs/cells/board/SKILL.md"),
+    ("D-522-2026-09-08-the-refresh-owns-the-cycle.md", 23, "docs/cells/board/SKILL.md"),
+    ("D-522-2026-09-08-the-refresh-owns-the-cycle.md", 23, "tools/board.py"),
+    ("D-524-2026-09-08-a-load-condition-has-one-home.md", 9, "tools/roster.py"),
+    ("D-524-2026-09-08-a-load-condition-has-one-home.md", 25, "docs/admissions.jsonl"),
+    ("D-524-2026-09-08-a-load-condition-has-one-home.md", 33, "docs/admissions.jsonl"),
+    ("D-544-2026-09-09-the-ceiling-reading-goes-to-the-refresh-note.md", 22, "docs/cells/board/SKILL.md"),
+    ("D-544-2026-09-09-the-ceiling-reading-goes-to-the-refresh-note.md", 32, "tools/roster.py"),
+    ("D-545-2026-09-09-a-review-disposes-its-own-findings.md", 23, "docs/cells/board/SKILL.md"),
+    ("D-556-2026-09-09-an-amendment-seats-revision-diff.md", 46, "docs/settling.jsonl"),
+    ("D-561-2026-09-10-records-sheds-three-sections.md", 9, "docs/cells/records/references/the-settling-row.md"),
+    ("D-561-2026-09-10-records-sheds-three-sections.md", 21, "docs/cells/records/references/the-settling-row.md"),
+    ("D-561-2026-09-10-records-sheds-three-sections.md", 49, "docs/cells/records/references/the-settling-row.md"),
+    ("D-561-2026-09-10-records-sheds-three-sections.md", 59, "tools/roster.py"),
+    ("D-568-2026-09-10-adversarial-review-sheds-three-blocks.md", 92, "docs/admissions.jsonl"),
+    ("D-575-2026-09-11-a-rule-is-a-guard-a-script-an-exhibit-or-unwritten.md", 33, "docs/admissions.jsonl"),
+    ("D-602-2026-09-13-the-implementation-brief.md", 31, "docs/settling.jsonl"),
+    ("D-611-2026-09-14-the-substrate-cell-swept.md", 64, "docs/settling.jsonl"),
+    ("D-618-2026-09-14-the-guards-ship.md", 7, "skills/substrate/scripts/lint.py"),
+    ("D-618-2026-09-14-the-guards-ship.md", 7, "skills/substrate/tests/test_substrate_lint.py"),
+    ("D-618-2026-09-14-the-guards-ship.md", 29, "skills/substrate/tests/test_substrate_lint.py"),
+    ("D-618-2026-09-14-the-guards-ship.md", 39, "skills/substrate/tests/test_substrate_lint.py"),
+    ("D-627-2026-09-14-persist-changes-cell-swept.md", 107, "docs/settling.jsonl"),
+    ("D-628-2026-09-14-the-spikes-cell-swept.md", 108, "docs/settling.jsonl"),
+    ("D-643-2026-09-16-the-charter-cell-swept.md", 65, "docs/admissions.jsonl"),
+    ("D-644-2026-09-16-the-filing-cell-swept.md", 97, "docs/cells/board/SKILL.md"),
+    ("D-644-2026-09-16-the-filing-cell-swept.md", 97, "docs/cells/board/references/refreshing-it.md"),
+    ("D-646-2026-09-16-adversarial-review-cell-swept.md", 223, "docs/settling.jsonl"),
+    ("D-654-2026-09-18-every-change-proven-by-running-it.md", 13, "tools/doctrine_callout.py"),
+    ("D-654-2026-09-18-every-change-proven-by-running-it.md", 40, "tools/roster.py"),
+    ("D-81-2026-08-19-doctrine-callout.md", 15, "tools/doctrine_callout.py"),
+}
+
+UNREPAIRABLE_AFTER_LANDING.update({
+    key: (
+        "target retired by issue #665 with "
+        + _ISSUE_665_RETIRED_MECHANISMS[key[2]]
+    )
+    for key in _ISSUE_665_RETIRED_REFS
+})
+
 def cell_of(rel_posix: str) -> str | None:
     """The cell a repo-relative path belongs to, or None if it is in no cell.
 
@@ -1110,6 +574,13 @@ def check_zone_wall(root: Path) -> list[str]:
                 continue
             rel_file = path.relative_to(root).as_posix()
             for lineno, line in enumerate(text.splitlines(), 1):
+                if path.suffix.lower() == ".md":
+                    for marker in DECISION_MARKER.findall(line):
+                        findings.append(
+                            f"zone-wall: {rel_file}:{lineno} cites repo-only "
+                            f"decision marker '{marker}' as shipped rationale; "
+                            "state the behavior's reason in the shipped prose"
+                        )
                 for hit in _rooted_zone_hits(line):
                     findings.append(
                         f"zone-wall: {rel_file}:{lineno} references "
@@ -1170,48 +641,14 @@ def _cell_name_refs(text: str) -> list[tuple[int, str, bool]]:
 def cell_pointer_graph(root: Path) -> dict[str, list[PointerEdge]]:
     """Every pointer from one cell to another, keyed by the naming cell.
 
-    **This is the practice's dependency graph, and it exists because a cell
-    may now point at the one cell owning a rule it needs.** Before that, a
-    rule two cells needed was copied into both or routed up to the always-on
-    surface, which is budgeted -- so every lesson competed for one fixed pool,
-    which is the cause #404 files.
-
-    Four kinds of reference are read and not made edges, each for its own
-    reason, and none of them is a silent omission:
-
-    - **A name that is no cell.** `check_cell_references` rules on it; an
-      edge to a node that does not exist would report a broken pointer as a
-      graph shape.
-    - **A cell naming itself.** Depth inside one cell is not a pointer
-      between two, and a self-edge would make every cell its own cycle.
-    - **The charter as target.** An adopting repository loads it before
-      substantive work, so following that pointer loads nothing and can
-      close no cycle *of loading*, which is what the cycle check refuses.
-      Keeping it would also make every cell reach every other through the
-      charter's own roster and report one figure for the whole practice.
-    - **A shipped cell naming a repo-only one.** That is the wall's refused
-      direction and already `check_cell_references`' finding. Reading it as
-      an edge would price one defect as two and could report a cycle whose
-      hop is a finding rather than a pointer.
-
-    **Only markdown is read**, which is the same basis `cell_prose` counts on
-    and says why: a script the cell carries is code a session runs, not prose
-    it loads. The first draft walked every file in the cell, so a reserved
-    form inside a `.py` comment made an edge -- crediting a cell the whole of
-    another's prose in a figure that counts no `.py` at all, and, with a
-    second such comment, reddening the mandated pre-commit command with a
-    circle between two files no session reads as prose. Two halves of one
-    change disagreeing about what a pointer is. [PR #437 review, M6]
-
-    Edges *from* the charter are kept, which is what makes its roster a real
-    set of pointers and its reach the practice's whole reachable prose.
-
-    The roster's own predicate decides what a cell is: a directory is not a
-    cell until it holds the file that loads, and a graph disagreeing with the
-    generator would have nodes no runtime can reach.
+    Only Markdown is read because code a cell carries is executed rather than
+    loaded as prose. Missing targets, self-references, charter targets and the
+    wall's refused shipped-to-local direction are excluded here because their
+    owning checks decide those cases. A directory becomes a cell only when it
+    contains SKILL.md, matching the runtime-visible definition used everywhere.
     """
-    sources = roster.cell_sources(root)
-    repo_names = set(roster.names_under(root, REPO_CELLS))
+    sources = cell_sources(root)
+    repo_names = set(names_under(root, REPO_CELLS))
     graph: dict[str, list[PointerEdge]] = {name: [] for name in sources}
     for name, source in sorted(sources.items()):
         base = root / source / name
@@ -1397,8 +834,8 @@ def check_sideways_deps(root: Path) -> list[str]:
     # directory test while the repo-only half was the generator's, so a
     # half-created shipped cell -- a directory with no SKILL.md -- was a cell
     # to this check and not to the generator or to check 6. [#404]
-    cell_names = set(roster.cell_sources(root))
-    repo_cell_names = set(roster.names_under(root, REPO_CELLS))
+    cell_names = set(cell_sources(root))
+    repo_cell_names = set(names_under(root, REPO_CELLS))
 
     def _is_cell(name: str) -> bool:
         return name in cell_names
@@ -1508,53 +945,35 @@ def _doctrine_scan_paths(root: Path) -> list[Path]:
     repository's records rules and its content-routing map carried `[D-N]`
     citations and repo paths while they lived in AGENTS.md, and both were
     checked there. Moving them under `docs/cells/` without moving the scan
-    would have retired those guarantees silently -- the same shape as the
-    merge gate in tools/doctrine_callout.py, which this change also had to
-    follow. A dangling citation reads as authority that resolves and does
-    not, wherever it is written. [#260]
+    would have retired those guarantees silently. A dangling citation reads
+    as authority that resolves and does not, wherever it is written.
     """
     paths = [root / name for name in ("AGENTS.md", "CLAUDE.md")]
     cells = root / REPO_CELLS
     if cells.is_dir():
-            # **Depth included, because this change sanctions it.** A repo-only
+        # **Depth included, because this change sanctions it.** A repo-only
         # cell sheds into `references/` exactly as a shipped one does, and a
         # dangling `[D-N]` or dead repo path there reads as authority that
         # resolves and does not -- the harm this scan exists to prevent, in
         # the one place the material tells authors to put depth. Probed [#291]:
         # identical prose redded in `SKILL.md` and was silent one directory
-        # down. The shipped cells stay out for the adopter-resolution reason
-        # `check_doctrine_citations` gives, which does not reach repo-only
-        # depth: nothing under `docs/` is resolved by a consumer at all.
+        # down. Shipped prose stays out because check 1 rejects its decision
+        # markers outright. Repo-only depth may cite the local log, so this
+        # resolution check reaches it just as it reaches each cell body.
         paths += sorted(cells.glob("**/*.md"))
     return paths
 
 
 def check_doctrine_citations(root: Path) -> list[str]:
-    r"""Every [D-N] the doctrine writes names a decision entry that exists.
+    r"""Every [D-N] marker in repo-only doctrine names an existing entry.
 
-    check_entry_references resolves what the decision log itself writes, and
-    stops there -- so a marker in the always-on surface resolved to nothing and
-    lint stayed green, verified for all four of them. That mattered little
-    while the doctrine merely cited; it matters now that the outflow rule
-    instructs a session to replace prose with a citation and requires one that
-    resolves. A reason compressed into a marker nobody checks is a reason
-    deleted on the next renumbering, on the surface every session reads first.
+    check_entry_references resolves references made by the decision log and
+    stops there. A dangling doctrine marker still presents historical rationale
+    as available evidence, so it must resolve where the local log is present.
 
-    Scoped to the doctrine files by decision, not by the shipped cells being
-    clean: they carry the `[D-N]` markers
-    `git grep -oE "\[D-[0-9]+\]" -- 'skills/**/*.md'` counts on whatever tree
-    you are on, and D-173 priced exactly that
-    cost rather than arguing it away, on the ground that the party who would
-    unknowingly undo the ruling is looking at the cell and not at the log. An
-    adopter cannot resolve any of them -- they receive the cells and not the
-    decision log -- so widening this guard would either mean stripping reasons
-    the practice deliberately kept, or a permanent exemption list. That is the
-    owner's call to reopen, not a repair a guard should make on its own; until
-    he does, those markers are lawful and out of reach here.
-
-    (The zone wall is not what puts them out of reach, whatever the shape of
-    the argument suggests: a `[D-N]` marker is not a path and violates no
-    zone rule. The reason is the resolution cost above.)
+    Shipped prose is deliberately outside this scan: check 1 rejects decision
+    markers there because an adopter receives the prose without the log. This
+    check owns the repository doctrine where a decision citation can resolve.
     """
     findings = []
     directory = root / "docs" / "architecture" / "decisions"
@@ -1641,12 +1060,9 @@ def _doctrine_ref_resolves(root: Path, ref: str) -> bool:
 
     `_entry_ref_resolves` also tries the entry's own directory and `skills/`,
     because decision entries write the skills-relative shorthand routinely. The
-    doctrine does not, and inheriting that leniency made the guard blind on the
-    one path it most needs to see: `charter/SKILL.md` -- broken from the root,
-    and the shortened form a session under budget pressure would reach for --
-    resolved under `skills/` and drew no finding, while a nonexistent cell name
-    in the same position did. The doctrine's paths are written from the root,
-    so that is the only base that answers the question it is asked.
+    doctrine does not, and inheriting that leniency makes it blind to a broken
+    root-relative shorthand such as `charter/SKILL.md`. Doctrine paths are
+    written from the repository root, so that is their only resolution base.
     """
     ref = ref.replace("\\", "/")
     if not ref or ref.startswith("/"):
@@ -1657,107 +1073,6 @@ def _doctrine_ref_resolves(root: Path, ref: str) -> bool:
     except OSError:
         return False
     return _within(resolved, root) and resolved.exists()
-
-
-# The charter's roster section, keyed by its heading rather than by reading
-# every reserved-form name in the file. The two differ exactly where it
-# matters: the charter names cells in its prose as well, so a whole-file read
-# would be satisfied by a cell mentioned in a rule and absent from the roster
-# -- which is the state this check exists to refuse. [PR #437 review, M1]
-CHARTER_ROSTER_HEADING = "## The cells this practice ships"
-
-
-def check_charter_roster(root: Path) -> list[str]:
-    """Every shipped cell but the charter has a line in the charter's roster.
-
-    **The router is half of what #404 bought and was held by prose alone.**
-    The affirmed implementation brief prefers a check in code wherever the ground is stable,
-    and this ground is as stable as this repository has: the cell set is
-    `roster.cell_sources`, which `check_project_roster` already derives a set
-    from, and the roster is a bullet list in the reserved form. Adding a cell
-    and leaving the roster alone was green -- the only red was the new
-    description's always-on cost, answered by an admission row, after which a
-    shipped cell was absent from the surface every session reads and nothing
-    said so. [PR #437 review, M1]
-
-    **The name set, and since #503 the names are the whole of it.** The
-    roster carried one load condition per cell, which was a second always-on
-    copy of that cell's description; one was falsified four hours after it
-    landed by a change to the mechanism it described, and went on routing
-    sessions to a step that did not exist until this check's own change
-    removed it. The conditions are gone and the descriptions keep them. What
-    was already true stays the reason this reads names alone: what a line
-    says is prose a reflow may lawfully rewrite, and `check_charter_cell`
-    declines to machine-read the charter's wording for that reason.
-
-    **Membership is read in both directions, and form in neither.** A cell
-    that ships and is unlisted is the first arm; the charter's own name
-    appearing in a list that says it excludes it is the second, which
-    `shipped - listed - {CHARTER_CELL}` cannot see because it subtracts that
-    name before diffing. Every other over-listing already reds elsewhere --
-    `check_cell_references` answers a phantom name, a retired cell and the
-    wall's refused direction -- so this arm is the residue rather than a
-    general one. **A load condition returning to a line is still invisible**,
-    that being form rather than membership, and reading form is the design
-    call the paragraph above declines. [#524 review, M5]
-
-    **The heading is checked too**, because a check keyed to a section is
-    disabled by renaming it, and the rename would otherwise be silent.
-    """
-    findings = []
-    charter = root / CHARTER
-    text = _read_text(charter)
-    if text is None:
-        return findings  # check 3 owns an absent or unreadable charter
-    if CHARTER_ROSTER_HEADING not in text:
-        return [
-            f"charter-roster: {CHARTER} has no '{CHARTER_ROSTER_HEADING}' "
-            f"section, so the always-on router this practice declares is "
-            f"either gone or renamed. It is keyed by that heading: rename it "
-            f"and every cell below stops being checked, silently"
-        ]
-    section = text.split(CHARTER_ROSTER_HEADING, 1)[1]
-    # To the next heading of the same level, so a later section's prose is not
-    # read as roster content.
-    for lineno, line in enumerate(section.splitlines()):
-        if lineno and line.startswith("## "):
-            section = section.split(line, 1)[0]
-            break
-    listed = {name for _lineno, name, _wrapped in _cell_name_refs(section)}
-    shipped = {
-        name for name, source in roster.cell_sources(root).items()
-        if source == SHIPPED_CELLS
-    }
-    # The charter excludes itself, so it is subtracted from `shipped`
-    # above -- which also makes a charter line in the roster invisible to
-    # that diff. The roster's completeness sentence names the exclusion, so
-    # a line contradicting it is a finding on its own arm. [#524 review, M5]
-    if CHARTER_CELL in listed:
-        findings.append(
-            f"charter-roster: {CHARTER}'s roster lists the "
-            f"'{CHARTER_CELL}' cell, which it excludes by construction -- a "
-            f"session reading the section's own claim that it names every "
-            f"cell but the one it is reading is reading a false sentence. "
-            f"Remove the line; the exclusion is what makes the claim true"
-        )
-    missing = sorted(shipped - listed - {CHARTER_CELL})
-    for name in missing:
-        findings.append(
-            f"charter-roster: the '{name}' cell ships and is not in "
-            f"{CHARTER}'s '{CHARTER_ROSTER_HEADING}' section, so a session "
-            f"that does not know which cell owns its rule is not routed to "
-            f"it from the one surface every session has already read. The "
-            f"section is named here rather than called the roster because "
-            f"the charter's only use of that word names the review panel's. "
-            f"Add one line naming the cell in the "
-            f"reserved form, the name alone -- when to load it is its own "
-            f"description's to say, and that loads in every session already, "
-            f"so a condition here is a second always-on copy [#503]. Note "
-            f"what the line costs even so: it is always-on in every runtime, "
-            f"so at a full surface it is admitted on {ADMISSIONS} like any "
-            f"other needed item"
-        )
-    return findings
 
 
 def check_cell_references(root: Path) -> list[str]:
@@ -1779,11 +1094,8 @@ def check_cell_references(root: Path) -> list[str]:
     def _names(source: str) -> set:
         # **A directory is not a cell until it holds the file that loads.** An
         # abandoned or half-renamed `docs/cells/ghost/` would otherwise satisfy
-        # a `` `ghost` cell `` reference here while the roster skips it and no
-        # runtime can load it -- a reference that resolves for the guard and
-        # for nobody else. The generator's own predicate is the one this must
-        # agree with, so it is the one used.
-        return set(roster.names_under(root, source))
+        # a `` `ghost` cell `` reference although no runtime can load it.
+        return set(names_under(root, source))
 
     # **Two known sets, because the wall runs one way.** A repo-only cell may
     # name a shipped cell -- that is the lawful direction, the same one that
@@ -1998,34 +1310,9 @@ def check_doctrine(root: Path) -> list[str]:
     agents = root / "AGENTS.md"
     if not agents.is_file():
         findings.append("doctrine: AGENTS.md is missing (it is the canonical root file)")
-    else:
-        # **No per-file ceiling here any more.** AGENTS.md and the charter
-        # body are both members of the always-on rows, and a ceiling on each
-        # member priced a relocation between them as a saving in the file that
-        # shrank while the surface a session loads did not move. The budget is
-        # on the rows themselves -- check_always_on_budget. [#260]
-        pass
     charter = root / CHARTER
-    # An absent cell is not a budget violation -- a tree without it simply has
-    # no such cell, and every minimal fixture is one. What an absent cell WOULD
-    # do is silently drop the budget on a rename, so that the map still names a
-    # real cell is pinned against this repository's own tree in the suite,
-    # where the question has an answer, rather than guessed at here.
-    # The record relaxes the constants below, never tightens them, and a row
-    # it cannot read grants nothing -- `read_admissions` fails closed and
-    # `check_admissions` reports what it dropped, so the malformed-record
-    # finding is not repeated at every site the record touches.
-    # A cell body over its ceiling raises no finding here and never has since
-    # #455: the ceiling reports rather than cutting, so it cannot
-    # redden the lint or refuse a commit. cells_over_ceiling() is what reads it
-    # and over_ceiling_note() is what reports it [D-544].
-    # An adopter loads the installed charter because its repository instructions
-    # say so. In THIS source repository the local charter reaches the session
-    # through an import in a file that is itself imported. Checked by shape
-    # rather than by position: unlike CLAUDE.md the
-    # import does not lead the file, and a backticked mention imports nothing.
-    # Nor does a fenced one -- the same premise, and the guard rejected one
-    # spelling of not-bare while accepting the other.
+    # This repository receives its local charter through a bare import in
+    # AGENTS.md. Backticked and fenced mentions display text but import nothing.
     if agents.is_file():
         lines = _unfenced(agents.read_text(encoding="utf-8", errors="replace"))
         if CHARTER_IMPORT not in lines:
@@ -2040,15 +1327,8 @@ def check_doctrine(root: Path) -> list[str]:
                 "which does not exist"
             )
 
-    # **An import is not a line, it is the file it names.** The row budget
-    # measures the doctrine files themselves; the runtime inlines whatever they
-    # `@`-import. Probed [#291]: `@docs/values.md` in AGENTS.md moved the row 17
-    # characters while the session loaded 5,482 more, with the lint clean -- so
-    # the one move the ceiling exists to refuse was available as a one-liner,
-    # and the guard's own message told the author it was not. Refusing the
-    # construct is the cheapest material that holds it: resolving imports into
-    # the figure would oblige `always_on_at` to resolve them at an arbitrary
-    # ref too, or the two halves of every delta measure different surfaces.
+    # Only the two sanctioned imports are lawful; any other one silently adds
+    # an entire file to the root instructions.
     for name, allowed in (("AGENTS.md", {CHARTER_IMPORT}),
                           ("CLAUDE.md", {"@AGENTS.md"})):
         doc = root / name
@@ -2060,9 +1340,8 @@ def check_doctrine(root: Path) -> list[str]:
             if stripped.startswith("@") and stripped not in allowed:
                 findings.append(
                     f"doctrine-import: {name} imports '{stripped}', which the "
-                    f"runtime inlines whole while the always-on figure charges "
-                    f"the line -- so it spends the row budget at a fraction of "
-                    f"what a session loads. The lawful imports here are "
+                    f"runtime inlines whole without making that content visible "
+                    f"at this root. The lawful imports here are "
                     f"{', '.join(sorted(allowed))}"
                 )
 
@@ -2084,95 +1363,12 @@ def check_doctrine(root: Path) -> list[str]:
     return findings
 
 
-def _is_calendar_day(value: str) -> bool:
-    """DATE_SHAPE pins the shape; this rejects 2026-13-45 and 2026-02-30."""
-    try:
-        datetime.date.fromisoformat(value)
-    except ValueError:
-        return False
-    return True
-
-
-def check_doctrine_callout(root: Path) -> list[str]:
-    """The callout must still be wired into CI.
-
-    Its own mechanism cannot catch its own removal: a PR that deletes the job
-    touches no doctrine file, so no callout fires, nothing goes red, and
-    the mechanism disappears exactly as silently as the CODEOWNERS callout it
-    replaced. Loud-on-failure and pinned-when-present are different guarantees
-    and the script only carries the first. This is the second, and it lives in
-    the lint because the lint is a required status check.
-    """
-    findings = []
-    script = root / "tools" / "doctrine_callout.py"
-    workflow = root / ".github" / "workflows" / "ci.yml"
-    if not script.is_file():
-        findings.append(
-            "doctrine-callout: tools/doctrine_callout.py is missing -- nothing "
-            "would flag a doctrine change for the owner's merge-time read [D-81]"
-        )
-    if not workflow.is_file():
-        findings.append("doctrine-callout: .github/workflows/ci.yml is missing")
-        return findings
-    lines = workflow.read_text(encoding="utf-8", errors="replace").splitlines()
-
-    # Scoped to the job's own block, not searched over the whole file. A
-    # whole-file search for the gate matches the version-bump step's identical
-    # `if:` line and passes a workflow whose callout job is disabled; and a
-    # plain substring passes a job that has merely been commented out, which is
-    # the most ordinary CI edit in the set. Both were measured.
-    block = []
-    for i, line in enumerate(lines):
-        if line == JOB_HEADER:
-            for tail in lines[i + 1:]:
-                if tail.strip() and not tail.startswith("    "):
-                    break
-                block.append(tail)
-            break
-    else:
-        findings.append(
-            "doctrine-callout: no live `doctrine-callout:` job in "
-            ".github/workflows/ci.yml -- the callout would stop firing with "
-            "nothing going red [D-81]"
-        )
-        return findings
-
-    for pattern, why in (
-        (RUNS_SCRIPT, "does not run tools/doctrine_callout.py"),
-        (GATED_ON_PR, "is not gated on a pull_request event"),
-        (FULL_HISTORY, "does not check out full history (`fetch-depth: 0`), "
-                       "so the base revision is unreadable: the callout loses "
-                       "this PR's movement AND the frontmatter arm raises, "
-                       "reddening this job on every pull request"),
-        (BASE_FLAG, "does not pass `--base` to tools/doctrine_callout.py, so "
-                    "the frontmatter arm never runs and no description edit is "
-                    "ever flagged -- the defect #277 was filed for"),
-        (BASE_ENV, "does not put the base revision in the environment as "
-                   "`BASE_SHA`, so `--base` expands to `\"\"`, which is not "
-                   "None and so reaches the frontmatter arm and raises"),
-    ):
-        if not any(pattern.match(line) for line in block):
-            findings.append(
-                f"doctrine-callout: the doctrine-callout job {why} [D-81]"
-            )
-    # The trigger is file-level, and switching it (to pull_request_target, say)
-    # would skip the job silently while both required checks still report.
-    if not any(PR_TRIGGER.match(line) for line in lines):
-        findings.append(
-            "doctrine-callout: .github/workflows/ci.yml has no `pull_request:` "
-            "trigger -- the callout job would never run [D-81]"
-        )
-    return findings
-
-
 def check_decision_index(root: Path) -> list[str]:
     """Every decision entry has a row in the log's index, and every row a file.
 
     The row is part of landing, written once in the PR that lands the entry.
-    It is not maintained after, but for the same two narrow repairs the entry
-    itself admits -- see the log's README. Without it the entry is unreachable:
-    the shipped rule carries at most a bare `[D-N]` marker, so the index is the
-    only route a later session has from a decision's number to its reasoning.
+    It is not maintained after, except for the narrow repairs the index itself
+    permits. Without the row a later session cannot find the decision by number.
     """
     findings: list[str] = []
     directory = root / "docs" / "architecture" / "decisions"
@@ -2396,11 +1592,6 @@ def check_cell_frontmatter(root: Path) -> list[str]:
     skills = root / SHIPPED_CELLS
     if not skills.is_dir():
         return findings
-    # The record relaxes the description ceiling below, never tightens it, and
-    # a row it cannot read grants nothing -- `read_admissions` fails closed
-    # and `check_admissions` reports what it dropped, so the malformed-record
-    # finding is not repeated at every site the record touches.
-    admissions, _ = read_admissions(root)
     # Both sources, because both load. A repo-only cell's description sits in
     # every session here exactly as a shipped one does -- the generator copies
     # it onto both runtime surfaces -- so an unparseable or oversized one fails
@@ -2453,28 +1644,16 @@ def check_cell_frontmatter(root: Path) -> list[str]:
                     f"description, no trigger, silently"
                 )
             elif key in CELL_FIELD_MAX_CHARS:
-                # **Only `description` is admissible.** The 64-character
-                # `name` cap bounds an identifier the runtime addresses the
-                # cell by, not a share of what a session loads, so no
-                # admission key names it and `ceiling` is handed the constant
-                # with nothing charged against it.
-                admission = f"description:{rel}" if key == "description" else ""
-                allowed, against = ceiling(
-                    CELL_FIELD_MAX_CHARS[key], admissions, admission)
+                allowed = CELL_FIELD_MAX_CHARS[key]
                 if len(value) > allowed:
                     findings.append(
                         f"cell-frontmatter: {rel}'s {key} is {len(value)} "
-                        f"chars, {against} -- "
+                        f"chars, maximum is {allowed} -- "
                         + ("every session here pays for it, invoked or not"
                            if rel.startswith(REPO_CELLS + "/") else
                            "every adopter pays for it in every session, "
                            "invoked or not")
-                        + (f". {admit_route(admission)}" if admission else "")
                     )
-                if admission:
-                    findings += stale_admission(
-                        f"{rel}'s description", len(value),
-                        CELL_FIELD_MAX_CHARS[key], admissions, admission)
         name = fields.get("name", "").strip().strip("'\"")
         if name and name != skill_dir.name:
             findings.append(
@@ -2487,27 +1666,10 @@ def check_cell_frontmatter(root: Path) -> list[str]:
 def continued_keys(text: str) -> list[str]:
     """Keys whose value continues onto a following, more-indented line.
 
-    **This reader takes one line per key, and YAML does not.** A plain scalar
-    continued on indented lines is one value to a parser and one line to the
-    loop below, which skips any line starting with whitespace. That gap costs
-    two guarantees at once, so it is detected once here and both callers ask.
-
-    **What it costs the budget** [#291]: the runtime loads the whole value and
-    `_roster` charges the first line. Probed on this repository -- a 4,007
-    character description measured as 58, and the always-on row *fell* 533
-    while ~3,950 always-on characters were added, with the lint and the roster
-    both clean. **What it costs the cell**: `_plain_scalar_hazard` inspects
-    what this returns, so a hazard on a continuation line is invisible -- a
-    frontmatter block PyYAML raises `ScannerError` on shipped through the whole
-    gate green, and the runtime's answer to unparseable is to load the cell
-    with empty metadata, silently, which is the failure check 4 exists to
-    catch.
-
-    Rejecting the construct rather than parsing it, on the ground check 4
-    already gives for not taking a YAML dependency to buy an approximation of
-    the real oracle -- and because a value nobody here can measure is one
-    nobody can budget, which is true of every spelling and not only the block
-    markers `>` and `|`.
+    This reader takes one line per key while YAML may continue a plain scalar
+    on indented lines. Reject the construct because otherwise length and scalar
+    safety checks inspect only the first line and the runtime may see another
+    value or empty metadata.
     """
     block = _frontmatter_block(text)
     if block is None:
@@ -2656,14 +1818,9 @@ def check_docstring_control_chars(root: Path) -> list[str]:
     are about them, so the escape and the character are one keystroke apart and
     the source looks identical either way.
 
-    **It fired repeatedly inside the one change that added it, and nothing
-    caught any of them** -- a committed decision-log row split by two control
-    bytes, a docstring carrying carriage returns after a repair turned its bytes
-    into escapes it never doubled, a code span that lost the character it named,
-    and this check's own registration sentence. Named rather than counted: the
-    stated count was wrong the moment the next instance landed, which is the
-    arithmetic `roster.verify` deleted rather than corrected a fourth time
-    [PR #210 cycle one, C1-F5]. [#233]
+    It has caught control bytes in a decision row and in compiled docstrings.
+    Instances are named rather than counted because the count changes whenever
+    another instance lands.
 
     It reads the **compiled** value, not the source, which is the whole point:
     the bytes on disk were clean in the second instance and the runtime value
@@ -2718,9 +1875,7 @@ def check_docstring_control_chars(root: Path) -> list[str]:
             # unguarded: a control character in a *module* docstring -- which is
             # exactly the shape this check teaches about -- raised out of
             # `run()`, so the mandated first step of the flow answered with a
-            # traceback and none of the other checks' findings. The same defect
-            # `roster.write` records at [PR #210 review, M4], reinstated by the
-            # guard written to end a different one.
+            # traceback and none of the other checks' findings.
             line = node.body[0].lineno
             owner = getattr(node, "name", "module")
             for point in sorted({ord(c) for c in doc} - allowed):
@@ -2758,8 +1913,7 @@ def check_docstring_control_chars(root: Path) -> list[str]:
 # a script whose escapes had become control bytes. Skipping them from the byte
 # guard withdrew, for `docs/recorded-findings.jsonl`, the pre-commit catch this
 # change's own M2 remedy had just bought. The byte guard still covers each
-# record, including the two closed files, while check 27 parses
-# `docs/admissions.jsonl`.
+# record, including the two closed files.
 # [PR #247 review, post-fix 1]
 FROZEN_ARCHIVE = frozenset({
     "docs/ledger.jsonl",
@@ -2772,21 +1926,6 @@ FROZEN_PREFIXES = ("docs/architecture/adr/",)
 LIVE_RECORDS = frozenset({
     "docs/reviews.jsonl",
     "docs/recorded-findings.jsonl",
-    # An admission's `item` and `outflow` are prose about the rule that was
-    # admitted, so a row naming a path or quoting a clause holds exactly the
-    # constructs the prose guard reports. Append-only means such a finding is
-    # a red no lawful edit clears, which is the shape #224 was about -- the
-    # byte guard still covers it, where a lone carriage return is corruption
-    # of the row's own format rather than content. [#334]
-    "docs/admissions.jsonl",
-    # `scoring_pass` and `notes` are prose about an implementation brief -- what the pass
-    # removed, and why a row is shaped as it is -- so a row quoting a
-    # whitespace-only span holds exactly what the prose guard reports, and
-    # append-only makes it a red no lawful edit clears. Measured rather than
-    # assumed: only a span of spaces or NBSP is reachable here, JSON escaping
-    # putting a raw tab or newline out of reach, and the byte guard still
-    # covers a lone carriage return as format corruption. [#423]
-    "docs/settling.jsonl",
 })
 
 
@@ -2901,46 +2040,6 @@ def _unfenced_text(text: str) -> str:
     return "\n".join(out)
 
 
-def _is_generated_entry(root: Path, rel_file: str) -> bool:
-    """Whether this path is a roster entry `tools/roster.py` wrote.
-
-    A generated entry's frontmatter is its cell's, byte for byte, so a defect
-    in one prose guard's territory would be reported twice for a single edit
-    -- once against the cell, once against the copy. The copy's finding is the
-    useless half: the file it names says *do not edit this one*, so a reader
-    acting on it edits a generated file and the next `--write` brings the
-    defect back.
-
-    **The location is tested first, and that is the whole of what was wrong
-    here.** `roster.is_generated` answers whether a file holds the generator's
-    marker, and its five other callers all hand it a path under the roster
-    directory. Handed every path in the repository, it also answers True for
-    `tools/roster.py`, which contains that marker's own byte literal -- so
-    both prose guards went blind on the one file both of their motivating
-    instances came out of, and the falsification this guard's own tests name
-    returned nothing. Every seat of this change's review found it
-    independently [PR #247 review, M1].
-
-    The marker is still read, and is what decides it inside those
-    directories: each is its own runtime's documented home for a project's own
-    skills, so a hand-written one there is nobody's copy and is still read.
-
-    **Every surface the generator writes**, asked of `roster.ROSTER_DIRS`
-    rather than listed here. A second directory that this predicate did not
-    know about would report each description defect once more per copy, which
-    is the doubling the whole exemption exists to stop. [#258]
-
-    Nothing hides behind this. Check 17 holds every entry in step with its
-    cell, and a lone carriage return is not among what its comparison
-    forgives, so a copy that diverged from its cell is already a finding
-    there.
-    """
-    if not any(rel_file.startswith(directory + "/")
-               for directory in roster.ROSTER_DIRS):
-        return False
-    return roster.is_generated(root / rel_file)
-
-
 def check_hollow_code_span(root: Path) -> list[str]:
     """No inline code span holds nothing but whitespace.
 
@@ -2990,7 +2089,7 @@ def check_hollow_code_span(root: Path) -> list[str]:
         if path in ignored:
             continue
         rel_file = path.relative_to(root).as_posix()
-        if _unread_as_prose(rel_file) or _is_generated_entry(root, rel_file):
+        if _unread_as_prose(rel_file):
             continue
         text = _read_text(path)
         if text is None:
@@ -3125,14 +2224,14 @@ def check_committed_carriage_return(root: Path) -> list[str]:
         fields, _, rel_file = row.partition(chr(9))
         parts = fields.split()
         index_eol, worktree_eol = parts[0], parts[1]
-        if _frozen(rel_file) or _is_generated_entry(root, rel_file):
+        if _frozen(rel_file):
             continue
         if index_eol not in ("i/lf", "i/none"):
             candidates.setdefault(rel_file, []).append("index")
         if worktree_eol not in ("w/lf", "w/none"):
             candidates.setdefault(rel_file, []).append("working tree")
     for rel_file in untracked:
-        if not _frozen(rel_file) and not _is_generated_entry(root, rel_file):
+        if not _frozen(rel_file):
             candidates.setdefault(rel_file, []).append("working tree")
 
     findings = []
@@ -3282,11 +2381,8 @@ def run(root: Path) -> list[str]:
     a session had no way to tell a clean tree from a filthy one.
 
     Observed live: a check formatted `node.lineno` on an `ast.Module`, which
-    has none, and took nineteen other checks' findings with it. Fixing that one
-    trigger left the chain as it was. The same defect `roster.write` records at
-    [PR #210 review, M4], with the same remedy and the same reason: reporting
-    keeps the remaining work going and leaves the reader what the other checks
-    would have given them. [#239]
+    has none, and took the other checks' findings with it. Reporting keeps the
+    remaining work going and leaves the reader what those checks found.
 
     **The finding claims only what was computed.** It names the check, the
     exception and the frame that raised -- and says the check's territory went
@@ -3349,10 +2445,8 @@ def _is_marker(value: object) -> bool:
 def _marker_names(tree: ast.Module) -> set[str]:
     """Module-level names bound to a marker literal.
 
-    Hoisting the marker to a constant is what a reader would call an
-    improvement, and it defeated an earlier form of this check outright --
-    tools/roster.py already writes its markers that way, so the house style
-    was the blind spot.
+    A body-strip detector must follow a marker hoisted to a constant or a
+    mechanical refactor would silently defeat the check.
     """
     names: set[str] = set()
     for node in tree.body:
@@ -3606,351 +2700,6 @@ def check_body_strip_owner(root: Path) -> list[str]:
     return findings
 
 
-def check_project_roster(root: Path) -> list[str]:
-    """Every cell has an entry on every surface, carrying its frontmatter.
-
-    There is one surface per runtime, and between them they are the whole of
-    what a session working in this repository loads a description from:
-    `.claude/skills/` for Claude Code, `.agents/skills/` for Codex. An adopter
-    installs the plugin and receives the roster from it; this repository never
-    installs itself, so before #199 no session here held any cell's name or
-    description, and every trigger routed to a description over several
-    changes reached every consumer and missed us. `tools/roster.py` carries
-    the mechanism and the evidence.
-
-    **Codex was outside that scope and is now inside it.** [PR #210 review,
-    M10] required the runtime be named rather than left to a universal,
-    because a sentence claiming every session would have asserted a fix Codex
-    never received -- and while it stood, that named exclusion was the whole
-    of what this repository contributed to the runtime its doctrine calls
-    canonical. **How long it stood is left to its derivation** --
-    `git log -S "Codex is outside
-    that scope" -- tools/lint.py` -- rather than stated here, where a comment
-    beside code freezes and the figure rule gives it the command and the tree
-    and never the output. A draft stated a duration and the duration was
-    wrong. **The quoted string is wrapped on purpose**: unwrapped, this file
-    holds its own search term, and the command then reports the commit that
-    unwrapped it as though the sentence had moved there.
-    [PR #278 review, M5, F7, P4, P5] The rule survives the fix, narrowed to
-    what the messages do: a finding **about a surface** names its runtime as
-    well as its directory, because the two directories reach one runtime each
-    and a session that repaired one has not repaired the other. A finding
-    about a **cell** -- frontmatter that will not parse, no cell at all --
-    names no surface and is reported once, the cell being one file however
-    many copies of it are owed. An earlier draft claimed the runtime
-    universally while three of the shapes named only a directory.
-    [#258] [PR #278 review, M2]
-
-    The expectation is the generator's, asked for rather than recomputed. A
-    guard that computes its own copy of what a writer produces is a second
-    definition of the same thing, and the two agree exactly until either is
-    edited -- the failure `_always_on` in `tools/figures.py` already records,
-    where two hand-written copies of one sum let a mutation through green.
-
-    An empty `skills/` is a finding rather than a pass, for the reason #198
-    states about a sibling guard: no cell found is indistinguishable from
-    every cell lawful, and the cheapest route to green must never be deleting
-    what the check reads.
-    """
-    return roster.verify(root)
-
-
-# Every check, in report order. A tuple rather than an expression because
-# `run()` calls them one at a time to isolate them; see its docstring.
-def _unmeasurable_descriptions(root: Path) -> list[str]:
-    """Every counted description is one this repository can actually measure.
-
-    **The ceiling is only as good as the number it is applied to.** The
-    frontmatter reader here takes `key: value` on one line, which is what every
-    cell in this practice writes -- but a *hand-written* project skill on a
-    roster surface is somebody else's file, and YAML lets it write
-    `description: >-` with the value indented beneath. The runtime loads the
-    whole block; this reader sees the two-character token. Probed: a description of thousands of characters measured as the marker
-    alone and left the row budget green; the shipped pin reproduces it.
-
-    Rejecting the construct rather than parsing it, for the reason
-    `check_cell_frontmatter` already gives about not taking a YAML dependency
-    to buy an approximation of the real oracle -- and because a description
-    nobody can measure is one nobody can budget, whichever way it is spelled.
-    [#260] [#291]
-    """
-    findings = []
-    for surface in roster.SURFACES:
-        base = root / surface.directory
-        if not base.is_dir():
-            continue
-        for cell in sorted(base.glob("*/SKILL.md")):
-            text = _read_text(cell)
-            if text is None or not text.startswith("---"):
-                continue
-            rel = cell.relative_to(root).as_posix()
-            if "description" in continued_keys(text):
-                findings.append(
-                    f"always-on-budget: {rel}'s description continues onto an "
-                    f"indented line, which the runtime loads whole and this "
-                    f"repository measures as the first line -- so it is "
-                    f"charged to the {surface.runtime} row at a fraction of "
-                    f"what it costs. Write the description on one line"
-                )
-            for line in (_frontmatter_block(text) or "").splitlines():
-                key, sep, value = line.partition(":")
-                if sep and key.strip() == "description":
-                    if value.strip().startswith((">", "|")):
-                        findings.append(
-                            f"always-on-budget: {rel}'s description is a YAML "
-                            f"block scalar, which the runtime loads whole and "
-                            f"this repository measures as the marker alone -- "
-                            f"so it is charged to the {surface.runtime} row at "
-                            f"a fraction of what it costs. Write the "
-                            f"description on one line"
-                        )
-    return findings
-
-
-def check_always_on_budget(root: Path) -> list[str]:
-    """Every per-runtime always-on row, and the adopter total, inside budget.
-
-    **This is the ceiling the two per-file ones became.** A budget on AGENTS.md
-    and another on the charter body could not see a move between them: the file
-    that shrank reported headroom, the file that grew reported a violation only
-    if it happened to be near its own line, and the surface a session actually
-    loads had not changed. Budgeting the rows prices what is read. [#260]
-
-    **It fails loudly when the figure cannot be derived.** `always_on_note`
-    swallows every exception and returns a string, which is right for a note
-    printed beside the findings and wrong for an enforced ceiling: a ceiling
-    that silently stops applying when its input breaks is not a ceiling. So the
-    import and the arithmetic are inside this check and a failure is a finding.
-
-    **Both rows are checked against one constant, not one row against it.** The
-    rows differ -- only Claude Code reads CLAUDE.md -- and a check that took the
-    smallest, or the first, would leave the larger unbudgeted, which is the
-    defect `_always_on` records for `repo_total` and the reason this does not
-    use that scalar.
-    """
-    findings = []
-    # **This guard runs where this guard lives.** The quantity is composed
-    # from this repository's own doctrine files and its two generated roster
-    # surfaces and measured by its own instrument, so the tree it means
-    # anything about is the one carrying this file. A fixture tree writes some
-    # of `tools/` without writing `tools/lint.py`, and reporting there would
-    # red every synthetic tree the suite builds.
-    #
-    # **The deletion bypass stays closed**, which is what #134 records going
-    # wrong when a guard reads its own input's absence as clean: the gate is
-    # this file, not the figure, so removing `tools/figures.py` from this
-    # repository reaches the branch below and reds. Probed both ways. [#260]
-    if not (root / "tools" / "lint.py").is_file():
-        return findings
-    # **Before the figure, not after it.** A description this repository cannot
-    # measure is a finding whether or not the figure derives -- it is a fact
-    # about the file, not about the arithmetic -- and putting it behind the
-    # derivation meant a tree with no `tools/figures.py` reported the
-    # derivation failure and nothing about the descriptions it also could not
-    # have measured. [#291]
-    findings += _unmeasurable_descriptions(root)
-    # Before the figure, for the same reason: a malformed row is a fact about
-    # the record, not about whether `tools/figures.py` imported. The rows are
-    # what relax the two constants below; `read_admissions` fails closed, so a
-    # row it could not read leaves the constant in force and is reported by
-    # `check_admissions` rather than a second time here.
-    admissions, _ = read_admissions(root)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "repo_figures_budget", root / "tools" / "figures.py"
-        )
-        figures = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(figures)
-        data = figures.figure_always_on(root)["data"]
-        rows = data["here"]
-        adopter = data["adopter_total"]
-    except Exception as exc:  # noqa: BLE001 -- a ceiling with no input is a finding
-        return findings + [
-            f"always-on-budget: not derived ({type(exc).__name__}: {exc}), so "
-            f"the always-on ceiling applied to nothing on this run -- fix "
-            f"tools/figures.py; no budget passes by being unmeasurable"
-        ]
-    # **An incomplete figure is not a passing one.** An empty or short `here`
-    # list would walk the loop below zero times and apply no ceiling at all,
-    # which is the same silent pass the note above was rejected for. The
-    # expected set is the generator's surfaces, so a runtime added there and
-    # missed here reports rather than going unbudgeted.
-    want = {surface.runtime for surface in roster.SURFACES}
-    got = {row.get("runtime") for row in rows if isinstance(row, dict)}
-    if want - got:
-        return findings + [
-            f"always-on-budget: the figure reported no row for "
-            f"{', '.join(sorted(want - got))}, so that runtime's surface was "
-            f"not measured and no ceiling applied to it -- fix "
-            f"tools/figures.py; no budget passes by being unmeasurable"
-        ]
-    if not isinstance(adopter, int):
-        return findings + [
-            f"always-on-budget: the figure's adopter total is not a number "
-            f"({adopter!r}), so no ceiling applied to it -- fix "
-            f"tools/figures.py; no budget passes by being unmeasurable"
-        ]
-    row_key, adopter_key = "always-on-row", "always-on-adopter"
-    row_allowed, row_against = ceiling(
-        ALWAYS_ON_ROW_BUDGET_CHARS, admissions, row_key)
-    for row in rows:
-        if row["total"] > row_allowed:
-            findings.append(
-                f"always-on-budget: the {row['runtime']} row is "
-                f"{row['total']} chars, {row_against} -- this is the whole "
-                f"surface that runtime loads before acting, so moving prose "
-                f"to another always-on file will not clear it. A body over "
-                f"budget sheds to a cell body or to references/; a "
-                f"*description* over budget can do neither without ceasing "
-                f"to be a trigger, so it is answered by retiring a cell or "
-                f"merging two. {admit_route(row_key)}. What to do at a "
-                f"ceiling is skills/authoring/SKILL.md's -- whose own "
-                f"deletion answer removes the rule, "
-                f"which is a different move from admitting and is "
-                f"reached where the sentence states no concept and no move "
-                f"is open to its rule -- not a guard, not a script's own "
-                f"message, not the cell where it binds, not a decision "
-                f"entry's citation"
-            )
-    # **The largest row, because one constant governs both.** Re-arming asks
-    # whether the surface has come back under, and it has not while either
-    # runtime is still over -- taking the smaller would bank space the larger
-    # is still spending.
-    findings += stale_admission(
-        "the largest always-on row", max(row["total"] for row in rows),
-        ALWAYS_ON_ROW_BUDGET_CHARS, admissions, row_key)
-    adopter_allowed, adopter_against = ceiling(
-        ALWAYS_ON_ADOPTER_BUDGET_CHARS, admissions, adopter_key)
-    if adopter > adopter_allowed:
-        findings.append(
-            f"always-on-budget: the adopter total is {adopter} chars, "
-            f"{adopter_against} -- this is what this practice puts in every "
-            f"session of every repository that adopts it, and it counts the "
-            f"charter body and the shipped roster's descriptions only. "
-            f"{admit_route(adopter_key)}"
-        )
-    findings += stale_admission(
-        "the adopter total", adopter, ALWAYS_ON_ADOPTER_BUDGET_CHARS,
-        admissions, adopter_key)
-    return findings
-
-
-def check_admissions(root: Path) -> list[str]:
-    """The admissions record parses, and no ceiling carries what it no longer spends.
-
-    **This is the guard on the thing that relaxes the other guards**, so it
-    reports what `read_admissions` refused rather than leaving a malformed row
-    to fail silently closed. Silent fail-closed would be safe and unreadable:
-    the session would meet a ceiling finding it had just written a row to
-    clear, with nothing saying the row was the problem.
-
-    **A record cannot tighten a ceiling.** Rows banking more than was ever
-    admitted against a key would drive the effective ceiling below the
-    constant, which would make this file's constants stop being where the
-    ceilings are set. `admitted` floors the sum at zero and this reports the
-    set that got there, in both polarities: over-banking is a finding, and
-    banking exactly what was admitted is the lawful end state.
-    """
-    rows, findings = read_admissions(root)
-    for key in sorted({key for row in rows for key in row["ceilings"]}):
-        charged = [row for row in rows if key in row["ceilings"]]
-        total = sum(row["chars"] for row in charged)
-        if total < 0:
-            findings.append(
-                f"admissions: the rows charged against \"{key}\" sum to "
-                f"{total}, which would put its ceiling below the constant "
-                f"that {ADMISSIONS} exists to relax -- a record does not tighten a "
-                f"ceiling, and tools/lint.py is where they are set. Bank no "
-                f"more than was admitted"
-            )
-    return findings
-
-
-
-SETTLING_ROWS_BRIEF_GRANDFATHERED = 27
-
-
-def check_settling_index(root: Path) -> list[str]:
-    """Every settling row parses and carries the keys the `records` cell names.
-
-    The record is append-only and doctrine forbids repairing a landed row, so a
-    malformed one is permanent. Nothing read this file at all when it shipped:
-    invalid JSON landed green while the identical append to `admissions.jsonl`
-    was reported. That asymmetry is what this closes.
-
-    **Required keys, not exact keys.** Nonblank rows at positions through
-    `SETTLING_ROWS_BRIEF_GRANDFATHERED` require `brief` alongside the common
-    list below. A row may carry more -- the first one carries `set`, `history`,
-    `notes` and `reversed` beyond that list -- because a later session with
-    more to record should not have to change a guard first. What it may not do
-    is omit what a reader needs to find the row's own sources.
-
-    **The implementation-brief link changes forward-only by nonblank row
-    position.** The 27 rows written before this change existed keep `brief`;
-    every row appended after them requires `implementation_brief`. Position
-    cannot be evaded with a mistyped date, and blank lines do not move the
-    boundary.
-
-    **A required key may be `null`**, which is how a successor reconstructing
-    an affirmation it was not present for records a figure nobody holds. An
-    absent key and a null one say different things: absent is an omission, null
-    is `nobody can supply this`. The `records` cell states that convention.
-    """
-    path = root / "docs" / "settling.jsonl"
-    if not path.exists():
-        return []
-    required = ("date", "issue", "puts", "amendments",
-                "corrected_before_posted", "scoring_pass", "cold_seat")
-    findings = []
-    row_position = 0
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        row_position += 1
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError as exc:
-            findings.append(
-                f"settling-index: docs/settling.jsonl:{number} is not valid "
-                f"JSON ({exc}). The record is append-only, so a malformed row "
-                f"cannot be repaired -- append a corrected row instead"
-            )
-            continue
-        if not isinstance(row, dict):
-            findings.append(
-                f"settling-index: docs/settling.jsonl:{number} is not an object"
-            )
-            continue
-        link_key = (
-            "brief"
-            if row_position <= SETTLING_ROWS_BRIEF_GRANDFATHERED
-            else "implementation_brief"
-        )
-        missing = [key for key in (*required, link_key) if key not in row]
-        if missing:
-            if missing == ["brief"]:
-                findings.append(
-                    f"settling-index: docs/settling.jsonl:{number} is missing "
-                    f"brief. Rows through nonblank position "
-                    f"{SETTLING_ROWS_BRIEF_GRANDFATHERED} require that link key"
-                )
-            elif missing == ["implementation_brief"] and "brief" in row:
-                findings.append(
-                    f"settling-index: docs/settling.jsonl:{number} carries brief "
-                    f"but is missing implementation_brief. The settling link is "
-                    f"renamed on rows after nonblank position "
-                    f"{SETTLING_ROWS_BRIEF_GRANDFATHERED}; use "
-                    f"implementation_brief instead of brief"
-                )
-            else:
-                findings.append(
-                    f"settling-index: docs/settling.jsonl:{number} is missing "
-                    f"{', '.join(missing)}. A required figure nobody can supply is "
-                    f"written as null, never omitted -- the two say different things"
-                )
-    return findings
-
-
 def check_depth_index(root: Path) -> list[str]:
     """Every depth file a cell holds is named in that cell's body, and back.
 
@@ -4032,14 +2781,12 @@ CHECKS = (
     check_harness_tokens,
     check_charter_cell,
     check_cell_frontmatter,
-    check_project_roster,
     check_sideways_deps,
     check_cell_references,
     check_depth_index,
     check_doctrine_citations,
     check_doctrine_references,
     check_doctrine,
-    check_doctrine_callout,
     check_decision_index,
     check_entry_references,
     check_emitted_ascii,
@@ -4051,175 +2798,11 @@ CHECKS = (
     check_committed_carriage_return,
     check_marketplace_source,
     check_body_strip_owner,
-    check_always_on_budget,
-    check_admissions,
-    check_settling_index,
-    check_charter_roster,
 )
 
 
-def always_on_note(root: Path) -> str:
-    """The always-on total, where a session sees it before it writes.
-
-    A cold consumer adding a binding rule found this number only because it
-    thought to go looking: `tools/figures.py` is named in no always-on surface
-    and in no skill prose. It said the
-    number changed what it did -- it measured its rule and its outflow before
-    writing either, against whatever headroom the tree had -- which is the whole
-    argument for putting it where the flow already goes.
-
-    The callout is a merge-surface instrument by design and gated to
-    `pull_request`, so it cannot reach the session doing the editing. This is
-    that session's answer, and it costs no always-on characters, owes no
-    outflow, and adds no sentence anybody has to read.
-
-    **It prints every runtime's total, not one scalar**, and the renderer is
-    the figure's own rather than a fourth wording of it. This was the third
-    place `repo_total` was rendered and the only one that did not learn the
-    term had been redefined to the smallest row: on a tree the roster guard
-    passes -- a lawful hand-written project skill under one surface is enough
-    -- it handed the session that ran the flow's first mandated step a number
-    that was some other runtime's, understated, with nothing saying so. Found
-    by every seat of PR #278's panel and by the external pass, at the one
-    surface the criterion's own audience reads. **No runtime detection is owed
-    or wanted**: this cannot ask which runtime it is under, `check_harness_tokens`
-    exists because a form binding in one runtime and not the other forks the
-    practice, and this runs in CI where neither is present. It names every row
-    and lets the reader take its own. [PR #278 review, M1]
-
-    Never fatal. A figure that will not derive is stated and moves on; a clean
-    tree does not go red because a number was unavailable.
-    """
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "repo_figures", root / "tools" / "figures.py"
-        )
-        figures = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(figures)
-        data = figures.figure_always_on(root)["data"]
-        # Inside the guard, not after it. The read was inside and the
-        # formatting was not, so a `data` missing either key escaped as a
-        # KeyError -- and `main()` answered the flow's mandated command
-        # with a traceback, which is the guarantee `run()`'s isolation
-        # exists to make. Two seats disagreed about whether this function
-        # was guarded; the probe settled it. [PR #247 review, M19]
-        # The adopter total is stated with what is admitted against it, for
-        # the reason `figures.priced` carries: a session reading the constant
-        # alone reads headroom a different number governs. Silent on a tree
-        # that has admitted nothing.
-        extra = data.get("admitted", {}).get("always-on-adopter", 0)
-        return (
-            f"always-on surface here, per runtime: "
-            f"{figures.by_runtime(data)}; "
-            f"{data['adopter_total']:,} of "
-            f"{figures.priced(ALWAYS_ON_ADOPTER_BUDGET_CHARS, extra)} "
-            f"from this practice for an adopter"
-        )
-    except Exception as exc:  # noqa: BLE001 -- reported, never fatal
-        return f"always-on surface: not derived ({type(exc).__name__}: {exc})"
-
-
-def cell_body_note(root: Path) -> str:
-    """Every cell body, where a session sees it before it writes.
-
-    **The map is not the cells.** `check_doctrine` iterates
-    `CELL_BODY_CEILING_CHARS`, so a cell absent from it was sized by nothing at
-    either command the landing procedure mandates -- save the charter, whose
-    body is a term in every always-on row and was already printed there -- and the cells absent from
-    it had become the large ones, with the governed bodies neither the
-    largest nor near it. Reporting a size asserts no number, which is why this
-    is a note and not a ceiling: the map is sparse on purpose, because a number
-    chosen for a cell nobody has argued about would be a ruling arriving as a
-    constant, and this change was affirmed not to make one. [#302]
-
-    **Never fatal, and never silent.** It reports rather than reds, copying
-    `always_on_note` above -- which states a figure it cannot derive and moves
-    on. The two states a reader must be able to tell apart are *nothing to
-    report*, which a tree with no cells is, and *could not derive*, which a
-    broken input is; silence would say neither, so each produces text.
-    """
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "repo_figures_bodies", root / "tools" / "figures.py"
-        )
-        figures = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(figures)
-        rows = figures.cell_body_rows(root)
-        # Inside the guard, for the reason always_on_note records: a `data`
-        # missing its key escaping as a KeyError answers the flow's mandated
-        # command with a traceback.
-        if not rows:
-            return "cell bodies here: no cells on either roster source"
-        return (
-            "cell bodies here, largest first:"
-            + chr(10) + figures.cell_body_block(rows)
-        )
-    except Exception as exc:  # noqa: BLE001 -- reported, never fatal
-        return f"cell bodies: not derived ({type(exc).__name__}: {exc})"
-
-
-def over_ceiling_note(root: Path) -> str:
-    """Every cell body over where it stood, as the one line a refresh note copies.
-
-    The `board` cell obliges the refresh note to carry this reading, beside the
-    charter's reach. **One line, because a note copies a line and assembles a
-    block by hand** -- and assembling by hand is where a figure stops matching
-    the tool that derived it. The block above already prints every body against
-    its ceiling; what this adds is the subset a reader is being asked to act on,
-    in a form that survives being pasted.
-
-    **Ordered by overshoot, not by size.** The quantity the note reports is how
-    far past a body has gone, so the largest overshoot is what a reader wants
-    first; the largest body may not be over at all.
-
-    Never fatal and never silent, for the two reasons `cell_body_note` records.
-    `none` is written rather than left as an empty tail, because *nothing is
-    over* and *the derivation broke* are the two states a reader must tell
-    apart and an absent line says neither.
-    """
-    # **The scope is in the label because the label is what gets pasted.**
-    # The block above prints one row per cell in the roster, charter
-    # included; this reads CELL_BODY_CEILING_CHARS, which excludes the
-    # charter deliberately -- its body is a term in every always-on row and
-    # check_always_on_budget sizes it there. So the two adjacent outputs
-    # count different populations, and a consumer read the block's 13 rows
-    # as this line's universe [PR #544 review, M18/M24].
-    label = ("cell bodies over where they stood -- every cell but the "
-             "charter, which is sized against the always-on row instead: ")
-    try:
-        rows = cells_over_ceiling(root)
-        if not rows:
-            return label + "none"
-        rows = sorted(rows, key=lambda row: row[1] - row[2], reverse=True)
-        return label + "; ".join(
-            f"{rel.rsplit('/', 2)[-2]} +{size - ceiling:,}"
-            for rel, size, ceiling in rows)
-    except Exception as exc:  # noqa: BLE001 -- reported, never fatal
-        return f"{label}not derived ({type(exc).__name__}: {exc})"
-
-
 def pointer_reach_note(root: Path) -> str:
-    """What a session reaches through each cell's pointers, before it writes.
-
-    **The figure no surface printed.** The graph was never empty -- the
-    charter and three repo-only cells pointed under the old exemptions, and a
-    session following `landing`'s pointers already held twenty times that
-    cell's own prose -- but nothing reported it, because with the ban in
-    force a pointer was the exception rather than the move. A cell may now
-    point at the one cell owning a rule it needs, and the quantity that
-    decides whether a pointer earns its place is the prose a reader ends up
-    holding. [PR #437 review, M9] This is where it is answered, beside the body figures, on the
-    one surface this repository's landing procedure sends every session to
-    before a commit. [#404]
-
-    **The basis travels with the number**, because a figure whose basis a
-    reader cannot reconstruct is one they cannot act on -- which files count,
-    that a cell reached twice is counted once, and that the charter is out.
-
-    Never fatal, and never silent, for the two reasons `cell_body_note`
-    records: a tree with no cells and a broken input are states a reader must
-    tell apart, so each produces text.
-    """
+    """Report each cell's transitive pointer reach with its measurement basis."""
     try:
         spec = importlib.util.spec_from_file_location(
             "repo_figures_reach", root / "tools" / "figures.py"
@@ -4228,7 +2811,7 @@ def pointer_reach_note(root: Path) -> str:
         spec.loader.exec_module(figures)
         rows = figures.pointer_reach_rows(root)
         if not rows:
-            return "pointer reach here: no cells on either roster source"
+            return "pointer reach here: no cells in either cell source"
         return (
             "pointer reach here, largest first -- " + figures.REACH_BASIS + ":"
             + chr(10) + figures.pointer_reach_block(rows)
@@ -4237,59 +2820,12 @@ def pointer_reach_note(root: Path) -> str:
         return f"pointer reach: not derived ({type(exc).__name__}: {exc})"
 
 
-def admission_note() -> str:
-    """The fourth answer, beside the figures rather than only in the finding.
-
-    **A route reachable only after you exceed cannot reach a session whose
-    method is not exceeding.** An experience session on this change closed a
-    real charter gap against 108 characters of headroom: it drafted six
-    candidate sentences, measured each before touching the file, found its
-    first three came in at +98 to +109 against 108 characters of room, and
-    shipped one at +95 -- dropping a clause it wanted to keep. (An earlier
-    wording here said all three were at or over the line; the note it cites
-    says +98, which fits with ten to spare.) That is the move `skills/authoring/SKILL.md`
-    forbids in the same sentence that names it, and it happened with
-    `tools/lint.py`'s budget and admission constants among what the session
-    reports having read. The run never went red, so it never met the finding
-    that carries the route, and the surface it did meet -- the block below,
-    which it preferred to `tools/figures.py` throughout -- named the ceiling
-    and no answer to it. [PR #346 session note]
-
-    **Unconditional, and evaluating nothing.** No threshold, no marker, no
-    word about how full a surface is: `cell_body_block` records why a figure
-    surface here invents no such number, and a route printed only when
-    headroom looks tight would be exactly that number wearing prose. This
-    states what to do at a ceiling and lets the reader see where it stands
-    from the figures above it.
-    """
-    forms = list(ADMISSION_BARE_KEYS) + [
-        prefix + "<path to SKILL.md>" for prefix in ADMISSION_KEY_PREFIXES]
-    keys = ", ".join(forms[:-1]) + ", or " + forms[-1]
-    return (
-        f"at a ceiling on a share of what a session loads -- an always-on "
-        f"row, the adopter total, a cell description "
-        f"-- a needed item that will not fit is admitted on {ADMISSIONS} "
-        f"(a cell body is not among them: it is measured against where it "
-        f"stood, and passing that is reported in the board's refresh note "
-        f"rather than refusing anything, so nothing there is admitted and "
-        f"nothing is cut) "
-        f"rather than trimmed until it fits: a row carrying "
-        f"{', '.join(ADMISSION_FIELDS)}, where ceilings names one or more of "
-        f"{keys}. The constant does not move, so an admission buys its own "
-        f"item and no room for the next one"
-    )
-
-
 def main() -> int:
     utf8_stdio()
     findings = run(ROOT)
     for finding in findings:
         print(finding)
-    print(always_on_note(ROOT))
-    print(cell_body_note(ROOT))
-    print(over_ceiling_note(ROOT))
     print(pointer_reach_note(ROOT))
-    print(admission_note())
     print(f"lint: {len(findings)} finding(s)")
     return 1 if findings else 0
 

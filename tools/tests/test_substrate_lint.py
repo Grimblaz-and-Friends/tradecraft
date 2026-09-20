@@ -1,10 +1,9 @@
-"""Traveling proofs for the portable substrate lint."""
+"""Proofs for this repository's substrate lint."""
 from __future__ import annotations
 
 import importlib.util
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,9 +11,8 @@ from pathlib import Path
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = ROOT / "skills" / "substrate" / "scripts" / "lint.py"
-SHIPPED_DIRS = ("skills", "lib", "commands", "agents", "hooks", ".claude-plugin")
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "tools" / "substrate_lint.py"
 
 
 def _load_script(path: Path = SCRIPT):
@@ -49,16 +47,6 @@ def _run(script: Path, target: Path, *, cwd: Path) -> subprocess.CompletedProces
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-
-
-def _copy_shipped_zone(destination: Path) -> Path:
-    for dirname in SHIPPED_DIRS:
-        source = ROOT / dirname
-        if source.is_dir():
-            shutil.copytree(source, destination / dirname)
-    for dirname in ("docs", "tools", ".github"):
-        assert not (destination / dirname).exists()
-    return destination / "skills" / "substrate" / "scripts" / "lint.py"
 
 
 def _assert_ascii(result: subprocess.CompletedProcess[bytes]) -> str:
@@ -158,18 +146,6 @@ def test_help_is_ascii_and_does_not_pipe_the_module_docstring(tmp_path):
     assert "Run portable substrate guards" in output
 
 
-def test_relocated_shipped_zone_runs_from_an_unrelated_directory(tmp_path):
-    installed = tmp_path / "installed"
-    relocated_script = _copy_shipped_zone(installed)
-    target = tmp_path / "target"
-    _write(target / "src" / "app.py", "VALUE = 'plain ASCII'\n")
-    unrelated = tmp_path / "unrelated"
-    unrelated.mkdir()
-
-    result = _run(relocated_script, target, cwd=unrelated)
-
-    assert result.returncode == 0
-    assert _assert_ascii(result).endswith("lint: 0 finding(s)\n")
 
 
 def test_no_python_target_leaves_the_python_checks_inert(tmp_path):
@@ -280,32 +256,7 @@ def test_harness_tokens_report_unreadable_contracts_but_leave_binary_contracts_s
     assert "binary.contract" not in findings[0]
 
 
-def test_traveling_tests_run_after_relocation(tmp_path):
-    if os.environ.get("SUBSTRATE_LINT_RELOCATED_TEST") == "1":
-        pytest.skip("the relocated run is the terminal proof")
-    installed = tmp_path / "installed"
-    _copy_shipped_zone(installed)
-    environment = _clean_env()
-    environment["SUBSTRATE_LINT_RELOCATED_TEST"] = "1"
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "skills/substrate/tests/test_substrate_lint.py",
-            "-q",
-        ],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        cwd=installed,
-        env=environment,
-    )
-
-    assert result.returncode == 0, (result.stdout + result.stderr).decode("utf-8", "replace")
-
-
-def test_run_names_a_raised_check_inside_the_shipped_guard(tmp_path, monkeypatch):
+def test_run_names_a_raised_check_inside_the_guard(tmp_path, monkeypatch):
     def broken(_root):
         raise RuntimeError("probe")
 
@@ -315,7 +266,7 @@ def test_run_names_a_raised_check_inside_the_shipped_guard(tmp_path, monkeypatch
 
     assert len(findings) == 1, findings
     assert "no frame inside" not in findings[0]
-    assert "skills/substrate/" in findings[0]
+    assert "tools/tests/test_substrate_lint.py" in findings[0]
 
 
 def test_traversal_prunes_git_and_keeps_every_other_directory(tmp_path):
@@ -330,10 +281,13 @@ def test_traversal_prunes_git_and_keeps_every_other_directory(tmp_path):
     assert ".venv/kept.py" in all_files
 
 
-def test_run_moment_includes_portable_calling_contracts():
+def test_substrate_cell_retains_the_five_guarded_concepts():
     text = (ROOT / "skills" / "substrate" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "Before committing Python work or a calling contract governed by this cell" in text
+    for concept in (
+        "calling contract", "ASCII", "docstring", "stream", "launch redirects",
+    ):
+        assert concept in text
 
 
 # --- check_emitted_ascii ---------------------------------------------------

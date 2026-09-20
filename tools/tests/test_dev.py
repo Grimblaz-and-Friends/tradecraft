@@ -171,12 +171,26 @@ def test_external_scratch_keeps_real_fixtures_outside_git(tmp_path, monkeypatch)
     scratch.mkdir()
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(scratch))
     probe = tmp_path / "test_checkout_discovery.py"
+    observed = tmp_path / "observed-fixture.txt"
     probe.write_text(
+        "from pathlib import Path\n"
         "def test_no_repository_above_fixture(tmp_path):\n"
-        "    assert not any((p / '.git').exists() for p in (tmp_path, *tmp_path.parents))\n",
+        f"    Path({str(observed)!r}).write_text(str(tmp_path), encoding='utf-8')\n"
+        "    git_parents = [p for p in (tmp_path, *tmp_path.parents) if (p / '.git').exists()]\n"
+        "    assert not git_parents, git_parents\n",
         encoding="utf-8",
     )
-    assert dev.run_checks(root, Path(sys.executable), "test", [str(probe), "-q"]) == 0
+    # A nested pytest cannot inherit pytest's Windows capture handles reliably
+    # after a linked-worktree probe has opened and closed more process handles.
+    real_run = subprocess.run
+    def quiet_run(command, **kwargs):
+        return real_run(
+            command, stdin=subprocess.DEVNULL, capture_output=True, **kwargs
+        )
+    monkeypatch.setattr(dev.subprocess, "run", quiet_run)
+    result = dev.run_checks(root, Path(sys.executable), "test", [str(probe), "-q"])
+    fixture = observed.read_text(encoding="utf-8") if observed.exists() else "not created"
+    assert result == 0, f"nested fixture: {fixture}"
 
 
 def test_nested_test_runs_have_separate_scratch_and_forward_arguments(tmp_path, monkeypatch):

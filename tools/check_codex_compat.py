@@ -75,7 +75,8 @@ nothing else. It must have exactly these keys:
   instructions;
 * `opening`: the charter's first prose paragraph after its purpose header,
   with internal whitespace collapsed to single spaces and Markdown preserved;
-* `ceremonies`: the two bold ceremony labels, in order and without punctuation;
+* `concepts`: the six numbered concept headings, in order and without their
+  leading numbers;
 * `tail`: the charter's final prose paragraph (not a heading or list), with
   internal whitespace collapsed to single spaces and Markdown preserved.
 
@@ -226,17 +227,21 @@ def _charter_evidence() -> dict[str, object]:
         ),
         None,
     )
-    ceremonies = re.findall(r"(?m)^- \*\*([^*]+)\.\*\*", body)
+    numbered_sections = re.findall(r"(?m)^## (\d+)\. (.+)$", body)
     tail = next(
         (block for block in reversed(paragraphs)
          if not re.match(r"^(?:#|[-*+]\s|\d+[.)]\s)", block)),
         None,
     )
-    if opening is None or len(ceremonies) != 2 or tail is None:
+    if (
+        opening is None
+        or [number for number, _ in numbered_sections] != list("123456")
+        or tail is None
+    ):
         raise CompatError(f"source charter {charter} has no stable compatibility anchors")
     return {
         "opening": opening,
-        "ceremonies": ceremonies,
+        "concepts": [heading for _, heading in numbered_sections],
         "tail": tail,
     }
 

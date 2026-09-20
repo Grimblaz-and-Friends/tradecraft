@@ -128,9 +128,8 @@ def _gh(*args: str) -> str:
         proc = subprocess.run(
             ["gh", *args], stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8",
-            # Dropped when this was copied from `doctrine_callout.py`,
-            # whose own copy carries it. Without it a child emitting
-            # invalid UTF-8 crashes the reader thread, `proc.stdout`
+            # Without replacement a child emitting invalid UTF-8 crashes the
+            # reader thread, `proc.stdout`
             # comes back None, and `json.loads(None)` raises TypeError --
             # bypassing the DeclarationError path below entirely rather
             # than degrading.

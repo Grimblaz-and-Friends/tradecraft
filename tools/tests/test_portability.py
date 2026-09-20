@@ -12,7 +12,6 @@ repo-only directory in reach.
 """
 from __future__ import annotations
 
-import ast
 import os
 import re
 import shutil
@@ -56,30 +55,22 @@ REPO_ONLY = ("docs", "tools", ".github")
 def _skills_with_scripts():
     if not SKILLS.is_dir():
         return []
-    return sorted(p for p in SKILLS.iterdir() if (p / "scripts").is_dir())
+    return sorted(
+        p for p in SKILLS.iterdir()
+        if any((p / "scripts").glob("*.py"))
+    )
 
 
 def _scripts_of(skill: Path):
     return sorted((skill / "scripts").glob("*.py"))
 
 
-def test_substrate_lint_test_copies_the_declared_shipped_zone():
-    source = ROOT / "skills" / "substrate" / "tests" / "test_substrate_lint.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    assignment = next(
-        node for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "SHIPPED_DIRS" for target in node.targets)
-    )
-
-    assert ast.literal_eval(assignment.value) == lint.SHIPPED_DIRS
-
-
 def test_repository_siting_routes_substrate_checks_through_the_wrapper():
     text = (ROOT / "docs" / "cells" / "siting" / "SKILL.md").read_text(encoding="utf-8")
 
     assert "`python tools/lint.py`" in text
-    assert "shipped implementations" in text
+    assert "`tools/substrate_lint.py`" in text
+    assert "same repo-only predicates" in text
 
 
 @pytest.fixture(scope="module")
@@ -191,29 +182,6 @@ def test_script_runs_from_the_relocated_root(script: Path, installed: Path):
                 f"{exc.start} -- a consumer capturing this reads it garbled, "
                 f"and which byte it becomes depends on their code page"
             ) from None
-
-
-def test_substrate_lint_runs_against_an_external_target_from_the_relocated_zone(
-        installed: Path, tmp_path):
-    """The portable guard has no dependency on this repository's other zone."""
-    script = installed / "skills" / "substrate" / "scripts" / "lint.py"
-    target = tmp_path / "target"
-    source = target / "src" / "app.py"
-    source.parent.mkdir(parents=True)
-    source.write_text("VALUE = 'ASCII'\n", encoding="utf-8")
-    unrelated = tmp_path / "unrelated"
-    unrelated.mkdir()
-
-    result = subprocess.run(
-        [sys.executable, str(script), str(target)],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        env=_clean_env(),
-        cwd=str(unrelated),
-    )
-
-    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-    assert result.stdout.decode("ascii").endswith("lint: 0 finding(s)\n")
 
 
 def test_no_shipped_skill_names_a_harness_token(installed: Path):
