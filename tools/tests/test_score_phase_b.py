@@ -131,9 +131,15 @@ def test_status_count_is_net_of_authorized_exclusions(capsys):
 
 
 class BoundaryTransport:
-    def __init__(self, count: int, exclude_number: int | None = None):
+    def __init__(
+        self,
+        count: int,
+        exclude_number: int | None = None,
+        exclusion_created_at: datetime | None = None,
+    ):
         self.requests: list[tuple[str, str]] = []
         self.exclude_number = exclude_number
+        self.exclusion_created_at = exclusion_created_at
         self.pulls = [
             {
                 "number": number,
@@ -164,7 +170,10 @@ class BoundaryTransport:
                 comments.append(
                     {
                         "id": 2,
-                        "created_at": (OPENED + timedelta(days=2)).isoformat(),
+                        "created_at": (
+                            self.exclusion_created_at
+                            or OPENED + timedelta(days=1, hours=2)
+                        ).isoformat(),
                         "body": (
                             "<!-- tradecraft:phase-b-exclude:v1 "
                             f"pr={spb.PRODUCT_REPOSITORIES[0]}#{self.exclude_number} "
@@ -262,6 +271,24 @@ def test_excluded_pull_request_does_not_supply_the_twentieth_change(capsys):
     )
     captured = capsys.readouterr()
     assert result == 0 and captured.out.count("| Change |") == 1
+
+
+def test_exclusion_after_twentieth_change_cannot_reopen_closed_window(capsys):
+    """A marker created after the terminus is outside the record window."""
+    transport = BoundaryTransport(
+        20,
+        exclude_number=1,
+        exclusion_created_at=OPENED + timedelta(days=3),
+    )
+    result = spb.run(
+        args("final", OPENED + timedelta(days=10)),
+        transport=transport,
+        cost_reader=unknown_cost,
+    )
+    output = capsys.readouterr().out
+    assert result == 0
+    assert output.count("| Change |") == 1
+    assert "Excluded product pull request" not in output
 
 
 def test_status_prints_only_count_and_days(capsys):

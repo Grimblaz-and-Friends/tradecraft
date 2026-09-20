@@ -101,6 +101,7 @@ class Exclusion:
     reason: str
     author: str
     authorized: bool
+    created_at: datetime
 
     @property
     def html_url(self) -> str:
@@ -304,6 +305,10 @@ def _exclusion_records(
     records: list[Exclusion] = []
     for source in (issue, *comments):
         author = _author(source)
+        try:
+            created_at = parse_timestamp(source.get("created_at"))
+        except PhaseBError:
+            continue
         for name, attributes in _markers(source.get("body")):
             if name != "phase-b-exclude" or set(attributes) != {"pr", "reason"}:
                 continue
@@ -314,7 +319,7 @@ def _exclusion_records(
             records.append(
                 Exclusion(
                     reference.group(1), int(reference.group(2)), reason, author,
-                    author in marker_producers,
+                    author in marker_producers, created_at,
                 )
             )
     return records
@@ -373,36 +378,56 @@ def read_window(transport: Transport, now: datetime) -> Window:
             if change is not None and opened <= change.merged_at <= cutoff:
                 changes.append(change)
     changes.sort(key=lambda item: (item.merged_at, item.repository.lower(), item.number))
-    authorized_keys = {
-        (item.repository.casefold(), item.number)
-        for item in exclusion_records if item.authorized
-    }
-    qualifying = [
-        change for change in changes
-        if (change.repository.casefold(), change.number) not in authorized_keys
+    exclusion_records = [
+        item for item in exclusion_records if opened <= item.created_at <= cutoff
     ]
     close_at = None
-    if len(qualifying) >= CHANGE_LIMIT:
-        close_at = qualifying[CHANGE_LIMIT - 1].merged_at
-    elif now >= deadline:
+    event_times = sorted({
+        *(change.merged_at for change in changes),
+        *(item.created_at for item in exclusion_records if item.authorized),
+    })
+    for instant in event_times:
+        excluded_at_instant = {
+            (item.repository.casefold(), item.number)
+            for item in exclusion_records
+            if item.authorized and item.created_at <= instant
+        }
+        count = sum(
+            change.merged_at <= instant
+            and (change.repository.casefold(), change.number) not in excluded_at_instant
+            for change in changes
+        )
+        if count >= CHANGE_LIMIT:
+            close_at = instant
+            break
+    if close_at is None and now >= deadline:
         close_at = deadline
     population_end = close_at or cutoff
+    effective_exclusions = [
+        item for item in exclusion_records if item.created_at <= population_end
+    ]
+    authorized_keys = {
+        (item.repository.casefold(), item.number)
+        for item in effective_exclusions if item.authorized
+    }
     population_keys = {
         (change.repository.casefold(), change.number)
         for change in changes if change.merged_at <= population_end
     }
     exclusions = tuple(
-        item for item in exclusion_records
+        item for item in effective_exclusions
         if item.authorized
         and (item.repository.casefold(), item.number) in population_keys
     )
     ignored = tuple(
-        item for item in exclusion_records
+        item for item in effective_exclusions
         if not item.authorized
         and (item.repository.casefold(), item.number) in population_keys
     )
     visible_changes = tuple(
-        change for change in qualifying if change.merged_at <= population_end
+        change for change in changes
+        if change.merged_at <= population_end
+        and (change.repository.casefold(), change.number) not in authorized_keys
     )[:CHANGE_LIMIT]
     return Window(opened, deadline, close_at, visible_changes, exclusions, ignored)
 
