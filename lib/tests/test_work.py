@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -203,6 +204,32 @@ def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch():
     prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
     assert prompt.count(b'"stage": "artifact"') == 1
     assert b"Do not start or dispatch a later stage" in prompt
+    evidence = json.loads(prompt.split(b"\n\n", 1)[1])
+    assert evidence["github"]["issue_comments"][0]["body"] == AFFIRMED
+
+
+def test_judging_root_detaches_an_attached_tree_and_removes_it_afterward(tmp_path):
+    root = tmp_path / "repository"
+    root.mkdir()
+    subprocess.run(["git", "init", str(root)], stdin=subprocess.DEVNULL,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    (root / "fixture.txt").write_bytes(b"fixture\n")
+    subprocess.run(["git", "-C", str(root), "add", "fixture.txt"], stdin=subprocess.DEVNULL,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    subprocess.run([
+        "git", "-C", str(root), "-c", "user.name=fixture",
+        "-c", "user.email=fixture@example.com", "commit", "-m", "fixture",
+    ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    with work.judging_root(root.resolve()) as recipient:
+        recipient_path = recipient
+        assert recipient != root.resolve()
+        head = subprocess.run(
+            ["git", "-C", str(recipient), "symbolic-ref", "-q", "HEAD"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        assert head.returncode == 1
+        assert (recipient / "fixture.txt").read_bytes().replace(b"\r\n", b"\n") == b"fixture\n"
+    assert not recipient_path.exists()
 
 
 @pytest.mark.parametrize("command", work.COMMANDS)

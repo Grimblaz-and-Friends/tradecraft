@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import fnmatch
 import json
@@ -459,12 +460,59 @@ def _stage_prompt(state: WorkState, decision: Decision) -> bytes:
         "reason": decision.reason,
         "detail": decision.detail,
         "continuity": decision.continuity,
+        "github": {
+            "issue": state.issue,
+            "issue_comments": state.issue_comments,
+            "timeline": state.timeline,
+            "pull_request": state.pr,
+            "pull_request_comments": state.pr_comments,
+            "reviews": state.reviews,
+            "review_comments": state.review_comments,
+            "checks": state.checks,
+            "changed_paths": state.changed_paths,
+        },
     }
     return (
         "Perform exactly the stage named in this dispatch and return to the holder. "
         "Do not start or dispatch a later stage.\n\n" +
         json.dumps(evidence, ensure_ascii=True, indent=2) + "\n"
     ).encode("utf-8")
+
+
+def _git(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}
+    }
+    return subprocess.run(
+        ["git", "-C", str(root), *command], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, env=environment,
+    )
+
+
+def _git_failure(result: subprocess.CompletedProcess[bytes]) -> str:
+    return result.stderr.decode("utf-8", errors="backslashreplace").strip() or str(result.returncode)
+
+
+@contextmanager
+def judging_root(root: Path):
+    attached = _git(["symbolic-ref", "-q", "HEAD"], root)
+    if attached.returncode == 1:
+        yield root
+        return
+    if attached.returncode != 0:
+        raise WorkError(f"cannot inspect recipient HEAD: {_git_failure(attached)}")
+    with tempfile.TemporaryDirectory(prefix="tradecraft-recipient-") as temporary:
+        recipient = Path(temporary) / "detached"
+        added = _git(["worktree", "add", "--detach", str(recipient), "HEAD"], root)
+        if added.returncode:
+            raise WorkError(f"cannot create detached judging worktree: {_git_failure(added)}")
+        try:
+            yield recipient.resolve()
+        finally:
+            removed = _git(["worktree", "remove", "--force", str(recipient)], root)
+            if removed.returncode:
+                raise WorkError(f"cannot remove detached judging worktree: {_git_failure(removed)}")
 
 
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None) -> int:
@@ -477,18 +525,26 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     with tempfile.TemporaryDirectory(prefix="tradecraft-work-") as temporary:
         dispatch = Path(temporary) / "dispatch.txt"
         dispatch.write_bytes(_stage_prompt(state, decision))
-        common = [
-            "--dispatch", str(dispatch), "--root", str(root),
-            "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
-            "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
-            "--settings-scope", decision.stage,
-        ]
         if decision.stage in {"cold-seat", "use"}:
-            command = [sys.executable, str(here / "dispatch_seat.py"), *common,
-                       "--vendor", "claude", "--own-vendor", "codex",
-                       "--classification", "cold" if decision.stage == "cold-seat" else "ordinary",
-                       "--requires", "read" if decision.stage == "cold-seat" else "execute"]
+            with judging_root(root) as recipient:
+                common = [
+                    "--dispatch", str(dispatch), "--root", str(recipient),
+                    "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
+                    "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
+                    "--settings-scope", decision.stage,
+                ]
+                command = [sys.executable, str(here / "dispatch_seat.py"), *common,
+                           "--vendor", "claude", "--own-vendor", "codex",
+                           "--classification", "cold" if decision.stage == "cold-seat" else "ordinary",
+                           "--requires", "read" if decision.stage == "cold-seat" else "execute"]
+                return subprocess.run(command).returncode
         else:
+            common = [
+                "--dispatch", str(dispatch), "--root", str(root),
+                "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
+                "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
+                "--settings-scope", decision.stage,
+            ]
             command = [sys.executable, str(here / "dispatch_implementer.py"), *common]
             if decision.continuity == "resume":
                 sessions = [marker.attributes.get("session") for marker in state.markers
@@ -496,7 +552,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 if not sessions:
                     raise WorkError(f"{decision.stage} requires resume but no session marker exists")
                 command.extend(("--resume", sessions[-1]))
-        return subprocess.run(command).returncode
+            return subprocess.run(command).returncode
 
 
 def parser() -> argparse.ArgumentParser:

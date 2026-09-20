@@ -415,6 +415,7 @@ def test_unavailable_falls_back_once_and_records_reason(job, monkeypatch, vendor
     assert (fallback["model"], fallback["effort"]) == (
         seat.DEFAULT_MODELS[args.own_vendor], expected_effort
     )
+    assert fallback["usage"]["model"]["requested"] == seat.DEFAULT_MODELS[args.own_vendor]
     assert (args.hold_file.read_bytes() if args.hold_file.exists() else None) == before
 
 

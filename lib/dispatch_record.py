@@ -507,7 +507,7 @@ def usage_record(attempt: dict[str, object], request: dict[str, object], *,
             "staffing_status": staffing_status,
         },
         "model": {
-            "requested": requested.get("model"),
+            "requested": attempt.get("model") or requested.get("model"),
             "reported": reported_models,
             "reported_unknown_reason": (
                 None if reported_models else observed.get("reported_models_unavailable_reason")
