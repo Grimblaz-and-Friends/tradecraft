@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Launch or resume a Codex implementer and retain the dispatch evidence.
 
-Usage: python <plugin>/lib/dispatch_implementer.py --dispatch FILE --root DIR
+Usage: python <plugin-root>/lib/dispatch_implementer.py --dispatch FILE --root DIR
        --work ISSUE --stage NAME --settings-source SOURCE --settings-scope SCOPE
        [--resume SESSION_ID]
 
@@ -86,6 +86,8 @@ def run_implementer(args: argparse.Namespace) -> int:
         raise ImplementerError(f"dispatch is empty: {dispatch}")
     if args.resume and not args.resume.strip():
         raise ImplementerError("--resume must be a nonempty explicit session id")
+    if args.holder_session_id and args.resume == args.holder_session_id:
+        raise ImplementerError("a builder session cannot also identify the holder session")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         raise ImplementerError("--timeout-seconds must be finite and positive")
     executable = resolve_command("codex", args.codex)
@@ -120,6 +122,7 @@ def run_implementer(args: argparse.Namespace) -> int:
                 permission_boundary="workspace-write with automatic approval review (--approve-for-me)",
                 root=root, requested_session_id=args.resume, command=command,
                 retry_of=args.retry_of,
+                holder_session_id=args.holder_session_id,
                 setting_sources={
                     "vendor": "dispatch_implementer route",
                     "model": "dispatch_implementer default" if model_defaulted else args.settings_source,
@@ -188,6 +191,10 @@ def run_implementer(args: argparse.Namespace) -> int:
                 completed = any(event.get("type") == "turn.completed" for event in events)
                 failed = any(event.get("type") in {"turn.failed", "error"} for event in events)
                 session_id, session_source = _thread_id(events, result.stderr)
+                if args.holder_session_id and session_id == args.holder_session_id:
+                    reason = "runtime returned the holder session as the builder session"
+                    session_id = None
+                    session_source = ""
                 if attempt["launched"]:
                     records.add_runtime_evidence(attempt, "codex", result.stdout, continuity, elapsed)
                 else:
@@ -229,6 +236,13 @@ def run_implementer(args: argparse.Namespace) -> int:
                     records.add_unobserved(attempt, attempt["reason"])
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 record["revision_after"] = records.git_revision(root)
+                records.add_usage_record(
+                    attempt, request, completed_at=record["completed_at"],
+                    staffing_status=(
+                        "qualified" if record["outcome"] in {"success", "success_uncontinuable"}
+                        else "unfilled"
+                    ),
+                )
                 record_stream = streams.streams.pop(record_path)
                 record_stream.close()
                 for stream in streams.values():
@@ -281,6 +295,7 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--settings-source", required=True)
     cli.add_argument("--settings-scope", required=True)
     cli.add_argument("--retry-of", help="dispatch id of an earlier whole-invocation retry")
+    cli.add_argument("--holder-session-id", help="holding session that must remain distinct")
     cli.add_argument("--output", type=Path)
     cli.add_argument("--resume")
     cli.add_argument("--model", help=f"requested model (default: {DEFAULT_MODEL})")

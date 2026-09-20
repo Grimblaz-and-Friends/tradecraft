@@ -15,6 +15,15 @@
 
 **An implementation brief is the whole item the owner affirms before a non-mechanical change is built: one Shape sentence; the Readers named once; each decision that matters as a row carrying its Why and one cell per reader; and Not this.** A blank cell is visible and unlawful; `unchanged` is a filled cell.
 
+The form ends with these two lines:
+
+```text
+Review risk: ordinary
+Review lane: connected
+```
+
+The lawful pairs are `ordinary` with `connected`, `elevated` with `routine-panel`, and `critical` with `substantial-panel`; carrying the pair in the affirmed item makes its review depth available to the entrance rather than a later recollection.
+
 The Readers name the owner, the holding session that designs with them and runs the stretch, the builder that writes the artifact and builds, and a judging seat, cold or review or consumer. For shipped work, the adopter's owner and sessions are one reader when their outcome is identical in every row. Each row states the decision, its reason, and what every reader gets. Session-owned execution choices — implementation approach, file layout, tools, and work order — stay out and belong in the artifact and build.
 
 **The affirmed item is the exact text kept from affirmation onward; none of it needs to have been typed by the owner.** When a push changes a row, the affirmation record quotes that push once, while the revised row in the affirmed item is the term the builder reads.
@@ -27,15 +36,21 @@ An item that put a question to the owner is re-put whole carrying their answer: 
 
 **Where the work picked up is a problem rather than a want, the implementation brief is for its systemic cause.** Before the first turn, ask why until the cause is systemic — one whose fix would have prevented this instance and its open siblings. The siblings the test found are tied to the cause before the whole item is put, so what the fix covers is on the record and not in the session's head. The instance falls out of the fix, or the implementation brief says why it does not; fixing the instance alone is the owner's exception, ruled in the implementation brief with its reason. **Where those symptoms are already tied to a cause and the why-chain reaches a different one, the implementation brief disputes that parentage and recommends the new one.** The disputed symptoms are not re-tied until the owner rules; their ruling is what re-ties them. A cause still a hypothesis when the asking stops is a premise that could make the implementation brief wrong. A bundle is one set with one cause. A want that would make something currently wrong stop being wrong is a problem.
 
-**The session judges the concept done when the next turn would add execution detail rather than a decision, then puts the whole implementation brief for affirmation.** Before putting it, check that every decision row has its reason, every reader cell is filled, and no row is execution detail. The owner affirms the whole item or pushes it; the design ends only on affirmation, never on running row-by-row approval.
+**The session judges the concept done when the next turn would add execution detail rather than a decision, then puts the whole implementation brief for affirmation.** Before putting it, check that every decision row has its reason, every reader cell is filled, no row is execution detail, and exactly one lawful `Review risk` and `Review lane` pair is present. The owner affirms the whole item or pushes it; the design ends only on affirmation, never on running row-by-row approval.
 
 **A builder starts only from an affirmed implementation brief.** A put, push, or draft is not the term.
 
-Before putting a descriptive plain brief, score the finished text against each of that form's disqualifiers by name. Before putting an implementation brief, run the row-reason-cell-execution check above over the finished item. These are passes over what was written, not rereadings of the form before writing: [opening a form immediately before drafting has failed to prevent the defect](https://github.com/Grimblaz-and-Friends/tradecraft/issues/428). The record says what the applicable pass removed, and says so where it found nothing.
+Before putting a descriptive plain brief, score the finished text against each of that form's disqualifiers by name. Before putting an implementation brief, run the row-reason-cell-execution-risk-lane check above over the finished item. These are passes over what was written, not rereadings of the form before writing: [opening a form immediately before drafting has failed to prevent the defect](https://github.com/Grimblaz-and-Friends/tradecraft/issues/428). The record says what the applicable pass removed, and says so where it found nothing.
 
 **The conversation with the owner is the engagement surface.** Three more are this cell's to name: a review's final report, where its descriptive plain brief opens the report as posted; a message handing work back after time away, which also carries where the work now stands; and the pre-implementation artifact, which carries the affirmed implementation brief because it binds there.
 
 **The implementation brief is settled with the owner; the artifact is the session's reading of it.** The whole item is put once the session judges the concept done, and affirmation is the owner's answer to it in the conversation where they read it. **What is posted on the work's issue is the affirmed implementation brief, as the record of what was agreed** — never the version they are being asked to approve — the waiting rule (`../references/waiting.md`) is the exception, and the only one. **That record carries the implementation brief's own history:** how many times the whole item was put, how many amendments and by whom, how many drafts the owner corrected before one was posted, what the pre-put check removed, and each push that changed a row quoted once. Write it while the conversation is in hand. A premise that could make the implementation brief wrong is tested before the whole item is put.
+
+Begin that recorded issue comment with the `work` cell's affirmation marker:
+
+```text
+<!-- tradecraft:affirmed-brief:v1 -->
+```
 
 ## Amendments
 

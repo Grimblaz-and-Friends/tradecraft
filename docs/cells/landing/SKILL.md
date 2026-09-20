@@ -14,7 +14,13 @@ description: This repository's own procedure for taking a change from a fresh br
 
 ## The flow
 
-Branch first (`main` refuses direct pushes) → settle the implementation brief, then the artifact as the `engagement` cell settles it, a truth-of-text change drafting its replacement text first → build → run the floor — `python -m pytest tools/tests skills lib/tests -q` and `python tools/lint.py` → commit → publish the branch and **open the pull request as a draft** → run the experience session the change bought or record the one line declining it — owed equally where the change concluded it bought none, and by mechanical work too → **mark ready and apply `reviewers`** → dispose every connected reviewer's comment in its thread. A panel runs only when the owner buys one in the implementation brief's review-risk line or by asking on the pull request, because review depth cannot depend on a later memory. A batch rewriting what the material instructs, or changing what someone using the result can do, buys one more experience session, or the line declining it.
+For issue-backed product work, enter through the `work` cell; it reads the issue and pull request and runs the next stage this flow calls for. The stages remain: branch first (`main` refuses direct pushes) → settle the implementation brief, then the artifact as the `engagement` cell settles it, a truth-of-text change drafting its replacement text first → build → run the floor — `python -m pytest tools/tests skills lib/tests -q` and `python tools/lint.py` → commit → publish the branch and **open the pull request as a draft** → run the experience session the path rules bought or record the explicit no-use line → **mark ready and apply `reviewers`** → dispose every connected reviewer's comment in its thread. A panel runs only when the owner buys its lane in the implementation brief, because review depth cannot depend on a later memory. A batch rewriting what the material instructs, or changing what someone using the result can do, buys one more experience session, or the line declining it.
+
+At the open-the-draft step, the holder posts this comment on the implemented issue, replacing `NUMBER` with the new pull request number:
+
+```text
+<!-- tradecraft:implementing-pr:v1 number=NUMBER -->
+```
 
 **On a change with an affirmed implementation brief, the `engagement` cell's holder publishes the implementer's commits, opens the pull request, and carries it through use, the connected reviewers, any bought panel, and reporting.** Opening it transfers no responsibility. **On a change owing no implementation brief, the session that opens the pull request still runs its remaining stretch.** Nothing routes a pull request to another session, because no recipient receives such a handoff.
 

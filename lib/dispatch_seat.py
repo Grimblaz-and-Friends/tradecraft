@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dispatch a fresh, bounded seat and publish its final message.
 
-Usage: python <plugin>/lib/dispatch_seat.py --dispatch FILE --root DIR
+Usage: python <plugin-root>/lib/dispatch_seat.py --dispatch FILE --root DIR
        --vendor claude --own-vendor codex --work ISSUE --stage NAME
        --settings-source SOURCE --settings-scope SCOPE --classification cold
        --requires read|execute [--output NEW_FILE]
@@ -381,6 +381,10 @@ def run_dispatch(args, *, now=None) -> int:
                   "dispatch_id": request["dispatch_id"], "request": str(request_path),
                   "requested_vendor": args.vendor, "own_vendor": args.own_vendor,
                   "actual_vendor": None, "fallback_reason": None, "attempts": [],
+                  "staffing_status": "unfilled", "staffing_reason": None,
+                  "staffing_qualification": {
+                      "cross_vendor_satisfied": False, "same_vendor_reason": None,
+                  },
                   "result": {"source_output": None,
                              "source_output_unavailable_reason": "no successful final source return",
                              "published_output": None,
@@ -518,6 +522,13 @@ def run_dispatch(args, *, now=None) -> int:
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 record["revision_after"] = records.git_revision(root)
                 if verdict is not None:
+                    degraded = record["actual_vendor"] != record["requested_vendor"]
+                    record["staffing_status"] = "degraded" if degraded else "qualified"
+                    record["staffing_reason"] = record["fallback_reason"] if degraded else None
+                    record["staffing_qualification"] = {
+                        "cross_vendor_satisfied": not degraded or bool(args.same_vendor_reason),
+                        "same_vendor_reason": args.same_vendor_reason if degraded else None,
+                    }
                     record["outcome"] = "success"
                     streams[source_path].write(verdict)
                     streams[source_path].flush()
@@ -529,6 +540,15 @@ def run_dispatch(args, *, now=None) -> int:
                     record["outcome"] = "error"
                 else:
                     record["outcome"] = "unavailable"
+                for attempt in record["attempts"]:
+                    if attempt["vendor"] == record["actual_vendor"]:
+                        attempt_staffing = record["staffing_status"]
+                    else:
+                        attempt_staffing = "unfilled"
+                    records.add_usage_record(
+                        attempt, request, completed_at=record["completed_at"],
+                        staffing_status=attempt_staffing,
+                    )
                 streams.streams.pop(record_path)
                 record_stream.close()
                 for stream in streams.values():
@@ -596,6 +616,10 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--settings-scope", required=True,
                      help="stages and vendor reached by the issue choice or named default")
     cli.add_argument("--retry-of", help="dispatch id of an earlier whole-invocation retry")
+    cli.add_argument(
+        "--same-vendor-reason",
+        help="stage-local reason a degraded same-vendor return may satisfy this cross-vendor stage",
+    )
     cli.add_argument("--classification", choices=records.CLASSIFICATIONS, required=True,
                      help="ordinary, protected cold, or terminal judgment")
     cli.add_argument(

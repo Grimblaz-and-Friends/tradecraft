@@ -77,6 +77,11 @@ def test_fresh_launch_is_recorded_and_resumable(job):
         "scope": "invocation", "input_tokens": 120, "cached_input_tokens": 80,
         "output_tokens": 12, "reasoning_output_tokens": 3,
     }
+    assert attempt["usage"]["tokens"] == {
+        "input": 120, "cached_input": 80, "output": 12, "reasoning_output": 3,
+    }
+    assert attempt["usage"]["scope"] == "invocation"
+    assert attempt["usage"]["dispatch"]["staffing_status"] == "qualified"
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
     assert request["runtime_version"] == "codex-cli test"
     assert request["settings_source"] == "issuecomment-5655702442"
@@ -134,6 +139,26 @@ def test_resume_mismatch_is_error_and_never_publishes(job):
     })
     assert implementer.run_implementer(args) == 1
     assert record(args)["outcome"] == "error"
+    assert not args.output.exists()
+
+
+def test_holder_session_cannot_be_resumed_as_builder(job):
+    args, _ = job
+    args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    args.holder_session_id = args.resume
+    with pytest.raises(implementer.ImplementerError, match="cannot also identify"):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+
+
+def test_fresh_runtime_returning_holder_identity_is_not_published(job):
+    args, _ = job
+    args.holder_session_id = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    configure(job, {"stdout": success_events(args.holder_session_id), "message": "wrong identity\n"})
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert logged["attempts"][0]["observed"]["session_id"] is None
     assert not args.output.exists()
 
 

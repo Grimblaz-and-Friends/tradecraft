@@ -24,7 +24,7 @@ import uuid
 
 from winio import utf8_stdio
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CONTINUITIES = ("fresh", "resume")
 CLASSIFICATIONS = ("ordinary", "cold", "terminal")
 
@@ -201,6 +201,7 @@ def request_record(
     command: list[str] | None = None,
     setting_sources: dict[str, str] | None = None,
     retry_of: str | None = None,
+    holder_session_id: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
     for name, value in (
@@ -221,6 +222,12 @@ def request_record(
         raise RecordError("fresh continuity cannot request an existing session id")
     if retry_of is not None and not retry_of.strip():
         raise RecordError("retry dispatch id must be nonempty")
+    if holder_session_id is not None and not holder_session_id.strip():
+        raise RecordError("holder session id must be nonempty")
+    if holder_session_id == dispatch_id:
+        raise RecordError("a dispatch id cannot also identify the holder session")
+    if holder_session_id is not None and holder_session_id == requested_session_id:
+        raise RecordError("a builder session cannot also identify the holder session")
     for name, source in (setting_sources or {}).items():
         if not name.strip() or not source.strip():
             raise RecordError("setting source names and values must be nonempty")
@@ -233,6 +240,7 @@ def request_record(
         "settings_source": settings_source,
         "settings_scope": settings_scope,
         "retry_of": retry_of,
+        "holder_session_id": holder_session_id,
         "requested": {
             "vendor": vendor,
             "model": model,
@@ -287,20 +295,25 @@ def _codex_evidence(raw: bytes, continuity: str) -> dict[str, object]:
             reason = None
         else:
             reason = "resume usage scope is not established for this runtime version"
+    additional = {}
+    if usage:
+        known = {"input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"}
+        additional = {
+            key: value for key, value in usage[-1].items()
+            if key not in known and key.endswith("_tokens") and _number(value) is not None
+        }
     return {
-        "source": "codex JSONL turn.completed.usage",
+        "source": "turn.completed.usage",
         "raw": usage,
         "normalized": normalized,
         "normalized_unavailable_reason": reason,
+        "additional_native_classes": additional,
         "reported_models": observed_models,
         "reported_models_unavailable_reason": None if observed_models else "runtime returned no model identifier",
         "reported_effort": None,
         "reported_effort_unavailable_reason": "runtime returned no effort field",
         "thread_ids": thread_ids,
         "turn_ids": turn_ids,
-        "runtime_cost": None,
-        "runtime_cost_unavailable_reason": "Codex JSONL returned no monetary field",
-        "runtime_cost_scope_unavailable_reason": "Codex JSONL returned no monetary field",
     }
 
 
@@ -315,25 +328,30 @@ def _claude_evidence(raw: bytes, continuity: str) -> dict[str, object]:
             "raw": None,
             "normalized": None,
             "normalized_unavailable_reason": "runtime returned no valid JSON result",
+            "additional_native_classes": {},
             "reported_models": [],
             "reported_models_unavailable_reason": "runtime returned no valid JSON result",
             "reported_effort": None,
             "reported_effort_unavailable_reason": "runtime returned no valid JSON result",
             "thread_ids": [],
             "turn_ids": [],
-            "runtime_cost": None,
-            "runtime_cost_unavailable_reason": "runtime returned no valid JSON result",
-            "runtime_cost_scope_unavailable_reason": "runtime returned no valid JSON result",
         }
     model_usage = payload.get("modelUsage")
     models: dict[str, dict[str, int | float]] = {}
-    source = "claude JSON result.modelUsage"
+    source = "modelUsage"
     source_usage = model_usage
+    additional: dict[str, dict[str, int | float]] = {}
     if isinstance(model_usage, dict):
         names = ("inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", "outputTokens")
         for model, values in model_usage.items():
             if isinstance(model, str) and isinstance(values, dict):
                 models[model] = _reported_fields(values, names)
+                extras = {
+                    key: value for key, value in values.items()
+                    if key not in names and key.endswith("Tokens") and _number(value) is not None
+                }
+                if extras:
+                    additional[model] = extras
     native_usage = payload.get("usage")
     native_model = payload.get("model")
     if not models and isinstance(native_usage, dict) and isinstance(native_model, str):
@@ -342,25 +360,27 @@ def _claude_evidence(raw: bytes, continuity: str) -> dict[str, object]:
             "cache_creation_input_tokens", "output_tokens",
         )
         models[native_model] = _reported_fields(native_usage, names)
-        source = "claude native result.usage"
+        source = "usage"
         source_usage = native_usage
-    cost = _number(payload.get("total_cost_usd"))
+        additional_native = {
+            key: value for key, value in native_usage.items()
+            if key not in names and key.endswith("_tokens") and _number(value) is not None
+        }
+        if additional_native:
+            additional[native_model] = additional_native
     effort = payload.get("effort") if isinstance(payload.get("effort"), str) else None
     session_id = payload.get("session_id") if isinstance(payload.get("session_id"), str) else None
     normalized = {"scope": "invocation", "models": models} if models else None
     normalized_reason = None if models else "runtime returned no modelUsage or usage values"
-    cost_scope = "invocation"
-    cost_scope_reason = None
     if continuity == "resume":
         normalized = None
         normalized_reason = "resume usage scope is not established for this runtime version"
-        cost_scope = "unestablished"
-        cost_scope_reason = "resume cost scope is not established for this runtime version"
     return {
         "source": source,
         "raw": source_usage,
         "normalized": normalized,
         "normalized_unavailable_reason": normalized_reason,
+        "additional_native_classes": additional,
         "reported_models": sorted(models),
         "reported_models_unavailable_reason": (
             None if models else "runtime returned no modelUsage or top-level model identifier"
@@ -369,11 +389,6 @@ def _claude_evidence(raw: bytes, continuity: str) -> dict[str, object]:
         "reported_effort_unavailable_reason": None if effort else "runtime returned no effort field",
         "thread_ids": [session_id] if session_id else [],
         "turn_ids": [],
-        "runtime_cost": {
-            "currency": "USD", "amount": cost, "source": "total_cost_usd", "scope": cost_scope,
-        } if cost is not None else None,
-        "runtime_cost_unavailable_reason": None if cost is not None else "runtime returned no total_cost_usd",
-        "runtime_cost_scope_unavailable_reason": cost_scope_reason,
     }
 
 
@@ -387,15 +402,13 @@ def runtime_evidence(vendor: str, raw_stdout: bytes, continuity: str) -> dict[st
         "raw": None,
         "normalized": None,
         "normalized_unavailable_reason": "no extractor for this tool",
+        "additional_native_classes": {},
         "reported_models": [],
         "reported_models_unavailable_reason": "no extractor for this tool",
         "reported_effort": None,
         "reported_effort_unavailable_reason": "no extractor for this tool",
         "thread_ids": [],
         "turn_ids": [],
-        "runtime_cost": None,
-        "runtime_cost_unavailable_reason": "no extractor for this tool",
-        "runtime_cost_scope_unavailable_reason": "no extractor for this tool",
     }
 
 
@@ -410,14 +423,116 @@ def add_unobserved(attempt: dict[str, object], reason: str) -> None:
     attempt["observed"] = {
         "source": None, "raw": None, "normalized": None,
         "normalized_unavailable_reason": reason,
+        "additional_native_classes": {},
         "reported_models": [], "reported_models_unavailable_reason": reason,
         "reported_effort": None, "reported_effort_unavailable_reason": reason,
         "thread_ids": [], "turn_ids": [],
-        "runtime_cost": None, "runtime_cost_unavailable_reason": reason,
-        "runtime_cost_scope_unavailable_reason": reason,
     }
     attempt["elapsed_seconds"] = None
     attempt["elapsed_seconds_unavailable_reason"] = reason
+
+
+def _change(work: str) -> dict[str, object]:
+    match = re.fullmatch(r"(.+?)#([0-9]+)", work)
+    if match:
+        return {
+            "repository": match.group(1), "issue": int(match.group(2)),
+            "unknown_reason": None,
+        }
+    issue = re.fullmatch(r"issue-([0-9]+)", work, re.IGNORECASE)
+    return {
+        "repository": None,
+        "issue": int(issue.group(1)) if issue else None,
+        "unknown_reason": "work identifier did not contain repository#issue",
+    }
+
+
+def _normalized_tokens(vendor: str, observed: dict[str, object]) -> tuple[object, str | None, str]:
+    normalized = observed.get("normalized")
+    if not isinstance(normalized, dict):
+        return None, str(observed.get("normalized_unavailable_reason") or "runtime usage unavailable"), "unknown"
+    scope = str(normalized.get("scope") or "unknown")
+    if vendor == "codex":
+        mapping = {
+            "input_tokens": "input", "cached_input_tokens": "cached_input",
+            "output_tokens": "output", "reasoning_output_tokens": "reasoning_output",
+        }
+        tokens = {target: normalized[source] for source, target in mapping.items() if source in normalized}
+        return tokens, None, scope
+    if vendor == "claude":
+        native_models = normalized.get("models")
+        models = {}
+        mapping = {
+            "inputTokens": "input", "cacheReadInputTokens": "cache_read",
+            "cacheCreationInputTokens": "cache_creation", "outputTokens": "output",
+            "input_tokens": "input", "cache_read_input_tokens": "cache_read",
+            "cache_creation_input_tokens": "cache_creation", "output_tokens": "output",
+        }
+        if isinstance(native_models, dict):
+            for model, values in native_models.items():
+                if isinstance(values, dict):
+                    models[model] = {
+                        target: values[source] for source, target in mapping.items() if source in values
+                    }
+        return {"models": models}, None, scope
+    return None, "no normalized token-class extractor for this tool", "unknown"
+
+
+def usage_record(attempt: dict[str, object], request: dict[str, object], *,
+                 completed_at: str, staffing_status: str) -> dict[str, object]:
+    observed = attempt.get("observed")
+    if not isinstance(observed, dict):
+        observed = {}
+    requested = request.get("requested")
+    if not isinstance(requested, dict):
+        requested = {}
+    vendor = str(attempt.get("vendor") or requested.get("vendor") or "unknown")
+    tokens, tokens_unknown, scope = _normalized_tokens(vendor, observed)
+    reported_models = observed.get("reported_models")
+    if not isinstance(reported_models, list):
+        reported_models = []
+    runtime_version_value = attempt.get("runtime_version") or request.get("runtime_version")
+    runtime_version = runtime_version_value if isinstance(runtime_version_value, str) else None
+    raw_source = attempt.get("stdout") or attempt.get("source_return")
+    return {
+        "change": _change(str(request.get("work") or "")),
+        "dispatch": {
+            "id": request.get("dispatch_id"),
+            "requested_vendor": requested.get("vendor"),
+            "actual_vendor": vendor,
+            "stage": request.get("stage"),
+            "continuity": requested.get("continuity"),
+            "launched_at": request.get("launched_at"),
+            "completed_at": completed_at,
+            "staffing_status": staffing_status,
+        },
+        "model": {
+            "requested": attempt.get("model") or requested.get("model"),
+            "reported": reported_models,
+            "reported_unknown_reason": (
+                None if reported_models else observed.get("reported_models_unavailable_reason")
+            ),
+        },
+        "tokens": tokens,
+        "tokens_unknown_reason": tokens_unknown,
+        "additional_native_classes": observed.get("additional_native_classes") or {},
+        "scope": scope if scope in {"invocation", "cumulative", "unknown"} else "unknown",
+        "source_field": observed.get("source"),
+        "raw_source": raw_source,
+        "runtime_version": runtime_version,
+        "runtime_version_unknown_reason": None if runtime_version else (
+            attempt.get("runtime_version_unavailable_reason")
+            or request.get("runtime_version_unavailable_reason")
+            or "runtime version unavailable"
+        ),
+    }
+
+
+def add_usage_record(attempt: dict[str, object], request: dict[str, object], *,
+                     completed_at: str, staffing_status: str) -> None:
+    attempt["usage"] = usage_record(
+        attempt, request, completed_at=completed_at, staffing_status=staffing_status
+    )
 
 
 def _attachment_paths(output: Path, kind: str) -> tuple[Path, Path]:
@@ -480,6 +595,7 @@ def begin_native(args: argparse.Namespace) -> Path:
         permission_boundary=args.permission_boundary, root=args.root,
         classification=args.classification, requested_session_id=args.session_id,
         retry_of=args.retry_of,
+        holder_session_id=getattr(args, "holder_session_id", None),
         setting_sources=setting_sources,
     )
     recorded_at = request["launched_at"]
@@ -596,6 +712,10 @@ def finish_native(args: argparse.Namespace) -> Path:
             "assessment": "unassessed",
         },
     }
+    add_usage_record(
+        attempt, request, completed_at=run["completed_at"],
+        staffing_status="qualified" if succeeded else "unfilled",
+    )
     if final is not None:
         try:
             publish_output(output, final)
@@ -658,6 +778,7 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("--classification-source", required=True, help="where the role classification came from")
     begin.add_argument("--session-id")
     begin.add_argument("--retry-of")
+    begin.add_argument("--holder-session-id")
     begin.add_argument("--runtime-version")
     begin.add_argument("--permission-boundary", required=True)
     begin.add_argument(

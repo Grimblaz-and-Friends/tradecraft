@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "product_repositories": [
+    "Grimblaz-and-Friends/Organizations-of-Verra",
+    "Grimblaz-and-Friends/Daemon"
+  ],
+  "connected_reviewers": [
+    "coderabbitai[bot]",
+    "greptile-apps[bot]",
+    "chatgpt-codex-connector[bot]"
+  ],
+  "marker_producers": [
+    "Grimblaz"
+  ]
+}

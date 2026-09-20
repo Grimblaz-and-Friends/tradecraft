@@ -8,6 +8,12 @@ The holder authors the final report and sends its draft through the `engagement`
 
 The final report is the review's whole evidence to a reader who was not in it, posted to the review's chosen issue. Per-seat counts are credits — a seat's `high` counts the sustained highs it is credited on, never distinct highs — and the unit counted throughout is the finding as originated and dispositioned, never a row of a ruling table.
 
+Post each completed panel-stage return with the `work` cell's marker, replacing `STAGE` from that marker's vocabulary:
+
+```text
+<!-- tradecraft:panel-stage:v1 stage=STAGE status=complete -->
+```
+
 **The split by consequence shape is what makes drift legible.** A review whose sustained findings were mostly apparatus-facing spent its round on the record of having reviewed rather than on the work — a fact about the instrument, which the next lane choice reads and which a count of findings cannot show.
 
 The report alone is the record. Before reading what it says, ask what it could have said: an evidence loop whose instrument cannot express the finding it tests for is not evidence, and a record is silent about everything its fields do not carry.

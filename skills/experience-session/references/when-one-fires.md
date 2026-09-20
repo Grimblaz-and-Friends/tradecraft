@@ -6,4 +6,11 @@
 
 **A review's fix batch buys a second one where it rewrote what the material instructs, or changed what someone using the result can do.** The first run is spent on the tree the fixes then replace, so what merges has been read again and never used — and a fix batch meeting either condition is itself a change of the kind above. It fires once, on the last tree the review's fixes produce — where more fixes are still expected, it waits for them — before the review closes. A batch that changed only the record of the change — a decision entry, an index row, a pull request body — is the mechanical case above.
 
-**A session a change bought and did not get costs one line** — say so and why, on the change's pull request or issue. **So does a change that concluded it bought none**, mechanical work included: the conclusion is written down with its reason, because *nothing was bought* and *the trigger never named my case* are the same silence from outside, and the second is what a missed session actually looks like from inside. No session blocks a pull request by existing or by being skipped; this is not a gate and not a stage of a review. **That line names no successor**: one naming a later session binds whoever it names to nothing.
+**A session a change bought and did not get costs one line** — say so and why, on the change's pull request or issue. **So does a change that concluded it bought none**, mechanical work included: the conclusion is written down with its reason, because *nothing was bought* and *the trigger never named my case* are the same silence from outside, and the second is what a missed session actually looks like from inside. A repository's path rules decide which branch applies; the `work` cell keeps a bought current-head use, or the other branch's explicit line, ahead of ready-for-review. The session remains an instrument rather than a review stage. **That line names no successor**: one naming a later session binds whoever it names to nothing.
+
+Post that conclusion with the `work` cell's marker and the required line, replacing `HEAD` and `REASON`:
+
+```text
+<!-- tradecraft:no-use:v1 head=HEAD -->
+Use: not required — REASON
+```
