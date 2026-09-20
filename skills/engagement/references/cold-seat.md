@@ -36,6 +36,12 @@ The verdict **names the text it judged** — the sha256 and byte count it was gi
 - **would not** — it would not, on the points named. Settles nothing: a transcribed no is the question answered against you.
 - **not settleable** — the artifact turns on a question that is the owner's, and no revision by the session reaches it. The seat names the readings and what turns on the pick.
 
+Return the verdict with the `work` cell's marker, replacing `VERDICT` and `STAFFING_STATUS` from that marker's vocabulary:
+
+```text
+<!-- tradecraft:cold-verdict:v1 verdict=VERDICT staffing_status=STAFFING_STATUS -->
+```
+
 **The bar is `plausible`, and it belongs to the instrument rather than to the dispatcher.** **`Would` asks whether a plausible builder, holding the artifact and affirmed implementation brief without the design conversation, would deliver every non-`unchanged` reader cell.** The seat judges the reading against the cells, not against a paragraph summary. That is the same word `../references/the-artifact.md` holds the criteria author to — *a criterion a plausible wrong implementation would also pass measures nothing* — stated here for the side that applies it. **A contrived implementation is an observation, not a blocker:** where a passing-but-bad reading exists only because it was constructed to, the seat reports it and does not fail the artifact on it. **A dispatch may not raise the bar.** The dispatcher is an interested party, and [one that asked its seats to construct any passing wrong implementation asked for what no finite set of criteria over prose survives, buying three rounds of verdicts correct against that bar and unreachable against anything the practice states](https://github.com/Grimblaz-and-Friends/tradecraft/issues/356).
 
 **The cold seat checks both directions:** every reader cell whose value is not "unchanged" has a criterion, and every criterion names a reader cell or is explicitly labelled execution detail. A missing reader cell or an orphan criterion is a point against the artifact, not a count to report.

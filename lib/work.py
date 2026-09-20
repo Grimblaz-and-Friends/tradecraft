@@ -33,7 +33,15 @@ DISPOSITIONS = (
 MARKER = re.compile(r"<!--\s*tradecraft:([a-z-]+):v1(?:\s+([^>]*?))?\s*-->", re.I)
 ATTRIBUTE = re.compile(r"([a-z_]+)=([^\s]+)", re.I)
 PR_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)", re.I)
-INCIDENT_URL = re.compile(r"https://github\.com/[^/]+/(Elos|Daemon)/issues/(\d+)", re.I)
+ISSUE_URL = re.compile(
+    r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)",
+    re.I,
+)
+REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+WORK_EVIDENCE_MARKERS = frozenset({
+    "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
+    "no-use", "connected-reviewer", "panel-stage", "practice-facing", "product-incident",
+})
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
 }
@@ -70,6 +78,8 @@ class WorkState:
         values = [str(self.issue.get("body") or "")]
         values.extend(str(item.get("body") or "") for item in self.issue_comments)
         values.extend(str(item.get("body") or "") for item in self.pr_comments)
+        values.extend(str(item.get("body") or "") for item in self.reviews)
+        values.extend(str(item.get("body") or "") for item in self.review_comments)
         return values
 
     @property
@@ -222,12 +232,35 @@ def is_practice_facing(state: WorkState) -> bool:
     return "practice-facing" in names or any(marker.name == "practice-facing" for marker in state.markers)
 
 
-def has_product_incident(state: WorkState) -> bool:
+def load_product_repos(root: Path) -> frozenset[str] | None:
+    path = root / ".tradecraft" / "product-repos.json"
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_bytes())
+    except (OSError, ValueError) as exc:
+        raise WorkError(f"cannot read product repository list: {path}") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise WorkError("product repository list must be a schema-version-1 object")
+    repositories = value.get("repositories")
+    if not isinstance(repositories, list):
+        raise WorkError("product repository list must carry a repositories list")
+    normalized: set[str] = set()
+    for repository in repositories:
+        if not isinstance(repository, str) or REPOSITORY_NAME.fullmatch(repository) is None:
+            raise WorkError("each product repository must be an owner/repository string")
+        normalized.add(repository.lower())
+    return frozenset(normalized)
+
+
+def has_product_incident(state: WorkState, product_repos: frozenset[str]) -> bool:
     if any(marker.name == "product-incident" and marker.attributes.get("repo", "").lower()
-           in {"elos", "daemon"} and marker.attributes.get("issue", "").isdigit()
+           in product_repos and marker.attributes.get("issue", "").isdigit()
+           and int(marker.attributes["issue"]) > 0
            for marker in state.markers):
         return True
-    return any(INCIDENT_URL.search(text) for text in state.texts)
+    return any(match.group(1).lower() in product_repos
+               for text in state.texts for match in ISSUE_URL.finditer(text))
 
 
 def _head_sha(state: WorkState) -> str | None:
@@ -333,70 +366,80 @@ def _panel_next(state: WorkState, lane: str) -> str | None:
     return next((stage for stage in stages if stage not in completed), None)
 
 
-def decide(state: WorkState, rules: dict[str, object]) -> Decision:
+def decide(state: WorkState, rules: dict[str, object],
+           product_repos: frozenset[str] | None = None) -> Decision:
+    practice_facing = is_practice_facing(state)
+    product_check_not_configured = practice_facing and not product_repos
+
+    def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
+               detail: str | None = None) -> Decision:
+        if product_check_not_configured:
+            reason = f"{reason};product-incident-check-not-configured"
+        return Decision(stage, dispatch, continuity, reason, detail)
+
     if state.ambiguous_prs:
         joined = ",".join(str(number) for number in state.ambiguous_prs)
-        return Decision("ambiguous-pr", False, None, "multiple-candidate-pull-requests", joined)
+        return result("ambiguous-pr", False, None, "multiple-candidate-pull-requests", joined)
     if str(state.issue.get("state") or "").lower() == "closed" or (
         state.pr and (state.pr.get("merged_at") or str(state.pr.get("state") or "").lower() == "closed")
     ):
-        return Decision("terminal", False, None, "issue-or-pull-request-terminal")
-    if is_practice_facing(state) and not has_product_incident(state):
-        return Decision("product-incident-required", False, None, "practice-work-has-no-product-incident")
+        return result("terminal", False, None, "issue-or-pull-request-terminal")
+    if practice_facing and product_repos and not has_product_incident(state, product_repos):
+        return result("product-incident-required", False, None, "practice-work-has-no-product-incident")
     affirmed = [marker for marker in state.markers if marker.name == "affirmed-brief"]
     if not affirmed:
-        return Decision("convergence", False, None, "affirmed-brief-marker-absent")
+        return result("convergence", False, None, "affirmed-brief-marker-absent")
     lane_pair = review_lane(affirmed[-1].body)
     if lane_pair is None:
-        return Decision("affirmation-invalid", False, None, "review-risk-lane-missing-or-mismatched")
+        return result("affirmation-invalid", False, None, "review-risk-lane-missing-or-mismatched")
     _risk, lane = lane_pair
     artifacts = [marker for marker in state.markers if marker.name == "artifact"]
     if not artifacts:
-        return Decision("artifact", True, "fresh", "artifact-marker-absent")
+        return result("artifact", True, "fresh", "artifact-marker-absent")
     verdicts = [marker for marker in state.markers
                 if marker.name == "cold-verdict" and staffing_qualified(marker)]
     if not verdicts:
-        return Decision("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
+        return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
     verdict = verdicts[-1]
     if verdict.attributes.get("verdict") == "would-not":
-        return Decision("artifact", True, "resume", "cold-verdict-would-not")
+        return result("artifact", True, "resume", "cold-verdict-would-not")
     if verdict.attributes.get("verdict") != "would":
-        return Decision("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
+        return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
     if not any(marker.name == "holder-reading" for marker in state.markers):
-        return Decision("holder-read", False, None, "whole-change-holder-reading-absent")
+        return result("holder-read", False, None, "whole-change-holder-reading-absent")
     if state.pr is None:
-        return Decision("build", True, "fresh", "pull-request-absent")
+        return result("build", True, "fresh", "pull-request-absent")
     sha = _head_sha(state)
     if sha is None:
-        return Decision("floor", True, "resume", "pull-request-head-sha-absent")
+        return result("floor", True, "resume", "pull-request-head-sha-absent")
     floor = _current_marker(state, "floor", head=sha, status="pass")
     if floor is None or _checks_red(state):
-        return Decision("floor", True, "resume", "current-head-floor-missing-or-red")
+        return result("floor", True, "resume", "current-head-floor-missing-or-red")
     latest_use = next((marker for marker in reversed(state.markers) if marker.name == "use"), None)
     if latest_use and latest_use.attributes.get("head") == sha and latest_use.attributes.get("changed") == "true":
-        return Decision("build", True, "resume", "use-finding-changed-behavior-or-instructions")
+        return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
     bought = use_required(state.changed_paths, rules)
     current_use = _current_marker(state, "use", head=sha, status="pass")
     if bought and (current_use is None or not staffing_qualified(current_use)):
-        return Decision("use", True, "fresh", "current-head-use-absent")
+        return result("use", True, "fresh", "current-head-use-absent")
     if not bought:
         no_use = _current_marker(state, "no-use", head=sha)
         if no_use is None or "Use: not required" not in no_use.body:
-            return Decision("use", False, None, "path-rules-require-explicit-no-use-line")
+            return result("use", False, None, "path-rules-require-explicit-no-use-line")
     if bool(state.pr.get("draft")):
-        return Decision("ready-reviewers", False, None, "floor-and-use-complete-pr-draft")
+        return result("ready-reviewers", False, None, "floor-and-use-complete-pr-draft")
     if not _reviewer_ran(state):
-        return Decision("waiting", False, None, "required-connected-reviewer-has-not-run")
+        return result("waiting", False, None, "required-connected-reviewer-has-not-run")
     threads = _undisposed_threads(state)
     if threads:
-        return Decision(
+        return result(
             "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
             ",".join(str(identity) for identity in threads),
         )
     panel_stage = _panel_next(state, lane)
     if panel_stage:
-        return Decision("panel", False, None, "bought-panel-incomplete", panel_stage)
-    return Decision("release-report", True, "fresh", "all-evidence-complete")
+        return result("panel", False, None, "bought-panel-incomplete", panel_stage)
+    return result("release-report", True, "fresh", "all-evidence-complete")
 
 
 def registry_path() -> Path:
@@ -568,12 +611,14 @@ def parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace, *, transport: GitHubREST | None = None,
         executor: Callable[[WorkState, Decision, Path, str | None], int] = execute_stage) -> int:
+    root = args.root.expanduser().resolve()
+    product_repos = load_product_repos(root)
     state = read_state(transport or GitHubREST(), args.repo, args.issue)
     rules = load_use_rules(args.use_rules)
-    decision = decide(state, rules)
+    decision = decide(state, rules, product_repos)
     if args.command:
         decision = Decision(args.command, True, "fresh", "power-user-stage-command")
-    return executor(state, decision, args.root.expanduser().resolve(), args.instalment)
+    return executor(state, decision, root, args.instalment)
 
 
 def main(argv: list[str] | None = None) -> int:

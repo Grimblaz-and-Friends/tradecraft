@@ -31,7 +31,7 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open"):
         pull = {"number": 7, "state": "open", "draft": draft, "merged_at": None,
                 "head": {"sha": SHA}}
     return work.WorkState(
-        "Grimblaz-and-Friends/Elos", 12,
+        "example/product", 12,
         {"number": 12, "state": issue_state, "body": "", "labels": []},
         issue_comments=comments, pr=pull, changed_paths=paths or ["lib/runtime.py"],
     )
@@ -141,16 +141,51 @@ def test_missing_or_crossed_review_rows_cannot_become_affirmed_state(text):
     assert work.decide(fixture, RULES).stage == "affirmation-invalid"
 
 
-def test_practice_facing_tradecraft_requires_a_named_product_incident():
+def configured_products(tmp_path, repositories):
+    directory = tmp_path / ".tradecraft"
+    directory.mkdir()
+    (directory / "product-repos.json").write_text(json.dumps({
+        "schema_version": 1,
+        "repositories": repositories,
+    }), encoding="utf-8")
+    return work.load_product_repos(tmp_path)
+
+
+@pytest.mark.parametrize("body", [
+    "https://github.com/acme/product-app/issues/91",
+    "<!-- tradecraft:product-incident:v1 repo=ACME/PRODUCT-APP issue=91 -->",
+])
+def test_configured_product_repository_accepts_its_incident_case_insensitively(tmp_path, body):
     fixture = state(AFFIRMED)
-    fixture.repo = "Grimblaz-and-Friends/tradecraft"
+    fixture.repo = "example/tradecraft"
     fixture.issue["labels"] = [{"name": "practice-facing"}]
-    decision = work.decide(fixture, RULES)
-    assert (decision.stage, decision.dispatch) == ("product-incident-required", False)
+    fixture.issue_comments.append({"body": body})
+    products = configured_products(tmp_path, ["Acme/Product-App"])
+    assert work.decide(fixture, RULES, products).stage == "artifact"
+
+
+def test_configured_product_repository_refuses_an_incident_from_elsewhere(tmp_path):
+    fixture = state(AFFIRMED)
+    fixture.repo = "example/tradecraft"
+    fixture.issue["labels"] = [{"name": "practice-facing"}]
     fixture.issue_comments.append({
-        "body": "<!-- tradecraft:product-incident:v1 repo=Elos issue=91 -->"
+        "body": "https://github.com/acme/elsewhere/issues/91\n"
+                "<!-- tradecraft:product-incident:v1 repo=acme/elsewhere issue=91 -->",
     })
-    assert work.decide(fixture, RULES).stage == "artifact"
+    products = configured_products(tmp_path, ["acme/product-app"])
+    decision = work.decide(fixture, RULES, products)
+    assert (decision.stage, decision.dispatch) == ("product-incident-required", False)
+
+
+def test_absent_product_repository_list_disables_the_check_and_says_so(tmp_path):
+    fixture = state(AFFIRMED)
+    fixture.repo = "example/tradecraft"
+    fixture.issue["labels"] = [{"name": "practice-facing"}]
+    products = work.load_product_repos(tmp_path)
+    decision = work.decide(fixture, RULES, products)
+    assert products is None
+    assert (decision.stage, decision.dispatch) == ("artifact", True)
+    assert decision.reason == "artifact-marker-absent;product-incident-check-not-configured"
 
 
 def test_path_rules_buy_runtime_use_and_decline_docs_and_tests():
@@ -178,10 +213,10 @@ class FakeTransport:
 
 
 def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
-    base = "repos/acme/Elos"
+    base = "repos/acme/widget"
     values = {
         f"{base}/issues/3": {"number": 3, "state": "open", "body": "", "labels": []},
-        f"{base}/issues/3/comments": [{"body": "https://github.com/acme/Elos/pull/9"}],
+        f"{base}/issues/3/comments": [{"body": "https://github.com/acme/widget/pull/9"}],
         f"{base}/issues/3/timeline": [],
         f"{base}/pulls/9": {"number": 9, "state": "open", "draft": True,
                              "head": {"sha": SHA}},
@@ -192,11 +227,44 @@ def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
         f"{base}/commits/{SHA}/check-runs": {"check_runs": []},
     }
     transport = FakeTransport(values)
-    fixture = work.read_state(transport, "acme/Elos", 3)
+    fixture = work.read_state(transport, "acme/widget", 3)
     assert fixture.pr["number"] == 9
     assert fixture.changed_paths == ["lib/runtime.py"]
     assert {method for method, _endpoint, _paginate in transport.calls} == {"GET"}
     assert len(transport.calls) == 9
+
+
+def test_review_disposition_marker_is_part_of_the_entrance_evidence():
+    fixture = state()
+    fixture.review_comments = [{"body": REVIEWED}]
+    assert {marker.name for marker in fixture.markers} == {"connected-reviewer"}
+
+
+def test_run_reads_the_product_repository_list_from_root(tmp_path):
+    configured_products(tmp_path, ["acme/product-app"])
+    args = work.parser().parse_args([
+        "--repo", "example/tradecraft", "--issue", "3", "--root", str(tmp_path),
+    ])
+    captured = []
+
+    class PracticeTransport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint.endswith("/comments") or endpoint.endswith("/timeline"):
+                return []
+            return {
+                "number": 3,
+                "state": "open",
+                "body": AFFIRMED + "\nhttps://github.com/ACME/PRODUCT-APP/issues/7",
+                "labels": [{"name": "practice-facing"}],
+            }
+
+    assert work.run(
+        args, transport=PracticeTransport(),
+        executor=lambda state, decision, root, instalment: captured.append(decision) or 0,
+    ) == 0
+    assert [(decision.stage, decision.reason) for decision in captured] == [
+        ("artifact", "artifact-marker-absent"),
+    ]
 
 
 def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch():
@@ -235,7 +303,7 @@ def test_judging_root_detaches_an_attached_tree_and_removes_it_afterward(tmp_pat
 @pytest.mark.parametrize("command", work.COMMANDS)
 def test_power_user_commands_run_one_named_stage(command, tmp_path):
     args = work.parser().parse_args([
-        command, "--repo", "acme/Elos", "--issue", "3", "--root", str(tmp_path),
+        command, "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
     ])
     captured = []
 
@@ -254,10 +322,10 @@ def test_registry_write_is_atomic_shape_and_canonical(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / "tree"
     root.mkdir()
-    work.register_worktree(root, "acme/Elos", 3, "2", guard_status="unavailable")
+    work.register_worktree(root, "acme/widget", 3, "2", guard_status="unavailable")
     recorded = json.loads(work.registry_path().read_bytes())
     assert recorded == {"schema_version": 1, "worktrees": [{
-        "root": str(root.resolve()), "repository": "acme/Elos", "issue": 3,
+        "root": str(root.resolve()), "repository": "acme/widget", "issue": 3,
         "instalment": "2", "active": True, "holder_write_guard": "unavailable",
         "revision_before": None, "status_before": None,
     }]}

@@ -6,6 +6,12 @@
 
 **The holding session designs the change with the owner through affirmation and owns the whole stretch that follows.** It dispatches every stage and receives every return, remaining the owner's counterpart through the reviewed pull request and its posted report. One holding session per change, never one for many, because its context grows from the first turn through every stage. It edits no file in the implementation tree and takes no judging seat. Where responsibility changes at affirmation, the handoff rule (`../references/the-handoff.md`) governs the exception.
 
+Post the whole-change reading with the `work` cell's marker, replacing `RESULT` from that marker's vocabulary:
+
+```text
+<!-- tradecraft:holder-reading:v1 result=RESULT -->
+```
+
 The builder launcher registers an implementation worktree before dispatch. In a holder runtime that loads project pre-tool hooks, the holder guard rereads that machine-local registry on every edit, write, notebook edit or shell call and refuses an implicated write. A runtime with no such hook records the guard as unavailable and retains before/after revision and status evidence; those snapshots detect a breach but do not enforce the boundary.
 
 **The material handing a party its job states the tools and permission or approval route it must be started with to perform it, and a launcher capable of checking that declaration refuses a launch that would not supply it**, because instructions cannot supply a capability the launch withholds.

@@ -7,13 +7,17 @@ description: The single state-driven entrance for a product change. Use when the
 
 **Purpose:** turn one issue number into the next stage its GitHub evidence calls for. **Audience:** the holder continuing an affirmed product change, and a power user running one named stage. **Success:** the issue and its linked pull request are read without mutation, exactly one next stage is selected, and no recipient is instructed to continue into another stage.
 
+## Where this cell's depth lives
+
+- **Recording or reading evidence that advances the entrance** → `references/markers.md`: each marker's exact form, lawful values, producer, surface and moment.
+
 For the ordinary entrance, run:
 
 ```text
 python <plugin-root>/lib/work.py --repo OWNER/REPO --issue N --root PATH
 ```
 
-The script reads issue, pull-request, check, review and comment state with GitHub REST GET requests. It refuses ambiguous linked pull requests. On tradecraft work marked practice-facing, it also refuses dispatch until the issue names the Elos or Daemon incident it answers, because the practice is a means to better product work rather than its own product.
+The script reads issue, pull-request, check, review and comment state with GitHub REST GET requests. It refuses ambiguous linked pull requests. On practice-facing work, it applies the repository's own product list where one is configured and refuses dispatch until the issue names an incident from that list, because the practice is a means to better product work rather than its own product. With no configured list, that check does not apply and the decision reason says so.
 
 An affirmed-brief marker counts only with exactly one lawful `Review risk` and `Review lane` pair. Changed paths are matched against the repository's schema-versioned JSON use rules; a bought use needs a current-head note, and the other branch needs its explicit no-use line. These are guards read by the entrance rather than choices it makes.
 

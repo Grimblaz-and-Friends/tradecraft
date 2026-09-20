@@ -17,7 +17,7 @@ WHEN = "2026-09-19T12:00:00+00:00"
 def usage(vendor="codex", model="gpt-fixture", tokens=None, scope="invocation",
           dispatch_id="dispatch-1", stage="build"):
     return {
-        "change": {"repository": "acme/Elos", "issue": 12, "unknown_reason": None},
+        "change": {"repository": "acme/widget", "issue": 12, "unknown_reason": None},
         "dispatch": {
             "id": dispatch_id, "requested_vendor": vendor, "actual_vendor": vendor,
             "stage": stage, "continuity": "fresh", "launched_at": WHEN,
@@ -65,7 +65,7 @@ def test_schema_v2_usage_has_context_classes_source_and_no_money():
     }
     observed = records.runtime_evidence("claude", json.dumps(payload).encode(), "fresh")
     request = records.request_record(
-        dispatch_id="dispatch", work="acme/Elos#12", stage="use",
+        dispatch_id="dispatch", work="acme/widget#12", stage="use",
         settings_source="fixture", settings_scope="use", vendor="claude",
         model="requested-alias", effort="xhigh", continuity="fresh",
         permission_boundary="native", root=None,
@@ -76,7 +76,7 @@ def test_schema_v2_usage_has_context_classes_source_and_no_money():
         {"vendor": "claude", "observed": observed, "source_return": "raw.json"},
         request, completed_at=WHEN, staffing_status="qualified",
     )
-    assert row["change"] == {"repository": "acme/Elos", "issue": 12,
+    assert row["change"] == {"repository": "acme/widget", "issue": 12,
                               "unknown_reason": None}
     assert row["dispatch"]["stage"] == "use"
     assert row["model"] == {
@@ -96,7 +96,7 @@ def test_schema_v2_usage_has_context_classes_source_and_no_money():
 def test_native_tool_usage_records_unknown_with_reason_not_requested_model():
     observed = records.runtime_evidence("native-tool", b"opaque", "fresh")
     request = records.request_record(
-        dispatch_id="native", work="acme/Elos#12", stage="use",
+        dispatch_id="native", work="acme/widget#12", stage="use",
         settings_source="fixture", settings_scope="use", vendor="native-tool",
         model="requested-only", effort="ordinary", continuity="fresh",
         permission_boundary="native", root=None,
@@ -140,7 +140,7 @@ def test_report_labels_three_quantities_groups_rows_and_keeps_unknowns(tmp_path)
     write_json(run_path, {"schema_version": 2, "attempts": [{"usage": usage()}]})
     holder_path = tmp_path / "holder.jsonl"
     holder = cost.holder_close(
-        "acme/Elos", 12, "codex", None, None,
+        "acme/widget", 12, "codex", None, None,
         "holder host exposed no class breakdown", holder_path,
         now=datetime.fromisoformat(WHEN),
     )
@@ -149,7 +149,7 @@ def test_report_labels_three_quantities_groups_rows_and_keeps_unknowns(tmp_path)
     terms_path = tmp_path / "missing-plan-terms.json"
     gauges_path = tmp_path / "missing-gauges.jsonl"
     result = cost.report(
-        "acme/Elos", 12, dispatch_root, rates_path, terms_path, gauges_path, holder_path
+        "acme/widget", 12, dispatch_root, rates_path, terms_path, gauges_path, holder_path
     )
     assert result["marker"] == "change-cost:v1"
     assert set(result) >= {
@@ -192,7 +192,7 @@ def test_plan_terms_and_latest_gauge_remain_separate_from_rate_price(tmp_path):
 def test_holder_close_rejects_money_and_always_appends_unknown_row(tmp_path):
     destination = tmp_path / "holder.jsonl"
     row = cost.holder_close(
-        "acme/Elos", 12, "codex", None, None, "host supplied no tokens",
+        "acme/widget", 12, "codex", None, None, "host supplied no tokens",
         destination, now=datetime.fromisoformat(WHEN),
     )
     assert row["tokens"] is None
@@ -202,7 +202,7 @@ def test_holder_close_rejects_money_and_always_appends_unknown_row(tmp_path):
     write_json(monetary, {"tokens": {"input": 1}, "cost_usd": 1})
     with pytest.raises(cost.CostError, match="cannot contain money"):
         cost.holder_close(
-            "acme/Elos", 12, "codex", None, monetary, None, destination,
+            "acme/widget", 12, "codex", None, monetary, None, destination,
             now=datetime.fromisoformat(WHEN),
         )
 

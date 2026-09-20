@@ -10,6 +10,12 @@ The `reviewers` label gates Greptile and CodeRabbit. Removing and re-adding it m
 
 Every comment ends in its own thread, by a fix or a one-line reply carrying one of these dispositions: `fixed`; `fixed — nothing else found it`; `fixed in #<N>`; `yours — in the release report`; `declined — <why it earns no end>`; `duplicate of <the earlier comment>`; `lapsed — <the rule we do not run>`. **The list is closed, and it covers every end an unfixed finding has** — a true one you are not fixing here leaves by the follow-up pull request that carries it or by the one ask to the owner, so each has a word and neither is a silence. **A true comment that earns no end at all is declined here, on the work**, which is what the charter already does with a decline outside a review: a finding failing the `filing` cell's bar takes neither of its two ends, and without a word for that it reads as a builder who never answered. A fix still gets its one-line `fixed`, so a reviewer's silence remains distinguishable from the builder's. Nothing is bundled, receipted or recorded elsewhere.
 
+Append the `work` cell's completion marker to the final disposition reply for that reviewer, replacing `NAME`:
+
+```text
+<!-- tradecraft:connected-reviewer:v1 name=NAME status=complete -->
+```
+
 Copy each block whole to the filename named above it.
 
 ## `greptile.json`
