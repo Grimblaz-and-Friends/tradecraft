@@ -594,11 +594,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("repository_root", metavar="repository-root", type=_repository_root)
     args = parser.parse_args(argv)
+    files_read = sum(1 for _ in _iter_files(args.repository_root))
     findings = run(args.repository_root)
     for finding in findings:
         print(finding)
-    print(f"lint: {len(findings)} finding(s)")
-    return 1 if findings else 0
+    print(f"lint: {len(findings)} finding(s); {files_read} file(s) read")
+    return 1 if findings or files_read == 0 else 0
 
 
 if __name__ == "__main__":

@@ -54,14 +54,24 @@ def _assert_ascii(result: subprocess.CompletedProcess[bytes]) -> str:
     return result.stdout.decode("ascii")
 
 
-def test_clean_target_is_clean(tmp_path):
+def test_populated_clean_target_reports_its_file_count(tmp_path):
     target = tmp_path / "clean"
     _write(target / "src" / "app.py", "VALUE = 'plain ASCII'\n")
 
     result = _run(SCRIPT, target, cwd=tmp_path)
 
     assert result.returncode == 0
-    assert _assert_ascii(result).endswith("lint: 0 finding(s)\n")
+    assert _assert_ascii(result).endswith("lint: 0 finding(s); 1 file(s) read\n")
+
+
+def test_empty_target_reports_zero_files_and_fails(tmp_path):
+    target = tmp_path / "empty"
+    target.mkdir()
+
+    result = _run(SCRIPT, target, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert _assert_ascii(result) == "lint: 0 finding(s); 0 file(s) read\n"
 
 
 def test_cli_refuses_a_missing_or_file_repository_root(tmp_path):
@@ -88,7 +98,7 @@ def test_native_runtime_settings_are_not_a_portable_calling_contract(tmp_path):
     result = _run(SCRIPT, target, cwd=tmp_path)
 
     assert result.returncode == 0
-    assert _assert_ascii(result).endswith("lint: 0 finding(s)\n")
+    assert _assert_ascii(result).endswith("lint: 0 finding(s); 1 file(s) read\n")
 
 
 def test_every_guard_reports_a_planted_violation_and_leaves_a_lawful_sibling(tmp_path):
@@ -170,7 +180,7 @@ def test_git_ignored_violation_is_not_judged(tmp_path):
     result = _run(SCRIPT, target, cwd=tmp_path)
 
     assert result.returncode == 0
-    assert _assert_ascii(result).endswith("lint: 0 finding(s)\n")
+    assert _assert_ascii(result).endswith("lint: 0 finding(s); 2 file(s) read\n")
 
 
 @pytest.mark.parametrize(
