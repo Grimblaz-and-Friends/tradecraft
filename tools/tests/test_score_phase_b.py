@@ -120,6 +120,30 @@ def test_unauthorized_exclusion_is_ignored_and_named(capsys):
     )
 
 
+def test_window_marker_accepts_producer_and_names_ignored_nonproducer(capsys):
+    """Only a configured producer can set the opening instant."""
+    _transport, output = fixture_run(capsys)
+    assert (
+        "| Ignored phase-b-window from untrusted-user "
+        "(2025-12-01T00:00:00Z) |" in output
+    )
+
+
+def test_window_requires_an_authorized_marker():
+    """A valid marker from an unlisted author cannot open the window."""
+    transport = spb.FixtureTransport.from_path(FIXTURE)
+    endpoint = (
+        f"repos/{spb.RECORD_REPOSITORY}/issues/{spb.RECORD_ISSUE}"
+        "/comments?per_page=100"
+    )
+    response = transport.responses[endpoint]
+    comments = [dict(item) for item in response.body]
+    comments[0]["user"] = {"login": "untrusted-user"}
+    transport.responses[endpoint] = spb.Response(comments, response.headers)
+    with pytest.raises(spb.PhaseBError, match="found 0"):
+        spb.read_window(transport, OPENED + timedelta(days=28))
+
+
 def test_status_count_is_net_of_authorized_exclusions(capsys):
     """Status keeps its two-line shape and counts only qualifying changes."""
     transport = spb.FixtureTransport.from_path(FIXTURE)
@@ -318,8 +342,74 @@ def test_i5_c5_cost_quantities_are_separate_and_unknown_is_explicit(capsys):
     header = next(line for line in output.splitlines() if line.startswith("| Change |"))
     assert "| Cost: raw usage | Cost: rate-card price | Cost: bill or plan status |" in header
     daemon = next(line for line in output.splitlines() if "Daemon#22" in line)
-    assert daemon.endswith("| unknown | unknown | unknown |")
+    assert daemon.count('"status":"unknown"') == 3
     assert "actual_vendor" in output and '"amount":"0.12"' in output
+
+
+def test_cost_uses_work_issue_and_no_issue_has_explicit_unknown_reason(capsys):
+    """Cost reads the work issue, while an unlinked pull request remains explicit."""
+    seen: list[tuple[str, int]] = []
+
+    def recording_cost_reader(repository: str, issue_number: int) -> dict[str, object]:
+        seen.append((repository, issue_number))
+        return cost_report(repository, issue_number)
+
+    transport = spb.FixtureTransport.from_path(FIXTURE)
+    result = spb.run(
+        args("final", OPENED + timedelta(days=28)),
+        transport=transport,
+        cost_reader=recording_cost_reader,
+    )
+    output = capsys.readouterr().out
+    assert result == 0
+    assert seen == [(spb.PRODUCT_REPOSITORIES[0], 91)]
+    daemon = next(line for line in output.splitlines() if "Daemon#22" in line)
+    assert daemon.count(
+        "no work issue found for Grimblaz-and-Friends/Daemon#22"
+    ) == 3
+
+
+def test_work_issue_evidence_accepts_closing_reference_and_authorized_marker():
+    """Reverse resolution mirrors both evidence forms and marker authorization."""
+    change = spb.Change(
+        spb.PRODUCT_REPOSITORIES[0],
+        11,
+        OPENED + timedelta(days=1),
+        "https://example.invalid/pull/11",
+        {"body": "Fixes #90"},
+    )
+    issues = [
+        {
+            "number": 91,
+            "user": {"login": "Grimblaz"},
+            "body": "<!-- tradecraft:implementing-pr:v1 number=11 -->",
+        },
+        {
+            "number": 92,
+            "user": {"login": "untrusted-user"},
+            "body": "<!-- tradecraft:implementing-pr:v1 number=11 -->",
+        },
+        {
+            "number": 93,
+            "pull_request": {},
+            "user": {"login": "Grimblaz"},
+            "body": "<!-- tradecraft:implementing-pr:v1 number=11 -->",
+        },
+        {"number": 94, "body": "ordinary issue"},
+    ]
+    comments = [
+        {
+            "id": 1,
+            "issue_url": (
+                "https://api.github.com/repos/example/project/issues/94"
+            ),
+            "user": {"login": "Grimblaz"},
+            "body": "<!-- tradecraft:implementing-pr:v1 number=11 -->",
+        }
+    ]
+    assert spb._work_issue_candidates(
+        change, issues, comments, frozenset({"grimblaz"})
+    ) == (90, 91, 94)
 
 
 def test_i5_c5_unreadable_cost_report_is_unknown_in_all_three_columns(monkeypatch):
@@ -348,7 +438,38 @@ def test_i5_c6_transport_is_get_only_and_follows_link_pages(monkeypatch, capsys)
     """I5-C6: every observed API request is GET and mutation is refused before launch."""
     transport, _output = fixture_run(capsys)
     assert transport.requests and {method for method, _endpoint in transport.requests} == {"GET"}
-    assert any(endpoint.endswith("&page=2") for _method, endpoint in transport.requests)
+    assert [endpoint for _method, endpoint in transport.requests] == [
+        f"repos/{spb.RECORD_REPOSITORY}/issues/{spb.RECORD_ISSUE}",
+        f"repos/{spb.RECORD_REPOSITORY}/issues/{spb.RECORD_ISSUE}/comments?per_page=100",
+        (
+            f"repos/{spb.PRODUCT_REPOSITORIES[0]}/pulls?state=closed&sort=updated"
+            "&direction=desc&per_page=100"
+        ),
+        (
+            f"repos/{spb.PRODUCT_REPOSITORIES[1]}/pulls?state=closed&sort=updated"
+            "&direction=desc&per_page=100"
+        ),
+        (
+            f"repos/{spb.PRODUCT_REPOSITORIES[0]}/issues?state=all"
+            "&per_page=100"
+        ),
+        (
+            f"repos/{spb.PRODUCT_REPOSITORIES[0]}/issues?state=all"
+            "&per_page=100&page=2"
+        ),
+        (
+            f"repos/{spb.PRODUCT_REPOSITORIES[0]}/issues/comments"
+            "?per_page=100"
+        ),
+        (
+            f"repos/{spb.PRODUCT_REPOSITORIES[1]}/issues?state=all"
+            "&per_page=100"
+        ),
+        (
+            f"repos/{spb.PRODUCT_REPOSITORIES[1]}/issues/comments"
+            "?per_page=100"
+        ),
+    ]
     with pytest.raises(spb.PhaseBError, match="refuses method"):
         transport("POST", "repos/example/project/issues/1/comments")
 
@@ -363,3 +484,10 @@ def test_i5_c6_transport_is_get_only_and_follows_link_pages(monkeypatch, capsys)
     with pytest.raises(spb.PhaseBError, match="refuses method"):
         spb.GitHubREST()("PATCH", "repos/example/project/issues/1")
     assert not launched
+
+
+def test_owner_asks_count_only_issue_bodies_and_issue_comments(capsys):
+    """Owner asks on pull-request bodies and conversations do not count."""
+    _transport, output = fixture_run(capsys)
+    row = next(line for line in output.splitlines() if "Organizations-of-Verra#11" in line)
+    assert "| 1 | 1 | 2 |" in row

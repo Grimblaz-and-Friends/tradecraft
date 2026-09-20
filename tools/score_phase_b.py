@@ -7,7 +7,9 @@ their GitHub record was created from the opening instant through the closing
 instant, inclusive.
 
 ``phase-b-window:v1`` has exactly ``opened=TIMESTAMP`` and lives on the record
-issue.  Its timestamp is an aware ISO-8601 instant.
+issue.  Its timestamp is an aware ISO-8601 instant and its author must be
+listed under ``marker_producers`` in this repository's work configuration.
+Ignored valid markers are named in the final close table.
 
 ``phase-b-exclude:v1`` has exactly
 ``pr=OWNER/REPOSITORY#NUMBER reason=SLUG`` and lives on the record issue.  Its
@@ -26,9 +28,11 @@ one issue counts once.
 carrying it is one record for the qualifying pull request named by ``pr``.
 
 Cost is the ``change-cost:v1`` report returned by ``lib/change_cost.py`` at
-read time for the product repository and pull-request number.  Raw usage,
-dated rate-card price, and bill or plan status remain separate output columns.
-An absent cost quantity is rendered as ``unknown`` and never as zero.
+read time for the product repository and work-issue number.  The work issue is
+resolved from a closing reference in the pull request body or an authorized
+``implementing-pr:v1`` issue marker.  Raw usage, dated rate-card price, and
+bill or plan status remain separate output columns.  An absent cost quantity
+is rendered as ``unknown`` and never as zero.
 """
 from __future__ import annotations
 
@@ -50,7 +54,7 @@ sys.path.insert(0, str(LIB))
 
 import change_cost  # noqa: E402
 from winio import utf8_stdio  # noqa: E402
-from work import ATTRIBUTE, MARKER, load_work_config  # noqa: E402
+from work import ATTRIBUTE, CLOSING_REFERENCE, MARKER, load_work_config  # noqa: E402
 
 
 PRODUCT_REPOSITORIES = (
@@ -109,11 +113,18 @@ class Exclusion:
 
 
 @dataclass(frozen=True)
+class IgnoredWindowMarker:
+    opened_at: datetime
+    author: str
+
+
+@dataclass(frozen=True)
 class Window:
     opened_at: datetime
     deadline: datetime
     close_at: datetime | None
     changes: tuple[Change, ...]
+    ignored_window_markers: tuple[IgnoredWindowMarker, ...]
     exclusions: tuple[Exclusion, ...]
     ignored_exclusions: tuple[Exclusion, ...]
 
@@ -253,9 +264,7 @@ def _object(transport: Transport, endpoint: str) -> dict[str, object]:
     return value
 
 
-def _items(
-    transport: Transport, endpoint: str, *, field: str | None = None
-) -> list[dict[str, object]]:
+def _items(transport: Transport, endpoint: str) -> list[dict[str, object]]:
     found: list[dict[str, object]] = []
     seen: set[str] = set()
     current: str | None = endpoint
@@ -265,10 +274,6 @@ def _items(
         seen.add(current)
         response = transport("GET", current)
         value = response.body
-        if field is not None:
-            if not isinstance(value, dict):
-                raise PhaseBError(f"GitHub GET returned a non-object for {current}")
-            value = value.get(field)
         if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
             raise PhaseBError(f"GitHub GET returned a non-object list for {current}")
         found.extend(value)
@@ -325,23 +330,34 @@ def _exclusion_records(
     return records
 
 
-def _opened_at(issue: dict[str, object], comments: list[dict[str, object]]) -> datetime:
+def _opened_at(
+    issue: dict[str, object],
+    comments: list[dict[str, object]],
+    marker_producers: frozenset[str],
+) -> tuple[datetime, tuple[IgnoredWindowMarker, ...]]:
     valid: set[datetime] = set()
+    ignored: list[IgnoredWindowMarker] = []
     for source in (issue, *comments):
+        author = _author(source)
         for name, attributes in _markers(source.get("body")):
             if name != "phase-b-window" or set(attributes) != {"opened"}:
                 continue
             try:
-                valid.add(parse_timestamp(attributes["opened"]))
+                opened_at = parse_timestamp(attributes["opened"])
             except PhaseBError:
                 # The settled artifact quotes the family as opened=... .  It is
                 # documentation, not a timestamp-bearing record.
                 continue
+            if author in marker_producers:
+                valid.add(opened_at)
+            else:
+                ignored.append(IgnoredWindowMarker(opened_at, author))
     if len(valid) != 1:
         raise PhaseBError(
-            f"record issue must contain exactly one valid phase-b-window timestamp; found {len(valid)}"
+            "record issue must contain exactly one valid phase-b-window "
+            f"timestamp from a marker producer; found {len(valid)}"
         )
-    return next(iter(valid))
+    return next(iter(valid)), tuple(ignored)
 
 
 def _change_from_pull(repository: str, pull: dict[str, object]) -> Change | None:
@@ -360,8 +376,8 @@ def read_window(transport: Transport, now: datetime) -> Window:
     record = f"repos/{RECORD_REPOSITORY}/issues/{RECORD_ISSUE}"
     issue = _object(transport, record)
     comments = _items(transport, f"{record}/comments?per_page=100")
-    opened = _opened_at(issue, comments)
     marker_producers = load_work_config(ROOT).marker_producers
+    opened, ignored_windows = _opened_at(issue, comments, marker_producers)
     exclusion_records = _exclusion_records(issue, comments, marker_producers)
     if now < opened:
         raise PhaseBError("current time precedes the Phase B opening timestamp")
@@ -429,7 +445,10 @@ def read_window(transport: Transport, now: datetime) -> Window:
         if change.merged_at <= population_end
         and (change.repository.casefold(), change.number) not in authorized_keys
     )[:CHANGE_LIMIT]
-    return Window(opened, deadline, close_at, visible_changes, exclusions, ignored)
+    return Window(
+        opened, deadline, close_at, visible_changes, ignored_windows,
+        exclusions, ignored,
+    )
 
 
 def _created_in_window(
@@ -456,31 +475,44 @@ def _valid_pr(attributes: dict[str, str], key: str) -> int | None:
     return int(value) if value.isdigit() and int(value) > 0 else None
 
 
-def _read_change_surfaces(transport: Transport, change: Change) -> None:
-    base = f"repos/{change.repository}"
-    issue = _object(transport, f"{base}/issues/{change.number}")
-    pull = _object(transport, f"{base}/pulls/{change.number}")
-    _items(transport, f"{base}/issues/{change.number}/comments?per_page=100")
-    _items(transport, f"{base}/pulls/{change.number}/reviews?per_page=100")
-    _items(transport, f"{base}/pulls/{change.number}/comments?per_page=100")
-    head = pull.get("head")
-    sha = head.get("sha") if isinstance(head, dict) else None
-    if not isinstance(sha, str) or not sha:
-        fallback = change.pull.get("head")
-        sha = fallback.get("sha") if isinstance(fallback, dict) else None
-    if not isinstance(sha, str) or not sha:
-        raise PhaseBError(
-            f"qualifying pull request has no head SHA: {change.repository}#{change.number}"
-        )
-    _items(
-        transport,
-        f"{base}/commits/{sha}/check-runs?per_page=100",
-        field="check_runs",
+def _work_issue_candidates(
+    change: Change,
+    issues: list[dict[str, object]],
+    comments: list[dict[str, object]],
+    marker_producers: frozenset[str],
+) -> tuple[int, ...]:
+    found = {
+        int(match.group(1))
+        for match in CLOSING_REFERENCE.finditer(str(change.pull.get("body") or ""))
+    }
+    issue_by_number = {
+        int(issue["number"]): issue
+        for issue in issues
+        if isinstance(issue.get("number"), int)
+    }
+    sources: list[tuple[dict[str, object], dict[str, object] | None]] = [
+        (issue, issue) for issue in issues
+    ]
+    sources.extend(
+        (comment, issue_by_number.get(_issue_number(comment)))
+        for comment in comments
     )
-    if issue.get("number") != change.number or pull.get("number") != change.number:
-        raise PhaseBError(
-            f"GitHub returned mismatched change records for {change.repository}#{change.number}"
-        )
+    for source, parent in sources:
+        if (
+            parent is None
+            or isinstance(parent.get("pull_request"), dict)
+            or _author(source) not in marker_producers
+        ):
+            continue
+        parent_number = _issue_number(parent)
+        for name, attributes in _markers(source.get("body")):
+            if (
+                name == "implementing-pr"
+                and _valid_pr(attributes, "number") == change.number
+                and parent_number is not None
+            ):
+                found.add(parent_number)
+    return tuple(sorted(found))
 
 
 def _repository_measures(
@@ -489,18 +521,18 @@ def _repository_measures(
     changes: tuple[Change, ...],
     opened: datetime,
     closed: datetime,
-) -> dict[int, tuple[int, int, int]]:
+    marker_producers: frozenset[str],
+) -> tuple[
+    dict[int, tuple[int, int, int]],
+    dict[int, tuple[int, ...]],
+]:
     base = f"repos/{repository}"
-    since = _timestamp_text(opened)
     issues = _items(
-        transport, f"{base}/issues?state=all&since={since}&per_page=100"
+        transport, f"{base}/issues?state=all&per_page=100"
     )
     comments = _items(
-        transport, f"{base}/issues/comments?since={since}&per_page=100"
+        transport, f"{base}/issues/comments?per_page=100"
     )
-    for change in changes:
-        _read_change_surfaces(transport, change)
-
     change_by_number = {change.number: change for change in changes}
     issue_by_number = {
         int(issue["number"]): issue
@@ -545,13 +577,20 @@ def _repository_measures(
                         defects[source].add(parent_number)
             elif name == "owner-ask" and set(attributes) == {"pr"}:
                 source = _valid_pr(attributes, "pr")
-                if source in asks:
+                if source in asks and parent_is_issue:
                     asks[source].add(record_key)
 
-    return {
+    counts = {
         number: (len(followups[number]), len(defects[number]), len(asks[number]))
         for number in change_by_number
     }
+    work_issues = {
+        change.number: _work_issue_candidates(
+            change, issues, comments, marker_producers
+        )
+        for change in changes
+    }
+    return counts, work_issues
 
 
 def default_cost_reader(repository: str, number: int) -> dict[str, object]:
@@ -575,18 +614,32 @@ def default_cost_reader(repository: str, number: int) -> dict[str, object]:
         }
 
 
+def _unknown_cost(repository: str, pull_number: int, reason: str) -> dict[str, object]:
+    unknown = {"status": "unknown", "reason": reason}
+    return {
+        "marker": "change-cost:v1",
+        "change": {"repository": repository, "pull_request": pull_number},
+        "raw_usage": unknown,
+        "dated_rate_card_equivalent": unknown,
+        "bill_plan_status": unknown,
+    }
+
+
 def collect_measures(
     transport: Transport, window: Window, cost_reader: CostReader
 ) -> list[Measures]:
     if window.close_at is None:
         raise PhaseBError("Phase B has not reached a terminus")
+    marker_producers = load_work_config(ROOT).marker_producers
     counts: dict[tuple[str, int], tuple[int, int, int]] = {}
+    work_issues: dict[tuple[str, int], tuple[int, ...]] = {}
     for repository in PRODUCT_REPOSITORIES:
         changes = tuple(
             change for change in window.changes if change.repository == repository
         )
-        repo_counts = _repository_measures(
-            transport, repository, changes, window.opened_at, window.close_at
+        repo_counts, repo_work_issues = _repository_measures(
+            transport, repository, changes, window.opened_at, window.close_at,
+            marker_producers,
         )
         counts.update(
             {
@@ -594,10 +647,27 @@ def collect_measures(
                 for number, value in repo_counts.items()
             }
         )
+        work_issues.update(
+            {
+                (repository, number): value
+                for number, value in repo_work_issues.items()
+            }
+        )
     rows = []
     for change in window.changes:
         followups, defects, asks = counts[(change.repository, change.number)]
-        cost = cost_reader(change.repository, change.number)
+        candidates = work_issues[(change.repository, change.number)]
+        if len(candidates) == 1:
+            cost = cost_reader(change.repository, candidates[0])
+        else:
+            identity = f"{change.repository}#{change.number}"
+            reason = (
+                f"no work issue found for {identity}"
+                if not candidates
+                else f"multiple work issues found for {identity}: "
+                + ",".join(str(number) for number in candidates)
+            )
+            cost = _unknown_cost(change.repository, change.number, reason)
         if not isinstance(cost, dict) or cost.get("marker") != "change-cost:v1":
             raise PhaseBError(
                 f"cost reader returned no change-cost:v1 report for {change.repository}#{change.number}"
@@ -615,6 +685,7 @@ def _cell(value: object) -> str:
 
 def render(
     rows: list[Measures],
+    ignored_window_markers: tuple[IgnoredWindowMarker, ...] = (),
     exclusions: tuple[Exclusion, ...] = (),
     ignored_exclusions: tuple[Exclusion, ...] = (),
 ) -> str:
@@ -650,6 +721,12 @@ def render(
             f"| Phase C vendor record | [#653](https://github.com/{RECORD_REPOSITORY}/issues/653) |",
         )
     )
+    for marker in ignored_window_markers:
+        opened = _timestamp_text(marker.opened_at)
+        link = f"[#{RECORD_ISSUE}](https://github.com/{RECORD_REPOSITORY}/issues/{RECORD_ISSUE})"
+        lines.append(
+            f"| Ignored phase-b-window from {marker.author} ({opened}) | {link} |"
+        )
     for exclusion in exclusions:
         label = f"[{exclusion.repository}#{exclusion.number}]({exclusion.html_url})"
         lines.append(
@@ -699,6 +776,7 @@ def run(
         return 1
     print(render(
         collect_measures(active_transport, window, cost_reader),
+        window.ignored_window_markers,
         window.exclusions,
         window.ignored_exclusions,
     ))

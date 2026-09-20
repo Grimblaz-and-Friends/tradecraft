@@ -27,7 +27,9 @@ values contain no whitespace. A record is in the window when its GitHub
 record was created from the opening through the closing instant, inclusive.
 
 - `<!-- tradecraft:phase-b-window:v1 opened=TIMESTAMP -->` appears on #665.
-  The timestamp is an aware ISO-8601 instant.
+  The timestamp is an aware ISO-8601 instant. Its author must be listed under
+  `marker_producers` in this repository's `.tradecraft/work.json`; final mode
+  names valid markers it ignored from other authors.
 - `<!-- tradecraft:phase-b-exclude:v1 pr=OWNER/REPOSITORY#NUMBER
   reason=SLUG -->` appears on #665 and removes that pull request before the
   qualifying count and twenty-change terminus are computed. The reason is a
@@ -46,12 +48,16 @@ record was created from the opening through the closing instant, inclusive.
   comment one ask record for that qualifying pull request.
 
 The fourth measure comes from the `change-cost:v1` report produced at read
-time by `lib/change_cost.py`, keyed by product repository and pull-request
-number. Its raw usage, dated rate-card price, and bill or plan status are
+time by `lib/change_cost.py`, keyed by product repository and work-issue
+number. The reader resolves that issue from a `Closes`, `Fixes`, or `Resolves`
+reference in the pull-request body, or an authorized `implementing-pr:v1`
+marker on the issue. That linkage identifies existing work and may predate the
+Phase B window. With no work issue, all three cost quantities remain `unknown`
+with that reason. Raw usage, dated rate-card price, and bill or plan status are
 separate table columns. An absent quantity is `unknown`, never zero. The other
 three measures are counts and may lawfully be zero. If the read-time cost
-report itself cannot be completed, each of its three columns remains unknown
-rather than erasing the product-change rows.
+report itself cannot be completed, each cost column remains unknown rather
+than erasing the product-change rows.
 
 No Codex rate row exists because its list-price source was unavailable and
 these runs are billed by plan; rate-card price stays explicitly unknown while
