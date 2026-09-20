@@ -1,4 +1,37 @@
 {
   "schema_version": 1,
-  "rates": []
+  "rates": [
+    {
+      "vendor": "claude",
+      "model": "claude-fable-5-1",
+      "effective_from": "2026-09-20T00:00:00Z",
+      "effective_to": null,
+      "currency": "USD",
+      "per_tokens": 1000000,
+      "classes": {
+        "input": 10,
+        "output": 50,
+        "cache_creation": 12.5,
+        "cache_read": 0.25
+      },
+      "source_url": "https://claude.com/pricing",
+      "retrieved_at": "2026-09-20T20:04:42Z"
+    },
+    {
+      "vendor": "claude",
+      "model": "claude-opus-5",
+      "effective_from": "2026-09-20T00:00:00Z",
+      "effective_to": null,
+      "currency": "USD",
+      "per_tokens": 1000000,
+      "classes": {
+        "input": 5,
+        "output": 25,
+        "cache_creation": 6.25,
+        "cache_read": 0.5
+      },
+      "source_url": "https://claude.com/pricing",
+      "retrieved_at": "2026-09-20T20:04:42Z"
+    }
+  ]
 }

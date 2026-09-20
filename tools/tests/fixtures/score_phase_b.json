@@ -18,16 +18,46 @@
           "id": 2,
           "created_at": "2026-01-01T00:02:00Z",
           "body": "The documented form is <!-- tradecraft:phase-b-window:v1 opened=... -->."
+        },
+        {
+          "id": 3,
+          "created_at": "2026-01-03T00:00:00Z",
+          "user": {"login": "Grimblaz"},
+          "body": "<!-- tradecraft:phase-b-exclude:v1 pr=Grimblaz-and-Friends/Organizations-of-Verra#12 reason=practice-adoption -->"
+        },
+        {
+          "id": 4,
+          "created_at": "2026-01-03T00:01:00Z",
+          "user": {"login": "Grimblaz"},
+          "body": "<!-- tradecraft:phase-b-exclude:v1 pr=Grimblaz-and-Friends/Organizations-of-Verra#10 reason=outside-window -->"
+        },
+        {
+          "id": 5,
+          "created_at": "2026-01-03T00:02:00Z",
+          "user": {"login": "untrusted-user"},
+          "body": "<!-- tradecraft:phase-b-exclude:v1 pr=Grimblaz-and-Friends/Daemon#22 reason=practice-adoption -->"
         }
       ]
     },
     "repos/Grimblaz-and-Friends/Organizations-of-Verra/pulls?state=closed&sort=updated&direction=desc&per_page=100": {
       "body": [
         {
+          "number": 12,
+          "merged_at": "2026-01-02T12:00:00Z",
+          "html_url": "https://github.com/Grimblaz-and-Friends/Organizations-of-Verra/pull/12",
+          "head": {"sha": "oov12"}
+        },
+        {
           "number": 11,
           "merged_at": "2026-01-02T00:00:00Z",
           "html_url": "https://github.com/Grimblaz-and-Friends/Organizations-of-Verra/pull/11",
           "head": {"sha": "oov11"}
+        },
+        {
+          "number": 10,
+          "merged_at": "2025-12-31T23:59:59Z",
+          "html_url": "https://github.com/Grimblaz-and-Friends/Organizations-of-Verra/pull/10",
+          "head": {"sha": "oov10"}
         }
       ]
     },

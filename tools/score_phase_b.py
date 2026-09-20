@@ -9,6 +9,12 @@ instant, inclusive.
 ``phase-b-window:v1`` has exactly ``opened=TIMESTAMP`` and lives on the record
 issue.  Its timestamp is an aware ISO-8601 instant.
 
+``phase-b-exclude:v1`` has exactly
+``pr=OWNER/REPOSITORY#NUMBER reason=SLUG`` and lives on the record issue.  Its
+author must be listed under ``marker_producers`` in this repository's work
+configuration.  A matching pull request leaves the qualifying population;
+ignored markers are named in the final close table.
+
 ``change-followup:v1`` has exactly ``source_pr=NUMBER``.  It lives on an issue;
 one issue counts once for the qualifying pull request named by ``source_pr``.
 
@@ -44,7 +50,7 @@ sys.path.insert(0, str(LIB))
 
 import change_cost  # noqa: E402
 from winio import utf8_stdio  # noqa: E402
-from work import ATTRIBUTE, MARKER  # noqa: E402
+from work import ATTRIBUTE, MARKER, load_work_config  # noqa: E402
 
 
 PRODUCT_REPOSITORIES = (
@@ -59,6 +65,10 @@ API_HOST = "api.github.com"
 
 LINK = re.compile(r'<([^>]+)>\s*;\s*rel="([^"]+)"')
 ISSUE_NUMBER = re.compile(r"/issues/([1-9][0-9]*)/?\Z")
+PULL_REFERENCE = re.compile(
+    r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)\Z"
+)
+REASON_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 
 class PhaseBError(RuntimeError):
@@ -85,11 +95,26 @@ class Change:
 
 
 @dataclass(frozen=True)
+class Exclusion:
+    repository: str
+    number: int
+    reason: str
+    author: str
+    authorized: bool
+
+    @property
+    def html_url(self) -> str:
+        return f"https://github.com/{self.repository}/pull/{self.number}"
+
+
+@dataclass(frozen=True)
 class Window:
     opened_at: datetime
     deadline: datetime
     close_at: datetime | None
     changes: tuple[Change, ...]
+    exclusions: tuple[Exclusion, ...]
+    ignored_exclusions: tuple[Exclusion, ...]
 
 
 @dataclass(frozen=True)
@@ -265,6 +290,36 @@ def _markers(text: object) -> list[tuple[str, dict[str, str]]]:
     ]
 
 
+def _author(record: dict[str, object]) -> str:
+    user = record.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    return str(login).lower() if isinstance(login, str) and login else "unknown"
+
+
+def _exclusion_records(
+    issue: dict[str, object],
+    comments: list[dict[str, object]],
+    marker_producers: frozenset[str],
+) -> list[Exclusion]:
+    records: list[Exclusion] = []
+    for source in (issue, *comments):
+        author = _author(source)
+        for name, attributes in _markers(source.get("body")):
+            if name != "phase-b-exclude" or set(attributes) != {"pr", "reason"}:
+                continue
+            reference = PULL_REFERENCE.fullmatch(attributes["pr"])
+            reason = attributes["reason"]
+            if reference is None or REASON_SLUG.fullmatch(reason) is None:
+                continue
+            records.append(
+                Exclusion(
+                    reference.group(1), int(reference.group(2)), reason, author,
+                    author in marker_producers,
+                )
+            )
+    return records
+
+
 def _opened_at(issue: dict[str, object], comments: list[dict[str, object]]) -> datetime:
     valid: set[datetime] = set()
     for source in (issue, *comments):
@@ -301,6 +356,8 @@ def read_window(transport: Transport, now: datetime) -> Window:
     issue = _object(transport, record)
     comments = _items(transport, f"{record}/comments?per_page=100")
     opened = _opened_at(issue, comments)
+    marker_producers = load_work_config(ROOT).marker_producers
+    exclusion_records = _exclusion_records(issue, comments, marker_producers)
     if now < opened:
         raise PhaseBError("current time precedes the Phase B opening timestamp")
     deadline = opened + timedelta(days=CALENDAR_DAYS)
@@ -316,13 +373,38 @@ def read_window(transport: Transport, now: datetime) -> Window:
             if change is not None and opened <= change.merged_at <= cutoff:
                 changes.append(change)
     changes.sort(key=lambda item: (item.merged_at, item.repository.lower(), item.number))
-    changes = changes[:CHANGE_LIMIT]
+    authorized_keys = {
+        (item.repository.casefold(), item.number)
+        for item in exclusion_records if item.authorized
+    }
+    qualifying = [
+        change for change in changes
+        if (change.repository.casefold(), change.number) not in authorized_keys
+    ]
     close_at = None
-    if len(changes) == CHANGE_LIMIT:
-        close_at = changes[-1].merged_at
+    if len(qualifying) >= CHANGE_LIMIT:
+        close_at = qualifying[CHANGE_LIMIT - 1].merged_at
     elif now >= deadline:
         close_at = deadline
-    return Window(opened, deadline, close_at, tuple(changes))
+    population_end = close_at or cutoff
+    population_keys = {
+        (change.repository.casefold(), change.number)
+        for change in changes if change.merged_at <= population_end
+    }
+    exclusions = tuple(
+        item for item in exclusion_records
+        if item.authorized
+        and (item.repository.casefold(), item.number) in population_keys
+    )
+    ignored = tuple(
+        item for item in exclusion_records
+        if not item.authorized
+        and (item.repository.casefold(), item.number) in population_keys
+    )
+    visible_changes = tuple(
+        change for change in qualifying if change.merged_at <= population_end
+    )[:CHANGE_LIMIT]
+    return Window(opened, deadline, close_at, visible_changes, exclusions, ignored)
 
 
 def _created_in_window(
@@ -506,7 +588,11 @@ def _cell(value: object) -> str:
     return rendered.replace("|", "\\|").replace("\n", "\\n")
 
 
-def render(rows: list[Measures]) -> str:
+def render(
+    rows: list[Measures],
+    exclusions: tuple[Exclusion, ...] = (),
+    ignored_exclusions: tuple[Exclusion, ...] = (),
+) -> str:
     lines = [
         "| Change | Follow-ups created | Escaped defects found in use after merge | Asks put to owner | Cost: raw usage | Cost: rate-card price | Cost: bill or plan status |",
         "| --- | ---: | ---: | ---: | --- | --- | --- |",
@@ -539,6 +625,16 @@ def render(rows: list[Measures]) -> str:
             f"| Phase C vendor record | [#653](https://github.com/{RECORD_REPOSITORY}/issues/653) |",
         )
     )
+    for exclusion in exclusions:
+        label = f"[{exclusion.repository}#{exclusion.number}]({exclusion.html_url})"
+        lines.append(
+            f"| Excluded product pull request ({exclusion.reason}) | {label} |"
+        )
+    for exclusion in ignored_exclusions:
+        label = f"[{exclusion.repository}#{exclusion.number}]({exclusion.html_url})"
+        lines.append(
+            f"| Ignored exclusion from {exclusion.author} ({exclusion.reason}) | {label} |"
+        )
     return "\n".join(lines)
 
 
@@ -576,7 +672,11 @@ def run(
     if window.close_at is None:
         print("phase-b: final report is unavailable before a terminus", file=sys.stderr)
         return 1
-    print(render(collect_measures(active_transport, window, cost_reader)))
+    print(render(
+        collect_measures(active_transport, window, cost_reader),
+        window.exclusions,
+        window.ignored_exclusions,
+    ))
     return 0
 
 

@@ -85,9 +85,55 @@ def test_i5_c1_one_four_measure_table_and_three_close_links(capsys):
         assert f"[#{number}](https://github.com/{spb.RECORD_REPOSITORY}/issues/{number})" in output
 
 
+def test_authorized_exclusion_removes_row_and_is_listed_with_reason(capsys):
+    """A holder exclusion removes the matching row visibly in final mode."""
+    _transport, output = fixture_run(capsys)
+    change_rows = [
+        line for line in output.splitlines()
+        if line.startswith("| [Grimblaz-and-Friends/")
+    ]
+    assert all("Organizations-of-Verra#12" not in line for line in change_rows)
+    assert (
+        "| Excluded product pull request (practice-adoption) | "
+        "[Grimblaz-and-Friends/Organizations-of-Verra#12]" in output
+    )
+
+
+def test_exclusion_outside_window_changes_nothing(capsys):
+    """An exclusion cannot alter or annotate a pull request outside the window."""
+    _transport, output = fixture_run(capsys)
+    assert "Organizations-of-Verra#10" not in output
+    assert "outside-window" not in output
+
+
+def test_unauthorized_exclusion_is_ignored_and_named(capsys):
+    """An untrusted exclusion leaves the row and is named in the close table."""
+    _transport, output = fixture_run(capsys)
+    assert any(
+        "Daemon#22" in line
+        for line in output.splitlines()
+        if line.startswith("| [Grimblaz-and-Friends/")
+    )
+    assert (
+        "| Ignored exclusion from untrusted-user (practice-adoption) | "
+        "[Grimblaz-and-Friends/Daemon#22]" in output
+    )
+
+
+def test_status_count_is_net_of_authorized_exclusions(capsys):
+    """Status keeps its two-line shape and counts only qualifying changes."""
+    transport = spb.FixtureTransport.from_path(FIXTURE)
+    result = spb.run(
+        args("status", OPENED + timedelta(days=28)), transport=transport
+    )
+    assert result == 0
+    assert capsys.readouterr().out == "qualifying changes: 2\ndays elapsed: 28\n"
+
+
 class BoundaryTransport:
-    def __init__(self, count: int):
+    def __init__(self, count: int, exclude_number: int | None = None):
         self.requests: list[tuple[str, str]] = []
+        self.exclude_number = exclude_number
         self.pulls = [
             {
                 "number": number,
@@ -106,14 +152,29 @@ class BoundaryTransport:
         if endpoint == record:
             return spb.Response({"number": spb.RECORD_ISSUE, "body": ""}, {})
         if endpoint == f"{record}/comments?per_page=100":
-            return spb.Response(
-                [
+            comments = [
+                {
+                    "id": 1,
+                    "created_at": OPENED.isoformat(),
+                    "body": "<!-- tradecraft:phase-b-window:v1 opened=2026-01-01T00:00:00Z -->",
+                    "user": {"login": "Grimblaz"},
+                }
+            ]
+            if self.exclude_number is not None:
+                comments.append(
                     {
-                        "id": 1,
-                        "created_at": OPENED.isoformat(),
-                        "body": "<!-- tradecraft:phase-b-window:v1 opened=2026-01-01T00:00:00Z -->",
+                        "id": 2,
+                        "created_at": (OPENED + timedelta(days=2)).isoformat(),
+                        "body": (
+                            "<!-- tradecraft:phase-b-exclude:v1 "
+                            f"pr={spb.PRODUCT_REPOSITORIES[0]}#{self.exclude_number} "
+                            "reason=practice-adoption -->"
+                        ),
+                        "user": {"login": "Grimblaz"},
                     }
-                ],
+                )
+            return spb.Response(
+                comments,
                 {},
             )
         pulls_endpoint = (
@@ -176,6 +237,27 @@ def test_i5_c2_both_termini_and_preterminus_silence(capsys):
     result = spb.run(
         args("final", OPENED + timedelta(days=10)),
         transport=twenty,
+        cost_reader=unknown_cost,
+    )
+    captured = capsys.readouterr()
+    assert result == 0 and captured.out.count("| Change |") == 1
+
+
+def test_excluded_pull_request_does_not_supply_the_twentieth_change(capsys):
+    """The change terminus counts the population after authorized exclusions."""
+    nineteen_qualifying = BoundaryTransport(20, exclude_number=1)
+    result = spb.run(
+        args("final", OPENED + timedelta(days=10)),
+        transport=nineteen_qualifying,
+        cost_reader=unknown_cost,
+    )
+    captured = capsys.readouterr()
+    assert result != 0 and captured.out == ""
+
+    twenty_qualifying = BoundaryTransport(21, exclude_number=1)
+    result = spb.run(
+        args("final", OPENED + timedelta(days=10)),
+        transport=twenty_qualifying,
         cost_reader=unknown_cost,
     )
     captured = capsys.readouterr()

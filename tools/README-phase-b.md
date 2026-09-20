@@ -28,6 +28,14 @@ record was created from the opening through the closing instant, inclusive.
 
 - `<!-- tradecraft:phase-b-window:v1 opened=TIMESTAMP -->` appears on #665.
   The timestamp is an aware ISO-8601 instant.
+- `<!-- tradecraft:phase-b-exclude:v1 pr=OWNER/REPOSITORY#NUMBER
+  reason=SLUG -->` appears on #665 and removes that pull request before the
+  qualifying count and twenty-change terminus are computed. The reason is a
+  lowercase hyphenated slug. Its author must be listed under
+  `marker_producers` in this repository's `.tradecraft/work.json`; final mode
+  lists matching exclusions and their reasons, and names matching records it
+  ignored from other authors. A record for a pull request outside the window
+  changes nothing.
 - `<!-- tradecraft:change-followup:v1 source_pr=NUMBER -->` appears on an
   issue. The distinct issue counts once for that qualifying product pull
   request.
@@ -44,6 +52,10 @@ separate table columns. An absent quantity is `unknown`, never zero. The other
 three measures are counts and may lawfully be zero. If the read-time cost
 report itself cannot be completed, each of its three columns remains unknown
 rather than erasing the product-change rows.
+
+No Codex rate row exists because its list-price source was unavailable and
+these runs are billed by plan; rate-card price stays explicitly unknown while
+the separate bill-or-plan column carries that status.
 
 The final output has one change table and one close-record table linking #652,
 #360, and #653. It makes no comparative decision about repositories, changes,
