@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import sys
 
 from winio import utf8_stdio
@@ -95,7 +94,14 @@ DANGEROUS_GIT_LONG = {
 }
 SHELL_EFFECT = re.compile(r"(?:^|\s)(?:>|>>|<|2>|&>|tee\b|set-content\b|add-content\b|out-file\b)", re.I)
 NESTED_OR_CHAINED = re.compile(r"(?:\$\(|`|&&|\|\||;|\r|\n)")
-WINDOWS_ABSOLUTE = re.compile(r"(?i)(?:^|[\s'\"])([a-z]:[\\/][^'\"\r\n|;&<>]*)")
+WINDOWS_ABSOLUTE = re.compile(
+    r'''(?ix)"([a-z]:[\\/][^"\r\n|;&<>]*)"'''
+    r'''|'([a-z]:[\\/][^'\r\n|;&<>]*)'|(?<![\w.])([a-z]:[\\/][^\s'"\r\n|;&<>]*)'''
+)
+POSIX_ABSOLUTE = re.compile(
+    r'''(?x)"(/[^"\r\n|;&<>]*)"'''
+    r'''|'(/[^'\r\n|;&<>]*)'|(?<![\w.])(/[^\s'"\r\n|;&<>]*)'''
+)
 
 
 class GuardError(RuntimeError):
@@ -149,18 +155,56 @@ def _cwd(payload: dict[str, object], tool_input: dict[str, object]) -> Path:
     return canonical(Path(value)) if isinstance(value, str) and value else Path.cwd().resolve()
 
 
+def _command_words(command: str) -> list[str] | None:
+    words: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if quote:
+            if character == quote:
+                quote = None
+            elif character == "\\" and index + 1 < len(command) and command[index + 1] == quote:
+                current.append(command[index + 1])
+                index += 1
+            else:
+                current.append(character)
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "\\" and index + 1 < len(command) and command[index + 1].isspace():
+            current.append(command[index + 1])
+            index += 1
+        elif character.isspace():
+            if current:
+                words.append("".join(current))
+                current = []
+        else:
+            current.append(character)
+        index += 1
+    if quote:
+        return None
+    if current:
+        words.append("".join(current))
+    return words
+
+
+def _absolute_command_paths(command: str, cwd: Path) -> list[Path]:
+    found = []
+    for pattern in (WINDOWS_ABSOLUTE, POSIX_ABSOLUTE):
+        for match in pattern.finditer(command):
+            value = next(group for group in match.groups() if group is not None)
+            found.append(canonical(Path(value), cwd))
+    return found
+
+
 def _command_paths(command: str, cwd: Path) -> list[Path]:
-    found: list[Path] = []
-    for match in WINDOWS_ABSOLUTE.finditer(command):
-        found.append(canonical(Path(match.group(1).strip()), cwd))
-    try:
-        tokens = shlex.split(command, posix=False)
-    except ValueError:
-        tokens = []
-    for token in tokens[1:]:
-        value = token.strip("'\"(),")
+    found = _absolute_command_paths(command, cwd)
+    words = _command_words(command) or []
+    for token in words[1:]:
+        value = token.strip("(),")
         if value.startswith("-") and "=" in value:
-            value = value.split("=", 1)[1].strip("'\"")
+            value = value.split("=", 1)[1]
         if not value or value.startswith("-"):
             continue
         try:
@@ -244,10 +288,7 @@ def _read_only_shell(command: str) -> bool:
     stripped = command.strip()
     if not stripped or SHELL_EFFECT.search(stripped) or NESTED_OR_CHAINED.search(stripped):
         return False
-    try:
-        words = shlex.split(stripped, posix=False)
-    except ValueError:
-        return False
+    words = _command_words(stripped)
     if not words:
         return False
     executable = Path(words[0].strip("'\"")).name.lower()

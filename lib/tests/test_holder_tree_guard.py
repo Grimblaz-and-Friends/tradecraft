@@ -56,15 +56,58 @@ def test_shell_command_naming_registered_target_is_denied_from_outside(roots, to
                            "tool_input": {"command": command}}, registered)
 
 
-def test_git_option_naming_registered_target_is_denied_from_outside(roots):
+def test_native_git_option_path_has_both_guard_polarities(roots):
     protected, outside, registered = roots
-    command = f'git --git-dir="{protected / ".git"}" status'
+    protected_command = f'git --git-dir="{protected / ".git"}" status'
+    outside_command = f'git --git-dir="{outside / ".git"}" status'
 
     assert guard.decision({
         "tool_name": "PowerShell",
         "cwd": str(outside),
-        "tool_input": {"command": command},
+        "tool_input": {"command": protected_command},
     }, registered)
+    assert guard.decision({
+        "tool_name": "PowerShell",
+        "cwd": str(outside),
+        "tool_input": {"command": outside_command},
+    }, registered) is None
+
+
+def test_posix_git_option_path_has_both_guard_polarities():
+    protected_text = "/tmp/tradecraft-guard/Implementation Tree"
+    outside_text = "/tmp/tradecraft-guard/holder"
+    protected = guard.canonical(Path(protected_text))
+    outside = guard.canonical(Path(outside_text))
+    protected_command = f'git --git-dir="{protected_text}/.git" status'
+    outside_command = 'git --git-dir="/tmp/tradecraft-guard/Other Tree/.git" status'
+
+    assert guard.decision({
+        "tool_name": "Bash",
+        "cwd": str(outside),
+        "tool_input": {"command": protected_command},
+    }, [protected])
+    assert guard.decision({
+        "tool_name": "Bash",
+        "cwd": str(outside),
+        "tool_input": {"command": outside_command},
+    }, [protected]) is None
+
+
+def test_separate_git_output_path_has_both_guard_polarities(roots):
+    protected, outside, registered = roots
+    protected_command = f'git log -o "{protected / "holder.patch"}"'
+    outside_command = f'git log -o "{outside / "holder.patch"}"'
+
+    assert guard.decision({
+        "tool_name": "PowerShell",
+        "cwd": str(outside),
+        "tool_input": {"command": protected_command},
+    }, registered)
+    assert guard.decision({
+        "tool_name": "PowerShell",
+        "cwd": str(outside),
+        "tool_input": {"command": outside_command},
+    }, registered) is None
 
 
 @pytest.mark.parametrize(("tool", "field"), [
