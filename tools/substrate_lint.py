@@ -11,6 +11,7 @@ import sys
 import traceback
 import unicodedata
 from collections.abc import Iterable
+from contextvars import ContextVar
 from pathlib import Path
 
 
@@ -31,6 +32,20 @@ HARNESS_TOKENS = re.compile(
     rf"|(?i:%(?:{_HARNESS_NAMES})%)"
 )
 
+_FILES_READ: ContextVar[set[Path] | None] = ContextVar("_FILES_READ", default=None)
+
+
+def _read_bytes_result(path: Path) -> tuple[bytes | None, OSError | None]:
+    """Return bytes plus any read error, recording each successful guard read."""
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        return None, error
+    files_read = _FILES_READ.get()
+    if files_read is not None:
+        files_read.add(path)
+    return data, None
+
 
 def _read_text(path: Path) -> str | None:
     """Return decoded text, or None for binary and unreadable files."""
@@ -40,10 +55,10 @@ def _read_text(path: Path) -> str | None:
 
 def _read_text_result(path: Path) -> tuple[str | None, OSError | None]:
     """Return decoded text plus the read error, if an OS error prevented it."""
-    try:
-        data = path.read_bytes()
-    except OSError as error:
+    data, error = _read_bytes_result(path)
+    if error is not None:
         return None, error
+    assert data is not None
     if b"\0" in data[:1024]:
         return None, None
     return data.decode("utf-8-sig", errors="replace"), None
@@ -165,15 +180,15 @@ def check_emitted_ascii(root: Path) -> list[str]:
     findings = []
     for path in _target_python_files(root):
         rel_file = path.relative_to(root).as_posix()
-        try:
-            raw = path.read_bytes()
-        except OSError as exc:
+        raw, error = _read_bytes_result(path)
+        if error is not None:
             findings.append(
-                f"emitted-ascii: {rel_file} could not be read ({exc.strerror}) "
+                f"emitted-ascii: {rel_file} could not be read ({error.strerror}) "
                 f"-- it is unchecked, and a check that skips in silence cannot "
                 f"be told apart from a clean tree"
             )
             continue
+        assert raw is not None
         try:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
@@ -560,21 +575,25 @@ def _where(exc: BaseException) -> str:
     return "no frame inside the shipped guard"
 
 
-def run(root: Path) -> list[str]:
+def run(root: Path, *, files_read: set[Path] | None = None) -> list[str]:
     """Run every guard independently and return findings in report order."""
     reset_ignored_memo()
     findings: list[str] = []
-    for check in CHECKS:
-        try:
-            findings.extend(check(root))
-        except Exception as exc:  # noqa: BLE001 -- a failed guard is a finding
-            findings.append(
-                f"check-raised: {check.__name__} raised {type(exc).__name__} "
-                f"at {_where(exc)} ({exc}) -- that check reported nothing, "
-                f"so what it covers is unchecked and this run does not say the "
-                f"tree is clean. Every other check's findings stand and are listed "
-                f"with this one"
-            )
+    token = _FILES_READ.set(files_read)
+    try:
+        for check in CHECKS:
+            try:
+                findings.extend(check(root))
+            except Exception as exc:  # noqa: BLE001 -- a failed guard is a finding
+                findings.append(
+                    f"check-raised: {check.__name__} raised {type(exc).__name__} "
+                    f"at {_where(exc)} ({exc}) -- that check reported nothing, "
+                    f"so what it covers is unchecked and this run does not say the "
+                    f"tree is clean. Every other check's findings stand and are listed "
+                    f"with this one"
+                )
+    finally:
+        _FILES_READ.reset(token)
     return findings
 
 
@@ -594,11 +613,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("repository_root", metavar="repository-root", type=_repository_root)
     args = parser.parse_args(argv)
-    findings = run(args.repository_root)
+    files_read: set[Path] = set()
+    findings = run(args.repository_root, files_read=files_read)
     for finding in findings:
         print(finding)
-    print(f"lint: {len(findings)} finding(s)")
-    return 1 if findings else 0
+    print(f"lint: {len(findings)} finding(s); {len(files_read)} file(s) read")
+    return 1 if findings or not files_read else 0
 
 
 if __name__ == "__main__":
