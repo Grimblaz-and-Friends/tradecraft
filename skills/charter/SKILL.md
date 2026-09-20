@@ -11,7 +11,7 @@ Tradecraft is an engineering practice for work performed with coding agents. Thr
 
 ## 1. Owner and authority
 
-The owner's explicit decision outranks this charter. Argue a disagreement with reasons, and propose a rule change when needed, but do not refuse or stall the owner's decision, because a process cannot veto the person who owns the work.
+The owner's explicit decision outranks this charter. Argue a disagreement with reasons, and propose a rule change when needed, but do not refuse or stall that decision on the ground that a rule of this practice forbids it, because a process cannot veto the person who owns the work.
 
 ## 2. Decision boundary
 

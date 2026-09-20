@@ -227,7 +227,7 @@ def _charter_evidence() -> dict[str, object]:
         ),
         None,
     )
-    numbered_sections = re.findall(r"(?m)^## ([1-6])\. (.+)$", body)
+    numbered_sections = re.findall(r"(?m)^## (\d+)\. (.+)$", body)
     tail = next(
         (block for block in reversed(paragraphs)
          if not re.match(r"^(?:#|[-*+]\s|\d+[.)]\s)", block)),

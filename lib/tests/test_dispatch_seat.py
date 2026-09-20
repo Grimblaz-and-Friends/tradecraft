@@ -117,7 +117,8 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
                          "--allowedTools", tools, "--permission-mode", "dontAsk", "--strict-mcp-config"]
     else:
         last = flags[flags.index("--output-last-message") + 1]
-        assert flags == ["exec", "--strict-config", "--ephemeral", "--sandbox", "read-only",
+        assert flags == ["exec", "--strict-config", "--ignore-user-config",
+                         "--ephemeral", "--sandbox", "read-only",
                          "--json", "--color", "never", "--model", "gpt-5.6-sol",
                          "-c", "apps._default.enabled=false",
                          "-c", 'model_reasoning_effort="xhigh"', "-C", str(args.root),
@@ -136,10 +137,29 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     ):
         if vendor == "codex":
             assert "sandbox=read-only" in boundary
+            assert "user_config=ignored" in boundary
             assert "apps=disabled-by-config" in boundary
             assert "connector_surface=not_constrained_by_dispatch_seat" not in boundary
         else:
+            assert "user_config=ignored" not in boundary
             assert "apps=disabled-by-config" not in boundary
+
+
+def test_codex_launch_ignores_config_with_an_explicit_app_enable(job, monkeypatch):
+    args, _ = job
+    codex_home = args.root.parent / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_bytes(
+        b"[apps.github]\nenabled = true\n"
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    args.vendor = args.own_vendor = "codex"
+    configure(job, {"codex": {"message": "isolated"}})
+
+    assert seat.run_dispatch(args) == 0
+    flags = seen(args, "codex")["argv"]
+    assert flags.count("--ignore-user-config") == 1
+    assert "apps._default.enabled=false" in flags
 
 
 @pytest.mark.parametrize(
@@ -147,7 +167,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     [
         ("claude", "read", "Claude tools=Read,Glob,Grep; safe_mode=true; permission_mode=dontAsk; strict_mcp_config=true; os_sandbox=none"),
         ("claude", "execute", "Claude tools=Read,Glob,Grep,Bash; safe_mode=true; permission_mode=dontAsk; strict_mcp_config=true; os_sandbox=none"),
-        ("codex", "read", "Codex sandbox=read-only; apps=disabled-by-config"),
+        ("codex", "read", "Codex sandbox=read-only; user_config=ignored; apps=disabled-by-config"),
     ],
 )
 def test_permission_boundary_states_the_selected_vendor_mode_and_root(job, vendor, required_capability, expected):

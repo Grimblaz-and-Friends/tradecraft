@@ -1,6 +1,6 @@
 ---
 name: authoring
-description: How to create and revise this practice's prose — the purpose header every governing document carries, which home each kind of content takes, what a cell carries, and the writing standards that keep it lean. Use when writing, restructuring or revising a skill or governing document, including a description alone or what sheds behind a pointer; when deciding where content belongs or editing an always-on surface; or when a write-up, a pre-implementation artifact included, states derived figures or describes current behaviour; not for how code is written, though where such a rule belongs is here; not for reviewing finished content, and not for deciding what a change is for.
+description: How to create and revise this practice's prose — the purpose header every governing document carries, which home each kind of content takes, what a cell carries, and the writing standards that keep it lean. Use when writing, restructuring or revising a skill or governing document, including a description alone or what sheds behind a pointer; when deciding where content belongs; or when a write-up, a pre-implementation artifact included, states derived figures or describes current behaviour; not for how code is written, though where such a rule belongs is here; not for reviewing finished content, and not for deciding what a change is for.
 ---
 
 # authoring
@@ -10,7 +10,7 @@ description: How to create and revise this practice's prose — the purpose head
 ## Where this cell's depth lives
 
 - **Creating a cell, restructuring one, writing or revising a description, or writing prose that names or relies on another cell** → `references/cell-structure.md`: what the description owes, when depth leaves the body, the index a cell with depth carries, and the pointer form and its one-way rules.
-- **Deciding which home a piece of content belongs in, or editing an always-on surface** → `references/routing.md`: the four homes a concept takes and the four materials a rule takes instead.
+- **Deciding which home a piece of content belongs in** → `references/routing.md`: the four homes a concept takes and the four materials a rule takes instead.
 - **Changing prose that already governs something, rather than writing new prose** → `references/revising.md`: reading the cited decision first, naming every meaning change, and what a reviser owes the entry it supersedes.
 - **About to put a figure, or a claim about current behaviour, into anything that does not re-derive it at read time** → `references/frozen-documents.md`: what a frozen surface may state, and why the command and the tree go in place of the number.
 

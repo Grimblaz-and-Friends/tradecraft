@@ -393,6 +393,21 @@ def test_charter_evidence_requires_all_six_numbered_concepts(tmp_path, monkeypat
         compat._charter_evidence()
 
 
+def test_charter_evidence_rejects_a_seventh_numbered_concept(tmp_path, monkeypatch):
+    charter = tmp_path / "skills/charter/SKILL.md"
+    charter.parent.mkdir(parents=True)
+    body = "".join(
+        f"## {number}. Concept {number}\n\nConcept prose.\n\n"
+        for number in range(1, 8)
+    )
+    charter.write_bytes(
+        ("# Charter\n\n**Purpose:** fixture\n\nOpening prose.\n\n" + body).encode("utf-8")
+    )
+    monkeypatch.setattr(compat, "ROOT", tmp_path)
+    with pytest.raises(compat.CompatError, match="no stable compatibility anchors"):
+        compat._charter_evidence()
+
+
 def test_tail_requires_prose_even_when_the_charter_ends_in_public_skill_names(tmp_path, monkeypatch):
     charter = tmp_path / "skills/charter/SKILL.md"
     charter.parent.mkdir(parents=True)
