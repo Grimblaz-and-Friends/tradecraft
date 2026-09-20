@@ -111,3 +111,13 @@
 ```text
 <!-- tradecraft:product-incident:v1 repo=acme/product-app issue=91 -->
 ```
+
+## `implementing-pr`
+
+- **Exact form:** `<!-- tradecraft:implementing-pr:v1 number=NUMBER -->`.
+- **Attributes and lawful values:** `number` is the positive integer number of the pull request that implements this issue.
+- **Producer, surface, moment:** the holder, in a comment on the implemented issue, immediately after opening the implementing pull request as a draft.
+
+```text
+<!-- tradecraft:implementing-pr:v1 number=91 -->
+```

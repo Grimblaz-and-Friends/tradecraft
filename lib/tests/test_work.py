@@ -125,6 +125,17 @@ def test_multiple_candidate_pull_requests_refuse_instead_of_choosing():
     }
 
 
+def test_closed_completed_issue_is_terminal_before_three_candidate_pull_requests():
+    fixture = state(issue_state="closed")
+    fixture.issue["state_reason"] = "completed"
+    fixture.ambiguous_prs = [666, 667, 668]
+    decision = work.decide(fixture, RULES)
+    assert decision.as_dict() == {
+        "stage": "terminal", "dispatch": False, "continuity": None,
+        "reason": "issue-or-pull-request-terminal", "detail": None,
+    }
+
+
 @pytest.mark.parametrize(("risk", "lane"), list(work.LANES.items()))
 def test_each_lawful_review_risk_lane_pair_is_affirmed(risk, lane):
     assert work.review_lane(f"Review risk: {risk}\nReview lane: {lane}\n") == (risk, lane)
@@ -216,8 +227,10 @@ def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
     base = "repos/acme/widget"
     values = {
         f"{base}/issues/3": {"number": 3, "state": "open", "body": "", "labels": []},
-        f"{base}/issues/3/comments": [{"body": "https://github.com/acme/widget/pull/9"}],
-        f"{base}/issues/3/timeline": [],
+        f"{base}/issues/3/comments": [
+            {"body": "<!-- tradecraft:implementing-pr:v1 number=9 -->"},
+        ],
+        f"{base}/pulls?state=all&per_page=100": [{"number": 9, "body": ""}],
         f"{base}/pulls/9": {"number": 9, "state": "open", "draft": True,
                              "head": {"sha": SHA}},
         f"{base}/issues/9/comments": [],
@@ -234,6 +247,66 @@ def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
     assert len(transport.calls) == 9
 
 
+def test_merged_pull_request_cited_as_evidence_is_not_a_candidate_or_terminal():
+    base = "repos/acme/widget"
+    values = {
+        f"{base}/issues/12": {
+            "number": 12, "state": "open", "labels": [],
+            "body": "Evidence was recorded in https://github.com/acme/widget/pull/9",
+        },
+        f"{base}/issues/12/comments": [],
+        f"{base}/pulls?state=all&per_page=100": [{
+            "number": 9, "state": "closed", "merged_at": "2026-09-01T00:00:00Z",
+            "body": "This records evidence and mentions closes #12 inline.",
+        }],
+    }
+    fixture = work.read_state(FakeTransport(values), "acme/widget", 12)
+    assert fixture.pr is None
+    assert fixture.ambiguous_prs == []
+    assert work.decide(fixture, RULES).stage == "convergence"
+
+
+def test_pull_request_body_standalone_closing_reference_is_the_candidate():
+    candidates = work._candidate_prs(
+        12, {"number": 12, "body": ""}, [],
+        [{"number": 9, "body": "Context\nCloses #12\nMore context"}],
+    )
+    assert candidates == {9}
+
+
+def test_two_pull_request_bodies_closing_the_issue_are_ambiguous():
+    base = "repos/acme/widget"
+    values = {
+        f"{base}/issues/12": {"number": 12, "state": "open", "body": "", "labels": []},
+        f"{base}/issues/12/comments": [],
+        f"{base}/pulls?state=all&per_page=100": [
+            {"number": 7, "body": "Fixes #12"},
+            {"number": 8, "body": "RESOLVED #12"},
+        ],
+    }
+    fixture = work.read_state(FakeTransport(values), "acme/widget", 12)
+    assert fixture.pr is None
+    assert fixture.ambiguous_prs == [7, 8]
+    assert work.decide(fixture, RULES).stage == "ambiguous-pr"
+
+
+def test_cross_reference_timeline_is_not_read_as_a_candidate():
+    base = "repos/acme/widget"
+    values = {
+        f"{base}/issues/12": {
+            "number": 12, "state": "open", "body": "", "labels": [],
+            "timeline_url": "https://api.github.test/repos/acme/widget/issues/12/timeline",
+        },
+        f"{base}/issues/12/comments": [],
+        f"{base}/pulls?state=all&per_page=100": [],
+    }
+    transport = FakeTransport(values)
+    fixture = work.read_state(transport, "acme/widget", 12)
+    assert fixture.pr is None
+    assert fixture.ambiguous_prs == []
+    assert all("timeline" not in endpoint for _method, endpoint, _paginate in transport.calls)
+
+
 def test_review_disposition_marker_is_part_of_the_entrance_evidence():
     fixture = state()
     fixture.review_comments = [{"body": REVIEWED}]
@@ -242,6 +315,9 @@ def test_review_disposition_marker_is_part_of_the_entrance_evidence():
 
 def test_run_reads_the_product_repository_list_from_root(tmp_path):
     configured_products(tmp_path, ["acme/product-app"])
+    rules_directory = tmp_path / "lib"
+    rules_directory.mkdir()
+    (rules_directory / "use-rules.json").write_bytes((LIB / "use-rules.json").read_bytes())
     args = work.parser().parse_args([
         "--repo", "example/tradecraft", "--issue", "3", "--root", str(tmp_path),
     ])
@@ -249,7 +325,7 @@ def test_run_reads_the_product_repository_list_from_root(tmp_path):
 
     class PracticeTransport:
         def get(self, endpoint, *, paginate=False):
-            if endpoint.endswith("/comments") or endpoint.endswith("/timeline"):
+            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
                 return []
             return {
                 "number": 3,
@@ -304,12 +380,13 @@ def test_judging_root_detaches_an_attached_tree_and_removes_it_afterward(tmp_pat
 def test_power_user_commands_run_one_named_stage(command, tmp_path):
     args = work.parser().parse_args([
         command, "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
+        "--use-rules", str(LIB / "use-rules.json"),
     ])
     captured = []
 
     class MinimalTransport:
         def get(self, endpoint, *, paginate=False):
-            if endpoint.endswith("/comments") or endpoint.endswith("/timeline"):
+            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
                 return []
             return {"number": 3, "state": "open", "body": "", "labels": []}
 

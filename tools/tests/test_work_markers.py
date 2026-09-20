@@ -39,6 +39,7 @@ def test_marker_reference_coverage_guard_detects_an_omitted_marker():
     ("skills/experience-session/references/when-one-fires.md", "no-use"),
     ("skills/adversarial-review/references/connected-reviewers.md", "connected-reviewer"),
     ("skills/adversarial-review/references/the-record.md", "panel-stage"),
+    ("docs/cells/landing/SKILL.md", "implementing-pr"),
 ])
 def test_each_producing_template_carries_its_marker(path, marker):
     text = (ROOT / path).read_text(encoding="utf-8")

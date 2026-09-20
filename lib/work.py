@@ -32,7 +32,9 @@ DISPOSITIONS = (
 )
 MARKER = re.compile(r"<!--\s*tradecraft:([a-z-]+):v1(?:\s+([^>]*?))?\s*-->", re.I)
 ATTRIBUTE = re.compile(r"([a-z_]+)=([^\s]+)", re.I)
-PR_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)", re.I)
+CLOSING_REFERENCE = re.compile(
+    r"(?im)^\s*(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\s*$"
+)
 ISSUE_URL = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)",
     re.I,
@@ -41,6 +43,7 @@ REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "no-use", "connected-reviewer", "panel-stage", "practice-facing", "product-incident",
+    "implementing-pr",
 })
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
@@ -64,7 +67,6 @@ class WorkState:
     issue_number: int
     issue: dict[str, object]
     issue_comments: list[dict[str, object]] = field(default_factory=list)
-    timeline: list[dict[str, object]] = field(default_factory=list)
     pr: dict[str, object] | None = None
     pr_comments: list[dict[str, object]] = field(default_factory=list)
     reviews: list[dict[str, object]] = field(default_factory=list)
@@ -148,28 +150,24 @@ def _get_list(transport: GitHubREST, endpoint: str) -> list[dict[str, object]]:
     return _list(transport.get(endpoint, paginate=True), endpoint)
 
 
-def _candidate_prs(repo: str, issue: dict[str, object], comments: list[dict[str, object]],
-                   timeline: list[dict[str, object]]) -> set[int]:
+def _candidate_prs(issue_number: int, issue: dict[str, object],
+                   comments: list[dict[str, object]], pulls: list[dict[str, object]]) -> set[int]:
     found: set[int] = set()
     if isinstance(issue.get("pull_request"), dict):
-        found.add(int(issue["number"]))
+        found.add(issue_number)
     texts = [str(issue.get("body") or "")]
     texts.extend(str(item.get("body") or "") for item in comments)
-    for text in texts:
-        for match in PR_URL.finditer(text):
-            if match.group(1).lower() == repo.lower():
-                found.add(int(match.group(2)))
-    for event in timeline:
-        source = event.get("source")
-        source_issue = source.get("issue") if isinstance(source, dict) else None
-        if not isinstance(source_issue, dict) or not isinstance(source_issue.get("pull_request"), dict):
-            continue
-        repository = source_issue.get("repository")
-        full_name = repository.get("full_name") if isinstance(repository, dict) else repo
-        if isinstance(full_name, str) and full_name.lower() == repo.lower():
-            number = source_issue.get("number")
-            if isinstance(number, int):
-                found.add(number)
+    for marker in markers(texts):
+        number = marker.attributes.get("number", "")
+        if marker.name == "implementing-pr" and number.isdigit() and int(number) > 0:
+            found.add(int(number))
+    for pull in pulls:
+        number = pull.get("number")
+        body = str(pull.get("body") or "")
+        if isinstance(number, int) and any(
+            int(match.group(1)) == issue_number for match in CLOSING_REFERENCE.finditer(body)
+        ):
+            found.add(number)
     return found
 
 
@@ -178,9 +176,10 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int) -> WorkState
     issue_endpoint = f"{base}/issues/{issue_number}"
     issue = _dict(transport.get(issue_endpoint), issue_endpoint)
     issue_comments = _get_list(transport, f"{issue_endpoint}/comments")
-    timeline = _get_list(transport, f"{issue_endpoint}/timeline")
-    candidates = sorted(_candidate_prs(repo, issue, issue_comments, timeline))
-    state = WorkState(repo, issue_number, issue, issue_comments, timeline)
+    pulls_endpoint = f"{base}/pulls?state=all&per_page=100"
+    pulls = _get_list(transport, pulls_endpoint)
+    candidates = sorted(_candidate_prs(issue_number, issue, issue_comments, pulls))
+    state = WorkState(repo, issue_number, issue, issue_comments)
     if len(candidates) > 1:
         state.ambiguous_prs = candidates
         return state
@@ -377,12 +376,12 @@ def decide(state: WorkState, rules: dict[str, object],
             reason = f"{reason};product-incident-check-not-configured"
         return Decision(stage, dispatch, continuity, reason, detail)
 
+    if str(state.issue.get("state") or "").lower() == "closed":
+        return result("terminal", False, None, "issue-or-pull-request-terminal")
     if state.ambiguous_prs:
         joined = ",".join(str(number) for number in state.ambiguous_prs)
         return result("ambiguous-pr", False, None, "multiple-candidate-pull-requests", joined)
-    if str(state.issue.get("state") or "").lower() == "closed" or (
-        state.pr and (state.pr.get("merged_at") or str(state.pr.get("state") or "").lower() == "closed")
-    ):
+    if state.pr and (state.pr.get("merged_at") or str(state.pr.get("state") or "").lower() == "closed"):
         return result("terminal", False, None, "issue-or-pull-request-terminal")
     if practice_facing and product_repos and not has_product_incident(state, product_repos):
         return result("product-incident-required", False, None, "practice-work-has-no-product-incident")
@@ -506,7 +505,6 @@ def _stage_prompt(state: WorkState, decision: Decision) -> bytes:
         "github": {
             "issue": state.issue,
             "issue_comments": state.issue_comments,
-            "timeline": state.timeline,
             "pull_request": state.pr,
             "pull_request_comments": state.pr_comments,
             "reviews": state.reviews,
@@ -605,7 +603,7 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--issue", required=True, type=int)
     cli.add_argument("--root", required=True, type=Path)
     cli.add_argument("--instalment")
-    cli.add_argument("--use-rules", type=Path, default=Path(__file__).with_name("use-rules.json"))
+    cli.add_argument("--use-rules", type=Path)
     return cli
 
 
@@ -614,7 +612,7 @@ def run(args: argparse.Namespace, *, transport: GitHubREST | None = None,
     root = args.root.expanduser().resolve()
     product_repos = load_product_repos(root)
     state = read_state(transport or GitHubREST(), args.repo, args.issue)
-    rules = load_use_rules(args.use_rules)
+    rules = load_use_rules(args.use_rules or root / "lib" / "use-rules.json")
     decision = decide(state, rules, product_repos)
     if args.command:
         decision = Decision(args.command, True, "fresh", "power-user-stage-command")
