@@ -78,6 +78,7 @@ from substrate_lint import (  # noqa: E402
     check_stdio_wired,
     check_subprocess_streams,
     check_harness_tokens as _check_harness_tokens,
+    reset_ignored_memo,
 )
 
 SHIPPED_DIRS = (
@@ -2396,6 +2397,10 @@ def run(root: Path) -> list[str]:
     when nothing else reported. A raising check that exited 0 would be read as
     a clean tree, which is the failure this exists to end rather than relocate.
     """
+    # This wrapper is an invocation too: the memo the shipped helper keeps is
+    # per-run, and the caller that drives this in-process over mutated trees
+    # reaches it through here. [#649]
+    reset_ignored_memo()
     findings: list[str] = []
     for check in CHECKS:
         try:

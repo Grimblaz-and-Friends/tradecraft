@@ -960,3 +960,86 @@ def test_epilog_piped_to_argparse_is_caught(tmp_path):
     findings = lint.check_docstring_not_piped(tmp_path)
     assert len(findings) == 1, findings
     assert "epilog" in findings[0], findings[0]
+
+
+def test_one_invocation_asks_git_once_per_distinct_path_list(tmp_path, monkeypatch):
+    """Both polarities: the repeated question is memoised, a new one is asked."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _write(tmp_path / ".gitignore", "skip\n")
+    hidden = tmp_path / "skip" / "plain.py"
+    _write(hidden, "x = 1\n")
+    shown = tmp_path / "shown.py"
+    _write(shown, "y = 2\n")
+    lint.reset_ignored_memo()
+
+    launches = []
+    real_run = subprocess.run
+
+    def spy(args, **kwargs):
+        if "check-ignore" in [str(argument) for argument in args]:
+            launches.append(args)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(lint.subprocess, "run", spy)
+
+    first = lint._git_ignored(tmp_path, [hidden, shown])
+    again = lint._git_ignored(tmp_path, [hidden, shown])
+    assert len(launches) == 1, launches
+    assert first == again == {hidden}
+
+    lint._git_ignored(tmp_path, [shown])
+    assert len(launches) == 2, launches
+
+
+def test_a_gitignore_rewritten_between_invocations_is_not_answered_from_the_first(tmp_path):
+    """The file set is held fixed and the answer is moved, which is the only arm
+    that discriminates: adding a file changes the candidate list, so the memo key
+    changes with it and a cache nobody ever clears queries git again and passes.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    module = tmp_path / "a.py"
+    _write(module, "x = 1\n")
+    _write(tmp_path / ".gitignore", "\n")
+    lint.reset_ignored_memo()
+
+    assert lint._git_ignored(tmp_path, [module]) == set()
+
+    _write(tmp_path / ".gitignore", "a.py\n")
+    assert lint._git_ignored(tmp_path, [module]) == set(), "held within one invocation"
+
+    lint.reset_ignored_memo()
+    assert lint._git_ignored(tmp_path, [module]) == {module}, "and dropped at the next"
+
+
+def test_run_drops_the_memo_so_two_lints_in_one_process_are_independent(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _write(tmp_path / "a.py", "x = 1\n")
+    stale = ("stale-root", ("stale-path",))
+    lint._IGNORED_MEMO[stale] = {Path("stale-path")}
+
+    lint.run(tmp_path)
+
+    assert stale not in lint._IGNORED_MEMO
+
+
+def test_a_caller_receives_the_answer_for_the_paths_it_asked_about(tmp_path):
+    """`vendor/keep.py` is ignored and sits inside one caller's population and
+    outside the other's, so a cache keyed on the root rather than on the paths
+    would hand the narrow caller a set computed for the wide one.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _write(tmp_path / ".gitignore", "vendor\n")
+    vendored = tmp_path / "vendor" / "keep.py"
+    _write(vendored, "x = 1\n")
+    plain = tmp_path / "plain.py"
+    _write(plain, "y = 2\n")
+    lint.reset_ignored_memo()
+
+    wide = lint._git_ignored(tmp_path, [vendored, plain])
+    narrow = lint._git_ignored(tmp_path, [plain])
+
+    assert wide == {vendored}
+    assert narrow == set()
+
+    wide.add(plain)
+    assert lint._git_ignored(tmp_path, [vendored, plain]) == {vendored}, "memo not poisoned"
