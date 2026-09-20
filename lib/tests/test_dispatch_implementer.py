@@ -77,6 +77,11 @@ def test_fresh_launch_is_recorded_and_resumable(job):
         "scope": "invocation", "input_tokens": 120, "cached_input_tokens": 80,
         "output_tokens": 12, "reasoning_output_tokens": 3,
     }
+    assert attempt["usage"]["tokens"] == {
+        "input": 120, "cached_input": 80, "output": 12, "reasoning_output": 3,
+    }
+    assert attempt["usage"]["scope"] == "invocation"
+    assert attempt["usage"]["dispatch"]["staffing_status"] == "qualified"
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
     assert request["runtime_version"] == "codex-cli test"
     assert request["settings_source"] == "issuecomment-5655702442"

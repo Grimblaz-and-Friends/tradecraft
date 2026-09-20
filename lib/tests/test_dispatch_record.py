@@ -42,7 +42,7 @@ def test_holder_identity_cannot_also_identify_dispatch_or_resumed_builder():
         ))
 
 
-def test_claude_usage_keeps_models_and_returned_cost_without_double_counting():
+def test_claude_usage_keeps_models_while_money_stays_out_of_observed_usage():
     payload = {
         "type": "result", "is_error": False, "subtype": "success",
         "total_cost_usd": 1.25,
@@ -60,9 +60,7 @@ def test_claude_usage_keeps_models_and_returned_cost_without_double_counting():
         "inputTokens": 100, "cacheReadInputTokens": 80,
         "cacheCreationInputTokens": 10, "outputTokens": 20,
     }
-    assert evidence["runtime_cost"] == {
-        "currency": "USD", "amount": 1.25, "source": "total_cost_usd", "scope": "invocation"
-    }
+    assert "runtime_cost" not in evidence
     assert "total" not in evidence["normalized"]
 
 
@@ -75,7 +73,7 @@ def test_missing_usage_is_unknown_rather_than_zero():
     assert "no turn.completed usage" in evidence["normalized_unavailable_reason"]
 
 
-def test_claude_resume_usage_and_cost_keep_their_scope_unestablished():
+def test_claude_resume_usage_keeps_its_scope_unestablished():
     payload = {
         "type": "result", "total_cost_usd": 1.25,
         "modelUsage": {"opus": {"inputTokens": 100, "outputTokens": 20}},
@@ -84,8 +82,7 @@ def test_claude_resume_usage_and_cost_keep_their_scope_unestablished():
     assert evidence["raw"] == payload["modelUsage"]
     assert evidence["normalized"] is None
     assert "resume usage scope is not established" in evidence["normalized_unavailable_reason"]
-    assert evidence["runtime_cost"]["scope"] == "unestablished"
-    assert "resume cost scope is not established" in evidence["runtime_cost_scope_unavailable_reason"]
+    assert "runtime_cost" not in evidence
 
 
 def test_native_claude_usage_keeps_the_returned_model_and_tokens():
@@ -102,7 +99,7 @@ def test_native_claude_usage_keeps_the_returned_model_and_tokens():
         "scope": "invocation",
         "models": {"claude-opus-5": payload["usage"]},
     }
-    assert evidence["runtime_cost"]["amount"] == 1.8841
+    assert "runtime_cost" not in evidence
 
 
 def test_git_revision_timeout_is_unknown(monkeypatch, tmp_path):
@@ -185,7 +182,10 @@ def test_native_begin_finish_and_attachment_survive_source_removal(tmp_path):
     final.unlink()
     assert output.read_bytes() == b"consumer result\n"
     run = json.loads(run_path.read_bytes())
-    assert run["attempts"][0]["observed"]["runtime_cost"]["amount"] == 0.02
+    assert "runtime_cost" not in run["attempts"][0]["observed"]
+    assert b'"total_cost_usd": 0.02' in Path(run["attempts"][0]["source_return"]).read_bytes()
+    assert run["schema_version"] == 2
+    assert run["attempts"][0]["usage"]["runtime_version"] == "native fixture 1.0"
     assert run["attempts"][0]["elapsed_seconds"] == 214.773
     assert Path(run["result"]["source_output"]).read_bytes() == b"consumer result\n"
     product = tmp_path / "uncommitted-artifact.md"
@@ -253,7 +253,8 @@ def test_native_failed_completion_retains_return_without_publishing(tmp_path, ou
     assert not records.sidecar(output, ".source.bin").exists()
     if not launched:
         assert attempt["observed"]["normalized"] is None
-        assert attempt["observed"]["runtime_cost"] is None
+        assert "runtime_cost" not in attempt["observed"]
+        assert attempt["usage"]["tokens"] is None
 
 
 def test_native_finish_refuses_collisions_after_a_successful_begin(tmp_path):

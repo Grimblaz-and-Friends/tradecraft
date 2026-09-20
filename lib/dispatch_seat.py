@@ -540,6 +540,15 @@ def run_dispatch(args, *, now=None) -> int:
                     record["outcome"] = "error"
                 else:
                     record["outcome"] = "unavailable"
+                for attempt in record["attempts"]:
+                    if attempt["vendor"] == record["actual_vendor"]:
+                        attempt_staffing = record["staffing_status"]
+                    else:
+                        attempt_staffing = "unfilled"
+                    records.add_usage_record(
+                        attempt, request, completed_at=record["completed_at"],
+                        staffing_status=attempt_staffing,
+                    )
                 streams.streams.pop(record_path)
                 record_stream.close()
                 for stream in streams.values():

@@ -236,6 +236,13 @@ def run_implementer(args: argparse.Namespace) -> int:
                     records.add_unobserved(attempt, attempt["reason"])
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 record["revision_after"] = records.git_revision(root)
+                records.add_usage_record(
+                    attempt, request, completed_at=record["completed_at"],
+                    staffing_status=(
+                        "qualified" if record["outcome"] in {"success", "success_uncontinuable"}
+                        else "unfilled"
+                    ),
+                )
                 record_stream = streams.streams.pop(record_path)
                 record_stream.close()
                 for stream in streams.values():
