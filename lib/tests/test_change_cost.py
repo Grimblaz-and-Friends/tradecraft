@@ -49,9 +49,43 @@ def write_json(path, value):
     path.write_bytes((json.dumps(value) + "\n").encode())
 
 
-def test_shipped_rate_card_has_shape_but_freezes_no_values():
-    value = json.loads((LIB / "rates.json").read_bytes())
-    assert value == {"schema_version": 1, "rates": []}
+def test_shipped_rate_card_prices_recorded_claude_classes_and_leaves_unknown_model():
+    rates = cost.load_rates(LIB / "rates.json")
+    assert {row["model"] for row in rates} == {
+        "claude-fable-5-1", "claude-opus-5",
+    }
+    assert all(row["vendor"] == "claude" for row in rates)
+    assert all(set(row["classes"]) == {
+        "input", "output", "cache_creation", "cache_read",
+    } for row in rates)
+    assert all(row["effective_from"] == "2026-09-20T00:00:00Z" for row in rates)
+    assert all(row["effective_to"] is None for row in rates)
+    assert all(row["currency"] == "USD" and row["per_tokens"] == 1_000_000
+               for row in rates)
+    assert all(row["source_url"] == "https://claude.com/pricing" for row in rates)
+    assert all(row["retrieved_at"] == "2026-09-20T20:04:42Z" for row in rates)
+    recorded = usage(
+        vendor="claude", model="claude-opus-5", tokens={"models": {
+            "claude-opus-5": {
+                "input": 1_000_000, "output": 1_000_000,
+                "cache_creation": 1_000_000, "cache_read": 1_000_000,
+            },
+        }},
+    )
+    recorded["dispatch"]["launched_at"] = "2026-09-20T12:00:00+00:00"
+    priced = cost.rate_card_equivalent(recorded, rates)
+    assert priced["status"] == "known"
+    assert priced["currency"] == "USD"
+    assert priced["amount"] == "36.75"
+
+    unrecorded = cost.rate_card_equivalent(usage(
+        vendor="claude", model="claude-sonnet-5", tokens={"models": {
+            "claude-sonnet-5": {"input": 1},
+        }},
+    ), rates)
+    assert unrecorded["status"] == "unknown"
+    assert unrecorded["reason"] == "no dated rate matches claude claude-sonnet-5"
+    assert not any(row["vendor"] == "codex" for row in rates)
 
 
 def test_schema_v2_usage_has_context_classes_source_and_no_money():

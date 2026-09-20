@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "responses": {
+    "repos/Grimblaz-and-Friends/tradecraft/issues/665": {
+      "body": {
+        "number": 665,
+        "body": "Phase B record"
+      }
+    },
+    "repos/Grimblaz-and-Friends/tradecraft/issues/665/comments?per_page=100": {
+      "body": [
+        {
+          "id": 1,
+          "created_at": "2026-01-01T00:01:00Z",
+          "user": {"login": "Grimblaz"},
+          "body": "<!-- tradecraft:phase-b-window:v1 opened=2026-01-01T00:00:00Z -->"
+        },
+        {
+          "id": 2,
+          "created_at": "2026-01-01T00:02:00Z",
+          "body": "The documented form is <!-- tradecraft:phase-b-window:v1 opened=... -->."
+        },
+        {
+          "id": 3,
+          "created_at": "2026-01-03T00:00:00Z",
+          "user": {"login": "Grimblaz"},
+          "body": "<!-- tradecraft:phase-b-exclude:v1 pr=Grimblaz-and-Friends/Organizations-of-Verra#12 reason=practice-adoption -->"
+        },
+        {
+          "id": 4,
+          "created_at": "2026-01-03T00:01:00Z",
+          "user": {"login": "Grimblaz"},
+          "body": "<!-- tradecraft:phase-b-exclude:v1 pr=Grimblaz-and-Friends/Organizations-of-Verra#10 reason=outside-window -->"
+        },
+        {
+          "id": 5,
+          "created_at": "2026-01-03T00:02:00Z",
+          "user": {"login": "untrusted-user"},
+          "body": "<!-- tradecraft:phase-b-exclude:v1 pr=Grimblaz-and-Friends/Daemon#22 reason=practice-adoption -->"
+        },
+        {
+          "id": 6,
+          "created_at": "2026-01-03T00:03:00Z",
+          "user": {"login": "untrusted-user"},
+          "body": "<!-- tradecraft:phase-b-window:v1 opened=2025-12-01T00:00:00Z -->"
+        }
+      ]
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/pulls?state=closed&sort=updated&direction=desc&per_page=100": {
+      "body": [
+        {
+          "number": 12,
+          "merged_at": "2026-01-02T12:00:00Z",
+          "html_url": "https://github.com/Grimblaz-and-Friends/Organizations-of-Verra/pull/12",
+          "head": {"sha": "oov12"}
+        },
+        {
+          "number": 11,
+          "merged_at": "2026-01-02T00:00:00Z",
+          "html_url": "https://github.com/Grimblaz-and-Friends/Organizations-of-Verra/pull/11",
+          "body": "Fixes #91",
+          "head": {"sha": "oov11"}
+        },
+        {
+          "number": 10,
+          "merged_at": "2025-12-31T23:59:59Z",
+          "html_url": "https://github.com/Grimblaz-and-Friends/Organizations-of-Verra/pull/10",
+          "head": {"sha": "oov10"}
+        }
+      ]
+    },
+    "repos/Grimblaz-and-Friends/Daemon/pulls?state=closed&sort=updated&direction=desc&per_page=100": {
+      "body": [
+        {
+          "number": 22,
+          "merged_at": "2026-01-03T00:00:00Z",
+          "html_url": "https://github.com/Grimblaz-and-Friends/Daemon/pull/22",
+          "head": {"sha": "daemon22"}
+        }
+      ]
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/issues?state=all&per_page=100": {
+      "headers": {
+        "Link": "<https://api.github.com/repos/Grimblaz-and-Friends/Organizations-of-Verra/issues?state=all&per_page=100&page=2>; rel=\"next\""
+      },
+      "body": [
+        {
+          "number": 101,
+          "created_at": "2026-01-04T00:00:00Z",
+          "body": "<!-- tradecraft:change-followup:v1 source_pr=11 -->"
+        },
+        {
+          "number": 102,
+          "created_at": "2026-01-05T00:00:00Z",
+          "body": "<!-- tradecraft:escaped-defect:v1 found_by=use source_pr=11 -->"
+        }
+      ]
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/issues?state=all&per_page=100&page=2": {
+      "body": [
+        {
+          "number": 103,
+          "created_at": "2026-01-04T12:00:00Z",
+          "body": "<!-- tradecraft:owner-ask:v1 pr=11 -->"
+        },
+        {
+          "number": 104,
+          "created_at": "2026-01-01T12:00:00Z",
+          "body": "<!-- tradecraft:escaped-defect:v1 found_by=use source_pr=11 -->"
+        },
+        {
+          "number": 105,
+          "created_at": "2026-01-05T12:00:00Z",
+          "pull_request": {},
+          "body": "<!-- tradecraft:owner-ask:v1 pr=11 -->"
+        }
+      ]
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/issues/comments?per_page=100": {
+      "body": [
+        {
+          "id": 501,
+          "issue_url": "https://api.github.com/repos/Grimblaz-and-Friends/Organizations-of-Verra/issues/101",
+          "created_at": "2026-01-06T00:00:00Z",
+          "body": "<!-- tradecraft:owner-ask:v1 pr=11 --> <!-- tradecraft:change-followup:v1 source_pr=11 -->"
+        },
+        {
+          "id": 502,
+          "issue_url": "https://api.github.com/repos/Grimblaz-and-Friends/Organizations-of-Verra/issues/105",
+          "created_at": "2026-01-06T12:00:00Z",
+          "body": "<!-- tradecraft:owner-ask:v1 pr=11 -->"
+        }
+      ]
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/issues/11": {
+      "body": {"number": 11, "body": "pull request issue"}
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/pulls/11": {
+      "body": {"number": 11, "head": {"sha": "oov11"}}
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/issues/11/comments?per_page=100": {
+      "body": []
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/pulls/11/reviews?per_page=100": {
+      "body": []
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/pulls/11/comments?per_page=100": {
+      "body": []
+    },
+    "repos/Grimblaz-and-Friends/Organizations-of-Verra/commits/oov11/check-runs?per_page=100": {
+      "body": {"check_runs": []}
+    },
+    "repos/Grimblaz-and-Friends/Daemon/issues?state=all&per_page=100": {
+      "body": [
+        {
+          "number": 201,
+          "created_at": "2026-01-07T00:00:00Z",
+          "body": "<!-- tradecraft:change-followup:v1 source_pr=22 --> <!-- tradecraft:escaped-defect:v1 found_by=use source_pr=22 -->"
+        },
+        {
+          "number": 202,
+          "created_at": "2026-01-08T00:00:00Z",
+          "body": "ordinary issue"
+        }
+      ]
+    },
+    "repos/Grimblaz-and-Friends/Daemon/issues/comments?per_page=100": {
+      "body": [
+        {
+          "id": 601,
+          "issue_url": "https://api.github.com/repos/Grimblaz-and-Friends/Daemon/issues/202",
+          "created_at": "2026-01-09T00:00:00Z",
+          "body": "<!-- tradecraft:owner-ask:v1 pr=22 -->"
+        },
+        {
+          "id": 602,
+          "issue_url": "https://api.github.com/repos/Grimblaz-and-Friends/Daemon/issues/202",
+          "created_at": "2026-01-10T00:00:00Z",
+          "body": "<!-- tradecraft:owner-ask:v1 pr=22 -->"
+        },
+        {
+          "id": 603,
+          "issue_url": "https://api.github.com/repos/Grimblaz-and-Friends/Daemon/issues/202",
+          "created_at": "2026-01-11T00:00:00Z",
+          "body": "<!-- tradecraft:owner-ask:v1 pr=22 -->"
+        }
+      ]
+    },
+    "repos/Grimblaz-and-Friends/Daemon/issues/22": {
+      "body": {"number": 22, "body": "pull request issue"}
+    },
+    "repos/Grimblaz-and-Friends/Daemon/pulls/22": {
+      "body": {"number": 22, "head": {"sha": "daemon22"}}
+    },
+    "repos/Grimblaz-and-Friends/Daemon/issues/22/comments?per_page=100": {
+      "body": []
+    },
+    "repos/Grimblaz-and-Friends/Daemon/pulls/22/reviews?per_page=100": {
+      "body": []
+    },
+    "repos/Grimblaz-and-Friends/Daemon/pulls/22/comments?per_page=100": {
+      "body": []
+    },
+    "repos/Grimblaz-and-Friends/Daemon/commits/daemon22/check-runs?per_page=100": {
+      "body": {"check_runs": []}
+    }
+  }
+}
