@@ -1,59 +1,38 @@
 ---
 name: charter
-description: The practice's binding rules, as a session receives them at the start of a session in a repository that has adopted this practice. Use this before your first substantial action if you cannot state this practice's two ceremony moments, or to re-read the rules after the context they arrived in is gone. Not for writing a review's charter or an experience session's charter, which are different things with the same name; not for deciding whether a particular call is the owner's; not for deciding where a piece of content belongs.
+description: The binding rules every session receives first—ownership, the decision boundary, convergence before build, proof before release, review purchase, and where durable guidance lives. Use before the first substantial action in an adopting repository or whenever those rules are no longer in context; not for detailed implementation, review, writing, or repository-specific procedure.
 ---
 
-# The tradecraft charter — the practice's binding half
+# The tradecraft charter
 
-**Purpose:** the rules a session must hold before it has opened anything else, in any repository that has adopted this practice. **Audience:** every session in an adopting repository, every runtime. **Success:** a session behaves correctly at the gates and knows which cell holds the rest.
+**Purpose:** the rules a session must hold before opening anything else in a repository that has adopted this practice. **Audience:** every session and runtime working there. **Success:** the owner remains in control, decisions settle before build, and release rests on evidence from the result.
 
-Tradecraft is a house engineering practice for frontier models: the standards, judgment structure, and compounding memory that turn model capability into trustworthy engineering. The models write the code; this carries what a vendor never ships — what counts as evidence, what "done" must be true of, which decisions are the human's. Capability wrappers are deliberately not in it.
+Tradecraft is an engineering practice for work performed with coding agents. Throughout, **the owner** is the human accountable for the repository and result.
 
-Throughout, **the owner** is the human whose repository this is.
+## 1. Owner and authority
 
-## Authority
+The owner's explicit decision outranks this charter. Argue a disagreement with reasons, and propose a rule change when needed, but do not refuse or stall the owner's decision, because a process cannot veto the person who owns the work.
 
-**The owner's decisions outrank this charter.** When you disagree, argue the merits with reasoning — that is wanted, and further argument with new reasons is welcome. Never refuse or stall an owner decision because a rule of this practice forbids it: a rule that conflicts with an owner decision is a rule that needs amending, and the move is to propose the amendment alongside the work, never to block on it.
+## 2. Decision boundary
 
-**Every surface the owner enters opens with a plain brief; an implementation brief is a specific kind of brief with its own standards and binds when affirmed.** The common form and bar, the implementation brief's additional standards, and what an affirmed implementation brief governs travel with the practice, in the `engagement` cell.
+The owner decides a genuine fork: a choice that changes what is built, its cost, what another person sees, or how they must work, where choosing wrongly has a cost an ordinary edit cannot undo. The session decides implementation choices inside that boundary and reports consequential ones with their reasons, because inventing a question where no genuine fork exists creates a gate rather than protecting ownership.
 
-**Some decisions are the owner's and every other is the session's**, decided and reported afterward with its reason — asking where no fork exists is a fabricated gate, a defect rather than politeness. Which are theirs, and the argued shape an ask takes, are the `engagement` cell's.
+An **implementation brief** is the owner-approved statement of a change's purpose, scope, outcomes, and important risks. It binds once the owner affirms it; the session must read later implementation choices against it rather than silently replace it.
 
-## The two ceremony moments
+## 3. Convergence before build
 
-Process weight concentrates at two moments; what runs between them is model judgment plus the standards carried in the skills.
+A change that decides or changes behavior, a rule, or a mechanism's public surface settles its implementation brief before building. The implementer then writes a **pre-implementation artifact**: the plan, boundaries, and falsifiable checks that demonstrate the brief was understood, and has an independent reader who did not share the implementer's context settle it before the first commit. Purely mechanical work needs neither, because ceremony pays for decisions and should not tax work that makes none.
 
-- **Convergence.** Any change that decides something — states or changes a rule, a mechanism's surface, or a skill's behavior — gets an implementation brief settled with the owner and a pre-implementation artifact reading it. The artifact is the session's; what the implementation brief contains and when they affirm it, what the artifact contains and how it is settled, where each is recorded, and when the owner is next needed are the `engagement` cell's. Mechanical work proceeds without it; when in doubt of that, ask the cheap question.
-- **Release.** Merging is the owner's, never the agent's. **Before a change merges it is proven by running it** — what executes against the tree it produces, every connected reviewer once, and a use of that result of the kind the `experience-session` cell names, or one line saying why none happened. A panel is bought by asking; the `adversarial-review` cell carries what one is and what a connected reviewer's comment owes.
+## 4. Proof and release
 
-## Review
+Before release, run the executable checks against the tree that will ship; exercise the built result as its consumer would when the changed paths require that use, or record why no use applies; and resolve every comment from a **connected reviewer**, meaning a configured reviewer that automatically examines the pull request. Merging is the owner's decision, because evidence can inform release authority but cannot replace it.
 
-Every reviewable artifact states its purpose, audience, and success criteria — the `authoring` cell carries that header's standard. A review is bought when the owner asks for one on the pull request; once bought, it judges against that statement, and its charter, roster, evidence standards and dispositions travel with it in the `adversarial-review` cell, including what a finding earns outside a review.
+## 5. Review purchase
 
-**Outside a review, a decline is recorded on the work itself** — no stage exists there to rule one, and naming a finding in conversation is not a disposition.
+The implementation brief names the risk that might justify a **panel**, a separately commissioned adversarial review by several judging seats. Run that panel only when the owner buys it by asking; ordinary connected reviewers remain part of release proof whether or not a panel is bought, because review depth must follow the risk agreed before implementation rather than a later recollection.
 
-## Where content goes
+## 6. Content and evidence
 
-- **Methodology** — how any work is done → the skill that governs it. Which home a piece belongs in, and the standard its prose meets there, are the `authoring` cell's.
-- **What must hold before any context loads** → an always-on surface: this charter, or the adopting repository's own root doctrine, which is the surface it can edit and version. In a repository that installed the practice as a plugin the charter arrives read-only from the plugin cache, and there, on a conflict between the two, that doctrine wins.
-- **Rationale** — why a shape was chosen, what was rejected → a decision entry.
-- **Review evidence** → the review report.
+Reusable methodology lives with the practice component that teaches it; repository-specific doctrine lives in that repository's root instructions and wins locally when the two conflict. Decision entries preserve historical rationale and inform later judgment without binding it; review evidence stays with its review. This separation keeps shipped guidance usable without requiring its reader to reconstruct the practice's private history.
 
-**Nothing reaches this charter that a cell can hold.** What a cell can hold is stated by the cell that owns it and named from here, because a second copy of a rule is the thing that drifts.
-
-**Decisions inform, never bind.** A prior decision is superseded by reading it, not obeyed; what a reviser owes a cited entry is the `authoring` cell's.
-
-**Governing prose states the concept and its reason and carries at most one example; a rule is a guard, a script, an exhibit, or unwritten** — a concept reaches the case nobody anticipated, a rule reaches only the case it names, and only if it was read first. So what can be checked is a guard, what a session must not get wrong about running something is that thing's own message at the moment of the mistake, an incident is a decision entry, and a sentence that makes the reader's judgment for them is the sentence to cut. **A guard or a script is built only for a concept prose already states in one sentence.** Admission climbs from the cheapest reliable material to the most expensive, an always-on surface last; the `authoring` cell carries the order and this principle's application. Owner-stated requirements are admitted, not argued — counter-argument is welcome, per Authority above; what is refused is stalling on one. Agent-proposed rules need an incident from real work or the owner's specific approval of that rule — **a review finding about governing prose is not an incident.**
-
-## The cells this practice ships
-
-Every cell this practice ships but this one, which you are reading already — so a session that does not yet know which cell owns what sees the whole set rather than taking a partial list for it.
-
-- `adversarial-review` cell
-- `authoring` cell
-- `engagement` cell
-- `experience-session` cell
-- `filing` cell
-- `persist-changes` cell
-- `spikes` cell
-- `substrate` cell
+Governing prose states each concept and its reason. A guard or a script is built only for a concept prose already states in one sentence.

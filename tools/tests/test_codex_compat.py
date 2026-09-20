@@ -84,7 +84,7 @@ def test_probe_launch_pins_isolation_and_staffing(tmp_path):
     evidence = compat._charter_evidence()
     assert evidence["opening"] not in compat.PROMPT
     assert evidence["tail"] not in compat.PROMPT
-    assert all(ceremony not in compat.PROMPT for ceremony in evidence["ceremonies"])
+    assert all(concept not in compat.PROMPT for concept in evidence["concepts"])
     assert "nine descriptions" not in compat.PROMPT
 
 
@@ -376,12 +376,34 @@ def test_probe_answer_rejects_a_truncated_charter_tail():
         compat._assert_probe_answer(json.dumps(payload), marker)
 
 
+def test_charter_evidence_requires_all_six_numbered_concepts(tmp_path, monkeypatch):
+    charter = tmp_path / "skills/charter/SKILL.md"
+    charter.parent.mkdir(parents=True)
+    charter.write_text(
+        "# Charter\n\n**Purpose:** fixture\n\nOpening prose.\n\n"
+        "## 1. Owner\n\nOwner prose.\n\n"
+        "## 2. Decisions\n\nDecision prose.\n\n"
+        "## 3. Convergence\n\nConvergence prose.\n\n"
+        "## 4. Proof\n\nProof prose.\n\n"
+        "## 5. Review\n\nReview prose.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(compat, "ROOT", tmp_path)
+    with pytest.raises(compat.CompatError, match="no stable compatibility anchors"):
+        compat._charter_evidence()
+
+
 def test_tail_requires_prose_even_when_the_charter_ends_in_public_skill_names(tmp_path, monkeypatch):
     charter = tmp_path / "skills/charter/SKILL.md"
     charter.parent.mkdir(parents=True)
     charter.write_text(
         "# Charter\n\n**Purpose:** fixture\n\nOpening prose.\n\n"
-        "- **Convergence.** Settle the purpose.\n- **Release.** Human merges.\n\n"
+        "## 1. Owner\n\nOwner prose.\n\n"
+        "## 2. Decisions\n\nDecision prose.\n\n"
+        "## 3. Convergence\n\nConvergence prose.\n\n"
+        "## 4. Proof\n\nProof prose.\n\n"
+        "## 5. Review\n\nReview prose.\n\n"
+        "## 6. Content\n\nContent prose.\n\n"
         "This closing paragraph is\nnot available from the skill index.\n\n"
         "## Cells\n\n- `alpha` cell\n- `beta` cell\n",
         encoding="utf-8",

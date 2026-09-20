@@ -950,45 +950,29 @@ def _doctrine_scan_paths(root: Path) -> list[Path]:
     paths = [root / name for name in ("AGENTS.md", "CLAUDE.md")]
     cells = root / REPO_CELLS
     if cells.is_dir():
-            # **Depth included, because this change sanctions it.** A repo-only
+        # **Depth included, because this change sanctions it.** A repo-only
         # cell sheds into `references/` exactly as a shipped one does, and a
         # dangling `[D-N]` or dead repo path there reads as authority that
         # resolves and does not -- the harm this scan exists to prevent, in
         # the one place the material tells authors to put depth. Probed [#291]:
         # identical prose redded in `SKILL.md` and was silent one directory
-        # down. The shipped cells stay out for the adopter-resolution reason
-        # `check_doctrine_citations` gives, which does not reach repo-only
-        # depth: nothing under `docs/` is resolved by a consumer at all.
+        # down. Shipped prose stays out because check 1 rejects its decision
+        # markers outright. Repo-only depth may cite the local log, so this
+        # resolution check reaches it just as it reaches each cell body.
         paths += sorted(cells.glob("**/*.md"))
     return paths
 
 
 def check_doctrine_citations(root: Path) -> list[str]:
-    r"""Every [D-N] the doctrine writes names a decision entry that exists.
+    r"""Every [D-N] marker in repo-only doctrine names an existing entry.
 
-    check_entry_references resolves what the decision log itself writes, and
-    stops there -- so a marker in the always-on surface resolved to nothing and
-    lint stayed green, verified for all four of them. That mattered little
-    while the doctrine merely cited; it matters now that the outflow rule
-    instructs a session to replace prose with a citation and requires one that
-    resolves. A reason compressed into a marker nobody checks is a reason
-    deleted on the next renumbering, on the surface every session reads first.
+    check_entry_references resolves references made by the decision log and
+    stops there. A dangling doctrine marker still presents historical rationale
+    as available evidence, so it must resolve where the local log is present.
 
-    Scoped to the doctrine files by decision, not by the shipped cells being
-    clean: they carry the `[D-N]` markers
-    `git grep -oE "\[D-[0-9]+\]" -- 'skills/**/*.md'` counts on whatever tree
-    you are on, and D-173 priced exactly that
-    cost rather than arguing it away, on the ground that the party who would
-    unknowingly undo the ruling is looking at the cell and not at the log. An
-    adopter cannot resolve any of them -- they receive the cells and not the
-    decision log -- so widening this guard would either mean stripping reasons
-    the practice deliberately kept, or a permanent exemption list. That is the
-    owner's call to reopen, not a repair a guard should make on its own; until
-    he does, those markers are lawful and out of reach here.
-
-    (The zone wall is not what puts them out of reach, whatever the shape of
-    the argument suggests: a `[D-N]` marker is not a path and violates no
-    zone rule. The reason is the resolution cost above.)
+    Shipped prose is deliberately outside this scan: check 1 rejects decision
+    markers there because an adopter receives the prose without the log. This
+    check owns the repository doctrine where a decision citation can resolve.
     """
     findings = []
     directory = root / "docs" / "architecture" / "decisions"
