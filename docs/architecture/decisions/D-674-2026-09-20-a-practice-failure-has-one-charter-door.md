@@ -24,7 +24,9 @@ The practice repository is resolved from the installed plugin's `homepage`, whos
 
 The paragraph routes the reporting session to the `product-incident` record in the `work` cell's marker reference. `skills/work/SKILL.md` at the base routes a reader to `skills/work/references/markers.md`, and that reference owns the exact record and its lawful producer, surface, and moment. The charter does not copy the marker syntax: copying it would create a second operative form that could drift.
 
-The filing also carries the command run and the output seen. The record makes the incident admissible to the existing entrance; command and output make the failure rerunnable rather than merely described. No entrance behavior, product list, marker syntax, or producer rule changes in this decision.
+The filing also carries the command run and the output seen. For an adopting repository on the practice repository's product list, the record makes the incident admissible to the existing entrance; command and output make the failure rerunnable rather than merely described. No entrance behavior, product list, marker syntax, or producer rule changes in this decision.
+
+An adopting repository absent from that list files the same record in the same place. At the base, `skills/work/references/markers.md` makes list membership a lawful value and `lib/work.py` counts incident evidence only for configured product repositories, so the entrance does not count that filing as the incident practice work requires until the owner lists the repository; until then, it is a report the holder reads and the owner rules on. Widening admission, whether by listing the repository or by adding an admission path for outside adopters, is the owner's decision and outside this change.
 
 ### Filing does not stall the product work
 
