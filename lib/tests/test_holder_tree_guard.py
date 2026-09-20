@@ -144,13 +144,87 @@ def test_shell_command_naming_registry_is_denied_from_any_cwd(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("command", [
-    "git status --porcelain", "git diff --stat", "Get-Content -Raw README.md",
+    "git status --porcelain",
+    "git diff --no-textconv --no-ext-diff --stat",
+    "git show --no-textconv --no-ext-diff --stat",
+    "git show --no-patch",
+    "git log --no-textconv --no-ext-diff --stat",
+    "git log --oneline",
+    "Get-Content -Raw README.md",
     "Test-Path README.md",
 ])
 def test_finite_read_only_commands_are_allowed_inside_registered_root(roots, command):
     protected, _outside, registered = roots
     assert guard.decision({"tool_name": "PowerShell", "cwd": str(protected),
                            "tool_input": {"command": command}}, registered) is None
+
+
+@pytest.mark.parametrize("command", ["git diff", "git show", "git log --stat"])
+def test_git_diffing_commands_name_the_helper_guards_they_require(roots, command):
+    protected, _outside, registered = roots
+    reason = guard.decision({
+        "tool_name": "Bash",
+        "cwd": str(protected),
+        "tool_input": {"command": command},
+    }, registered)
+    assert "--no-textconv" in reason
+    assert "--no-ext-diff" in reason
+
+
+def test_git_helper_probe_and_guarded_negative_control(tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    helper = tmp_path / "helper.py"
+    sentinel = tmp_path / "helper-ran"
+    helper.write_bytes(
+        b"import pathlib, sys\n"
+        b"pathlib.Path(sys.argv[1]).write_bytes(b'ran\\n')\n"
+        b"if len(sys.argv) == 3:\n"
+        b"    sys.stdout.buffer.write(pathlib.Path(sys.argv[2]).read_bytes())\n"
+    )
+
+    def git(*arguments):
+        result = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+        return result
+
+    git("init")
+    git("config", "user.name", "fixture")
+    git("config", "user.email", "fixture@example.com")
+    (repository / ".gitattributes").write_bytes(b"sample.bin diff=probe\n")
+    sample = repository / "sample.bin"
+    sample.write_bytes(b"before\n")
+    git("add", ".gitattributes", "sample.bin")
+    git("commit", "-m", "fixture")
+    sample.write_bytes(b"after\n")
+    helper_command = f'"{Path(sys.executable).as_posix()}" "{helper.as_posix()}" "{sentinel.as_posix()}"'
+
+    git("config", "diff.probe.textconv", helper_command)
+    textconv_commands = [
+        (("diff", "--", "sample.bin"),
+         ("diff", "--no-textconv", "--no-ext-diff", "--", "sample.bin")),
+        (("show", "HEAD"),
+         ("show", "--no-textconv", "--no-ext-diff", "HEAD")),
+        (("log", "-p", "-1"),
+         ("log", "--no-textconv", "--no-ext-diff", "-p", "-1")),
+    ]
+    for unguarded, guarded in textconv_commands:
+        git(*unguarded)
+        assert sentinel.is_file()
+        sentinel.unlink()
+        git(*guarded)
+        assert not sentinel.exists()
+
+    git("config", "--unset", "diff.probe.textconv")
+    git("config", "diff.probe.command", helper_command)
+    git("diff", "--", "sample.bin")
+    assert sentinel.is_file()
+    sentinel.unlink()
+    git("diff", "--no-textconv", "--no-ext-diff", "--", "sample.bin")
+    assert not sentinel.exists()
 
 
 @pytest.mark.parametrize("command", [
@@ -181,13 +255,62 @@ def test_write_capable_helper_and_unknown_options_are_denied_inside_root(roots, 
 
 
 @pytest.mark.parametrize("command", [
-    "git status > state.txt", "git status; Set-Content x y", "pwsh -Command 'Get-Content x'",
+    "git status > state.txt", "git status; Set-Content x y",
     "python -c 'print(1)'", "Get-Content x | Set-Content y",
 ])
 def test_unproved_or_nested_commands_are_denied_inside_registered_root(roots, command):
     protected, _outside, registered = roots
     assert guard.decision({"tool_name": "PowerShell", "cwd": str(protected),
                            "tool_input": {"command": command}}, registered)
+
+
+@pytest.mark.parametrize("command", [
+    "bash -c 'cd protected-tree; echo changed > file'",
+    "sh -c 'cd protected-tree; echo changed > file'",
+    "zsh -c 'cd protected-tree; echo changed > file'",
+    "pwsh -Command 'Set-Location protected-tree; Set-Content file changed'",
+    "powershell -c 'chdir protected-tree; Set-Content file changed'",
+    "cmd /c 'cd protected-tree && echo changed > file'",
+    "eval 'cd protected-tree; echo changed > file'",
+    "/usr/bin/bash -c 'cd protected-tree; echo changed > file'",
+])
+def test_nested_shell_entering_registered_root_is_denied(tmp_path, command):
+    protected = (tmp_path / "protected-tree").resolve()
+    protected.mkdir()
+    payload = {"tool_name": "Bash", "cwd": str(tmp_path),
+               "tool_input": {"command": command}}
+    assert guard.decision(payload, [protected])
+    assert guard.decision(payload, []) is None
+
+
+def test_read_only_nested_shell_outside_root_is_allowed(roots):
+    _protected, outside, registered = roots
+    payload = {"tool_name": "Bash", "cwd": str(outside),
+               "tool_input": {"command": "bash -c 'git status'"}}
+    assert guard.decision(payload, registered) is None
+
+
+def test_nested_body_that_cannot_be_split_is_denied_when_a_root_is_registered(roots):
+    _protected, outside, registered = roots
+    payload = {"tool_name": "Bash", "cwd": str(outside),
+               "tool_input": {"command": 'bash -c "git \'status"'}}
+    assert "cannot be split" in guard.decision(payload, registered)
+    assert guard.decision(payload, []) is None
+
+
+@pytest.mark.parametrize("command", [
+    "python -c 'open(\"protected-tree/file\", \"w\")'",
+    "python -\nopen(\"protected-tree/file\", \"w\")",
+    "node -e 'writeFileSync(\"protected-tree/file\", \"x\")'",
+    "perl -e 'open my $fh, \">\", \"protected-tree/file\"'",
+])
+def test_inline_interpreter_path_scan_has_both_polarities(tmp_path, command):
+    protected = (tmp_path / "protected-tree").resolve()
+    protected.mkdir()
+    payload = {"tool_name": "Bash", "cwd": str(tmp_path),
+               "tool_input": {"command": command}}
+    assert guard.decision(payload, [protected])
+    assert guard.decision(payload, []) is None
 
 
 def test_path_case_and_separator_normalization_matches_on_windows(roots):

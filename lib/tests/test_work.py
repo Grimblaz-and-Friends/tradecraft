@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -102,6 +104,42 @@ def test_undisposed_reviewer_thread_routes_only_the_disposition_stage():
     assert (decision.stage, decision.continuity, decision.detail) == (
         "review-disposition", "resume", "41",
     )
+
+
+def test_earlier_head_thread_stays_undisposed_after_reviewer_runs_at_current_head():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.review_comments = [{
+        "id": 41, "body": "earlier finding", "commit_id": "b" * 40,
+        "user": {"login": REVIEWER, "type": "Bot"},
+    }]
+    assert work.decide(fixture, RULES).stage == "review-disposition"
+
+
+def test_listed_producer_disposes_an_earlier_head_thread():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.review_comments = [
+        {"id": 41, "body": "earlier finding", "commit_id": "b" * 40,
+         "user": {"login": REVIEWER, "type": "Bot"}},
+        {"id": 42, "in_reply_to_id": 41, "body": "fixed",
+         "user": {"login": PRODUCER}},
+    ]
+    assert work.decide(fixture, RULES).stage == "release-report"
+
+
+def test_unlisted_disposition_author_is_ignored_and_named():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.review_comments = [
+        {"id": 41, "body": "finding", "commit_id": SHA,
+         "user": {"login": REVIEWER, "type": "Bot"}},
+        {"id": 42, "in_reply_to_id": 41, "body": "fixed",
+         "user": {"login": "unlisted-commenter"}},
+    ]
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "review-disposition"
+    assert "ignored-disposition-from=unlisted-commenter" in decision.reason
 
 
 def test_listed_reviewer_summary_comment_counts_for_the_current_pull_request():
@@ -363,7 +401,9 @@ def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
             {"body": "<!-- tradecraft:implementing-pr:v1 number=9 -->",
              "user": {"login": PRODUCER}},
         ],
-        f"{base}/pulls?state=all&per_page=100": [{"number": 9, "body": ""}],
+        f"{base}/pulls?state=all&per_page=100": [
+            {"number": 9, "state": "open", "body": ""},
+        ],
         f"{base}/pulls/9": {"number": 9, "state": "open", "draft": True,
                              "head": {"sha": SHA}},
         f"{base}/issues/9/comments": [],
@@ -399,10 +439,40 @@ def test_merged_pull_request_cited_as_evidence_is_not_a_candidate_or_terminal():
     assert work.decide(fixture, RULES).stage == "convergence"
 
 
+def test_reopened_issue_ignores_its_merged_former_implementing_pull_request():
+    issue = {"number": 12, "state": "open", "body": ""}
+    pulls = [{
+        "number": 9, "state": "closed", "merged_at": "2026-09-01T00:00:00Z",
+        "body": "Closes #12",
+    }]
+    candidates = work._candidate_prs(12, issue, [], pulls, CONFIG)
+    fixture = work.WorkState("acme/widget", 12, issue, config=CONFIG)
+    assert candidates == set()
+    assert work.decide(fixture, RULES).stage == "convergence"
+
+
+def test_closed_issue_keeps_its_merged_implementing_pull_request_terminal():
+    issue = {"number": 12, "state": "closed", "body": ""}
+    pulls = [{
+        "number": 9, "state": "closed", "merged_at": "2026-09-01T00:00:00Z",
+        "body": "Closes #12",
+    }]
+    candidates = work._candidate_prs(12, issue, [], pulls, CONFIG)
+    fixture = work.WorkState("acme/widget", 12, issue, pr=pulls[0], config=CONFIG)
+    assert candidates == {9}
+    assert work.decide(fixture, RULES).stage == "terminal"
+
+
+def test_open_issue_selects_its_open_implementing_pull_request():
+    issue = {"number": 12, "state": "open", "body": ""}
+    pulls = [{"number": 9, "state": "open", "body": "Closes #12"}]
+    assert work._candidate_prs(12, issue, [], pulls, CONFIG) == {9}
+
+
 def test_pull_request_body_standalone_closing_reference_is_the_candidate():
     candidates = work._candidate_prs(
         12, {"number": 12, "body": ""}, [],
-        [{"number": 9, "body": "Context\nCloses #12\nMore context"}],
+        [{"number": 9, "state": "open", "body": "Context\nCloses #12\nMore context"}],
         CONFIG,
     )
     assert candidates == {9}
@@ -414,7 +484,7 @@ def test_unauthorized_implementing_pr_marker_is_not_a_candidate():
         {"number": 12, "body": "", "user": {"login": PRODUCER}},
         [{"body": "<!-- tradecraft:implementing-pr:v1 number=9 -->",
           "user": {"login": "untrusted-commenter"}}],
-        [{"number": 9, "body": "A citation, not a closing reference"}],
+        [{"number": 9, "state": "open", "body": "A citation, not a closing reference"}],
         CONFIG,
     )
     assert candidates == set()
@@ -426,8 +496,8 @@ def test_two_pull_request_bodies_closing_the_issue_are_ambiguous():
         f"{base}/issues/12": {"number": 12, "state": "open", "body": "", "labels": []},
         f"{base}/issues/12/comments": [],
         f"{base}/pulls?state=all&per_page=100": [
-            {"number": 7, "body": "Fixes #12"},
-            {"number": 8, "body": "RESOLVED #12"},
+            {"number": 7, "state": "open", "body": "Fixes #12"},
+            {"number": 8, "state": "open", "body": "RESOLVED #12"},
         ],
     }
     fixture = work.read_state(FakeTransport(values), "acme/widget", 12)
@@ -483,7 +553,7 @@ def test_run_reads_the_work_configuration_from_root(tmp_path):
 
     assert work.run(
         args, transport=PracticeTransport(),
-        executor=lambda state, decision, root, instalment: captured.append(decision) or 0,
+        executor=lambda state, decision, root, instalment, holder: captured.append(decision) or 0,
     ) == 0
     assert [(decision.stage, decision.reason) for decision in captured] == [
         ("artifact", "artifact-marker-absent"),
@@ -504,6 +574,48 @@ def test_build_prompt_tells_the_holder_to_post_the_builder_session_marker():
         state(AFFIRMED), work.Decision("build", True, "fresh", "fixture")
     )
     assert b"<!-- tradecraft:builder-session:v1 session=SESSION -->" in prompt
+
+
+def test_cold_seat_prompt_carries_only_artifact_brief_and_check_contract(tmp_path):
+    brief = AFFIRMED + "Brief text visible only to the cold seat.\n"
+    artifact = ARTIFACT + "\nArtifact text visible only to the cold seat.\n"
+    fixture = state(brief, "OTHER COMMENT MUST STAY OUT", artifact)
+    artifact_bytes = artifact.encode("utf-8")
+    decision = work.Decision("cold-seat", True, "fresh", "fixture")
+
+    with pytest.raises(work.WorkError, match="isolated working root"):
+        work._stage_prompt(fixture, decision)
+    prompt = work._stage_prompt(fixture, decision, tmp_path)
+
+    assert artifact_bytes in prompt
+    assert brief.encode("utf-8") in prompt
+    assert hashlib.sha256(artifact_bytes).hexdigest().encode("ascii") in prompt
+    assert f"Artifact byte count: {len(artifact_bytes)}".encode("ascii") in prompt
+    assert b"OTHER COMMENT MUST STAY OUT" not in prompt
+    assert b"The bar is plausible" in prompt
+    assert b"Trace both directions" in prompt
+    assert b"This list is closed" in prompt
+
+
+def test_execute_cold_seat_uses_the_bounded_prompt(tmp_path, monkeypatch):
+    artifact = ARTIFACT + "\nArtifact body.\n"
+    fixture = state(AFFIRMED, "OTHER COMMENT MUST STAY OUT", artifact)
+    captured = []
+    monkeypatch.setattr(work, "judging_root", lambda _root: nullcontext(tmp_path))
+    monkeypatch.setattr(work, "_git_snapshot", lambda _root: (SHA, ""))
+
+    def run(command):
+        dispatch = Path(command[command.index("--dispatch") + 1])
+        captured.append(dispatch.read_bytes())
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(work.subprocess, "run", run)
+    decision = work.Decision("cold-seat", True, "fresh", "fixture")
+    assert work.execute_stage(fixture, decision, tmp_path, None) == 0
+    assert artifact.encode("utf-8") in captured[0]
+    assert AFFIRMED.encode("utf-8") in captured[0]
+    assert b"OTHER COMMENT MUST STAY OUT" not in captured[0]
+    assert b'"issue_comments"' not in captured[0]
 
 
 def dispatch_bundle(record_root, *, work_value="example/product#12", stage="build",
@@ -556,7 +668,9 @@ def test_resume_without_bundle_or_marker_returns_a_non_dispatching_decision(
         lambda *_args, **_kwargs: pytest.fail("a missing resume session must not launch"),
     )
     decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
-    assert work.execute_stage(state(pr=True), decision, tmp_path, None) == 0
+    assert work.execute_stage(
+        state(pr=True), decision, tmp_path, None, "holder-session"
+    ) == 0
     returned = json.loads(capsys.readouterr().out)
     assert returned == {
         "continuity": None,
@@ -570,6 +684,51 @@ def test_resume_without_bundle_or_marker_returns_a_non_dispatching_decision(
     }
 
 
+def test_build_launch_without_holder_identity_is_refused(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        work.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("missing holder identity must not launch"),
+    )
+    decision = work.Decision("build", True, "fresh", "pull-request-absent")
+    assert work.execute_stage(state(), decision, tmp_path, None) == 0
+    returned = json.loads(capsys.readouterr().out)
+    assert returned["reason"] == "holder-session-id-required-for-build"
+    assert "--holder-session-id" in returned["detail"]
+
+
+def test_build_launch_forwards_and_registers_holder_identity(tmp_path, monkeypatch):
+    commands = []
+    registrations = []
+    monkeypatch.setattr(
+        work, "register_worktree",
+        lambda *args, **kwargs: registrations.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        work.subprocess, "run",
+        lambda command: commands.append(command) or subprocess.CompletedProcess(command, 0),
+    )
+    decision = work.Decision("build", True, "fresh", "pull-request-absent")
+    assert work.execute_stage(
+        state(), decision, tmp_path, "2", "stable-holder-token"
+    ) == 0
+    assert commands[0][-2:] == ["--holder-session-id", "stable-holder-token"]
+    assert registrations[0][0][-1] == "stable-holder-token"
+
+
+def test_resume_marker_equal_to_holder_identity_is_rejected(
+        tmp_path, monkeypatch, capsys):
+    fixture = state(f"<!-- tradecraft:builder-session:v1 session={SESSION} -->", pr=True)
+    monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
+    monkeypatch.setattr(
+        work.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("holder session must not resume as builder"),
+    )
+    decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
+    assert work.execute_stage(fixture, decision, tmp_path, None, SESSION) == 0
+    returned = json.loads(capsys.readouterr().out)
+    assert returned["reason"] == "resume-session-identifies-holder-for-floor"
+
+
 def test_execute_stage_passes_the_recovered_session_to_the_implementer(
         tmp_path, monkeypatch):
     commands = []
@@ -581,8 +740,12 @@ def test_execute_stage_passes_the_recovered_session_to_the_implementer(
 
     monkeypatch.setattr(work.subprocess, "run", run)
     decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
-    assert work.execute_stage(state(pr=True), decision, tmp_path, None) == 0
-    assert commands[0][-2:] == ["--resume", SESSION]
+    assert work.execute_stage(
+        state(pr=True), decision, tmp_path, None, "holder-session"
+    ) == 0
+    assert commands[0][-4:] == [
+        "--holder-session-id", "holder-session", "--resume", SESSION,
+    ]
 
 
 def test_judging_root_detaches_an_attached_tree_and_removes_it_afterward(tmp_path):
@@ -623,8 +786,10 @@ def test_power_user_commands_run_one_named_stage(command, tmp_path):
                 return []
             return {"number": 3, "state": "open", "body": "", "labels": []}
 
-    assert work.run(args, transport=MinimalTransport(),
-                    executor=lambda state, decision, root, instalment: captured.append(decision) or 0) == 0
+    assert work.run(
+        args, transport=MinimalTransport(),
+        executor=lambda state, decision, root, instalment, holder: captured.append(decision) or 0,
+    ) == 0
     assert [(item.stage, item.reason) for item in captured] == [(command, "power-user-stage-command")]
 
 
@@ -632,11 +797,14 @@ def test_registry_write_is_atomic_shape_and_canonical(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / "tree"
     root.mkdir()
-    work.register_worktree(root, "acme/widget", 3, "2", guard_status="unavailable")
+    work.register_worktree(
+        root, "acme/widget", 3, "2", "holder-session", guard_status="unavailable"
+    )
     recorded = json.loads(work.registry_path().read_bytes())
     assert recorded == {"schema_version": 1, "worktrees": [{
         "root": str(root.resolve()), "repository": "acme/widget", "issue": 3,
         "instalment": "2", "active": True, "holder_write_guard": "unavailable",
+        "holder_session_id": "holder-session",
         "revision_before": None, "status_before": None,
     }]}
 

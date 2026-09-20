@@ -14,10 +14,12 @@ description: The single state-driven entrance for a product change. Use when the
 For the ordinary entrance, run:
 
 ```text
-python <plugin-root>/lib/work.py --repo OWNER/REPO --issue N --root PATH
+python <plugin-root>/lib/work.py --repo OWNER/REPO --issue N --root PATH --holder-session-id ID
 ```
 
 In this repository, `<plugin-root>` is the repository checkout root. For an adopter, `<plugin-root>` is the installed plugin directory containing `lib/work.py`. For the ordinary entrance, `--root` is the repository checkout that receives implementation-worktree registrations and supplies `.tradecraft/work.json` and `lib/use-rules.json`.
+
+`--holder-session-id` is required whenever the selected stage launches or resumes a builder; pass the runtime's session identifier, or a stable holder token when that runtime exposes none, so the launcher and worktree registry can keep holder and builder identities distinct.
 
 The script reads issue, pull-request, check, review and comment state with GitHub REST GET requests. A pull request becomes the implementing one only through its own standalone closing reference or the issue's explicit marker, and multiple candidates are refused. A nonempty repository-owned product list makes every issue in that repository practice-facing and requires an incident from the list unless an affirmed brief has already admitted the work; with a missing or empty list, nothing is practice-facing and the check does not apply, because the practice is a means to better product work rather than its own product. The same repository-owned work configuration names connected-reviewer and marker-producer logins, so other accounts cannot satisfy review or advance the entrance; with no connected reviewer configured, no review is required and the decision says so.
 
