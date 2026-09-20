@@ -381,6 +381,10 @@ def run_dispatch(args, *, now=None) -> int:
                   "dispatch_id": request["dispatch_id"], "request": str(request_path),
                   "requested_vendor": args.vendor, "own_vendor": args.own_vendor,
                   "actual_vendor": None, "fallback_reason": None, "attempts": [],
+                  "staffing_status": "unfilled", "staffing_reason": None,
+                  "staffing_qualification": {
+                      "cross_vendor_satisfied": False, "same_vendor_reason": None,
+                  },
                   "result": {"source_output": None,
                              "source_output_unavailable_reason": "no successful final source return",
                              "published_output": None,
@@ -518,6 +522,13 @@ def run_dispatch(args, *, now=None) -> int:
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 record["revision_after"] = records.git_revision(root)
                 if verdict is not None:
+                    degraded = record["actual_vendor"] != record["requested_vendor"]
+                    record["staffing_status"] = "degraded" if degraded else "qualified"
+                    record["staffing_reason"] = record["fallback_reason"] if degraded else None
+                    record["staffing_qualification"] = {
+                        "cross_vendor_satisfied": not degraded or bool(args.same_vendor_reason),
+                        "same_vendor_reason": args.same_vendor_reason if degraded else None,
+                    }
                     record["outcome"] = "success"
                     streams[source_path].write(verdict)
                     streams[source_path].flush()
@@ -596,6 +607,10 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--settings-scope", required=True,
                      help="stages and vendor reached by the issue choice or named default")
     cli.add_argument("--retry-of", help="dispatch id of an earlier whole-invocation retry")
+    cli.add_argument(
+        "--same-vendor-reason",
+        help="stage-local reason a degraded same-vendor return may satisfy this cross-vendor stage",
+    )
     cli.add_argument("--classification", choices=records.CLASSIFICATIONS, required=True,
                      help="ordinary, protected cold, or terminal judgment")
     cli.add_argument(

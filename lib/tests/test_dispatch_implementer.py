@@ -137,6 +137,26 @@ def test_resume_mismatch_is_error_and_never_publishes(job):
     assert not args.output.exists()
 
 
+def test_holder_session_cannot_be_resumed_as_builder(job):
+    args, _ = job
+    args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    args.holder_session_id = args.resume
+    with pytest.raises(implementer.ImplementerError, match="cannot also identify"):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+
+
+def test_fresh_runtime_returning_holder_identity_is_not_published(job):
+    args, _ = job
+    args.holder_session_id = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    configure(job, {"stdout": success_events(args.holder_session_id), "message": "wrong identity\n"})
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert logged["attempts"][0]["observed"]["session_id"] is None
+    assert not args.output.exists()
+
+
 def test_completed_turn_without_identity_retains_result_but_is_not_resumable(job):
     args, _ = job
     stdout = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}})

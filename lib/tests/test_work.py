@@ -94,6 +94,26 @@ def test_bought_panel_routes_the_next_stage_named_by_the_lane():
     assert work.decide(fixture, RULES).detail == "revision-diff"
 
 
+@pytest.mark.parametrize("marker_name", ["cold-verdict", "use"])
+def test_degraded_cross_vendor_evidence_needs_a_stage_local_reason(marker_name):
+    if marker_name == "cold-verdict":
+        degraded = "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=degraded -->"
+        fixture = state(AFFIRMED, ARTIFACT, degraded)
+        assert work.decide(fixture, RULES).stage == "cold-seat"
+        fixture.issue_comments[-1]["body"] = degraded.replace(
+            " -->", " same_vendor_reason=primary-unavailable -->"
+        )
+        assert work.decide(fixture, RULES).stage == "holder-read"
+    else:
+        degraded = f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=false staffing_status=degraded -->"
+        fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, degraded, pr=True)
+        assert work.decide(fixture, RULES).stage == "use"
+        fixture.issue_comments[-1]["body"] = degraded.replace(
+            " -->", " same_vendor_reason=primary-unavailable -->"
+        )
+        assert work.decide(fixture, RULES).stage == "ready-reviewers"
+
+
 def test_multiple_candidate_pull_requests_refuse_instead_of_choosing():
     fixture = state(AFFIRMED)
     fixture.ambiguous_prs = [7, 8]
@@ -207,9 +227,16 @@ def test_registry_write_is_atomic_shape_and_canonical(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / "tree"
     root.mkdir()
-    work.register_worktree(root, "acme/Elos", 3, "2")
+    work.register_worktree(root, "acme/Elos", 3, "2", guard_status="unavailable")
     recorded = json.loads(work.registry_path().read_bytes())
     assert recorded == {"schema_version": 1, "worktrees": [{
         "root": str(root.resolve()), "repository": "acme/Elos", "issue": 3,
-        "instalment": "2", "active": True,
+        "instalment": "2", "active": True, "holder_write_guard": "unavailable",
+        "revision_before": None, "status_before": None,
     }]}
+
+
+def test_runtime_without_project_hook_records_enforcement_gap(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    assert work.holder_guard_status() == "unavailable"

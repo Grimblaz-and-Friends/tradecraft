@@ -242,6 +242,12 @@ def _current_marker(state: WorkState, name: str, **attributes: str) -> Marker | 
     return None
 
 
+def staffing_qualified(marker: Marker) -> bool:
+    if marker.attributes.get("staffing_status") != "degraded":
+        return True
+    return bool(marker.attributes.get("same_vendor_reason"))
+
+
 def load_use_rules(path: Path) -> dict[str, object]:
     try:
         value = json.loads(path.read_bytes())
@@ -346,7 +352,8 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     artifacts = [marker for marker in state.markers if marker.name == "artifact"]
     if not artifacts:
         return Decision("artifact", True, "fresh", "artifact-marker-absent")
-    verdicts = [marker for marker in state.markers if marker.name == "cold-verdict"]
+    verdicts = [marker for marker in state.markers
+                if marker.name == "cold-verdict" and staffing_qualified(marker)]
     if not verdicts:
         return Decision("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
     verdict = verdicts[-1]
@@ -368,7 +375,8 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if latest_use and latest_use.attributes.get("head") == sha and latest_use.attributes.get("changed") == "true":
         return Decision("build", True, "resume", "use-finding-changed-behavior-or-instructions")
     bought = use_required(state.changed_paths, rules)
-    if bought and _current_marker(state, "use", head=sha, status="pass") is None:
+    current_use = _current_marker(state, "use", head=sha, status="pass")
+    if bought and (current_use is None or not staffing_qualified(current_use)):
         return Decision("use", True, "fresh", "current-head-use-absent")
     if not bought:
         no_use = _current_marker(state, "no-use", head=sha)
@@ -394,7 +402,26 @@ def registry_path() -> Path:
     return Path.home() / ".tradecraft" / "implementation-worktrees.json"
 
 
-def register_worktree(path: Path, repo: str, issue: int, instalment: str | None) -> None:
+def _git_snapshot(path: Path) -> tuple[str | None, str | None]:
+    values = []
+    for arguments in (("rev-parse", "HEAD"), ("status", "--porcelain")):
+        result = subprocess.run(
+            ["git", "-C", str(path), *arguments], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+        )
+        values.append(result.stdout.decode("utf-8", errors="backslashreplace") if result.returncode == 0 else None)
+    revision = values[0].strip() if values[0] else None
+    return revision, values[1]
+
+
+def holder_guard_status() -> str:
+    return "available" if any(os.environ.get(name) for name in (
+        "CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE",
+    )) else "unavailable"
+
+
+def register_worktree(path: Path, repo: str, issue: int, instalment: str | None,
+                      *, guard_status: str | None = None) -> None:
     target = path.expanduser().resolve()
     destination = registry_path()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -407,8 +434,11 @@ def register_worktree(path: Path, repo: str, issue: int, instalment: str | None)
     rows = [row for row in current["worktrees"] if not (
         isinstance(row, dict) and str(row.get("root") or "").lower() == str(target).lower()
     )]
+    revision, status = _git_snapshot(target)
     rows.append({"root": str(target), "repository": repo, "issue": issue,
-                 "instalment": instalment, "active": True})
+                 "instalment": instalment, "active": True,
+                 "holder_write_guard": guard_status or holder_guard_status(),
+                 "revision_before": revision, "status_before": status})
     current["worktrees"] = rows
     content = (json.dumps(current, ensure_ascii=True, indent=2) + "\n").encode("utf-8")
     with tempfile.NamedTemporaryFile(mode="wb", dir=destination.parent, delete=False) as stream:

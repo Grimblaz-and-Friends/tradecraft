@@ -201,6 +201,7 @@ def request_record(
     command: list[str] | None = None,
     setting_sources: dict[str, str] | None = None,
     retry_of: str | None = None,
+    holder_session_id: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
     for name, value in (
@@ -221,6 +222,12 @@ def request_record(
         raise RecordError("fresh continuity cannot request an existing session id")
     if retry_of is not None and not retry_of.strip():
         raise RecordError("retry dispatch id must be nonempty")
+    if holder_session_id is not None and not holder_session_id.strip():
+        raise RecordError("holder session id must be nonempty")
+    if holder_session_id == dispatch_id:
+        raise RecordError("a dispatch id cannot also identify the holder session")
+    if holder_session_id is not None and holder_session_id == requested_session_id:
+        raise RecordError("a builder session cannot also identify the holder session")
     for name, source in (setting_sources or {}).items():
         if not name.strip() or not source.strip():
             raise RecordError("setting source names and values must be nonempty")
@@ -233,6 +240,7 @@ def request_record(
         "settings_source": settings_source,
         "settings_scope": settings_scope,
         "retry_of": retry_of,
+        "holder_session_id": holder_session_id,
         "requested": {
             "vendor": vendor,
             "model": model,
@@ -480,6 +488,7 @@ def begin_native(args: argparse.Namespace) -> Path:
         permission_boundary=args.permission_boundary, root=args.root,
         classification=args.classification, requested_session_id=args.session_id,
         retry_of=args.retry_of,
+        holder_session_id=getattr(args, "holder_session_id", None),
         setting_sources=setting_sources,
     )
     recorded_at = request["launched_at"]
@@ -658,6 +667,7 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("--classification-source", required=True, help="where the role classification came from")
     begin.add_argument("--session-id")
     begin.add_argument("--retry-of")
+    begin.add_argument("--holder-session-id")
     begin.add_argument("--runtime-version")
     begin.add_argument("--permission-boundary", required=True)
     begin.add_argument(

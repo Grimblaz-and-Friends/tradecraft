@@ -127,6 +127,8 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     assert args.output.read_bytes().startswith(b"would not\n")
     logged = record(args)
     assert len(logged["attempts"]) == 1
+    assert logged["staffing_status"] == "qualified"
+    assert logged["staffing_qualification"]["cross_vendor_satisfied"] is True
     request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
     assert request["work"] == "issue-592"
     assert request["stage"] == "cold-read"
@@ -399,6 +401,11 @@ def test_unavailable_falls_back_once_and_records_reason(job, monkeypatch, vendor
     assert [a["vendor"] for a in log["attempts"]] == [vendor, args.own_vendor]
     assert log["actual_vendor"] == args.own_vendor
     assert log["fallback_reason"]
+    assert log["staffing_status"] == "degraded"
+    assert log["staffing_reason"] == log["fallback_reason"]
+    assert log["staffing_qualification"] == {
+        "cross_vendor_satisfied": False, "same_vendor_reason": None,
+    }
     assert base64.b64decode(seen(args, args.own_vendor)["stdin"]) == args.dispatch.read_bytes()
     fallback = log["attempts"][1]
     expected_effort = (
@@ -409,6 +416,21 @@ def test_unavailable_falls_back_once_and_records_reason(job, monkeypatch, vendor
         seat.DEFAULT_MODELS[args.own_vendor], expected_effort
     )
     assert (args.hold_file.read_bytes() if args.hold_file.exists() else None) == before
+
+
+def test_degraded_fallback_qualifies_only_with_stage_local_same_vendor_reason(job):
+    args, _ = job
+    args.same_vendor_reason = "primary vendor was unavailable for this cold stage"
+    configure(job, {"claude": {"message": "Not logged in"}})
+    assert seat.run_dispatch(args) == 0
+    logged = record(args)
+    assert logged["staffing_status"] == "degraded"
+    assert logged["requested_vendor"] == "claude"
+    assert logged["actual_vendor"] == "codex"
+    assert logged["staffing_qualification"] == {
+        "cross_vendor_satisfied": True,
+        "same_vendor_reason": "primary vendor was unavailable for this cold stage",
+    }
 
 
 @pytest.mark.parametrize("vendor", seat.VENDORS)

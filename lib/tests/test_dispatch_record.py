@@ -21,6 +21,27 @@ NATIVE_SOURCES = {
 }
 
 
+def request_values(**changes):
+    values = {
+        "dispatch_id": "builder-dispatch", "work": "issue", "stage": "build",
+        "settings_source": "fixture", "settings_scope": "build", "vendor": "codex",
+        "model": "model", "effort": "xhigh", "continuity": "fresh",
+        "permission_boundary": "workspace-write", "root": None,
+    }
+    values.update(changes)
+    return values
+
+
+def test_holder_identity_cannot_also_identify_dispatch_or_resumed_builder():
+    with pytest.raises(records.RecordError, match="dispatch id cannot also identify"):
+        records.request_record(**request_values(holder_session_id="builder-dispatch"))
+    with pytest.raises(records.RecordError, match="builder session cannot also identify"):
+        records.request_record(**request_values(
+            continuity="resume", requested_session_id="holder-session",
+            holder_session_id="holder-session",
+        ))
+
+
 def test_claude_usage_keeps_models_and_returned_cost_without_double_counting():
     payload = {
         "type": "result", "is_error": False, "subtype": "success",
