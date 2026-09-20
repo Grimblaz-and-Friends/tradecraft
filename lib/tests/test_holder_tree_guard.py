@@ -142,7 +142,7 @@ def test_configured_hook_process_denies_without_changing_revision_or_status(tmp_
     result = subprocess.run(
         [sys.executable, str(LIB / "holder_tree_guard.py")], input=payload,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
-        env={**os.environ, "USERPROFILE": str(tmp_path)},
+        env={**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)},
     )
     assert json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert not (protected / "blocked.txt").exists()
