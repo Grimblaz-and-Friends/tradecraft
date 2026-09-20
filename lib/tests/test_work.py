@@ -22,19 +22,33 @@ HOLDER = "<!-- tradecraft:holder-reading:v1 result=no-amendment -->"
 FLOOR = f"<!-- tradecraft:floor:v1 head={SHA} status=pass -->"
 USE = f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=false -->"
 REVIEWED = "<!-- tradecraft:connected-reviewer:v1 name=fixture status=complete -->"
+PRODUCER = "holder-fixture"
+REVIEWER = "reviewer-fixture[bot]"
+SESSION = "01234567-89ab-cdef-0123-456789abcdef"
+OTHER_SESSION = "89abcdef-0123-4567-89ab-cdef01234567"
+CONFIG = work.WorkConfig(
+    connected_reviewers=frozenset({REVIEWER}),
+    marker_producers=frozenset({PRODUCER}),
+)
 
 
-def state(*texts, pr=False, draft=True, paths=None, issue_state="open"):
-    comments = [{"body": text} for text in texts]
+def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
+          reviewer_ran=False, config=CONFIG):
+    comments = [{"body": text, "user": {"login": PRODUCER}} for text in texts]
     pull = None
     if pr:
         pull = {"number": 7, "state": "open", "draft": draft, "merged_at": None,
                 "head": {"sha": SHA}}
-    return work.WorkState(
+    fixture = work.WorkState(
         "example/product", 12,
-        {"number": 12, "state": issue_state, "body": "", "labels": []},
+        {"number": 12, "state": issue_state, "body": "", "labels": [],
+         "user": {"login": PRODUCER}},
         issue_comments=comments, pr=pull, changed_paths=paths or ["lib/runtime.py"],
+        config=config,
     )
+    if reviewer_ran:
+        fixture.pr_comments = [{"body": "review summary", "user": {"login": REVIEWER}}]
+    return fixture
 
 
 @pytest.mark.parametrize(("fixture", "expected"), [
@@ -54,15 +68,17 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open"):
      ("ready-reviewers", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True, draft=False),
      ("waiting", False, None)),
-    (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, REVIEWED, pr=True, draft=False),
+    (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True, draft=False,
+           reviewer_ran=True),
      ("release-report", True, "fresh")),
-    (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, REVIEWED,
+    (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
            "<!-- tradecraft:panel-stage:v1 stage=cold-pass status=complete -->",
            "<!-- tradecraft:panel-stage:v1 stage=defense status=complete -->",
            "<!-- tradecraft:panel-stage:v1 stage=floor-fixes status=complete -->",
-           pr=True, draft=False), ("release-report", True, "fresh")),
-    (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, REVIEWED,
-           pr=True, draft=False, issue_state="closed"), ("terminal", False, None)),
+           pr=True, draft=False, reviewer_ran=True), ("release-report", True, "fresh")),
+    (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+           pr=True, draft=False, reviewer_ran=True, issue_state="closed"),
+     ("terminal", False, None)),
 ])
 def test_each_state_table_row_routes_exactly_one_stage(fixture, expected):
     decision = work.decide(fixture, RULES)
@@ -76,22 +92,65 @@ def test_red_check_routes_floor_even_with_a_current_head_floor_marker():
 
 
 def test_undisposed_reviewer_thread_routes_only_the_disposition_stage():
-    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, REVIEWED,
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
                     pr=True, draft=False)
-    fixture.review_comments = [{"id": 41, "body": "finding", "user": {"type": "Bot"}}]
+    fixture.review_comments = [{
+        "id": 41, "body": "finding", "commit_id": SHA,
+        "user": {"login": REVIEWER, "type": "Bot"},
+    }]
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.continuity, decision.detail) == (
         "review-disposition", "resume", "41",
     )
 
 
+def test_listed_reviewer_summary_comment_counts_for_the_current_pull_request():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    assert work.decide(fixture, RULES).stage == "release-report"
+
+
+def test_unlisted_bot_comment_does_not_count_as_connected_review():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    fixture.pr_comments = [{
+        "body": "automation summary",
+        "user": {"login": "unlisted-service[bot]", "type": "Bot"},
+    }]
+    assert work.decide(fixture, RULES).stage == "waiting"
+
+
+def test_listed_review_on_an_old_head_does_not_count():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    fixture.reviews = [{
+        "body": "reviewed", "commit_id": "b" * 40,
+        "user": {"login": REVIEWER, "type": "Bot"},
+    }]
+    assert work.decide(fixture, RULES).stage == "waiting"
+
+
+def test_empty_reviewer_list_requires_no_review_and_says_so():
+    config = work.WorkConfig(marker_producers=frozenset({PRODUCER}))
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, config=config)
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "release-report", "all-evidence-complete;no-connected-reviewer-configured",
+    )
+
+
 def test_bought_panel_routes_the_next_stage_named_by_the_lane():
     elevated = AFFIRMED.replace("ordinary", "elevated").replace("connected", "routine-panel")
-    fixture = state(elevated, ARTIFACT, WOULD, HOLDER, FLOOR, USE, REVIEWED,
-                    pr=True, draft=False, paths=["/".join(("skills", "work", "SKILL.md"))])
+    fixture = state(elevated, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True,
+                    paths=["/".join(("skills", "work", "SKILL.md"))])
     first = work.decide(fixture, RULES)
     assert (first.stage, first.detail) == ("panel", "cold-pass")
-    fixture.issue_comments.append({"body": "<!-- tradecraft:panel-stage:v1 stage=cold-pass status=complete -->"})
+    fixture.issue_comments.append({
+        "body": "<!-- tradecraft:panel-stage:v1 stage=cold-pass status=complete -->",
+        "user": {"login": PRODUCER},
+    })
     assert work.decide(fixture, RULES).detail == "revision-diff"
 
 
@@ -152,14 +211,45 @@ def test_missing_or_crossed_review_rows_cannot_become_affirmed_state(text):
     assert work.decide(fixture, RULES).stage == "affirmation-invalid"
 
 
-def configured_products(tmp_path, repositories):
+def test_authorized_marker_advances_the_entrance():
+    assert work.decide(state(AFFIRMED), RULES).stage == "artifact"
+
+
+def test_unauthorized_comment_marker_is_ignored_and_names_its_author():
+    fixture = state()
+    fixture.issue_comments = [{
+        "body": AFFIRMED,
+        "user": {"login": "untrusted-commenter"},
+    }]
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "convergence",
+        "affirmed-brief-marker-absent;ignored-marker-from=untrusted-commenter",
+    )
+
+
+def test_issue_body_marker_is_checked_against_the_issue_author():
+    fixture = state()
+    fixture.issue["body"] = AFFIRMED
+    fixture.issue["user"] = {"login": "untrusted-author"}
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "convergence", "affirmed-brief-marker-absent;ignored-marker-from=untrusted-author",
+    )
+    fixture.issue["user"] = {"login": PRODUCER}
+    assert work.decide(fixture, RULES).stage == "artifact"
+
+
+def configured_work(tmp_path, repositories, *, reviewers=(REVIEWER,), producers=(PRODUCER,)):
     directory = tmp_path / ".tradecraft"
-    directory.mkdir()
-    (directory / "product-repos.json").write_text(json.dumps({
+    directory.mkdir(exist_ok=True)
+    (directory / "work.json").write_text(json.dumps({
         "schema_version": 1,
-        "repositories": repositories,
+        "product_repositories": repositories,
+        "connected_reviewers": list(reviewers),
+        "marker_producers": list(producers),
     }), encoding="utf-8")
-    return work.load_product_repos(tmp_path)
+    return work.load_work_config(tmp_path)
 
 
 @pytest.mark.parametrize("body", [
@@ -169,30 +259,31 @@ def configured_products(tmp_path, repositories):
 def test_unlabelled_issue_accepts_a_configured_product_incident_case_insensitively(
         tmp_path, body):
     fixture = state(body)
-    products = configured_products(tmp_path, ["Acme/Product-App"])
-    assert work.decide(fixture, RULES, products).stage == "convergence"
+    fixture.config = configured_work(tmp_path, ["Acme/Product-App"])
+    assert work.decide(fixture, RULES).stage == "convergence"
 
 
 def test_configured_product_list_refuses_an_unlabelled_issue_without_an_incident(tmp_path):
     fixture = state()
-    products = configured_products(tmp_path, ["acme/product-app"])
-    decision = work.decide(fixture, RULES, products)
+    fixture.config = configured_work(tmp_path, ["acme/product-app"])
+    decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.dispatch) == ("product-incident-required", False)
 
 
 def test_affirmed_brief_waives_the_configured_product_incident_check(tmp_path):
     fixture = state(AFFIRMED)
-    products = configured_products(tmp_path, ["acme/product-app"])
-    assert work.decide(fixture, RULES, products).stage == "artifact"
+    fixture.config = configured_work(tmp_path, ["acme/product-app"])
+    assert work.decide(fixture, RULES).stage == "artifact"
 
 
 def test_pull_request_admission_evidence_does_not_waive_the_issue_check(tmp_path):
     fixture = state(pr=True)
     fixture.pr_comments = [{
         "body": AFFIRMED + "\nhttps://github.com/acme/product-app/issues/91",
+        "user": {"login": PRODUCER},
     }]
-    products = configured_products(tmp_path, ["acme/product-app"])
-    assert work.decide(fixture, RULES, products).stage == "product-incident-required"
+    fixture.config = configured_work(tmp_path, ["acme/product-app"])
+    assert work.decide(fixture, RULES).stage == "product-incident-required"
 
 
 def test_configured_product_repository_refuses_an_incident_from_elsewhere(tmp_path):
@@ -200,9 +291,10 @@ def test_configured_product_repository_refuses_an_incident_from_elsewhere(tmp_pa
     fixture.issue_comments.append({
         "body": "https://github.com/acme/elsewhere/issues/91\n"
                 "<!-- tradecraft:product-incident:v1 repo=acme/elsewhere issue=91 -->",
+        "user": {"login": PRODUCER},
     })
-    products = configured_products(tmp_path, ["acme/product-app"])
-    decision = work.decide(fixture, RULES, products)
+    fixture.config = configured_work(tmp_path, ["acme/product-app"])
+    decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.dispatch) == ("product-incident-required", False)
 
 
@@ -216,11 +308,24 @@ def test_missing_or_empty_product_repository_list_disables_the_check(
         tmp_path, repositories, texts, expected):
     fixture = state(*texts)
     fixture.issue["labels"] = [{"name": "practice-facing"}]
-    products = (work.load_product_repos(tmp_path) if repositories is None
-                else configured_products(tmp_path, repositories))
-    decision = work.decide(fixture, RULES, products)
-    assert decision.stage == expected
+    fixture.config = (work.load_work_config(tmp_path) if repositories is None
+                      else configured_work(tmp_path, repositories))
+    decision = work.decide(fixture, RULES)
+    if repositories == []:
+        assert decision.stage == expected
     assert decision.stage != "product-incident-required"
+
+
+def test_work_configuration_normalizes_all_three_repository_owned_lists(tmp_path):
+    config = configured_work(
+        tmp_path, ["Acme/Product-App"],
+        reviewers=("Review-Service[bot]",), producers=("Release-Holder",),
+    )
+    assert config == work.WorkConfig(
+        product_repositories=frozenset({"acme/product-app"}),
+        connected_reviewers=frozenset({"review-service[bot]"}),
+        marker_producers=frozenset({"release-holder"}),
+    )
 
 
 def test_path_rules_buy_runtime_use_and_decline_docs_and_tests():
@@ -250,9 +355,13 @@ class FakeTransport:
 def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
     base = "repos/acme/widget"
     values = {
-        f"{base}/issues/3": {"number": 3, "state": "open", "body": "", "labels": []},
+        f"{base}/issues/3": {
+            "number": 3, "state": "open", "body": "", "labels": [],
+            "user": {"login": PRODUCER},
+        },
         f"{base}/issues/3/comments": [
-            {"body": "<!-- tradecraft:implementing-pr:v1 number=9 -->"},
+            {"body": "<!-- tradecraft:implementing-pr:v1 number=9 -->",
+             "user": {"login": PRODUCER}},
         ],
         f"{base}/pulls?state=all&per_page=100": [{"number": 9, "body": ""}],
         f"{base}/pulls/9": {"number": 9, "state": "open", "draft": True,
@@ -264,7 +373,7 @@ def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
         f"{base}/commits/{SHA}/check-runs": {"check_runs": []},
     }
     transport = FakeTransport(values)
-    fixture = work.read_state(transport, "acme/widget", 3)
+    fixture = work.read_state(transport, "acme/widget", 3, CONFIG)
     assert fixture.pr["number"] == 9
     assert fixture.changed_paths == ["lib/runtime.py"]
     assert {method for method, _endpoint, _paginate in transport.calls} == {"GET"}
@@ -294,8 +403,21 @@ def test_pull_request_body_standalone_closing_reference_is_the_candidate():
     candidates = work._candidate_prs(
         12, {"number": 12, "body": ""}, [],
         [{"number": 9, "body": "Context\nCloses #12\nMore context"}],
+        CONFIG,
     )
     assert candidates == {9}
+
+
+def test_unauthorized_implementing_pr_marker_is_not_a_candidate():
+    candidates = work._candidate_prs(
+        12,
+        {"number": 12, "body": "", "user": {"login": PRODUCER}},
+        [{"body": "<!-- tradecraft:implementing-pr:v1 number=9 -->",
+          "user": {"login": "untrusted-commenter"}}],
+        [{"number": 9, "body": "A citation, not a closing reference"}],
+        CONFIG,
+    )
+    assert candidates == set()
 
 
 def test_two_pull_request_bodies_closing_the_issue_are_ambiguous():
@@ -333,12 +455,12 @@ def test_cross_reference_timeline_is_not_read_as_a_candidate():
 
 def test_review_disposition_marker_is_part_of_the_entrance_evidence():
     fixture = state()
-    fixture.review_comments = [{"body": REVIEWED}]
+    fixture.review_comments = [{"body": REVIEWED, "user": {"login": PRODUCER}}]
     assert {marker.name for marker in fixture.markers} == {"connected-reviewer"}
 
 
-def test_run_reads_the_product_repository_list_from_root(tmp_path):
-    configured_products(tmp_path, ["acme/product-app"])
+def test_run_reads_the_work_configuration_from_root(tmp_path):
+    configured_work(tmp_path, ["acme/product-app"])
     rules_directory = tmp_path / "lib"
     rules_directory.mkdir()
     (rules_directory / "use-rules.json").write_bytes((LIB / "use-rules.json").read_bytes())
@@ -356,6 +478,7 @@ def test_run_reads_the_product_repository_list_from_root(tmp_path):
                 "state": "open",
                 "body": AFFIRMED + "\nhttps://github.com/ACME/PRODUCT-APP/issues/7",
                 "labels": [{"name": "practice-facing"}],
+                "user": {"login": PRODUCER},
             }
 
     assert work.run(
@@ -374,6 +497,92 @@ def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch():
     assert b"Do not start or dispatch a later stage" in prompt
     evidence = json.loads(prompt.split(b"\n\n", 1)[1])
     assert evidence["github"]["issue_comments"][0]["body"] == AFFIRMED
+
+
+def test_build_prompt_tells_the_holder_to_post_the_builder_session_marker():
+    prompt = work._stage_prompt(
+        state(AFFIRMED), work.Decision("build", True, "fresh", "fixture")
+    )
+    assert b"<!-- tradecraft:builder-session:v1 session=SESSION -->" in prompt
+
+
+def dispatch_bundle(record_root, *, work_value="example/product#12", stage="build",
+                    session=SESSION, completed_at="2026-09-20T10:00:00+00:00"):
+    bundle = record_root / stage
+    bundle.mkdir(parents=True, exist_ok=True)
+    request = bundle / "result.md.request.json"
+    run = bundle / "result.md.run.json"
+    request.write_text(json.dumps({
+        "schema_version": 2, "work": work_value, "stage": stage,
+    }), encoding="utf-8")
+    run.write_text(json.dumps({
+        "schema_version": 2,
+        "completed_at": completed_at,
+        "attempts": [{"observed": {"session_id": session}}],
+    }), encoding="utf-8")
+
+
+def test_resume_session_prefers_matching_bundle_over_issue_marker(tmp_path):
+    fixture = state(f"<!-- tradecraft:builder-session:v1 session={OTHER_SESSION} -->")
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store)
+    dispatch_bundle(
+        store, work_value="example/elsewhere#12", stage="floor", session=OTHER_SESSION,
+        completed_at="2026-09-20T11:00:00+00:00",
+    )
+    dispatch_bundle(
+        store, stage="artifact", session=OTHER_SESSION,
+        completed_at="2026-09-20T12:00:00+00:00",
+    )
+    assert work.resume_session(fixture, "floor", store) == SESSION
+
+
+def test_artifact_revision_recovers_its_artifact_session(tmp_path):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact")
+    assert work.resume_session(state(), "artifact", store) == SESSION
+
+
+def test_resume_session_falls_back_to_authorized_builder_session_marker(tmp_path):
+    fixture = state(f"<!-- tradecraft:builder-session:v1 session={SESSION} -->")
+    assert work.resume_session(fixture, "floor", tmp_path / "missing") == SESSION
+
+
+def test_resume_without_bundle_or_marker_returns_a_non_dispatching_decision(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        work.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("a missing resume session must not launch"),
+    )
+    decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
+    assert work.execute_stage(state(pr=True), decision, tmp_path, None) == 0
+    returned = json.loads(capsys.readouterr().out)
+    assert returned == {
+        "continuity": None,
+        "detail": (
+            "stage=floor; supply=a matching dispatch bundle or authorized "
+            "builder-session marker"
+        ),
+        "dispatch": False,
+        "reason": "resume-session-missing-for-floor",
+        "stage": "floor",
+    }
+
+
+def test_execute_stage_passes_the_recovered_session_to_the_implementer(
+        tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
+
+    def run(command):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(work.subprocess, "run", run)
+    decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
+    assert work.execute_stage(state(pr=True), decision, tmp_path, None) == 0
+    assert commands[0][-2:] == ["--resume", SESSION]
 
 
 def test_judging_root_detaches_an_attached_tree_and_removes_it_afterward(tmp_path):

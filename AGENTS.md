@@ -8,7 +8,7 @@
 
 ## Worth doing
 
-When whether work is worth doing outruns the available evidence, argue it against `docs/values.md` by number; only the owner amends that ranking. Do not admit work whose subject is this practice itself unless it names the product harm it answers under `.tradecraft/product-repos.json`, because the practice is a means to better product work rather than its own product.
+When whether work is worth doing outruns the available evidence, argue it against `docs/values.md` by number; only the owner amends that ranking. Do not admit work whose subject is this practice itself unless it names the product harm it answers under `.tradecraft/work.json`, because the practice is a means to better product work rather than its own product.
 
 ## The one-way wall
 

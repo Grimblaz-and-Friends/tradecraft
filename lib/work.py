@@ -15,6 +15,7 @@ import sys
 import tempfile
 from typing import Callable
 
+import dispatch_record as records
 from winio import utf8_stdio
 
 COMMANDS = (
@@ -40,12 +41,21 @@ ISSUE_URL = re.compile(
     re.I,
 )
 REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?\Z")
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "no-use", "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
+    "builder-session",
 })
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
+}
+RESUME_SOURCE_STAGES = {
+    "artifact": frozenset({"artifact"}),
+    "build": frozenset({"build", "floor", "review-disposition"}),
+    "floor": frozenset({"build", "floor"}),
+    "review-disposition": frozenset({"build", "floor", "review-disposition"}),
 }
 
 
@@ -58,6 +68,14 @@ class Marker:
     name: str
     attributes: dict[str, str]
     body: str
+    author: str
+
+
+@dataclass(frozen=True)
+class WorkConfig:
+    product_repositories: frozenset[str] = frozenset()
+    connected_reviewers: frozenset[str] = frozenset()
+    marker_producers: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -73,28 +91,35 @@ class WorkState:
     checks: list[dict[str, object]] = field(default_factory=list)
     changed_paths: list[str] = field(default_factory=list)
     ambiguous_prs: list[int] = field(default_factory=list)
+    config: WorkConfig = field(default_factory=WorkConfig)
 
     @property
-    def issue_texts(self) -> list[str]:
-        values = [str(self.issue.get("body") or "")]
-        values.extend(str(item.get("body") or "") for item in self.issue_comments)
+    def issue_sources(self) -> list[tuple[str, str]]:
+        values = [(str(self.issue.get("body") or ""), _author(self.issue))]
+        values.extend((str(item.get("body") or ""), _author(item))
+                      for item in self.issue_comments)
         return values
 
     @property
-    def texts(self) -> list[str]:
-        values = self.issue_texts
-        values.extend(str(item.get("body") or "") for item in self.pr_comments)
-        values.extend(str(item.get("body") or "") for item in self.reviews)
-        values.extend(str(item.get("body") or "") for item in self.review_comments)
+    def sources(self) -> list[tuple[str, str]]:
+        values = self.issue_sources
+        for records_from_surface in (self.pr_comments, self.reviews, self.review_comments):
+            values.extend((str(item.get("body") or ""), _author(item))
+                          for item in records_from_surface)
         return values
 
     @property
     def issue_markers(self) -> list[Marker]:
-        return markers(self.issue_texts)
+        return _authorized_markers(markers(self.issue_sources), self.config.marker_producers)
 
     @property
     def markers(self) -> list[Marker]:
-        return markers(self.texts)
+        return _authorized_markers(markers(self.sources), self.config.marker_producers)
+
+    @property
+    def ignored_markers(self) -> list[Marker]:
+        return [marker for marker in markers(self.sources)
+                if marker.author.lower() not in self.config.marker_producers]
 
 
 @dataclass(frozen=True)
@@ -158,14 +183,25 @@ def _get_list(transport: GitHubREST, endpoint: str) -> list[dict[str, object]]:
     return _list(transport.get(endpoint, paginate=True), endpoint)
 
 
+def _author(item: dict[str, object]) -> str:
+    user = item.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    return str(login).lower() if isinstance(login, str) and login else "unknown"
+
+
+def _authorized_markers(found: list[Marker], producers: frozenset[str]) -> list[Marker]:
+    return [marker for marker in found if marker.author.lower() in producers]
+
+
 def _candidate_prs(issue_number: int, issue: dict[str, object],
-                   comments: list[dict[str, object]], pulls: list[dict[str, object]]) -> set[int]:
+                   comments: list[dict[str, object]], pulls: list[dict[str, object]],
+                   config: WorkConfig) -> set[int]:
     found: set[int] = set()
     if isinstance(issue.get("pull_request"), dict):
         found.add(issue_number)
-    texts = [str(issue.get("body") or "")]
-    texts.extend(str(item.get("body") or "") for item in comments)
-    for marker in markers(texts):
+    sources = [(str(issue.get("body") or ""), _author(issue))]
+    sources.extend((str(item.get("body") or ""), _author(item)) for item in comments)
+    for marker in _authorized_markers(markers(sources), config.marker_producers):
         number = marker.attributes.get("number", "")
         if marker.name == "implementing-pr" and number.isdigit() and int(number) > 0:
             found.add(int(number))
@@ -179,15 +215,17 @@ def _candidate_prs(issue_number: int, issue: dict[str, object],
     return found
 
 
-def read_state(transport: GitHubREST, repo: str, issue_number: int) -> WorkState:
+def read_state(transport: GitHubREST, repo: str, issue_number: int,
+               config: WorkConfig | None = None) -> WorkState:
+    work_config = config or WorkConfig()
     base = f"repos/{repo}"
     issue_endpoint = f"{base}/issues/{issue_number}"
     issue = _dict(transport.get(issue_endpoint), issue_endpoint)
     issue_comments = _get_list(transport, f"{issue_endpoint}/comments")
     pulls_endpoint = f"{base}/pulls?state=all&per_page=100"
     pulls = _get_list(transport, pulls_endpoint)
-    candidates = sorted(_candidate_prs(issue_number, issue, issue_comments, pulls))
-    state = WorkState(repo, issue_number, issue, issue_comments)
+    candidates = sorted(_candidate_prs(issue_number, issue, issue_comments, pulls, work_config))
+    state = WorkState(repo, issue_number, issue, issue_comments, config=work_config)
     if len(candidates) > 1:
         state.ambiguous_prs = candidates
         return state
@@ -210,12 +248,12 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int) -> WorkState
     return state
 
 
-def markers(texts: list[str]) -> list[Marker]:
+def markers(sources: list[tuple[str, str]]) -> list[Marker]:
     found: list[Marker] = []
-    for text in texts:
+    for text, author in sources:
         for match in MARKER.finditer(text):
             attributes = {key.lower(): value for key, value in ATTRIBUTE.findall(match.group(2) or "")}
-            found.append(Marker(match.group(1).lower(), attributes, text))
+            found.append(Marker(match.group(1).lower(), attributes, text, author))
     return found
 
 
@@ -229,25 +267,37 @@ def review_lane(text: str) -> tuple[str, str] | None:
     return risks[0].lower(), lanes[0].lower()
 
 
-def load_product_repos(root: Path) -> frozenset[str] | None:
-    path = root / ".tradecraft" / "product-repos.json"
+def load_work_config(root: Path) -> WorkConfig:
+    path = root / ".tradecraft" / "work.json"
     if not path.exists():
-        return None
+        return WorkConfig()
     try:
         value = json.loads(path.read_bytes())
     except (OSError, ValueError) as exc:
-        raise WorkError(f"cannot read product repository list: {path}") from exc
+        raise WorkError(f"cannot read work configuration: {path}") from exc
     if not isinstance(value, dict) or value.get("schema_version") != 1:
-        raise WorkError("product repository list must be a schema-version-1 object")
-    repositories = value.get("repositories")
-    if not isinstance(repositories, list):
-        raise WorkError("product repository list must carry a repositories list")
-    normalized: set[str] = set()
-    for repository in repositories:
+        raise WorkError("work configuration must be a schema-version-1 object")
+    fields = ("product_repositories", "connected_reviewers", "marker_producers")
+    if any(not isinstance(value.get(name), list) for name in fields):
+        raise WorkError("work configuration must carry product, reviewer and marker-producer lists")
+    products: set[str] = set()
+    for repository in value["product_repositories"]:
         if not isinstance(repository, str) or REPOSITORY_NAME.fullmatch(repository) is None:
             raise WorkError("each product repository must be an owner/repository string")
-        normalized.add(repository.lower())
-    return frozenset(normalized)
+        products.add(repository.lower())
+    identities: dict[str, frozenset[str]] = {}
+    for field_name in ("connected_reviewers", "marker_producers"):
+        normalized: set[str] = set()
+        for login in value[field_name]:
+            if not isinstance(login, str) or GITHUB_LOGIN.fullmatch(login) is None:
+                raise WorkError(f"each {field_name} entry must be a GitHub login")
+            normalized.add(login.lower())
+        identities[field_name] = frozenset(normalized)
+    return WorkConfig(
+        product_repositories=frozenset(products),
+        connected_reviewers=identities["connected_reviewers"],
+        marker_producers=identities["marker_producers"],
+    )
 
 
 def has_product_incident(state: WorkState, product_repos: frozenset[str]) -> bool:
@@ -257,7 +307,7 @@ def has_product_incident(state: WorkState, product_repos: frozenset[str]) -> boo
            for marker in state.issue_markers):
         return True
     return any(match.group(1).lower() in product_repos
-               for text in state.issue_texts for match in ISSUE_URL.finditer(text))
+               for text, _author_name in state.issue_sources for match in ISSUE_URL.finditer(text))
 
 
 def _head_sha(state: WorkState) -> str | None:
@@ -312,15 +362,16 @@ def _checks_red(state: WorkState) -> bool:
     return any(str(check.get("conclusion") or "").lower() in RED_CONCLUSIONS for check in state.checks)
 
 
+def _review_record_at_head(state: WorkState, item: dict[str, object]) -> bool:
+    commit_id = item.get("commit_id")
+    head = _head_sha(state)
+    return commit_id is None or (isinstance(commit_id, str) and commit_id == head)
+
+
 def _reviewer_ran(state: WorkState) -> bool:
-    if _current_marker(state, "connected-reviewer", status="complete"):
-        return True
-    records = [*state.reviews, *state.review_comments, *state.pr_comments]
-    for item in records:
-        user = item.get("user")
-        login = str(user.get("login") or "").lower() if isinstance(user, dict) else ""
-        kind = str(user.get("type") or "").lower() if isinstance(user, dict) else ""
-        if kind == "bot" or login.endswith("[bot]") or any(name in login for name in ("coderabbit", "greptile", "codex")):
+    for item in (*state.reviews, *state.review_comments, *state.pr_comments):
+        if (_author(item) in state.config.connected_reviewers
+                and _review_record_at_head(state, item)):
             return True
     return False
 
@@ -333,10 +384,8 @@ def _undisposed_threads(state: WorkState) -> list[int]:
         identity = item.get("id")
         if not isinstance(identity, int) or item.get("in_reply_to_id") is not None:
             continue
-        user = item.get("user")
-        login = str(user.get("login") or "").lower() if isinstance(user, dict) else ""
-        kind = str(user.get("type") or "").lower() if isinstance(user, dict) else ""
-        if kind != "bot" and not login.endswith("[bot]"):
+        if (_author(item) not in state.config.connected_reviewers
+                or not _review_record_at_head(state, item)):
             continue
         reply = replies.get(identity)
         body = str(reply.get("body") or "").lower().replace(chr(0x2014), "-") if reply else ""
@@ -363,11 +412,15 @@ def _panel_next(state: WorkState, lane: str) -> str | None:
     return next((stage for stage in stages if stage not in completed), None)
 
 
-def decide(state: WorkState, rules: dict[str, object],
-           product_repos: frozenset[str] | None = None) -> Decision:
+def _ignored_marker_suffix(state: WorkState) -> str:
+    authors = sorted({marker.author for marker in state.ignored_markers})
+    return f";ignored-marker-from={','.join(authors)}" if authors else ""
+
+
+def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
                detail: str | None = None) -> Decision:
-        return Decision(stage, dispatch, continuity, reason, detail)
+        return Decision(stage, dispatch, continuity, reason + _ignored_marker_suffix(state), detail)
 
     if str(state.issue.get("state") or "").lower() == "closed":
         return result("terminal", False, None, "issue-or-pull-request-terminal")
@@ -377,7 +430,8 @@ def decide(state: WorkState, rules: dict[str, object],
     if state.pr and (state.pr.get("merged_at") or str(state.pr.get("state") or "").lower() == "closed"):
         return result("terminal", False, None, "issue-or-pull-request-terminal")
     affirmed = [marker for marker in state.issue_markers if marker.name == "affirmed-brief"]
-    if product_repos and not affirmed and not has_product_incident(state, product_repos):
+    products = state.config.product_repositories
+    if products and not affirmed and not has_product_incident(state, products):
         return result("product-incident-required", False, None, "practice-work-has-no-product-incident")
     if not affirmed:
         return result("convergence", False, None, "affirmed-brief-marker-absent")
@@ -420,7 +474,8 @@ def decide(state: WorkState, rules: dict[str, object],
             return result("use", False, None, "path-rules-require-explicit-no-use-line")
     if bool(state.pr.get("draft")):
         return result("ready-reviewers", False, None, "floor-and-use-complete-pr-draft")
-    if not _reviewer_ran(state):
+    reviewers = state.config.connected_reviewers
+    if reviewers and not _reviewer_ran(state):
         return result("waiting", False, None, "required-connected-reviewer-has-not-run")
     threads = _undisposed_threads(state)
     if threads:
@@ -431,7 +486,8 @@ def decide(state: WorkState, rules: dict[str, object],
     panel_stage = _panel_next(state, lane)
     if panel_stage:
         return result("panel", False, None, "bought-panel-incomplete", panel_stage)
-    return result("release-report", True, "fresh", "all-evidence-complete")
+    reason = "all-evidence-complete" if reviewers else "all-evidence-complete;no-connected-reviewer-configured"
+    return result("release-report", True, "fresh", reason)
 
 
 def registry_path() -> Path:
@@ -506,9 +562,17 @@ def _stage_prompt(state: WorkState, decision: Decision) -> bytes:
             "changed_paths": state.changed_paths,
         },
     }
-    return (
+    instruction = (
         "Perform exactly the stage named in this dispatch and return to the holder. "
-        "Do not start or dispatch a later stage.\n\n" +
+        "Do not start or dispatch a later stage."
+    )
+    if decision.stage == "build":
+        instruction += (
+            " Tell the holder to post <!-- tradecraft:builder-session:v1 session=SESSION --> "
+            "on the issue using the session id printed by the launcher."
+        )
+    return (
+        instruction + "\n\n" +
         json.dumps(evidence, ensure_ascii=True, indent=2) + "\n"
     ).encode("utf-8")
 
@@ -549,10 +613,84 @@ def judging_root(root: Path):
                 raise WorkError(f"cannot remove detached judging worktree: {_git_failure(removed)}")
 
 
+def _json_object(path: Path) -> dict[str, object] | None:
+    try:
+        value = json.loads(path.read_bytes())
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _bundle_session(work_value: str, stage: str, record_root: Path) -> str | None:
+    allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
+    candidates: list[tuple[str, str, str]] = []
+    if not record_root.is_dir():
+        return None
+    try:
+        for run_path in record_root.rglob("*.run.json"):
+            run = _json_object(run_path)
+            request_name = run_path.name.removesuffix(".run.json") + ".request.json"
+            request = _json_object(run_path.with_name(request_name))
+            if run is None or request is None:
+                continue
+            if (request.get("schema_version") != records.SCHEMA_VERSION
+                    or run.get("schema_version") != records.SCHEMA_VERSION
+                    or str(request.get("work") or "").lower() != work_value.lower()
+                    or request.get("stage") not in allowed_stages):
+                continue
+            attempts = run.get("attempts")
+            if not isinstance(attempts, list):
+                continue
+            sessions: list[str] = []
+            for attempt in attempts:
+                observed = attempt.get("observed") if isinstance(attempt, dict) else None
+                session = observed.get("session_id") if isinstance(observed, dict) else None
+                if isinstance(session, str) and SESSION_ID.fullmatch(session):
+                    sessions.append(session)
+            if sessions:
+                completed = str(run.get("completed_at") or "")
+                candidates.append((completed, str(run_path), sessions[-1]))
+    except OSError:
+        return None
+    return max(candidates)[-1] if candidates else None
+
+
+def resume_session(state: WorkState, stage: str, record_root: Path | None = None) -> str | None:
+    work_value = f"{state.repo}#{state.issue_number}"
+    bundled = _bundle_session(
+        work_value, stage, record_root or records.default_record_root().expanduser().resolve()
+    )
+    if bundled:
+        return bundled
+    if stage == "artifact":
+        return None
+    sessions = [marker.attributes.get("session") for marker in state.issue_markers
+                if marker.name == "builder-session"]
+    return next((session for session in reversed(sessions)
+                 if isinstance(session, str) and SESSION_ID.fullmatch(session)), None)
+
+
+def _missing_resume_decision(state: WorkState, decision: Decision) -> Decision:
+    supply = ("a matching artifact dispatch bundle" if decision.stage == "artifact"
+              else "a matching dispatch bundle or authorized builder-session marker")
+    return Decision(
+        decision.stage, False, None,
+        f"resume-session-missing-for-{decision.stage}{_ignored_marker_suffix(state)}",
+        f"stage={decision.stage}; supply={supply}",
+    )
+
+
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None) -> int:
     if not decision.dispatch:
         print(json.dumps(decision.as_dict(), ensure_ascii=True, sort_keys=True))
         return 0
+    session = None
+    if decision.continuity == "resume":
+        session = resume_session(state, decision.stage)
+        if session is None:
+            print(json.dumps(_missing_resume_decision(state, decision).as_dict(),
+                             ensure_ascii=True, sort_keys=True))
+            return 0
     if decision.stage == "build" and decision.continuity == "fresh":
         register_worktree(root, state.repo, state.issue_number, instalment)
     here = Path(__file__).resolve().parent
@@ -581,11 +719,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             ]
             command = [sys.executable, str(here / "dispatch_implementer.py"), *common]
             if decision.continuity == "resume":
-                sessions = [marker.attributes.get("session") for marker in state.markers
-                            if marker.name in {"builder", "artifact-writer"} and marker.attributes.get("session")]
-                if not sessions:
-                    raise WorkError(f"{decision.stage} requires resume but no session marker exists")
-                command.extend(("--resume", sessions[-1]))
+                command.extend(("--resume", session))
             return subprocess.run(command).returncode
 
 
@@ -603,10 +737,10 @@ def parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace, *, transport: GitHubREST | None = None,
         executor: Callable[[WorkState, Decision, Path, str | None], int] = execute_stage) -> int:
     root = args.root.expanduser().resolve()
-    product_repos = load_product_repos(root)
-    state = read_state(transport or GitHubREST(), args.repo, args.issue)
+    config = load_work_config(root)
+    state = read_state(transport or GitHubREST(), args.repo, args.issue, config)
     rules = load_use_rules(args.use_rules or root / "lib" / "use-rules.json")
-    decision = decide(state, rules, product_repos)
+    decision = decide(state, rules)
     if args.command:
         decision = Decision(args.command, True, "fresh", "power-user-stage-command")
     return executor(state, decision, root, args.instalment)

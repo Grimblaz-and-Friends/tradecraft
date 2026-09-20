@@ -1,6 +1,6 @@
 # Work evidence markers
 
-**Loaded when** recording evidence that the state-driven entrance will read, or interpreting why it selected a stage. A marker is an HTML comment on the surface named below; attribute values contain no whitespace, and a reason uses a hyphenated slug.
+**Loaded when** recording evidence that the state-driven entrance will read, or interpreting why it selected a stage. A marker is an HTML comment on the surface named below; attribute values contain no whitespace, and a reason uses a hyphenated slug. It advances the entrance only when its issue body or comment author is named by the repository's marker-producer configuration, because an untrusted commenter cannot stand in for the party each contract names.
 
 ## `affirmed-brief`
 
@@ -40,6 +40,16 @@
 
 ```text
 <!-- tradecraft:holder-reading:v1 result=no-amendment -->
+```
+
+## `builder-session`
+
+- **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION -->`.
+- **Attributes and lawful values:** `session` is the UUID-shaped session identity printed by the implementer launcher.
+- **Producer, surface, moment:** the holder, in a comment on the issue, when the build return and launcher output arrive.
+
+```text
+<!-- tradecraft:builder-session:v1 session=01234567-89ab-cdef-0123-456789abcdef -->
 ```
 
 ## `floor`
