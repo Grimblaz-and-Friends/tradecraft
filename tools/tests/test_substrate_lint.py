@@ -87,7 +87,7 @@ def test_cli_refuses_a_missing_or_file_repository_root(tmp_path):
         assert b"no tree was checked" in result.stderr
 
 
-def test_native_runtime_settings_are_not_a_portable_calling_contract(tmp_path):
+def test_non_python_native_runtime_file_is_not_counted_as_read(tmp_path):
     target = tmp_path / "target"
     token = "$" + "{CLAUDE_PROJECT_DIR}"
     _write(
@@ -97,8 +97,8 @@ def test_native_runtime_settings_are_not_a_portable_calling_contract(tmp_path):
 
     result = _run(SCRIPT, target, cwd=tmp_path)
 
-    assert result.returncode == 0
-    assert _assert_ascii(result).endswith("lint: 0 finding(s); 1 file(s) read\n")
+    assert result.returncode == 1
+    assert _assert_ascii(result) == "lint: 0 finding(s); 0 file(s) read\n"
 
 
 def test_every_guard_reports_a_planted_violation_and_leaves_a_lawful_sibling(tmp_path):
@@ -180,7 +180,7 @@ def test_git_ignored_violation_is_not_judged(tmp_path):
     result = _run(SCRIPT, target, cwd=tmp_path)
 
     assert result.returncode == 0
-    assert _assert_ascii(result).endswith("lint: 0 finding(s); 2 file(s) read\n")
+    assert _assert_ascii(result).endswith("lint: 0 finding(s); 1 file(s) read\n")
 
 
 @pytest.mark.parametrize(
