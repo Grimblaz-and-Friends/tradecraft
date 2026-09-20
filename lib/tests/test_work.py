@@ -166,19 +166,37 @@ def configured_products(tmp_path, repositories):
     "https://github.com/acme/product-app/issues/91",
     "<!-- tradecraft:product-incident:v1 repo=ACME/PRODUCT-APP issue=91 -->",
 ])
-def test_configured_product_repository_accepts_its_incident_case_insensitively(tmp_path, body):
-    fixture = state(AFFIRMED)
-    fixture.repo = "example/tradecraft"
-    fixture.issue["labels"] = [{"name": "practice-facing"}]
-    fixture.issue_comments.append({"body": body})
+def test_unlabelled_issue_accepts_a_configured_product_incident_case_insensitively(
+        tmp_path, body):
+    fixture = state(body)
     products = configured_products(tmp_path, ["Acme/Product-App"])
+    assert work.decide(fixture, RULES, products).stage == "convergence"
+
+
+def test_configured_product_list_refuses_an_unlabelled_issue_without_an_incident(tmp_path):
+    fixture = state()
+    products = configured_products(tmp_path, ["acme/product-app"])
+    decision = work.decide(fixture, RULES, products)
+    assert (decision.stage, decision.dispatch) == ("product-incident-required", False)
+
+
+def test_affirmed_brief_waives_the_configured_product_incident_check(tmp_path):
+    fixture = state(AFFIRMED)
+    products = configured_products(tmp_path, ["acme/product-app"])
     assert work.decide(fixture, RULES, products).stage == "artifact"
 
 
+def test_pull_request_admission_evidence_does_not_waive_the_issue_check(tmp_path):
+    fixture = state(pr=True)
+    fixture.pr_comments = [{
+        "body": AFFIRMED + "\nhttps://github.com/acme/product-app/issues/91",
+    }]
+    products = configured_products(tmp_path, ["acme/product-app"])
+    assert work.decide(fixture, RULES, products).stage == "product-incident-required"
+
+
 def test_configured_product_repository_refuses_an_incident_from_elsewhere(tmp_path):
-    fixture = state(AFFIRMED)
-    fixture.repo = "example/tradecraft"
-    fixture.issue["labels"] = [{"name": "practice-facing"}]
+    fixture = state()
     fixture.issue_comments.append({
         "body": "https://github.com/acme/elsewhere/issues/91\n"
                 "<!-- tradecraft:product-incident:v1 repo=acme/elsewhere issue=91 -->",
@@ -188,15 +206,21 @@ def test_configured_product_repository_refuses_an_incident_from_elsewhere(tmp_pa
     assert (decision.stage, decision.dispatch) == ("product-incident-required", False)
 
 
-def test_absent_product_repository_list_disables_the_check_and_says_so(tmp_path):
-    fixture = state(AFFIRMED)
-    fixture.repo = "example/tradecraft"
+@pytest.mark.parametrize("repositories", [None, []])
+@pytest.mark.parametrize(("texts", "expected"), [
+    (("<!-- tradecraft:practice-facing:v1 -->",), "convergence"),
+    ((AFFIRMED,), "artifact"),
+    (("https://github.com/acme/product-app/issues/91",), "convergence"),
+])
+def test_missing_or_empty_product_repository_list_disables_the_check(
+        tmp_path, repositories, texts, expected):
+    fixture = state(*texts)
     fixture.issue["labels"] = [{"name": "practice-facing"}]
-    products = work.load_product_repos(tmp_path)
+    products = (work.load_product_repos(tmp_path) if repositories is None
+                else configured_products(tmp_path, repositories))
     decision = work.decide(fixture, RULES, products)
-    assert products is None
-    assert (decision.stage, decision.dispatch) == ("artifact", True)
-    assert decision.reason == "artifact-marker-absent;product-incident-check-not-configured"
+    assert decision.stage == expected
+    assert decision.stage != "product-incident-required"
 
 
 def test_path_rules_buy_runtime_use_and_decline_docs_and_tests():

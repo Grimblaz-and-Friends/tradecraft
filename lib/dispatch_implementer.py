@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Launch or resume a Codex implementer and retain the dispatch evidence.
 
-Usage: python <plugin>/lib/dispatch_implementer.py --dispatch FILE --root DIR
+Usage: python <plugin-root>/lib/dispatch_implementer.py --dispatch FILE --root DIR
        --work ISSUE --stage NAME --settings-source SOURCE --settings-scope SCOPE
        [--resume SESSION_ID]
 

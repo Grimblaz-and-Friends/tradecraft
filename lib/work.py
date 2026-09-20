@@ -42,8 +42,7 @@ ISSUE_URL = re.compile(
 REPOSITORY_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
-    "no-use", "connected-reviewer", "panel-stage", "practice-facing", "product-incident",
-    "implementing-pr",
+    "no-use", "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
 })
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
@@ -76,13 +75,22 @@ class WorkState:
     ambiguous_prs: list[int] = field(default_factory=list)
 
     @property
-    def texts(self) -> list[str]:
+    def issue_texts(self) -> list[str]:
         values = [str(self.issue.get("body") or "")]
         values.extend(str(item.get("body") or "") for item in self.issue_comments)
+        return values
+
+    @property
+    def texts(self) -> list[str]:
+        values = self.issue_texts
         values.extend(str(item.get("body") or "") for item in self.pr_comments)
         values.extend(str(item.get("body") or "") for item in self.reviews)
         values.extend(str(item.get("body") or "") for item in self.review_comments)
         return values
+
+    @property
+    def issue_markers(self) -> list[Marker]:
+        return markers(self.issue_texts)
 
     @property
     def markers(self) -> list[Marker]:
@@ -221,16 +229,6 @@ def review_lane(text: str) -> tuple[str, str] | None:
     return risks[0].lower(), lanes[0].lower()
 
 
-def is_practice_facing(state: WorkState) -> bool:
-    if state.repo.rsplit("/", 1)[-1].lower() != "tradecraft":
-        return False
-    labels = state.issue.get("labels")
-    names = {
-        str(item.get("name") or "").lower() for item in labels or [] if isinstance(item, dict)
-    }
-    return "practice-facing" in names or any(marker.name == "practice-facing" for marker in state.markers)
-
-
 def load_product_repos(root: Path) -> frozenset[str] | None:
     path = root / ".tradecraft" / "product-repos.json"
     if not path.exists():
@@ -256,10 +254,10 @@ def has_product_incident(state: WorkState, product_repos: frozenset[str]) -> boo
     if any(marker.name == "product-incident" and marker.attributes.get("repo", "").lower()
            in product_repos and marker.attributes.get("issue", "").isdigit()
            and int(marker.attributes["issue"]) > 0
-           for marker in state.markers):
+           for marker in state.issue_markers):
         return True
     return any(match.group(1).lower() in product_repos
-               for text in state.texts for match in ISSUE_URL.finditer(text))
+               for text in state.issue_texts for match in ISSUE_URL.finditer(text))
 
 
 def _head_sha(state: WorkState) -> str | None:
@@ -367,13 +365,8 @@ def _panel_next(state: WorkState, lane: str) -> str | None:
 
 def decide(state: WorkState, rules: dict[str, object],
            product_repos: frozenset[str] | None = None) -> Decision:
-    practice_facing = is_practice_facing(state)
-    product_check_not_configured = practice_facing and not product_repos
-
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
                detail: str | None = None) -> Decision:
-        if product_check_not_configured:
-            reason = f"{reason};product-incident-check-not-configured"
         return Decision(stage, dispatch, continuity, reason, detail)
 
     if str(state.issue.get("state") or "").lower() == "closed":
@@ -383,9 +376,9 @@ def decide(state: WorkState, rules: dict[str, object],
         return result("ambiguous-pr", False, None, "multiple-candidate-pull-requests", joined)
     if state.pr and (state.pr.get("merged_at") or str(state.pr.get("state") or "").lower() == "closed"):
         return result("terminal", False, None, "issue-or-pull-request-terminal")
-    if practice_facing and product_repos and not has_product_incident(state, product_repos):
+    affirmed = [marker for marker in state.issue_markers if marker.name == "affirmed-brief"]
+    if product_repos and not affirmed and not has_product_incident(state, product_repos):
         return result("product-incident-required", False, None, "practice-work-has-no-product-incident")
-    affirmed = [marker for marker in state.markers if marker.name == "affirmed-brief"]
     if not affirmed:
         return result("convergence", False, None, "affirmed-brief-marker-absent")
     lane_pair = review_lane(affirmed[-1].body)

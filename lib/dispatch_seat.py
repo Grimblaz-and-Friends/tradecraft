@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dispatch a fresh, bounded seat and publish its final message.
 
-Usage: python <plugin>/lib/dispatch_seat.py --dispatch FILE --root DIR
+Usage: python <plugin-root>/lib/dispatch_seat.py --dispatch FILE --root DIR
        --vendor claude --own-vendor codex --work ISSUE --stage NAME
        --settings-source SOURCE --settings-scope SCOPE --classification cold
        --requires read|execute [--output NEW_FILE]

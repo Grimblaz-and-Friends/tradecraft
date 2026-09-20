@@ -92,21 +92,11 @@
 <!-- tradecraft:panel-stage:v1 stage=defense status=complete -->
 ```
 
-## `practice-facing`
-
-- **Exact form:** `<!-- tradecraft:practice-facing:v1 -->`.
-- **Attributes and lawful values:** none.
-- **Producer, surface, moment:** the issue author or holder, in the issue body or a later issue comment, when the work is classified as changing the practice rather than its consumer product; the repository may use its equivalent label instead.
-
-```text
-<!-- tradecraft:practice-facing:v1 -->
-```
-
 ## `product-incident`
 
 - **Exact form:** `<!-- tradecraft:product-incident:v1 repo=OWNER/REPOSITORY issue=NUMBER -->`.
 - **Attributes and lawful values:** `repo` is an entry in the repository-owned product list, compared case-insensitively; `issue` is a positive integer.
-- **Producer, surface, moment:** the issue author or holder, in the practice-facing issue body or a later issue comment, when naming the product incident that the work answers; a full issue URL is the equivalent evidence.
+- **Producer, surface, moment:** the issue author or holder, in the issue body or a later issue comment, when naming the product incident that the work answers; a full issue URL is the equivalent evidence.
 
 ```text
 <!-- tradecraft:product-incident:v1 repo=acme/product-app issue=91 -->
