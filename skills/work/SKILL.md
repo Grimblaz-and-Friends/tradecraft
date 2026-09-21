@@ -19,7 +19,7 @@ python <plugin-root>/lib/work.py --repo OWNER/REPO --issue N --root PATH --holde
 
 The fifth merge across the practice's repositories since the last cross-change note, or the status read of a running evaluation, calls for engagement's read across landed changes.
 
-In this repository, `<plugin-root>` is the repository checkout root. For an adopter, `<plugin-root>` is the installed plugin directory containing `lib/work.py`. For the ordinary entrance, `--root` is the repository checkout that receives implementation-worktree registrations and supplies `.tradecraft/work.json` and `lib/use-rules.json`.
+In this repository, `<plugin-root>` is the repository checkout root. For an adopter, `<plugin-root>` is the installed plugin directory containing `lib/work.py`. For the ordinary entrance, `--root` remains the holder checkout: it supplies `.tradecraft/work.json` and `lib/use-rules.json` and anchors the durable implementation worktree, but is never itself the implementation root.
 
 `--holder-session-id` is required whenever the selected stage launches or resumes a builder; pass the runtime's session identifier, or a stable holder token when that runtime exposes none, so the launcher and worktree registry can keep holder and builder identities distinct.
 
@@ -31,6 +31,10 @@ Power users may put one of `artifact`, `cold-seat`, `build`, `floor`, `use`, `re
 
 The entrance consumes the affirmed brief and recorded evidence; it never decides whether work is worth doing, what the change is for, the brief's terms, a vendor or model default, whether to merge, or an owner ask. `ambiguous-pr` returns to the holder, who names the implementing pull request on the issue with the `implementing-pr` marker or opens the one that should exist. Holder-reading, ready/reviewer setup, waiting, panel coordination and terminal states also return to the holder without an unattended recipient.
 
-Before a fresh build dispatch, the entrance atomically registers the canonical implementation root in the machine-local worktree registry. A holder runtime loading project `PreToolUse` hooks refuses writes below every active root; another runtime records `holder_write_guard=unavailable`, with revision and status snapshots providing detection only, because detection is not equivalent enforcement.
+Before a fresh build dispatch, the entrance creates a branch and implementation worktree below the holder checkout's `.claude/worktrees/`, then atomically registers and dispatches into that root. Every later stage resolves the registered root, including an artifact or cold seat reached after build, so proof reads the change rather than the holder's checkout. The builder remains on the entrance-created branch rather than creating or switching to another.
+
+`holder_write_guard=available` records that the holder checkout's project settings declare the write-refusing `PreToolUse` hook; it does not claim the runtime loaded or enforced it. Without that complete declaration the entrance records `unavailable`, and revision and status snapshots provide detection only, because detection is not equivalent enforcement.
+
+Every entrance run sweeps active registrations and makes one inactive only when its uniquely identified implementing pull request is closed or merged, or when no implementing pull request is identified and the issue is closed. A holder can release one directly with `python <plugin-root>/lib/work.py release --repo OWNER/REPO --issue N --root HOLDER_PATH [--instalment VALUE]`; release changes only the registry row and leaves its worktree and branch in place, because they may contain work the holder still needs.
 
 For a resumed implementer stage, the entrance first recovers the latest matching session from the machine-local dispatch bundles and otherwise accepts the issue's authorized `builder-session` marker; if neither can supply the required continuity, it returns a non-dispatching decision naming the stage and missing evidence.

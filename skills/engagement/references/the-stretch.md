@@ -12,7 +12,7 @@ Post the whole-change reading with the `work` cell's marker, replacing `RESULT` 
 <!-- tradecraft:holder-reading:v1 result=RESULT -->
 ```
 
-The builder launcher registers an implementation worktree before dispatch. In a holder runtime that loads project pre-tool hooks, the holder guard rereads that machine-local registry on every edit, write, notebook edit or shell call and refuses an implicated write. A runtime with no such hook records the guard as unavailable and retains before/after revision and status evidence; those snapshots detect a breach but do not enforce the boundary.
+The builder launcher cuts a branch and separate implementation worktree below the holder checkout's ignored `.claude/worktrees/`, registers that root, and dispatches the builder there; later stages resolve the same root so the holder does not edit the implementation tree and judgment reads the change. The recorded guard status describes whether the holder checkout's project settings declare the write-refusing pre-tool hook, not whether a runtime enforced it. When declared, that hook rereads the machine-local registry on every edit, write, notebook edit or shell call and refuses an implicated write; without the declaration, before/after revision and status snapshots detect a breach but do not enforce the boundary.
 
 **The material handing a party its job states the tools and permission or approval route it must be started with to perform it, and a launcher capable of checking that declaration refuses a launch that would not supply it**, because instructions cannot supply a capability the launch withholds.
 
