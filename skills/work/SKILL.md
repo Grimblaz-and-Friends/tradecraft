@@ -27,7 +27,7 @@ The script reads issue, pull-request, check, review and comment state with GitHu
 
 An affirmed-brief marker counts only with exactly one lawful `Review risk` and `Review lane` pair. Changed paths are matched against the repository's schema-versioned JSON use rules; a bought use needs a current-head note, and the other branch needs its explicit no-use line. These are guards read by the entrance rather than choices it makes.
 
-Power users may put one of `artifact`, `cold-seat`, `build`, `floor`, `use`, `review-disposition` or `release-report` before the options. That runs only the named stage and exits. Every builder prompt names one stage and tells the recipient to return rather than start another.
+Power users may put one of `artifact`, `cold-seat`, `build`, `floor`, `use`, `review-disposition` or `release-report` before the options. That runs only the named stage and exits. The direct `release` command below occupies the same positional slot but is not a stage and never dispatches. Every builder prompt names one stage and tells the recipient to return rather than start another.
 
 The entrance consumes the affirmed brief and recorded evidence; it never decides whether work is worth doing, what the change is for, the brief's terms, a vendor or model default, whether to merge, or an owner ask. `ambiguous-pr` returns to the holder, who names the implementing pull request on the issue with the `implementing-pr` marker or opens the one that should exist. Holder-reading, ready/reviewer setup, waiting, panel coordination and terminal states also return to the holder without an unattended recipient.
 

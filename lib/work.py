@@ -1127,8 +1127,16 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
 
 
 def parser() -> argparse.ArgumentParser:
-    cli = argparse.ArgumentParser(description="Read GitHub state and run exactly one change stage.")
-    cli.add_argument("command", nargs="?", choices=CLI_COMMANDS)
+    cli = argparse.ArgumentParser(
+        description="Read GitHub state and run exactly one change stage, or release one registration."
+    )
+    cli.add_argument(
+        "command", nargs="?", choices=CLI_COMMANDS,
+        help=(
+            "stage to run; omit to select from state, or use release to make one "
+            "registration inactive without dispatching or deleting its worktree"
+        ),
+    )
     cli.add_argument("--repo", required=True)
     cli.add_argument("--issue", required=True, type=int)
     cli.add_argument("--root", required=True, type=Path)

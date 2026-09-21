@@ -1181,3 +1181,12 @@ def test_release_command_sweeps_first_and_never_dispatches(tmp_path, monkeypatch
     assert calls == [transport]
     assert "implementation" in capsys.readouterr().out
     assert "release" in work.parser().format_help()
+
+
+def test_help_distinguishes_release_from_a_dispatching_stage():
+    help_text = " ".join(work.parser().format_help().split())
+    assert "run exactly one change stage, or release one registration" in help_text
+    assert (
+        "use release to make one registration inactive without dispatching or "
+        "deleting its worktree"
+    ) in help_text
