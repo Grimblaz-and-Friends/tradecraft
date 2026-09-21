@@ -7,7 +7,8 @@ tradecraft issue #665. Its product repository configuration names
 lab-specific file.
 
 Run `python tools/score_phase_b.py --status` for exactly the qualifying-change
-count and whole calendar days elapsed. Run
+count and whole calendar days elapsed. The status read is also the trigger for
+the `engagement` cell's read across landed changes. Run
 `python tools/score_phase_b.py --final` only at a terminus. Final mode exits
 nonzero without a partial table until the first of 28 calendar days after the
 opening instant or 20 qualifying merged product pull requests. At a terminus
