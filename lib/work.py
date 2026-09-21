@@ -766,11 +766,18 @@ def release_registration(repo: str, issue: int, holder_root: Path,
     )]
     if not matches:
         raise WorkError(f"no implementation registration matches {repo}#{issue}")
-    if len(matches) != 1:
+    active_matches = [row for row in matches if row.get("active") is True]
+    if len(active_matches) > 1:
         raise WorkError(f"multiple implementation registrations match {repo}#{issue}")
-    matches[0]["active"] = False
+    if active_matches:
+        selected = active_matches[0]
+    elif len(matches) == 1:
+        selected = matches[0]
+    else:
+        raise WorkError(f"no active implementation registration matches {repo}#{issue}")
+    selected["active"] = False
     write_registry(current)
-    return Path(str(matches[0]["root"])).expanduser().resolve()
+    return Path(str(selected["root"])).expanduser().resolve()
 
 
 def sweep_registry(transport: GitHubREST) -> None:
@@ -796,6 +803,21 @@ def sweep_registry(transport: GitHubREST) -> None:
             candidates = sorted(_candidate_prs(
                 issue_number, issue, comments, pulls, config, include_closed=True
             ))
+            registered_branch = row.get("branch")
+            if isinstance(registered_branch, str) and registered_branch:
+                matching_candidates = []
+                for candidate in candidates:
+                    pull = next((item for item in pulls
+                                 if item.get("number") == candidate), None)
+                    if pull is None:
+                        raise WorkError("implementing pull request state is absent")
+                    head = pull.get("head")
+                    pull_branch = head.get("ref") if isinstance(head, dict) else None
+                    if not isinstance(pull_branch, str) or not pull_branch:
+                        raise WorkError("implementing pull request branch is absent")
+                    if pull_branch == registered_branch:
+                        matching_candidates.append(candidate)
+                candidates = matching_candidates
             if len(candidates) > 1:
                 raise WorkError("multiple implementing pull requests are terminal candidates")
             if candidates:

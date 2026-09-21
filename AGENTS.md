@@ -14,6 +14,8 @@ When whether work is worth doing outruns the available evidence, argue it agains
 
 Shipped (`skills/`, `lib/`, `commands/`, `agents/`, `hooks/`, `.claude-plugin/`) never references repo-only (`docs/`, `tools/`, `.github/`), and the wall runs one way: repo-only material may reference shipped material, but shipped material must stand on its own for an adopter.
 
+The Steward is this repository's long-lived session for coordinating the lab and holds no change; before starting work or sending it evidence, read `docs/cells/steward/SKILL.md` so the lab's state and every change remain in distinct hands.
+
 ## Code Review Rules
 
 Review pull requests only when they are marked ready; skip drafts. Post only P0/P1 findings a consumer would act on wrongly. Name the wrong action, not the wording. Where this repository's own convention contradicts a general rule, the convention wins and the comment says so. A deletion is as good a finding as an addition.

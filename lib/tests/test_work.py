@@ -1148,6 +1148,44 @@ def test_sweep_releases_only_proven_terminal_rows_and_keeps_worktrees(
     assert "acme/widget#7" in warnings
 
 
+@pytest.mark.parametrize(("pull_branch", "merged_at", "expected_active"), [
+    ("tradecraft/12-former", "now", True),
+    ("tradecraft/12-current", None, False),
+    ("tradecraft/12-current", "now", False),
+])
+def test_sweep_releases_only_a_terminal_pull_request_for_the_registered_branch(
+        tmp_path, monkeypatch, pull_branch, merged_at, expected_active):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    implementation = tmp_path / "implementation"
+    implementation.mkdir()
+    write_registry_rows([{
+        "root": str(implementation), "holder_root": str(holder),
+        "branch": "tradecraft/12-current", "repository": "acme/widget",
+        "issue": 12, "instalment": None, "active": True,
+    }])
+    base = "repos/acme/widget"
+    values = {
+        f"{base}/issues/12": {
+            "number": 12, "state": "open", "body": "",
+        },
+        f"{base}/issues/12/comments": [],
+        f"{base}/pulls?state=all&per_page=100": [{
+            "number": 112, "state": "closed", "merged_at": merged_at,
+            "body": "Fixes #12", "head": {"ref": pull_branch},
+        }],
+    }
+
+    work.sweep_registry(FakeTransport(values))
+
+    row = work.read_registry()["worktrees"][0]
+    assert row["active"] is expected_active
+    assert implementation.is_dir()
+
+
 def test_direct_release_is_idempotent_and_keeps_legacy_worktree(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
@@ -1162,6 +1200,58 @@ def test_direct_release_is_idempotent_and_keeps_legacy_worktree(tmp_path, monkey
     assert work.release_registration("acme/widget", 3, legacy_root, None) == legacy_root
     assert work.read_registry()["worktrees"][0]["active"] is False
     assert legacy_root.is_dir()
+
+
+def test_direct_release_selects_the_active_registration_from_history(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    former = tmp_path / "former"
+    former.mkdir()
+    current = tmp_path / "current"
+    current.mkdir()
+    write_registry_rows([
+        {
+            "root": str(former), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": False,
+        },
+        {
+            "root": str(current), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": True,
+        },
+    ])
+
+    assert work.release_registration("acme/widget", 3, holder, None) == current
+    assert [row["active"] for row in work.read_registry()["worktrees"]] == [False, False]
+    assert former.is_dir()
+    assert current.is_dir()
+
+
+def test_direct_release_refuses_multiple_active_registrations(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    rows = []
+    for name in ("first", "second"):
+        root = tmp_path / name
+        root.mkdir()
+        rows.append({
+            "root": str(root), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": True,
+        })
+    write_registry_rows(rows)
+
+    with pytest.raises(work.WorkError, match="multiple implementation registrations"):
+        work.release_registration("acme/widget", 3, holder, None)
+
+    assert all(row["active"] is True for row in work.read_registry()["worktrees"])
 
 
 def test_release_command_sweeps_first_and_never_dispatches(tmp_path, monkeypatch, capsys):
