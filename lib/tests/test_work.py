@@ -34,6 +34,48 @@ CONFIG = work.WorkConfig(
 )
 
 
+def git(root, *arguments, check=True):
+    return subprocess.run(
+        ["git", "-C", str(root), *arguments], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check,
+    )
+
+
+def repository(tmp_path, name="repository", *, ignore_worktrees=True):
+    root = tmp_path / name
+    root.mkdir()
+    subprocess.run(
+        ["git", "init", str(root)], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+    )
+    (root / "fixture.txt").write_bytes(b"fixture\n")
+    tracked = ["fixture.txt"]
+    if ignore_worktrees:
+        (root / ".gitignore").write_bytes(b".claude/worktrees/\n")
+        tracked.append(".gitignore")
+    git(root, "add", *tracked)
+    git(
+        root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "fixture",
+    )
+    return root.resolve()
+
+
+def registry_row(root, holder, branch, *, issue=12, active=True):
+    return {
+        "root": str(root.resolve()), "holder_root": str(holder.resolve()),
+        "branch": branch, "repository": "example/product", "issue": issue,
+        "instalment": None, "active": active,
+        "holder_session_id": "holder-session",
+        "holder_write_guard": "unavailable",
+        "revision_before": None, "status_before": None,
+    }
+
+
+def write_registry_rows(rows):
+    work.write_registry({"schema_version": 1, "worktrees": rows})
+
+
 def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
           reviewer_ran=False, config=CONFIG):
     comments = [{"body": text, "user": {"login": PRODUCER}} for text in texts]
@@ -547,7 +589,8 @@ def test_review_disposition_marker_is_part_of_the_entrance_evidence():
     assert {marker.name for marker in fixture.markers} == {"connected-reviewer"}
 
 
-def test_run_reads_the_work_configuration_from_root(tmp_path):
+def test_run_reads_the_work_configuration_from_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     configured_work(tmp_path, ["acme/product-app"])
     rules_directory = tmp_path / "lib"
     rules_directory.mkdir()
@@ -714,13 +757,12 @@ def test_build_launch_without_holder_identity_is_refused(tmp_path, monkeypatch, 
     assert "--holder-session-id" in returned["detail"]
 
 
-def test_build_launch_forwards_and_registers_holder_identity(tmp_path, monkeypatch):
+def test_build_launch_forwards_holder_identity_to_the_implementation_root(
+        tmp_path, monkeypatch):
     commands = []
-    registrations = []
-    monkeypatch.setattr(
-        work, "register_worktree",
-        lambda *args, **kwargs: registrations.append((args, kwargs)),
-    )
+    branch = "tradecraft/12-fixture"
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_args: (tmp_path, branch))
+    monkeypatch.setattr(work, "_attached_branch", lambda _root: branch)
     monkeypatch.setattr(
         work.subprocess, "run",
         lambda command: commands.append(command) or subprocess.CompletedProcess(command, 0),
@@ -730,7 +772,7 @@ def test_build_launch_forwards_and_registers_holder_identity(tmp_path, monkeypat
         state(), decision, tmp_path, "2", "stable-holder-token"
     ) == 0
     assert commands[0][-2:] == ["--holder-session-id", "stable-holder-token"]
-    assert registrations[0][0][-1] == "stable-holder-token"
+    assert commands[0][commands[0].index("--root") + 1] == str(tmp_path)
 
 
 def test_resume_marker_equal_to_holder_identity_is_rejected(
@@ -751,6 +793,10 @@ def test_execute_stage_passes_the_recovered_session_to_the_implementer(
         tmp_path, monkeypatch):
     commands = []
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
+    monkeypatch.setattr(
+        work, "_dispatch_root", lambda *_args: (tmp_path, "tradecraft/12-fixture")
+    )
+    monkeypatch.setattr(work, "_attached_branch", lambda _root: "tradecraft/12-fixture")
 
     def run(command):
         commands.append(command)
@@ -791,7 +837,8 @@ def test_judging_root_detaches_an_attached_tree_and_removes_it_afterward(tmp_pat
 
 
 @pytest.mark.parametrize("command", work.COMMANDS)
-def test_power_user_commands_run_one_named_stage(command, tmp_path):
+def test_power_user_commands_run_one_named_stage(command, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     args = work.parser().parse_args([
         command, "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
         "--use-rules", str(LIB / "use-rules.json"),
@@ -827,7 +874,452 @@ def test_registry_write_is_atomic_shape_and_canonical(tmp_path, monkeypatch):
     }]}
 
 
-def test_runtime_without_project_hook_records_enforcement_gap(monkeypatch):
+def test_runtime_without_project_hook_records_enforcement_gap(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     monkeypatch.delenv("CLAUDECODE", raising=False)
-    assert work.holder_guard_status() == "unavailable"
+    assert work.holder_guard_status(tmp_path) == "unavailable"
+
+
+def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holder(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder", ignore_worktrees=False)
+    (holder / "fixture.txt").write_bytes(b"dirty tracked\n")
+    (holder / "untracked.txt").write_bytes(b"dirty untracked\n")
+    before = {
+        "branch": git(holder, "symbolic-ref", "--short", "HEAD").stdout,
+        "head": git(holder, "rev-parse", "HEAD").stdout,
+        "status": git(holder, "status", "--porcelain").stdout,
+        "tracked": (holder / "fixture.txt").read_bytes(),
+        "untracked": (holder / "untracked.txt").read_bytes(),
+    }
+    launches = []
+    original_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            dispatch = Path(command[command.index("--dispatch") + 1])
+            launches.append((command, dispatch.read_bytes()))
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work.subprocess, "run", run)
+    decision = work.Decision("build", True, "fresh", "pull-request-absent")
+    assert work.execute_stage(
+        state(), decision, holder, None, "holder-session"
+    ) == 0
+    assert work.execute_stage(
+        state(), decision, holder, None, "holder-session"
+    ) == 0
+
+    recorded = work.read_registry()["worktrees"]
+    assert len(recorded) == 1
+    row = recorded[0]
+    implementation = Path(row["root"])
+    assert implementation != holder
+    assert implementation.parent == holder / ".claude" / "worktrees"
+    exclude = Path(git(holder, "rev-parse", "--git-path", "info/exclude").stdout.decode().strip())
+    if not exclude.is_absolute():
+        exclude = holder / exclude
+    assert b"/.claude/worktrees/" in exclude.resolve().read_bytes().splitlines()
+    assert not (holder / ".gitignore").exists()
+    assert row["holder_root"] == str(holder)
+    assert row["holder_write_guard"] == "unavailable"
+    assert git(implementation, "symbolic-ref", "--short", "HEAD").stdout.decode().strip() == row["branch"]
+    assert git(implementation, "rev-parse", "HEAD").stdout == before["head"]
+    assert [Path(command[command.index("--root") + 1]) for command, _prompt in launches] == [
+        implementation, implementation,
+    ]
+    assert row["branch"].encode() in launches[0][1]
+    assert b"do not create or switch to another branch" in launches[0][1]
+    assert {
+        "branch": git(holder, "symbolic-ref", "--short", "HEAD").stdout,
+        "head": git(holder, "rev-parse", "HEAD").stdout,
+        "status": git(holder, "status", "--porcelain").stdout,
+        "tracked": (holder / "fixture.txt").read_bytes(),
+        "untracked": (holder / "untracked.txt").read_bytes(),
+    } == before
+
+
+def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    (implementation / "sentinel.txt").write_bytes(b"implementation only\n")
+    git(implementation, "add", "sentinel.txt")
+    git(
+        implementation, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "sentinel",
+    )
+    launches = []
+    judged_sources = []
+    original_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name in {
+                "dispatch_implementer.py", "dispatch_seat.py"}:
+            dispatch = Path(command[command.index("--dispatch") + 1])
+            launches.append((command, dispatch.read_bytes()))
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *args, **kwargs)
+
+    def judging(source):
+        judged_sources.append(source)
+        return nullcontext(source)
+
+    monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
+    fixture = state(AFFIRMED, ARTIFACT, pr=True)
+    for stage, continuity in (
+        ("artifact", "resume"), ("build", "resume"), ("floor", "resume"),
+        ("review-disposition", "resume"), ("release-report", "fresh"),
+    ):
+        assert work.execute_stage(
+            fixture, work.Decision(stage, True, continuity, "fixture"),
+            holder, None, "holder-session",
+        ) == 0
+
+    monkeypatch.setattr(work, "judging_root", judging)
+    for stage in ("cold-seat", "use"):
+        assert work.execute_stage(
+            fixture, work.Decision(stage, True, "fresh", "fixture"),
+            holder, None, "holder-session",
+        ) == 0
+
+    implementer_launches = launches[:5]
+    assert all(
+        Path(command[command.index("--root") + 1]) == implementation
+        for command, _prompt in implementer_launches
+    )
+    assert all(branch.encode() in prompt for _command, prompt in implementer_launches)
+    assert (implementation / "sentinel.txt").read_bytes() == b"implementation only\n"
+    assert judged_sources == [implementation, implementation]
+
+
+def test_holder_guard_status_requires_the_complete_project_declaration(
+        tmp_path, monkeypatch):
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir()
+    complete = {
+        "hooks": {"PreToolUse": [{
+            "matcher": "Edit|Write|NotebookEdit|Bash|PowerShell",
+            "hooks": [
+                {"type": "command", "command": "python lib/holder_tree_guard.py"},
+                {"type": "command", "command": "python extra.py"},
+            ],
+        }]},
+        "permissions": {"allow": []},
+    }
+    cases = (
+        (None, "unavailable"),
+        (b"{malformed", "unavailable"),
+        ({"hooks": {"PreToolUse": [{
+            "hooks": [{"type": "command", "command": "python lib/holder_tree_guard.py"}],
+        }]}}, "available"),
+        ({"hooks": {"PreToolUse": [{
+            "matcher": "Edit|Write|Bash|PowerShell",
+            "hooks": [{"type": "command", "command": "python lib/holder_tree_guard.py"}],
+        }]}}, "unavailable"),
+        ({"hooks": {"PreToolUse": [{
+            "matcher": "Edit|Write|NotebookEdit|Bash|PowerShell",
+            "hooks": [{"type": "command", "command": "python unrelated.py"}],
+        }]}}, "unavailable"),
+        ({"hooks": {"PreToolUse": [{
+            "matcher": "Edit|Write|NotebookEdit|Bash|PowerShell",
+            "hooks": [{"type": "command", "command": "echo lib/holder_tree_guard.py"}],
+        }]}}, "unavailable"),
+        (complete, "available"),
+    )
+    for environment_present in (False, True):
+        if environment_present:
+            monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "fixture")
+            monkeypatch.setenv("CLAUDECODE", "1")
+        else:
+            monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+            monkeypatch.delenv("CLAUDECODE", raising=False)
+        for value, expected in cases:
+            settings_path.unlink(missing_ok=True)
+            if isinstance(value, bytes):
+                settings_path.write_bytes(value)
+            elif value is not None:
+                settings_path.write_text(json.dumps(value), encoding="utf-8")
+            assert work.holder_guard_status(tmp_path) == expected
+
+
+def test_unproved_root_evidence_refuses_every_invalid_class(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    valid = registry_row(implementation, holder, branch)
+    decision = work.Decision("floor", True, "resume", "fixture")
+
+    def refused(rows):
+        write_registry_rows(rows)
+        selected = work._dispatch_root(
+            state(pr=True), decision, holder, None, "holder-session"
+        )
+        assert isinstance(selected, work.Decision)
+        assert selected.dispatch is False
+        return selected.detail
+
+    assert "no active" in refused([])
+    assert "multiple active" in refused([valid.copy(), valid.copy()])
+    legacy = valid.copy()
+    legacy.pop("holder_root")
+    legacy.pop("branch")
+    assert "legacy evidence" in refused([legacy])
+    missing = valid.copy()
+    missing["root"] = str(tmp_path / "missing")
+    assert "is missing" in refused([missing])
+    wrong_holder = valid.copy()
+    wrong_holder["holder_root"] = str(tmp_path / "another-holder")
+    assert "another holder root" in refused([wrong_holder])
+    wrong_branch = valid.copy()
+    wrong_branch["branch"] = "tradecraft/wrong"
+    assert "branch mismatch" in refused([wrong_branch])
+    git(implementation, "checkout", "--detach")
+    assert "is detached" in refused([valid.copy()])
+    git(implementation, "switch", branch)
+    foreign = repository(tmp_path, "foreign")
+    foreign_row = valid.copy()
+    foreign_row["root"] = str(foreign)
+    foreign_row["branch"] = work._attached_branch(foreign)
+    assert "another Git repository" in refused([foreign_row])
+
+    inactive = valid.copy()
+    inactive["active"] = False
+    write_registry_rows([inactive])
+    artifact = work._dispatch_root(
+        state(AFFIRMED), work.Decision("artifact", True, "fresh", "fixture"),
+        holder, None, "holder-session",
+    )
+    assert isinstance(artifact, work.Decision)
+    assert "registration history" in artifact.detail
+
+
+def test_sweep_releases_only_proven_terminal_rows_and_keeps_worktrees(
+        tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    states = {
+        1: ("open", [{"number": 101, "state": "closed", "merged_at": None,
+                       "body": "Fixes #1"}]),
+        2: ("open", [{"number": 102, "state": "closed", "merged_at": "now",
+                       "body": "Fixes #2"}]),
+        3: ("closed", []),
+        4: ("open", [{"number": 104, "state": "open", "merged_at": None,
+                       "body": "Fixes #4"}]),
+        5: ("open", []),
+        6: ("open", [
+            {"number": 106, "state": "closed", "body": "Fixes #6"},
+            {"number": 107, "state": "closed", "body": "Resolves #6"},
+        ]),
+    }
+    values = {}
+    rows = []
+    roots = {}
+    all_pulls = [pull for _issue_state, pulls in states.values() for pull in pulls]
+    for issue_number in range(1, 8):
+        root = tmp_path / f"kept-{issue_number}"
+        root.mkdir()
+        roots[issue_number] = root
+        rows.append({
+            "root": str(root), "repository": "acme/widget", "issue": issue_number,
+            "instalment": None, "active": True,
+        })
+        if issue_number in states:
+            issue_state, pulls = states[issue_number]
+            base = "repos/acme/widget"
+            values[f"{base}/issues/{issue_number}"] = {
+                "number": issue_number, "state": issue_state, "body": "",
+            }
+            values[f"{base}/issues/{issue_number}/comments"] = []
+            values[f"{base}/pulls?state=all&per_page=100"] = all_pulls
+    write_registry_rows(rows)
+    work.sweep_registry(FakeTransport(values))
+    recorded = {row["issue"]: row["active"] for row in work.read_registry()["worktrees"]}
+    assert recorded == {
+        1: False, 2: False, 3: False, 4: True, 5: True, 6: True, 7: True,
+    }
+    assert all(root.is_dir() for root in roots.values())
+    warnings = capsys.readouterr().err
+    assert "acme/widget#6" in warnings
+    assert "acme/widget#7" in warnings
+
+
+@pytest.mark.parametrize(("pull_branch", "merged_at", "expected_active"), [
+    ("tradecraft/12-former", "now", True),
+    ("tradecraft/12-current", None, False),
+    ("tradecraft/12-current", "now", False),
+])
+def test_sweep_releases_only_a_terminal_pull_request_for_the_registered_branch(
+        tmp_path, monkeypatch, pull_branch, merged_at, expected_active):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    implementation = tmp_path / "implementation"
+    implementation.mkdir()
+    write_registry_rows([{
+        "root": str(implementation), "holder_root": str(holder),
+        "branch": "tradecraft/12-current", "repository": "acme/widget",
+        "issue": 12, "instalment": None, "active": True,
+    }])
+    base = "repos/acme/widget"
+    values = {
+        f"{base}/issues/12": {
+            "number": 12, "state": "open", "body": "",
+        },
+        f"{base}/issues/12/comments": [],
+        f"{base}/pulls?state=all&per_page=100": [{
+            "number": 112, "state": "closed", "merged_at": merged_at,
+            "body": "Fixes #12", "head": {"ref": pull_branch},
+        }],
+    }
+
+    work.sweep_registry(FakeTransport(values))
+
+    row = work.read_registry()["worktrees"][0]
+    assert row["active"] is expected_active
+    assert implementation.is_dir()
+
+
+def test_direct_release_is_idempotent_and_keeps_legacy_worktree(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir()
+    write_registry_rows([{
+        "root": str(legacy_root), "repository": "acme/widget", "issue": 3,
+        "instalment": None, "active": True,
+    }])
+    assert work.release_registration("acme/widget", 3, legacy_root, None) == legacy_root
+    assert work.release_registration("acme/widget", 3, legacy_root, None) == legacy_root
+    assert work.read_registry()["worktrees"][0]["active"] is False
+    assert legacy_root.is_dir()
+
+
+def test_direct_release_selects_the_active_registration_from_history(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    former = tmp_path / "former"
+    former.mkdir()
+    current = tmp_path / "current"
+    current.mkdir()
+    write_registry_rows([
+        {
+            "root": str(former), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": False,
+        },
+        {
+            "root": str(current), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": True,
+        },
+    ])
+
+    assert work.release_registration("acme/widget", 3, holder, None) == current
+    assert [row["active"] for row in work.read_registry()["worktrees"]] == [False, False]
+    assert former.is_dir()
+    assert current.is_dir()
+
+
+def test_direct_release_is_a_noop_with_multiple_historical_registrations(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    former = tmp_path / "former"
+    former.mkdir()
+    latest = tmp_path / "latest"
+    latest.mkdir()
+    write_registry_rows([
+        {
+            "root": str(former), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": False,
+        },
+        {
+            "root": str(latest), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": False,
+        },
+    ])
+    before = work.registry_path().read_bytes()
+
+    assert work.release_registration("acme/widget", 3, holder, None) == latest
+    assert [row["active"] for row in work.read_registry()["worktrees"]] == [False, False]
+    assert work.registry_path().read_bytes() == before
+    assert former.is_dir()
+    assert latest.is_dir()
+
+
+def test_direct_release_refuses_multiple_active_registrations(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    rows = []
+    for name in ("first", "second"):
+        root = tmp_path / name
+        root.mkdir()
+        rows.append({
+            "root": str(root), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": True,
+        })
+    write_registry_rows(rows)
+
+    with pytest.raises(work.WorkError, match="multiple implementation registrations"):
+        work.release_registration("acme/widget", 3, holder, None)
+
+    assert all(row["active"] is True for row in work.read_registry()["worktrees"])
+
+
+def test_release_command_sweeps_first_and_never_dispatches(tmp_path, monkeypatch, capsys):
+    args = work.parser().parse_args([
+        "release", "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
+    ])
+    calls = []
+    monkeypatch.setattr(work, "sweep_registry", lambda transport: calls.append(transport))
+    monkeypatch.setattr(
+        work, "release_registration", lambda *_args: tmp_path / "implementation"
+    )
+    transport = object()
+    assert work.run(
+        args, transport=transport,
+        executor=lambda *_args: pytest.fail("release must not dispatch"),
+    ) == 0
+    assert calls == [transport]
+    assert "implementation" in capsys.readouterr().out
+    assert "release" in work.parser().format_help()
+
+
+def test_help_distinguishes_release_from_a_dispatching_stage():
+    help_text = " ".join(work.parser().format_help().split())
+    assert "run exactly one change stage, or release one registration" in help_text
+    assert (
+        "use release to make one registration inactive without dispatching or "
+        "deleting its worktree"
+    ) in help_text

@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -23,6 +25,7 @@ COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
     "review-disposition", "release-report",
 )
+CLI_COMMANDS = (*COMMANDS, "release")
 LANES = {
     "ordinary": "connected",
     "elevated": "routine-panel",
@@ -196,13 +199,14 @@ def _authorized_markers(found: list[Marker], producers: frozenset[str]) -> list[
 
 def _candidate_prs(issue_number: int, issue: dict[str, object],
                    comments: list[dict[str, object]], pulls: list[dict[str, object]],
-                   config: WorkConfig) -> set[int]:
+                   config: WorkConfig, *, include_closed: bool = False) -> set[int]:
     found: set[int] = set()
     issue_closed = str(issue.get("state") or "").lower() == "closed"
     eligible = {
         int(pull["number"]) for pull in pulls
         if isinstance(pull.get("number"), int)
-        and (issue_closed or str(pull.get("state") or "").lower() == "open")
+        and (include_closed or issue_closed
+             or str(pull.get("state") or "").lower() == "open")
     }
     if isinstance(issue.get("pull_request"), dict):
         found.add(issue_number)
@@ -526,6 +530,34 @@ def registry_path() -> Path:
     return Path.home() / ".tradecraft" / "implementation-worktrees.json"
 
 
+def read_registry() -> dict[str, object]:
+    destination = registry_path()
+    try:
+        current = (json.loads(destination.read_bytes()) if destination.is_file()
+                   else {"schema_version": 1, "worktrees": []})
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise WorkError(f"cannot read implementation worktree registry: {destination}") from exc
+    if (not isinstance(current, dict) or current.get("schema_version") != 1
+            or not isinstance(current.get("worktrees"), list)
+            or not all(isinstance(row, dict) for row in current["worktrees"])):
+        raise WorkError("implementation worktree registry has an unsupported shape")
+    return current
+
+
+def write_registry(current: dict[str, object]) -> None:
+    destination = registry_path()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    content = (json.dumps(current, ensure_ascii=True, indent=2) + "\n").encode("utf-8")
+    with tempfile.NamedTemporaryFile(mode="wb", dir=destination.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(content)
+        stream.flush()
+    try:
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _git_snapshot(path: Path) -> tuple[str | None, str | None]:
     values = []
     for arguments in (("rev-parse", "HEAD"), ("status", "--porcelain")):
@@ -538,24 +570,47 @@ def _git_snapshot(path: Path) -> tuple[str | None, str | None]:
     return revision, values[1]
 
 
-def holder_guard_status() -> str:
-    return "available" if any(os.environ.get(name) for name in (
-        "CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE",
-    )) else "unavailable"
+def holder_guard_status(holder_root: Path) -> str:
+    settings = _json_object(holder_root / ".claude" / "settings.json")
+    hooks = settings.get("hooks") if settings else None
+    declarations = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    if not isinstance(declarations, list):
+        return "unavailable"
+    write_surfaces = {"Edit", "Write", "NotebookEdit", "Bash", "PowerShell"}
+    for declaration in declarations:
+        if not isinstance(declaration, dict):
+            continue
+        if "matcher" not in declaration:
+            declared = write_surfaces
+        else:
+            matcher = declaration.get("matcher")
+            declared = set(matcher.split("|")) if isinstance(matcher, str) else set()
+        command_hooks = declaration.get("hooks")
+        if not write_surfaces.issubset(declared) or not isinstance(command_hooks, list):
+            continue
+        for hook in command_hooks:
+            if (not isinstance(hook, dict) or hook.get("type") != "command"
+                    or not isinstance(hook.get("command"), str)):
+                continue
+            try:
+                tokens = shlex.split(hook["command"].replace("\\", "/"))
+            except ValueError:
+                continue
+            normalized = [token.removeprefix("./") for token in tokens]
+            executable = Path(normalized[0]).name.casefold() if normalized else ""
+            if (executable in {"python", "python.exe", "python3", "python3.exe",
+                               "py", "py.exe"}
+                    and "lib/holder_tree_guard.py" in normalized[1:]):
+                return "available"
+    return "unavailable"
 
 
 def register_worktree(path: Path, repo: str, issue: int, instalment: str | None,
                       holder_session_id: str,
-                      *, guard_status: str | None = None) -> None:
+                      *, holder_root: Path | None = None, branch: str | None = None,
+                      guard_status: str | None = None) -> None:
     target = path.expanduser().resolve()
-    destination = registry_path()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        current = json.loads(destination.read_bytes()) if destination.is_file() else {"schema_version": 1, "worktrees": []}
-    except (OSError, ValueError) as exc:
-        raise WorkError(f"cannot read implementation worktree registry: {destination}") from exc
-    if not isinstance(current, dict) or current.get("schema_version") != 1 or not isinstance(current.get("worktrees"), list):
-        raise WorkError("implementation worktree registry has an unsupported shape")
+    current = read_registry()
     rows = [row for row in current["worktrees"] if not (
         isinstance(row, dict) and str(row.get("root") or "").lower() == str(target).lower()
     )]
@@ -563,21 +618,263 @@ def register_worktree(path: Path, repo: str, issue: int, instalment: str | None,
     rows.append({"root": str(target), "repository": repo, "issue": issue,
                  "instalment": instalment, "active": True,
                  "holder_session_id": holder_session_id,
-                 "holder_write_guard": guard_status or holder_guard_status(),
+                 "holder_write_guard": guard_status or holder_guard_status(
+                     (holder_root or target).expanduser().resolve()
+                 ),
+                 **({"holder_root": str(holder_root.expanduser().resolve()),
+                     "branch": branch} if holder_root is not None and branch is not None else {}),
                  "revision_before": revision, "status_before": status})
     current["worktrees"] = rows
-    content = (json.dumps(current, ensure_ascii=True, indent=2) + "\n").encode("utf-8")
+    write_registry(current)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
+
+
+def _git_text(command: list[str], root: Path, purpose: str) -> str:
+    result = _git(command, root)
+    if result.returncode:
+        raise WorkError(f"cannot {purpose}: {_git_failure(result)}")
+    return result.stdout.decode("utf-8", errors="backslashreplace").strip()
+
+
+def _git_top_level(root: Path, purpose: str) -> Path:
+    top = Path(_git_text(["rev-parse", "--show-toplevel"], root, purpose))
+    return top.expanduser().resolve()
+
+
+def _git_common_directory(root: Path) -> Path:
+    value = Path(_git_text(["rev-parse", "--git-common-dir"], root,
+                           "inspect Git common directory"))
+    return (value if value.is_absolute() else root / value).resolve()
+
+
+def _ensure_implementation_parent_ignored(holder_root: Path) -> None:
+    value = Path(_git_text(
+        ["rev-parse", "--git-path", "info/exclude"], holder_root,
+        "locate repository exclude file",
+    ))
+    destination = (value if value.is_absolute() else holder_root / value).resolve()
+    try:
+        existing = destination.read_bytes() if destination.is_file() else b""
+    except OSError as exc:
+        raise WorkError(f"cannot read repository exclude file: {destination}") from exc
+    pattern = b"/.claude/worktrees/"
+    if pattern in existing.splitlines():
+        return
+    separator = b"" if not existing or existing.endswith((b"\n", b"\r")) else b"\n"
+    content = existing + separator + pattern + b"\n"
+    destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="wb", dir=destination.parent, delete=False) as stream:
         temporary = Path(stream.name)
         stream.write(content)
         stream.flush()
     try:
         os.replace(temporary, destination)
+    except OSError as exc:
+        raise WorkError(f"cannot write repository exclude file: {destination}") from exc
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None) -> bytes:
+def _attached_branch(root: Path) -> str:
+    result = _git(["symbolic-ref", "--quiet", "--short", "HEAD"], root)
+    if result.returncode == 1:
+        raise WorkError(f"implementation root is detached: {root}")
+    if result.returncode:
+        raise WorkError(f"cannot inspect implementation branch: {_git_failure(result)}")
+    branch = result.stdout.decode("utf-8", errors="backslashreplace").strip()
+    if not branch:
+        raise WorkError(f"implementation root has no attached branch: {root}")
+    return branch
+
+
+def canonical_holder_root(root: Path) -> Path:
+    holder = root.expanduser().resolve()
+    if not holder.is_dir():
+        raise WorkError(f"holder root does not exist: {holder}")
+    top = _git_top_level(holder, "inspect holder Git top level")
+    if not _same_path(top, holder):
+        raise WorkError(f"holder root is not a Git worktree top level: {holder}")
+    return holder
+
+
+def _change_rows(repo: str, issue: int, instalment: str | None,
+                 *, active_only: bool) -> list[dict[str, object]]:
+    rows = read_registry()["worktrees"]
+    return [row for row in rows if (
+        (not active_only or row.get("active") is True)
+        and str(row.get("repository") or "").casefold() == repo.casefold()
+        and row.get("issue") == issue
+        and (instalment is None or row.get("instalment") == instalment)
+    )]
+
+
+def _validate_implementation_row(row: dict[str, object], holder_root: Path) -> tuple[Path, str]:
+    root_value = row.get("root")
+    holder_value = row.get("holder_root")
+    branch_value = row.get("branch")
+    if not all(isinstance(value, str) and value for value in (
+            root_value, holder_value, branch_value)):
+        raise WorkError("active registration is legacy evidence without holder_root and branch")
+    implementation_root = Path(root_value).expanduser().resolve()
+    recorded_holder = Path(holder_value).expanduser().resolve()
+    if not _same_path(recorded_holder, holder_root):
+        raise WorkError(
+            f"active registration belongs to another holder root: {recorded_holder}"
+        )
+    if not implementation_root.is_dir():
+        raise WorkError(f"registered implementation root is missing: {implementation_root}")
+    implementation_top = _git_top_level(
+        implementation_root, "inspect implementation Git top level"
+    )
+    if not _same_path(implementation_top, implementation_root):
+        raise WorkError(
+            f"registered implementation root is not a Git worktree top level: {implementation_root}"
+        )
+    branch = _attached_branch(implementation_root)
+    if branch != branch_value:
+        raise WorkError(
+            f"registered implementation branch mismatch: expected {branch_value}, found {branch}"
+        )
+    if not _same_path(
+        _git_common_directory(implementation_root), _git_common_directory(holder_root)
+    ):
+        raise WorkError("registered implementation root belongs to another Git repository")
+    return implementation_root, branch
+
+
+def resolve_implementation_root(holder_root: Path, repo: str, issue: int,
+                                instalment: str | None) -> tuple[Path, str] | None:
+    matches = _change_rows(repo, issue, instalment, active_only=True)
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise WorkError(f"multiple active implementation roots match {repo}#{issue}")
+    return _validate_implementation_row(matches[0], canonical_holder_root(holder_root))
+
+
+def create_implementation_root(holder_root: Path, repo: str, issue: int,
+                               instalment: str | None,
+                               holder_session_id: str) -> tuple[Path, str]:
+    holder = canonical_holder_root(holder_root)
+    revision = _git_text(["rev-parse", "HEAD"], holder, "inspect holder HEAD")
+    suffix = secrets.token_hex(6)
+    branch = f"tradecraft/{issue}-{suffix}"
+    target = holder / ".claude" / "worktrees" / f"issue-{issue}-{suffix}"
+    _ensure_implementation_parent_ignored(holder)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    added = _git(["worktree", "add", "-b", branch, str(target), "HEAD"], holder)
+    if added.returncode:
+        raise WorkError(f"cannot create implementation worktree: {_git_failure(added)}")
+    implementation_root, attached_branch = _validate_implementation_row({
+        "root": str(target), "holder_root": str(holder), "branch": branch,
+    }, holder)
+    created_revision = _git_text(
+        ["rev-parse", "HEAD"], implementation_root, "inspect implementation HEAD"
+    )
+    if created_revision != revision:
+        raise WorkError(
+            "created implementation worktree does not begin at the holder revision"
+        )
+    register_worktree(
+        implementation_root, repo, issue, instalment, holder_session_id,
+        holder_root=holder, branch=attached_branch,
+    )
+    return implementation_root, attached_branch
+
+
+def release_registration(repo: str, issue: int, holder_root: Path,
+                         instalment: str | None) -> Path:
+    holder = holder_root.expanduser().resolve()
+    current = read_registry()
+    matches = [row for row in current["worktrees"] if (
+        str(row.get("repository") or "").casefold() == repo.casefold()
+        and row.get("issue") == issue
+        and (instalment is None or row.get("instalment") == instalment)
+        and isinstance(row.get("root"), str)
+        and _same_path(Path(str(row.get("holder_root") or row["root"])), holder)
+    )]
+    if not matches:
+        raise WorkError(f"no implementation registration matches {repo}#{issue}")
+    active_matches = [row for row in matches if row.get("active") is True]
+    if len(active_matches) > 1:
+        raise WorkError(f"multiple implementation registrations match {repo}#{issue}")
+    if active_matches:
+        selected = active_matches[0]
+        selected["active"] = False
+        write_registry(current)
+    else:
+        selected = matches[-1]
+    return Path(str(selected["root"])).expanduser().resolve()
+
+
+def sweep_registry(transport: GitHubREST) -> None:
+    current = read_registry()
+    changed = False
+    for row in current["worktrees"]:
+        if row.get("active") is not True:
+            continue
+        repo = row.get("repository")
+        issue_number = row.get("issue")
+        if not isinstance(repo, str) or not isinstance(issue_number, int):
+            print("work: warning: active registry row has invalid change identity",
+                  file=sys.stderr)
+            continue
+        try:
+            base = f"repos/{repo}"
+            issue_endpoint = f"{base}/issues/{issue_number}"
+            issue = _dict(transport.get(issue_endpoint), issue_endpoint)
+            comments = _get_list(transport, f"{issue_endpoint}/comments")
+            pulls = _get_list(transport, f"{base}/pulls?state=all&per_page=100")
+            config_root = Path(str(row.get("holder_root") or row.get("root") or ""))
+            config = load_work_config(config_root.expanduser().resolve())
+            candidates = sorted(_candidate_prs(
+                issue_number, issue, comments, pulls, config, include_closed=True
+            ))
+            registered_branch = row.get("branch")
+            if isinstance(registered_branch, str) and registered_branch:
+                matching_candidates = []
+                for candidate in candidates:
+                    pull = next((item for item in pulls
+                                 if item.get("number") == candidate), None)
+                    if pull is None:
+                        raise WorkError("implementing pull request state is absent")
+                    head = pull.get("head")
+                    pull_branch = head.get("ref") if isinstance(head, dict) else None
+                    if not isinstance(pull_branch, str) or not pull_branch:
+                        raise WorkError("implementing pull request branch is absent")
+                    if pull_branch == registered_branch:
+                        matching_candidates.append(candidate)
+                candidates = matching_candidates
+            if len(candidates) > 1:
+                raise WorkError("multiple implementing pull requests are terminal candidates")
+            if candidates:
+                pull = next((item for item in pulls
+                             if item.get("number") == candidates[0]), None)
+                if pull is None:
+                    raise WorkError("implementing pull request state is absent")
+                terminal = bool(pull.get("merged_at")) or str(
+                    pull.get("state") or ""
+                ).lower() == "closed"
+                if terminal:
+                    row["active"] = False
+                    changed = True
+            elif str(issue.get("state") or "").lower() == "closed":
+                row["active"] = False
+                changed = True
+        except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+            print(
+                f"work: warning: cannot determine terminal state for {repo}#{issue_number}: {exc}",
+                file=sys.stderr,
+            )
+    if changed:
+        write_registry(current)
+
+
+def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None,
+                  branch: str | None = None) -> bytes:
     if decision.stage == "cold-seat":
         if root is None:
             raise WorkError("cold-seat dispatch requires its isolated working root")
@@ -608,6 +905,11 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         instruction += (
             " Tell the holder to post <!-- tradecraft:builder-session:v1 session=SESSION --> "
             "on the issue using the session id printed by the launcher."
+        )
+    if branch is not None:
+        instruction += (
+            f" The entrance placed this change on branch {branch}. Remain on that branch; "
+            "do not create or switch to another branch."
         )
     return (
         instruction + "\n\n" +
@@ -771,6 +1073,43 @@ def _holder_identity_decision(state: WorkState, decision: Decision, reason: str)
     )
 
 
+def _implementation_root_decision(state: WorkState, decision: Decision,
+                                  detail: str) -> Decision:
+    return Decision(
+        decision.stage, False, None,
+        f"implementation-root-unproved-for-{decision.stage}{_ignored_marker_suffix(state)}",
+        detail,
+    )
+
+
+def _dispatch_root(state: WorkState, decision: Decision, holder_root: Path,
+                   instalment: str | None, holder_session_id: str) -> tuple[Path, str | None] | Decision:
+    try:
+        resolved = resolve_implementation_root(
+            holder_root, state.repo, state.issue_number, instalment
+        )
+        if resolved is not None:
+            return resolved
+        if decision.stage == "build" and decision.continuity == "fresh":
+            return create_implementation_root(
+                holder_root, state.repo, state.issue_number, instalment,
+                holder_session_id,
+            )
+    except WorkError as exc:
+        return _implementation_root_decision(state, decision, str(exc))
+    if decision.stage in {"artifact", "cold-seat"}:
+        if _change_rows(state.repo, state.issue_number, instalment, active_only=False):
+            return _implementation_root_decision(
+                state, decision,
+                "the change has implementation registration history but no active root",
+            )
+        return holder_root.expanduser().resolve(), None
+    return _implementation_root_decision(
+        state, decision,
+        f"no active implementation registration matches {state.repo}#{state.issue_number}",
+    )
+
+
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None) -> int:
     if not decision.dispatch:
@@ -797,15 +1136,18 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             )
             print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
             return 0
-    if decision.stage == "build" and decision.continuity == "fresh":
-        register_worktree(
-            root, state.repo, state.issue_number, instalment, holder_identity
-        )
+    selected = _dispatch_root(
+        state, decision, root, instalment, holder_identity
+    )
+    if isinstance(selected, Decision):
+        print(json.dumps(selected.as_dict(), ensure_ascii=True, sort_keys=True))
+        return 0
+    dispatch_root, branch = selected
     here = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(prefix="tradecraft-work-") as temporary:
         dispatch = Path(temporary) / "dispatch.txt"
         if decision.stage in {"cold-seat", "use"}:
-            with judging_root(root) as recipient:
+            with judging_root(dispatch_root) as recipient:
                 prompt = _stage_prompt(state, decision, recipient)
                 dispatch.write_bytes(prompt)
                 common = [
@@ -820,9 +1162,11 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                            "--requires", "read" if decision.stage == "cold-seat" else "execute"]
                 return subprocess.run(command).returncode
         else:
-            dispatch.write_bytes(_stage_prompt(state, decision))
+            if branch is not None:
+                branch = _attached_branch(dispatch_root)
+            dispatch.write_bytes(_stage_prompt(state, decision, branch=branch))
             common = [
-                "--dispatch", str(dispatch), "--root", str(root),
+                "--dispatch", str(dispatch), "--root", str(dispatch_root),
                 "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
                 "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
                 "--settings-scope", decision.stage,
@@ -835,8 +1179,16 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
 
 
 def parser() -> argparse.ArgumentParser:
-    cli = argparse.ArgumentParser(description="Read GitHub state and run exactly one change stage.")
-    cli.add_argument("command", nargs="?", choices=COMMANDS)
+    cli = argparse.ArgumentParser(
+        description="Read GitHub state and run exactly one change stage, or release one registration."
+    )
+    cli.add_argument(
+        "command", nargs="?", choices=CLI_COMMANDS,
+        help=(
+            "stage to run; omit to select from state, or use release to make one "
+            "registration inactive without dispatching or deleting its worktree"
+        ),
+    )
     cli.add_argument("--repo", required=True)
     cli.add_argument("--issue", required=True, type=int)
     cli.add_argument("--root", required=True, type=Path)
@@ -854,8 +1206,14 @@ def run(
     executor: Callable[[WorkState, Decision, Path, str | None, str | None], int] = execute_stage,
 ) -> int:
     root = args.root.expanduser().resolve()
+    github = transport or GitHubREST()
+    sweep_registry(github)
+    if args.command == "release":
+        released = release_registration(args.repo, args.issue, root, args.instalment)
+        print(json.dumps({"released_root": str(released)}, ensure_ascii=True, sort_keys=True))
+        return 0
     config = load_work_config(root)
-    state = read_state(transport or GitHubREST(), args.repo, args.issue, config)
+    state = read_state(github, args.repo, args.issue, config)
     rules = load_use_rules(args.use_rules or root / "lib" / "use-rules.json")
     decision = decide(state, rules)
     if args.command:
