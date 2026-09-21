@@ -10,7 +10,7 @@ description: This repository's own procedure for taking a change from a fresh br
 ## Where this cell's depth lives
 
 - **Your change may be mechanical, or may deliver the truth of some text, and you want to know what that changes about the order above** → `references/where-the-flow-starts.md`: which step each skips and which it never skips, whose list decides *mechanical* and the two neighbouring lists it is not, and the slice of build that precedes the artifact on a truth-of-text change.
-- **Anything owed at or after the commit — what the pull request body must say, or what is left before this change can merge** → `references/the-pull-request-body.md`: the waiting-on-you line and what its green check does not say, the closing reference or the line saying it closes none, the spelling GitHub parses, and everything a change fixing a cause disposes of on the way out.
+- **Anything owed at or after the commit — what the pull request body must say, or what is left before this change can merge** → `references/the-pull-request-body.md`: the waiting-on-you line and what its green check does not say, the closing reference or the line saying it closes none, the path-departure paragraph, the spelling GitHub parses, and everything a change fixing a cause disposes of on the way out.
 
 ## The flow
 

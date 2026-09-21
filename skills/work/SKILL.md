@@ -17,6 +17,8 @@ For the ordinary entrance, run:
 python <plugin-root>/lib/work.py --repo OWNER/REPO --issue N --root PATH --holder-session-id ID
 ```
 
+The fifth merge across the practice's repositories since the last cross-change note, or the status read of a running evaluation, calls for engagement's read across landed changes.
+
 In this repository, `<plugin-root>` is the repository checkout root. For an adopter, `<plugin-root>` is the installed plugin directory containing `lib/work.py`. For the ordinary entrance, `--root` is the repository checkout that receives implementation-worktree registrations and supplies `.tradecraft/work.json` and `lib/use-rules.json`.
 
 `--holder-session-id` is required whenever the selected stage launches or resumes a builder; pass the runtime's session identifier, or a stable holder token when that runtime exposes none, so the launcher and worktree registry can keep holder and builder identities distinct.
