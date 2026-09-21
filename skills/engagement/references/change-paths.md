@@ -12,11 +12,13 @@ The paragraph sits beside the change's existing record. It is the same conventio
 
 ## When the read fires
 
-While a repository-specific evaluation already has a status read, the holder reads when it observes that status read or when five changes have merged after the interval's earlier bound, whichever comes first. The cutoff recorded by a read becomes the next interval's earlier bound and starts its merge count. Once that evaluation ends, five merged changes is the cadence.
+The **reader** is whichever session the repository's doctrine assigns to perform the cross-change read; that session need not hold a change. Absent an assignment, the change's holder is the reader.
+
+While a repository-specific evaluation already has a status read, the reader reads when it observes that status read or when five changes have merged after the interval's earlier bound, whichever comes first. The cutoff recorded by a read becomes the next interval's earlier bound and starts its merge count. Once that evaluation ends, five merged changes is the cadence.
 
 The repository set is the practice repository identified by the installed plugin, the products named by its repository-owned work configuration, and the shared gate named by those products' configured gate job. Every merged pull request in that set counts; the read does not inherit a scorer's exclusions.
 
-Use the previous note's recorded cutoff as the earlier bound. For the first read during an existing evaluation, use that evaluation's opening instant. In a repository with neither a previous note nor an existing evaluation, the holder establishes the earlier bound the first time it carries a change under this procedure: capture one UTC cutoff then, record it in a note that reads no interval, and count later merges from it. Nothing before adoption is in scope because it could not carry the paragraph.
+Use the previous note's recorded cutoff as the earlier bound. For the first read during an existing evaluation, use that evaluation's opening instant. In a repository with neither a previous note nor an existing evaluation, the reader establishes the earlier bound the first time it performs this procedure: capture one UTC cutoff then, record it in a note that reads no interval, and count later merges from it. Nothing before adoption is in scope because it could not carry the paragraph.
 
 For every other read, capture one UTC cutoff immediately before the first repository query. For each repository in the configured set, run:
 
@@ -24,11 +26,11 @@ For every other read, capture one UTC cutoff immediately before the first reposi
 gh api --method GET "repos/<owner>/<repository>/pulls?state=closed&sort=updated&direction=desc&per_page=100" --paginate --jq '.[] | select(.merged_at != null and .merged_at > "<earlier-bound-UTC>" and .merged_at <= "<cutoff-UTC>") | [.merged_at, .html_url] | @tsv'
 ```
 
-The holder orders the returned rows by `merged_at`, counts across repositories, reads every row in the interval and records the cutoff in the note. A pull request merging after the cutoff belongs to the next interval even when it merges before the note is posted. This is an observed cadence, not a job, hook, score or other mechanism.
+The reader orders the returned rows by `merged_at`, counts across repositories, reads every row in the interval and records the cutoff in the note. A pull request merging after the cutoff belongs to the next interval even when it merges before the note is posted. This is an observed cadence, not a job, hook, score or other mechanism.
 
-While the existing evaluation runs, its record issue carries the note. Afterwards all notes land on one standing issue for the read; the first holder who needs that destination opens it once.
+While the existing evaluation runs, its record issue carries the note. Afterwards all notes land on one standing issue for the read; the first reader who needs that destination opens it once.
 
-## What the holder reads
+## What the reader reads
 
 For each landed change, read only:
 
