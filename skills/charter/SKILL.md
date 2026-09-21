@@ -25,7 +25,7 @@ A change that decides or changes behavior, a rule, or a mechanism's public surfa
 
 ## 4. Proof and release
 
-Before release, run the executable checks against the tree that will ship; exercise the built result as its consumer would when the changed paths require that use, or record why no use applies; and resolve every comment from a **connected reviewer**, meaning a configured reviewer that automatically examines the pull request. Merging is the owner's decision, because evidence can inform release authority but cannot replace it.
+Before release, run the executable checks against the tree that will ship; exercise the built result as its consumer would when the changed paths require that use, or record why no use applies; resolve every comment from a **connected reviewer**, meaning a configured reviewer that automatically examines the pull request; and record in the pull request which stages the change skipped, bypassed or stalled at and why. Merging is the owner's decision, because evidence can inform release authority but cannot replace it.
 
 ## 5. Review purchase
 

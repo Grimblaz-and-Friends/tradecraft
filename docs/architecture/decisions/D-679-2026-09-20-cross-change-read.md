@@ -12,7 +12,7 @@ The practice retained a marker timeline, pull-request body and dispatch bundles 
 
 The holding session performs the read, writes its note and takes its exits, so `skills/engagement/references/change-paths.md` carries the method behind one indexed trigger. A reference keeps the cadence-only procedure off the engagement body, which every design, artifact, dispatch and handback firing pays to load. A new cell was rejected because the read has no independent actor or job outside engagement.
 
-The shipped reference is the single operative owner. This repository's pull-request form adds one sentence pointing to the `engagement` cell rather than copying the paragraph rule, and the plugin version moves to `0.144.0` so an adopter receives the revised cell. The shipped reference does not cite this entry: rationale may remain repository-only, while an adopter must be able to follow the method without this log.
+The charter's release paragraph carries the always-on hook that a pull request records which stages the change skipped, bypassed or stalled at and why. The engagement reference remains the single owner of the paragraph's form and the read's method. This repository's pull-request form adds one sentence pointing to the `engagement` cell rather than copying that depth, and the plugin version moves to `0.144.0` so an adopter receives the revised cells. The shipped prose does not cite this entry: rationale may remain repository-only, while an adopter must be able to follow the method without this log.
 
 ### The cadence is observed rather than automated
 
@@ -24,7 +24,7 @@ At landing, the repository-specific Phase B binding is:
 - `<!-- tradecraft:phase-b-window:v1 opened=2026-09-20T18:50:14Z -->`, the first-read watermark recorded by the authorized [opening comment on #665](https://github.com/Grimblaz-and-Friends/tradecraft/issues/665#issuecomment-5752077642);
 - [#665](https://github.com/Grimblaz-and-Friends/tradecraft/issues/665) as the note's destination while that window is open, the same record issue bound by `tools/score_phase_b.py` at the base.
 
-Those are today's repository constants, kept here so the shipped method stays portable and the chain to the local application is one repository-only file. The opening marker supplies the first interval's earlier bound; every later interval uses the previous note's GitHub creation time. When Phase B ends, its status-read arm and destination cease to apply; the five-merge cadence remains, and the first holder who needs the later destination opens one standing issue. Creating that issue now was rejected because it would be an empty second record beside the active one.
+Those are today's repository constants, kept here so the shipped method stays portable and the chain to the local application is one repository-only file. The opening marker supplies the first interval's earlier bound; every later interval uses the cutoff recorded in the previous note. Capturing that cutoff before any repository query keeps a merge arriving during the read for the next interval instead of losing it between queries and note creation. When Phase B ends, its status-read arm and destination cease to apply; the five-merge cadence remains, and the first holder who needs the later destination opens one standing issue. Creating that issue now was rejected because it would be an empty second record beside the active one.
 
 ### Evidence and cost decide the comparison
 
@@ -40,10 +40,10 @@ The changed `skills/**` paths match the `runtime-or-user-surface` rule in `lib/u
 
 The added reference increases the prose reached whenever engagement's cross-change trigger fires and, through existing cell edges, the measured reach of cells that already point to engagement. That cost is accepted because placing the procedure in the engagement body would charge every engagement firing, while a new cell would duplicate its actor and reporting boundary.
 
-Also rejected were a second operative copy in this repository's landing cell, a product or repository identity in shipped prose, a new cadence mechanism, a change to Phase B, a conformity score, a note template or schema, and a standing issue created before Phase B ends. Each would either duplicate an owner, make portable prose local, or turn a manual read over existing evidence into another process machine.
+Also rejected were a second copy of the engagement depth in this repository's landing cell, a product or repository identity in shipped prose, a new cadence mechanism, a change to Phase B, a conformity score, a note template or schema, and a standing issue created before Phase B ends. Each would either duplicate an owner, make portable prose local, or turn a manual read over existing evidence into another process machine.
 
 ## Evidence
 
-The pull request body carries the final executable-floor output and fresh-consumer use evidence, each pinned to the pull-request revision that ships. This entry cannot name that revision while it is being written because adding it and its index row produces the amended commit.
+The pull request body is where the final executable-floor output and fresh-consumer use evidence will be recorded, each pinned to the pull-request revision that ships. This entry cannot name that revision while it is being written because adding it and its index row produces the amended commit.
 
-The implementation surface is re-derived with `git diff --name-only c365cfad374261798c0aed742979e794186108d8 <pull-request-head>` and its content with `git diff c365cfad374261798c0aed742979e794186108d8 <pull-request-head>`. The structural floor is `git diff --check`, `python tools/lint.py`, and `python -m pytest tools/tests skills lib/tests -q -n auto --dist loadfile` on that head. The behavioral proof is the fresh-consumer experience note carried by the pull request body.
+The implementation surface is re-derived with `git diff --name-only c365cfad374261798c0aed742979e794186108d8 <pull-request-head>` and its content with `git diff c365cfad374261798c0aed742979e794186108d8 <pull-request-head>`. The structural floor is `git diff --check`, `python tools/lint.py`, and `python -m pytest tools/tests skills lib/tests -q -n auto --dist loadfile` on that head. Once run, the behavioral proof will be the fresh-consumer experience note recorded in the pull request body.
