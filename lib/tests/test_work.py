@@ -41,16 +41,19 @@ def git(root, *arguments, check=True):
     )
 
 
-def repository(tmp_path, name="repository"):
+def repository(tmp_path, name="repository", *, ignore_worktrees=True):
     root = tmp_path / name
     root.mkdir()
     subprocess.run(
         ["git", "init", str(root)], stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
     )
-    (root / ".gitignore").write_bytes(b".claude/worktrees/\n")
     (root / "fixture.txt").write_bytes(b"fixture\n")
-    git(root, "add", ".gitignore", "fixture.txt")
+    tracked = ["fixture.txt"]
+    if ignore_worktrees:
+        (root / ".gitignore").write_bytes(b".claude/worktrees/\n")
+        tracked.append(".gitignore")
+    git(root, "add", *tracked)
     git(
         root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "fixture",
@@ -882,7 +885,7 @@ def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holde
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
-    holder = repository(tmp_path, "holder")
+    holder = repository(tmp_path, "holder", ignore_worktrees=False)
     (holder / "fixture.txt").write_bytes(b"dirty tracked\n")
     (holder / "untracked.txt").write_bytes(b"dirty untracked\n")
     before = {
@@ -917,6 +920,11 @@ def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holde
     implementation = Path(row["root"])
     assert implementation != holder
     assert implementation.parent == holder / ".claude" / "worktrees"
+    exclude = Path(git(holder, "rev-parse", "--git-path", "info/exclude").stdout.decode().strip())
+    if not exclude.is_absolute():
+        exclude = holder / exclude
+    assert b"/.claude/worktrees/" in exclude.resolve().read_bytes().splitlines()
+    assert not (holder / ".gitignore").exists()
     assert row["holder_root"] == str(holder)
     assert row["holder_write_guard"] == "unavailable"
     assert git(implementation, "symbolic-ref", "--short", "HEAD").stdout.decode().strip() == row["branch"]
@@ -1012,6 +1020,9 @@ def test_holder_guard_status_requires_the_complete_project_declaration(
     cases = (
         (None, "unavailable"),
         (b"{malformed", "unavailable"),
+        ({"hooks": {"PreToolUse": [{
+            "hooks": [{"type": "command", "command": "python lib/holder_tree_guard.py"}],
+        }]}}, "available"),
         ({"hooks": {"PreToolUse": [{
             "matcher": "Edit|Write|Bash|PowerShell",
             "hooks": [{"type": "command", "command": "python lib/holder_tree_guard.py"}],
@@ -1229,6 +1240,38 @@ def test_direct_release_selects_the_active_registration_from_history(tmp_path, m
     assert [row["active"] for row in work.read_registry()["worktrees"]] == [False, False]
     assert former.is_dir()
     assert current.is_dir()
+
+
+def test_direct_release_is_a_noop_with_multiple_historical_registrations(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = tmp_path / "holder"
+    holder.mkdir()
+    former = tmp_path / "former"
+    former.mkdir()
+    latest = tmp_path / "latest"
+    latest.mkdir()
+    write_registry_rows([
+        {
+            "root": str(former), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": False,
+        },
+        {
+            "root": str(latest), "holder_root": str(holder),
+            "repository": "acme/widget", "issue": 3,
+            "instalment": None, "active": False,
+        },
+    ])
+    before = work.registry_path().read_bytes()
+
+    assert work.release_registration("acme/widget", 3, holder, None) == latest
+    assert [row["active"] for row in work.read_registry()["worktrees"]] == [False, False]
+    assert work.registry_path().read_bytes() == before
+    assert former.is_dir()
+    assert latest.is_dir()
 
 
 def test_direct_release_refuses_multiple_active_registrations(tmp_path, monkeypatch):

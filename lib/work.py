@@ -580,8 +580,11 @@ def holder_guard_status(holder_root: Path) -> str:
     for declaration in declarations:
         if not isinstance(declaration, dict):
             continue
-        matcher = declaration.get("matcher")
-        declared = set(matcher.split("|")) if isinstance(matcher, str) else set()
+        if "matcher" not in declaration:
+            declared = write_surfaces
+        else:
+            matcher = declaration.get("matcher")
+            declared = set(matcher.split("|")) if isinstance(matcher, str) else set()
         command_hooks = declaration.get("hooks")
         if not write_surfaces.issubset(declared) or not isinstance(command_hooks, list):
             continue
@@ -645,6 +648,34 @@ def _git_common_directory(root: Path) -> Path:
     value = Path(_git_text(["rev-parse", "--git-common-dir"], root,
                            "inspect Git common directory"))
     return (value if value.is_absolute() else root / value).resolve()
+
+
+def _ensure_implementation_parent_ignored(holder_root: Path) -> None:
+    value = Path(_git_text(
+        ["rev-parse", "--git-path", "info/exclude"], holder_root,
+        "locate repository exclude file",
+    ))
+    destination = (value if value.is_absolute() else holder_root / value).resolve()
+    try:
+        existing = destination.read_bytes() if destination.is_file() else b""
+    except OSError as exc:
+        raise WorkError(f"cannot read repository exclude file: {destination}") from exc
+    pattern = b"/.claude/worktrees/"
+    if pattern in existing.splitlines():
+        return
+    separator = b"" if not existing or existing.endswith((b"\n", b"\r")) else b"\n"
+    content = existing + separator + pattern + b"\n"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="wb", dir=destination.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(content)
+        stream.flush()
+    try:
+        os.replace(temporary, destination)
+    except OSError as exc:
+        raise WorkError(f"cannot write repository exclude file: {destination}") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _attached_branch(root: Path) -> str:
@@ -732,6 +763,7 @@ def create_implementation_root(holder_root: Path, repo: str, issue: int,
     suffix = secrets.token_hex(6)
     branch = f"tradecraft/{issue}-{suffix}"
     target = holder / ".claude" / "worktrees" / f"issue-{issue}-{suffix}"
+    _ensure_implementation_parent_ignored(holder)
     target.parent.mkdir(parents=True, exist_ok=True)
     added = _git(["worktree", "add", "-b", branch, str(target), "HEAD"], holder)
     if added.returncode:
@@ -771,12 +803,10 @@ def release_registration(repo: str, issue: int, holder_root: Path,
         raise WorkError(f"multiple implementation registrations match {repo}#{issue}")
     if active_matches:
         selected = active_matches[0]
-    elif len(matches) == 1:
-        selected = matches[0]
+        selected["active"] = False
+        write_registry(current)
     else:
-        raise WorkError(f"no active implementation registration matches {repo}#{issue}")
-    selected["active"] = False
-    write_registry(current)
+        selected = matches[-1]
     return Path(str(selected["root"])).expanduser().resolve()
 
 
