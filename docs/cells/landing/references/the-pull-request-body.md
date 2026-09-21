@@ -6,4 +6,6 @@
 
 The body states `Closes #N`, or one line saying it closes none and why. **A change that fixes a cause disposes of every issue tied to it as a symptom**, with a closing reference for each one the fix discharged and one line for each survivor saying why it stands. Read the symptoms from the cause's own GitHub sub-issue list; where a relationship could not be represented there, walk the issue's flagged prose by hand. Each closing reference is a bare keyword and one number on its own line, because that is the form GitHub parses.
 
+Before the dispatch line, the body carries the path-departure paragraph the `engagement` cell owns.
+
 The body carries `**Dispatch:** holder <vendor> <model>, <usage exactly as the runtime displayed it | usage unavailable — reason>; implementer <vendor actually run>.` Read each value from the runtime or dispatch record rather than reconstructing it from a transcript.
