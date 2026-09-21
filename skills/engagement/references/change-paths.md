@@ -16,7 +16,9 @@ While a repository-specific evaluation already has a status read, the holder rea
 
 The repository set is the practice repository identified by the installed plugin, the products named by its repository-owned work configuration, and the shared gate named by those products' configured gate job. Every merged pull request in that set counts; the read does not inherit a scorer's exclusions.
 
-Use the previous note's recorded cutoff as the earlier bound. For the first read during an existing evaluation, use that evaluation's opening instant. Capture one UTC cutoff immediately before the first repository query. For each repository in the configured set, run:
+Use the previous note's recorded cutoff as the earlier bound. For the first read during an existing evaluation, use that evaluation's opening instant. For a first read with neither a previous note nor an existing evaluation, capture one UTC cutoff, use it as the earlier bound, and record it in a note that reads no interval; the next read starts there. Nothing before adoption is in scope because it could not carry the paragraph.
+
+For every other read, capture one UTC cutoff immediately before the first repository query. For each repository in the configured set, run:
 
 ```text
 gh api --method GET "repos/<owner>/<repository>/pulls?state=closed&sort=updated&direction=desc&per_page=100" --paginate --jq '.[] | select(.merged_at != null and .merged_at > "<earlier-bound-UTC>" and .merged_at <= "<cutoff-UTC>") | [.merged_at, .html_url] | @tsv'
