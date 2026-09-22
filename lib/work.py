@@ -26,6 +26,12 @@ COMMANDS = (
     "review-disposition", "release-report",
 )
 CLI_COMMANDS = (*COMMANDS, "release")
+USE_HOLDER_DETAIL = (
+    "Charter and time-box the experience session under its procedure; "
+    "build and inspect the consumer tree as the isolation reference prescribes; dispatch the "
+    "consumer through lib/dispatch_seat.py with the capability the job requires; write the "
+    "session note and post the current-head use marker."
+)
 LANES = {
     "ordinary": "connected",
     "elevated": "routine-panel",
@@ -142,6 +148,10 @@ class Decision:
             "reason": self.reason,
             "detail": self.detail,
         }
+
+
+def _use_holder_decision(reason: str) -> Decision:
+    return Decision("use", False, None, reason, USE_HOLDER_DETAIL)
 
 
 class GitHubREST:
@@ -503,7 +513,7 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     bought = use_required(state.changed_paths, rules)
     current_use = _current_marker(state, "use", head=sha, status="pass")
     if bought and (current_use is None or not staffing_qualified(current_use)):
-        return result("use", True, "fresh", "current-head-use-absent")
+        return result("use", False, None, "current-head-use-absent", USE_HOLDER_DETAIL)
     if not bought:
         no_use = _current_marker(state, "no-use", head=sha)
         if no_use is None or "Use: not required" not in no_use.body:
@@ -875,6 +885,8 @@ def sweep_registry(transport: GitHubREST) -> None:
 
 def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None,
                   branch: str | None = None) -> bytes:
+    if decision.stage == "use":
+        raise WorkError("the entrance does not dispatch the use stage; return it to the holder")
     if decision.stage == "cold-seat":
         if root is None:
             raise WorkError("cold-seat dispatch requires its isolated working root")
@@ -1110,12 +1122,39 @@ def _dispatch_root(state: WorkState, decision: Decision, holder_root: Path,
     )
 
 
+def _resolved_use_holder_decision(state: WorkState, decision: Decision, holder_root: Path,
+                                  instalment: str | None) -> Decision:
+    try:
+        resolved = resolve_implementation_root(
+            holder_root, state.repo, state.issue_number, instalment
+        )
+    except WorkError:
+        resolved = None
+    if resolved is None:
+        detail = (
+            "No active registered implementation root resolves for this change and holder; "
+            "repair the registration and run the entrance again instead of archiving the "
+            "--root holder checkout."
+        )
+    else:
+        implementation_root, _branch = resolved
+        detail = (
+            f"Registered implementation root: {implementation_root}; archive and record the "
+            f"session against revision {_head_sha(state)}. {USE_HOLDER_DETAIL}"
+        )
+    return Decision("use", False, None, decision.reason, detail)
+
+
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None) -> int:
+    if decision.stage == "use" and decision.dispatch:
+        decision = _use_holder_decision(decision.reason)
+    if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
+        decision = _resolved_use_holder_decision(state, decision, root, instalment)
     if not decision.dispatch:
         print(json.dumps(decision.as_dict(), ensure_ascii=True, sort_keys=True))
         return 0
-    uses_implementer = decision.stage not in {"cold-seat", "use"}
+    uses_implementer = decision.stage != "cold-seat"
     holder_identity = holder_session_id.strip() if holder_session_id else ""
     if uses_implementer and not holder_identity:
         refused = _holder_identity_decision(
@@ -1146,7 +1185,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     here = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(prefix="tradecraft-work-") as temporary:
         dispatch = Path(temporary) / "dispatch.txt"
-        if decision.stage in {"cold-seat", "use"}:
+        if decision.stage == "cold-seat":
             with judging_root(dispatch_root) as recipient:
                 prompt = _stage_prompt(state, decision, recipient)
                 dispatch.write_bytes(prompt)
@@ -1158,8 +1197,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 ]
                 command = [sys.executable, str(here / "dispatch_seat.py"), *common,
                            "--vendor", "claude", "--own-vendor", "codex",
-                           "--classification", "cold" if decision.stage == "cold-seat" else "ordinary",
-                           "--requires", "read" if decision.stage == "cold-seat" else "execute"]
+                           "--classification", "cold", "--requires", "read"]
                 return subprocess.run(command).returncode
         else:
             if branch is not None:
@@ -1216,7 +1254,9 @@ def run(
     state = read_state(github, args.repo, args.issue, config)
     rules = load_use_rules(args.use_rules or root / "lib" / "use-rules.json")
     decision = decide(state, rules)
-    if args.command:
+    if args.command == "use":
+        decision = _use_holder_decision("power-user-stage-command")
+    elif args.command:
         decision = Decision(args.command, True, "fresh", "power-user-stage-command")
     return executor(state, decision, root, args.instalment, args.holder_session_id)
 
