@@ -1305,6 +1305,25 @@ def test_legacy_registration_migrates_before_dispatch_and_names_the_proof_gap(
         work.resolve_implementation_root(holder, "example/product", 12, None)
 
 
+def test_legacy_migration_refuses_holder_root_and_names_adopt(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    branch = work._attached_branch(holder)
+    legacy = registry_row(holder, holder, branch)
+    legacy.pop("holder_root")
+    legacy.pop("branch")
+    write_registry_rows([legacy])
+    before = work.registry_path().read_bytes()
+
+    with pytest.raises(work.WorkError, match="run adopt with a distinct"):
+        work.resolve_implementation_root(holder, "example/product", 12, None)
+
+    assert work.registry_path().read_bytes() == before
+
+
 @pytest.mark.parametrize(("case", "message"), [
     ("missing-holder", "invalid holder_root or branch"),
     ("missing-branch", "invalid holder_root or branch"),
@@ -1666,6 +1685,72 @@ def test_adopt_command_recovers_a_released_tree_without_dispatching_or_moving_it
     assert competing.is_dir()
 
 
+def test_adopt_accepts_a_non_entrance_branch(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "first-holder-session"
+    )
+    git(implementation, "branch", "-m", "legacy-feature")
+
+    adopted_root, adopted_branch = work.adopt_registration(
+        holder, implementation, "example/product", 12, None, SESSION
+    )
+
+    assert (adopted_root, adopted_branch) == (implementation, "legacy-feature")
+    matching = [
+        row for row in work.read_registry()["worktrees"]
+        if row.get("repository") == "example/product" and row.get("issue") == 12
+    ]
+    assert sum(row.get("active") is True for row in matching) == 1
+    assert matching[-1]["branch"] == "legacy-feature"
+
+
+def test_adopt_refuses_another_issues_entrance_branch_without_changing_registry(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "first-holder-session"
+    )
+    before = work.registry_path().read_bytes()
+
+    with pytest.raises(work.WorkError, match="does not belong to issue 13"):
+        work.adopt_registration(
+            holder, implementation, "example/product", 13, None, SESSION
+        )
+
+    assert work.registry_path().read_bytes() == before
+
+
+def test_adopt_requires_an_instalment_when_named_registrations_exist(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "first-holder-session"
+    )
+    current = work.read_registry()
+    named = dict(current["worktrees"][0])
+    named["instalment"] = "2"
+    current["worktrees"].append(named)
+    work.write_registry(current)
+    before = work.registry_path().read_bytes()
+
+    with pytest.raises(work.WorkError, match="requires --instalment"):
+        work.adopt_registration(
+            holder, implementation, "example/product", 12, None, SESSION
+        )
+
+    assert work.registry_path().read_bytes() == before
+
+
 @pytest.mark.parametrize(("case", "message"), [
     ("missing-holder-identity", "requires --holder-session-id"),
     ("holder-root", "distinct from the holder root"),
@@ -1673,7 +1758,6 @@ def test_adopt_command_recovers_a_released_tree_without_dispatching_or_moving_it
     ("nested-root", "not a Git worktree top level"),
     ("detached-root", "is detached"),
     ("foreign-root", "another Git repository"),
-    ("wrong-issue", "does not belong to issue 13"),
 ])
 def test_adopt_refuses_unproved_trees_without_changing_registry(
         tmp_path, monkeypatch, case, message):
@@ -1701,8 +1785,6 @@ def test_adopt_refuses_unproved_trees_without_changing_registry(
     elif case == "foreign-root":
         candidate = repository(tmp_path, "foreign")
         git(candidate, "branch", "-m", "tradecraft/12-fedcba987654")
-    elif case == "wrong-issue":
-        issue = 13
     before = work.registry_path().read_bytes()
 
     with pytest.raises(work.WorkError, match=message):

@@ -808,6 +808,11 @@ def resolve_implementation_root(holder_root: Path, repo: str, issue: int,
                 "registered implementation root is not a Git worktree top level: "
                 f"{implementation_root}"
             )
+        if _same_path(implementation_root, holder):
+            raise WorkError(
+                "legacy registration names the holder root; run adopt with a distinct "
+                "implementation root"
+            )
         branch = _attached_branch(implementation_root)
         if not _same_path(
             _git_common_directory(implementation_root), _git_common_directory(holder)
@@ -877,15 +882,27 @@ def adopt_registration(holder_root: Path, implementation_root: Path, repo: str,
     branch = _attached_branch(target)
     if not _same_path(_git_common_directory(target), _git_common_directory(holder)):
         raise WorkError("implementation root belongs to another Git repository")
-    if re.fullmatch(rf"tradecraft/{issue}-[0-9a-f]{{12}}", branch) is None:
+    entrance_branch = re.fullmatch(
+        r"tradecraft/([1-9][0-9]*)-[0-9a-f]{12}", branch
+    )
+    if entrance_branch is not None and int(entrance_branch.group(1)) != issue:
         raise WorkError(
             f"implementation branch does not belong to issue {issue}: {branch}"
+        )
+    current = read_registry()
+    if instalment is None and any(
+            str(row.get("repository") or "").casefold() == repo.casefold()
+            and row.get("issue") == issue
+            and row.get("instalment") is not None
+            for row in current["worktrees"]):
+        raise WorkError(
+            "adopt requires --instalment because named instalment registrations exist "
+            f"for {repo}#{issue}"
         )
     adopted = _registration_row(
         target, repo, issue, instalment, holder_identity,
         holder_root=holder, branch=branch,
     )
-    current = read_registry()
     for row in current["worktrees"]:
         if _row_matches_change(row, repo, issue, instalment):
             row["active"] = False
