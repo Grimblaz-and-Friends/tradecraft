@@ -788,14 +788,11 @@ def test_build_launch_without_holder_identity_is_refused(tmp_path, monkeypatch, 
     assert "--holder-session-id" in returned["detail"]
 
 
-def test_dispatching_use_is_returned_before_root_prompt_or_launch(
+def test_dispatching_use_without_registration_names_absence_before_prompt_or_launch(
         tmp_path, monkeypatch, capsys):
-    expected = work.decide(
-        state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True), RULES
-    )
-
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     def fail(*_args, **_kwargs):
-        pytest.fail("a use handoff must not inspect a root, build a prompt, or launch")
+        pytest.fail("a use handoff must not build a prompt or launch")
 
     monkeypatch.setattr(work, "_dispatch_root", fail)
     monkeypatch.setattr(work, "judging_root", fail)
@@ -805,13 +802,37 @@ def test_dispatching_use_is_returned_before_root_prompt_or_launch(
     decision = work.Decision("use", True, "fresh", "externally-constructed-use")
     assert work.execute_stage(state(pr=True), decision, tmp_path, None) == 0
     returned = json.loads(capsys.readouterr().out)
-    assert returned == {
-        "continuity": None,
-        "detail": expected.detail,
-        "dispatch": False,
-        "reason": "externally-constructed-use",
-        "stage": "use",
-    }
+    assert (returned["stage"], returned["dispatch"], returned["continuity"],
+            returned["reason"]) == ("use", False, None, "externally-constructed-use")
+    assert "no active registered implementation root resolves" in returned["detail"].lower()
+    assert "instead of archiving the --root holder checkout" in returned["detail"].lower()
+    assert str(tmp_path.resolve()) not in returned["detail"]
+    assert SHA not in returned["detail"]
+
+
+def test_use_handoff_names_registered_implementation_root_and_revision(
+        tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    revision = git(implementation, "rev-parse", "HEAD").stdout.decode().strip()
+    fixture = state(
+        AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR.replace(SHA, revision), pr=True
+    )
+    fixture.pr["head"]["sha"] = revision
+
+    assert work.execute_stage(
+        fixture, work.decide(fixture, RULES), holder, None
+    ) == 0
+    returned = json.loads(capsys.readouterr().out)
+    assert (returned["stage"], returned["dispatch"], returned["continuity"],
+            returned["reason"]) == ("use", False, None, "current-head-use-absent")
+    assert str(implementation) in returned["detail"]
+    assert revision in returned["detail"]
 
 
 def test_build_launch_forwards_holder_identity_to_the_implementation_root(

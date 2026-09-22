@@ -1122,10 +1122,35 @@ def _dispatch_root(state: WorkState, decision: Decision, holder_root: Path,
     )
 
 
+def _resolved_use_holder_decision(state: WorkState, decision: Decision, holder_root: Path,
+                                  instalment: str | None) -> Decision:
+    try:
+        resolved = resolve_implementation_root(
+            holder_root, state.repo, state.issue_number, instalment
+        )
+    except WorkError:
+        resolved = None
+    if resolved is None:
+        detail = (
+            "No active registered implementation root resolves for this change and holder; "
+            "repair the registration and run the entrance again instead of archiving the "
+            "--root holder checkout."
+        )
+    else:
+        implementation_root, _branch = resolved
+        detail = (
+            f"Registered implementation root: {implementation_root}; archive and record the "
+            f"session against revision {_head_sha(state)}. {USE_HOLDER_DETAIL}"
+        )
+    return Decision("use", False, None, decision.reason, detail)
+
+
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None) -> int:
     if decision.stage == "use" and decision.dispatch:
         decision = _use_holder_decision(decision.reason)
+    if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
+        decision = _resolved_use_holder_decision(state, decision, root, instalment)
     if not decision.dispatch:
         print(json.dumps(decision.as_dict(), ensure_ascii=True, sort_keys=True))
         return 0

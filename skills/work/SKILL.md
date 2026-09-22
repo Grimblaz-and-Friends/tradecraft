@@ -27,7 +27,7 @@ The script reads issue, pull-request, check, review and comment state with GitHu
 
 An affirmed-brief marker counts only with exactly one lawful `Review risk` and `Review lane` pair. Changed paths are matched against the repository's schema-versioned JSON use rules; a bought use needs a current-head note, and the other branch needs its explicit no-use line. These are guards read by the entrance rather than choices it makes.
 
-Power users may put one of `artifact`, `cold-seat`, `build`, `floor`, `use`, `review-disposition` or `release-report` before the options. That runs only the named stage and exits. The direct `release` command below occupies the same positional slot but is not a stage and never dispatches. Every builder prompt names one stage and tells the recipient to return rather than start another.
+Power users may put one of `artifact`, `cold-seat`, `build`, `floor`, `use`, `review-disposition` or `release-report` before the options. That runs only the named stage and exits, except `use`, which returns the holder handoff without dispatching. The direct `release` command below occupies the same positional slot but is not a stage and never dispatches. Every builder prompt names one stage and tells the recipient to return rather than start another.
 
 **A stage whose value depends on its recipient not knowing the expected answer is never dispatched by the entrance with the change's record or registered implementation root.** It returns to the holder with the manual isolation and dispatch step named, because the holder must inspect both the recipient tree and the job's extent before launch.
 
