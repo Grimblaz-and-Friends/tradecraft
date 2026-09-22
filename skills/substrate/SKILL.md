@@ -24,3 +24,4 @@ description: How this practice writes code that behaves consistently across plat
 - **A launch redirects nothing, or names standard input, output and error together**, because an unnamed Windows stream can resolve through a closed process handle.
 - **Comparable files are written as bytes, and text streams explicitly choose UTF-8 with newline translation suppressed**, because text mode silently changes bytes across platforms.
 - **Resolve a relative path from the file that names it**, because working directories differ between source checkouts and installed copies.
+- **A change to the shape of a durable record owes the records already written a migration or a recovery route**, because a guard that can only report that a record is old strands exactly the work it was protecting.
