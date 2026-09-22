@@ -104,7 +104,7 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
     (state(AFFIRMED, ARTIFACT, WOULD), ("holder-read", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER), ("build", True, "fresh")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True), ("floor", True, "resume")),
-    (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True), ("use", True, "fresh")),
+    (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True), ("use", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR,
            f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=true -->", pr=True),
      ("build", True, "resume")),
@@ -127,6 +127,23 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
 def test_each_state_table_row_routes_exactly_one_stage(fixture, expected):
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.dispatch, decision.continuity) == expected
+
+
+def test_bought_use_returns_an_actionable_holder_handoff():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True)
+    decision = work.decide(fixture, RULES)
+
+    assert decision.reason == "current-head-use-absent"
+    assert decision.detail is not None
+    for step in (
+        "charter and time-box",
+        "build and inspect the consumer tree",
+        "dispatch the consumer through lib/dispatch_seat.py",
+        "capability the job requires",
+        "write the session note",
+        "post the current-head use marker",
+    ):
+        assert step in decision.detail.lower()
 
 
 def test_red_check_routes_floor_even_with_a_current_head_floor_marker():
@@ -637,6 +654,20 @@ def test_build_prompt_tells_the_holder_to_post_the_builder_session_marker():
     assert b"<!-- tradecraft:builder-session:v1 session=SESSION -->" in prompt
 
 
+def test_use_prompt_is_refused_while_build_keeps_the_record():
+    criterion = "SECRET ACCEPTANCE CRITERION"
+    comment = "SECRET ISSUE COMMENT"
+    fixture = state(AFFIRMED + criterion, comment)
+    use = work.Decision("use", True, "fresh", "fixture")
+
+    with pytest.raises(work.WorkError, match="does not dispatch the use stage"):
+        work._stage_prompt(fixture, use)
+
+    prompt = work._stage_prompt(fixture, work.Decision("build", True, "fresh", "fixture"))
+    assert criterion.encode("ascii") in prompt
+    assert comment.encode("ascii") in prompt
+
+
 def test_cold_seat_prompt_carries_only_artifact_brief_and_check_contract(tmp_path):
     brief = AFFIRMED + "Brief text visible only to the cold seat.\n"
     artifact = ARTIFACT + "\nArtifact text visible only to the cold seat.\n"
@@ -757,6 +788,32 @@ def test_build_launch_without_holder_identity_is_refused(tmp_path, monkeypatch, 
     assert "--holder-session-id" in returned["detail"]
 
 
+def test_dispatching_use_is_returned_before_root_prompt_or_launch(
+        tmp_path, monkeypatch, capsys):
+    expected = work.decide(
+        state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True), RULES
+    )
+
+    def fail(*_args, **_kwargs):
+        pytest.fail("a use handoff must not inspect a root, build a prompt, or launch")
+
+    monkeypatch.setattr(work, "_dispatch_root", fail)
+    monkeypatch.setattr(work, "judging_root", fail)
+    monkeypatch.setattr(work, "_stage_prompt", fail)
+    monkeypatch.setattr(work.subprocess, "run", fail)
+
+    decision = work.Decision("use", True, "fresh", "externally-constructed-use")
+    assert work.execute_stage(state(pr=True), decision, tmp_path, None) == 0
+    returned = json.loads(capsys.readouterr().out)
+    assert returned == {
+        "continuity": None,
+        "detail": expected.detail,
+        "dispatch": False,
+        "reason": "externally-constructed-use",
+        "stage": "use",
+    }
+
+
 def test_build_launch_forwards_holder_identity_to_the_implementation_root(
         tmp_path, monkeypatch):
     commands = []
@@ -836,7 +893,7 @@ def test_judging_root_detaches_an_attached_tree_and_removes_it_afterward(tmp_pat
     assert not recipient_path.exists()
 
 
-@pytest.mark.parametrize("command", work.COMMANDS)
+@pytest.mark.parametrize("command", [command for command in work.COMMANDS if command != "use"])
 def test_power_user_commands_run_one_named_stage(command, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     args = work.parser().parse_args([
@@ -856,6 +913,35 @@ def test_power_user_commands_run_one_named_stage(command, tmp_path, monkeypatch)
         executor=lambda state, decision, root, instalment, holder: captured.append(decision) or 0,
     ) == 0
     assert [(item.stage, item.reason) for item in captured] == [(command, "power-user-stage-command")]
+
+
+def test_power_user_use_returns_the_shared_holder_handoff(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    args = work.parser().parse_args([
+        "use", "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
+        "--use-rules", str(LIB / "use-rules.json"),
+    ])
+    captured = []
+
+    class MinimalTransport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+                return []
+            return {"number": 3, "state": "open", "body": "", "labels": []}
+
+    assert work.run(
+        args, transport=MinimalTransport(),
+        executor=lambda state, decision, root, instalment, holder: captured.append(decision) or 0,
+    ) == 0
+    ordinary = work.decide(
+        state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True), RULES
+    )
+    assert len(captured) == 1
+    assert (captured[0].stage, captured[0].dispatch, captured[0].continuity) == (
+        "use", False, None,
+    )
+    assert captured[0].reason == "power-user-stage-command"
+    assert captured[0].detail == ordinary.detail
 
 
 def test_registry_write_is_atomic_shape_and_canonical(tmp_path, monkeypatch):
@@ -987,11 +1073,10 @@ def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
         ) == 0
 
     monkeypatch.setattr(work, "judging_root", judging)
-    for stage in ("cold-seat", "use"):
-        assert work.execute_stage(
-            fixture, work.Decision(stage, True, "fresh", "fixture"),
-            holder, None, "holder-session",
-        ) == 0
+    assert work.execute_stage(
+        fixture, work.Decision("cold-seat", True, "fresh", "fixture"),
+        holder, None, "holder-session",
+    ) == 0
 
     implementer_launches = launches[:5]
     assert all(
@@ -1000,7 +1085,7 @@ def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
     )
     assert all(branch.encode() in prompt for _command, prompt in implementer_launches)
     assert (implementation / "sentinel.txt").read_bytes() == b"implementation only\n"
-    assert judged_sources == [implementation, implementation]
+    assert judged_sources == [implementation]
 
 
 def test_holder_guard_status_requires_the_complete_project_declaration(
