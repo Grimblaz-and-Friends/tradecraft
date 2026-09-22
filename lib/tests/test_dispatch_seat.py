@@ -302,6 +302,24 @@ def test_linked_detached_worktree_is_accepted_by_the_root_guard(job):
     assert seat.detached_worktree_root(args.root.resolve()) is None
 
 
+def test_one_neutral_commit_is_refused_while_attached_and_accepted_when_detached(tmp_path):
+    root = tmp_path / "consumer"
+    root.mkdir()
+    git(root, "init")
+    (root / "fixture.txt").write_bytes(b"fixture\n")
+    git(root, "config", "user.name", "consumer")
+    git(root, "config", "user.email", "consumer@invalid")
+    git(root, "config", "commit.gpgsign", "false")
+    git(root, "add", "--all")
+    git(root, "commit", "-m", "consumer")
+
+    assert git(root, "rev-list", "--count", "HEAD").stdout.strip() == b"1"
+    assert "HEAD is attached" in seat.detached_worktree_root(root.resolve())
+
+    git(root, "checkout", "--detach", "HEAD")
+    assert seat.detached_worktree_root(root.resolve()) is None
+
+
 def test_root_guard_reasons_distinguish_attached_subdirectory_and_nonrepository(job, tmp_path):
     args, _ = job
     git(args.root, "checkout", "-B", "attached")
