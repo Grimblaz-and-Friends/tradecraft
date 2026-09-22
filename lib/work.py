@@ -513,9 +513,7 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     bought = use_required(state.changed_paths, rules)
     current_use = _current_marker(state, "use", head=sha, status="pass")
     if bought and (current_use is None or not staffing_qualified(current_use)):
-        suffix = (_ignored_marker_suffix(state) + _ignored_disposition_suffix(state)
-                  + _ignored_product_incident_suffix(state))
-        return _use_holder_decision("current-head-use-absent" + suffix)
+        return result("use", False, None, "current-head-use-absent", USE_HOLDER_DETAIL)
     if not bought:
         no_use = _current_marker(state, "no-use", head=sha)
         if no_use is None or "Use: not required" not in no_use.body:
