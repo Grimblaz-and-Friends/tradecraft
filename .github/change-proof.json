@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "name": "runtime-or-user-surface",
+      "include": [
+        "agents/**",
+        "commands/**",
+        "hooks/**",
+        "lib/**",
+        "skills/**",
+        ".claude-plugin/**"
+      ],
+      "exclude": [
+        "**/tests/**",
+        "**/test_*.py",
+        "**/*_test.py"
+      ]
+    }
+  ]
+}
