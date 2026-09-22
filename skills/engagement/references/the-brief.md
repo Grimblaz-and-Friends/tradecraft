@@ -38,6 +38,8 @@ An item that put a question to the owner is re-put whole carrying their answer: 
 
 **The session judges the concept done when the next turn would add execution detail rather than a decision, then puts the whole implementation brief for affirmation.** Before putting it, check that every decision row has its reason, every reader cell is filled, no row is execution detail, and exactly one lawful `Review risk` and `Review lane` pair is present. The owner affirms the whole item or pushes it; the design ends only on affirmation, never on running row-by-row approval.
 
+Before putting the item, run `python <plugin-root>/lib/brief.py --check FILE` over the finished draft; it decides only whether Shape, Readers, a decision block, Not this, and exactly one lawful `Review risk` / `Review lane` pair are present, never whether the rows carry their reasons and reader cells, execution detail stayed out, or the content is right.
+
 **A builder starts only from an affirmed implementation brief.** A put, push, or draft is not the term.
 
 Before putting a descriptive plain brief, score the finished text against each of that form's disqualifiers by name. Before putting an implementation brief, run the row-reason-cell-execution-risk-lane check above over the finished item. These are passes over what was written, not rereadings of the form before writing: [opening a form immediately before drafting has failed to prevent the defect](https://github.com/Grimblaz-and-Friends/tradecraft/issues/428). The record says what the applicable pass removed, and says so where it found nothing.

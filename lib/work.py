@@ -18,6 +18,7 @@ import sys
 import tempfile
 from typing import Callable
 
+from brief import LANES, review_lane
 import dispatch_record as records
 from winio import utf8_stdio
 
@@ -32,11 +33,12 @@ USE_HOLDER_DETAIL = (
     "consumer through lib/dispatch_seat.py with the capability the job requires; write the "
     "session note and post the current-head use marker."
 )
-LANES = {
-    "ordinary": "connected",
-    "elevated": "routine-panel",
-    "critical": "substantial-panel",
-}
+BRIEF_GUIDANCE = (
+    "Follow <plugin-root>/skills/engagement/references/the-brief.md and write Shape, Readers, "
+    "a decision block, Not this, and exactly one lawful Review risk / Review lane pair. "
+    "Before putting the item, run python <plugin-root>/lib/brief.py --check FILE. The "
+    "command checks presence only; the reference's content pass still runs."
+)
 DISPOSITIONS = (
     "fixed", "fixed - nothing else found it", "fixed in #", "yours - in the release report",
     "declined -", "duplicate of ", "lapsed -",
@@ -278,16 +280,6 @@ def markers(sources: list[tuple[str, str]]) -> list[Marker]:
     return found
 
 
-def review_lane(text: str) -> tuple[str, str] | None:
-    risks = re.findall(r"(?im)^Review risk:\s*(ordinary|elevated|critical)\s*$", text)
-    lanes = re.findall(
-        r"(?im)^Review lane:\s*(connected|routine-panel|substantial-panel)\s*$", text
-    )
-    if len(risks) != 1 or len(lanes) != 1 or LANES[risks[0].lower()] != lanes[0].lower():
-        return None
-    return risks[0].lower(), lanes[0].lower()
-
-
 def load_work_config(root: Path) -> WorkConfig:
     path = root / ".tradecraft" / "work.json"
     if not path.exists():
@@ -480,7 +472,9 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if products and not affirmed and not has_product_incident(state, products):
         return result("product-incident-required", False, None, "practice-work-has-no-product-incident")
     if not affirmed:
-        return result("convergence", False, None, "affirmed-brief-marker-absent")
+        return result(
+            "convergence", False, None, "affirmed-brief-marker-absent", BRIEF_GUIDANCE
+        )
     lane_pair = review_lane(affirmed[-1].body)
     if lane_pair is None:
         return result("affirmation-invalid", False, None, "review-risk-lane-missing-or-mismatched")
