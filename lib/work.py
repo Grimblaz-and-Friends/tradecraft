@@ -2092,10 +2092,18 @@ def _latest_public_marker(state: WorkState, name: str, **attributes: str) -> Mar
     )[1] if candidates else None
 
 
+def _check_head(state: WorkState, check: dict[str, object]) -> str | None:
+    for source in (check.get("workflow_run"), check.get("check_suite")):
+        head = source.get("head_sha") if isinstance(source, dict) else None
+        if isinstance(head, str) and head:
+            return head
+    direct = check.get("head_sha")
+    return direct if isinstance(direct, str) and direct else _head_sha(state)
+
+
 def _check_record(state: WorkState, check: dict[str, object]) -> dict[str, object]:
     app = check.get("app")
     workflow = check.get("workflow_run")
-    suite = check.get("check_suite")
     run_id = _action_run_id(check)
     return {
         "id": check.get("id") if isinstance(check.get("id"), int) else None,
@@ -2112,10 +2120,7 @@ def _check_record(state: WorkState, check: dict[str, object]) -> dict[str, objec
             and isinstance(workflow.get("html_url"), str)
             else check.get("details_url") if isinstance(check.get("details_url"), str) else None
         ),
-        "head": (
-            suite.get("head_sha") if isinstance(suite, dict)
-            and isinstance(suite.get("head_sha"), str) else _head_sha(state)
-        ),
+        "head": _check_head(state, check),
         "status": str(check.get("status")) if check.get("status") is not None else None,
         "conclusion": (
             str(check.get("conclusion")) if check.get("conclusion") is not None else None
@@ -2127,6 +2132,32 @@ def _check_record(state: WorkState, check: dict[str, object]) -> dict[str, objec
             str(check.get("completed_at")) if check.get("completed_at") is not None else None
         ),
     }
+
+
+def _release_gate_status(state: WorkState, head: str | None = None) -> dict[str, object]:
+    current_head = head or _head_sha(state)
+    checks = _gate_checks(state)
+    runs = [_check_record(state, check) for check in checks]
+    if not checks:
+        verdict = "absent"
+        reason = "no required gate run is visible"
+    elif current_head is None or any(run.get("head") != current_head for run in runs):
+        verdict = "stale"
+        reason = "an identified gate run does not name the current pull-request head"
+    elif any(
+            str(check.get("status") or "").lower() in PENDING_CHECK_STATUSES
+            or check.get("conclusion") is None
+            for check in checks):
+        verdict = "absent"
+        reason = "an identified current-head gate run has no terminal verdict"
+    elif all(str(check.get("conclusion") or "").lower() == "success"
+             for check in checks):
+        verdict = "green"
+        reason = "every latest identified gate run succeeded at the current head"
+    else:
+        verdict = "red"
+        reason = "a latest identified current-head gate run is not successful"
+    return {"verdict": verdict, "head": current_head, "runs": runs, "reason": reason}
 
 
 def _unverifiable_declaration(stage: str, reason: str) -> dict[str, object]:
@@ -2902,7 +2933,43 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             detail=(decision.detail or
                     "Write and deliver the release report from the completed evidence; launch nobody."),
         ))
-        print(json.dumps(report.as_dict(), ensure_ascii=True, sort_keys=True))
+        current_head = _head_sha(state)
+        if (transport is not None and state.pr is not None
+                and isinstance(state.pr.get("number"), int)):
+            endpoint = f"repos/{state.repo}/pulls/{int(state.pr['number'])}"
+            current_pr = _dict(transport.get(endpoint), endpoint)
+            live_head = current_pr.get("head")
+            live_sha = live_head.get("sha") if isinstance(live_head, dict) else None
+            if not isinstance(live_sha, str) or not live_sha:
+                raise WorkError("run release-report cannot establish the current pull-request head")
+            current_head = live_sha
+        required_gate = _release_gate_status(state, current_head)
+        verdict = required_gate["verdict"]
+        head = required_gate["head"] or "unknown-current-head"
+        if verdict == "green":
+            path_departures = {
+                "restate": False,
+                "instruction": (
+                    "The required gate is green at this head; no gate-bypass "
+                    "restatement is required."
+                ),
+            }
+        else:
+            path_departures = {
+                "restate": True,
+                "instruction": (
+                    f"Restate the **Path departures:** paragraph at head {head}, "
+                    f"recording the required gate bypass ({verdict}) and its reason. "
+                    "This records the bypass and does not forbid it; merging remains "
+                    "the owner's decision."
+                ),
+            }
+        payload = report.as_dict()
+        payload.update({
+            "required_gate": required_gate,
+            "path_departures": path_departures,
+        })
+        print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
         return 0
     if decision.stage == "use" and decision.dispatch:
         if dispatch_path is None or tree_metadata is None:

@@ -396,6 +396,59 @@ def test_completed_proof_and_successful_gate_reach_release_report():
     assert (decision.stage, decision.reason) == ("release-report", "all-evidence-complete")
 
 
+@pytest.mark.parametrize(
+    ("expected", "run_head", "conclusion", "restate"),
+    [
+        ("green", SHA, "success", False),
+        ("red", SHA, "failure", True),
+        ("stale", "b" * 40, "success", True),
+        ("absent", None, None, True),
+    ],
+)
+def test_release_report_names_gate_verdict_run_and_path_departure_action(
+        expected, run_head, conclusion, restate, tmp_path, capsys):
+    fixture = state(pr=True)
+    if run_head is not None:
+        fixture.checks = [{
+            "id": 91, "name": "Change proof / Change proof",
+            "status": "completed", "conclusion": conclusion,
+            "started_at": "2026-09-23T12:00:00Z",
+            "details_url": "https://github.com/example/product/actions/runs/81/job/91",
+            "workflow_run": {
+                "workflow_id": 11, "id": 81, "head_sha": run_head,
+                "html_url": "https://github.com/example/product/actions/runs/81",
+            },
+        }]
+
+    class ReleaseTransport:
+        def get(self, endpoint, *, paginate=False):
+            assert endpoint == "repos/example/product/pulls/7"
+            assert paginate is False
+            return {"head": {"sha": SHA}}
+
+    decision = work.Decision("release-report", False, None, "holder-named-stage")
+    assert work.execute_stage(
+        fixture, decision, tmp_path, None, transport=ReleaseTransport()
+    ) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["required_gate"]["verdict"] == expected
+    assert report["required_gate"]["head"] == SHA
+    runs = report["required_gate"]["runs"]
+    assert len(runs) == (0 if expected == "absent" else 1)
+    if runs:
+        assert runs[0]["run_id"] == 81
+        assert runs[0]["head"] == run_head
+    assert report["path_departures"]["restate"] is restate
+    instruction = report["path_departures"]["instruction"]
+    if restate:
+        assert "Restate the **Path departures:** paragraph" in instruction
+        assert SHA in instruction
+        assert "merging remains the owner's decision" in instruction
+    else:
+        assert "no gate-bypass restatement is required" in instruction
+
+
 def test_failed_gate_waits_and_does_not_route_back_to_floor():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
                     pr=True, draft=False, reviewer_ran=True)

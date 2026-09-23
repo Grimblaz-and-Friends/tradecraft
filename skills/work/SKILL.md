@@ -62,7 +62,7 @@ python <plugin-root>/lib/work.py run use ... \
   --dispatch JOB --tree-metadata TREE.tradecraft-tree.json
 ```
 
-It validates the adjacent metadata, source revision, detached neutral repository and carried bytes before launching the consumer through `dispatch_seat.py`. `run release-report` launches nobody and returns the report handoff to the holder; it refuses a custom dispatch. Repeating either the ordinary decision or the release-report handoff cannot buy another recipient.
+It validates the adjacent metadata, source revision, detached neutral repository and carried bytes before launching the consumer through `dispatch_seat.py`. `run release-report` launches nobody and returns the report handoff to the holder; it refuses a custom dispatch. That handoff names the required gate verdict at the current head as `green`, `red`, `stale` or `absent`, with the identified run, and a non-green verdict directs the holder to restate the `**Path departures:**` paragraph at that head with the bypass and its reason. It records rather than forbids a bypass, because merging remains the owner's decision. Repeating either the ordinary decision or the release-report handoff cannot buy another recipient.
 
 Build a consumer tree with the same door:
 
