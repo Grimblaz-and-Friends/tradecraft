@@ -522,14 +522,8 @@ def _registry_boundary() -> tuple[Path, Path]:
     return registry, registry.parent
 
 
-def _shell_names_registry(command: str, cwd: Path) -> bool:
-    registry, directory = _registry_boundary()
-    lowered = command.lower().replace("\\", "/")
-    named = (str(registry).lower().replace("\\", "/"),
-             str(directory).lower().replace("\\", "/"),
-             registry.name.lower(), directory.name.lower())
-    if any(value and value in lowered for value in named):
-        return True
+def _shell_resolves_registry(command: str, cwd: Path) -> bool:
+    _registry, directory = _registry_boundary()
     return any(contains(directory, path) for path in _command_paths(command, cwd))
 
 
@@ -556,8 +550,9 @@ def decision(payload: dict[str, object], roots: list[Path]) -> str | None:
             raise GuardError(f"{tool} input has no command")
         read_only = _read_only_shell(command)
         _registry, registry_directory = _registry_boundary()
-        if (_shell_names_registry(command, cwd)
-                or (contains(registry_directory, cwd) and not read_only)):
+        if (not read_only and (
+                _shell_resolves_registry(command, cwd)
+                or contains(registry_directory, cwd))):
             return "holder write denied: implementation worktree registry is not the holder's to edit"
         if not roots:
             return None

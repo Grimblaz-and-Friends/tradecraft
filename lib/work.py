@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 import fnmatch
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -20,14 +22,15 @@ from typing import Callable
 
 from brief import LANES, review_lane
 import dispatch_record as records
+import recipient_tree
 from winio import utf8_stdio
 
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
     "review-disposition", "release-report",
 )
-DIRECT_COMMANDS = ("release", "adopt")
-CLI_COMMANDS = (*COMMANDS, *DIRECT_COMMANDS)
+DIRECT_COMMANDS = ("release", "adopt", "run", "tree")
+CLI_COMMANDS = DIRECT_COMMANDS
 USE_HOLDER_DETAIL = (
     "Charter and time-box the experience session under its procedure; "
     "build and inspect the consumer tree as the isolation reference prescribes; dispatch the "
@@ -44,6 +47,7 @@ MIGRATION_NOTICE = (
     "implementation registration migrated; recorded-holder check was not "
     "enforced on this run"
 )
+BRANCH_PLACEHOLDER = "__TRADECRAFT_IMPLEMENTATION_BRANCH__"
 DISPOSITIONS = (
     "fixed", "fixed - nothing else found it", "fixed in #", "yours - in the release report",
     "declined -", "duplicate of ", "lapsed -",
@@ -68,6 +72,57 @@ WORK_EVIDENCE_MARKERS = frozenset({
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
 }
+PENDING_CHECK_STATUSES = {"queued", "in_progress", "pending", "requested", "waiting"}
+HEAD_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
+POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
+NEW_MECHANISM_VERSION = "0.152.0"
+REGISTERED_ROOT_VERSION = "0.149.0"
+DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
+DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
+STAGE_SAFETY = {
+    "artifact": ((NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),),
+    "cold-seat": ((NEW_MECHANISM_VERSION, "neutral cold root and explicit run"),),
+    "build": ((NEW_MECHANISM_VERSION,
+               "bounded prompt, branch publication and explicit run"),),
+    "floor": (
+        (REGISTERED_ROOT_VERSION, "registered implementation root"),
+        (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
+    ),
+    "use": ((NEW_MECHANISM_VERSION, "validated consumer tree and explicit run"),),
+    "review-disposition": (
+        (REGISTERED_ROOT_VERSION, "registered implementation root"),
+        (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
+    ),
+    "release-report": ((NEW_MECHANISM_VERSION, "holder-owned release report"),),
+}
+MARKER_CONTRACTS: dict[str, dict[str, object]] = {
+    "affirmed-brief": {"required": set(), "optional": set(),
+                       "surfaces": {"issue-comment"}},
+    "artifact": {"required": {"status"}, "optional": set(),
+                 "surfaces": {"issue-comment"}},
+    "cold-verdict": {"required": {"verdict", "staffing_status"},
+                     "optional": {"same_vendor_reason"},
+                     "surfaces": {"issue-comment"}},
+    "holder-reading": {"required": {"result"}, "optional": set(),
+                       "surfaces": {"issue-comment"}},
+    "builder-session": {"required": {"session"}, "optional": set(),
+                        "surfaces": {"issue-comment"}},
+    "floor": {"required": {"head", "status"}, "optional": set(),
+              "surfaces": {"issue-comment", "pull-request-comment"}},
+    "use": {"required": {"head", "status", "changed", "staffing_status"},
+            "optional": {"same_vendor_reason"},
+            "surfaces": {"issue-comment", "pull-request-comment"}},
+    "no-use": {"required": {"head"}, "optional": set(),
+               "surfaces": {"issue-comment", "pull-request-comment"}},
+    "connected-reviewer": {"required": {"name", "status"}, "optional": set(),
+                           "surfaces": {"review-comment", "pull-request-comment"}},
+    "panel-stage": {"required": {"stage", "status"}, "optional": set(),
+                    "surfaces": {"issue-comment"}},
+    "product-incident": {"required": {"repo", "issue"}, "optional": set(),
+                         "surfaces": {"issue", "issue-comment"}},
+    "implementing-pr": {"required": {"number"}, "optional": set(),
+                        "surfaces": {"issue-comment"}},
+}
 RESUME_SOURCE_STAGES = {
     "artifact": frozenset({"artifact"}),
     "build": frozenset({"build", "floor", "review-disposition"}),
@@ -86,6 +141,21 @@ class Marker:
     attributes: dict[str, str]
     body: str
     author: str
+    surface: str = "unknown"
+    source_id: str | None = None
+    timestamp: str | None = None
+    url: str | None = None
+    raw_attributes: str = ""
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "attributes": self.attributes,
+            "surface": self.surface,
+            "source_id": self.source_id,
+            "timestamp": self.timestamp,
+            "url": self.url,
+        }
 
 
 @dataclass(frozen=True)
@@ -109,6 +179,9 @@ class WorkState:
     changed_paths: list[str] = field(default_factory=list)
     ambiguous_prs: list[int] = field(default_factory=list)
     config: WorkConfig = field(default_factory=WorkConfig)
+    record_root: Path | None = None
+    validated_markers: list[Marker] | None = None
+    invalid_marker_claims: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def issue_sources(self) -> list[tuple[str, str]]:
@@ -127,15 +200,23 @@ class WorkState:
 
     @property
     def issue_markers(self) -> list[Marker]:
-        return _authorized_markers(markers(self.issue_sources), self.config.marker_producers)
+        selected = (self.validated_markers if self.validated_markers is not None
+                    else self.raw_markers)
+        return [marker for marker in selected
+                if marker.surface in {"issue", "issue-comment", "unknown"}]
 
     @property
     def markers(self) -> list[Marker]:
-        return _authorized_markers(markers(self.sources), self.config.marker_producers)
+        return (self.validated_markers if self.validated_markers is not None
+                else self.raw_markers)
+
+    @property
+    def raw_markers(self) -> list[Marker]:
+        return _authorized_markers(_state_markers(self), self.config.marker_producers)
 
     @property
     def ignored_markers(self) -> list[Marker]:
-        return [marker for marker in markers(self.sources)
+        return [marker for marker in _state_markers(self)
                 if marker.author.lower() not in self.config.marker_producers]
 
 
@@ -146,15 +227,37 @@ class Decision:
     continuity: str | None
     reason: str
     detail: str | None = None
+    work: str | None = None
+    producer_version: str = field(default_factory=records.producer_version)
+    status: str | None = None
+    lawful_markers: tuple[dict[str, object], ...] = ()
+    invalid_markers: tuple[dict[str, object], ...] = ()
+    latest_checks: tuple[dict[str, object], ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
+            "schema_version": 1,
+            "work": self.work,
+            "producer_version": self.producer_version,
             "stage": self.stage,
             "dispatch": self.dispatch,
+            "status": self.status or _decision_status(self),
             "continuity": self.continuity,
             "reason": self.reason,
             "detail": self.detail,
+            "lawful_markers": list(self.lawful_markers),
+            "invalid_markers": list(self.invalid_markers),
+            "latest_checks": list(self.latest_checks),
         }
+
+
+@dataclass(frozen=True)
+class ResumeSource:
+    completed: str
+    path: str
+    request: dict[str, object]
+    run: dict[str, object]
+    session: str
 
 
 def _use_holder_decision(reason: str) -> Decision:
@@ -214,6 +317,38 @@ def _authorized_markers(found: list[Marker], producers: frozenset[str]) -> list[
     return [marker for marker in found if marker.author.lower() in producers]
 
 
+def _marker_items(items: list[dict[str, object]], surface: str) -> list[Marker]:
+    found: list[Marker] = []
+    for item in items:
+        text = str(item.get("body") or "")
+        timestamp = item.get("created_at") or item.get("submitted_at")
+        identity = item.get("id")
+        url = item.get("html_url")
+        found.extend(markers([(
+            text, _author(item), surface,
+            str(identity) if identity is not None else None,
+            str(timestamp) if isinstance(timestamp, str) else None,
+            str(url) if isinstance(url, str) else None,
+        )]))
+    return found
+
+
+def _state_markers(state: WorkState) -> list[Marker]:
+    issue_timestamp = state.issue.get("created_at")
+    issue_url = state.issue.get("html_url")
+    found = markers([(
+        str(state.issue.get("body") or ""), _author(state.issue), "issue",
+        str(state.issue.get("id")) if state.issue.get("id") is not None else None,
+        str(issue_timestamp) if isinstance(issue_timestamp, str) else None,
+        str(issue_url) if isinstance(issue_url, str) else None,
+    )])
+    found.extend(_marker_items(state.issue_comments, "issue-comment"))
+    found.extend(_marker_items(state.pr_comments, "pull-request-comment"))
+    found.extend(_marker_items(state.reviews, "review"))
+    found.extend(_marker_items(state.review_comments, "review-comment"))
+    return found
+
+
 def _candidate_prs(issue_number: int, issue: dict[str, object],
                    comments: list[dict[str, object]], pulls: list[dict[str, object]],
                    config: WorkConfig, *, include_closed: bool = False) -> set[int]:
@@ -227,11 +362,17 @@ def _candidate_prs(issue_number: int, issue: dict[str, object],
     }
     if isinstance(issue.get("pull_request"), dict):
         found.add(issue_number)
-    sources = [(str(issue.get("body") or ""), _author(issue))]
-    sources.extend((str(item.get("body") or ""), _author(item)) for item in comments)
+    sources: list[tuple] = [(
+        str(issue.get("body") or ""), _author(issue), "issue", None, None, None,
+    )]
+    sources.extend((str(item.get("body") or ""), _author(item), "issue-comment",
+                    None, None, None) for item in comments)
     for marker in _authorized_markers(markers(sources), config.marker_producers):
         number = marker.attributes.get("number", "")
-        if marker.name == "implementing-pr" and number.isdigit() and int(number) > 0:
+        if (marker.name == "implementing-pr" and marker.surface == "issue-comment"
+                and _attribute_error(marker) is None
+                and _marker_value_error(marker) is None
+                and number.isdigit() and int(number) > 0):
             found.add(int(number))
     for pull in pulls:
         number = pull.get("number")
@@ -276,12 +417,20 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     return state
 
 
-def markers(sources: list[tuple[str, str]]) -> list[Marker]:
+def markers(sources: list[tuple]) -> list[Marker]:
     found: list[Marker] = []
-    for text, author in sources:
+    for source in sources:
+        text, author = source[:2]
+        surface = source[2] if len(source) > 2 else "unknown"
+        source_id = source[3] if len(source) > 3 else None
+        timestamp = source[4] if len(source) > 4 else None
+        url = source[5] if len(source) > 5 else None
         for match in MARKER.finditer(text):
             attributes = {key.lower(): value for key, value in ATTRIBUTE.findall(match.group(2) or "")}
-            found.append(Marker(match.group(1).lower(), attributes, text, author))
+            found.append(Marker(
+                match.group(1).lower(), attributes, text, author, surface,
+                source_id, timestamp, url, match.group(2) or "",
+            ))
     return found
 
 
@@ -342,10 +491,170 @@ def _current_marker(state: WorkState, name: str, **attributes: str) -> Marker | 
     return None
 
 
+def _marker_recency(marker: Marker, position: int) -> tuple[datetime, int, int]:
+    timestamp = _time(marker.timestamp) or datetime.min.replace(tzinfo=timezone.utc)
+    source_id = int(marker.source_id) if marker.source_id and marker.source_id.isdigit() else 0
+    return timestamp, source_id, position
+
+
 def staffing_qualified(marker: Marker) -> bool:
     if marker.attributes.get("staffing_status") != "degraded":
         return True
     return bool(marker.attributes.get("same_vendor_reason"))
+
+
+def _attribute_error(marker: Marker) -> str | None:
+    contract = MARKER_CONTRACTS.get(marker.name)
+    if contract is None:
+        return None
+    tokens = marker.raw_attributes.split()
+    parsed: dict[str, str] = {}
+    for token in tokens:
+        match = re.fullmatch(r"([a-z_]+)=([^\s]+)", token, re.I)
+        if match is None:
+            return "malformed marker attribute"
+        key = match.group(1).lower()
+        if key in parsed:
+            return f"duplicate marker attribute: {key}"
+        parsed[key] = match.group(2)
+    required = contract["required"]
+    optional = contract["optional"]
+    missing = sorted(required - parsed.keys())
+    unknown = sorted(parsed.keys() - required - optional)
+    if missing:
+        return "missing marker attributes: " + ",".join(missing)
+    if unknown:
+        return "unknown marker attributes: " + ",".join(unknown)
+    if parsed != marker.attributes:
+        return "marker attributes could not be parsed exactly"
+    return None
+
+
+def _marker_value_error(marker: Marker) -> str | None:
+    values = marker.attributes
+    if marker.name == "artifact" and values.get("status") not in {"draft", "settled"}:
+        return "artifact status is invalid"
+    if marker.name == "cold-verdict":
+        if values.get("verdict") not in {"would", "would-not", "not-settleable"}:
+            return "cold verdict is invalid"
+        if values.get("staffing_status") not in {"qualified", "degraded"}:
+            return "cold staffing status is invalid"
+        same = values.get("same_vendor_reason")
+        if (values.get("staffing_status") == "degraded") != bool(same):
+            return "degraded cold staffing requires one same-vendor reason"
+    if marker.name == "holder-reading" and values.get("result") not in {
+            "no-amendment", "amended"}:
+        return "holder reading result is invalid"
+    if marker.name == "builder-session" and SESSION_ID.fullmatch(
+            values.get("session", "")) is None:
+        return "builder session is not UUID-shaped"
+    if marker.name in {"floor", "use", "no-use"} and HEAD_SHA.fullmatch(
+            values.get("head", "")) is None:
+        return "marker head is not a full hexadecimal revision"
+    if marker.name == "floor" and values.get("status") != "pass":
+        return "floor status is invalid"
+    if marker.name == "use":
+        if values.get("status") != "pass" or values.get("changed") not in {"true", "false"}:
+            return "use status or changed value is invalid"
+        if values.get("staffing_status") not in {"qualified", "degraded"}:
+            return "use staffing status is invalid"
+        same = values.get("same_vendor_reason")
+        if (values.get("staffing_status") == "degraded") != bool(same):
+            return "degraded use staffing requires one same-vendor reason"
+    if marker.name == "no-use" and "Use: not required" not in marker.body:
+        return "no-use marker lacks its required prose"
+    if marker.name == "connected-reviewer" and (
+            not values.get("name") or values.get("status") != "complete"):
+        return "connected-reviewer claim is invalid"
+    if marker.name == "panel-stage" and (
+            values.get("stage") not in {
+                "cold-pass", "revision-diff", "four-seat-panel", "defense", "judge",
+                "floor-fixes",
+            } or values.get("status") != "complete"):
+        return "panel stage claim is invalid"
+    if marker.name == "product-incident" and (
+            REPOSITORY_NAME.fullmatch(values.get("repo", "")) is None
+            or POSITIVE_INTEGER.fullmatch(values.get("issue", "")) is None):
+        return "product incident identity is invalid"
+    if marker.name == "implementing-pr" and POSITIVE_INTEGER.fullmatch(
+            values.get("number", "")) is None:
+        return "implementing pull request number is invalid"
+    return None
+
+
+def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
+    if state.record_root is None:
+        return None
+    stages = {
+        "builder-session": {"build"},
+        "floor": {"floor"},
+        "cold-verdict": {"cold-seat"},
+        "use": {"use"},
+    }.get(marker.name)
+    if stages is None:
+        return None
+    try:
+        matched = _matching_bundles(
+            f"{state.repo}#{state.issue_number}", stages, state.record_root,
+            completed_no_later_than=marker.timestamp,
+        )
+    except WorkError as exc:
+        return str(exc)
+    if not matched:
+        return "no matching successful dispatch bundle"
+    completed, path, request, run = matched[-1]
+    if len(matched) > 1 and matched[-2][0] == completed:
+        return "matching dispatch bundle is ambiguous"
+    if marker.name == "builder-session":
+        sessions = []
+        for attempt in run.get("attempts", []):
+            observed = attempt.get("observed") if isinstance(attempt, dict) else None
+            session = observed.get("session_id") if isinstance(observed, dict) else None
+            if isinstance(session, str):
+                sessions.append(session)
+        if not sessions or sessions[-1].casefold() != marker.attributes["session"].casefold():
+            return "builder-session claim disagrees with its build bundle"
+    if marker.name == "floor":
+        if run.get("revision_after") != marker.attributes["head"]:
+            return "floor head disagrees with its successful bundle"
+    if marker.name in {"cold-verdict", "use"}:
+        if run.get("staffing_status") != marker.attributes["staffing_status"]:
+            return f"{marker.name} staffing disagrees with its seat bundle"
+        qualification = run.get("staffing_qualification")
+        bundled_reason = (qualification.get("same_vendor_reason")
+                          if isinstance(qualification, dict) else None)
+        if marker.attributes.get("same_vendor_reason") != bundled_reason:
+            return f"{marker.name} same-vendor reason disagrees with its seat bundle"
+    return None
+
+
+def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[str, object]]]:
+    lawful: list[Marker] = []
+    invalid: list[dict[str, object]] = []
+    for marker in _state_markers(state):
+        contract = MARKER_CONTRACTS.get(marker.name)
+        if contract is None:
+            continue
+        error = None
+        if marker.author.lower() not in state.config.marker_producers:
+            error = f"marker producer is not authorized: {marker.author}"
+        if error is None:
+            error = _attribute_error(marker)
+        if error is None and marker.surface != "unknown" and marker.surface not in contract["surfaces"]:
+            error = f"marker is not permitted on {marker.surface}"
+        if error is None:
+            error = _marker_value_error(marker)
+        if error is None:
+            error = _bundle_marker_error(state, marker)
+        if error is None:
+            lawful.append(marker)
+        else:
+            claim = marker.as_dict()
+            claim["reason"] = error
+            invalid.append(claim)
+    state.validated_markers = lawful
+    state.invalid_marker_claims = invalid
+    return lawful, invalid
 
 
 def load_use_rules(path: Path) -> dict[str, object]:
@@ -377,8 +686,61 @@ def use_required(paths: list[str], rules: dict[str, object]) -> bool:
     return False
 
 
+def latest_checks(state: WorkState) -> list[dict[str, object]]:
+    selected: dict[str, dict[str, object]] = {}
+    for check in state.checks:
+        name = str(check.get("name") or "")
+        identity = check.get("id")
+        numeric_identity = identity if isinstance(identity, int) else -1
+        key = (str(check.get("started_at") or ""), numeric_identity)
+        current = selected.get(name)
+        if current is None:
+            selected[name] = check
+            continue
+        current_id = current.get("id")
+        current_key = (
+            str(current.get("started_at") or ""),
+            current_id if isinstance(current_id, int) else -1,
+        )
+        if key > current_key:
+            selected[name] = check
+    return [selected[name] for name in sorted(selected)]
+
+
 def _checks_red(state: WorkState) -> bool:
-    return any(str(check.get("conclusion") or "").lower() in RED_CONCLUSIONS for check in state.checks)
+    return any(str(check.get("conclusion") or "").lower() in RED_CONCLUSIONS
+               for check in latest_checks(state))
+
+
+def _checks_pending(state: WorkState) -> bool:
+    return any(str(check.get("status") or "").lower() in PENDING_CHECK_STATUSES
+               for check in latest_checks(state))
+
+
+def _decision_status(decision: Decision) -> str:
+    if decision.dispatch:
+        return "runnable"
+    if decision.stage in {"artifact-cap", "open-pull-request", "holder-read",
+                          "ready-reviewers", "use", "release-report", "ambiguous-pr",
+                          "panel"}:
+        return "holder-owned"
+    if decision.stage == "terminal":
+        return "terminal"
+    if "version" in decision.reason or "refused" in decision.reason or "unproved" in decision.reason:
+        return "refused"
+    return "waiting"
+
+
+def _reported_decision(state: WorkState, decision: Decision) -> Decision:
+    return replace(
+        decision,
+        work=f"{state.repo}#{state.issue_number}",
+        producer_version=records.producer_version(),
+        status=decision.status or _decision_status(decision),
+        lawful_markers=tuple(marker.as_dict() for marker in state.markers),
+        invalid_markers=tuple(state.invalid_marker_claims),
+        latest_checks=tuple(latest_checks(state)),
+    )
 
 
 def _reviewer_ran(state: WorkState) -> bool:
@@ -459,11 +821,15 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
 
 
 def decide(state: WorkState, rules: dict[str, object]) -> Decision:
+    validate_marker_claims(state)
+
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
                detail: str | None = None) -> Decision:
         suffix = (_ignored_marker_suffix(state) + _ignored_disposition_suffix(state)
                   + _ignored_product_incident_suffix(state))
-        return Decision(stage, dispatch, continuity, reason + suffix, detail)
+        return _reported_decision(
+            state, Decision(stage, dispatch, continuity, reason + suffix, detail)
+        )
 
     if str(state.issue.get("state") or "").lower() == "closed":
         return result("terminal", False, None, "issue-or-pull-request-terminal")
@@ -484,21 +850,49 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if lane_pair is None:
         return result("affirmation-invalid", False, None, "review-risk-lane-missing-or-mismatched")
     _risk, lane = lane_pair
-    artifacts = [marker for marker in state.markers if marker.name == "artifact"]
+    indexed_markers = list(enumerate(state.markers))
+    artifacts = sorted(
+        ((position, marker) for position, marker in indexed_markers
+         if marker.name == "artifact"),
+        key=lambda item: _marker_recency(item[1], item[0]),
+    )
     if not artifacts:
         return result("artifact", True, "fresh", "artifact-marker-absent")
-    verdicts = [marker for marker in state.markers
-                if marker.name == "cold-verdict" and staffing_qualified(marker)]
+    verdicts = sorted(
+        ((position, marker) for position, marker in indexed_markers
+         if marker.name == "cold-verdict" and staffing_qualified(marker)),
+        key=lambda item: _marker_recency(item[1], item[0]),
+    )
     if not verdicts:
         return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
-    verdict = verdicts[-1]
+    verdict_position, verdict = verdicts[-1]
     if verdict.attributes.get("verdict") == "would-not":
+        adverse_rounds = [marker for _position, marker in verdicts
+                          if marker.attributes.get("verdict") == "would-not"]
+        if len(adverse_rounds) >= 2:
+            return result(
+                "artifact-cap", False, None, "artifact-cold-round-cap-reached",
+                "Two qualifying would-not verdicts reached the cold-seat cap; "
+                "carry unresolved points to the owner under the artifact procedure.",
+            )
+        artifact_position, artifact = artifacts[-1]
+        if (artifact.attributes.get("status") == "draft"
+                and _marker_recency(artifact, artifact_position)
+                > _marker_recency(verdict, verdict_position)):
+            return result(
+                "cold-seat", True, "fresh", "newer-artifact-draft-after-would-not"
+            )
         return result("artifact", True, "resume", "cold-verdict-would-not")
     if verdict.attributes.get("verdict") != "would":
         return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
     if not any(marker.name == "holder-reading" for marker in state.markers):
         return result("holder-read", False, None, "whole-change-holder-reading-absent")
     if state.pr is None:
+        if any(marker.name == "builder-session" for marker in state.issue_markers):
+            return result(
+                "open-pull-request", False, None, "builder-returned-without-pull-request",
+                "Open the implementing pull request from the registered implementation branch.",
+            )
         return result("build", True, "fresh", "pull-request-absent")
     sha = _head_sha(state)
     if sha is None:
@@ -506,6 +900,8 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     floor = _current_marker(state, "floor", head=sha, status="pass")
     if floor is None or _checks_red(state):
         return result("floor", True, "resume", "current-head-floor-missing-or-red")
+    if _checks_pending(state):
+        return result("waiting", False, None, "latest-check-run-pending")
     latest_use = next((marker for marker in reversed(state.markers) if marker.name == "use"), None)
     if latest_use and latest_use.attributes.get("head") == sha and latest_use.attributes.get("changed") == "true":
         return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
@@ -532,7 +928,7 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if panel_stage:
         return result("panel", False, None, "bought-panel-incomplete", panel_stage)
     reason = "all-evidence-complete" if reviewers else "all-evidence-complete;no-connected-reviewer-configured"
-    return result("release-report", True, "fresh", reason)
+    return result("release-report", False, None, reason)
 
 
 def registry_path() -> Path:
@@ -650,6 +1046,14 @@ def _same_path(left: Path, right: Path) -> bool:
     return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
 
 
+def _path_inside(path: Path, parent: Path) -> bool:
+    try:
+        path.expanduser().resolve().relative_to(parent.expanduser().resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def _git_text(command: list[str], root: Path, purpose: str) -> str:
     result = _git(command, root)
     if result.returncode:
@@ -734,6 +1138,17 @@ def _row_matches_change(row: dict[str, object], repo: str, issue: int,
         and row.get("issue") == issue
         and (instalment is None or row.get("instalment") == instalment)
     )
+
+
+def _dispatch_inside_registered_root(path: Path, repo: str, issue: int,
+                                     instalment: str | None) -> bool:
+    for row in read_registry()["worktrees"]:
+        root_value = row.get("root")
+        if (row.get("active") is True and _row_matches_change(row, repo, issue, instalment)
+                and isinstance(root_value, str) and root_value
+                and _path_inside(path, Path(root_value))):
+            return True
+    return False
 
 
 def _validate_implementation_row(row: dict[str, object], holder_root: Path, *,
@@ -856,6 +1271,46 @@ def create_implementation_root(holder_root: Path, repo: str, issue: int,
         holder_root=holder, branch=attached_branch,
     )
     return implementation_root, attached_branch
+
+
+def publish_implementation_branch(root: Path, branch: str) -> str:
+    retry = (
+        "repair the remote selection, authentication, or connectivity and retry run build; "
+        "the registered branch will be published and verified before launch"
+    )
+    remotes = [line for line in _git_text(["remote"], root, "list Git remotes").splitlines()
+               if line]
+    upstream = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], root)
+    remote: str | None = None
+    if upstream.returncode == 0:
+        tracking = upstream.stdout.decode("utf-8", errors="backslashreplace").strip()
+        remote = next((candidate for candidate in remotes
+                       if tracking.startswith(candidate + "/")), None)
+    elif len(remotes) == 1:
+        remote = remotes[0]
+    if remote is None:
+        raise WorkError(
+            "cannot publish implementation branch: select one upstream or leave exactly one "
+            f"remote; {retry}"
+        )
+    pushed = _git(["push", "--set-upstream", remote,
+                   f"HEAD:refs/heads/{branch}"], root)
+    if pushed.returncode:
+        raise WorkError(
+            f"cannot publish implementation branch: {_git_failure(pushed)}; {retry}"
+        )
+    local = _git_text(["rev-parse", "HEAD"], root, "inspect published branch revision")
+    remote_head = _git(["ls-remote", "--heads", remote, f"refs/heads/{branch}"], root)
+    if remote_head.returncode:
+        raise WorkError(
+            f"cannot verify implementation branch: {_git_failure(remote_head)}; {retry}"
+        )
+    fields = remote_head.stdout.decode("ascii", errors="replace").strip().split()
+    if len(fields) != 2 or fields[0] != local:
+        raise WorkError(
+            f"cannot verify implementation branch: expected {local} at {remote}/{branch}; {retry}"
+        )
+    return remote
 
 
 def adopt_registration(holder_root: Path, implementation_root: Path, repo: str,
@@ -1001,24 +1456,6 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         if root is None:
             raise WorkError("cold-seat dispatch requires its isolated working root")
         return _cold_stage_prompt(state, root)
-    evidence = {
-        "repository": state.repo,
-        "issue": state.issue_number,
-        "stage": decision.stage,
-        "reason": decision.reason,
-        "detail": decision.detail,
-        "continuity": decision.continuity,
-        "github": {
-            "issue": state.issue,
-            "issue_comments": state.issue_comments,
-            "pull_request": state.pr,
-            "pull_request_comments": state.pr_comments,
-            "reviews": state.reviews,
-            "review_comments": state.review_comments,
-            "checks": state.checks,
-            "changed_paths": state.changed_paths,
-        },
-    }
     instruction = (
         "Perform exactly the stage named in this dispatch and return to the holder. "
         "Do not start or dispatch a later stage."
@@ -1029,14 +1466,66 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             "on the issue using the session id printed by the launcher."
         )
     if branch is not None:
+        instruction += _branch_instruction(branch)
+    if decision.stage == "build":
         instruction += (
-            f" The entrance placed this change on branch {branch}. Remain on that branch; "
-            "do not create or switch to another branch."
+            " Build and validate the affirmed work and any supplied settled artifact, commit "
+            "the finished change, push the supplied branch, and then return to the holder."
         )
+    brief = next((marker for marker in reversed(state.issue_markers)
+                  if marker.name == "affirmed-brief"), None)
+    artifact = next((marker for marker in reversed(state.markers)
+                     if marker.name == "artifact"), None)
+    if brief is None:
+        raise WorkError(f"{decision.stage} dispatch requires an authorized affirmed brief")
+    pr_number = state.pr.get("number") if state.pr else None
+    facts = {
+        "schema_version": 1,
+        "work": f"{state.repo}#{state.issue_number}",
+        "producer_version": records.producer_version(),
+        "stage": decision.stage,
+        "continuity": decision.continuity,
+        "reason": decision.reason,
+        "detail": decision.detail,
+        "pull_request": pr_number,
+        "head": _head_sha(state),
+    }
+    fetches = [
+        f"gh api --method GET repos/{state.repo}/issues/{state.issue_number}",
+        f"gh api --method GET --paginate repos/{state.repo}/issues/{state.issue_number}/comments",
+    ]
+    if isinstance(pr_number, int):
+        fetches.extend((
+            f"gh api --method GET repos/{state.repo}/pulls/{pr_number}",
+            f"gh api --method GET --paginate repos/{state.repo}/issues/{pr_number}/comments",
+        ))
+    sections = [
+        instruction,
+        json.dumps(facts, ensure_ascii=True, indent=2, sort_keys=True),
+        "--- affirmed implementation brief begin ---\n" + brief.body
+        + "\n--- affirmed implementation brief end ---",
+    ]
+    if artifact is not None:
+        sections.append(
+            "--- settled artifact begin ---\n" + artifact.body
+            + "\n--- settled artifact end ---"
+        )
+    sections.append("Fetch current state only if this stage needs it:\n" + "\n".join(fetches))
+    return ("\n\n".join(sections) + "\n").encode("utf-8")
+
+
+def _branch_instruction(branch: str) -> str:
     return (
-        instruction + "\n\n" +
-        json.dumps(evidence, ensure_ascii=True, indent=2) + "\n"
-    ).encode("utf-8")
+        f" The entrance placed this change on branch {branch}. Remain on that branch; "
+        "do not create or switch to another branch."
+    )
+
+
+def _bind_prompt_branch(prompt: bytes, branch: str | None) -> bytes:
+    placeholder = BRANCH_PLACEHOLDER.encode("ascii")
+    if branch is not None:
+        return prompt.replace(placeholder, branch.encode("utf-8"))
+    return prompt.replace(_branch_instruction(BRANCH_PLACEHOLDER).encode("utf-8"), b"")
 
 
 def _cold_stage_prompt(state: WorkState, root: Path) -> bytes:
@@ -1101,23 +1590,11 @@ def _git_failure(result: subprocess.CompletedProcess[bytes]) -> str:
 
 @contextmanager
 def judging_root(root: Path):
-    attached = _git(["symbolic-ref", "-q", "HEAD"], root)
-    if attached.returncode == 1:
-        yield root
-        return
-    if attached.returncode != 0:
-        raise WorkError(f"cannot inspect recipient HEAD: {_git_failure(attached)}")
-    with tempfile.TemporaryDirectory(prefix="tradecraft-recipient-") as temporary:
-        recipient = Path(temporary) / "detached"
-        added = _git(["worktree", "add", "--detach", str(recipient), "HEAD"], root)
-        if added.returncode:
-            raise WorkError(f"cannot create detached judging worktree: {_git_failure(added)}")
-        try:
-            yield recipient.resolve()
-        finally:
-            removed = _git(["worktree", "remove", "--force", str(recipient)], root)
-            if removed.returncode:
-                raise WorkError(f"cannot remove detached judging worktree: {_git_failure(removed)}")
+    try:
+        with recipient_tree.neutral_judging_root(root) as recipient:
+            yield recipient
+    except recipient_tree.RecipientTreeError as exc:
+        raise WorkError(str(exc)) from exc
 
 
 def _json_object(path: Path) -> dict[str, object] | None:
@@ -1128,11 +1605,23 @@ def _json_object(path: Path) -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
-def _bundle_session(work_value: str, stage: str, record_root: Path) -> str | None:
-    allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
-    candidates: list[tuple[str, str, str]] = []
-    if not record_root.is_dir():
+def _time(value: str | None) -> datetime | None:
+    if not value:
         return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _matching_bundles(
+    work_value: str, stages: set[str] | frozenset[str], record_root: Path, *,
+    completed_no_later_than: str | None = None,
+) -> list[tuple[str, str, dict[str, object], dict[str, object]]]:
+    candidates: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
+    if not record_root.is_dir():
+        return candidates
+    boundary = _time(completed_no_later_than)
     try:
         for run_path in record_root.rglob("*.run.json"):
             run = _json_object(run_path)
@@ -1140,26 +1629,55 @@ def _bundle_session(work_value: str, stage: str, record_root: Path) -> str | Non
             request = _json_object(run_path.with_name(request_name))
             if run is None or request is None:
                 continue
-            if (request.get("schema_version") != records.SCHEMA_VERSION
-                    or run.get("schema_version") != records.SCHEMA_VERSION
-                    or str(request.get("work") or "").lower() != work_value.lower()
-                    or request.get("stage") not in allowed_stages):
+            if (str(request.get("work") or "").lower() != work_value.lower()
+                    or request.get("stage") not in stages):
                 continue
-            attempts = run.get("attempts")
-            if not isinstance(attempts, list):
+            if request.get("schema_version") != records.SCHEMA_VERSION:
+                raise WorkError(
+                    f"matching dispatch bundle has unsupported request schema: {run_path}"
+                )
+            if run.get("schema_version") != records.SCHEMA_VERSION:
+                raise WorkError(
+                    f"matching dispatch bundle has unsupported run schema: {run_path}"
+                )
+            if run.get("outcome") not in {"success", "success_uncontinuable"}:
                 continue
-            sessions: list[str] = []
-            for attempt in attempts:
-                observed = attempt.get("observed") if isinstance(attempt, dict) else None
-                session = observed.get("session_id") if isinstance(observed, dict) else None
-                if isinstance(session, str) and SESSION_ID.fullmatch(session):
-                    sessions.append(session)
-            if sessions:
-                completed = str(run.get("completed_at") or "")
-                candidates.append((completed, str(run_path), sessions[-1]))
+            completed = str(run.get("completed_at") or "")
+            completed_time = _time(completed)
+            if boundary is not None and (completed_time is None or completed_time > boundary):
+                continue
+            candidates.append((completed, str(run_path), request, run))
     except OSError:
-        return None
-    return max(candidates)[-1] if candidates else None
+        return []
+    return sorted(candidates)
+
+
+def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSource | None:
+    allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
+    matched = _matching_bundles(work_value, allowed_stages, record_root)
+    candidates: list[ResumeSource] = []
+    for completed, run_path, request, run in matched:
+        attempts = run.get("attempts")
+        if not isinstance(attempts, list):
+            continue
+        sessions: list[str] = []
+        for attempt in attempts:
+            observed = attempt.get("observed") if isinstance(attempt, dict) else None
+            session = observed.get("session_id") if isinstance(observed, dict) else None
+            if isinstance(session, str) and SESSION_ID.fullmatch(session):
+                sessions.append(session)
+        if sessions:
+            candidates.append(ResumeSource(
+                completed, run_path, request, run, sessions[-1]
+            ))
+    if matched and not candidates:
+        raise WorkError("matching dispatch bundles supply no valid session")
+    return max(candidates, key=lambda item: (item.completed, item.path)) if candidates else None
+
+
+def _bundle_session(work_value: str, stage: str, record_root: Path) -> str | None:
+    source = _resume_source(work_value, stage, record_root)
+    return source.session if source is not None else None
 
 
 def resume_session(state: WorkState, stage: str, record_root: Path | None = None) -> str | None:
@@ -1175,6 +1693,69 @@ def resume_session(state: WorkState, stage: str, record_root: Path | None = None
                 if marker.name == "builder-session"]
     return next((session for session in reversed(sessions)
                  if isinstance(session, str) and SESSION_ID.fullmatch(session)), None)
+
+
+def _version_key(value: str) -> tuple[object, ...] | None:
+    if records.SEMANTIC_VERSION.fullmatch(value) is None:
+        return None
+    precedence = value.split("+", 1)[0]
+    core, separator, prerelease = precedence.partition("-")
+    major, minor, patch = (int(part) for part in core.split("."))
+    if not separator:
+        return major, minor, patch, 1, ()
+    identifiers: list[tuple[int, int | str]] = []
+    for identifier in prerelease.split("."):
+        if identifier.isdigit():
+            if len(identifier) > 1 and identifier.startswith("0"):
+                return None
+            identifiers.append((0, int(identifier)))
+        else:
+            identifiers.append((1, identifier))
+    return major, minor, patch, 0, tuple(identifiers)
+
+
+def _version_refusal(state: WorkState, decision: Decision,
+                     source: ResumeSource | None = None) -> Decision | None:
+    requirements = STAGE_SAFETY.get(decision.stage)
+    if not requirements:
+        return None
+    found = records.producer_version()
+    found_key = _version_key(found)
+    for minimum, mechanism in requirements:
+        minimum_key = _version_key(minimum)
+        incompatible_major = (
+            found_key is not None and minimum_key is not None
+            and found_key[0] != minimum_key[0]
+        )
+        if (found_key is None or minimum_key is None or incompatible_major
+                or found_key < minimum_key):
+            qualifier = "; incompatible major" if incompatible_major else ""
+            return _reported_decision(state, Decision(
+                decision.stage, False, None, f"unsafe-running-version-for-{decision.stage}",
+                f"stage={decision.stage}; found={found}; required={minimum}; "
+                f"mechanism={mechanism}{qualifier}",
+                status="refused",
+            ))
+    if decision.continuity != "resume" or source is None:
+        return None
+    source_version = source.request.get("producer_version")
+    source_key = _version_key(source_version) if isinstance(source_version, str) else None
+    minimum, mechanism = max(requirements, key=lambda item: _version_key(item[0]) or (0, 0, 0))
+    minimum_key = _version_key(minimum)
+    incompatible_major = (
+        source_key is not None and found_key is not None and source_key[0] != found_key[0]
+    )
+    if (source_key is None or minimum_key is None or incompatible_major
+            or source_key < minimum_key):
+        found_source = source_version if isinstance(source_version, str) else "missing"
+        qualifier = "; incompatible major" if incompatible_major else ""
+        return _reported_decision(state, Decision(
+            decision.stage, False, None, f"unsafe-source-version-for-{decision.stage}",
+            f"stage={decision.stage}; found={found_source}; required={minimum}; "
+            f"mechanism={mechanism}{qualifier}",
+            status="refused",
+        ))
+    return None
 
 
 def _missing_resume_decision(state: WorkState, decision: Decision) -> Decision:
@@ -1212,12 +1793,16 @@ def _dispatch_root(state: WorkState, decision: Decision, holder_root: Path,
             holder_root, state.repo, state.issue_number, instalment
         )
         if resolved is not None:
+            if decision.stage == "build" and decision.continuity == "fresh":
+                implementation_root, branch, _migrated = resolved
+                publish_implementation_branch(implementation_root, branch)
             return resolved
         if decision.stage == "build" and decision.continuity == "fresh":
             implementation_root, branch = create_implementation_root(
                 holder_root, state.repo, state.issue_number, instalment,
                 holder_session_id,
             )
+            publish_implementation_branch(implementation_root, branch)
             return implementation_root, branch, False
     except WorkError as exc:
         return _implementation_root_decision(state, decision, str(exc))
@@ -1260,13 +1845,94 @@ def _resolved_use_holder_decision(state: WorkState, decision: Decision, holder_r
 
 
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
-                  holder_session_id: str | None = None) -> int:
+                  holder_session_id: str | None = None, *, dispatch_path: Path | None = None,
+                  tree_metadata: Path | None = None,
+                  timeout_seconds: float | None = None) -> int:
+    effective_timeout = (
+        timeout_seconds if timeout_seconds is not None else
+        DEFAULT_BUILD_TIMEOUT_SECONDS if decision.stage == "build" else
+        DEFAULT_STAGE_TIMEOUT_SECONDS
+    )
+    if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+        raise WorkError("--timeout-seconds must be finite and positive")
+    timeout_argument = f"{effective_timeout:g}"
+    resume_source: ResumeSource | None = None
+    if decision.continuity == "resume":
+        record_root = state.record_root or records.default_record_root().expanduser().resolve()
+        try:
+            resume_source = _resume_source(
+                f"{state.repo}#{state.issue_number}", decision.stage, record_root
+            )
+        except WorkError as exc:
+            refused = _reported_decision(state, Decision(
+                decision.stage, False, None,
+                f"resume-bundle-invalid-for-{decision.stage}", str(exc), status="refused",
+            ))
+            print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+            return 0
+    refused = _version_refusal(state, decision, resume_source)
+    if refused is not None:
+        print(json.dumps(_reported_decision(state, refused).as_dict(),
+                         ensure_ascii=True, sort_keys=True))
+        return 0
+    if decision.stage == "release-report":
+        if dispatch_path is not None:
+            raise WorkError("run release-report refuses --dispatch because it launches nobody")
+        report = _reported_decision(state, replace(
+            decision, dispatch=False, continuity=None, status="holder-owned",
+            detail=(decision.detail or
+                    "Write and deliver the release report from the completed evidence; launch nobody."),
+        ))
+        print(json.dumps(report.as_dict(), ensure_ascii=True, sort_keys=True))
+        return 0
     if decision.stage == "use" and decision.dispatch:
-        decision = _use_holder_decision(decision.reason)
+        if dispatch_path is None or tree_metadata is None:
+            refused_use = _reported_decision(state, Decision(
+                "use", False, None, "use-requires-holder-job-and-tree",
+                "run use requires --dispatch and --tree-metadata", status="refused",
+            ))
+            print(json.dumps(refused_use.as_dict(), ensure_ascii=True, sort_keys=True))
+            return 0
+        try:
+            resolved = resolve_implementation_root(
+                root, state.repo, state.issue_number, instalment
+            )
+            if resolved is None:
+                raise WorkError(
+                    f"no active implementation registration matches {state.repo}#{state.issue_number}"
+                )
+            implementation_root, _branch, _migrated = resolved
+            consumer_root = recipient_tree.validate_consumer_tree(
+                tree_metadata, work=f"{state.repo}#{state.issue_number}",
+                source=implementation_root,
+            )
+        except (WorkError, recipient_tree.RecipientTreeError) as exc:
+            refused_use = _reported_decision(state, Decision(
+                "use", False, None, "consumer-tree-unproved-for-use", str(exc), status="refused",
+            ))
+            print(json.dumps(refused_use.as_dict(), ensure_ascii=True, sort_keys=True))
+            return 0
+        dispatch = dispatch_path.expanduser().resolve()
+        if _path_inside(dispatch, implementation_root):
+            raise WorkError("use dispatch file must be outside the registered implementation root")
+        if not dispatch.is_file() or not dispatch.read_bytes().strip():
+            raise WorkError(f"use dispatch file is absent or empty: {dispatch}")
+        here = Path(__file__).resolve().parent
+        command = [
+            sys.executable, str(here / "dispatch_seat.py"),
+            "--dispatch", str(dispatch), "--root", str(consumer_root),
+            "--work", f"{state.repo}#{state.issue_number}", "--stage", "use",
+            "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
+            "--settings-scope", "use", "--vendor", "claude", "--own-vendor", "codex",
+            "--classification", "cold", "--requires", "execute",
+            "--timeout-seconds", timeout_argument,
+        ]
+        return subprocess.run(command).returncode
     if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
         decision = _resolved_use_holder_decision(state, decision, root, instalment)
     if not decision.dispatch:
-        print(json.dumps(decision.as_dict(), ensure_ascii=True, sort_keys=True))
+        print(json.dumps(_reported_decision(state, decision).as_dict(),
+                         ensure_ascii=True, sort_keys=True))
         return 0
     uses_implementer = decision.stage != "cold-seat"
     holder_identity = holder_session_id.strip() if holder_session_id else ""
@@ -1274,28 +1940,62 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         refused = _holder_identity_decision(
             state, decision, f"holder-session-id-required-for-{decision.stage}"
         )
-        print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+        print(json.dumps(_reported_decision(state, refused).as_dict(),
+                         ensure_ascii=True, sort_keys=True))
         return 0
     session = None
     if decision.continuity == "resume":
-        session = resume_session(state, decision.stage)
+        session = (resume_source.session if resume_source is not None
+                   else resume_session(state, decision.stage, state.record_root))
         if session is None:
-            print(json.dumps(_missing_resume_decision(state, decision).as_dict(),
+            print(json.dumps(_reported_decision(
+                state, _missing_resume_decision(state, decision)).as_dict(),
                              ensure_ascii=True, sort_keys=True))
             return 0
         if holder_identity and session.casefold() == holder_identity.casefold():
             refused = _holder_identity_decision(
                 state, decision, f"resume-session-identifies-holder-for-{decision.stage}"
             )
+            print(json.dumps(_reported_decision(state, refused).as_dict(),
+                             ensure_ascii=True, sort_keys=True))
+            return 0
+    prepared_prompt: bytes | None = None
+    prepared_dispatch: Path | None = None
+    if uses_implementer:
+        try:
+            if dispatch_path is None:
+                prepared_prompt = _stage_prompt(
+                    state, decision, branch=BRANCH_PLACEHOLDER
+                )
+            else:
+                prepared_dispatch = dispatch_path.expanduser().resolve()
+                if (not prepared_dispatch.is_file()
+                        or not prepared_dispatch.read_bytes().strip()):
+                    raise WorkError(
+                        f"dispatch file is absent or empty: {prepared_dispatch}"
+                    )
+                if _dispatch_inside_registered_root(
+                        prepared_dispatch, state.repo, state.issue_number, instalment):
+                    raise WorkError(
+                        "dispatch file must be outside the registered implementation root"
+                    )
+        except WorkError as exc:
+            refused = _reported_decision(state, Decision(
+                decision.stage, False, None,
+                f"stage-input-invalid-for-{decision.stage}", str(exc), status="refused",
+            ))
             print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
             return 0
     selected = _dispatch_root(
         state, decision, root, instalment, holder_identity
     )
     if isinstance(selected, Decision):
-        print(json.dumps(selected.as_dict(), ensure_ascii=True, sort_keys=True))
+        print(json.dumps(_reported_decision(state, selected).as_dict(),
+                         ensure_ascii=True, sort_keys=True))
         return 0
     dispatch_root, branch, migrated = selected
+    if prepared_dispatch is not None and _path_inside(prepared_dispatch, dispatch_root):
+        raise WorkError("dispatch file must be outside the registered implementation root")
     if migrated:
         detail = (
             f"{decision.detail}; {MIGRATION_NOTICE}"
@@ -1305,11 +2005,18 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             decision.stage, decision.dispatch, decision.continuity,
             decision.reason, detail,
         )
-        print(json.dumps(decision.as_dict(), ensure_ascii=True, sort_keys=True))
+        if prepared_prompt is not None:
+            prepared_prompt = _stage_prompt(
+                state, decision, branch=BRANCH_PLACEHOLDER
+            )
+        print(json.dumps(_reported_decision(state, decision).as_dict(),
+                         ensure_ascii=True, sort_keys=True))
     here = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(prefix="tradecraft-work-") as temporary:
-        dispatch = Path(temporary) / "dispatch.txt"
+        dispatch = prepared_dispatch or Path(temporary) / "dispatch.txt"
         if decision.stage == "cold-seat":
+            if dispatch_path is not None:
+                raise WorkError("cold-seat uses the exact bounded artifact-and-brief prompt")
             with judging_root(dispatch_root) as recipient:
                 prompt = _stage_prompt(state, decision, recipient)
                 dispatch.write_bytes(prompt)
@@ -1318,6 +2025,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                     "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
                     "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
                     "--settings-scope", decision.stage,
+                    "--timeout-seconds", timeout_argument,
                 ]
                 command = [sys.executable, str(here / "dispatch_seat.py"), *common,
                            "--vendor", "claude", "--own-vendor", "codex",
@@ -1326,12 +2034,14 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         else:
             if branch is not None:
                 branch = _attached_branch(dispatch_root)
-            dispatch.write_bytes(_stage_prompt(state, decision, branch=branch))
+            if prepared_prompt is not None:
+                dispatch.write_bytes(_bind_prompt_branch(prepared_prompt, branch))
             common = [
                 "--dispatch", str(dispatch), "--root", str(dispatch_root),
                 "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
                 "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
                 "--settings-scope", decision.stage,
+                "--timeout-seconds", timeout_argument,
             ]
             command = [sys.executable, str(here / "dispatch_implementer.py"), *common,
                        "--holder-session-id", holder_identity]
@@ -1343,18 +2053,19 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(
         description=(
-            "Read GitHub state and run exactly one change stage, or release one registration, "
-            "or adopt one existing worktree."
+            "Report the next change step without mutation, explicitly run one named stage, "
+            "build a consumer tree, or manage one implementation registration."
         )
     )
     cli.add_argument(
         "command", nargs="?", choices=CLI_COMMANDS,
         help=(
-            "stage to run; omit to select from state; use release to make one registration "
-            "inactive without dispatching or deleting its worktree; or use adopt to register "
-            "an existing entrance worktree without dispatching or deleting a worktree"
+            "omit to decide read-only; run names one stage; tree builds a consumer root; "
+            "release and adopt manage a registration without dispatching"
         ),
     )
+    cli.add_argument("stage", nargs="?", choices=COMMANDS,
+                     help="the single stage required after the run command")
     cli.add_argument("--repo", required=True)
     cli.add_argument("--issue", required=True, type=int)
     cli.add_argument("--root", required=True, type=Path)
@@ -1370,22 +2081,100 @@ def parser() -> argparse.ArgumentParser:
         "--implementation-root", type=Path,
         help="existing entrance worktree to register with adopt",
     )
+    cli.add_argument("--dispatch", type=Path,
+                     help="holder-authored dispatch file outside the implementation root")
+    cli.add_argument("--tree-metadata", type=Path,
+                     help="adjacent metadata from tree; required by run use")
+    cli.add_argument(
+        "--timeout-seconds", type=float,
+        help="launcher timeout; defaults to 7200 for build and 3600 for every other stage",
+    )
+    cli.add_argument("--mode", choices=("adopter", "repository-session"))
+    cli.add_argument("--output", type=Path)
+    cli.add_argument("--path", action="append", default=[])
+    cli.add_argument("--loading-surface", action="append", default=[])
+    cli.add_argument("--front-page")
+    cli.add_argument("--root-instructions")
+    cli.add_argument("--directed-path", action="append", default=[])
+    cli.add_argument("--exclude-record", action="append", default=[])
+    cli.add_argument("--deny-text", action="append", default=[])
     cli.add_argument("--use-rules", type=Path)
     return cli
 
 
+def _named_continuity(state: WorkState, stage: str, recommendation: Decision) -> str:
+    if recommendation.stage == stage and recommendation.continuity is not None:
+        return recommendation.continuity
+    if stage in {"cold-seat", "use", "release-report"}:
+        return "fresh"
+    if stage == "artifact":
+        try:
+            bundles = _matching_bundles(
+                f"{state.repo}#{state.issue_number}", frozenset({"artifact"}),
+                state.record_root or records.default_record_root().expanduser().resolve(),
+            )
+        except WorkError:
+            return "resume"
+        return "resume" if bundles else "fresh"
+    if stage == "build":
+        return "resume" if state.pr is not None else "fresh"
+    return "resume"
+
+
+def _tree_command(args: argparse.Namespace, root: Path) -> int:
+    if args.stage is not None:
+        raise WorkError("tree does not accept a stage")
+    if args.mode is None or args.output is None:
+        raise WorkError("tree requires --mode and --output")
+    current = records.producer_version()
+    if (_version_key(current) or (0, 0, 0)) < (_version_key(NEW_MECHANISM_VERSION) or (0, 0, 0)):
+        raise WorkError(
+            f"tree: found={current}; required={NEW_MECHANISM_VERSION}; "
+            "mechanism=verified neutral consumer tree"
+        )
+    resolved = resolve_implementation_root(root, args.repo, args.issue, args.instalment)
+    if resolved is None:
+        raise WorkError(f"no active implementation registration matches {args.repo}#{args.issue}")
+    source, _branch, _migrated = resolved
+    try:
+        metadata = recipient_tree.create_consumer_tree(
+            source=source, output=args.output,
+            work=f"{args.repo}#{args.issue}", producer_version=current,
+            mode=args.mode, paths=args.path,
+            loading_surfaces=args.loading_surface,
+            front_page=args.front_page, root_instructions=args.root_instructions,
+            directed_paths=args.directed_path, exclusions=args.exclude_record,
+            deny_texts=args.deny_text,
+        )
+    except recipient_tree.RecipientTreeError as exc:
+        raise WorkError(str(exc)) from exc
+    print(json.dumps({
+        "schema_version": 1, "work": f"{args.repo}#{args.issue}",
+        "producer_version": current, "tree_metadata": str(metadata),
+    }, ensure_ascii=True, sort_keys=True))
+    return 0
+
+
 def run(
     args: argparse.Namespace, *, transport: GitHubREST | None = None,
-    executor: Callable[[WorkState, Decision, Path, str | None, str | None], int] = execute_stage,
+    executor: Callable[..., int] = execute_stage,
 ) -> int:
     root = args.root.expanduser().resolve()
     github = transport or GitHubREST()
-    sweep_registry(github)
     if args.command == "release":
+        if args.stage is not None:
+            raise WorkError("release does not accept a stage")
+        sweep_registry(github)
         released = release_registration(args.repo, args.issue, root, args.instalment)
-        print(json.dumps({"released_root": str(released)}, ensure_ascii=True, sort_keys=True))
+        print(json.dumps({
+            "schema_version": 1, "work": f"{args.repo}#{args.issue}",
+            "producer_version": records.producer_version(), "released_root": str(released),
+        }, ensure_ascii=True, sort_keys=True))
         return 0
     if args.command == "adopt":
+        if args.stage is not None:
+            raise WorkError("adopt does not accept a stage")
+        sweep_registry(github)
         if args.implementation_root is None:
             raise WorkError("adopt requires --implementation-root")
         adopted, branch = adopt_registration(
@@ -1393,18 +2182,37 @@ def run(
             args.holder_session_id or "",
         )
         print(json.dumps(
-            {"adopted_root": str(adopted), "branch": branch},
+            {"schema_version": 1, "work": f"{args.repo}#{args.issue}",
+             "producer_version": records.producer_version(),
+             "adopted_root": str(adopted), "branch": branch},
             ensure_ascii=True, sort_keys=True,
         ))
         return 0
+    if args.command == "tree":
+        return _tree_command(args, root)
+    if args.command != "run" and args.stage is not None:
+        raise WorkError("a stage is accepted only after the run command")
+    if args.command == "run" and args.stage is None:
+        raise WorkError("run requires a stage")
     config = load_work_config(root)
     state = read_state(github, args.repo, args.issue, config)
+    state.record_root = records.default_record_root().expanduser().resolve()
     rules = load_use_rules(args.use_rules or root / "lib" / "use-rules.json")
-    decision = decide(state, rules)
-    if args.command == "use":
-        decision = _use_holder_decision("power-user-stage-command")
-    elif args.command:
-        decision = Decision(args.command, True, "fresh", "power-user-stage-command")
+    recommendation = decide(state, rules)
+    if args.command is None:
+        print(json.dumps(recommendation.as_dict(), ensure_ascii=True, sort_keys=True))
+        return 0
+    decision = _reported_decision(state, Decision(
+        args.stage, True, _named_continuity(state, args.stage, recommendation),
+        "holder-named-stage",
+        f"current recommendation: {recommendation.stage} ({recommendation.reason})",
+    ))
+    if executor is execute_stage:
+        return executor(
+            state, decision, root, args.instalment, args.holder_session_id,
+            dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
+            timeout_seconds=args.timeout_seconds,
+        )
     return executor(state, decision, root, args.instalment, args.holder_session_id)
 
 

@@ -2,6 +2,10 @@
 
 **Loaded when** recording evidence that the state-driven entrance will read, or interpreting why it selected a stage. A marker is an HTML comment on the surface named below; attribute values contain no whitespace, and a reason uses a hyphenated slug. It advances the entrance only when its issue body or comment author is named by the repository's marker-producer configuration, because an untrusted commenter cannot stand in for the party each contract names.
 
+The entrance validates every claim against the contract below before using it: the surface and authorized producer, exact required and optional attribute names, lawful values and formats, required accompanying prose, and any identity that must be unique all have to hold. It reports malformed, wrong-surface, unauthorized, ambiguous and unverifiable claims instead of advancing on them, because a typed marker cannot establish more than its source proves.
+
+For a marker produced by a dispatched stage, the latest matching successful bundle for the same work and stage, completed no later than the marker, is the source of truth. `builder-session` agrees with the build bundle's observed session; `floor` agrees with the floor bundle's revision and successful return; and `cold-verdict` and `use` take staffing, fallback and same-vendor facts from the seat run record. An absent or ambiguous bundle, or marker text disagreeing with it, does not satisfy the claim. Intrinsic holder-authored markers with no dispatched producer remain governed by their own contract here.
+
 ## `affirmed-brief`
 
 - **Exact form:** `<!-- tradecraft:affirmed-brief:v1 -->`.

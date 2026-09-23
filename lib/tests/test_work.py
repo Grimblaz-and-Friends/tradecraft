@@ -19,11 +19,12 @@ Review risk: ordinary
 Review lane: connected
 """
 ARTIFACT = "<!-- tradecraft:artifact:v1 status=draft -->"
-WOULD = "<!-- tradecraft:cold-verdict:v1 verdict=would -->"
+WOULD = "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
 HOLDER = "<!-- tradecraft:holder-reading:v1 result=no-amendment -->"
 FLOOR = f"<!-- tradecraft:floor:v1 head={SHA} status=pass -->"
-USE = f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=false -->"
+USE = f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=false staffing_status=qualified -->"
 REVIEWED = "<!-- tradecraft:connected-reviewer:v1 name=fixture status=complete -->"
+WOULD_NOT = "<!-- tradecraft:cold-verdict:v1 verdict=would-not staffing_status=qualified -->"
 PRODUCER = "holder-fixture"
 REVIEWER = "reviewer-fixture[bot]"
 SESSION = "01234567-89ab-cdef-0123-456789abcdef"
@@ -99,14 +100,14 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
     (state(), ("convergence", False, None)),
     (state(AFFIRMED), ("artifact", True, "fresh")),
     (state(AFFIRMED, ARTIFACT), ("cold-seat", True, "fresh")),
-    (state(AFFIRMED, ARTIFACT, "<!-- tradecraft:cold-verdict:v1 verdict=would-not -->"),
+    (state(AFFIRMED, ARTIFACT, "<!-- tradecraft:cold-verdict:v1 verdict=would-not staffing_status=qualified -->"),
      ("artifact", True, "resume")),
     (state(AFFIRMED, ARTIFACT, WOULD), ("holder-read", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER), ("build", True, "fresh")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True), ("floor", True, "resume")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True), ("use", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR,
-           f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=true -->", pr=True),
+           f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=true staffing_status=qualified -->", pr=True),
      ("build", True, "resume")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True),
      ("ready-reviewers", False, None)),
@@ -114,12 +115,12 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
      ("waiting", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True, draft=False,
            reviewer_ran=True),
-     ("release-report", True, "fresh")),
+     ("release-report", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
            "<!-- tradecraft:panel-stage:v1 stage=cold-pass status=complete -->",
            "<!-- tradecraft:panel-stage:v1 stage=defense status=complete -->",
            "<!-- tradecraft:panel-stage:v1 stage=floor-fixes status=complete -->",
-           pr=True, draft=False, reviewer_ran=True), ("release-report", True, "fresh")),
+           pr=True, draft=False, reviewer_ran=True), ("release-report", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
            pr=True, draft=False, reviewer_ran=True, issue_state="closed"),
      ("terminal", False, None)),
@@ -127,6 +128,38 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
 def test_each_state_table_row_routes_exactly_one_stage(fixture, expected):
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.dispatch, decision.continuity) == expected
+
+
+def test_would_not_without_a_newer_draft_resumes_artifact():
+    decision = work.decide(state(AFFIRMED, ARTIFACT, WOULD_NOT), RULES)
+    assert (decision.stage, decision.dispatch, decision.continuity) == (
+        "artifact", True, "resume",
+    )
+
+
+def test_newer_artifact_draft_after_would_not_routes_a_fresh_cold_seat():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD_NOT, ARTIFACT)
+    fixture.issue_comments[1]["created_at"] = "2026-09-23T10:00:00Z"
+    fixture.issue_comments[2]["created_at"] = "2026-09-23T11:00:00Z"
+    fixture.issue_comments[3]["created_at"] = "2026-09-23T12:00:00Z"
+    fixture.issue_comments = [
+        fixture.issue_comments[0], fixture.issue_comments[3],
+        fixture.issue_comments[1], fixture.issue_comments[2],
+    ]
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.dispatch, decision.continuity) == (
+        "cold-seat", True, "fresh",
+    )
+    assert decision.reason == "newer-artifact-draft-after-would-not"
+
+
+def test_second_would_not_reaches_the_two_round_holder_cap():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD_NOT, ARTIFACT, WOULD_NOT)
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.dispatch, decision.continuity, decision.status) == (
+        "artifact-cap", False, None, "holder-owned",
+    )
+    assert decision.reason == "artifact-cold-round-cap-reached"
 
 
 def test_bought_use_returns_an_actionable_holder_handoff():
@@ -150,6 +183,44 @@ def test_red_check_routes_floor_even_with_a_current_head_floor_marker():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True)
     fixture.checks = [{"conclusion": "failure"}]
     assert work.decide(fixture, RULES).stage == "floor"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_latest_same_name_check_run_wins_independent_of_api_order(reverse):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True)
+    checks = [
+        {"id": 1, "name": "floor", "started_at": "2026-09-22T10:00:00Z",
+         "status": "completed", "conclusion": "failure"},
+        {"id": 2, "name": "floor", "started_at": "2026-09-22T11:00:00Z",
+         "status": "completed", "conclusion": "success"},
+    ]
+    fixture.checks = list(reversed(checks)) if reverse else checks
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "use"
+    assert decision.latest_checks[0]["id"] == 2
+
+
+def test_latest_pending_check_waits_without_resurrecting_an_older_red():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True)
+    fixture.checks = [
+        {"id": 1, "name": "floor", "started_at": "2026-09-22T10:00:00Z",
+         "status": "completed", "conclusion": "failure"},
+        {"id": 2, "name": "floor", "started_at": "2026-09-22T11:00:00Z",
+         "status": "in_progress", "conclusion": None},
+    ]
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == ("waiting", "latest-check-run-pending")
+
+
+def test_builder_return_without_pull_request_is_a_holder_owned_handoff():
+    fixture = state(
+        AFFIRMED, ARTIFACT, WOULD, HOLDER,
+        f"<!-- tradecraft:builder-session:v1 session={SESSION} -->",
+    )
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.dispatch, decision.status) == (
+        "open-pull-request", False, "holder-owned",
+    )
 
 
 def test_undisposed_reviewer_thread_routes_only_the_disposition_stage():
@@ -281,7 +352,9 @@ def test_multiple_candidate_pull_requests_refuse_instead_of_choosing():
     fixture = state(AFFIRMED)
     fixture.ambiguous_prs = [7, 8]
     decision = work.decide(fixture, RULES)
-    assert decision.as_dict() == {
+    assert {key: decision.as_dict()[key] for key in (
+        "stage", "dispatch", "continuity", "reason", "detail"
+    )} == {
         "stage": "ambiguous-pr", "dispatch": False, "continuity": None,
         "reason": "multiple-candidate-pull-requests", "detail": "7,8",
     }
@@ -292,7 +365,9 @@ def test_closed_completed_issue_is_terminal_before_three_candidate_pull_requests
     fixture.issue["state_reason"] = "completed"
     fixture.ambiguous_prs = [666, 667, 668]
     decision = work.decide(fixture, RULES)
-    assert decision.as_dict() == {
+    assert {key: decision.as_dict()[key] for key in (
+        "stage", "dispatch", "continuity", "reason", "detail"
+    )} == {
         "stage": "terminal", "dispatch": False, "continuity": None,
         "reason": "issue-or-pull-request-terminal", "detail": None,
     }
@@ -305,7 +380,9 @@ def test_each_lawful_review_risk_lane_pair_is_affirmed(risk, lane):
 
 def test_missing_affirmation_routes_to_the_form_and_presence_check():
     decision = work.decide(state(), RULES)
-    assert decision.as_dict() == {
+    assert {key: decision.as_dict()[key] for key in (
+        "stage", "dispatch", "continuity", "reason", "detail"
+    )} == {
         "stage": "convergence",
         "dispatch": False,
         "continuity": None,
@@ -375,7 +452,9 @@ def test_issue_body_marker_is_checked_against_the_issue_author():
         "convergence", "affirmed-brief-marker-absent;ignored-marker-from=untrusted-author",
     )
     fixture.issue["user"] = {"login": PRODUCER}
-    assert work.decide(fixture, RULES).stage == "artifact"
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "convergence"
+    assert decision.invalid_markers[0]["reason"] == "marker is not permitted on issue"
 
 
 def configured_work(tmp_path, repositories, *, reviewers=(REVIEWER,), producers=(PRODUCER,)):
@@ -641,7 +720,7 @@ def test_review_disposition_marker_is_part_of_the_entrance_evidence():
     assert {marker.name for marker in fixture.markers} == {"connected-reviewer"}
 
 
-def test_run_reads_the_work_configuration_from_root(tmp_path, monkeypatch):
+def test_run_reads_the_work_configuration_from_root(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     configured_work(tmp_path, ["acme/product-app"])
     rules_directory = tmp_path / "lib"
@@ -650,27 +729,52 @@ def test_run_reads_the_work_configuration_from_root(tmp_path, monkeypatch):
     args = work.parser().parse_args([
         "--repo", "example/tradecraft", "--issue", "3", "--root", str(tmp_path),
     ])
-    captured = []
-
     class PracticeTransport:
         def get(self, endpoint, *, paginate=False):
-            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+            if endpoint.endswith("/comments"):
+                return [{"body": AFFIRMED, "user": {"login": PRODUCER}}]
+            if "/pulls?" in endpoint:
                 return []
             return {
                 "number": 3,
                 "state": "open",
-                "body": AFFIRMED + "\nhttps://github.com/ACME/PRODUCT-APP/issues/7",
+                    "body": "https://github.com/ACME/PRODUCT-APP/issues/7",
                 "labels": [{"name": "practice-facing"}],
                 "user": {"login": PRODUCER},
             }
 
-    assert work.run(
-        args, transport=PracticeTransport(),
-        executor=lambda state, decision, root, instalment, holder: captured.append(decision) or 0,
-    ) == 0
-    assert [(decision.stage, decision.reason) for decision in captured] == [
-        ("artifact", "artifact-marker-absent"),
-    ]
+    assert work.run(args, transport=PracticeTransport()) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert (report["stage"], report["reason"]) == ("artifact", "artifact-marker-absent")
+
+
+def test_ordinary_entrance_is_repeatable_and_never_sweeps_or_executes(
+        tmp_path, monkeypatch, capsys):
+    args = work.parser().parse_args([
+        "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
+        "--use-rules", str(LIB / "use-rules.json"),
+    ])
+
+    class MinimalTransport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+                return []
+            return {"number": 3, "state": "open", "body": "", "labels": [],
+                    "user": {"login": PRODUCER}}
+
+    monkeypatch.setattr(
+        work, "sweep_registry",
+        lambda *_args: pytest.fail("a decision read must not sweep the registry"),
+    )
+    executor = lambda *_args: pytest.fail("a decision read must not execute a stage")
+    assert work.run(args, transport=MinimalTransport(), executor=executor) == 0
+    first = capsys.readouterr().out
+    assert work.run(args, transport=MinimalTransport(), executor=executor) == 0
+    second = capsys.readouterr().out
+    assert first == second
+    report = json.loads(first)
+    assert report["work"] == "acme/widget#3"
+    assert report["producer_version"] == work.records.producer_version()
 
 
 def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch():
@@ -678,8 +782,10 @@ def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch():
     prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
     assert prompt.count(b'"stage": "artifact"') == 1
     assert b"Do not start or dispatch a later stage" in prompt
-    evidence = json.loads(prompt.split(b"\n\n", 1)[1])
-    assert evidence["github"]["issue_comments"][0]["body"] == AFFIRMED
+    evidence = json.loads(prompt.split(b"\n\n")[1])
+    assert evidence["work"] == "example/product#12"
+    assert AFFIRMED.encode("ascii") in prompt
+    assert b"gh api --method GET repos/example/product/issues/12" in prompt
 
 
 def test_build_prompt_tells_the_holder_to_post_the_builder_session_marker():
@@ -689,7 +795,14 @@ def test_build_prompt_tells_the_holder_to_post_the_builder_session_marker():
     assert b"<!-- tradecraft:builder-session:v1 session=SESSION -->" in prompt
 
 
-def test_use_prompt_is_refused_while_build_keeps_the_record():
+def test_unrelated_record_comments_do_not_change_a_composed_prompt():
+    first = state(AFFIRMED, ARTIFACT, "unrelated first comment")
+    second = state(AFFIRMED, ARTIFACT, "different unrelated comment")
+    decision = work.Decision("build", True, "fresh", "holder-named-stage")
+    assert work._stage_prompt(first, decision) == work._stage_prompt(second, decision)
+
+
+def test_use_prompt_is_refused_while_build_omits_the_record():
     criterion = "SECRET ACCEPTANCE CRITERION"
     comment = "SECRET ISSUE COMMENT"
     fixture = state(AFFIRMED + criterion, comment)
@@ -700,7 +813,7 @@ def test_use_prompt_is_refused_while_build_keeps_the_record():
 
     prompt = work._stage_prompt(fixture, work.Decision("build", True, "fresh", "fixture"))
     assert criterion.encode("ascii") in prompt
-    assert comment.encode("ascii") in prompt
+    assert comment.encode("ascii") not in prompt
 
 
 def test_cold_seat_prompt_carries_only_artifact_brief_and_check_contract(tmp_path):
@@ -746,19 +859,195 @@ def test_execute_cold_seat_uses_the_bounded_prompt(tmp_path, monkeypatch):
 
 
 def dispatch_bundle(record_root, *, work_value="example/product#12", stage="build",
-                    session=SESSION, completed_at="2026-09-20T10:00:00+00:00"):
+                    session=SESSION, completed_at="2026-09-20T10:00:00+00:00",
+                    name="result.md", producer_version=None,
+                    request_schema=2, run_schema=2):
+    if producer_version is None:
+        producer_version = work.records.producer_version()
     bundle = record_root / stage
     bundle.mkdir(parents=True, exist_ok=True)
-    request = bundle / "result.md.request.json"
-    run = bundle / "result.md.run.json"
+    request = bundle / f"{name}.request.json"
+    run = bundle / f"{name}.run.json"
     request.write_text(json.dumps({
-        "schema_version": 2, "work": work_value, "stage": stage,
+        "schema_version": request_schema, "work": work_value, "stage": stage,
+        "producer_version": producer_version,
     }), encoding="utf-8")
     run.write_text(json.dumps({
-        "schema_version": 2,
+        "schema_version": run_schema,
+        "outcome": "success",
         "completed_at": completed_at,
-        "attempts": [{"observed": {"session_id": session}}],
+        "attempts": ([] if session is None else [{"observed": {"session_id": session}}]),
     }), encoding="utf-8")
+
+
+def test_bundle_backed_builder_marker_must_match_the_observed_session(tmp_path):
+    marker = f"<!-- tradecraft:builder-session:v1 session={SESSION} -->"
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, marker)
+    fixture.issue_comments[2]["created_at"] = "2026-09-20T09:00:00Z"
+    fixture.issue_comments[-1]["created_at"] = "2026-09-20T11:00:00Z"
+    fixture.record_root = tmp_path / "dispatches"
+    cold = fixture.record_root / "cold-seat"
+    cold.mkdir(parents=True)
+    (cold / "result.md.request.json").write_bytes(json.dumps({
+        "schema_version": 2, "work": "example/product#12", "stage": "cold-seat",
+        "producer_version": work.records.producer_version(),
+    }).encode())
+    (cold / "result.md.run.json").write_bytes(json.dumps({
+        "schema_version": 2, "outcome": "success",
+        "completed_at": "2026-09-20T08:00:00+00:00", "staffing_status": "qualified",
+        "staffing_qualification": {"same_vendor_reason": None}, "attempts": [],
+    }).encode())
+    dispatch_bundle(fixture.record_root, completed_at="2026-09-20T10:00:00+00:00")
+    assert work.decide(fixture, RULES).stage == "open-pull-request"
+
+    fixture.issue_comments[-1]["body"] = (
+        f"<!-- tradecraft:builder-session:v1 session={OTHER_SESSION} -->"
+    )
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    assert any("disagrees" in item["reason"] for item in decision.invalid_markers)
+
+
+def test_version_refusal_happens_before_any_stage_side_effect(tmp_path, monkeypatch, capsys):
+    fixture = state(AFFIRMED)
+    monkeypatch.setattr(work.records, "producer_version", lambda: "0.150.0")
+    monkeypatch.setattr(
+        work, "_dispatch_root",
+        lambda *_args, **_kwargs: pytest.fail("unsafe version must not resolve or create a root"),
+    )
+    decision = work.Decision("build", True, "fresh", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "unsafe-running-version-for-build"
+    assert "stage=build" in report["detail"]
+    assert "found=0.150.0" in report["detail"]
+    assert "required=0.152.0" in report["detail"]
+    assert "mechanism=" in report["detail"]
+
+
+def test_unstamped_resume_bundle_is_refused_without_marker_fallback(
+        tmp_path, monkeypatch, capsys):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="floor")
+    request = store / "floor" / "result.md.request.json"
+    value = json.loads(request.read_bytes())
+    value.pop("producer_version")
+    request.write_bytes(json.dumps(value).encode())
+    fixture = state(
+        AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={OTHER_SESSION} -->", pr=True
+    )
+    fixture.record_root = store
+    monkeypatch.setattr(
+        work, "_dispatch_root",
+        lambda *_args, **_kwargs: pytest.fail("unstamped bundle must refuse before root access"),
+    )
+    decision = work.Decision("floor", True, "resume", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "unsafe-source-version-for-floor"
+    assert "found=missing" in report["detail"]
+
+
+def test_unsupported_matching_bundle_schema_refuses_before_marker_fallback(
+        tmp_path, monkeypatch, capsys):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="floor", request_schema=1)
+    fixture = state(
+        AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={OTHER_SESSION} -->", pr=True
+    )
+    fixture.record_root = store
+    monkeypatch.setattr(
+        work, "_dispatch_root",
+        lambda *_args, **_kwargs: pytest.fail("unsupported bundle schema must refuse first"),
+    )
+
+    decision = work.Decision("floor", True, "resume", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "resume-bundle-invalid-for-floor"
+    assert "unsupported request schema" in report["detail"]
+
+
+def test_resume_version_check_uses_the_bundle_that_supplies_the_session(
+        tmp_path, monkeypatch, capsys):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(
+        store, stage="floor", name="older", producer_version="0.148.0",
+        completed_at="2026-09-20T10:00:00+00:00",
+    )
+    dispatch_bundle(
+        store, stage="floor", name="newer", session=None,
+        completed_at="2026-09-20T11:00:00+00:00",
+    )
+    fixture = state(
+        AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={OTHER_SESSION} -->", pr=True
+    )
+    fixture.record_root = store
+    monkeypatch.setattr(
+        work, "_dispatch_root",
+        lambda *_args, **_kwargs: pytest.fail("unsafe selected bundle must refuse first"),
+    )
+
+    decision = work.Decision("floor", True, "resume", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "unsafe-source-version-for-floor"
+    assert "found=0.148.0" in report["detail"]
+
+
+def test_matching_bundles_without_a_session_refuse_instead_of_falling_back(
+        tmp_path, monkeypatch, capsys):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="floor", session=None)
+    fixture = state(
+        AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={SESSION} -->", pr=True
+    )
+    fixture.record_root = store
+    monkeypatch.setattr(
+        work, "_dispatch_root",
+        lambda *_args, **_kwargs: pytest.fail("sessionless bundle must block marker fallback"),
+    )
+
+    decision = work.Decision("floor", True, "resume", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "resume-bundle-invalid-for-floor"
+    assert "no valid session" in report["detail"]
+
+
+@pytest.mark.parametrize(("running", "fragment"), [
+    ("0.152.0-rc.1", "required=0.152.0"),
+    ("1.0.0", "incompatible major"),
+])
+def test_running_version_preserves_semver_boundaries_before_side_effects(
+        tmp_path, monkeypatch, capsys, running, fragment):
+    monkeypatch.setattr(work.records, "producer_version", lambda: running)
+    monkeypatch.setattr(
+        work, "_dispatch_root",
+        lambda *_args, **_kwargs: pytest.fail("unsafe version must refuse before root access"),
+    )
+    decision = work.Decision("build", True, "fresh", "holder-named-stage")
+    assert work.execute_stage(state(AFFIRMED), decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "unsafe-running-version-for-build"
+    assert fragment in report["detail"]
+
+
+def test_resume_source_with_another_major_refuses_before_side_effects(
+        tmp_path, monkeypatch, capsys):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="floor", producer_version="1.0.0")
+    fixture = state(AFFIRMED, pr=True)
+    fixture.record_root = store
+    monkeypatch.setattr(
+        work, "_dispatch_root",
+        lambda *_args, **_kwargs: pytest.fail("incompatible source major must refuse first"),
+    )
+    decision = work.Decision("floor", True, "resume", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "unsafe-source-version-for-floor"
+    assert "incompatible major" in report["detail"]
 
 
 def test_resume_session_prefers_matching_bundle_over_issue_marker(tmp_path):
@@ -796,10 +1085,12 @@ def test_resume_without_bundle_or_marker_returns_a_non_dispatching_decision(
     )
     decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
     assert work.execute_stage(
-        state(pr=True), decision, tmp_path, None, "holder-session"
+        state(AFFIRMED, pr=True), decision, tmp_path, None, "holder-session"
     ) == 0
     returned = json.loads(capsys.readouterr().out)
-    assert returned == {
+    assert {key: returned[key] for key in (
+        "continuity", "detail", "dispatch", "reason", "stage"
+    )} == {
         "continuity": None,
         "detail": (
             "stage=floor; supply=a matching dispatch bundle or authorized "
@@ -838,9 +1129,8 @@ def test_dispatching_use_without_registration_names_absence_before_prompt_or_lau
     assert work.execute_stage(state(pr=True), decision, tmp_path, None) == 0
     returned = json.loads(capsys.readouterr().out)
     assert (returned["stage"], returned["dispatch"], returned["continuity"],
-            returned["reason"]) == ("use", False, None, "externally-constructed-use")
-    assert "no active registered implementation root resolves" in returned["detail"].lower()
-    assert "instead of archiving the --root holder checkout" in returned["detail"].lower()
+            returned["reason"]) == ("use", False, None, "use-requires-holder-job-and-tree")
+    assert "--dispatch and --tree-metadata" in returned["detail"]
     assert str(tmp_path.resolve()) not in returned["detail"]
     assert SHA not in returned["detail"]
 
@@ -904,7 +1194,51 @@ def test_use_handoff_migrates_legacy_registration_and_names_the_proof_gap(
     assert recorded["branch"] == branch
 
 
-def test_build_launch_forwards_holder_identity_to_the_implementation_root(
+def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    (implementation / "job.md").write_bytes(b"consumer surface\n")
+    (implementation / "SKILL.md").write_bytes(b"loading surface\n")
+    (implementation / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
+    git(implementation, "add", "job.md", "SKILL.md", ".gitattributes")
+    git(implementation, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "consumer")
+    output = tmp_path / "consumer"
+    metadata = work.recipient_tree.create_consumer_tree(
+        source=implementation, output=output, work="example/product#12",
+        producer_version=work.records.producer_version(), mode="adopter", paths=["job.md"],
+        loading_surfaces=["SKILL.md"], front_page=None, root_instructions=None,
+        directed_paths=[], exclusions=[], deny_texts=[],
+    )
+    dispatch = tmp_path / "use-job.md"
+    dispatch.write_bytes(b"Use the result and return a session note.\n")
+    launches = []
+    original_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_seat.py":
+            launches.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work.subprocess, "run", run)
+    assert work.execute_stage(
+        state(AFFIRMED), work.Decision("use", True, "fresh", "holder-named-stage"),
+        holder, None, dispatch_path=dispatch, tree_metadata=metadata,
+    ) == 0
+    assert len(launches) == 1
+    command = launches[0]
+    assert Path(command[command.index("--dispatch") + 1]) == dispatch.resolve()
+    assert Path(command[command.index("--root") + 1]) == output.resolve()
+
+
+def test_build_launch_forwards_holder_identity_and_default_timeout_to_the_launcher(
         tmp_path, monkeypatch):
     commands = []
     branch = "tradecraft/12-fixture"
@@ -916,10 +1250,19 @@ def test_build_launch_forwards_holder_identity_to_the_implementation_root(
     )
     decision = work.Decision("build", True, "fresh", "pull-request-absent")
     assert work.execute_stage(
-        state(), decision, tmp_path, "2", "stable-holder-token"
+        state(AFFIRMED), decision, tmp_path, "2", "stable-holder-token"
     ) == 0
     assert commands[0][-2:] == ["--holder-session-id", "stable-holder-token"]
     assert commands[0][commands[0].index("--root") + 1] == str(tmp_path)
+    assert commands[0][commands[0].index("--timeout-seconds") + 1] == "7200"
+
+
+def test_run_parser_accepts_a_stage_timeout_override(tmp_path):
+    args = work.parser().parse_args([
+        "run", "build", "--repo", "acme/widget", "--issue", "3",
+        "--root", str(tmp_path), "--timeout-seconds", "42.5",
+    ])
+    assert args.timeout_seconds == 42.5
 
 
 def test_resume_marker_equal_to_holder_identity_is_rejected(
@@ -954,14 +1297,14 @@ def test_execute_stage_passes_the_recovered_session_to_the_implementer(
     monkeypatch.setattr(work.subprocess, "run", run)
     decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
     assert work.execute_stage(
-        state(pr=True), decision, tmp_path, None, "holder-session"
+        state(AFFIRMED, pr=True), decision, tmp_path, None, "holder-session"
     ) == 0
     assert commands[0][-4:] == [
         "--holder-session-id", "holder-session", "--resume", SESSION,
     ]
 
 
-def test_judging_root_detaches_an_attached_tree_and_removes_it_afterward(tmp_path):
+def test_judging_root_is_empty_detached_and_removes_it_afterward(tmp_path):
     root = tmp_path / "repository"
     root.mkdir()
     subprocess.run(["git", "init", str(root)], stdin=subprocess.DEVNULL,
@@ -981,15 +1324,18 @@ def test_judging_root_detaches_an_attached_tree_and_removes_it_afterward(tmp_pat
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         assert head.returncode == 1
-        assert (recipient / "fixture.txt").read_bytes().replace(b"\r\n", b"\n") == b"fixture\n"
+        assert not (recipient / "fixture.txt").exists()
+        assert git(recipient, "rev-list", "--count", "HEAD").stdout.strip() == b"1"
+        assert git(recipient, "remote").stdout.strip() == b""
+        assert (recipient / ".git").resolve() != (root / ".git").resolve()
     assert not recipient_path.exists()
 
 
-@pytest.mark.parametrize("command", [command for command in work.COMMANDS if command != "use"])
-def test_power_user_commands_run_one_named_stage(command, tmp_path, monkeypatch):
+@pytest.mark.parametrize("stage", work.COMMANDS)
+def test_power_user_commands_run_one_named_stage(stage, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     args = work.parser().parse_args([
-        command, "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
+        "run", stage, "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
         "--use-rules", str(LIB / "use-rules.json"),
     ])
     captured = []
@@ -1004,13 +1350,13 @@ def test_power_user_commands_run_one_named_stage(command, tmp_path, monkeypatch)
         args, transport=MinimalTransport(),
         executor=lambda state, decision, root, instalment, holder: captured.append(decision) or 0,
     ) == 0
-    assert [(item.stage, item.reason) for item in captured] == [(command, "power-user-stage-command")]
+    assert [(item.stage, item.reason) for item in captured] == [(stage, "holder-named-stage")]
 
 
-def test_power_user_use_returns_the_shared_holder_handoff(tmp_path, monkeypatch):
+def test_power_user_use_is_an_explicit_named_stage(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     args = work.parser().parse_args([
-        "use", "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
+        "run", "use", "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
         "--use-rules", str(LIB / "use-rules.json"),
     ])
     captured = []
@@ -1025,15 +1371,11 @@ def test_power_user_use_returns_the_shared_holder_handoff(tmp_path, monkeypatch)
         args, transport=MinimalTransport(),
         executor=lambda state, decision, root, instalment, holder: captured.append(decision) or 0,
     ) == 0
-    ordinary = work.decide(
-        state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True), RULES
-    )
     assert len(captured) == 1
     assert (captured[0].stage, captured[0].dispatch, captured[0].continuity) == (
-        "use", False, None,
+        "use", True, "fresh",
     )
-    assert captured[0].reason == "power-user-stage-command"
-    assert captured[0].detail == ordinary.detail
+    assert captured[0].reason == "holder-named-stage"
 
 
 def test_registry_write_is_atomic_shape_and_canonical(tmp_path, monkeypatch):
@@ -1069,6 +1411,10 @@ def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holde
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
     holder = repository(tmp_path, "holder", ignore_worktrees=False)
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], stdin=subprocess.DEVNULL,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    git(holder, "remote", "add", "origin", str(remote))
     (holder / "fixture.txt").write_bytes(b"dirty tracked\n")
     (holder / "untracked.txt").write_bytes(b"dirty untracked\n")
     before = {
@@ -1091,10 +1437,10 @@ def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holde
     monkeypatch.setattr(work.subprocess, "run", run)
     decision = work.Decision("build", True, "fresh", "pull-request-absent")
     assert work.execute_stage(
-        state(), decision, holder, None, "holder-session"
+        state(AFFIRMED), decision, holder, None, "holder-session"
     ) == 0
     assert work.execute_stage(
-        state(), decision, holder, None, "holder-session"
+        state(AFFIRMED), decision, holder, None, "holder-session"
     ) == 0
 
     recorded = work.read_registry()["worktrees"]
@@ -1124,6 +1470,99 @@ def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holde
         "tracked": (holder / "fixture.txt").read_bytes(),
         "untracked": (holder / "untracked.txt").read_bytes(),
     } == before
+
+
+def test_build_missing_brief_refuses_before_registry_worktree_or_remote_mutation(
+        tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder", ignore_worktrees=False)
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+    )
+    git(holder, "remote", "add", "origin", str(remote))
+    registry = work.registry_path()
+    registry_before = registry.read_bytes() if registry.exists() else None
+
+    decision = work.Decision("build", True, "fresh", "holder-named-stage")
+    assert work.execute_stage(state(), decision, holder, None, "holder-session") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "stage-input-invalid-for-build"
+    assert "affirmed brief" in report["detail"]
+    assert (registry.read_bytes() if registry.exists() else None) == registry_before
+    assert not (holder / ".claude" / "worktrees").exists()
+    assert git(remote, "for-each-ref", "--format=%(refname)", "refs/heads").stdout == b""
+
+
+def test_build_missing_holder_dispatch_refuses_before_root_mutation(
+        tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder", ignore_worktrees=False)
+    registry = work.registry_path()
+
+    decision = work.Decision("build", True, "fresh", "holder-named-stage")
+    assert work.execute_stage(
+        state(AFFIRMED), decision, holder, None, "holder-session",
+        dispatch_path=tmp_path / "missing-job.txt",
+    ) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "stage-input-invalid-for-build"
+    assert not registry.exists()
+    assert not (holder / ".claude" / "worktrees").exists()
+
+
+def test_failed_initial_publication_is_retried_and_verified_before_launch(
+        tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+    )
+    git(holder, "remote", "add", "origin", str(remote))
+    real_publish = work.publish_implementation_branch
+    real_run = subprocess.run
+    publish_calls = []
+    verified = False
+    launches = []
+
+    def publish(root, branch):
+        nonlocal verified
+        publish_calls.append((root, branch))
+        if len(publish_calls) == 1:
+            raise work.WorkError(
+                "cannot publish implementation branch; repair the remote and retry run build"
+            )
+        result = real_publish(root, branch)
+        verified = True
+        return result
+
+    def run(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            assert verified
+            launches.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work, "publish_implementation_branch", publish)
+    monkeypatch.setattr(work.subprocess, "run", run)
+    decision = work.Decision("build", True, "fresh", "holder-named-stage")
+
+    assert work.execute_stage(state(AFFIRMED), decision, holder, None, "holder-session") == 0
+    first = json.loads(capsys.readouterr().out)
+    assert "retry run build" in first["detail"]
+    assert not launches
+    assert work.execute_stage(state(AFFIRMED), decision, holder, None, "holder-session") == 0
+    assert len(publish_calls) == 2
+    assert len(launches) == 1
 
 
 def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
@@ -1175,7 +1614,8 @@ def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
         holder, None, "holder-session",
     ) == 0
 
-    implementer_launches = launches[:5]
+    implementer_launches = launches[:4]
+    assert len(launches) == 5
     assert all(
         Path(command[command.index("--root") + 1]) == implementation
         for command, _prompt in implementer_launches
@@ -1317,7 +1757,7 @@ def test_legacy_registration_migrates_before_dispatch_and_names_the_proof_gap(
     decision = work.Decision("floor", True, "resume", "fixture", "existing detail")
 
     assert work.execute_stage(
-        state(pr=True), decision, holder, None, "holder-session"
+        state(AFFIRMED, pr=True), decision, holder, None, "holder-session"
     ) == 0
 
     notice = (
@@ -1695,7 +2135,8 @@ def test_adopt_command_recovers_a_released_tree_without_dispatching_or_moving_it
     ) == 0
 
     assert calls == [transport]
-    assert json.loads(capsys.readouterr().out) == {
+    returned = json.loads(capsys.readouterr().out)
+    assert {key: returned[key] for key in ("adopted_root", "branch")} == {
         "adopted_root": str(implementation), "branch": branch,
     }
     rows = work.read_registry()["worktrees"]
@@ -1835,14 +2276,12 @@ def test_adopt_refuses_unproved_trees_without_changing_registry(
 def test_help_distinguishes_direct_commands_from_a_dispatching_stage():
     help_text = " ".join(work.parser().format_help().split())
     assert (
-        "run exactly one change stage, or release one registration, or adopt one existing "
-        "worktree"
+        "Report the next change step without mutation, explicitly run one named stage"
     ) in help_text
     assert (
-        "use release to make one registration inactive without dispatching or deleting its "
-        "worktree; or use adopt to register an existing entrance worktree without "
-        "dispatching or deleting a worktree"
+        "omit to decide read-only; run names one stage; tree builds a consumer root"
     ) in help_text
     assert "--implementation-root IMPLEMENTATION_ROOT" in help_text
     assert "--holder-session-id HOLDER_SESSION_ID" in help_text
+    assert "--tree-metadata TREE_METADATA" in help_text
     assert "required by adopt" in help_text
