@@ -285,7 +285,7 @@ def create_consumer_tree(
 
 
 def load_consumer_tree_metadata(metadata: Path, *, work: str) -> dict[str, object]:
-    """Authenticate adjacent metadata before a caller trusts its source claim."""
+    """Validate adjacent metadata integrity before a caller trusts its source claim."""
     metadata = metadata.expanduser().resolve()
     try:
         value = json.loads(metadata.read_bytes())
@@ -309,7 +309,7 @@ def validate_consumer_tree(
     metadata = metadata.expanduser().resolve()
     value = claim if claim is not None else load_consumer_tree_metadata(metadata, work=work)
     if value.get("metadata_sha256") != _digest(value) or value.get("work") != work:
-        raise RecipientTreeError("consumer-tree metadata claim is not authenticated")
+        raise RecipientTreeError("consumer-tree metadata claim does not pass integrity checks")
     root_value = value.get("tree_root")
     files = value.get("files")
     if not isinstance(root_value, str) or not isinstance(files, dict):

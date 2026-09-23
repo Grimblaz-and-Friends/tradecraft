@@ -1,4 +1,4 @@
-# D-727 — Make completion, landed work, and launch choices explicit
+# D-736 — Make completion, landed work, and launch choices explicit
 
 **Purpose:** preserve why the entrance reads Codex completion from its stream, retains merged implementation evidence, admits a landed consumer-tree source, and resolves launch choices before invoking a launcher. **Audience:** a future session changing dispatch interpretation, work-state routing, consumer-tree sources, or per-change launch settings. **Success:** that session can change one mechanism without reviving the four manual routes this decision removes, and can see that no standing model or effort default moved.
 
@@ -20,15 +20,15 @@ Completion records already written remain immutable. Bundle selection reads requ
 
 ### Merged implementation evidence returns to the holder
 
-For an open issue, candidate selection first considers open implementing pull requests and only then merged ones. Ambiguity is evaluated within the winning class; a closed-unmerged pull request is never a candidate. With one merged candidate and no open one, the ordinary entrance names that pull request in a holder-owned state. It recommends neither a fresh build nor terminal closure, because only the holder can say whether the issue should close or owes another instalment. Explicit `run build` remains the route to that instalment.
+For an open issue, candidate selection first considers open implementing pull requests and only then merged ones. Ambiguity is evaluated within the winning class; a closed-unmerged pull request is never a candidate. With one merged candidate and no open one, the ordinary entrance names that pull request in a holder-owned state. It recommends neither a fresh build nor terminal closure, because only the holder can say whether the issue should close or owes another instalment. Explicit `run build` remains the route to that instalment, and refuses until the holder releases the merged implementation's still-active registration.
 
 ### A landed commit is a second lawful consumer-tree source
 
-D-726's registered implementation root is no longer the only lawful source. `tree --revision COMMIT` uses the clean holder repository without reading or writing the implementation registry, refreshes the selected remote's GitHub-reported default branch, verifies its remote head, and requires the named commit to be its ancestor. Authenticated metadata records the exact revision and `registration_used=false`; `run use` trusts that claim only after authenticating it, then re-proves the revision, bytes, modes, neutrality, and clean trees against the holder source. The registered route keeps its existing guarantees.
+D-726's registered implementation root is no longer the only lawful source. `tree --revision COMMIT` uses the clean holder repository without reading or writing the implementation registry, refreshes the selected remote's GitHub-reported default branch, verifies its remote head, and requires the named commit to be its ancestor. Integrity-checked metadata records the exact revision and `registration_used=false`; `run use` then refreshes the remote-default head and repeats that ancestry proof before re-proving the revision, bytes, modes, neutrality, and clean trees against the holder source. The registered route keeps its existing guarantees.
 
 ### The entrance resolves every launch input
 
-The latest lawful `model-override` issue marker is one whole role-scoped choice. It replaces earlier lines rather than merging with them; omitted roles and vendor mismatches use that launcher's standing default. The entrance maps the stage to its role, resolves model and effort plus each value's source, discovers every available runtime path, and passes all of them explicitly. A judging fallback therefore carries its own value/source pair rather than the primary vendor's override.
+The latest lawful `model-override` issue marker is one whole role-scoped choice. It replaces earlier lines rather than merging with them; omitted roles and vendor mismatches use that launcher's standing default. The entrance maps the stage to its role, resolves model and effort plus each value's source, validates a holder-supplied runtime path or discovers one when none is supplied, and passes every selected path explicitly. A judging fallback therefore carries its own value/source pair rather than the primary vendor's override.
 
 No standing model or effort default changed. The launcher constants and their D-645 evidence remain intact; this decision changes how a per-change choice reaches them, not what they are.
 
@@ -48,11 +48,11 @@ No standing model or effort default changed. The launcher constants and their D-
 
 - D-726's registered implementation root is no longer the only lawful consumer-tree source.
 - An open issue's merged implementing pull request is retained as holder-owned evidence rather than discarded or treated as terminal.
-- The entrance resolves and forwards settings and runtime executables instead of leaving launcher defaults and discovery implicit.
+- The entrance resolves and forwards settings and holder-supplied or discovered runtime executables instead of leaving launcher defaults and discovery implicit.
 - Dispatch outcome reads Codex completion from the stream while historical bundle outcomes remain immutable.
 
 ## Evidence
 
-The stream parser, reconnect, no-output, reason, and immutable-history polarities are in `lib/tests/test_dispatch_record.py`, `lib/tests/test_dispatch_implementer.py`, `lib/tests/test_dispatch_seat.py`, and `lib/tests/test_work.py`. Merged-candidate precedence, exact whole-choice overrides, separate value sources, executable forwarding, landed reachability, registration absence, and authenticated use are in `lib/tests/test_work.py`; revision-pinned bytes and metadata are in `lib/tests/test_recipient_tree.py`.
+The stream parser, reconnect, no-output, reason, unavailable-runtime record, and immutable-history polarities are in `lib/tests/test_dispatch_record.py`, `lib/tests/test_dispatch_implementer.py`, `lib/tests/test_dispatch_seat.py`, and `lib/tests/test_work.py`. Merged-candidate precedence, active-registration refusal, exact whole-choice overrides, separate value sources, explicit executable forwarding, creation-and-use landed reachability, registration absence, and metadata integrity are in `lib/tests/test_work.py`; revision-pinned bytes and metadata are in `lib/tests/test_recipient_tree.py`.
 
-Run `python -m pytest lib/tests/test_dispatch_record.py lib/tests/test_dispatch_implementer.py lib/tests/test_dispatch_seat.py lib/tests/test_recipient_tree.py lib/tests/test_work.py -q -p no:cacheprovider`, `python tools/dev.py check`, and `python tools/check_version_bump.py --base 35f67420ecf114dcd2dfa415de53ff66a9ca8489` on the tree under review. These commands and test surfaces are the evidence; no derived result is frozen here.
+Run `python -m pytest lib/tests/test_dispatch_record.py lib/tests/test_dispatch_implementer.py lib/tests/test_dispatch_seat.py lib/tests/test_recipient_tree.py lib/tests/test_work.py -q -p no:cacheprovider`, `python tools/dev.py check`, and `git diff 35f67420ecf114dcd2dfa415de53ff66a9ca8489 -- .claude-plugin/plugin.json` on the tree under review. These commands and test surfaces are the evidence; no derived result is frozen here.

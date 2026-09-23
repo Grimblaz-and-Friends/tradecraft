@@ -149,6 +149,30 @@ def test_implementer_runs_the_shared_automatic_resolution_result(tmp_path, monke
     assert output.read_bytes() == b"built\n"
 
 
+def test_explicit_unavailable_reason_records_an_unavailable_attempt(job, monkeypatch):
+    args, _ = job
+    args.codex_unavailable_reason = "Codex CLI was not found by the entrance"
+    monkeypatch.setattr(
+        implementer, "resolve_command",
+        lambda *_args, **_kwargs: pytest.fail("an unavailable runtime must not be rediscovered"),
+    )
+
+    assert implementer.run_implementer(args) == 1
+
+    request = json.loads(
+        implementer.records.sidecar(args.output, ".request.json").read_bytes()
+    )
+    logged = record(args)
+    assert request["requested"]["command"] is None
+    assert request["runtime_version"] is None
+    assert request["runtime_version_unavailable_reason"] == args.codex_unavailable_reason
+    assert logged["outcome"] == "unavailable"
+    assert logged["attempts"][0]["outcome"] == "unavailable"
+    assert logged["attempts"][0]["reason"] == args.codex_unavailable_reason
+    assert logged["attempts"][0]["launched"] is False
+    assert not args.output.exists()
+
+
 def test_resume_names_exact_session_and_keeps_usage_scope_unknown(job):
     args, _ = job
     session = "0199a213-81c0-7800-8aa1-bbab2a035a53"

@@ -148,6 +148,8 @@ RESUME_SOURCE_STAGES = {
     "floor": frozenset({"build", "floor"}),
     "review-disposition": frozenset({"build", "floor", "review-disposition"}),
 }
+SUCCESSFUL_BUNDLE_OUTCOMES = frozenset({"success", "success_uncontinuable"})
+RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {"completed_no_output"}
 
 
 class WorkError(RuntimeError):
@@ -749,12 +751,20 @@ def _launch_settings(state: WorkState, role: str, vendor: str,
     return LaunchSettings(model, effort, model_source, effort_source)
 
 
-def _runtime_argument(vendor: str) -> list[str]:
+def _runtime_argument(vendor: str, explicit: Path | None = None) -> list[str]:
     try:
-        path = vendor_cli.resolve_executable_path(vendor)
+        path = vendor_cli.resolve_executable_path(
+            vendor, str(explicit) if explicit is not None else None,
+        )
     except vendor_cli.CliError as exc:
+        if explicit is not None:
+            raise WorkError(str(exc)) from exc
         return [f"--{vendor}-unavailable-reason", str(exc)]
     return [f"--{vendor}", str(path)]
+
+
+def _selected_runtime_argument(vendor: str, explicit: Path | None) -> list[str]:
+    return _runtime_argument(vendor, explicit) if explicit is not None else _runtime_argument(vendor)
 
 
 def _setting_arguments(vendor: str, settings: LaunchSettings) -> list[str]:
@@ -766,14 +776,16 @@ def _setting_arguments(vendor: str, settings: LaunchSettings) -> list[str]:
     ]
 
 
-def _seat_launch_arguments(state: WorkState, role: str,
-                           classification: str) -> list[str]:
+def _seat_launch_arguments(state: WorkState, role: str, classification: str, *,
+                           claude_path: Path | None = None,
+                           codex_path: Path | None = None) -> list[str]:
     arguments: list[str] = []
+    explicit_paths = {"claude": claude_path, "codex": codex_path}
     for vendor in dispatch_seat.VENDORS:
         arguments.extend(_setting_arguments(
             vendor, _launch_settings(state, role, vendor, classification)
         ))
-        arguments.extend(_runtime_argument(vendor))
+        arguments.extend(_selected_runtime_argument(vendor, explicit_paths[vendor]))
     return arguments
 
 
@@ -1791,6 +1803,7 @@ def _time(value: str | None) -> datetime | None:
 def _matching_bundles(
     work_value: str, stages: set[str] | frozenset[str], record_root: Path, *,
     completed_no_later_than: str | None = None,
+    outcomes: frozenset[str] = SUCCESSFUL_BUNDLE_OUTCOMES,
 ) -> list[tuple[str, str, dict[str, object], dict[str, object]]]:
     candidates: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
     if not record_root.is_dir():
@@ -1814,8 +1827,7 @@ def _matching_bundles(
                 raise WorkError(
                     f"matching dispatch bundle has unsupported run schema: {run_path}"
                 )
-            if run.get("outcome") not in {
-                    "success", "success_uncontinuable", "completed_no_output"}:
+            if run.get("outcome") not in outcomes:
                 continue
             completed = str(run.get("completed_at") or "")
             completed_time = _time(completed)
@@ -1829,7 +1841,9 @@ def _matching_bundles(
 
 def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSource | None:
     allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
-    matched = _matching_bundles(work_value, allowed_stages, record_root)
+    matched = _matching_bundles(
+        work_value, allowed_stages, record_root, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+    )
     candidates: list[ResumeSource] = []
     for completed, run_path, request, run in matched:
         attempts = run.get("attempts")
@@ -1969,6 +1983,13 @@ def _dispatch_root(state: WorkState, decision: Decision, holder_root: Path,
         )
         if resolved is not None:
             if decision.stage == "build" and decision.continuity == "fresh":
+                if state.merged_pr is not None:
+                    return Decision(
+                        "build", False, None, "fresh-build-requires-released-registration",
+                        "An active registration remains for the merged implementation; run "
+                        "release for this work before naming another fresh build.",
+                        status="refused",
+                    )
                 implementation_root, branch, _migrated = resolved
                 publish_implementation_branch(implementation_root, branch)
             return resolved
@@ -2022,7 +2043,10 @@ def _resolved_use_holder_decision(state: WorkState, decision: Decision, holder_r
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None, *, dispatch_path: Path | None = None,
                   tree_metadata: Path | None = None,
-                  timeout_seconds: float | None = None) -> int:
+                  timeout_seconds: float | None = None,
+                  transport: GitHubREST | None = None,
+                  claude_path: Path | None = None,
+                  codex_path: Path | None = None) -> int:
     if state.validated_markers is None:
         validate_marker_claims(state)
     effective_timeout = (
@@ -2033,6 +2057,9 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     if not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise WorkError("--timeout-seconds must be finite and positive")
     timeout_argument = f"{effective_timeout:g}"
+    for vendor, path in (("claude", claude_path), ("codex", codex_path)):
+        if path is not None:
+            _runtime_argument(vendor, path)
     resume_source: ResumeSource | None = None
     if decision.continuity == "resume":
         record_root = state.record_root or records.default_record_root().expanduser().resolve()
@@ -2084,7 +2111,14 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                     )
                 source_root, _branch, _migrated = resolved
             else:
-                source_root = canonical_holder_root(root)
+                revision = claim.get("source_revision")
+                if not isinstance(revision, str):
+                    raise recipient_tree.RecipientTreeError(
+                        "consumer-tree metadata lacks its source revision"
+                    )
+                source_root, _resolved_revision = _landed_revision_source(
+                    transport or GitHubREST(), state.repo, root, revision,
+                )
             consumer_root = recipient_tree.validate_consumer_tree(
                 tree_metadata, work=f"{state.repo}#{state.issue_number}",
                 source=source_root, claim=claim,
@@ -2109,7 +2143,10 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             "--settings-scope", "use-consumer", "--vendor", "claude", "--own-vendor", "codex",
             "--classification", "cold", "--requires", "execute",
             "--timeout-seconds", timeout_argument,
-            *_seat_launch_arguments(state, "use-consumer", "cold"),
+            *_seat_launch_arguments(
+                state, "use-consumer", "cold",
+                claude_path=claude_path, codex_path=codex_path,
+            ),
         ]
         return subprocess.run(command).returncode
     if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
@@ -2214,7 +2251,10 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 command = [sys.executable, str(here / "dispatch_seat.py"), *common,
                            "--vendor", "claude", "--own-vendor", "codex",
                            "--classification", "cold", "--requires", "read",
-                           *_seat_launch_arguments(state, "cold-seat", "cold")]
+                            *_seat_launch_arguments(
+                                state, "cold-seat", "cold",
+                                claude_path=claude_path, codex_path=codex_path,
+                            )]
                 return subprocess.run(command).returncode
         else:
             if branch is not None:
@@ -2233,7 +2273,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                        "--model", settings.model, "--effort", settings.effort,
                        "--model-source", settings.model_source,
                        "--effort-source", settings.effort_source,
-                       *_runtime_argument("codex"),
+                        *_selected_runtime_argument("codex", codex_path),
                        "--holder-session-id", holder_identity]
             if decision.continuity == "resume":
                 command.extend(("--resume", session))
@@ -2279,6 +2319,10 @@ def parser() -> argparse.ArgumentParser:
         "--timeout-seconds", type=float,
         help="launcher timeout; defaults to 7200 for build and 3600 for every other stage",
     )
+    cli.add_argument("--claude", type=Path,
+                     help="explicit Claude executable for run instead of discovery")
+    cli.add_argument("--codex", type=Path,
+                     help="explicit Codex executable for run instead of discovery")
     cli.add_argument("--mode", choices=("adopter", "repository-session"))
     cli.add_argument("--output", type=Path)
     cli.add_argument("--revision", help="landed commit to archive without a registration")
@@ -2303,6 +2347,7 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
             bundles = _matching_bundles(
                 f"{state.repo}#{state.issue_number}", frozenset({"artifact"}),
                 state.record_root or records.default_record_root().expanduser().resolve(),
+                outcomes=RESUMABLE_BUNDLE_OUTCOMES,
             )
         except WorkError:
             return "resume"
@@ -2411,7 +2456,8 @@ def run(
         return executor(
             state, decision, root, args.instalment, args.holder_session_id,
             dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
-            timeout_seconds=args.timeout_seconds,
+            timeout_seconds=args.timeout_seconds, transport=github,
+            claude_path=args.claude, codex_path=args.codex,
         )
     return executor(state, decision, root, args.instalment, args.holder_session_id)
 

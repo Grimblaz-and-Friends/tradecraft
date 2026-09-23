@@ -68,8 +68,7 @@ def run_implementer(args: argparse.Namespace) -> int:
         raise ImplementerError("--effort must be nonempty when supplied")
     if args.codex and args.codex_unavailable_reason:
         raise ImplementerError("Codex cannot be both explicit and unavailable")
-    if args.codex_unavailable_reason:
-        raise ImplementerError(args.codex_unavailable_reason)
+    explicit_executable = resolve_command("codex", args.codex) if args.codex else None
     args.model = DEFAULT_MODEL if model_defaulted else args.model
     args.effort = DEFAULT_EFFORT if effort_defaulted else args.effort
     root = args.root.expanduser().resolve()
@@ -85,7 +84,6 @@ def run_implementer(args: argparse.Namespace) -> int:
         raise ImplementerError("a builder session cannot also identify the holder session")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         raise ImplementerError("--timeout-seconds must be finite and positive")
-    executable = resolve_command("codex", args.codex)
     output = records.resolved_output(args.output, args.work, args.stage)
     records.require_output_outside_root(output, root)
     args.output = output
@@ -108,7 +106,17 @@ def run_implementer(args: argparse.Namespace) -> int:
     with records.reserve_bundle(destinations, output) as streams:
         with tempfile.TemporaryDirectory(prefix="tradecraft-implementer-") as temporary:
             last_message = Path(temporary) / "last.txt"
-            command = build_command(args, executable, last_message)
+            unavailable_reason = args.codex_unavailable_reason
+            executable = explicit_executable
+            if executable is None and unavailable_reason is None:
+                try:
+                    executable = resolve_command("codex", None)
+                except CliError as exc:
+                    unavailable_reason = str(exc)
+            command = (
+                build_command(args, executable, last_message)
+                if executable is not None else None
+            )
             request = records.request_record(
                 dispatch_id=uuid.uuid4().hex, work=args.work, stage=args.stage,
                 settings_source=args.settings_source, settings_scope=args.settings_scope,
@@ -130,8 +138,11 @@ def run_implementer(args: argparse.Namespace) -> int:
                     "permission_boundary": "dispatch_implementer route",
                 },
             )
-            request["runtime_version"] = records.runtime_version(executable)
+            request["runtime_version"] = (
+                records.runtime_version(executable) if executable is not None else None
+            )
             request["runtime_version_unavailable_reason"] = (
+                unavailable_reason if executable is None else
                 None if request["runtime_version"] else "runtime version command returned no value"
             )
             request["revision_before"] = records.git_revision(root)
@@ -157,6 +168,24 @@ def run_implementer(args: argparse.Namespace) -> int:
                            "published_output_unavailable_reason": "no completed final source return",
                            "assessment": "unassessed"},
             }
+            if unavailable_reason is not None:
+                attempt.update(outcome="unavailable", reason=unavailable_reason)
+                records.add_unobserved(attempt, unavailable_reason)
+                record["outcome"] = "unavailable"
+                record["completed_at"] = datetime.now(timezone.utc).isoformat()
+                record["revision_after"] = records.git_revision(root)
+                records.add_usage_record(
+                    attempt, request, completed_at=record["completed_at"],
+                    staffing_status="unfilled",
+                )
+                record_stream = streams.streams.pop(record_path)
+                record_stream.close()
+                for stream in streams.values():
+                    stream.close()
+                streams.streams.clear()
+                records.finalize_reserved_json(record_path, record)
+                print(f"implementer: {unavailable_reason}", file=sys.stderr)
+                return 1
             verdict: bytes | None = None
             source_ready = False
             publication_error: OSError | None = None
