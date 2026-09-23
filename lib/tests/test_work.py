@@ -115,12 +115,12 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
      ("waiting", False, None)),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True, draft=False,
            reviewer_ran=True),
-     ("release-report", False, None)),
+     ("proof", False, "fresh")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
            "<!-- tradecraft:panel-stage:v1 stage=cold-pass status=complete -->",
            "<!-- tradecraft:panel-stage:v1 stage=defense status=complete -->",
            "<!-- tradecraft:panel-stage:v1 stage=floor-fixes status=complete -->",
-           pr=True, draft=False, reviewer_ran=True), ("release-report", False, None)),
+           pr=True, draft=False, reviewer_ran=True), ("proof", False, "fresh")),
     (state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
            pr=True, draft=False, reviewer_ran=True, issue_state="closed"),
      ("terminal", False, None)),
@@ -212,6 +212,70 @@ def test_latest_pending_check_waits_without_resurrecting_an_older_red():
     assert (decision.stage, decision.reason) == ("waiting", "latest-check-run-pending")
 
 
+def test_same_name_checks_from_different_workflows_remain_separate():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True)
+    fixture.checks = [
+        {"id": 1, "name": "Tests", "started_at": "2026-09-23T10:00:00Z",
+         "status": "completed", "conclusion": "success",
+         "workflow_run": {"workflow_id": 10}},
+        {"id": 2, "name": "Tests", "started_at": "2026-09-23T10:01:00Z",
+         "status": "completed", "conclusion": "failure",
+         "workflow_run": {"workflow_id": 20}},
+        {"id": 3, "name": "Tests", "started_at": "2026-09-23T10:02:00Z",
+         "status": "completed", "conclusion": "success",
+         "workflow_run": {"workflow_id": 10}},
+    ]
+
+    selected = work.latest_checks(fixture)
+    assert [item["id"] for item in selected] == [3, 2]
+    assert work._checks_red(fixture) is True
+
+
+def test_same_name_action_runs_without_workflow_metadata_remain_separate():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True)
+    fixture.checks = [
+        {"id": 1, "name": "Tests", "started_at": "2026-09-23T10:00:00Z",
+         "status": "completed", "conclusion": "failure",
+         "details_url": "https://github.com/x/actions/runs/81/job/1", "app": {"id": 1}},
+        {"id": 2, "name": "Tests", "started_at": "2026-09-23T10:01:00Z",
+         "status": "completed", "conclusion": "success",
+         "details_url": "https://github.com/x/actions/runs/82/job/2", "app": {"id": 1}},
+    ]
+
+    selected = work.latest_checks(fixture)
+    assert [item["id"] for item in selected] == [1, 2]
+    assert work._checks_red(fixture) is True
+
+
+def test_gate_rerun_uses_current_head_run_and_workflow_identity():
+    fixture = state(AFFIRMED, pr=True)
+    fixture.checks = [{
+        "id": 91, "name": "Change proof / Change proof", "status": "completed",
+        "conclusion": "failure", "details_url": "https://github.com/x/actions/runs/81/job/3",
+        "workflow_run": {"id": 81, "workflow_id": 71, "head_sha": SHA},
+    }]
+
+    class GateTransport:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, endpoint, payload):
+            self.posts.append((endpoint, payload))
+            return {}
+
+        def get(self, endpoint, *, paginate=False):
+            return {"id": 81, "status": "queued", "conclusion": None}
+
+    transport = GateTransport()
+    reruns = work._rerun_gate_evaluations(transport, fixture, SHA)
+    assert transport.posts == [("repos/example/product/actions/runs/81/rerun", {})]
+    assert reruns[0] == {
+        "check_id": 91, "run_id": 81, "workflow_id": 71,
+        "requested": True, "status": "queued", "conclusion": None,
+        "reason": "rerun requested for the identified current-head workflow run",
+    }
+
+
 def test_builder_return_without_pull_request_is_a_holder_owned_handoff():
     fixture = state(
         AFFIRMED, ARTIFACT, WOULD, HOLDER,
@@ -255,7 +319,7 @@ def test_earlier_head_review_with_a_listed_disposition_reaches_release_report():
         {"id": 42, "in_reply_to_id": 41, "body": "fixed",
          "user": {"login": PRODUCER}},
     ]
-    assert work.decide(fixture, RULES).stage == "release-report"
+    assert work.decide(fixture, RULES).stage == "proof"
 
 
 def test_unlisted_disposition_author_is_ignored_and_named():
@@ -275,7 +339,7 @@ def test_unlisted_disposition_author_is_ignored_and_named():
 def test_listed_reviewer_summary_comment_counts_for_the_current_pull_request():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
                     pr=True, draft=False, reviewer_ran=True)
-    assert work.decide(fixture, RULES).stage == "release-report"
+    assert work.decide(fixture, RULES).stage == "proof"
 
 
 def test_unlisted_bot_comment_does_not_count_as_connected_review():
@@ -301,7 +365,7 @@ def test_listed_review_on_an_old_head_counts_once_for_the_pull_request():
         "body": "reviewed", "commit_id": "b" * 40,
         "user": {"login": REVIEWER, "type": "Bot"},
     }]
-    assert work.decide(fixture, RULES).stage == "release-report"
+    assert work.decide(fixture, RULES).stage == "proof"
 
 
 def test_empty_reviewer_list_requires_no_review_and_says_so():
@@ -310,8 +374,151 @@ def test_empty_reviewer_list_requires_no_review_and_says_so():
                     pr=True, draft=False, config=config)
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.reason) == (
-        "release-report", "all-evidence-complete;no-connected-reviewer-configured",
+        "proof", "current-head-proof-absent-or-outdated",
     )
+
+
+def test_completed_proof_and_successful_gate_reach_release_report():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.pr_comments.append({
+        "id": 71, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+        "user": {"login": PRODUCER},
+    })
+    fixture.proof_current = True
+    fixture.checks = [{
+        "id": 91, "name": "Change proof / Change proof", "status": "completed",
+        "conclusion": "success", "started_at": "2026-09-23T12:00:00Z",
+        "workflow_run": {"workflow_id": 11, "id": 81, "head_sha": SHA},
+    }]
+
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == ("release-report", "all-evidence-complete")
+
+
+@pytest.mark.parametrize(
+    ("expected", "run_head", "conclusion", "restate"),
+    [
+        ("green", SHA, "success", False),
+        ("red", SHA, "failure", True),
+        ("stale", "b" * 40, "success", True),
+        ("absent", None, None, True),
+    ],
+)
+def test_release_report_names_gate_verdict_run_and_path_departure_action(
+        expected, run_head, conclusion, restate, tmp_path, capsys):
+    fixture = state(pr=True)
+    if run_head is not None:
+        fixture.checks = [{
+            "id": 91, "name": "Change proof / Change proof",
+            "status": "completed", "conclusion": conclusion,
+            "started_at": "2026-09-23T12:00:00Z",
+            "details_url": "https://github.com/example/product/actions/runs/81/job/91",
+            "workflow_run": {
+                "workflow_id": 11, "id": 81, "head_sha": run_head,
+                "html_url": "https://github.com/example/product/actions/runs/81",
+            },
+        }]
+
+    class ReleaseTransport:
+        def get(self, endpoint, *, paginate=False):
+            assert endpoint == "repos/example/product/pulls/7"
+            assert paginate is False
+            return {"head": {"sha": SHA}}
+
+    decision = work.Decision("release-report", False, None, "holder-named-stage")
+    assert work.execute_stage(
+        fixture, decision, tmp_path, None, transport=ReleaseTransport()
+    ) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["required_gate"]["verdict"] == expected
+    assert report["required_gate"]["head"] == SHA
+    runs = report["required_gate"]["runs"]
+    assert len(runs) == (0 if expected == "absent" else 1)
+    if runs:
+        assert runs[0]["run_id"] == 81
+        assert runs[0]["head"] == run_head
+    assert report["path_departures"]["restate"] is restate
+    instruction = report["path_departures"]["instruction"]
+    if restate:
+        assert "Restate the **Path departures:** paragraph" in instruction
+        assert SHA in instruction
+        assert "merging remains the owner's decision" in instruction
+    else:
+        assert "no gate-bypass restatement is required" in instruction
+
+
+def test_failed_gate_waits_and_does_not_route_back_to_floor():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.pr_comments.append({
+        "id": 71, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+        "user": {"login": PRODUCER},
+    })
+    fixture.proof_current = True
+    fixture.checks = [{
+        "id": 91, "name": "Change proof / Change proof", "status": "completed",
+        "conclusion": "failure", "started_at": "2026-09-23T12:00:00Z",
+        "workflow_run": {"workflow_id": 11, "id": 81, "head_sha": SHA},
+    }]
+
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == ("waiting", "latest-gate-evaluation-failed")
+
+
+@pytest.mark.parametrize("conclusion", [None, "neutral", "skipped"])
+def test_gate_requires_an_explicit_success_before_release(conclusion):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.pr_comments.append({
+        "id": 71, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+        "user": {"login": PRODUCER},
+    })
+    fixture.proof_current = True
+    fixture.checks = [{
+        "id": 91, "name": "Change proof / Change proof", "status": "completed",
+        "conclusion": conclusion, "started_at": "2026-09-23T12:00:00Z",
+        "workflow_run": {"workflow_id": 11, "id": 81, "head_sha": SHA},
+    }]
+
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "waiting", "latest-gate-evaluation-not-successful",
+    )
+
+
+def proof_ready_fixture_without_gate():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.pr_comments.append({
+        "id": 71, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+        "user": {"login": PRODUCER},
+    })
+    fixture.proof_current = True
+    return fixture
+
+
+def test_conflicting_mergeability_explains_why_no_gate_run_exists():
+    fixture = proof_ready_fixture_without_gate()
+    fixture.pr["mergeable"] = None
+    fixture.pr["mergeable_state"] = "CONFLICTING"
+
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "current-head-gate-evaluation-absent"
+    assert "confirmed merge conflict" in decision.detail
+    assert "unknown" not in decision.detail.lower()
+
+
+def test_unknown_mergeability_is_not_reported_as_a_conflict():
+    fixture = proof_ready_fixture_without_gate()
+    fixture.pr["mergeable"] = None
+    fixture.pr["mergeable_state"] = "UNKNOWN"
+
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "current-head-gate-evaluation-absent"
+    assert "unknown" in decision.detail.lower()
+    assert "confirmed merge conflict" not in decision.detail.lower()
 
 
 def test_bought_panel_routes_the_next_stage_named_by_the_lane():
@@ -557,6 +764,96 @@ def test_work_configuration_normalizes_all_three_repository_owned_lists(tmp_path
     )
 
 
+def test_work_configuration_accepts_an_optional_reviewer_label(tmp_path):
+    directory = tmp_path / ".tradecraft"
+    directory.mkdir()
+    (directory / "work.json").write_text(json.dumps({
+        "schema_version": 1, "product_repositories": [],
+        "connected_reviewers": [], "marker_producers": [],
+        "reviewer_label": "reviewers",
+    }), encoding="utf-8")
+    assert work.load_work_config(tmp_path).reviewer_label == "reviewers"
+
+
+@pytest.mark.parametrize("label", ["", "   ", "bad\nlabel", 7])
+def test_work_configuration_rejects_an_invalid_reviewer_label(tmp_path, label):
+    directory = tmp_path / ".tradecraft"
+    directory.mkdir()
+    (directory / "work.json").write_text(json.dumps({
+        "schema_version": 1, "product_repositories": [],
+        "connected_reviewers": [], "marker_producers": [],
+        "reviewer_label": label,
+    }), encoding="utf-8")
+    with pytest.raises(work.WorkError, match="reviewer_label"):
+        work.load_work_config(tmp_path)
+
+
+def test_every_configured_reviewer_needs_its_own_receipt():
+    config = work.WorkConfig(
+        connected_reviewers=frozenset({REVIEWER, "second-reviewer[bot]"}),
+        marker_producers=frozenset({PRODUCER}),
+    )
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True, config=config)
+    receipts = work._reviewer_receipts(fixture)
+    assert {item["login"]: item["result"] for item in receipts} == {
+        REVIEWER: "present", "second-reviewer[bot]": "missing",
+    }
+    assert work.decide(fixture, RULES).reason == "required-connected-reviewer-has-not-run"
+
+
+def test_notice_of_not_reviewing_does_not_receive_credit():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    fixture.pr_comments = [{
+        "id": 72, "body": "Review limit reached", "user": {"login": REVIEWER},
+    }]
+    assert work._reviewer_receipts(fixture)[0]["result"] == "notice-only"
+    assert work.decide(fixture, RULES).stage == "waiting"
+
+
+@pytest.mark.parametrize("body", [
+    "Review summary: rate limited behavior is covered by tests.",
+    "| Check | Status |\n| tests | running normally |",
+])
+def test_review_summary_text_is_not_mistaken_for_a_notice(body):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    fixture.pr_comments = [{
+        "id": 72, "body": body, "user": {"login": REVIEWER},
+    }]
+    assert work._reviewer_receipts(fixture)[0]["result"] == "present"
+
+
+def test_notice_only_review_body_does_not_receive_credit():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    fixture.reviews = [{
+        "id": 73, "body": "Review skipped", "user": {"login": REVIEWER},
+    }]
+    assert work._reviewer_receipts(fixture)[0]["result"] == "notice-only"
+
+
+def test_substantive_review_after_notice_only_review_receives_credit():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    fixture.reviews = [
+        {"id": 73, "body": "Review skipped", "user": {"login": REVIEWER}},
+        {"id": 74, "body": "Review completed", "user": {"login": REVIEWER}},
+    ]
+    receipt = work._reviewer_receipts(fixture)[0]
+    assert receipt["result"] == "present"
+    assert receipt["source"]["id"] == 74
+    assert receipt["notices"] == ["review skipped"]
+
+
+def test_proof_decision_is_holder_owned():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    decision = work._reported_decision(fixture, work.decide(fixture, RULES))
+    assert (decision.stage, decision.status) == ("proof", "holder-owned")
+
+
 def test_path_rules_buy_runtime_use_and_decline_docs_and_tests():
     assert work.use_required(["lib/runtime.py"], RULES) is True
     assert work.use_required(["lib/tests/test_runtime.py", "README.md"], RULES) is False
@@ -566,9 +863,67 @@ def test_false_use_branch_requires_marker_and_explicit_line():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR,
                     f"<!-- tradecraft:no-use:v1 head={SHA} -->", pr=True,
                     paths=["README.md"])
-    assert work.decide(fixture, RULES).stage == "use"
+    assert work.decide(fixture, RULES).stage == "proof"
     fixture.issue_comments[-1]["body"] += "\nUse: not required for changed paths"
     assert work.decide(fixture, RULES).stage == "ready-reviewers"
+
+
+class AncestryTransport:
+    def __init__(self, ancestor, head, commits):
+        self.ancestor = ancestor
+        self.head = head
+        self.commits = commits
+
+    def get(self, endpoint, *, paginate=False):
+        if "/compare/" in endpoint:
+            return {
+                "status": "ahead", "ahead_by": len(self.commits),
+                "merge_base_commit": {"sha": self.ancestor},
+                "commits": [{"sha": revision} for revision in self.commits],
+            }
+        revision = endpoint.split("/commits/", 1)[1].split("?", 1)[0]
+        return {"files": self.commits[revision]}
+
+
+def test_clean_ancestor_use_applies_but_each_intervening_commit_is_classified():
+    ancestor = "b" * 40
+    marker = (
+        f"<!-- tradecraft:use:v1 head={ancestor} status=pass changed=false "
+        "staffing_status=qualified -->"
+    )
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, marker, pr=True)
+    commits = {
+        "c" * 40: [{"filename": "README.md"}],
+        "d" * 40: [{"filename": "lib/tests/test_runtime.py"}],
+    }
+    work.prepare_use_evidence(
+        fixture, AncestryTransport(ancestor, SHA, commits), RULES
+    )
+
+    assert fixture.applicable_use is not None
+    assert fixture.use_application["applicability"] == "ancestor"
+    assert [item["sha"] for item in fixture.use_application["intervening_commits"]] == [
+        "c" * 40, "d" * 40,
+    ]
+
+
+def test_intervening_bought_path_invalidates_ancestor_even_when_a_rename_hides_it():
+    ancestor = "b" * 40
+    marker = (
+        f"<!-- tradecraft:use:v1 head={ancestor} status=pass changed=false "
+        "staffing_status=qualified -->"
+    )
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, marker, pr=True)
+    commits = {
+        "c" * 40: [{"filename": "README.md", "previous_filename": "lib/runtime.py"}],
+    }
+    work.prepare_use_evidence(
+        fixture, AncestryTransport(ancestor, SHA, commits), RULES
+    )
+
+    assert fixture.applicable_use is None
+    assert fixture.collection_diagnostics[-1]["code"] == "use-evidence-stale"
+    assert work.decide(fixture, RULES).stage == "use"
 
 
 class FakeTransport:
@@ -596,12 +951,13 @@ def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
             {"number": 9, "state": "open", "body": ""},
         ],
         f"{base}/pulls/9": {"number": 9, "state": "open", "draft": True,
+                             "changed_files": 1,
                              "head": {"sha": SHA}},
         f"{base}/issues/9/comments": [],
         f"{base}/pulls/9/reviews": [],
         f"{base}/pulls/9/comments": [],
         f"{base}/pulls/9/files": [{"filename": "lib/runtime.py"}],
-        f"{base}/commits/{SHA}/check-runs": {"check_runs": []},
+        f"{base}/commits/{SHA}/check-runs?per_page=100": {"check_runs": []},
     }
     transport = FakeTransport(values)
     fixture = work.read_state(transport, "acme/widget", 3, CONFIG)
@@ -906,6 +1262,87 @@ def test_bundle_backed_builder_marker_must_match_the_observed_session(tmp_path):
     decision = work.decide(fixture, RULES)
     assert decision.stage == "build"
     assert any("disagrees" in item["reason"] for item in decision.invalid_markers)
+
+
+def test_proof_marks_missing_bundle_unverifiable_instead_of_copying_qualified(tmp_path):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True)
+    fixture.record_root = tmp_path / "missing-dispatches"
+    fixture.policy_sources = {
+        "work_configuration": {
+            "repository": fixture.repo, "path": ".tradecraft/work.json",
+            "revision": SHA, "sha256": "1" * 64,
+        },
+        "use_rules": {
+            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "revision": SHA, "sha256": "2" * 64,
+        },
+    }
+    work.prepare_use_evidence(fixture, AncestryTransport(SHA, SHA, {}), RULES)
+
+    composed = work.compose_proof(fixture, RULES)
+    declarations = {item["stage"]: item for item in composed["declarations"]}
+    assert declarations["floor"]["status"] == "unverifiable"
+    assert declarations["use"]["status"] == "unverifiable"
+    assert declarations["use"]["staffing_status"] is None
+    assert "no matching successful dispatch bundle" in declarations["use"]["reason"]
+
+
+class ProofCommentTransport:
+    def __init__(self, comments=()):
+        self.comments = list(comments)
+        self.mutations = []
+
+    def get(self, endpoint, *, paginate=False):
+        if endpoint == "user":
+            return {"login": PRODUCER}
+        if endpoint.endswith("/issues/7/comments"):
+            return self.comments
+        raise KeyError(endpoint)
+
+    def post(self, endpoint, payload):
+        self.mutations.append(("POST", endpoint))
+        item = {
+            "id": 90 + len(self.comments), "body": payload["body"],
+            "html_url": "https://github.example/proof", "user": {"login": PRODUCER},
+        }
+        self.comments.append(item)
+        return item
+
+    def patch(self, endpoint, payload):
+        self.mutations.append(("PATCH", endpoint))
+        identity = int(endpoint.rsplit("/", 1)[1])
+        item = next(record for record in self.comments if record["id"] == identity)
+        item["body"] = payload["body"]
+        return item
+
+
+def test_proof_publication_creates_once_and_is_idempotent():
+    fixture = state(AFFIRMED, pr=True)
+    body = f"<!-- tradecraft:proof:v1 head={SHA} -->\nproof\n"
+    transport = ProofCommentTransport()
+
+    first = work._publish_proof_comment(transport, fixture, body, SHA)
+    fixture.pr_comments = transport.comments
+    second = work._publish_proof_comment(transport, fixture, body, SHA)
+
+    assert first["action"] == "created"
+    assert second["action"] == "unchanged"
+    assert [method for method, _endpoint in transport.mutations] == ["POST"]
+
+
+def test_proof_publication_refuses_competing_authorized_documents():
+    comments = [
+        {"id": 1, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->\none",
+         "user": {"login": PRODUCER}},
+        {"id": 2, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->\ntwo",
+         "user": {"login": PRODUCER}},
+    ]
+    fixture = state(AFFIRMED, pr=True)
+    fixture.pr_comments = comments
+    with pytest.raises(work.WorkError, match="conflicting authorized proof"):
+        work._publish_proof_comment(
+            ProofCommentTransport(comments), fixture, comments[0]["body"], SHA
+        )
 
 
 def test_version_refusal_happens_before_any_stage_side_effect(tmp_path, monkeypatch, capsys):
@@ -1376,6 +1813,107 @@ def test_power_user_use_is_an_explicit_named_stage(tmp_path, monkeypatch):
         "use", True, "fresh",
     )
     assert captured[0].reason == "holder-named-stage"
+
+
+class ReadyTransport:
+    def __init__(self, draft=True, labels=()):
+        self.draft = draft
+        self.head = SHA
+        self.labels = set(labels)
+        self.operations = []
+
+    def get(self, endpoint, *, paginate=False):
+        if "/issues/7" in endpoint:
+            return {"labels": [{"name": label} for label in sorted(self.labels)]}
+        if "/pulls/7" in endpoint:
+            return {"number": 7, "draft": self.draft, "head": {"sha": self.head}}
+        raise KeyError(endpoint)
+
+    def post(self, endpoint, payload):
+        self.operations.append(("label", endpoint, payload))
+        self.labels.update(payload["labels"])
+        return {"labels": [{"name": label} for label in sorted(self.labels)]}
+
+    def graphql(self, query, variables):
+        self.operations.append(("ready", query, variables))
+        self.draft = False
+        return {"data": {"markPullRequestReadyForReview": {"pullRequest": {"isDraft": False}}}}
+
+
+def test_ready_reviewers_applies_configured_label_before_ready(capsys):
+    config = work.WorkConfig(
+        connected_reviewers=frozenset({REVIEWER}),
+        marker_producers=frozenset({PRODUCER}), reviewer_label="reviewers",
+    )
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, config=config)
+    fixture.pr["node_id"] = "PR_fixture"
+    work.validate_marker_claims(fixture)
+    transport = ReadyTransport()
+
+    assert work._execute_ready_reviewers(
+        transport, fixture, RULES, None, None
+    ) == 0
+    assert [operation[0] for operation in transport.operations] == ["label", "ready"]
+    report = json.loads(capsys.readouterr().out)
+    assert report["ready"] is True
+    assert report["reviewer_label"] == "reviewers"
+
+
+def test_ready_reviewers_repairs_label_without_toggling_an_already_ready_pr(capsys):
+    config = work.WorkConfig(
+        connected_reviewers=frozenset({REVIEWER}),
+        marker_producers=frozenset({PRODUCER}), reviewer_label="reviewers",
+    )
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, config=config)
+    work.validate_marker_claims(fixture)
+    transport = ReadyTransport(draft=False)
+
+    assert work._execute_ready_reviewers(
+        transport, fixture, RULES, None, None
+    ) == 0
+    assert [operation[0] for operation in transport.operations] == ["label"]
+    assert json.loads(capsys.readouterr().out)["ready_changed"] is False
+
+
+def test_ready_reviewers_refuses_a_head_that_moves_after_label_write():
+    config = work.WorkConfig(
+        connected_reviewers=frozenset({REVIEWER}),
+        marker_producers=frozenset({PRODUCER}), reviewer_label="reviewers",
+    )
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, config=config)
+    fixture.pr["node_id"] = "PR_fixture"
+    work.validate_marker_claims(fixture)
+
+    class MovingHeadTransport(ReadyTransport):
+        def post(self, endpoint, payload):
+            result = super().post(endpoint, payload)
+            self.head = "b" * 40
+            return result
+
+    transport = MovingHeadTransport()
+    with pytest.raises(work.WorkError, match="head changed"):
+        work._execute_ready_reviewers(transport, fixture, RULES, None, None)
+    assert [operation[0] for operation in transport.operations] == ["label"]
+
+
+def test_ready_reviewers_refuses_a_head_that_moves_during_ready_transition():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True)
+    fixture.pr["node_id"] = "PR_fixture"
+    work.validate_marker_claims(fixture)
+
+    class MovingHeadTransport(ReadyTransport):
+        def graphql(self, query, variables):
+            result = super().graphql(query, variables)
+            self.head = "b" * 40
+            return result
+
+    with pytest.raises(work.WorkError, match="head changed"):
+        work._execute_ready_reviewers(
+            MovingHeadTransport(), fixture, RULES, None, None
+        )
 
 
 def test_registry_write_is_atomic_shape_and_canonical(tmp_path, monkeypatch):

@@ -21,4 +21,4 @@ Every seat-launcher role — including `cold-read`, defense and judge — declar
 
 The `engagement` cell owns judging-seat freshness, vendor assignment — including how the holder treats an actual-vendor fallback — and **how a standing default model is chosen**. What is below applies within that staffing.
 
-**Where one model's advantage over another is real but scarce, concentrate it** where open-ended perception lives — the `cold-read` — and where single dispatches carry the most leverage — the judge. On Claude, ordinary seats and a panel's nonterminal defense run at `xhigh`; the `cold-read` and the terminal stage run at `max`, which makes a routine defense `max` and a panel defense `xhigh`.
+**Where one model's advantage over another is real but scarce, concentrate it** where open-ended perception lives — the `cold-read` — and where single dispatches carry the most leverage — the judge. On Claude, ordinary seats and a panel's nonterminal defense run at `high`; the `cold-read` and the terminal stage run at `max`, which makes a routine defense `max` and a panel defense `high`.
