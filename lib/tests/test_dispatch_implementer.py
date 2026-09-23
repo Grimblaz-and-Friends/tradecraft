@@ -84,7 +84,7 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     assert attempt["usage"]["dispatch"]["staffing_status"] == "qualified"
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
     assert request["work"] == "issue-592"
-    assert request["producer_version"] == "0.151.0"
+    assert request["producer_version"] == implementer.records.producer_version()
     assert request["runtime_version"] == "codex-cli test"
     assert request["settings_source"] == "issuecomment-5655702442"
     assert args.output.read_bytes() == b"built\n"

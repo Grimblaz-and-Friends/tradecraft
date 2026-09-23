@@ -131,7 +131,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     assert logged["staffing_qualification"]["cross_vendor_satisfied"] is True
     request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
     assert request["work"] == "issue-592"
-    assert request["producer_version"] == "0.151.0"
+    assert request["producer_version"] == seat.records.producer_version()
     assert request["stage"] == "cold-read"
     assert request["requested"]["required_capability"] == required_capability
     for boundary in (

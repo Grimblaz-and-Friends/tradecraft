@@ -45,7 +45,7 @@ def test_holder_identity_cannot_also_identify_dispatch_or_resumed_builder():
 def test_request_records_work_and_shared_producer_version():
     request = records.request_record(**request_values())
     assert request["work"] == "issue"
-    assert request["producer_version"] == records.producer_version() == "0.151.0"
+    assert request["producer_version"] == records.producer_version()
 
 
 def test_claude_usage_keeps_models_while_money_stays_out_of_observed_usage():

@@ -345,6 +345,32 @@ def test_each_lawful_review_risk_lane_pair_is_affirmed(risk, lane):
     assert work.review_lane(f"Review risk: {risk}\nReview lane: {lane}\n") == (risk, lane)
 
 
+def test_missing_affirmation_routes_to_the_form_and_presence_check():
+    decision = work.decide(state(), RULES)
+    assert {key: decision.as_dict()[key] for key in (
+        "stage", "dispatch", "continuity", "reason", "detail"
+    )} == {
+        "stage": "convergence",
+        "dispatch": False,
+        "continuity": None,
+        "reason": "affirmed-brief-marker-absent",
+        "detail": work.BRIEF_GUIDANCE,
+    }
+    for required in (
+        "<plugin-root>/skills/engagement/references/the-brief.md",
+        "Shape",
+        "Readers",
+        "decision block",
+        "Not this",
+        "Review risk / Review lane pair",
+        "python <plugin-root>/lib/brief.py --check FILE",
+        "presence only",
+        "content pass",
+    ):
+        assert required in decision.detail
+    assert work.decide(state(AFFIRMED), RULES).detail is None
+
+
 @pytest.mark.parametrize("text", [
     "Review lane: connected\n",
     "Review risk: ordinary\n",
@@ -354,6 +380,17 @@ def test_each_lawful_review_risk_lane_pair_is_affirmed(risk, lane):
 def test_missing_or_crossed_review_rows_cannot_become_affirmed_state(text):
     fixture = state("<!-- tradecraft:affirmed-brief:v1 -->\n" + text)
     assert work.decide(fixture, RULES).stage == "affirmation-invalid"
+
+
+@pytest.mark.parametrize("extra_row", [
+    "Review risk: severe\n",
+    "Review lane: bespoke\n",
+])
+def test_recording_marker_behavior_still_ignores_unrecognised_review_rows(extra_row):
+    text = "Review risk: ordinary\nReview lane: connected\n" + extra_row
+    assert work.review_lane(text) == ("ordinary", "connected")
+    fixture = state("<!-- tradecraft:affirmed-brief:v1 -->\n" + text)
+    assert work.decide(fixture, RULES).stage == "artifact"
 
 
 def test_authorized_marker_advances_the_entrance():
@@ -704,7 +741,7 @@ def test_ordinary_entrance_is_repeatable_and_never_sweeps_or_executes(
     assert first == second
     report = json.loads(first)
     assert report["work"] == "acme/widget#3"
-    assert report["producer_version"] == "0.151.0"
+    assert report["producer_version"] == work.records.producer_version()
 
 
 def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch():
@@ -790,8 +827,10 @@ def test_execute_cold_seat_uses_the_bounded_prompt(tmp_path, monkeypatch):
 
 def dispatch_bundle(record_root, *, work_value="example/product#12", stage="build",
                     session=SESSION, completed_at="2026-09-20T10:00:00+00:00",
-                    name="result.md", producer_version="0.151.0",
+                    name="result.md", producer_version=None,
                     request_schema=2, run_schema=2):
+    if producer_version is None:
+        producer_version = work.records.producer_version()
     bundle = record_root / stage
     bundle.mkdir(parents=True, exist_ok=True)
     request = bundle / f"{name}.request.json"
@@ -818,7 +857,7 @@ def test_bundle_backed_builder_marker_must_match_the_observed_session(tmp_path):
     cold.mkdir(parents=True)
     (cold / "result.md.request.json").write_bytes(json.dumps({
         "schema_version": 2, "work": "example/product#12", "stage": "cold-seat",
-        "producer_version": "0.151.0",
+        "producer_version": work.records.producer_version(),
     }).encode())
     (cold / "result.md.run.json").write_bytes(json.dumps({
         "schema_version": 2, "outcome": "success",
@@ -849,7 +888,7 @@ def test_version_refusal_happens_before_any_stage_side_effect(tmp_path, monkeypa
     assert report["reason"] == "unsafe-running-version-for-build"
     assert "stage=build" in report["detail"]
     assert "found=0.150.0" in report["detail"]
-    assert "required=0.151.0" in report["detail"]
+    assert "required=0.152.0" in report["detail"]
     assert "mechanism=" in report["detail"]
 
 
@@ -944,7 +983,7 @@ def test_matching_bundles_without_a_session_refuse_instead_of_falling_back(
 
 
 @pytest.mark.parametrize(("running", "fragment"), [
-    ("0.151.0-rc.1", "required=0.151.0"),
+    ("0.152.0-rc.1", "required=0.152.0"),
     ("1.0.0", "incompatible major"),
 ])
 def test_running_version_preserves_semver_boundaries_before_side_effects(
@@ -1140,7 +1179,7 @@ def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
     output = tmp_path / "consumer"
     metadata = work.recipient_tree.create_consumer_tree(
         source=implementation, output=output, work="example/product#12",
-        producer_version="0.151.0", mode="adopter", paths=["job.md"],
+        producer_version=work.records.producer_version(), mode="adopter", paths=["job.md"],
         loading_surfaces=["SKILL.md"], front_page=None, root_instructions=None,
         directed_paths=[], exclusions=[], deny_texts=[],
     )

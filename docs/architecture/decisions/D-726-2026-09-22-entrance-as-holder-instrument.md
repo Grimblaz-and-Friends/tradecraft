@@ -26,13 +26,13 @@ The stage-safety table records the first version carrying each mechanism:
 
 | Stage | Minimum | Mechanism |
 | --- | --- | --- |
-| `artifact` | `0.151.0` | bounded prompt and explicit run |
-| `cold-seat` | `0.151.0` | neutral cold root and explicit run |
-| `build` | `0.151.0` | bounded prompt, verified publication and explicit run |
-| `floor` | `0.149.0`, then `0.151.0` | registered implementation root, then bounded prompt and explicit run |
-| `use` | `0.151.0` | validated consumer tree and explicit run |
-| `review-disposition` | `0.149.0`, then `0.151.0` | registered implementation root, then bounded prompt and explicit run |
-| `release-report` | `0.151.0` | holder-owned report |
+| `artifact` | `0.152.0` | bounded prompt and explicit run |
+| `cold-seat` | `0.152.0` | neutral cold root and explicit run |
+| `build` | `0.152.0` | bounded prompt, verified publication and explicit run |
+| `floor` | `0.149.0`, then `0.152.0` | registered implementation root, then bounded prompt and explicit run |
+| `use` | `0.152.0` | validated consumer tree and explicit run |
+| `review-disposition` | `0.149.0`, then `0.152.0` | registered implementation root, then bounded prompt and explicit run |
+| `release-report` | `0.152.0` | holder-owned report |
 
 The registered-root pin is the manifest version at commit `f121ac38c6cc14d33b7cc2feb20970c50a7d0e4a`, which introduced that mechanism; `git show f121ac38c6cc14d33b7cc2feb20970c50a7d0e4a:.claude-plugin/plugin.json` is the reproducing command. The other pins use the version this pull request ships. Version comparison follows SemVer prerelease precedence and refuses a producer from another major before applying a mechanism minimum, because ordering a structurally incompatible record above a floor would silently treat it as readable.
 
