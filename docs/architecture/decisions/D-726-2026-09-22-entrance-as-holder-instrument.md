@@ -1,6 +1,6 @@
 # D-726 — Make the entrance the holder's instrument
 
-**Landed by** [PR #726](https://github.com/Grimblaz-and-Friends/tradecraft/pull/726). Closes [#724](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724). Governed by the [affirmed implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724#issuecomment-5787041296), the [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724#issuecomment-5787287271), its cold [`would` verdict](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724#issuecomment-5787287039), and the [holder's whole-change reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724#issuecomment-5787287457). The implementation began at `cb6209a338444dbec447f38319a167948db0e542`; the connected-review repair began at `4efa5a1730bb09de4a35551294cfad87e42c376b`.
+**Landed by** [PR #726](https://github.com/Grimblaz-and-Friends/tradecraft/pull/726). Closes [#724](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724). Governed by the [affirmed implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724#issuecomment-5787041296), the [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724#issuecomment-5787287271), its cold [`would` verdict](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724#issuecomment-5787287039), the [holder's whole-change reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724#issuecomment-5787287457), and the holder's [four post-settlement additions](https://github.com/Grimblaz-and-Friends/tradecraft/issues/724#issuecomment-5788388830). The implementation began at `cb6209a338444dbec447f38319a167948db0e542`; the connected-review repair began at `4efa5a1730bb09de4a35551294cfad87e42c376b`.
 
 ## Context
 
@@ -17,6 +17,16 @@ The ordinary invocation reads GitHub and local configuration and returns a versi
 `run STAGE` is the only stage-launching form. The stage argument is the holder's authority and need not equal the report's recommendation; one invocation validates and performs that stage and returns. Implementer prompts contain one-stage bounds, the exact affirmed brief, the latest artifact when one exists, compact stage facts and explicit GET commands. They do not contain issue or pull-request threads. `run use` instead requires the holder's job and validated consumer-tree metadata, while `run release-report` launches nobody. The existing `release` and `adopt` forms remain registration operations.
 
 The prompt or holder job is validated before a build creates or registers a root or publishes a branch. A settled artifact is deliberately not a build precondition: the holder-named stage is authoritative under the brief, and the charter exempts purely mechanical work from an artifact. Where an artifact exists, the bounded build prompt carries it.
+
+### Four additions taken inside the affirmed rows
+
+The registry side of the holder guard follows resolved paths and the existing finite read-only proof rather than matching `.tradecraft` or another bare name in command text. A shell write resolving inside the registry directory remains denied, as does a write whose working directory is there; a proved read may name a dispatch bundle or run there. File-tool protection and registered-implementation-root protection are unchanged. This closes [#685](https://github.com/Grimblaz-and-Friends/tradecraft/issues/685) without a launcher-name exemption.
+
+After one qualifying `would-not`, a newer artifact draft selects a fresh cold seat; without that draft the artifact implementer resumes. Two qualifying `would-not` verdicts reach the existing two-round cap and return the unresolved points to the holder for the owner instead of buying a third seat. This closes [#669](https://github.com/Grimblaz-and-Friends/tradecraft/issues/669) by making the report follow the artifact procedure's actual rounds.
+
+`run` accepts a per-stage timeout and passes it to the selected launcher. Build defaults to 7200 seconds because its launch must outlast a passing full check and 3600 seconds expired during this build; every other stage defaults to 3600 seconds.
+
+A stage return is posted to the change record whole, including any verbatim copy of the affirmed brief it carries, because later stages read the posted comment rather than the holder's machine-local bundle. The stretch owns that rule once; the work cell does not restate it.
 
 ### Version and bundle provenance are safety evidence
 
@@ -64,4 +74,4 @@ Fresh build creates and registers the entrance branch, selects the sole or track
 
 ## Evidence
 
-The implementation and connected-review repair are exercised by the read-only decision, explicit-run, latest-check, marker-contract, version-boundary, publication-retry, bounded-prompt, neutral-root and consumer-tree tests in `lib/tests/test_work.py` and `lib/tests/test_recipient_tree.py`. The full repository floor is `python tools/dev.py check`; it runs after this entry and index row are written, so this frozen entry names the command and test surfaces rather than an output from a commit it cannot yet cite.
+The implementation and connected-review repair are exercised by the read-only decision, cold-round routing, explicit-run timeout, latest-check, marker-contract, version-boundary, publication-retry, bounded-prompt, neutral-root and consumer-tree tests in `lib/tests/test_work.py` and `lib/tests/test_recipient_tree.py`, and by the registry-path polarities in `lib/tests/test_holder_tree_guard.py`. The full repository floor is `python tools/dev.py check`; it runs after this entry and index row are written, so this entry names the command and test surfaces rather than an output from a commit it cannot yet cite.

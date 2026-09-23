@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import fnmatch
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -76,6 +77,8 @@ HEAD_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
 NEW_MECHANISM_VERSION = "0.152.0"
 REGISTERED_ROOT_VERSION = "0.149.0"
+DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
+DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
 STAGE_SAFETY = {
     "artifact": ((NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),),
     "cold-seat": ((NEW_MECHANISM_VERSION, "neutral cold root and explicit run"),),
@@ -488,6 +491,12 @@ def _current_marker(state: WorkState, name: str, **attributes: str) -> Marker | 
     return None
 
 
+def _marker_recency(marker: Marker, position: int) -> tuple[datetime, int, int]:
+    timestamp = _time(marker.timestamp) or datetime.min.replace(tzinfo=timezone.utc)
+    source_id = int(marker.source_id) if marker.source_id and marker.source_id.isdigit() else 0
+    return timestamp, source_id, position
+
+
 def staffing_qualified(marker: Marker) -> bool:
     if marker.attributes.get("staffing_status") != "degraded":
         return True
@@ -711,8 +720,9 @@ def _checks_pending(state: WorkState) -> bool:
 def _decision_status(decision: Decision) -> str:
     if decision.dispatch:
         return "runnable"
-    if decision.stage in {"open-pull-request", "holder-read", "ready-reviewers", "use",
-                          "release-report", "ambiguous-pr", "panel"}:
+    if decision.stage in {"artifact-cap", "open-pull-request", "holder-read",
+                          "ready-reviewers", "use", "release-report", "ambiguous-pr",
+                          "panel"}:
         return "holder-owned"
     if decision.stage == "terminal":
         return "terminal"
@@ -840,15 +850,38 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if lane_pair is None:
         return result("affirmation-invalid", False, None, "review-risk-lane-missing-or-mismatched")
     _risk, lane = lane_pair
-    artifacts = [marker for marker in state.markers if marker.name == "artifact"]
+    indexed_markers = list(enumerate(state.markers))
+    artifacts = sorted(
+        ((position, marker) for position, marker in indexed_markers
+         if marker.name == "artifact"),
+        key=lambda item: _marker_recency(item[1], item[0]),
+    )
     if not artifacts:
         return result("artifact", True, "fresh", "artifact-marker-absent")
-    verdicts = [marker for marker in state.markers
-                if marker.name == "cold-verdict" and staffing_qualified(marker)]
+    verdicts = sorted(
+        ((position, marker) for position, marker in indexed_markers
+         if marker.name == "cold-verdict" and staffing_qualified(marker)),
+        key=lambda item: _marker_recency(item[1], item[0]),
+    )
     if not verdicts:
         return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
-    verdict = verdicts[-1]
+    verdict_position, verdict = verdicts[-1]
     if verdict.attributes.get("verdict") == "would-not":
+        adverse_rounds = [marker for _position, marker in verdicts
+                          if marker.attributes.get("verdict") == "would-not"]
+        if len(adverse_rounds) >= 2:
+            return result(
+                "artifact-cap", False, None, "artifact-cold-round-cap-reached",
+                "Two qualifying would-not verdicts reached the cold-seat cap; "
+                "carry unresolved points to the owner under the artifact procedure.",
+            )
+        artifact_position, artifact = artifacts[-1]
+        if (artifact.attributes.get("status") == "draft"
+                and _marker_recency(artifact, artifact_position)
+                > _marker_recency(verdict, verdict_position)):
+            return result(
+                "cold-seat", True, "fresh", "newer-artifact-draft-after-would-not"
+            )
         return result("artifact", True, "resume", "cold-verdict-would-not")
     if verdict.attributes.get("verdict") != "would":
         return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
@@ -1813,7 +1846,16 @@ def _resolved_use_holder_decision(state: WorkState, decision: Decision, holder_r
 
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None, *, dispatch_path: Path | None = None,
-                  tree_metadata: Path | None = None) -> int:
+                  tree_metadata: Path | None = None,
+                  timeout_seconds: float | None = None) -> int:
+    effective_timeout = (
+        timeout_seconds if timeout_seconds is not None else
+        DEFAULT_BUILD_TIMEOUT_SECONDS if decision.stage == "build" else
+        DEFAULT_STAGE_TIMEOUT_SECONDS
+    )
+    if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+        raise WorkError("--timeout-seconds must be finite and positive")
+    timeout_argument = f"{effective_timeout:g}"
     resume_source: ResumeSource | None = None
     if decision.continuity == "resume":
         record_root = state.record_root or records.default_record_root().expanduser().resolve()
@@ -1883,6 +1925,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
             "--settings-scope", "use", "--vendor", "claude", "--own-vendor", "codex",
             "--classification", "cold", "--requires", "execute",
+            "--timeout-seconds", timeout_argument,
         ]
         return subprocess.run(command).returncode
     if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
@@ -1982,6 +2025,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                     "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
                     "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
                     "--settings-scope", decision.stage,
+                    "--timeout-seconds", timeout_argument,
                 ]
                 command = [sys.executable, str(here / "dispatch_seat.py"), *common,
                            "--vendor", "claude", "--own-vendor", "codex",
@@ -1997,6 +2041,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
                 "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
                 "--settings-scope", decision.stage,
+                "--timeout-seconds", timeout_argument,
             ]
             command = [sys.executable, str(here / "dispatch_implementer.py"), *common,
                        "--holder-session-id", holder_identity]
@@ -2040,6 +2085,10 @@ def parser() -> argparse.ArgumentParser:
                      help="holder-authored dispatch file outside the implementation root")
     cli.add_argument("--tree-metadata", type=Path,
                      help="adjacent metadata from tree; required by run use")
+    cli.add_argument(
+        "--timeout-seconds", type=float,
+        help="launcher timeout; defaults to 7200 for build and 3600 for every other stage",
+    )
     cli.add_argument("--mode", choices=("adopter", "repository-session"))
     cli.add_argument("--output", type=Path)
     cli.add_argument("--path", action="append", default=[])
@@ -2162,6 +2211,7 @@ def run(
         return executor(
             state, decision, root, args.instalment, args.holder_session_id,
             dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
+            timeout_seconds=args.timeout_seconds,
         )
     return executor(state, decision, root, args.instalment, args.holder_session_id)
 

@@ -24,6 +24,7 @@ HOLDER = "<!-- tradecraft:holder-reading:v1 result=no-amendment -->"
 FLOOR = f"<!-- tradecraft:floor:v1 head={SHA} status=pass -->"
 USE = f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=false staffing_status=qualified -->"
 REVIEWED = "<!-- tradecraft:connected-reviewer:v1 name=fixture status=complete -->"
+WOULD_NOT = "<!-- tradecraft:cold-verdict:v1 verdict=would-not staffing_status=qualified -->"
 PRODUCER = "holder-fixture"
 REVIEWER = "reviewer-fixture[bot]"
 SESSION = "01234567-89ab-cdef-0123-456789abcdef"
@@ -127,6 +128,38 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
 def test_each_state_table_row_routes_exactly_one_stage(fixture, expected):
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.dispatch, decision.continuity) == expected
+
+
+def test_would_not_without_a_newer_draft_resumes_artifact():
+    decision = work.decide(state(AFFIRMED, ARTIFACT, WOULD_NOT), RULES)
+    assert (decision.stage, decision.dispatch, decision.continuity) == (
+        "artifact", True, "resume",
+    )
+
+
+def test_newer_artifact_draft_after_would_not_routes_a_fresh_cold_seat():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD_NOT, ARTIFACT)
+    fixture.issue_comments[1]["created_at"] = "2026-09-23T10:00:00Z"
+    fixture.issue_comments[2]["created_at"] = "2026-09-23T11:00:00Z"
+    fixture.issue_comments[3]["created_at"] = "2026-09-23T12:00:00Z"
+    fixture.issue_comments = [
+        fixture.issue_comments[0], fixture.issue_comments[3],
+        fixture.issue_comments[1], fixture.issue_comments[2],
+    ]
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.dispatch, decision.continuity) == (
+        "cold-seat", True, "fresh",
+    )
+    assert decision.reason == "newer-artifact-draft-after-would-not"
+
+
+def test_second_would_not_reaches_the_two_round_holder_cap():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD_NOT, ARTIFACT, WOULD_NOT)
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.dispatch, decision.continuity, decision.status) == (
+        "artifact-cap", False, None, "holder-owned",
+    )
+    assert decision.reason == "artifact-cold-round-cap-reached"
 
 
 def test_bought_use_returns_an_actionable_holder_handoff():
@@ -1205,7 +1238,7 @@ def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
     assert Path(command[command.index("--root") + 1]) == output.resolve()
 
 
-def test_build_launch_forwards_holder_identity_to_the_implementation_root(
+def test_build_launch_forwards_holder_identity_and_default_timeout_to_the_launcher(
         tmp_path, monkeypatch):
     commands = []
     branch = "tradecraft/12-fixture"
@@ -1221,6 +1254,15 @@ def test_build_launch_forwards_holder_identity_to_the_implementation_root(
     ) == 0
     assert commands[0][-2:] == ["--holder-session-id", "stable-holder-token"]
     assert commands[0][commands[0].index("--root") + 1] == str(tmp_path)
+    assert commands[0][commands[0].index("--timeout-seconds") + 1] == "7200"
+
+
+def test_run_parser_accepts_a_stage_timeout_override(tmp_path):
+    args = work.parser().parse_args([
+        "run", "build", "--repo", "acme/widget", "--issue", "3",
+        "--root", str(tmp_path), "--timeout-seconds", "42.5",
+    ])
+    assert args.timeout_seconds == 42.5
 
 
 def test_resume_marker_equal_to_holder_identity_is_rejected(

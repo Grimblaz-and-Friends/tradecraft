@@ -144,19 +144,70 @@ def test_each_file_tool_is_denied_at_registry_and_unanswered_elsewhere_in_home(
 
 
 @pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
-def test_shell_command_naming_registry_is_denied_from_any_cwd(tmp_path, monkeypatch, tool):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    outside = tmp_path / "holder"
-    outside.mkdir()
-    registry = guard.registry_path()
-    command = f"Get-Content '{registry}'"
+def test_registry_bare_name_and_repository_config_path_do_not_imply_registry_access(
+        tmp_path, monkeypatch, tool):
+    home = tmp_path / "home"
+    repository = tmp_path / "repository"
+    (repository / ".tradecraft").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
 
+    for command in ('cat .tradecraft/work.json', 'echo ".tradecraft"'):
+        assert guard.decision({
+            "tool_name": tool,
+            "cwd": str(repository),
+            "tool_input": {"command": command},
+        }, []) is None
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+def test_read_only_registry_paths_and_registry_working_directory_are_allowed(
+        tmp_path, monkeypatch, tool):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    registry = guard.registry_path()
+    registry.parent.mkdir()
+    bundle = registry.parent / "dispatches" / "build" / "result.md"
+
+    for cwd, command in (
+        (tmp_path, f"Get-Content -Raw '{bundle}'"),
+        (registry.parent, f"Get-Content -Raw '{registry.name}'"),
+    ):
+        assert guard.decision({
+            "tool_name": tool,
+            "cwd": str(cwd),
+            "tool_input": {"command": command},
+        }, []) is None
+
+
+@pytest.mark.parametrize(("tool", "command"), [
+    ("Bash", 'echo changed > "{registry}"'),
+    ("PowerShell", "Set-Content '{registry}' changed"),
+])
+def test_shell_write_to_resolved_registry_path_is_denied(
+        tmp_path, monkeypatch, tool, command):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    registry = guard.registry_path()
     reason = guard.decision({
         "tool_name": tool,
-        "cwd": str(outside),
+        "cwd": str(tmp_path),
+        "tool_input": {"command": command.format(registry=registry)},
+    }, [])
+    assert "registry is not the holder's to edit" in reason
+
+
+@pytest.mark.parametrize(("tool", "command"), [
+    ("Bash", "echo changed > result.md"),
+    ("PowerShell", "Set-Content result.md changed"),
+])
+def test_shell_write_from_registry_directory_is_denied(
+        tmp_path, monkeypatch, tool, command):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    directory = guard.registry_path().parent
+    directory.mkdir()
+    reason = guard.decision({
+        "tool_name": tool,
+        "cwd": str(directory),
         "tool_input": {"command": command},
     }, [])
-
     assert "registry is not the holder's to edit" in reason
 
 
