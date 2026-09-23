@@ -76,18 +76,22 @@ RED_CONCLUSIONS = {
 }
 PENDING_CHECK_STATUSES = {"queued", "in_progress", "pending", "requested", "waiting"}
 REVIEW_NOTICE_PATTERNS = (
-    ("Review limit reached", re.compile(r"\breview limit reached\b", re.I)),
-    ("rate limited", re.compile(r"\brate limited\b", re.I)),
+    ("Review limit reached", re.compile(r"^\s*review limit reached\b", re.I | re.M)),
+    ("rate limited", re.compile(r"^\s*(?:review(?:er)?\s+)?rate limited\b", re.I | re.M)),
     ("review limited", re.compile(
-        r"\breview (?:was |is )?limited\b|\blimited review\b", re.I,
+        r"^\s*(?:the\s+)?review (?:was |is )?limited\b|^\s*limited review\b",
+        re.I | re.M,
     )),
     ("review skipped", re.compile(
-        r"\breview (?:was |is )?skipped\b|\bskipped review\b", re.I,
+        r"^\s*(?:the\s+)?review (?:was |is )?skipped\b|^\s*skipped review\b",
+        re.I | re.M,
     )),
     ("Ask your admin to upgrade for code reviews", re.compile(
-        r"\bask your admin to upgrade for code reviews\b", re.I,
+        r"^\s*ask your admin to upgrade for code reviews\b", re.I | re.M,
     )),
-    ("Running", re.compile(r"^\|[^\n]*\brunning\b[^\n]*\|\s*$", re.I | re.M)),
+    ("Running", re.compile(
+        r"^\|(?:[^|\n]*\|)*\s*running\s*\|(?:[^|\n]*\|)*\s*$", re.I | re.M,
+    )),
 )
 HEAD_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
@@ -1007,8 +1011,8 @@ def _decision_status(decision: Decision) -> str:
     if decision.dispatch:
         return "runnable"
     if decision.stage in {"artifact-cap", "open-pull-request", "holder-read",
-                          "ready-reviewers", "use", "release-report", "ambiguous-pr",
-                          "panel"}:
+                          "ready-reviewers", "proof", "use", "release-report",
+                          "ambiguous-pr", "panel"}:
         return "holder-owned"
     if decision.stage == "terminal":
         return "terminal"
@@ -1060,8 +1064,13 @@ def _marker_source(state: WorkState, marker: Marker) -> dict[str, object]:
 
 
 def _review_notice(body: str) -> str | None:
+    leading_nonblank = "\n".join(
+        line for line in body.splitlines() if line.strip()
+    ).splitlines()[:3]
+    lead = "\n".join(leading_nonblank)
     for name, pattern in REVIEW_NOTICE_PATTERNS:
-        if pattern.search(body):
+        subject = body if name == "Running" else lead
+        if pattern.search(subject):
             return name
     return None
 
@@ -1073,9 +1082,20 @@ def _reviewer_receipts(state: WorkState) -> list[dict[str, object]]:
         notices: list[str] = []
         for kind, items in (
                 ("review", state.reviews), ("review-comment", state.review_comments)):
-            item = next((record for record in items if _author(record) == reviewer), None)
-            if item is not None:
+            for item in items:
+                if _author(item) != reviewer:
+                    continue
+                notice = (
+                    _review_notice(str(item.get("body") or ""))
+                    if kind == "review" else None
+                )
+                if notice is not None:
+                    if notice not in notices:
+                        notices.append(notice)
+                    continue
                 receipt = _public_source(state, item, kind)
+                break
+            if receipt is not None:
                 break
         if receipt is None:
             for item in state.pr_comments:
@@ -1322,7 +1342,7 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
         detail = "No current-head gate evaluation is visible."
         mergeable = state.pr.get("mergeable")
         mergeable_state = str(state.pr.get("mergeable_state") or "").lower()
-        if mergeable is False or mergeable_state == "dirty":
+        if mergeable is False or mergeable_state in {"dirty", "conflicting"}:
             detail = "The pull request has a confirmed merge conflict, so no gate run may exist."
         elif mergeable is None or mergeable_state in {"", "unknown"}:
             detail += " Mergeability is unknown; this is not reported as a conflict."
@@ -1333,6 +1353,9 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if any(str(check.get("conclusion") or "").lower() in RED_CONCLUSIONS
            for check in gates):
         return result("waiting", False, None, "latest-gate-evaluation-failed")
+    if any(str(check.get("conclusion") or "").lower() != "success"
+           for check in gates):
+        return result("waiting", False, None, "latest-gate-evaluation-not-successful")
     reason = "all-evidence-complete" if reviewers else "all-evidence-complete;no-connected-reviewer-configured"
     return result("release-report", False, None, reason)
 
@@ -2760,6 +2783,8 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     if error is not None:
         raise WorkError(error)
     assert state.pr is not None
+    validated_head = _head_sha(state)
+    assert validated_head is not None
     number = int(state.pr["number"])
     label = state.config.reviewer_label
     label_applied = False
@@ -2781,6 +2806,15 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     }
     if label is not None and label not in verified_labels:
         raise WorkError("reviewer label write returned without the configured label being present")
+    pull_endpoint = f"repos/{state.repo}/pulls/{number}"
+    current_pull = _dict(transport.get(pull_endpoint), pull_endpoint)
+    current_head = current_pull.get("head")
+    current_sha = current_head.get("sha") if isinstance(current_head, dict) else None
+    if current_sha != validated_head:
+        raise WorkError(
+            "pull-request head changed after ready evidence validation; "
+            "retry ready-reviewers on the new head"
+        )
     ready_changed = False
     if bool(state.pr.get("draft")):
         node_id = state.pr.get("node_id")
@@ -2793,8 +2827,14 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
         )
         _transport_mutation(transport, "graphql", query, {"id": node_id})
         ready_changed = True
-    pull_endpoint = f"repos/{state.repo}/pulls/{number}"
     verified_pull = _dict(transport.get(pull_endpoint), pull_endpoint)
+    verified_head = verified_pull.get("head")
+    verified_sha = verified_head.get("sha") if isinstance(verified_head, dict) else None
+    if verified_sha != validated_head:
+        raise WorkError(
+            "pull-request head changed during the ready transition; "
+            "readiness is not confirmed for the validated head"
+        )
     if bool(verified_pull.get("draft")):
         detail = " reviewer label is present;" if label is not None else ""
         raise WorkError(f"ready transition could not be confirmed;{detail} retry ready-reviewers")

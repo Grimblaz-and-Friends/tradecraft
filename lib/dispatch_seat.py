@@ -35,7 +35,7 @@ from winio import utf8_stdio
 
 VENDORS = ("codex", "claude")
 # Interim from #731: round-one Codex and Claude-judging evidence is not yet
-# definitive, so the owner's named preferences hold until confirmatory runs [D-NNN].
+# definitive, so the owner's named preferences hold until confirmatory runs [D-733].
 DEFAULT_MODELS = {
     "codex": "gpt-6-sol",
     "claude": "claude-opus-5-5",

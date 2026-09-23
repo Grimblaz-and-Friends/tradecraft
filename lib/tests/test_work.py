@@ -414,6 +414,60 @@ def test_failed_gate_waits_and_does_not_route_back_to_floor():
     assert (decision.stage, decision.reason) == ("waiting", "latest-gate-evaluation-failed")
 
 
+@pytest.mark.parametrize("conclusion", [None, "neutral", "skipped"])
+def test_gate_requires_an_explicit_success_before_release(conclusion):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.pr_comments.append({
+        "id": 71, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+        "user": {"login": PRODUCER},
+    })
+    fixture.proof_current = True
+    fixture.checks = [{
+        "id": 91, "name": "Change proof / Change proof", "status": "completed",
+        "conclusion": conclusion, "started_at": "2026-09-23T12:00:00Z",
+        "workflow_run": {"workflow_id": 11, "id": 81, "head_sha": SHA},
+    }]
+
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "waiting", "latest-gate-evaluation-not-successful",
+    )
+
+
+def proof_ready_fixture_without_gate():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.pr_comments.append({
+        "id": 71, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+        "user": {"login": PRODUCER},
+    })
+    fixture.proof_current = True
+    return fixture
+
+
+def test_conflicting_mergeability_explains_why_no_gate_run_exists():
+    fixture = proof_ready_fixture_without_gate()
+    fixture.pr["mergeable"] = None
+    fixture.pr["mergeable_state"] = "CONFLICTING"
+
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "current-head-gate-evaluation-absent"
+    assert "confirmed merge conflict" in decision.detail
+    assert "unknown" not in decision.detail.lower()
+
+
+def test_unknown_mergeability_is_not_reported_as_a_conflict():
+    fixture = proof_ready_fixture_without_gate()
+    fixture.pr["mergeable"] = None
+    fixture.pr["mergeable_state"] = "UNKNOWN"
+
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "current-head-gate-evaluation-absent"
+    assert "unknown" in decision.detail.lower()
+    assert "confirmed merge conflict" not in decision.detail.lower()
+
+
 def test_bought_panel_routes_the_next_stage_named_by_the_lane():
     elevated = AFFIRMED.replace("ordinary", "elevated").replace("connected", "routine-panel")
     fixture = state(elevated, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
@@ -703,6 +757,48 @@ def test_notice_of_not_reviewing_does_not_receive_credit():
     }]
     assert work._reviewer_receipts(fixture)[0]["result"] == "notice-only"
     assert work.decide(fixture, RULES).stage == "waiting"
+
+
+@pytest.mark.parametrize("body", [
+    "Review summary: rate limited behavior is covered by tests.",
+    "| Check | Status |\n| tests | running normally |",
+])
+def test_review_summary_text_is_not_mistaken_for_a_notice(body):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    fixture.pr_comments = [{
+        "id": 72, "body": body, "user": {"login": REVIEWER},
+    }]
+    assert work._reviewer_receipts(fixture)[0]["result"] == "present"
+
+
+def test_notice_only_review_body_does_not_receive_credit():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    fixture.reviews = [{
+        "id": 73, "body": "Review skipped", "user": {"login": REVIEWER},
+    }]
+    assert work._reviewer_receipts(fixture)[0]["result"] == "notice-only"
+
+
+def test_substantive_review_after_notice_only_review_receives_credit():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False)
+    fixture.reviews = [
+        {"id": 73, "body": "Review skipped", "user": {"login": REVIEWER}},
+        {"id": 74, "body": "Review completed", "user": {"login": REVIEWER}},
+    ]
+    receipt = work._reviewer_receipts(fixture)[0]
+    assert receipt["result"] == "present"
+    assert receipt["source"]["id"] == 74
+    assert receipt["notices"] == ["review skipped"]
+
+
+def test_proof_decision_is_holder_owned():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    decision = work._reported_decision(fixture, work.decide(fixture, RULES))
+    assert (decision.stage, decision.status) == ("proof", "holder-owned")
 
 
 def test_path_rules_buy_runtime_use_and_decline_docs_and_tests():
@@ -1669,6 +1765,7 @@ def test_power_user_use_is_an_explicit_named_stage(tmp_path, monkeypatch):
 class ReadyTransport:
     def __init__(self, draft=True, labels=()):
         self.draft = draft
+        self.head = SHA
         self.labels = set(labels)
         self.operations = []
 
@@ -1676,7 +1773,7 @@ class ReadyTransport:
         if "/issues/7" in endpoint:
             return {"labels": [{"name": label} for label in sorted(self.labels)]}
         if "/pulls/7" in endpoint:
-            return {"number": 7, "draft": self.draft, "head": {"sha": SHA}}
+            return {"number": 7, "draft": self.draft, "head": {"sha": self.head}}
         raise KeyError(endpoint)
 
     def post(self, endpoint, payload):
@@ -1725,6 +1822,45 @@ def test_ready_reviewers_repairs_label_without_toggling_an_already_ready_pr(caps
     ) == 0
     assert [operation[0] for operation in transport.operations] == ["label"]
     assert json.loads(capsys.readouterr().out)["ready_changed"] is False
+
+
+def test_ready_reviewers_refuses_a_head_that_moves_after_label_write():
+    config = work.WorkConfig(
+        connected_reviewers=frozenset({REVIEWER}),
+        marker_producers=frozenset({PRODUCER}), reviewer_label="reviewers",
+    )
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, config=config)
+    fixture.pr["node_id"] = "PR_fixture"
+    work.validate_marker_claims(fixture)
+
+    class MovingHeadTransport(ReadyTransport):
+        def post(self, endpoint, payload):
+            result = super().post(endpoint, payload)
+            self.head = "b" * 40
+            return result
+
+    transport = MovingHeadTransport()
+    with pytest.raises(work.WorkError, match="head changed"):
+        work._execute_ready_reviewers(transport, fixture, RULES, None, None)
+    assert [operation[0] for operation in transport.operations] == ["label"]
+
+
+def test_ready_reviewers_refuses_a_head_that_moves_during_ready_transition():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True)
+    fixture.pr["node_id"] = "PR_fixture"
+    work.validate_marker_claims(fixture)
+
+    class MovingHeadTransport(ReadyTransport):
+        def graphql(self, query, variables):
+            result = super().graphql(query, variables)
+            self.head = "b" * 40
+            return result
+
+    with pytest.raises(work.WorkError, match="head changed"):
+        work._execute_ready_reviewers(
+            MovingHeadTransport(), fixture, RULES, None, None
+        )
 
 
 def test_registry_write_is_atomic_shape_and_canonical(tmp_path, monkeypatch):

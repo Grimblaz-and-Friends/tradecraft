@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 from pathlib import Path
 import sys
@@ -145,3 +146,11 @@ def test_shipped_positive_fixture_is_canonical_and_negative_cases_name_rejection
         "non-review-notice", "unauthorized-disposition", "omitted-thread",
         "declaration-rendered-as-verified", "producer-verification-field",
     }
+    for case in negative:
+        candidate = deepcopy(valid)
+        candidate.update(deepcopy(case["document_patch"]))
+        if case["name"] == "producer-verification-field":
+            with pytest.raises(proof.ProofError):
+                proof.validate(candidate)
+        else:
+            assert proof.validate(candidate) == candidate
