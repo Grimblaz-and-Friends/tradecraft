@@ -83,6 +83,41 @@ def test_presence_does_not_judge_content_reasons_or_reader_cells():
     assert brief.missing_elements(defective) == ()
 
 
+def test_required_elements_inside_one_fence_are_refused():
+    fenced = f"```text\n{draft()}```\n"
+    assert brief.missing_elements(fenced) == (
+        "Shape",
+        "Readers",
+        "decision block",
+        "Not this",
+    )
+
+
+def test_fenced_review_pair_remains_accepted_when_other_elements_are_real():
+    pair = "Review risk: ordinary\nReview lane: connected\n"
+    fenced_pair = f"```text\n{pair}```\n"
+    assert brief.missing_elements(draft().replace(pair, fenced_pair)) == ()
+
+
+def test_bare_pipe_header_is_not_a_decision_table():
+    assert brief.missing_elements(draft("Decision | Why")) == ("decision block",)
+
+
+def test_pipe_table_with_delimiter_and_data_row_is_accepted():
+    table = "Decision | Why\n--- | ---\nKeep it small | Because"
+    assert brief.missing_elements(draft(table)) == ()
+
+
+@pytest.mark.parametrize("extra_row", [
+    "Review risk: severe\n",
+    "Review lane: bespoke\n",
+])
+def test_unrecognised_review_row_beside_lawful_pair_is_refused(extra_row):
+    assert brief.missing_elements(draft() + extra_row) == (
+        "Review risk / Review lane pair",
+    )
+
+
 def run_cli(path, cwd):
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--check", str(path)],

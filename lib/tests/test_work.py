@@ -338,6 +338,17 @@ def test_missing_or_crossed_review_rows_cannot_become_affirmed_state(text):
     assert work.decide(fixture, RULES).stage == "affirmation-invalid"
 
 
+@pytest.mark.parametrize("extra_row", [
+    "Review risk: severe\n",
+    "Review lane: bespoke\n",
+])
+def test_recording_marker_behavior_still_ignores_unrecognised_review_rows(extra_row):
+    text = "Review risk: ordinary\nReview lane: connected\n" + extra_row
+    assert work.review_lane(text) == ("ordinary", "connected")
+    fixture = state("<!-- tradecraft:affirmed-brief:v1 -->\n" + text)
+    assert work.decide(fixture, RULES).stage == "artifact"
+
+
 def test_authorized_marker_advances_the_entrance():
     assert work.decide(state(AFFIRMED), RULES).stage == "artifact"
 
