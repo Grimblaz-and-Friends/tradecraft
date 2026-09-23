@@ -112,14 +112,14 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     flags = observed["argv"]
     if vendor == "claude":
         tools = "Read,Glob,Grep,Bash" if required_capability == "execute" else "Read,Glob,Grep"
-        assert flags == ["-p", "--model", "opus", "--effort", "xhigh", "--output-format", "json",
+        assert flags == ["-p", "--model", "claude-opus-5-5", "--effort", "xhigh", "--output-format", "json",
                          "--no-session-persistence", "--safe-mode", "--tools", tools,
                          "--allowedTools", tools, "--permission-mode", "dontAsk", "--strict-mcp-config"]
     else:
         last = flags[flags.index("--output-last-message") + 1]
         assert flags == ["exec", "--strict-config", "--ignore-user-config",
                          "--ephemeral", "--sandbox", "read-only",
-                         "--json", "--color", "never", "--model", "gpt-5.6-sol",
+                         "--json", "--color", "never", "--model", "gpt-6-sol",
                          "-c", "apps._default.enabled=false",
                          "-c", 'model_reasoning_effort="xhigh"', "-C", str(args.root),
                          "--skip-git-repo-check", "--output-last-message", last, "-"]

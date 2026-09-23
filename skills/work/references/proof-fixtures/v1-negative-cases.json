@@ -1,0 +1,50 @@
+[
+  {
+    "document_patch": {"identity": {"head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+    "live": {"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "name": "wrong-head",
+    "reason": "the document head differs from the live pull-request head"
+  },
+  {
+    "document_patch": {"floor": {"checks": [{"id": 999}]}},
+    "live": {"floor_check_ids": [81]},
+    "name": "substituted-floor-check",
+    "reason": "the named check id is not a visible current-head floor run"
+  },
+  {
+    "document_patch": {"reviewers": []},
+    "live": {"connected_reviewers": ["reviewer[bot]"]},
+    "name": "omitted-configured-reviewer",
+    "reason": "every trusted configured reviewer needs a separate entry"
+  },
+  {
+    "document_patch": {"reviewers": [{"login": "reviewer[bot]", "result": "present"}]},
+    "live": {"reviewer_notice": "Review limit reached"},
+    "name": "non-review-notice",
+    "reason": "a notice of not reviewing cannot become a receipt"
+  },
+  {
+    "document_patch": {"dispositions": []},
+    "live": {"undisposed_threads": [51]},
+    "name": "omitted-thread",
+    "reason": "a favorable payload cannot hide a visible reviewer thread"
+  },
+  {
+    "document_patch": {"dispositions": [{"thread_id": 51, "reply_author": "stranger"}]},
+    "live": {"marker_producers": ["holder"]},
+    "name": "unauthorized-disposition",
+    "reason": "the gate authorizes the reply from trusted configuration"
+  },
+  {
+    "document_patch": {"verified": true},
+    "live": {},
+    "name": "producer-verification-field",
+    "reason": "only the gate emits verified conclusions"
+  },
+  {
+    "document_patch": {"declarations": [{"stage": "use", "status": "declared"}]},
+    "live": {"local_records_visible": false},
+    "name": "declaration-rendered-as-verified",
+    "reason": "local bundle and staffing facts remain declarations"
+  }
+]
