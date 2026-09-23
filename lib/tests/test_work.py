@@ -303,6 +303,30 @@ def test_each_lawful_review_risk_lane_pair_is_affirmed(risk, lane):
     assert work.review_lane(f"Review risk: {risk}\nReview lane: {lane}\n") == (risk, lane)
 
 
+def test_missing_affirmation_routes_to_the_form_and_presence_check():
+    decision = work.decide(state(), RULES)
+    assert decision.as_dict() == {
+        "stage": "convergence",
+        "dispatch": False,
+        "continuity": None,
+        "reason": "affirmed-brief-marker-absent",
+        "detail": work.BRIEF_GUIDANCE,
+    }
+    for required in (
+        "<plugin-root>/skills/engagement/references/the-brief.md",
+        "Shape",
+        "Readers",
+        "decision block",
+        "Not this",
+        "Review risk / Review lane pair",
+        "python <plugin-root>/lib/brief.py --check FILE",
+        "presence only",
+        "content pass",
+    ):
+        assert required in decision.detail
+    assert work.decide(state(AFFIRMED), RULES).detail is None
+
+
 @pytest.mark.parametrize("text", [
     "Review lane: connected\n",
     "Review risk: ordinary\n",
@@ -312,6 +336,17 @@ def test_each_lawful_review_risk_lane_pair_is_affirmed(risk, lane):
 def test_missing_or_crossed_review_rows_cannot_become_affirmed_state(text):
     fixture = state("<!-- tradecraft:affirmed-brief:v1 -->\n" + text)
     assert work.decide(fixture, RULES).stage == "affirmation-invalid"
+
+
+@pytest.mark.parametrize("extra_row", [
+    "Review risk: severe\n",
+    "Review lane: bespoke\n",
+])
+def test_recording_marker_behavior_still_ignores_unrecognised_review_rows(extra_row):
+    text = "Review risk: ordinary\nReview lane: connected\n" + extra_row
+    assert work.review_lane(text) == ("ordinary", "connected")
+    fixture = state("<!-- tradecraft:affirmed-brief:v1 -->\n" + text)
+    assert work.decide(fixture, RULES).stage == "artifact"
 
 
 def test_authorized_marker_advances_the_entrance():
