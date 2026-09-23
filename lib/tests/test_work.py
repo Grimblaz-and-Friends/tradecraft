@@ -726,7 +726,10 @@ def test_reopened_issue_retains_its_merged_former_implementing_pull_request():
     assert (decision.stage, decision.dispatch, decision.status) == (
         "merged-pull-request", False, "holder-owned",
     )
-    assert decision.detail.startswith("#9:")
+    assert decision.detail == (
+        "pull request #9 merged; holder decides what the issue still owes: close it, "
+        "run another build, or run a use owed after the merge from a landed commit"
+    )
 
 
 def test_fresh_build_after_merged_pull_request_refuses_the_active_registration(

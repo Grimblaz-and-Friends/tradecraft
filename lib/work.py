@@ -973,7 +973,8 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
         return result(
             "merged-pull-request", False, None,
             "implementing-pull-request-merged-while-issue-open",
-            f"#{number}: close the issue or explicitly run another build",
+            f"pull request #{number} merged; holder decides what the issue still owes: "
+            "close it, run another build, or run a use owed after the merge from a landed commit",
         )
     if state.pr and (state.pr.get("merged_at") or str(state.pr.get("state") or "").lower() == "closed"):
         return result("terminal", False, None, "issue-or-pull-request-terminal")

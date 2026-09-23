@@ -28,7 +28,7 @@ D-726's registered implementation root is no longer the only lawful source. `tre
 
 ### The entrance resolves every launch input
 
-The latest lawful `model-override` issue marker is one whole role-scoped choice. It replaces earlier lines rather than merging with them; omitted roles and vendor mismatches use that launcher's standing default. The entrance maps the stage to its role, resolves model and effort plus each value's source, validates a holder-supplied runtime path or discovers one when none is supplied, and passes every selected path explicitly. A judging fallback therefore carries its own value/source pair rather than the primary vendor's override.
+The latest lawful `model-override` issue marker is one whole role-scoped choice. It replaces earlier lines rather than merging with them; omitted roles and vendor mismatches use that launcher's standing default. The entrance resolves model and effort plus each value's source for the three roles it launches: implementer, cold seat and use consumer. It validates a holder-supplied runtime path or discovers one when none is supplied, and passes every selected path explicitly. Ordinary- and terminal-seat entries reach `dispatch_seat.py` only when the holder passes their resolved values directly with the marker comment as their source. A judging fallback therefore carries its own value/source pair rather than the primary vendor's override.
 
 No standing model or effort default changed. The launcher constants and their D-645 evidence remain intact; this decision changes how a per-change choice reaches them, not what they are.
 
@@ -48,7 +48,7 @@ No standing model or effort default changed. The launcher constants and their D-
 
 - D-726's registered implementation root is no longer the only lawful consumer-tree source.
 - An open issue's merged implementing pull request is retained as holder-owned evidence rather than discarded or treated as terminal.
-- The entrance resolves and forwards settings and holder-supplied or discovered runtime executables instead of leaving launcher defaults and discovery implicit.
+- The entrance resolves and forwards settings and holder-supplied or discovered runtime executables for its implementer, cold-seat and use-consumer launches; ordinary- and terminal-seat settings remain holder-forwarded direct launcher inputs.
 - Dispatch outcome reads Codex completion from the stream while historical bundle outcomes remain immutable.
 
 ## Evidence
