@@ -79,6 +79,29 @@ def test_missing_usage_is_unknown_rather_than_zero():
     assert "no turn.completed usage" in evidence["normalized_unavailable_reason"]
 
 
+def test_codex_stream_result_keeps_recovered_errors_and_last_agent_message():
+    raw = b"\n".join((
+        b'{"type":"error","message":"reconnecting"}',
+        b'{"type":"item.completed","item":{"type":"agent_message","text":"first"}}',
+        b'{"type":"item.completed","item":{"type":"agent_message","text":"final"}}',
+        b'{"type":"turn.completed"}',
+    ))
+    result = records.codex_stream_result(raw)
+    assert result.valid is True
+    assert result.completed is True
+    assert result.failed_events == ()
+    assert len(result.error_events) == 1
+    assert result.final_message == "final"
+    evidence = records.runtime_evidence("codex", raw, "fresh")
+    assert evidence["recovered_error_count"] == 1
+
+
+@pytest.mark.parametrize("raw", [b"not-json\n", b'{"type":"turn.failed"}\n'])
+def test_codex_stream_result_does_not_complete_invalid_or_failed_streams(raw):
+    result = records.codex_stream_result(raw)
+    assert not (result.valid and result.completed and not result.failed_events)
+
+
 def test_claude_resume_usage_keeps_its_scope_unestablished():
     payload = {
         "type": "result", "total_cost_usd": 1.25,

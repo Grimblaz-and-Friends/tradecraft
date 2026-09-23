@@ -148,6 +148,44 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
             assert "apps=disabled-by-config" not in boundary
 
 
+def test_codex_reconnect_returns_stream_verdict_without_fallback(job):
+    args, _ = job
+    args.vendor = "codex"
+    args.own_vendor = "claude"
+    stdout = "\n".join((
+        json.dumps({"type": "error", "message": "reconnecting"}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "agent_message", "text": "would\n",
+        }}),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}),
+    ))
+    configure(job, {"codex": {"stdout": stdout, "message": ""}})
+    assert seat.run_dispatch(args) == 0
+    logged = record(args)
+    assert len(logged["attempts"]) == 1
+    assert logged["attempts"][0]["outcome"] == "success"
+    assert logged["attempts"][0]["reason"] == ""
+    assert logged["attempts"][0]["observed"]["recovered_error_count"] == 1
+    assert args.output.read_bytes() == b"would\n"
+
+
+def test_codex_completed_without_message_does_not_fallback_or_publish(job):
+    args, _ = job
+    args.vendor = "codex"
+    args.own_vendor = "claude"
+    configure(job, {"codex": {
+        "stdout": json.dumps({"type": "turn.completed"}), "message": "",
+    }})
+    assert seat.run_dispatch(args) == 1
+    logged = record(args)
+    assert len(logged["attempts"]) == 1
+    assert logged["outcome"] == "completed_no_output"
+    assert logged["attempts"][0]["outcome"] == "completed_no_output"
+    assert logged["attempts"][0]["reason"] == "turn completed without a final message"
+    assert logged["result"]["source_output"] is None
+    assert not args.output.exists()
+
+
 def test_codex_launch_ignores_config_with_an_explicit_app_enable(job, monkeypatch):
     args, _ = job
     codex_home = args.root.parent / "codex-home"
@@ -404,7 +442,10 @@ def test_unavailable_falls_back_once_and_records_reason(job, monkeypatch, vendor
     elif kind == "hold":
         args.hold_file.write_bytes(f"{vendor} 2026-09-13T00:00:00Z\n".encode())
     elif kind == "zero_exit":
-        configure(job, {vendor: {"message": reason}})
+        scenario = {"message": reason}
+        if vendor == "codex":
+            scenario["stdout"] = json.dumps({"type": "error", "message": reason})
+        configure(job, {vendor: scenario})
     elif vendor == "codex":
         configure(job, {vendor: {"exit": 1, "message": "partial verdict must not escape",
                                 "stdout": json.dumps({"type": "turn.failed", "error": {"message": reason}})}})
@@ -455,7 +496,7 @@ def test_degraded_fallback_qualifies_only_with_stage_local_same_vendor_reason(jo
 
 @pytest.mark.parametrize("vendor", seat.VENDORS)
 @pytest.mark.parametrize("scenario", [
-    {"exit": 2, "stderr": "invalid argument --bad"},
+    {"exit": 2, "stderr": "invalid argument --bad", "stdout": "not JSON"},
     {"stdout": "not JSON"},
     {"message": ""},
     {"sleep": 20},
@@ -498,7 +539,10 @@ def test_no_fallback_loop_when_both_vendors_held_or_same(job, same_vendor):
 
 def test_fallback_error_retains_both_attempts_without_verdict(job):
     args, _ = job
-    configure(job, {"claude": {"message": "Not logged in"}, "codex": {"exit": 3}})
+    configure(job, {
+        "claude": {"message": "Not logged in"},
+        "codex": {"exit": 3, "stdout": json.dumps({"type": "turn.failed"})},
+    })
     assert seat.run_dispatch(args) == 1
     assert not args.output.exists()
     assert [a["outcome"] for a in record(args)["attempts"]] == ["unavailable", "error"]
@@ -909,6 +953,25 @@ def test_setting_sources_name_classification_and_default_model(job):
     assert sources["model"] == "dispatch_seat default"
     assert sources["effort"] == "classification mapping"
     assert sources["required_capability"] == "issuecomment-5655702442"
+
+
+def test_fallback_records_its_own_explicit_value_sources(job):
+    args, _ = job
+    args.claude_model = "claude-owner"
+    args.claude_effort = "max"
+    args.claude_model_source = "issue-comment:owner"
+    args.claude_effort_source = "issue-comment:owner"
+    args.codex_model = seat.DEFAULT_MODELS["codex"]
+    args.codex_effort = seat.DEFAULT_CODEX_EFFORT
+    args.codex_model_source = "dispatch_seat default"
+    args.codex_effort_source = "dispatch_seat default"
+    configure(job, {"claude": {"message": "Not logged in"}})
+    assert seat.run_dispatch(args) == 0
+    primary, fallback = record(args)["attempts"]
+    assert primary["setting_sources"]["model"] == "issue-comment:owner"
+    assert primary["setting_sources"]["effort"] == "issue-comment:owner"
+    assert fallback["setting_sources"]["model"] == "dispatch_seat default"
+    assert fallback["setting_sources"]["effort"] == "dispatch_seat default"
 
 
 def test_unknown_capability_does_not_fall_through_to_read_mode(job):

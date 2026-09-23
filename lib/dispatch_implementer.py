@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import json
 import math
 from pathlib import Path
 import re
@@ -51,14 +50,6 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
     return command
 
 
-def _events(raw: bytes) -> list[dict[str, object]]:
-    try:
-        values = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
-    except (UnicodeError, ValueError):
-        return []
-    return values if all(isinstance(item, dict) for item in values) else []
-
-
 def _thread_id(events: list[dict[str, object]], stderr: bytes) -> tuple[str | None, str]:
     ids = [event.get("thread_id") for event in events
            if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str)]
@@ -75,6 +66,10 @@ def run_implementer(args: argparse.Namespace) -> int:
         raise ImplementerError("--model must be nonempty when supplied")
     if args.effort is not None and not args.effort.strip():
         raise ImplementerError("--effort must be nonempty when supplied")
+    if args.codex and args.codex_unavailable_reason:
+        raise ImplementerError("Codex cannot be both explicit and unavailable")
+    if args.codex_unavailable_reason:
+        raise ImplementerError(args.codex_unavailable_reason)
     args.model = DEFAULT_MODEL if model_defaulted else args.model
     args.effort = DEFAULT_EFFORT if effort_defaulted else args.effort
     root = args.root.expanduser().resolve()
@@ -125,8 +120,12 @@ def run_implementer(args: argparse.Namespace) -> int:
                 holder_session_id=args.holder_session_id,
                 setting_sources={
                     "vendor": "dispatch_implementer route",
-                    "model": "dispatch_implementer default" if model_defaulted else args.settings_source,
-                    "effort": "dispatch_implementer default" if effort_defaulted else args.settings_source,
+                    "model": (args.model_source or (
+                        "dispatch_implementer default" if model_defaulted else args.settings_source
+                    )),
+                    "effort": (args.effort_source or (
+                        "dispatch_implementer default" if effort_defaulted else args.settings_source
+                    )),
                     "continuity": f"launcher route ({continuity})",
                     "permission_boundary": "dispatch_implementer route",
                 },
@@ -187,9 +186,11 @@ def run_implementer(args: argparse.Namespace) -> int:
                     streams[path].write(content)
                     streams[path].flush()
                     attempt[name + "_encoding"] = encoding
-                events = _events(result.stdout)
-                completed = any(event.get("type") == "turn.completed" for event in events)
-                failed = any(event.get("type") in {"turn.failed", "error"} for event in events)
+                stream = records.codex_stream_result(result.stdout)
+                events = list(stream.events)
+                if stream.valid and stream.completed and not stream.failed_events:
+                    # Completion is owned by the stream; the process status remains evidence.
+                    reason = ""
                 session_id, session_source = _thread_id(events, result.stderr)
                 if args.holder_session_id and session_id == args.holder_session_id:
                     reason = "runtime returned the holder session as the builder session"
@@ -204,7 +205,10 @@ def run_implementer(args: argparse.Namespace) -> int:
                 if args.resume and session_id and session_id != args.resume:
                     reason = f"returned session id {session_id} does not match requested resume {args.resume}"
                 message = last_message.read_bytes() if last_message.is_file() else b""
-                if result.returncode == 0 and completed and not failed and message.strip() and not reason:
+                if not message.strip() and stream.final_message is not None:
+                    message = stream.final_message.encode("utf-8")
+                complete = stream.valid and stream.completed and not stream.failed_events
+                if complete and message.strip() and not reason:
                     verdict = message.replace(b"\r\n", b"\n")
                     if session_id:
                         attempt.update(outcome="success", reason="")
@@ -216,10 +220,24 @@ def run_implementer(args: argparse.Namespace) -> int:
                             reason="Codex completed but returned no session identity; this turn cannot be resumed",
                         )
                         record["outcome"] = "success_uncontinuable"
+                elif complete and not message.strip() and not reason:
+                    attempt.update(
+                        outcome="completed_no_output",
+                        reason="turn completed without a final message",
+                    )
+                    record["outcome"] = "completed_no_output"
                 else:
+                    if not stream.valid:
+                        failure_reason = "codex returned invalid JSONL"
+                    elif stream.failed_events:
+                        failure_reason = "codex stream reported turn.failed"
+                    elif not stream.completed:
+                        failure_reason = "codex stream returned no turn.completed"
+                    else:
+                        failure_reason = f"codex turn could not be accepted (exit {result.returncode})"
                     attempt.update(
                         outcome="error",
-                        reason=reason or f"codex failed or returned no valid final result (exit {result.returncode})",
+                        reason=reason or failure_reason,
                     )
                     record["outcome"] = "error"
                 if verdict is not None:
@@ -230,7 +248,7 @@ def run_implementer(args: argparse.Namespace) -> int:
                     record["result"]["source_output_unavailable_reason"] = None
             finally:
                 record.setdefault("outcome", "error")
-                if not attempt["reason"]:
+                if attempt["outcome"] == "error" and not attempt["reason"]:
                     attempt["reason"] = str(record.get("error") or "implementer did not complete")
                 if "observed" not in attempt:
                     records.add_unobserved(attempt, attempt["reason"])
@@ -239,7 +257,9 @@ def run_implementer(args: argparse.Namespace) -> int:
                 records.add_usage_record(
                     attempt, request, completed_at=record["completed_at"],
                     staffing_status=(
-                        "qualified" if record["outcome"] in {"success", "success_uncontinuable"}
+                        "qualified" if record["outcome"] in {
+                            "success", "success_uncontinuable", "completed_no_output",
+                        }
                         else "unfilled"
                     ),
                 )
@@ -300,7 +320,11 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--resume")
     cli.add_argument("--model", help=f"requested model (default: {DEFAULT_MODEL})")
     cli.add_argument("--effort", help=f"requested effort (default: {DEFAULT_EFFORT})")
+    cli.add_argument("--model-source", help="source of the explicitly selected model")
+    cli.add_argument("--effort-source", help="source of the explicitly selected effort")
     cli.add_argument("--codex", help="explicit Codex CLI executable")
+    cli.add_argument("--codex-unavailable-reason",
+                     help="refuse without rediscovering a missing Codex executable")
     cli.add_argument("--timeout-seconds", type=float, default=3600)
     return cli
 
