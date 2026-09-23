@@ -835,11 +835,45 @@ def test_use_handoff_names_registered_implementation_root_and_revision(
     assert revision in returned["detail"]
 
 
+def test_use_handoff_migrates_legacy_registration_and_names_the_proof_gap(
+        tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    legacy = registry_row(implementation, holder, branch)
+    legacy.pop("holder_root")
+    legacy.pop("branch")
+    write_registry_rows([legacy])
+    revision = git(implementation, "rev-parse", "HEAD").stdout.decode().strip()
+    fixture = state(
+        AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR.replace(SHA, revision), pr=True
+    )
+    fixture.pr["head"]["sha"] = revision
+
+    assert work.execute_stage(
+        fixture, work.decide(fixture, RULES), holder, None
+    ) == 0
+
+    returned = json.loads(capsys.readouterr().out)
+    assert (returned["stage"], returned["dispatch"], returned["continuity"]) == (
+        "use", False, None,
+    )
+    assert str(implementation) in returned["detail"]
+    assert work.MIGRATION_NOTICE in returned["detail"]
+    recorded = work.read_registry()["worktrees"][0]
+    assert recorded["holder_root"] == str(holder)
+    assert recorded["branch"] == branch
+
+
 def test_build_launch_forwards_holder_identity_to_the_implementation_root(
         tmp_path, monkeypatch):
     commands = []
     branch = "tradecraft/12-fixture"
-    monkeypatch.setattr(work, "_dispatch_root", lambda *_args: (tmp_path, branch))
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_args: (tmp_path, branch, False))
     monkeypatch.setattr(work, "_attached_branch", lambda _root: branch)
     monkeypatch.setattr(
         work.subprocess, "run",
@@ -872,7 +906,9 @@ def test_execute_stage_passes_the_recovered_session_to_the_implementer(
     commands = []
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
     monkeypatch.setattr(
-        work, "_dispatch_root", lambda *_args: (tmp_path, "tradecraft/12-fixture")
+        work, "_dispatch_root", lambda *_args: (
+            tmp_path, "tradecraft/12-fixture", False
+        )
     )
     monkeypatch.setattr(work, "_attached_branch", lambda _root: "tradecraft/12-fixture")
 
@@ -967,16 +1003,21 @@ def test_power_user_use_returns_the_shared_holder_handoff(tmp_path, monkeypatch)
 
 def test_registry_write_is_atomic_shape_and_canonical(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    holder = tmp_path / "holder"
+    holder.mkdir()
     root = tmp_path / "tree"
     root.mkdir()
     work.register_worktree(
-        root, "acme/widget", 3, "2", "holder-session", guard_status="unavailable"
+        root, "acme/widget", 3, "2", "holder-session",
+        holder_root=holder, branch="tradecraft/3-abcdef123456",
+        guard_status="unavailable",
     )
     recorded = json.loads(work.registry_path().read_bytes())
     assert recorded == {"schema_version": 1, "worktrees": [{
         "root": str(root.resolve()), "repository": "acme/widget", "issue": 3,
         "instalment": "2", "active": True, "holder_write_guard": "unavailable",
         "holder_session_id": "holder-session",
+        "holder_root": str(holder.resolve()), "branch": "tradecraft/3-abcdef123456",
         "revision_before": None, "status_before": None,
     }]}
 
@@ -1159,7 +1200,7 @@ def test_holder_guard_status_requires_the_complete_project_declaration(
             assert work.holder_guard_status(tmp_path) == expected
 
 
-def test_unproved_root_evidence_refuses_every_invalid_class(tmp_path, monkeypatch):
+def test_current_root_evidence_refuses_every_invalid_class(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -1181,10 +1222,6 @@ def test_unproved_root_evidence_refuses_every_invalid_class(tmp_path, monkeypatc
 
     assert "no active" in refused([])
     assert "multiple active" in refused([valid.copy(), valid.copy()])
-    legacy = valid.copy()
-    legacy.pop("holder_root")
-    legacy.pop("branch")
-    assert "legacy evidence" in refused([legacy])
     missing = valid.copy()
     missing["root"] = str(tmp_path / "missing")
     assert "is missing" in refused([missing])
@@ -1212,6 +1249,165 @@ def test_unproved_root_evidence_refuses_every_invalid_class(tmp_path, monkeypatc
     )
     assert isinstance(artifact, work.Decision)
     assert "registration history" in artifact.detail
+
+
+def test_legacy_registration_migrates_before_dispatch_and_names_the_proof_gap(
+        tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    legacy = registry_row(implementation, holder, branch)
+    legacy.pop("holder_root")
+    legacy.pop("branch")
+    write_registry_rows([legacy])
+    launches = []
+    original_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            recorded = work.read_registry()["worktrees"][0]
+            assert recorded["holder_root"] == str(holder)
+            assert recorded["branch"] == branch
+            dispatch = Path(command[command.index("--dispatch") + 1])
+            launches.append((command, dispatch.read_bytes()))
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
+    decision = work.Decision("floor", True, "resume", "fixture", "existing detail")
+
+    assert work.execute_stage(
+        state(pr=True), decision, holder, None, "holder-session"
+    ) == 0
+
+    notice = (
+        "implementation registration migrated; recorded-holder check was not "
+        "enforced on this run"
+    )
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["detail"] == f"existing detail; {notice}"
+    assert len(launches) == 1
+    command, prompt = launches[0]
+    assert Path(command[command.index("--root") + 1]) == implementation
+    assert notice.encode() in prompt
+
+    other_holder = tmp_path / "other-holder"
+    git(holder, "worktree", "add", "-b", "holder-other", str(other_holder), "HEAD")
+    with pytest.raises(work.WorkError, match="another holder root"):
+        work.resolve_implementation_root(other_holder, "example/product", 12, None)
+    git(implementation, "branch", "-m", "tradecraft/12-deadbeefdead")
+    with pytest.raises(work.WorkError, match="branch mismatch"):
+        work.resolve_implementation_root(holder, "example/product", 12, None)
+
+
+def test_legacy_migration_refuses_holder_root_and_names_adopt(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    branch = work._attached_branch(holder)
+    legacy = registry_row(holder, holder, branch)
+    legacy.pop("holder_root")
+    legacy.pop("branch")
+    write_registry_rows([legacy])
+    before = work.registry_path().read_bytes()
+
+    with pytest.raises(work.WorkError, match="run adopt with a distinct"):
+        work.resolve_implementation_root(holder, "example/product", 12, None)
+
+    assert work.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize(("case", "message"), [
+    ("missing-holder", "invalid holder_root or branch"),
+    ("missing-branch", "invalid holder_root or branch"),
+    ("empty-holder", "invalid holder_root or branch"),
+    ("nonstring-branch", "invalid holder_root or branch"),
+    ("missing-root", "is missing"),
+    ("nested-root", "not a Git worktree top level"),
+    ("detached-root", "is detached"),
+    ("foreign-root", "another Git repository"),
+])
+def test_legacy_migration_refuses_unproved_shapes_without_rewriting_registry(
+        tmp_path, monkeypatch, case, message):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    row = registry_row(implementation, holder, branch)
+    if case == "missing-holder":
+        row.pop("holder_root")
+    elif case == "missing-branch":
+        row.pop("branch")
+    elif case == "empty-holder":
+        row["holder_root"] = ""
+    elif case == "nonstring-branch":
+        row["branch"] = 12
+    else:
+        row.pop("holder_root")
+        row.pop("branch")
+        if case == "missing-root":
+            row["root"] = str(tmp_path / "missing")
+        elif case == "nested-root":
+            nested = implementation / "nested"
+            nested.mkdir()
+            row["root"] = str(nested)
+        elif case == "detached-root":
+            git(implementation, "checkout", "--detach")
+        elif case == "foreign-root":
+            foreign = repository(tmp_path, "foreign")
+            row["root"] = str(foreign)
+    write_registry_rows([row])
+    before = work.registry_path().read_bytes()
+
+    selected = work._dispatch_root(
+        state(pr=True), work.Decision("floor", True, "resume", "fixture"),
+        holder, None, "holder-session",
+    )
+
+    assert isinstance(selected, work.Decision)
+    assert selected.dispatch is False
+    assert message in selected.detail
+    assert work.registry_path().read_bytes() == before
+
+
+def test_legacy_migration_write_failure_refuses_dispatch_without_changing_registry(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    legacy = registry_row(implementation, holder, branch)
+    legacy.pop("holder_root")
+    legacy.pop("branch")
+    write_registry_rows([legacy])
+    before = work.registry_path().read_bytes()
+
+    def fail_write(_current):
+        raise OSError("fixture write failure")
+
+    monkeypatch.setattr(work, "write_registry", fail_write)
+    selected = work._dispatch_root(
+        state(pr=True), work.Decision("floor", True, "resume", "fixture"),
+        holder, None, "holder-session",
+    )
+
+    assert isinstance(selected, work.Decision)
+    assert selected.dispatch is False
+    assert "cannot persist migrated" in selected.detail
+    assert work.registry_path().read_bytes() == before
 
 
 def test_sweep_releases_only_proven_terminal_rows_and_keeps_worktrees(
@@ -1422,10 +1618,196 @@ def test_release_command_sweeps_first_and_never_dispatches(tmp_path, monkeypatch
     assert "release" in work.parser().format_help()
 
 
-def test_help_distinguishes_release_from_a_dispatching_stage():
+def test_adopt_command_recovers_a_released_tree_without_dispatching_or_moving_it(
+        tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "first-holder-session"
+    )
+    assert work.release_registration("example/product", 12, holder, None) == implementation
+    competing = tmp_path / "competing"
+    competing.mkdir()
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    current = work.read_registry()
+    current["worktrees"].extend([
+        {
+            "root": str(competing), "repository": "example/product", "issue": 12,
+            "instalment": None, "active": True,
+        },
+        {
+            "root": str(unrelated), "repository": "example/product", "issue": 13,
+            "instalment": None, "active": True,
+        },
+    ])
+    work.write_registry(current)
+    worktrees_before = git(holder, "worktree", "list", "--porcelain").stdout
+    calls = []
+    monkeypatch.setattr(work, "sweep_registry", lambda transport: calls.append(transport))
+    args = work.parser().parse_args([
+        "adopt", "--repo", "example/product", "--issue", "12",
+        "--root", str(holder), "--implementation-root", str(implementation),
+        "--holder-session-id", SESSION,
+    ])
+    transport = object()
+
+    assert work.run(
+        args, transport=transport,
+        executor=lambda *_args: pytest.fail("adopt must not dispatch"),
+    ) == 0
+
+    assert calls == [transport]
+    assert json.loads(capsys.readouterr().out) == {
+        "adopted_root": str(implementation), "branch": branch,
+    }
+    rows = work.read_registry()["worktrees"]
+    matching = [row for row in rows if row.get("issue") == 12]
+    active = [row for row in matching if row.get("active") is True]
+    assert len(active) == 1
+    assert active[0] == {
+        "root": str(implementation), "repository": "example/product", "issue": 12,
+        "instalment": None, "active": True, "holder_session_id": SESSION,
+        "holder_write_guard": "unavailable", "holder_root": str(holder),
+        "branch": branch, "revision_before": active[0]["revision_before"],
+        "status_before": "",
+    }
+    assert active[0]["revision_before"]
+    assert all(row.get("active") is False for row in matching[:-1])
+    assert next(row for row in rows if row.get("issue") == 13)["active"] is True
+    assert work.resolve_implementation_root(
+        holder, "example/product", 12, None
+    ) == (implementation, branch, False)
+    assert git(holder, "worktree", "list", "--porcelain").stdout == worktrees_before
+    assert implementation.is_dir()
+    assert competing.is_dir()
+
+
+def test_adopt_accepts_a_non_entrance_branch(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "first-holder-session"
+    )
+    git(implementation, "branch", "-m", "legacy-feature")
+
+    adopted_root, adopted_branch = work.adopt_registration(
+        holder, implementation, "example/product", 12, None, SESSION
+    )
+
+    assert (adopted_root, adopted_branch) == (implementation, "legacy-feature")
+    matching = [
+        row for row in work.read_registry()["worktrees"]
+        if row.get("repository") == "example/product" and row.get("issue") == 12
+    ]
+    assert sum(row.get("active") is True for row in matching) == 1
+    assert matching[-1]["branch"] == "legacy-feature"
+
+
+def test_adopt_refuses_another_issues_entrance_branch_without_changing_registry(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "first-holder-session"
+    )
+    before = work.registry_path().read_bytes()
+
+    with pytest.raises(work.WorkError, match="does not belong to issue 13"):
+        work.adopt_registration(
+            holder, implementation, "example/product", 13, None, SESSION
+        )
+
+    assert work.registry_path().read_bytes() == before
+
+
+def test_adopt_requires_an_instalment_when_named_registrations_exist(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "first-holder-session"
+    )
+    current = work.read_registry()
+    named = dict(current["worktrees"][0])
+    named["instalment"] = "2"
+    current["worktrees"].append(named)
+    work.write_registry(current)
+    before = work.registry_path().read_bytes()
+
+    with pytest.raises(work.WorkError, match="requires --instalment"):
+        work.adopt_registration(
+            holder, implementation, "example/product", 12, None, SESSION
+        )
+
+    assert work.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize(("case", "message"), [
+    ("missing-holder-identity", "requires --holder-session-id"),
+    ("holder-root", "distinct from the holder root"),
+    ("missing-root", "does not exist"),
+    ("nested-root", "not a Git worktree top level"),
+    ("detached-root", "is detached"),
+    ("foreign-root", "another Git repository"),
+])
+def test_adopt_refuses_unproved_trees_without_changing_registry(
+        tmp_path, monkeypatch, case, message):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    implementation, branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "first-holder-session"
+    )
+    issue = 12
+    identity = SESSION
+    candidate = implementation
+    if case == "missing-holder-identity":
+        identity = ""
+    elif case == "holder-root":
+        candidate = holder
+    elif case == "missing-root":
+        candidate = tmp_path / "missing"
+    elif case == "nested-root":
+        candidate = implementation / "nested"
+        candidate.mkdir()
+    elif case == "detached-root":
+        git(implementation, "checkout", "--detach")
+    elif case == "foreign-root":
+        candidate = repository(tmp_path, "foreign")
+        git(candidate, "branch", "-m", "tradecraft/12-fedcba987654")
+    before = work.registry_path().read_bytes()
+
+    with pytest.raises(work.WorkError, match=message):
+        work.adopt_registration(
+            holder, candidate, "example/product", issue, None, identity
+        )
+
+    assert work.registry_path().read_bytes() == before
+    assert implementation.is_dir()
+    assert branch.startswith("tradecraft/12-")
+
+
+def test_help_distinguishes_direct_commands_from_a_dispatching_stage():
     help_text = " ".join(work.parser().format_help().split())
-    assert "run exactly one change stage, or release one registration" in help_text
     assert (
-        "use release to make one registration inactive without dispatching or "
-        "deleting its worktree"
+        "run exactly one change stage, or release one registration, or adopt one existing "
+        "worktree"
     ) in help_text
+    assert (
+        "use release to make one registration inactive without dispatching or deleting its "
+        "worktree; or use adopt to register an existing entrance worktree without "
+        "dispatching or deleting a worktree"
+    ) in help_text
+    assert "--implementation-root IMPLEMENTATION_ROOT" in help_text
+    assert "--holder-session-id HOLDER_SESSION_ID" in help_text
+    assert "required by adopt" in help_text
