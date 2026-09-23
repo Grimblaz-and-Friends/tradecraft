@@ -27,9 +27,9 @@ from seat_process import run_process
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
 
-# Interim from #731: round-one evidence is not yet definitive, so the owner's
-# named Codex preference holds until the recorded confirmatory runs [D-733].
-DEFAULT_MODEL = "gpt-6-sol"
+# Interim from #731: every combined Codex candidate outcome was inconclusive,
+# so the owner chose incumbent Sol 5.6 pending the recorded further runs [D-733].
+DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_EFFORT = "xhigh"
 SESSION = re.compile(r"(?im)^session id:\s*([0-9a-f]{8}-[0-9a-f-]{27,})\s*$")
 

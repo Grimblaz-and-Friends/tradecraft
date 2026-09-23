@@ -67,7 +67,7 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     assert "--last" not in flags
     assert "resume" not in flags
     assert flags[-1] == "-"
-    assert flags[flags.index("--model") + 1] == "gpt-6-sol"
+    assert flags[flags.index("--model") + 1] == "gpt-5.6-sol"
     assert 'model_reasoning_effort="xhigh"' in flags
     logged = record(args)
     attempt = logged["attempts"][0]

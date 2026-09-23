@@ -1,6 +1,6 @@
 # D-733 — Proof is one act per head
 
-**Landed by** [PR #733](https://github.com/Grimblaz-and-Friends/tradecraft/pull/733). Closes [#725](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725), [#706](https://github.com/Grimblaz-and-Friends/tradecraft/issues/706), [#719](https://github.com/Grimblaz-and-Friends/tradecraft/issues/719), [#682](https://github.com/Grimblaz-and-Friends/tradecraft/issues/682), and [#712](https://github.com/Grimblaz-and-Friends/tradecraft/issues/712). Governed by the latest [affirmed implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725#issuecomment-5793803434), the [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725#issuecomment-5793803168), and the holder's [whole-change reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725#issuecomment-5793803771). The model decision reads the [#731 protocol](https://github.com/Grimblaz-and-Friends/tradecraft/issues/731#issuecomment-5789688853) and its [recorded progress](https://github.com/Grimblaz-and-Friends/tradecraft/issues/731#issuecomment-5793813569).
+**Landed by** [PR #733](https://github.com/Grimblaz-and-Friends/tradecraft/pull/733). Closes [#725](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725), [#706](https://github.com/Grimblaz-and-Friends/tradecraft/issues/706), [#719](https://github.com/Grimblaz-and-Friends/tradecraft/issues/719), [#682](https://github.com/Grimblaz-and-Friends/tradecraft/issues/682), and [#712](https://github.com/Grimblaz-and-Friends/tradecraft/issues/712). Governed by the latest [affirmed implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725#issuecomment-5793803434), the [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725#issuecomment-5793803168), and the holder's [whole-change reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725#issuecomment-5793803771). The model decision reads the [#731 protocol](https://github.com/Grimblaz-and-Friends/tradecraft/issues/731#issuecomment-5789688853), its [round-one results](https://github.com/Grimblaz-and-Friends/tradecraft/issues/731#issuecomment-5804291939), and the owner's later rulings linked below.
 
 ## Context
 
@@ -26,26 +26,26 @@ For one compatibility release, proof also projects the lawful legacy use or gene
 
 Reviewer credit requires a separate substantive receipt from every configured reviewer. A notice that review was skipped, limited, rate-limited, still running, or unavailable receives no credit whether it arrived as a pull-request comment or review body. Every top-level inline finding requires an authorized first-line disposition.
 
-### Row 6 installs named interims, not inferred winners
+### Row 6 installs the owner's chosen interims, not inferred winners
 
-The owner's choice comes from the holder's role-specific recommendation when #731 closes; artifact selection, exploratory authoring, and vendor claims do not make that choice. Until a result is definitive under that protocol, the implemented values are explicitly **interim**:
+Under [#731's round-one results](https://github.com/Grimblaz-and-Friends/tradecraft/issues/731#issuecomment-5804291939), every Codex candidate's combined protocol outcome and the Claude judging arm were inconclusive. The owner therefore chose the interims: on the holder's recommendation, he [chose the incumbent Sol 5.6](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725#issuecomment-5804269705) over Sol 6, the brief's named interim; by his own ruling, he [chose Opus 5.5 at `high`](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725#issuecomment-5801169378) for ordinary Claude seats. The owner's decisions outrank the brief's named interim, so the implemented values are explicitly **interim**:
 
-- Codex implementer and Codex seats: `gpt-6-sol` at `xhigh`.
-- Claude ordinary seats: `claude-opus-5-5` at `xhigh`.
+- Codex implementer and Codex seats: `gpt-5.6-sol` at `xhigh`.
+- Claude ordinary seats: `claude-opus-5-5` at `high`.
 - Claude cold and terminal seats: `claude-opus-5-5` at `max`.
 
-Those full identifiers are pinned in `lib/dispatch_implementer.py` and `lib/dispatch_seat.py`; explicit per-change overrides still win. `skills/engagement/references/dispatch-records.md` now keeps three outcomes distinct: definitive separation recommends the better model, definitive confident no-difference recommends the cheaper model on relevant owner-paid cost evidence, and inconclusive, missing, or interrupted evidence retains the owner's named interim with its further runs recorded.
+Those full identifiers are pinned in `lib/dispatch_implementer.py` and `lib/dispatch_seat.py`; explicit per-change overrides still win. `skills/adversarial-review/references/roster.md` carries the selected Claude effort split. `skills/engagement/references/dispatch-records.md` now keeps three outcomes distinct: definitive separation recommends the better model, definitive confident no-difference recommends the cheaper model on relevant owner-paid cost evidence, and inconclusive, missing, or interrupted evidence retains the owner's chosen interim with its further runs recorded.
 
 This supersedes [D-645](https://github.com/Grimblaz-and-Friends/tradecraft/blob/main/docs/architecture/decisions/D-645-2026-09-16-comparison-chosen-model-defaults.md) only where it treated a comparison that *separates nothing* as sufficient to choose the cheaper model. Failure to detect a difference is not a confident finding of no difference. D-645's comparison-first rule, role specificity, and owner-paid-cost qualification remain.
 
 ## Further comparison work owed by the interims
 
-The interims remain labelled until #731 records a definitive recommendation and the owner chooses from it. If its present round remains inconclusive, the executable follow-up is:
+The owner [amended the Codex follow-up to keep Sol 6 in the comparison](https://github.com/Grimblaz-and-Friends/tradecraft/issues/725#issuecomment-5804292190). The Steward files both runs as new work, not on PR #733:
 
-- **Codex implementation and seat default:** in fresh isolated trees, run two further paired build repeats of `gpt-6-sol` at `xhigh` and the incumbent `gpt-5.6-sol` at `xhigh` from the same settled implementation artifact. Each repeat receives a byte-identical assignment, runs the hidden acceptance suite and `python tools/dev.py check`, and records commit completion and owner-paid cost evidence. Before launch, #731 records the confident-no-difference rule those repeats will be judged under. The unresolved decision is whether Sol 6 definitively separates, is confidently no different so cost decides, or remains interim.
-- **Claude judging default:** run two further blind judging repeats for `claude-opus-5-5` at `xhigh`, `claude-opus-5-5` at `max`, and the incumbent `claude-opus-5` at `max`. Each repeat judges the same held-out best, middle, and weakest artifact set with the same known-miss and false-alarm scoring, in fresh sessions with provenance withheld. The unresolved decision is whether Opus 5.5 separates for ordinary and cold/terminal judgment without increasing false alarms, or remains interim at the owner's chosen efforts.
+- **Artifact author and three-way Codex build:** on two or three further pull requests, Astra 6 at `xhigh` writes the artifact. Sol 5.6, Sol 6, and Luna 6, all at `xhigh`, each build from it in fresh trees under the owner's normal Codex configuration. Blind judging uses hidden tests whose fixture records are generated by the real recorder, plus code review. The open decisions are whether Sol 6 stays behind Sol 5.6, whether building moves to Luna, and whether authoring and building should take different Codex models; the last is a mechanism change.
+- **Claude ordinary-seat judging:** compare Opus 5.5 at `high` with Opus 5.5 at `xhigh` and Opus 5 at `max` under #731's caught-misses and false-alarms rule.
 
-These repeats are owed comparison work, not part of PR #733's release floor, and they do not change the standing defaults without the resulting recommendation and owner choice.
+These runs are owed comparison work, not part of PR #733's release floor, and they do not change the standing defaults without a resulting recommendation and owner choice.
 
 ## Rejected alternatives and consequences
 

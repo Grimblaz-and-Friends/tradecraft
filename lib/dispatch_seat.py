@@ -34,14 +34,14 @@ from seat_process import run_process
 from winio import utf8_stdio
 
 VENDORS = ("codex", "claude")
-# Interim from #731: round-one Codex and Claude-judging evidence is not yet
-# definitive, so the owner's named preferences hold until confirmatory runs [D-733].
+# Interim from #731: the combined Codex outcomes and Claude judging arm were
+# inconclusive, so the owner's chosen values hold pending further runs [D-733].
 DEFAULT_MODELS = {
-    "codex": "gpt-6-sol",
+    "codex": "gpt-5.6-sol",
     "claude": "claude-opus-5-5",
 }
 DEFAULT_CODEX_EFFORT = "xhigh"
-CLAUDE_EFFORTS = {"ordinary": "xhigh", "cold": "max", "terminal": "max"}
+CLAUDE_EFFORTS = {"ordinary": "high", "cold": "max", "terminal": "max"}
 CLAUDE_READ_TOOLS = "Read,Glob,Grep"
 CLAUDE_EXECUTE_TOOLS = "Read,Glob,Grep,Bash"
 GIT_ENVIRONMENT_KEYS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
