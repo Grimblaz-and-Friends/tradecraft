@@ -36,10 +36,12 @@ def source(tmp_path):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
+    (root / "job/run.sh").chmod(0o755)
     git(root, "add", "--all")
     git(root, "update-index", "--chmod=+x", "--", "job/run.sh")
     git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "fixture")
+    assert git(root, "status", "--porcelain").stdout == b""
     return root.resolve()
 
 
