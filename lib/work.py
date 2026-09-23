@@ -39,6 +39,7 @@ MIGRATION_NOTICE = (
     "implementation registration migrated; recorded-holder check was not "
     "enforced on this run"
 )
+BRANCH_PLACEHOLDER = "__TRADECRAFT_IMPLEMENTATION_BRANCH__"
 LANES = {
     "ordinary": "connected",
     "elevated": "routine-panel",
@@ -243,6 +244,15 @@ class Decision:
             "invalid_markers": list(self.invalid_markers),
             "latest_checks": list(self.latest_checks),
         }
+
+
+@dataclass(frozen=True)
+class ResumeSource:
+    completed: str
+    path: str
+    request: dict[str, object]
+    run: dict[str, object]
+    session: str
 
 
 def _use_holder_decision(reason: str) -> Decision:
@@ -582,10 +592,13 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
     }.get(marker.name)
     if stages is None:
         return None
-    matched = _matching_bundles(
-        f"{state.repo}#{state.issue_number}", stages, state.record_root,
-        completed_no_later_than=marker.timestamp,
-    )
+    try:
+        matched = _matching_bundles(
+            f"{state.repo}#{state.issue_number}", stages, state.record_root,
+            completed_no_later_than=marker.timestamp,
+        )
+    except WorkError as exc:
+        return str(exc)
     if not matched:
         return "no matching successful dispatch bundle"
     completed, path, request, run = matched[-1]
@@ -1100,6 +1113,17 @@ def _row_matches_change(row: dict[str, object], repo: str, issue: int,
     )
 
 
+def _dispatch_inside_registered_root(path: Path, repo: str, issue: int,
+                                     instalment: str | None) -> bool:
+    for row in read_registry()["worktrees"]:
+        root_value = row.get("root")
+        if (row.get("active") is True and _row_matches_change(row, repo, issue, instalment)
+                and isinstance(root_value, str) and root_value
+                and _path_inside(path, Path(root_value))):
+            return True
+    return False
+
+
 def _validate_implementation_row(row: dict[str, object], holder_root: Path, *,
                                  enforce_recorded_holder: bool = True) -> tuple[Path, str]:
     root_value = row.get("root")
@@ -1223,6 +1247,10 @@ def create_implementation_root(holder_root: Path, repo: str, issue: int,
 
 
 def publish_implementation_branch(root: Path, branch: str) -> str:
+    retry = (
+        "repair the remote selection, authentication, or connectivity and retry run build; "
+        "the registered branch will be published and verified before launch"
+    )
     remotes = [line for line in _git_text(["remote"], root, "list Git remotes").splitlines()
                if line]
     upstream = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], root)
@@ -1235,20 +1263,25 @@ def publish_implementation_branch(root: Path, branch: str) -> str:
         remote = remotes[0]
     if remote is None:
         raise WorkError(
-            "cannot publish implementation branch: select one upstream or leave exactly one remote"
+            "cannot publish implementation branch: select one upstream or leave exactly one "
+            f"remote; {retry}"
         )
     pushed = _git(["push", "--set-upstream", remote,
                    f"HEAD:refs/heads/{branch}"], root)
     if pushed.returncode:
-        raise WorkError(f"cannot publish implementation branch: {_git_failure(pushed)}")
+        raise WorkError(
+            f"cannot publish implementation branch: {_git_failure(pushed)}; {retry}"
+        )
     local = _git_text(["rev-parse", "HEAD"], root, "inspect published branch revision")
     remote_head = _git(["ls-remote", "--heads", remote, f"refs/heads/{branch}"], root)
     if remote_head.returncode:
-        raise WorkError(f"cannot verify implementation branch: {_git_failure(remote_head)}")
+        raise WorkError(
+            f"cannot verify implementation branch: {_git_failure(remote_head)}; {retry}"
+        )
     fields = remote_head.stdout.decode("ascii", errors="replace").strip().split()
     if len(fields) != 2 or fields[0] != local:
         raise WorkError(
-            f"cannot verify implementation branch: expected {local} at {remote}/{branch}"
+            f"cannot verify implementation branch: expected {local} at {remote}/{branch}; {retry}"
         )
     return remote
 
@@ -1406,14 +1439,11 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             "on the issue using the session id printed by the launcher."
         )
     if branch is not None:
-        instruction += (
-            f" The entrance placed this change on branch {branch}. Remain on that branch; "
-            "do not create or switch to another branch."
-        )
+        instruction += _branch_instruction(branch)
     if decision.stage == "build":
         instruction += (
-            " Build and validate the settled artifact, commit the finished change, push the "
-            "supplied branch, and then return to the holder."
+            " Build and validate the affirmed work and any supplied settled artifact, commit "
+            "the finished change, push the supplied branch, and then return to the holder."
         )
     brief = next((marker for marker in reversed(state.issue_markers)
                   if marker.name == "affirmed-brief"), None)
@@ -1455,6 +1485,20 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         )
     sections.append("Fetch current state only if this stage needs it:\n" + "\n".join(fetches))
     return ("\n\n".join(sections) + "\n").encode("utf-8")
+
+
+def _branch_instruction(branch: str) -> str:
+    return (
+        f" The entrance placed this change on branch {branch}. Remain on that branch; "
+        "do not create or switch to another branch."
+    )
+
+
+def _bind_prompt_branch(prompt: bytes, branch: str | None) -> bytes:
+    placeholder = BRANCH_PLACEHOLDER.encode("ascii")
+    if branch is not None:
+        return prompt.replace(placeholder, branch.encode("utf-8"))
+    return prompt.replace(_branch_instruction(BRANCH_PLACEHOLDER).encode("utf-8"), b"")
 
 
 def _cold_stage_prompt(state: WorkState, root: Path) -> bytes:
@@ -1559,8 +1603,17 @@ def _matching_bundles(
             if run is None or request is None:
                 continue
             if (str(request.get("work") or "").lower() != work_value.lower()
-                    or request.get("stage") not in stages
-                    or run.get("outcome") not in {"success", "success_uncontinuable"}):
+                    or request.get("stage") not in stages):
+                continue
+            if request.get("schema_version") != records.SCHEMA_VERSION:
+                raise WorkError(
+                    f"matching dispatch bundle has unsupported request schema: {run_path}"
+                )
+            if run.get("schema_version") != records.SCHEMA_VERSION:
+                raise WorkError(
+                    f"matching dispatch bundle has unsupported run schema: {run_path}"
+                )
+            if run.get("outcome") not in {"success", "success_uncontinuable"}:
                 continue
             completed = str(run.get("completed_at") or "")
             completed_time = _time(completed)
@@ -1572,11 +1625,11 @@ def _matching_bundles(
     return sorted(candidates)
 
 
-def _bundle_session(work_value: str, stage: str, record_root: Path) -> str | None:
+def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSource | None:
     allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
-    candidates: list[tuple[str, str, str]] = []
-    for completed, run_path, _request, run in _matching_bundles(
-            work_value, allowed_stages, record_root):
+    matched = _matching_bundles(work_value, allowed_stages, record_root)
+    candidates: list[ResumeSource] = []
+    for completed, run_path, request, run in matched:
         attempts = run.get("attempts")
         if not isinstance(attempts, list):
             continue
@@ -1587,8 +1640,17 @@ def _bundle_session(work_value: str, stage: str, record_root: Path) -> str | Non
             if isinstance(session, str) and SESSION_ID.fullmatch(session):
                 sessions.append(session)
         if sessions:
-            candidates.append((completed, run_path, sessions[-1]))
-    return max(candidates)[-1] if candidates else None
+            candidates.append(ResumeSource(
+                completed, run_path, request, run, sessions[-1]
+            ))
+    if matched and not candidates:
+        raise WorkError("matching dispatch bundles supply no valid session")
+    return max(candidates, key=lambda item: (item.completed, item.path)) if candidates else None
+
+
+def _bundle_session(work_value: str, stage: str, record_root: Path) -> str | None:
+    source = _resume_source(work_value, stage, record_root)
+    return source.session if source is not None else None
 
 
 def resume_session(state: WorkState, stage: str, record_root: Path | None = None) -> str | None:
@@ -1606,14 +1668,27 @@ def resume_session(state: WorkState, stage: str, record_root: Path | None = None
                  if isinstance(session, str) and SESSION_ID.fullmatch(session)), None)
 
 
-def _version_key(value: str) -> tuple[int, int, int] | None:
+def _version_key(value: str) -> tuple[object, ...] | None:
     if records.SEMANTIC_VERSION.fullmatch(value) is None:
         return None
-    core = value.split("-", 1)[0].split("+", 1)[0]
-    return tuple(int(part) for part in core.split("."))
+    precedence = value.split("+", 1)[0]
+    core, separator, prerelease = precedence.partition("-")
+    major, minor, patch = (int(part) for part in core.split("."))
+    if not separator:
+        return major, minor, patch, 1, ()
+    identifiers: list[tuple[int, int | str]] = []
+    for identifier in prerelease.split("."):
+        if identifier.isdigit():
+            if len(identifier) > 1 and identifier.startswith("0"):
+                return None
+            identifiers.append((0, int(identifier)))
+        else:
+            identifiers.append((1, identifier))
+    return major, minor, patch, 0, tuple(identifiers)
 
 
-def _version_refusal(state: WorkState, decision: Decision) -> Decision | None:
+def _version_refusal(state: WorkState, decision: Decision,
+                     source: ResumeSource | None = None) -> Decision | None:
     requirements = STAGE_SAFETY.get(decision.stage)
     if not requirements:
         return None
@@ -1621,31 +1696,36 @@ def _version_refusal(state: WorkState, decision: Decision) -> Decision | None:
     found_key = _version_key(found)
     for minimum, mechanism in requirements:
         minimum_key = _version_key(minimum)
-        if found_key is None or minimum_key is None or found_key < minimum_key:
+        incompatible_major = (
+            found_key is not None and minimum_key is not None
+            and found_key[0] != minimum_key[0]
+        )
+        if (found_key is None or minimum_key is None or incompatible_major
+                or found_key < minimum_key):
+            qualifier = "; incompatible major" if incompatible_major else ""
             return _reported_decision(state, Decision(
                 decision.stage, False, None, f"unsafe-running-version-for-{decision.stage}",
-                f"stage={decision.stage}; found={found}; required={minimum}; mechanism={mechanism}",
+                f"stage={decision.stage}; found={found}; required={minimum}; "
+                f"mechanism={mechanism}{qualifier}",
                 status="refused",
             ))
-    if decision.continuity != "resume":
+    if decision.continuity != "resume" or source is None:
         return None
-    root = state.record_root or records.default_record_root().expanduser().resolve()
-    sources = _matching_bundles(
-        f"{state.repo}#{state.issue_number}",
-        RESUME_SOURCE_STAGES.get(decision.stage, frozenset({decision.stage})), root,
-    )
-    if not sources:
-        return None
-    _completed, _path, request, _run = sources[-1]
-    source_version = request.get("producer_version")
+    source_version = source.request.get("producer_version")
     source_key = _version_key(source_version) if isinstance(source_version, str) else None
     minimum, mechanism = max(requirements, key=lambda item: _version_key(item[0]) or (0, 0, 0))
     minimum_key = _version_key(minimum)
-    if source_key is None or minimum_key is None or source_key < minimum_key:
+    incompatible_major = (
+        source_key is not None and found_key is not None and source_key[0] != found_key[0]
+    )
+    if (source_key is None or minimum_key is None or incompatible_major
+            or source_key < minimum_key):
         found_source = source_version if isinstance(source_version, str) else "missing"
+        qualifier = "; incompatible major" if incompatible_major else ""
         return _reported_decision(state, Decision(
             decision.stage, False, None, f"unsafe-source-version-for-{decision.stage}",
-            f"stage={decision.stage}; found={found_source}; required={minimum}; mechanism={mechanism}",
+            f"stage={decision.stage}; found={found_source}; required={minimum}; "
+            f"mechanism={mechanism}{qualifier}",
             status="refused",
         ))
     return None
@@ -1686,6 +1766,9 @@ def _dispatch_root(state: WorkState, decision: Decision, holder_root: Path,
             holder_root, state.repo, state.issue_number, instalment
         )
         if resolved is not None:
+            if decision.stage == "build" and decision.continuity == "fresh":
+                implementation_root, branch, _migrated = resolved
+                publish_implementation_branch(implementation_root, branch)
             return resolved
         if decision.stage == "build" and decision.continuity == "fresh":
             implementation_root, branch = create_implementation_root(
@@ -1737,7 +1820,21 @@ def _resolved_use_holder_decision(state: WorkState, decision: Decision, holder_r
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None, *, dispatch_path: Path | None = None,
                   tree_metadata: Path | None = None) -> int:
-    refused = _version_refusal(state, decision)
+    resume_source: ResumeSource | None = None
+    if decision.continuity == "resume":
+        record_root = state.record_root or records.default_record_root().expanduser().resolve()
+        try:
+            resume_source = _resume_source(
+                f"{state.repo}#{state.issue_number}", decision.stage, record_root
+            )
+        except WorkError as exc:
+            refused = _reported_decision(state, Decision(
+                decision.stage, False, None,
+                f"resume-bundle-invalid-for-{decision.stage}", str(exc), status="refused",
+            ))
+            print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+            return 0
+    refused = _version_refusal(state, decision, resume_source)
     if refused is not None:
         print(json.dumps(_reported_decision(state, refused).as_dict(),
                          ensure_ascii=True, sort_keys=True))
@@ -1811,7 +1908,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         return 0
     session = None
     if decision.continuity == "resume":
-        session = resume_session(state, decision.stage, state.record_root)
+        session = (resume_source.session if resume_source is not None
+                   else resume_session(state, decision.stage, state.record_root))
         if session is None:
             print(json.dumps(_reported_decision(
                 state, _missing_resume_decision(state, decision)).as_dict(),
@@ -1824,6 +1922,33 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             print(json.dumps(_reported_decision(state, refused).as_dict(),
                              ensure_ascii=True, sort_keys=True))
             return 0
+    prepared_prompt: bytes | None = None
+    prepared_dispatch: Path | None = None
+    if uses_implementer:
+        try:
+            if dispatch_path is None:
+                prepared_prompt = _stage_prompt(
+                    state, decision, branch=BRANCH_PLACEHOLDER
+                )
+            else:
+                prepared_dispatch = dispatch_path.expanduser().resolve()
+                if (not prepared_dispatch.is_file()
+                        or not prepared_dispatch.read_bytes().strip()):
+                    raise WorkError(
+                        f"dispatch file is absent or empty: {prepared_dispatch}"
+                    )
+                if _dispatch_inside_registered_root(
+                        prepared_dispatch, state.repo, state.issue_number, instalment):
+                    raise WorkError(
+                        "dispatch file must be outside the registered implementation root"
+                    )
+        except WorkError as exc:
+            refused = _reported_decision(state, Decision(
+                decision.stage, False, None,
+                f"stage-input-invalid-for-{decision.stage}", str(exc), status="refused",
+            ))
+            print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+            return 0
     selected = _dispatch_root(
         state, decision, root, instalment, holder_identity
     )
@@ -1832,7 +1957,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                          ensure_ascii=True, sort_keys=True))
         return 0
     dispatch_root, branch, migrated = selected
-    if dispatch_path is not None and _path_inside(dispatch_path, dispatch_root):
+    if prepared_dispatch is not None and _path_inside(prepared_dispatch, dispatch_root):
         raise WorkError("dispatch file must be outside the registered implementation root")
     if migrated:
         detail = (
@@ -1843,12 +1968,15 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             decision.stage, decision.dispatch, decision.continuity,
             decision.reason, detail,
         )
+        if prepared_prompt is not None:
+            prepared_prompt = _stage_prompt(
+                state, decision, branch=BRANCH_PLACEHOLDER
+            )
         print(json.dumps(_reported_decision(state, decision).as_dict(),
                          ensure_ascii=True, sort_keys=True))
     here = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(prefix="tradecraft-work-") as temporary:
-        dispatch = (dispatch_path.expanduser().resolve() if dispatch_path is not None
-                    else Path(temporary) / "dispatch.txt")
+        dispatch = prepared_dispatch or Path(temporary) / "dispatch.txt"
         if decision.stage == "cold-seat":
             if dispatch_path is not None:
                 raise WorkError("cold-seat uses the exact bounded artifact-and-brief prompt")
@@ -1868,10 +1996,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         else:
             if branch is not None:
                 branch = _attached_branch(dispatch_root)
-            if dispatch_path is None:
-                dispatch.write_bytes(_stage_prompt(state, decision, branch=branch))
-            elif not dispatch.is_file() or not dispatch.read_bytes().strip():
-                raise WorkError(f"dispatch file is absent or empty: {dispatch}")
+            if prepared_prompt is not None:
+                dispatch.write_bytes(_bind_prompt_branch(prepared_prompt, branch))
             common = [
                 "--dispatch", str(dispatch), "--root", str(dispatch_root),
                 "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
@@ -1939,10 +2065,13 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
     if stage in {"cold-seat", "use", "release-report"}:
         return "fresh"
     if stage == "artifact":
-        bundles = _matching_bundles(
-            f"{state.repo}#{state.issue_number}", frozenset({"artifact"}),
-            state.record_root or records.default_record_root().expanduser().resolve(),
-        )
+        try:
+            bundles = _matching_bundles(
+                f"{state.repo}#{state.issue_number}", frozenset({"artifact"}),
+                state.record_root or records.default_record_root().expanduser().resolve(),
+            )
+        except WorkError:
+            return "resume"
         return "resume" if bundles else "fresh"
     if stage == "build":
         return "resume" if state.pr is not None else "fresh"

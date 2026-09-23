@@ -25,6 +25,7 @@ def source(tmp_path):
     files = {
         ".gitattributes": b"* text=auto eol=lf\n",
         "job/job.md": b"run the consumer\n",
+        "job/run.sh": b"#!/bin/sh\nprintf 'ran\\n'\n",
         "skill/SKILL.md": b"loading surface\n",
         "README.md": b"front page\n",
         "AGENTS.md": b"root instructions\n",
@@ -36,6 +37,7 @@ def source(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
     git(root, "add", "--all")
+    git(root, "update-index", "--chmod=+x", "--", "job/run.sh")
     git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "fixture")
     return root.resolve()
@@ -60,6 +62,10 @@ def test_adopter_tree_carries_committed_bytes_and_adjacent_metadata(source, tmp_
     assert value["work"] == "acme/widget#7"
     assert value["source_revision"] == git(source, "rev-parse", "HEAD").stdout.decode().strip()
     assert value["verification"] == "raw-object-ids-match"
+    source_mode = git(source, "ls-tree", "HEAD", "--", "job/run.sh").stdout.split()[0]
+    recipient_mode = git(output, "ls-tree", "HEAD", "--", "job/run.sh").stdout.split()[0]
+    assert source_mode == recipient_mode == b"100755"
+    assert value["files"]["job/run.sh"]["mode"] == "100755"
     assert recipient_tree.validate_consumer_tree(
         metadata, work="acme/widget#7", source=source
     ) == output.resolve()
@@ -150,4 +156,37 @@ def test_tree_refuses_source_output_and_altered_metadata(source, tmp_path):
     value["mode"] = "repository-session"
     metadata.write_bytes((json.dumps(value) + "\n").encode())
     with pytest.raises(recipient_tree.RecipientTreeError, match="digest"):
+        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source)
+
+
+def _consumer_tree(source, tmp_path, name):
+    output = tmp_path / name
+    metadata = recipient_tree.create_consumer_tree(
+        source=source, output=output, work="acme/widget#7", producer_version="0.151.0",
+        mode="adopter", paths=["job"], loading_surfaces=["skill/SKILL.md"],
+        front_page=None, root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
+    )
+    return output, metadata
+
+
+def test_validation_refuses_an_extra_tracked_file_absent_from_manifest(source, tmp_path):
+    output, metadata = _consumer_tree(source, tmp_path, "tracked-extra")
+    (output / "undeclared.txt").write_bytes(b"not in metadata\n")
+    git(output, "add", "undeclared.txt")
+    git(output, "commit", "--amend", "--no-edit")
+
+    with pytest.raises(recipient_tree.RecipientTreeError, match="manifest"):
+        recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source)
+
+
+@pytest.mark.parametrize("kind", ["untracked", "ignored"])
+def test_validation_refuses_untracked_and_ignored_entries(source, tmp_path, kind):
+    output, metadata = _consumer_tree(source, tmp_path, kind)
+    extra = output / f"{kind}.cache"
+    if kind == "ignored":
+        exclude = output / ".git" / "info" / "exclude"
+        exclude.write_bytes(exclude.read_bytes() + b"*.cache\n")
+    extra.write_bytes(b"undeclared\n")
+
+    with pytest.raises(recipient_tree.RecipientTreeError, match="undeclared"):
         recipient_tree.validate_consumer_tree(metadata, work="acme/widget#7", source=source)

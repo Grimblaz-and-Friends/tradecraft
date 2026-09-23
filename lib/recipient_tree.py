@@ -86,29 +86,50 @@ def _blob_oid(source: Path, content: bytes) -> str:
     return hashlib.new(algorithm, framed).hexdigest()
 
 
+def _tree_files(root: Path, revision: str,
+                requested: list[str] | None = None) -> dict[str, dict[str, str]]:
+    arguments = ["ls-tree", "-r", "-z", revision]
+    if requested:
+        arguments.extend(("--", *requested))
+    found: dict[str, dict[str, str]] = {}
+    for entry in _git(root, *arguments).split(b"\0"):
+        if not entry:
+            continue
+        header, separator, raw_name = entry.partition(b"\t")
+        fields = header.split()
+        if not separator or len(fields) != 3:
+            raise RecipientTreeError("cannot parse committed recipient entry")
+        mode, kind, oid = (field.decode("ascii") for field in fields)
+        name = raw_name.decode("utf-8")
+        if kind != "blob" or mode not in {"100644", "100755"}:
+            raise RecipientTreeError(f"recipient path is not a regular Git file: {name}")
+        found[name] = {"mode": mode, "oid": oid}
+    return found
+
+
 def _required_files(source: Path, revision: str, requested: list[str],
-                    exclusions: list[str]) -> list[str]:
-    raw = _git(source, "ls-tree", "-r", "--name-only", "-z", revision, "--", *requested)
-    available = [name.decode("utf-8") for name in raw.split(b"\0") if name]
+                    exclusions: list[str]) -> dict[str, dict[str, str]]:
+    available = _tree_files(source, revision, requested)
     for required in requested:
         if not any(name == required or name.startswith(required.rstrip("/") + "/")
                    for name in available):
             raise RecipientTreeError(f"required source path is absent: {required}")
-    selected = [name for name in available if not any(
-        fnmatch.fnmatchcase(name, pattern) for pattern in exclusions
-    )]
+    selected = {
+        name: claim for name, claim in available.items()
+        if not any(fnmatch.fnmatchcase(name, pattern) for pattern in exclusions)
+    }
     for required in requested:
         if not any(name == required or name.startswith(required.rstrip("/") + "/")
                    for name in selected):
             raise RecipientTreeError(f"required source path was excluded: {required}")
-    return sorted(dict.fromkeys(selected))
+    return dict(sorted(selected.items()))
 
 
-def _extract_archive(source: Path, revision: str, files: list[str], destination: Path,
-                     deny_texts: list[str]) -> dict[str, str]:
+def _extract_archive(source: Path, revision: str, files: dict[str, dict[str, str]],
+                     destination: Path, deny_texts: list[str]) -> dict[str, dict[str, str]]:
     archive = _git(source, "archive", "--format=tar", revision, "--", *files)
     extracted: set[str] = set()
-    object_ids: dict[str, str] = {}
+    claims: dict[str, dict[str, str]] = {}
     with tarfile.open(fileobj=BytesIO(archive), mode="r:") as stream:
         for member in stream.getmembers():
             name = _source_path(member.name)
@@ -127,7 +148,10 @@ def _extract_archive(source: Path, revision: str, files: list[str], destination:
             for probe in deny_texts:
                 if probe.encode("utf-8") in content:
                     raise RecipientTreeError(f"denied text found in recipient path: {name}")
-            source_oid = _text(source, "rev-parse", f"{revision}:{name}")
+            expected = files.get(name)
+            if expected is None:
+                raise RecipientTreeError(f"archive contains an undeclared file: {name}")
+            source_oid = expected["oid"]
             extracted_oid = _blob_oid(source, content)
             if extracted_oid != source_oid:
                 raise RecipientTreeError(
@@ -136,17 +160,18 @@ def _extract_archive(source: Path, revision: str, files: list[str], destination:
                 )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
+            target.chmod(0o755 if expected["mode"] == "100755" else 0o644)
             extracted.add(name)
-            object_ids[name] = source_oid
+            claims[name] = dict(expected)
     missing = sorted(set(files) - extracted)
     if missing:
         raise RecipientTreeError(
             "git archive omitted required committed paths: " + ", ".join(missing)
         )
-    return object_ids
+    return claims
 
 
-def _initialize_neutral_repository(root: Path) -> None:
+def _initialize_neutral_repository(root: Path, files: dict[str, dict[str, str]]) -> None:
     _run_checked = lambda *args: _git(root, *args)
     _run_checked("init", "--quiet")
     for key, value in (
@@ -158,8 +183,13 @@ def _initialize_neutral_repository(root: Path) -> None:
     ):
         _run_checked("config", key, value)
     _run_checked("add", "-f", "--all")
+    for name, claim in files.items():
+        executable = "+x" if claim["mode"] == "100755" else "-x"
+        _run_checked("update-index", f"--chmod={executable}", "--", name)
     _run_checked("commit", "--quiet", "-m", "Neutral recipient snapshot")
     _run_checked("checkout", "--quiet", "--detach", "HEAD")
+    if _tree_files(root, "HEAD") != files:
+        raise RecipientTreeError("neutral commit modes or object ids do not match the source")
 
 
 def _prove_neutral_repository(root: Path, source: Path) -> None:
@@ -223,8 +253,8 @@ def create_consumer_tree(
     with tempfile.TemporaryDirectory(prefix=".tradecraft-tree-", dir=output.parent) as temporary:
         staged = Path(temporary) / "recipient"
         staged.mkdir()
-        object_ids = _extract_archive(source, revision, files, staged, deny_texts)
-        _initialize_neutral_repository(staged)
+        file_claims = _extract_archive(source, revision, files, staged, deny_texts)
+        _initialize_neutral_repository(staged, file_claims)
         _prove_neutral_repository(staged, source)
         staged.replace(output)
     value: dict[str, object] = {
@@ -238,7 +268,7 @@ def create_consumer_tree(
         "job_paths": job_paths,
         "carried_surfaces": surfaces,
         "exclusions": normalized_exclusions,
-        "files": object_ids,
+        "files": file_claims,
         "verification": "raw-object-ids-match",
     }
     value["metadata_sha256"] = _digest(value)
@@ -277,17 +307,31 @@ def validate_consumer_tree(metadata: Path, *, work: str, source: Path) -> Path:
     if _text(source, "status", "--porcelain"):
         raise RecipientTreeError("registered source root is dirty")
     _prove_neutral_repository(root, source)
-    if _text(root, "status", "--porcelain"):
-        raise RecipientTreeError("consumer tree is dirty")
+    status = _git(
+        root, "status", "--porcelain=v1", "--ignored", "--untracked-files=all", "-z"
+    )
+    if status:
+        raise RecipientTreeError("consumer tree contains changed or undeclared entries")
+    manifest: dict[str, dict[str, str]] = {}
     for name, expected in files.items():
-        if not isinstance(name, str) or not isinstance(expected, str):
+        if (not isinstance(name, str) or _source_path(name) != name
+                or not isinstance(expected, dict)
+                or set(expected) != {"mode", "oid"}
+                or expected.get("mode") not in {"100644", "100755"}
+                or not isinstance(expected.get("oid"), str)):
             raise RecipientTreeError("consumer-tree metadata has an invalid file claim")
+        manifest[name] = {"mode": expected["mode"], "oid": expected["oid"]}
+    if _tree_files(root, "HEAD") != manifest:
+        raise RecipientTreeError("consumer-tree committed paths do not match the manifest")
+    source_files = _tree_files(source, str(value["source_revision"]), list(manifest))
+    if source_files != manifest:
+        raise RecipientTreeError("consumer-tree manifest does not match the source revision")
+    for name, expected in manifest.items():
         path = root / Path(*PurePosixPath(name).parts)
         if not path.is_file():
             raise RecipientTreeError(f"consumer tree is missing a carried file: {name}")
         actual = _blob_oid(source, path.read_bytes())
-        if actual != expected or expected != _text(
-                source, "rev-parse", f"{value['source_revision']}:{name}"):
+        if actual != expected["oid"]:
             raise RecipientTreeError(f"consumer-tree bytes do not match source: {name}")
     return root
 
