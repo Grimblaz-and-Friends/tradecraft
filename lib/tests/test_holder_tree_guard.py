@@ -56,6 +56,23 @@ def test_shell_command_naming_registered_target_is_denied_from_outside(roots, to
                            "tool_input": {"command": command}}, registered)
 
 
+def test_guard_protects_by_path_without_a_work_launcher_allowlist(roots):
+    protected, outside, registered = roots
+    direct = f'python lib/dispatch_implementer.py --root "{protected}"'
+    holder = (
+        "python lib/work.py run build --repo acme/widget --issue 7 "
+        f'--root "{outside}" --holder-session-id holder'
+    )
+    assert guard.decision({
+        "tool_name": "PowerShell", "cwd": str(outside),
+        "tool_input": {"command": direct},
+    }, registered)
+    assert guard.decision({
+        "tool_name": "PowerShell", "cwd": str(outside),
+        "tool_input": {"command": holder},
+    }, registered) is None
+
+
 def test_native_git_option_path_has_both_guard_polarities(roots):
     protected, outside, registered = roots
     protected_command = f'git --git-dir="{protected / ".git"}" status'

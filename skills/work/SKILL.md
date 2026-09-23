@@ -14,31 +14,73 @@ description: The single state-driven entrance for a product change. Use when the
 For the ordinary entrance, run:
 
 ```text
-python <plugin-root>/lib/work.py --repo OWNER/REPO --issue N --root PATH --holder-session-id ID
+python <plugin-root>/lib/work.py --repo OWNER/REPO --issue N --root HOLDER_PATH
 ```
 
 The fifth merge across the practice's repositories since the last cross-change note, or the status read of a running evaluation, calls for engagement's read across landed changes.
 
-In this repository, `<plugin-root>` is the repository checkout root. For an adopter, `<plugin-root>` is the installed plugin directory containing `lib/work.py`. For the ordinary entrance, `--root` remains the holder checkout: it supplies `.tradecraft/work.json` and `lib/use-rules.json` and anchors the durable implementation worktree, but is never itself the implementation root.
+In this repository, `<plugin-root>` is the repository checkout root. For an adopter, it is the installed plugin directory containing `lib/work.py`. `--root` is always the holder checkout: it supplies `.tradecraft/work.json` and `lib/use-rules.json` and anchors the registered implementation root, but is never itself the implementation root.
 
-`--holder-session-id` is required whenever the selected stage launches or resumes a builder; pass the runtime's session identifier, or a stable holder token when that runtime exposes none, so the launcher and worktree registry can keep holder and builder identities distinct.
+## Decide, then run on the holder's word
 
-The script reads issue, pull-request, check, review and comment state with GitHub REST GET requests. A pull request becomes the implementing one only through its own standalone closing reference or the issue's explicit marker, and multiple candidates are refused. A nonempty repository-owned product list makes every issue in that repository practice-facing and requires an incident from the list unless an affirmed brief has already admitted the work; with a missing or empty list, nothing is practice-facing and the check does not apply, because the practice is a means to better product work rather than its own product. The same repository-owned work configuration names connected-reviewer and marker-producer logins, so other accounts cannot satisfy review or advance the entrance; with no connected reviewer configured, no review is required and the decision says so.
+The ordinary entrance performs GitHub GETs and local reads only. It does not sweep or write the registry, create a directory or worktree, publish a branch, write a dispatch file or invoke a launcher. Its JSON report carries the schema version, `work`, `producer_version`, next stage, continuity, reason, detail, holder/runnable/waiting/terminal status, lawful and invalid marker claims, and the latest run selected for every exact check name. For checks, `started_at` and then numeric run id choose the latest run; an older conclusion never defeats a newer success or pending run.
 
-An affirmed-brief marker counts only with exactly one lawful `Review risk` and `Review lane` pair. Changed paths are matched against the repository's schema-versioned JSON use rules; a bought use needs a current-head note, and the other branch needs its explicit no-use line. These are guards read by the entrance rather than choices it makes.
+Run a stage only when the holder says to:
 
-Power users may put one of `artifact`, `cold-seat`, `build`, `floor`, `use`, `review-disposition` or `release-report` before the options. That runs only the named stage and exits, except `use`, which returns the holder handoff without dispatching. The direct `release` and `adopt` commands below occupy the same positional slot, but neither is a stage or dispatches. Every builder prompt names one stage and tells the recipient to return rather than start another.
+```text
+python <plugin-root>/lib/work.py run STAGE \
+  --repo OWNER/REPO --issue N --root HOLDER_PATH \
+  --holder-session-id ID [--dispatch FILE]
+```
 
-**A stage whose value depends on its recipient not knowing the expected answer is never dispatched by the entrance with the change's record or registered implementation root.** It returns to the holder with the manual isolation and dispatch step named, because the holder must inspect both the recipient tree and the job's extent before launch.
+`STAGE` is `artifact`, `cold-seat`, `build`, `floor`, `use`, `review-disposition` or `release-report`. The named stage is authority: `run` validates and performs exactly it, without requiring it to equal the recommendation or advancing after the return. `--holder-session-id` is required when an implementer is launched or resumed. A holder-supplied dispatch must be outside the registered implementation root and reaches the launcher byte-for-byte; otherwise the composed implementer prompt carries one-stage bounds, the exact affirmed brief, the latest artifact, compact stage facts and explicit `gh api --method GET` commands, never the issue or pull-request record.
 
-The entrance consumes the affirmed brief and recorded evidence; it never decides whether work is worth doing, what the change is for, the brief's terms, a vendor or model default, whether to merge, or an owner ask. `ambiguous-pr` returns to the holder, who names the implementing pull request on the issue with the `implementing-pr` marker or opens the one that should exist. Holder-reading, ready/reviewer setup, waiting, panel coordination and terminal states also return to the holder without an unattended recipient.
+Every decision and dispatch request records `work` and the producing plugin version. Before any registry mutation, branch publication, temporary root or launch, `run` checks the named stage's safety table. A refusal names the stage, found version, minimum version and missing mechanism. A resumed stage uses the latest matching successful bundle first; an unsafe or unstamped bundle refuses and never falls back to a session marker. Only when no matching bundle exists may the authorized `builder-session` marker supply continuity.
 
-Before a fresh build dispatch, the entrance creates a branch and implementation worktree below the holder checkout's `.claude/worktrees/`, then atomically registers and dispatches into that root. Before creating the worktree, it writes `/.claude/worktrees/` to the holder checkout's repository-local exclude file, which is not committed and is not visible in `git status`. Every later stage the entrance dispatches resolves the registered root, including an artifact or cold seat reached after build, so proof reads the change rather than the holder's checkout. The builder remains on the entrance-created branch rather than creating or switching to another.
+Marker claims are validated against their existing contract before they advance the decision: producer, surface, exact attributes, lawful values, required prose and unambiguous identity must hold. Claims produced by a dispatched stage must also agree with the latest matching successful bundle completed before the marker. Builder session, floor head and pass, and cold/use staffing therefore come from their run records rather than from marker text alone. The exact contracts remain in `references/markers.md`.
 
-`holder_write_guard=available` records that the holder checkout's project settings declare the write-refusing `PreToolUse` hook; it does not claim the runtime loaded or enforced it. Without that complete declaration the entrance records `unavailable`, and revision and status snapshots provide detection only, because detection is not equivalent enforcement.
+## Roots and holder-owned endpoints
 
-Every entrance run sweeps active registrations and makes one inactive only when its uniquely identified implementing pull request is closed or merged, or when no implementing pull request is identified and the issue is closed. That sweep considers every active registration on the machine, not only registrations for the repository named by `--repo`. A holder can release one directly with `python <plugin-root>/lib/work.py release --repo OWNER/REPO --issue N --root HOLDER_PATH [--instalment VALUE]`; release changes only the registry row and leaves its worktree and branch in place, because they may contain work the holder still needs.
+A fresh `run build` creates and registers the implementation worktree, publishes its entrance-created branch to the uniquely selected remote, sets its upstream and verifies the remote head before launching. The builder commits and pushes there, then returns; when its lawful session marker exists without a pull request, the next report is the holder-owned `open-pull-request` step rather than another build. Later implementer stages resolve and prove that registered root internally, so the holder command names no protected implementation path. The path-based holder guard remains authoritative: a direct launcher command naming the protected root is still refused.
 
-A holder can recover a released registration with `python <plugin-root>/lib/work.py adopt --repo OWNER/REPO --issue N --root HOLDER_PATH --implementation-root IMPLEMENTATION_PATH --holder-session-id ID [--instalment VALUE]`. Adopt re-registers the holder-named existing worktree without dispatching or deleting another worktree, after proving that both roots are distinct top-level worktrees in the same repository and refusing an entrance-shaped branch for another issue. Where named instalment registrations exist, adopt requires `--instalment`, because omission must not deactivate a sibling instalment.
+`run cold-seat` creates an empty temporary repository outside the change, gives it one neutral detached commit and no remote or shared history, and removes it after the seat returns. Its prompt remains the exact artifact, exact brief and cold-check contract, with no fetch command or record.
 
-For a resumed implementer stage, the entrance first recovers the latest matching session from the machine-local dispatch bundles and otherwise accepts the issue's authorized `builder-session` marker; if neither can supply the required continuity, it returns a non-dispatching decision naming the stage and missing evidence.
+`run use` requires both the holder's job and a tree produced below:
+
+```text
+python <plugin-root>/lib/work.py run use ... \
+  --dispatch JOB --tree-metadata TREE.tradecraft-tree.json
+```
+
+It validates the adjacent metadata, source revision, detached neutral repository and carried bytes before launching the consumer through `dispatch_seat.py`. `run release-report` launches nobody and returns the report handoff to the holder; it refuses a custom dispatch. Repeating either the ordinary decision or the release-report handoff cannot buy another recipient.
+
+Build a consumer tree with the same door:
+
+```text
+python <plugin-root>/lib/work.py tree \
+  --repo OWNER/REPO --issue N --root HOLDER_PATH \
+  --mode adopter|repository-session --output PATH \
+  --path PATH [--path PATH ...] MODE-SPECIFIC-OPTIONS
+```
+
+Adopter mode requires one or more `--loading-surface` values. Repository-session mode requires `--front-page` and `--root-instructions` and accepts repeated `--directed-path` values. Repeated `--exclude-record` pathspecs remove records; repeated `--deny-text` probes refuse leaks. The command archives the registered root's clean committed revision, refuses omissions and transformations, compares every regular file's raw object id, initializes one history-free detached repository and writes the work, revision, mode, surfaces, exclusions and verification to adjacent metadata. The holder still inspects the result and characterizes unavoidable residue before use.
+
+The entrance consumes the affirmed brief and recorded evidence; it never decides what work is for, the brief's terms, a vendor or model default, whether to merge, or an owner ask. Ambiguous pull requests, holder reading, ready/reviewer setup, waiting, panel coordination and terminal states return to the holder.
+
+## Registration commands
+
+`release` and `adopt` retain their direct forms and sweep active registrations before their state change. Release makes the selected row inactive without deleting its worktree or branch:
+
+```text
+python <plugin-root>/lib/work.py release --repo OWNER/REPO --issue N --root HOLDER_PATH [--instalment VALUE]
+```
+
+Adopt proves and registers a holder-named existing worktree without dispatching or deleting another:
+
+```text
+python <plugin-root>/lib/work.py adopt --repo OWNER/REPO --issue N \
+  --root HOLDER_PATH --implementation-root IMPLEMENTATION_PATH \
+  --holder-session-id ID [--instalment VALUE]
+```
+
+Where named instalment registrations exist, adopt requires `--instalment`, because omission must not deactivate a sibling instalment. `holder_write_guard=available` records only that the holder checkout declares the full write-refusing hook; without it, revision and status snapshots detect a breach but do not enforce the boundary.

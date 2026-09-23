@@ -27,10 +27,28 @@ from winio import utf8_stdio
 SCHEMA_VERSION = 2
 CONTINUITIES = ("fresh", "resume")
 CLASSIFICATIONS = ("ordinary", "cold", "terminal")
+SEMANTIC_VERSION = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
+)
 
 
 class RecordError(RuntimeError):
     """A dispatch record cannot be created without losing its contract."""
+
+
+def producer_version() -> str:
+    """Return the validated version of the plugin that produced a record."""
+    manifest = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
+    try:
+        value = json.loads(manifest.read_bytes())
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RecordError(f"cannot read plugin version: {manifest}") from exc
+    version = value.get("version") if isinstance(value, dict) else None
+    if not isinstance(version, str) or SEMANTIC_VERSION.fullmatch(version) is None:
+        raise RecordError(f"plugin manifest has an invalid semantic version: {manifest}")
+    return version
 
 
 def sidecar(output: Path, suffix: str) -> Path:
@@ -236,6 +254,7 @@ def request_record(
         "schema_version": SCHEMA_VERSION,
         "dispatch_id": dispatch_id,
         "work": work,
+        "producer_version": producer_version(),
         "stage": stage,
         "settings_source": settings_source,
         "settings_scope": settings_scope,

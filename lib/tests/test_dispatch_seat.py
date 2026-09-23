@@ -131,6 +131,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     assert logged["staffing_qualification"]["cross_vendor_satisfied"] is True
     request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
     assert request["work"] == "issue-592"
+    assert request["producer_version"] == "0.151.0"
     assert request["stage"] == "cold-read"
     assert request["requested"]["required_capability"] == required_capability
     for boundary in (
@@ -625,6 +626,9 @@ def test_output_cannot_create_the_hold_file(job, suffix):
 def test_relocated_library_has_no_repository_dependency(tmp_path):
     copied = tmp_path / "installed/lib"
     shutil.copytree(LIB, copied, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    manifest = copied.parent / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir()
+    manifest.write_bytes((LIB.parent / ".claude-plugin" / "plugin.json").read_bytes())
     help_run = subprocess.run([sys.executable, str(copied / "dispatch_seat.py"), "--help"], cwd=tmp_path,
                               stdin=subprocess.DEVNULL, capture_output=True)
     assert help_run.returncode == 0
