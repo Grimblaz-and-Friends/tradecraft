@@ -18,7 +18,7 @@ A shipped filing exists only for work the owner bought and carries that work as 
 
 At pickup the holder and owner design the solution in turns, and the implementation brief records that sitting. This narrows D-654 and D-664 only where they made a bought issue carry the proposed fix or all that the ask knew; their no-unbought-issue rule, the two ends for an unfixed finding and the bought/not-bought distinction remain. D-590 already leaves remedy design to pickup and remains on that point.
 
-This repository has one local exception to the shipped intake route. A holder sends a practice defect to the Steward as facts and files nothing; the Steward verifies, searches, files, folds or declines with the reason; and the owner buys at pickup. For practice defects here, that explicitly overrides both shipped rules: the sender does not file what it can itself, and the Steward may create the factual issue before purchase. A product holder still files a product defect in that product with its harm named. Row 2 makes both overrides lab doctrine only. This supersedes D-691 only on who files a defect in this practice: `skills/engagement/references/cross-session-intake.md` and the shipped filing purchase gate remain unchanged for adopters.
+This repository has one local exception to the shipped intake route. A holder sends a practice defect to the Steward as facts and files nothing; the Steward verifies, searches, files, folds or declines with the reason; and the owner buys at pickup. For practice defects here, that explicitly overrides three shipped rules: the sender neither files what it can itself nor files a practice failure under charter §6, and the Steward may create the factual issue before purchase. A product holder still files a product defect in that product with its harm named. Row 2 makes all three overrides lab doctrine only. This supersedes D-691 only on who files a defect in this practice: the charter's practice-failure filing direction, `skills/engagement/references/cross-session-intake.md` and the shipped filing purchase gate remain unchanged for adopters.
 
 ### Mechanical is an affirmed lane, not an inferred size
 
@@ -45,7 +45,7 @@ Substrate keeps its both-polarities and same-class negative-control standard and
 ## Meaning changes
 
 - A shipped filing remains bought work but carries facts for pickup rather than a proposed solution.
-- The local Steward, not an individual holder, files, folds or declines defects in this practice before purchase; both departures from shipped intake and filing are explicit local overrides, and the shipped sentences are unchanged.
+- The local Steward, not an individual holder, files, folds or declines defects in this practice before purchase; the three departures from the charter's practice-failure filing direction, shipped cross-session intake and shipped filing purchase gate are explicit local overrides, and the shipped sentences are unchanged.
 - A valid `ordinary` / `mechanical` pair is the only authority for the brief-backed artifact, cold-seat and use exemptions; purely mechanical work owing no brief remains a distinct class, and an adopter with no coordinating session uses the recorded holder fallback.
 - A holder-explicit artifact or cold-seat stage remains lawful on a mechanical brief: its prompt carries the available draft instead of describing the ordinary skip.
 - The proof's generated no-use reason may be the affirmed mechanical lane and then names the affirmed comment as its source; it does not falsely claim changed paths failed to match.
