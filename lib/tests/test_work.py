@@ -14,6 +14,16 @@ import work
 
 RULES = work.load_use_rules(LIB / "use-rules.json")
 SHA = "a" * 40
+BASE_SHA = "c" * 40
+GATE_PATH = "/".join((".github", "workflows", "self-change-proof.yml"))
+GATE_SOURCE = {
+    "repository_id": 2,
+    "repository": "example/change-proof",
+    "path": GATE_PATH,
+    "ref": None,
+    "sha": None,
+    "rules": [{"id": 31, "name": "required proof", "source_type": "Organization"}],
+}
 AFFIRMED = """<!-- tradecraft:affirmed-brief:v1 -->
 Review risk: ordinary
 Review lane: connected
@@ -62,6 +72,44 @@ def repository(tmp_path, name="repository", *, ignore_worktrees=True):
     return root.resolve()
 
 
+WORK_CONFIG_BYTES = (
+    b'{\n  "schema_version": 1,\n  "product_repositories": [],\n'
+    b'  "connected_reviewers": [],\n  "marker_producers": []\n}\n'
+)
+USE_RULES_BYTES = (
+    b'{\n  "schema_version": 1,\n  "rules": [\n    {\n      "name": "fixture",\n'
+    b'      "include": ["lib/**"],\n      "exclude": []\n    }\n  ]\n}\n'
+)
+
+
+def policy_repository(tmp_path, name="policy-repository", *, autocrlf="false",
+                      work_configuration=True, crlf=False):
+    root = tmp_path / name
+    root.mkdir()
+    git(root, "init")
+    git(root, "config", "core.autocrlf", autocrlf)
+    (root / ".tradecraft").mkdir()
+    (root / "lib").mkdir()
+    def content(value):
+        return value.replace(b"\n", b"\r\n") if crlf else value
+    tracked = []
+    if work_configuration:
+        (root / ".tradecraft" / "work.json").write_bytes(content(WORK_CONFIG_BYTES))
+        tracked.append(".tradecraft/work.json")
+    (root / "lib" / "use-rules.json").write_bytes(content(USE_RULES_BYTES))
+    tracked.append("lib/use-rules.json")
+    git(root, "add", *tracked)
+    git(
+        root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "policies",
+    )
+    for relative in tracked:
+        path = root / relative
+        path.unlink()
+        git(root, "checkout", "--", relative)
+    return root.resolve()
+
+
 def registry_row(root, holder, branch, *, issue=12, active=True):
     return {
         "root": str(root.resolve()), "holder_root": str(holder.resolve()),
@@ -83,7 +131,11 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
     pull = None
     if pr:
         pull = {"number": 7, "state": "open", "draft": draft, "merged_at": None,
-                "head": {"sha": SHA}}
+                "head": {"sha": SHA},
+                "base": {
+                    "ref": "main", "sha": BASE_SHA,
+                    "repo": {"id": 1, "full_name": "example/product"},
+                }}
     fixture = work.WorkState(
         "example/product", 12,
         {"number": 12, "state": issue_state, "body": "", "labels": [],
@@ -91,9 +143,37 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
         issue_comments=comments, pr=pull, changed_paths=paths or ["lib/runtime.py"],
         config=config,
     )
+    if pr:
+        fixture.required_gate = {
+            "status": "identified",
+            "base": {
+                "repository": "example/product", "repository_id": 1,
+                "ref": "main", "sha": BASE_SHA,
+            },
+            "sources": [dict(GATE_SOURCE)],
+            "reason": "base-branch rules identify every required workflow source",
+        }
     if reviewer_ran:
         fixture.pr_comments = [{"body": "review summary", "user": {"login": REVIEWER}}]
     return fixture
+
+
+def gate_check(*, identity=91, run_id=81, workflow_id=11, head=SHA,
+               conclusion="success", status="completed", name="Change proof / Change proof",
+               repository="example/change-proof", path=GATE_PATH):
+    return {
+        "id": identity, "name": name, "status": status,
+        "conclusion": conclusion, "started_at": "2026-09-23T12:00:00Z",
+        "details_url": f"https://github.com/example/product/actions/runs/{run_id}/job/{identity}",
+        "workflow_run": {
+            "workflow_id": workflow_id, "id": run_id, "head_sha": head,
+            "html_url": f"https://github.com/example/product/actions/runs/{run_id}",
+        },
+        "workflow_source": {
+            "repository": repository, "path": path,
+            "run_id": run_id, "workflow_id": workflow_id,
+        },
+    }
 
 
 @pytest.mark.parametrize(("fixture", "expected"), [
@@ -247,13 +327,20 @@ def test_same_name_action_runs_without_workflow_metadata_remain_separate():
     assert work._checks_red(fixture) is True
 
 
+def test_latest_run_groups_by_top_level_source_not_runtime_workflow_id():
+    fixture = state(pr=True)
+    older = gate_check(identity=1, run_id=81, workflow_id=10, conclusion="failure")
+    older["started_at"] = "2026-09-23T10:00:00Z"
+    newer = gate_check(identity=2, run_id=82, workflow_id=20, conclusion="success")
+    newer["started_at"] = "2026-09-23T11:00:00Z"
+    fixture.checks = [newer, older]
+    assert [item["id"] for item in work.latest_checks(fixture)] == [2]
+    assert work._release_gate_status(fixture)["verdict"] == "green"
+
+
 def test_gate_rerun_uses_current_head_run_and_workflow_identity():
     fixture = state(AFFIRMED, pr=True)
-    fixture.checks = [{
-        "id": 91, "name": "Change proof / Change proof", "status": "completed",
-        "conclusion": "failure", "details_url": "https://github.com/x/actions/runs/81/job/3",
-        "workflow_run": {"id": 81, "workflow_id": 71, "head_sha": SHA},
-    }]
+    fixture.checks = [gate_check(workflow_id=71, conclusion="failure")]
 
     class GateTransport:
         def __init__(self):
@@ -270,6 +357,7 @@ def test_gate_rerun_uses_current_head_run_and_workflow_identity():
     reruns = work._rerun_gate_evaluations(transport, fixture, SHA)
     assert transport.posts == [("repos/example/product/actions/runs/81/rerun", {})]
     assert reruns[0] == {
+        "source": GATE_SOURCE,
         "check_id": 91, "run_id": 81, "workflow_id": 71,
         "requested": True, "status": "queued", "conclusion": None,
         "reason": "rerun requested for the identified current-head workflow run",
@@ -386,11 +474,7 @@ def test_completed_proof_and_successful_gate_reach_release_report():
         "user": {"login": PRODUCER},
     })
     fixture.proof_current = True
-    fixture.checks = [{
-        "id": 91, "name": "Change proof / Change proof", "status": "completed",
-        "conclusion": "success", "started_at": "2026-09-23T12:00:00Z",
-        "workflow_run": {"workflow_id": 11, "id": 81, "head_sha": SHA},
-    }]
+    fixture.checks = [gate_check()]
 
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.reason) == ("release-report", "all-evidence-complete")
@@ -409,22 +493,13 @@ def test_release_report_names_gate_verdict_run_and_path_departure_action(
         expected, run_head, conclusion, restate, tmp_path, capsys):
     fixture = state(pr=True)
     if run_head is not None:
-        fixture.checks = [{
-            "id": 91, "name": "Change proof / Change proof",
-            "status": "completed", "conclusion": conclusion,
-            "started_at": "2026-09-23T12:00:00Z",
-            "details_url": "https://github.com/example/product/actions/runs/81/job/91",
-            "workflow_run": {
-                "workflow_id": 11, "id": 81, "head_sha": run_head,
-                "html_url": "https://github.com/example/product/actions/runs/81",
-            },
-        }]
+        fixture.checks = [gate_check(head=run_head, conclusion=conclusion)]
 
     class ReleaseTransport:
         def get(self, endpoint, *, paginate=False):
             assert endpoint == "repos/example/product/pulls/7"
             assert paginate is False
-            return {"head": {"sha": SHA}}
+            return fixture.pr
 
     decision = work.Decision("release-report", False, None, "holder-named-stage")
     assert work.execute_stage(
@@ -449,6 +524,52 @@ def test_release_report_names_gate_verdict_run_and_path_departure_action(
         assert "no gate-bypass restatement is required" in instruction
 
 
+@pytest.mark.parametrize(("requirement", "verdict", "restate", "phrase"), [
+    (
+        {"status": "none", "base": {}, "sources": [], "reason": "no required gate"},
+        "none", False, "No required gate",
+    ),
+    (
+        {"status": "unidentified", "base": {}, "sources": [],
+         "reason": "rules returned 403"},
+        "unidentified", True, "Do not claim that a particular required gate was bypassed",
+    ),
+])
+def test_release_report_distinguishes_no_gate_from_unreadable_rules(
+        requirement, verdict, restate, phrase, tmp_path, capsys):
+    fixture = state(pr=True)
+    fixture.required_gate = requirement
+
+    class ReleaseTransport:
+        def get(self, endpoint, *, paginate=False):
+            return fixture.pr
+
+    assert work.execute_stage(
+        fixture, work.Decision("release-report", False, None, "holder-named-stage"),
+        tmp_path, None, transport=ReleaseTransport(),
+    ) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["required_gate"]["verdict"] == verdict
+    assert report["path_departures"]["restate"] is restate
+    assert phrase in report["path_departures"]["instruction"]
+
+
+def test_release_report_refuses_when_base_moves_after_collection(tmp_path):
+    fixture = state(pr=True)
+    moved = json.loads(json.dumps(fixture.pr))
+    moved["base"]["ref"] = "release/other"
+
+    class ReleaseTransport:
+        def get(self, endpoint, *, paginate=False):
+            return moved
+
+    with pytest.raises(work.WorkError, match="head or base changed"):
+        work.execute_stage(
+            fixture, work.Decision("release-report", False, None, "holder-named-stage"),
+            tmp_path, None, transport=ReleaseTransport(),
+        )
+
+
 def test_failed_gate_waits_and_does_not_route_back_to_floor():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
                     pr=True, draft=False, reviewer_ran=True)
@@ -457,18 +578,37 @@ def test_failed_gate_waits_and_does_not_route_back_to_floor():
         "user": {"login": PRODUCER},
     })
     fixture.proof_current = True
-    fixture.checks = [{
-        "id": 91, "name": "Change proof / Change proof", "status": "completed",
-        "conclusion": "failure", "started_at": "2026-09-23T12:00:00Z",
-        "workflow_run": {"workflow_id": 11, "id": 81, "head_sha": SHA},
-    }]
+    fixture.checks = [gate_check(conclusion="failure")]
 
     decision = work.decide(fixture, RULES)
     assert (decision.stage, decision.reason) == ("waiting", "latest-gate-evaluation-failed")
 
 
-@pytest.mark.parametrize("conclusion", [None, "neutral", "skipped"])
-def test_gate_requires_an_explicit_success_before_release(conclusion):
+@pytest.mark.parametrize(("gate_conclusion", "copy_conclusion", "stage", "gate_verdict"), [
+    ("success", "failure", "floor", "green"),
+    ("failure", "success", "waiting", "red"),
+])
+def test_same_named_local_copy_stays_ordinary(
+        gate_conclusion, copy_conclusion, stage, gate_verdict):
+    fixture = proof_ready_fixture_without_gate()
+    fixture.checks = [
+        gate_check(conclusion=gate_conclusion, name="same / name"),
+        gate_check(
+            identity=92, run_id=82, workflow_id=12, conclusion=copy_conclusion,
+            name="same / name", repository="example/product",
+        ),
+    ]
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == stage
+    assert work._release_gate_status(fixture)["verdict"] == gate_verdict
+
+
+@pytest.mark.parametrize(("conclusion", "reason"), [
+    (None, "current-head-gate-evaluation-absent"),
+    ("neutral", "latest-gate-evaluation-failed"),
+    ("skipped", "latest-gate-evaluation-failed"),
+])
+def test_gate_requires_an_explicit_success_before_release(conclusion, reason):
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
                     pr=True, draft=False, reviewer_ran=True)
     fixture.pr_comments.append({
@@ -476,16 +616,10 @@ def test_gate_requires_an_explicit_success_before_release(conclusion):
         "user": {"login": PRODUCER},
     })
     fixture.proof_current = True
-    fixture.checks = [{
-        "id": 91, "name": "Change proof / Change proof", "status": "completed",
-        "conclusion": conclusion, "started_at": "2026-09-23T12:00:00Z",
-        "workflow_run": {"workflow_id": 11, "id": 81, "head_sha": SHA},
-    }]
+    fixture.checks = [gate_check(conclusion=conclusion)]
 
     decision = work.decide(fixture, RULES)
-    assert (decision.stage, decision.reason) == (
-        "waiting", "latest-gate-evaluation-not-successful",
-    )
+    assert (decision.stage, decision.reason) == ("waiting", reason)
 
 
 def proof_ready_fixture_without_gate():
@@ -1045,6 +1179,295 @@ class FakeTransport:
         return self.values[endpoint]
 
 
+class GateReadTransport(FakeTransport):
+    def __init__(self, values, provenance):
+        super().__init__(values)
+        self.provenance = provenance
+        self.provenance_reads = []
+
+    def workflow_run_files(self, check_suite_ids):
+        self.provenance_reads.append(check_suite_ids)
+        return self.provenance
+
+
+def gate_read_values(*, rules, checks, runs, base_ref="release/next"):
+    base = "repos/acme/widget"
+    values = {
+        f"{base}/issues/3": {
+            "number": 3, "state": "open", "body": "", "labels": [],
+            "user": {"login": PRODUCER},
+        },
+        f"{base}/issues/3/comments": [
+            {"body": "<!-- tradecraft:implementing-pr:v1 number=9 -->",
+             "user": {"login": PRODUCER}},
+        ],
+        f"{base}/pulls?state=all&per_page=100": [
+            {"number": 9, "state": "open", "body": ""},
+        ],
+        f"{base}/pulls/9": {
+            "number": 9, "state": "open", "draft": True, "changed_files": 1,
+            "head": {"sha": SHA},
+            "base": {
+                "ref": base_ref, "sha": BASE_SHA,
+                "repo": {"id": 1, "full_name": "acme/widget"},
+            },
+        },
+        f"repos/acme/widget/rules/branches/{base_ref.replace('/', '%2F')}?per_page=100": rules,
+        f"{base}/issues/9/comments": [],
+        f"{base}/pulls/9/reviews": [],
+        f"{base}/pulls/9/comments": [],
+        f"{base}/pulls/9/files": [{"filename": "lib/runtime.py"}],
+        f"{base}/commits/{SHA}/check-runs?per_page=100": {
+            "total_count": len(checks), "check_runs": checks,
+        },
+    }
+    values.update({f"{base}/actions/runs/{identity}": value
+                   for identity, value in runs.items()})
+    return values
+
+
+def test_state_reader_uses_base_rules_and_top_level_source_for_all_gate_readers():
+    checks = [
+        {
+            "id": 101, "name": "renamed proof", "status": "completed",
+            "conclusion": "success", "started_at": "2026-09-23T12:00:00Z",
+            "details_url": "https://github.com/acme/widget/actions/runs/81/job/101",
+            "check_suite": {"node_id": "CS-required"},
+        },
+        {
+            "id": 102, "name": "renamed proof", "status": "completed",
+            "conclusion": "failure", "started_at": "2026-09-23T12:01:00Z",
+            "details_url": "https://github.com/acme/widget/actions/runs/82/job/102",
+            "check_suite": {"node_id": "CS-copy"},
+        },
+    ]
+    rules = [
+        {"id": 30, "type": "required_status_checks", "parameters": {}},
+        {
+            "id": 31, "name": "inherited proof", "type": "workflows",
+            "source_type": "Organization",
+            "parameters": {"workflows": [{
+                "repository_id": 2, "path": GATE_PATH,
+            }]},
+        },
+    ]
+    values = gate_read_values(
+        rules=rules, checks=checks,
+        runs={
+            81: {"id": 81, "workflow_id": 11, "head_sha": SHA},
+            82: {
+                "id": 82, "workflow_id": 12, "head_sha": SHA,
+                "referenced_workflows": [{"path": f"example/change-proof/{GATE_PATH}@main"}],
+            },
+        },
+    )
+    values["repositories/2"] = {"id": 2, "full_name": "example/change-proof"}
+    provenance = {"data": {"nodes": [
+        {
+            "id": "CS-required", "workflowRun": {
+                "databaseId": 81, "workflow": {"databaseId": 11},
+                "file": {"repositoryName": "Example/Change-Proof", "path": GATE_PATH},
+            },
+        },
+        {
+            "id": "CS-copy", "workflowRun": {
+                "databaseId": 82, "workflow": {"databaseId": 12},
+                "file": {"repositoryName": "acme/widget", "path": GATE_PATH},
+            },
+        },
+    ]}}
+    transport = GateReadTransport(values, provenance)
+
+    fixture = work.read_state(transport, "acme/widget", 3, CONFIG)
+
+    assert fixture.required_gate["status"] == "identified"
+    assert fixture.required_gate["base"]["ref"] == "release/next"
+    assert [check["id"] for check in work._gate_checks(fixture)] == [101]
+    assert [check["id"] for check in work._floor_checks(fixture)] == [102]
+    assert work._release_gate_status(fixture)["verdict"] == "green"
+    assert work._checks_red(fixture) is True
+    assert transport.provenance_reads == [["CS-copy", "CS-required"]]
+    assert any("release%2Fnext" in endpoint for _method, endpoint, _page in transport.calls)
+
+
+@pytest.mark.parametrize("rules", [
+    [],
+    [{"id": 40, "type": "required_status_checks", "parameters": {}}],
+])
+def test_successfully_read_rules_without_workflows_mean_no_required_gate(rules):
+    pr = {
+        "base": {
+            "ref": "main", "sha": BASE_SHA,
+            "repo": {"id": 1, "full_name": "person/project"},
+        },
+    }
+    endpoint = "repos/person/project/rules/branches/main?per_page=100"
+    requirement = work._collect_required_gate(FakeTransport({endpoint: rules}), pr)
+    assert requirement == {
+        "status": "none",
+        "base": {
+            "repository": "person/project", "repository_id": 1,
+            "ref": "main", "sha": BASE_SHA,
+        },
+        "sources": [], "reason": "no required gate",
+    }
+
+    fixture = proof_ready_fixture_without_gate()
+    fixture.required_gate = requirement
+    assert work.decide(fixture, RULES).stage == "release-report"
+
+    class NoMutation:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, endpoint, payload):
+            self.posts.append((endpoint, payload))
+
+    transport = NoMutation()
+    assert work._rerun_gate_evaluations(transport, fixture, SHA)[0]["reason"] == (
+        "no required gate"
+    )
+    assert transport.posts == []
+
+
+@pytest.mark.parametrize("failure", ["forbidden", "later-page", "malformed"])
+def test_unreadable_or_malformed_rules_are_unidentified(failure):
+    pr = {
+        "base": {
+            "ref": "main", "sha": BASE_SHA,
+            "repo": {"id": 1, "full_name": "acme/widget"},
+        },
+    }
+    endpoint = "repos/acme/widget/rules/branches/main?per_page=100"
+
+    class RulesTransport:
+        def get(self, requested, *, paginate=False):
+            assert requested == endpoint
+            if failure != "malformed":
+                raise work.WorkError(failure)
+            return [{"id": 31, "type": "workflows", "parameters": {"workflows": [{}]}}]
+
+    requirement = work._collect_required_gate(RulesTransport(), pr)
+    assert requirement["status"] == "unidentified"
+    assert requirement["reason"]
+
+
+def test_missing_provenance_is_unidentified_only_until_required_source_is_matched():
+    fixture = state(pr=True)
+    unknown = gate_check(identity=102, run_id=82, workflow_id=12)
+    unknown.pop("workflow_source")
+    unknown["workflow_source_error"] = "GraphQL file is null"
+    fixture.checks = [unknown]
+    result = work._release_gate_status(fixture)
+    assert result["verdict"] == "unidentified"
+    assert result["requirement_known"] is True
+
+    known_copy = gate_check(
+        identity=103, run_id=83, workflow_id=13, conclusion="failure",
+        repository="acme/widget",
+    )
+    fixture.checks = [gate_check(), unknown, known_copy]
+    result = work._release_gate_status(fixture)
+    assert result["verdict"] == "green"
+    assert {item["id"] for item in work._floor_checks(fixture)} == {102, 103}
+
+
+@pytest.mark.parametrize("response", [
+    {"data": {"nodes": [{"id": "CS", "workflowRun": None}]},
+     "errors": [{"message": "partial"}]},
+    {"data": {"nodes": [{
+        "id": "CS", "workflowRun": {
+            "databaseId": 81, "workflow": {"databaseId": 11},
+            "file": {"repositoryName": "example/change-proof", "path": GATE_PATH},
+        },
+    }]}, "errors": [{"message": "another field failed"}]},
+    {"data": {"nodes": [{
+        "id": "CS", "workflowRun": {
+            "databaseId": 999, "workflow": {"databaseId": 11},
+            "file": {"repositoryName": "example/change-proof", "path": GATE_PATH},
+        },
+    }]}},
+])
+def test_partial_or_mismatched_graphql_provenance_is_not_guessed(response):
+    check = gate_check()
+    check.pop("workflow_source")
+    check["check_suite"] = {"node_id": "CS"}
+
+    class ProvenanceTransport:
+        def workflow_run_files(self, check_suite_ids):
+            assert check_suite_ids == ["CS"]
+            return response
+
+    work._collect_workflow_provenance(ProvenanceTransport(), [check])
+    assert "workflow_source" not in check
+    assert "workflow_source_error" in check
+
+
+def test_unresolved_required_source_repository_is_unidentified():
+    pr = {
+        "base": {
+            "ref": "main", "sha": BASE_SHA,
+            "repo": {"id": 1, "full_name": "acme/widget"},
+        },
+    }
+    rules_endpoint = "repos/acme/widget/rules/branches/main?per_page=100"
+
+    class RepositoryTransport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint == rules_endpoint:
+                return [{
+                    "id": 31, "type": "workflows",
+                    "parameters": {"workflows": [{
+                        "repository_id": 2, "path": GATE_PATH,
+                    }]},
+                }]
+            raise work.WorkError("repository hidden")
+
+    requirement = work._collect_required_gate(RepositoryTransport(), pr)
+    assert requirement["status"] == "unidentified"
+    assert "repository 2" in requirement["reason"]
+
+
+def test_multiple_required_sources_cannot_aggregate_green_while_one_is_missing():
+    fixture = state(pr=True)
+    second = dict(GATE_SOURCE)
+    second.update({
+        "repository_id": 3, "repository": "example/other-proof",
+        "path": "/".join((".github", "workflows", "other.yml")),
+    })
+    fixture.required_gate["sources"] = [dict(GATE_SOURCE), second]
+    fixture.checks = [gate_check()]
+
+    result = work._release_gate_status(fixture)
+
+    assert result["verdict"] == "absent"
+    assert [item["verdict"] for item in result["requirements"]] == ["green", "absent"]
+
+
+def test_gate_rerun_deduplicates_jobs_from_one_current_run():
+    fixture = state(pr=True)
+    fixture.checks = [
+        gate_check(identity=91, name="proof / first"),
+        gate_check(identity=92, name="proof / second"),
+    ]
+
+    class GateTransport:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, endpoint, payload):
+            self.posts.append((endpoint, payload))
+            return {}
+
+        def get(self, endpoint, *, paginate=False):
+            return {"id": 81, "status": "queued", "conclusion": None}
+
+    transport = GateTransport()
+    reruns = work._rerun_gate_evaluations(transport, fixture, SHA)
+    assert transport.posts == [("repos/example/product/actions/runs/81/rerun", {})]
+    assert len(reruns) == 1
+
+
 def test_state_reader_uses_get_only_and_reads_all_pr_surfaces():
     base = "repos/acme/widget"
     values = {
@@ -1561,6 +1984,228 @@ def test_proof_publication_refuses_competing_authorized_documents():
         work._publish_proof_comment(
             ProofCommentTransport(comments), fixture, comments[0]["body"], SHA
         )
+
+
+@pytest.mark.parametrize("autocrlf", ["true", "false"])
+def test_policy_snapshot_hashes_committed_blobs_across_checkout_line_endings(
+        tmp_path, autocrlf):
+    root = policy_repository(tmp_path, f"policy-{autocrlf}", autocrlf=autocrlf)
+
+    snapshot = work._capture_policy_snapshot(
+        root, "example/product", root / "lib" / "use-rules.json",
+        enforce_clean=True,
+    )
+
+    for name, relative in snapshot.paths.items():
+        expected = git(root, "show", f"HEAD:{relative}").stdout
+        assert snapshot.blobs[name] == expected
+        assert snapshot.sources[name]["sha256"] == hashlib.sha256(expected).hexdigest()
+    assert git(root, "status", "--porcelain").stdout == b""
+
+
+def test_policy_snapshot_preserves_committed_crlf_bytes(tmp_path):
+    root = policy_repository(tmp_path, crlf=True)
+    snapshot = work._capture_policy_snapshot(
+        root, "example/product", root / "lib" / "use-rules.json",
+        enforce_clean=True,
+    )
+    committed = git(root, "show", "HEAD:lib/use-rules.json").stdout
+    assert b"\r\n" in committed
+    assert snapshot.blobs["use_rules"] == committed
+    assert snapshot.sources["use_rules"]["sha256"] == hashlib.sha256(committed).hexdigest()
+
+
+def _dirty_policy(root, condition):
+    target = root / "lib" / "use-rules.json"
+    if condition == "unstaged":
+        target.write_bytes(USE_RULES_BYTES + b" ")
+        return "lib/use-rules.json"
+    if condition == "staged":
+        target.write_bytes(USE_RULES_BYTES + b" ")
+        git(root, "add", "lib/use-rules.json")
+        return "lib/use-rules.json"
+    if condition == "staged-restored":
+        target.write_bytes(USE_RULES_BYTES + b" ")
+        git(root, "add", "lib/use-rules.json")
+        target.write_bytes(USE_RULES_BYTES)
+        return "lib/use-rules.json"
+    if condition == "deleted":
+        target.unlink()
+        return "lib/use-rules.json"
+    if condition == "renamed":
+        git(root, "mv", "lib/use-rules.json", "lib/renamed-rules.json")
+        return "lib/use-rules.json"
+    if condition == "conflicted":
+        branch = git(root, "branch", "--show-current").stdout.decode().strip()
+        git(root, "checkout", "-b", "policy-side")
+        target.write_bytes(b"side\n")
+        git(root, "add", "lib/use-rules.json")
+        git(
+            root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "commit", "-m", "side",
+        )
+        git(root, "checkout", branch)
+        target.write_bytes(b"base\n")
+        git(root, "add", "lib/use-rules.json")
+        git(
+            root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "commit", "-m", "base",
+        )
+        assert git(root, "merge", "policy-side", check=False).returncode != 0
+        return "lib/use-rules.json"
+    raise AssertionError(condition)
+
+
+@pytest.mark.parametrize(
+    "condition",
+    ["unstaged", "staged", "staged-restored", "deleted", "renamed", "conflicted"],
+)
+def test_dirty_tracked_policy_refuses_proof_before_any_github_request(
+        tmp_path, condition):
+    root = policy_repository(tmp_path, f"dirty-{condition}")
+    relative = _dirty_policy(root, condition)
+
+    class NoGitHub:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, endpoint, *, paginate=False):
+            self.calls.append((endpoint, paginate))
+            raise AssertionError("proof reached GitHub before policy refusal")
+
+    transport = NoGitHub()
+    with pytest.raises(work.WorkError, match="commit or revert") as raised:
+        work._execute_proof(
+            transport, state(pr=True), root, RULES, root / "lib" / "use-rules.json",
+            None, None,
+        )
+    assert relative in str(raised.value)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("policy_name", ["work_configuration", "use_rules"])
+def test_untracked_policy_refuses_proof_before_any_github_request(tmp_path, policy_name):
+    root = policy_repository(
+        tmp_path, f"untracked-{policy_name}", work_configuration=policy_name != "work_configuration"
+    )
+    if policy_name == "work_configuration":
+        target = root / ".tradecraft" / "work.json"
+        target.write_bytes(WORK_CONFIG_BYTES)
+    else:
+        target = root / "lib" / "use-rules.json"
+        git(root, "rm", "lib/use-rules.json")
+        git(
+            root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "commit", "-m", "remove use policy",
+        )
+        target.parent.mkdir(exist_ok=True)
+        target.write_bytes(USE_RULES_BYTES)
+
+    class NoGitHub:
+        def get(self, endpoint, *, paginate=False):
+            raise AssertionError("proof reached GitHub before policy refusal")
+
+    with pytest.raises(work.WorkError, match="commit or revert") as raised:
+        work._execute_proof(
+            NoGitHub(), state(pr=True), root, RULES, root / "lib" / "use-rules.json",
+            None, None,
+        )
+    assert target.relative_to(root).as_posix() in str(raised.value)
+
+
+def test_absent_optional_work_configuration_keeps_unavailable_source(tmp_path):
+    root = policy_repository(tmp_path, work_configuration=False)
+    snapshot = work._capture_policy_snapshot(
+        root, "example/product", root / "lib" / "use-rules.json",
+        enforce_clean=True,
+    )
+    assert snapshot.blobs["work_configuration"] is None
+    assert snapshot.sources["work_configuration"] == {
+        "repository": "example/product", "path": ".tradecraft/work.json",
+        "revision": snapshot.revision, "sha256": "unavailable",
+    }
+    assert work._work_config_bytes(None, ".tradecraft/work.json") == work.WorkConfig()
+
+
+def test_policy_snapshot_ignores_unrelated_dirty_files_and_refuses_outside_policy(
+        tmp_path):
+    root = policy_repository(tmp_path)
+    (root / "unrelated.txt").write_bytes(b"dirty\n")
+    snapshot = work._capture_policy_snapshot(
+        root, "example/product", root / "lib" / "use-rules.json",
+        enforce_clean=True,
+    )
+    assert snapshot.problems == ()
+
+    outside = tmp_path / "outside-rules.json"
+    outside.write_bytes(USE_RULES_BYTES)
+    with pytest.raises(work.WorkError, match="outside the holder checkout"):
+        work._capture_policy_snapshot(
+            root, "example/product", outside, enforce_clean=True
+        )
+
+
+def test_ordinary_read_uses_committed_policy_while_reporting_dirtiness(
+        tmp_path, monkeypatch, capsys):
+    root = policy_repository(tmp_path)
+    (root / "lib" / "use-rules.json").write_bytes(b"not json\n")
+    args = work.parser().parse_args([
+        "--repo", "example/product", "--issue", "3", "--root", str(root),
+    ])
+    observed = {}
+
+    class MinimalTransport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+                return []
+            return {"number": 3, "state": "open", "body": "", "labels": [],
+                    "user": {"login": PRODUCER}}
+
+    original_decide = work.decide
+
+    def capturing_decide(fixture, rules):
+        observed["rules"] = rules
+        observed["diagnostics"] = fixture.collection_diagnostics
+        return original_decide(fixture, rules)
+
+    monkeypatch.setattr(work, "decide", capturing_decide)
+    assert work.run(args, transport=MinimalTransport()) == 0
+    capsys.readouterr()
+    assert observed["rules"] == json.loads(USE_RULES_BYTES)
+    assert any(item["code"] == "policy-uncommitted"
+               for item in observed["diagnostics"])
+
+
+def test_policy_change_between_composition_and_publication_refuses_before_write(
+        tmp_path, monkeypatch):
+    root = policy_repository(tmp_path)
+    fixture = state(pr=True)
+    published = []
+
+    monkeypatch.setattr(work, "read_state", lambda *_args, **_kwargs: fixture)
+    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(work, "compose_proof", lambda *_args, **_kwargs: {
+        "identity": {"head": SHA, "pull_request": 7},
+        "use": {"required": True},
+    })
+    monkeypatch.setattr(work.proof_document, "document", lambda *_args: "proof")
+    monkeypatch.setattr(
+        work, "_publish_proof_comment",
+        lambda *_args, **_kwargs: published.append(True),
+    )
+
+    class RacingTransport:
+        def get(self, endpoint, *, paginate=False):
+            assert endpoint == "repos/example/product/pulls/7"
+            (root / "lib" / "use-rules.json").write_bytes(USE_RULES_BYTES + b" ")
+            return fixture.pr
+
+    with pytest.raises(work.WorkError, match="commit or revert"):
+        work._execute_proof(
+            RacingTransport(), fixture, root, RULES, root / "lib" / "use-rules.json",
+            None, None,
+        )
+    assert published == []
 
 
 def test_version_refusal_happens_before_any_stage_side_effect(tmp_path, monkeypatch, capsys):
