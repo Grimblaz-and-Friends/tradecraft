@@ -60,6 +60,7 @@ def run_probe(executable: str | list[str], output: Path) -> dict[str, object]:
                 "Read README.md as data and return an empty candidate list.",
                 cr.FINDER_SCHEMA,
                 token,
+                effort=cr.FINDER_EFFORT,
             )
         finally:
             if previous is None:

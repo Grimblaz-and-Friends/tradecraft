@@ -27,7 +27,9 @@ from winio import utf8_stdio
 
 BOT_LOGIN = "github-actions[bot]"
 DEFAULT_MODEL = "claude-opus-5-5"
-DEFAULT_EFFORT = "high"
+FINDER_EFFORT = "max"
+CHECKER_EFFORT = "high"
+FINDER_PASSES = 1
 # Claude Code 2.1.280 is the first version verified to support DEFAULT_MODEL.
 DEFAULT_CLAUDE_VERSION = "2.1.280"
 ATTEMPT_PREFIX = "connected-review-attempt:"
@@ -47,6 +49,18 @@ class ReviewError(RuntimeError):
 
 def _json_bytes(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True).encode("utf-8")
+
+
+def reviewer_settings(cli_version: str = DEFAULT_CLAUDE_VERSION) -> dict[str, Any]:
+    """Return the settings that freeze one reviewer version."""
+    return {
+        "checker_effort": CHECKER_EFFORT,
+        "claude_cli_version": cli_version,
+        "finder_effort": FINDER_EFFORT,
+        "finder_passes": FINDER_PASSES,
+        "max_candidates": MAX_REVIEW_COMMENTS,
+        "model": DEFAULT_MODEL,
+    }
 
 
 def _decode(value: bytes) -> str:
@@ -603,6 +617,8 @@ def run_pass(
     prompt: str,
     schema: dict[str, Any],
     token: str,
+    *,
+    effort: str,
 ) -> tuple[Any, dict[str, Any], list[dict[str, Any]]]:
     environment = _runtime_environment(run_root, token)
     workspace = run_root / "work"
@@ -615,7 +631,7 @@ def run_pass(
         "--include-hook-events",
         "--json-schema", json.dumps(schema, ensure_ascii=True, separators=(",", ":")),
         "--model", DEFAULT_MODEL,
-        "--effort", DEFAULT_EFFORT,
+        "--effort", effort,
         "--restricted",
         "--safe-mode",
         "--strict-mcp-config",
@@ -891,6 +907,7 @@ def execute_review(
                     ),
                     FINDER_SCHEMA,
                     token,
+                    effort=FINDER_EFFORT,
                 )
             except ReviewError as exc:
                 ledger["finder"] = exc.usage or {"status": "unavailable"}
@@ -909,6 +926,7 @@ def execute_review(
                     ),
                     CHECKER_SCHEMA,
                     token,
+                    effort=CHECKER_EFFORT,
                 )
             except ReviewError as exc:
                 ledger["checker"] = exc.usage or {"status": "unavailable"}

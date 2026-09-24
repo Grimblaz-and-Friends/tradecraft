@@ -178,6 +178,7 @@ def run_replay(
     cr.verify_claude_version(executable, version)
     finder_text = finder_prompt.read_text(encoding="utf-8")
     checker_text = checker_prompt.read_text(encoding="utf-8")
+    settings = cr.reviewer_settings(version)
     record = {
         "schema_version": 1,
         "repository": manifest["repository"],
@@ -187,9 +188,8 @@ def run_replay(
         ],
         "reviewer": {
             "revision": revision,
-            "model": cr.DEFAULT_MODEL,
-            "effort": cr.DEFAULT_EFFORT,
-            "claude_cli_version": version,
+            **settings,
+            "settings_sha256": hashlib.sha256(cr._json_bytes(settings)).hexdigest(),
             "finder_prompt_sha256": file_digest(finder_prompt),
             "checker_prompt_sha256": file_digest(checker_prompt),
             "harness_sha256": file_digest(Path(cr.__file__)),
@@ -232,6 +232,7 @@ def run_replay(
                     executable, case_root / "finder", snapshot,
                     cr._pass_prompt(finder_text, snapshot, diff_text, rules_text),
                     cr.FINDER_SCHEMA, token,
+                    effort=cr.FINDER_EFFORT,
                 )
                 lines = cr.changed_lines(diff_text)
                 candidates = cr.validate_candidates(finder_value, lines)
@@ -241,6 +242,7 @@ def run_replay(
                         checker_text, snapshot, diff_text, rules_text, candidates,
                     ),
                     cr.CHECKER_SCHEMA, token,
+                    effort=cr.CHECKER_EFFORT,
                 )
                 survivors = cr.validate_decisions(checker_value, candidates, lines)
                 leaks = _outside_trace_reads(finder_trace + checker_trace, snapshot)

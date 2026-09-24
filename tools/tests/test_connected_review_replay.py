@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -141,12 +142,14 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
     monkeypatch.setattr(replay.cr, "verify_managed_settings", lambda: None)
     monkeypatch.setattr(replay.cr, "verify_claude_version", lambda *_: None)
     snapshots = []
+    efforts = []
     calls = 0
 
-    def run(_executable, _root, snapshot, _prompt, schema, _token):
+    def run(_executable, _root, snapshot, _prompt, schema, _token, *, effort):
         nonlocal calls
         calls += 1
         snapshots.append(sorted(path.name for path in snapshot.iterdir()))
+        efforts.append(effort)
         if calls == 3:
             raise replay.cr.ReviewError("case-specific failure")
         if schema is replay.cr.FINDER_SCHEMA:
@@ -167,6 +170,15 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
         replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
     )
     assert snapshots == [["only-1.py"], ["only-1.py"], ["only-2.py"]]
+    assert efforts == [
+        replay.cr.FINDER_EFFORT, replay.cr.CHECKER_EFFORT, replay.cr.FINDER_EFFORT,
+    ]
+    assert result["reviewer"]["finder_effort"] == "max"
+    assert result["reviewer"]["checker_effort"] == "high"
+    settings = replay.cr.reviewer_settings(replay.cr.DEFAULT_CLAUDE_VERSION)
+    assert result["reviewer"]["settings_sha256"] == hashlib.sha256(
+        replay.cr._json_bytes(settings)
+    ).hexdigest()
     assert [len(record["cases"]) for record in writes] == [0, 1, 2]
     assert result["cases"][0]["status"] == "completed"
     assert result["cases"][1] == {
@@ -187,7 +199,12 @@ def test_run_records_canaries_tool_trace_and_invalidates_outside_read(tmp_path, 
     monkeypatch.setattr(replay.cr, "verify_managed_settings", lambda: None)
     monkeypatch.setattr(replay.cr, "verify_claude_version", lambda *_: None)
 
-    def run(_executable, _root, snapshot, _prompt, schema, _token):
+    def run(_executable, _root, snapshot, _prompt, schema, _token, *, effort):
+        expected = (
+            replay.cr.FINDER_EFFORT
+            if schema is replay.cr.FINDER_SCHEMA else replay.cr.CHECKER_EFFORT
+        )
+        assert effort == expected
         if schema is replay.cr.FINDER_SCHEMA:
             trace = [{"tool": "Read", "input": {"file_path": str(snapshot / "only-1.py")}}]
             return {"candidates": []}, {}, trace

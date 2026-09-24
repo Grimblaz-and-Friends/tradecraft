@@ -25,6 +25,8 @@ The holder's four artifact readings govern the implementation:
 
 The workflow serializes only review jobs per repository and pull request, without cancellation. Preparation remains parallel and head-aware; the runtime checks the current head immediately before publication. A reporter reconciles the attempt identifier across completed reviews at any head before it can post one skip notice. It also handles an eligible preparation failure when current trusted API data can establish eligibility; inability to establish eligibility fails visibly and posts nothing.
 
+Tuning round 1 responds to the aggregate tradecraft replay result recorded on [#746](https://github.com/Grimblaz-and-Friends/tradecraft/issues/746#issuecomment-5822972677): candidate discovery was the limiting pass while checked output remained clean. The finder remains one read-only pass with the existing candidate ceiling, but now runs at `max` effort and must cover every changed hunk, its callers and consumers, its tests and its governing prose before returning. It proposes every concrete input, path and wrong result without applying its own confidence threshold; the separate checker keeps its original prompt, `high` effort and proof burden. The changed finder prompt, pass-specific effort and harness metadata constitute a new reviewer version, so a complete tradecraft replay is required before any freeze.
+
 ## Rejected alternatives and consequences
 
 **Enable this repository in the build.** Rejected because no replay-qualified frozen merged revision exists yet. A branch commit is not a stable activation pin, especially when the pull request may squash.
@@ -34,6 +36,8 @@ The workflow serializes only review jobs per repository and pull request, withou
 **Count an unfinished run as a clean review.** Rejected because it recreates the Greptile limit-notice defect. Failures retain observed per-pass usage, post no review, and remain owed.
 
 **Treat replay output as a build pass.** Rejected because corpus selection, tuning and independent grading belong to the ordered post-build work above. Missing bars, missing cases, a per-case error or an input leak makes a replay unscorable.
+
+**Add finder passes or raise the candidate ceiling in the first tuning round.** Rejected because the aggregate evidence showed that the existing pass was not exploring the input or approaching its available output capacity. Systematic coverage and higher finder effort are the smaller recall intervention; the checker remains the precision boundary.
 
 ## Evidence
 

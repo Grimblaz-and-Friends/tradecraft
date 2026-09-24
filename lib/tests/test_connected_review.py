@@ -313,13 +313,15 @@ def test_model_process_has_only_read_tools_and_no_github_credential(tmp_path, mo
 
     monkeypatch.setattr(cr, "_run", run)
     value, usage, trace = cr.run_pass(
-        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth"
+        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth",
+        effort=cr.FINDER_EFFORT,
     )
     assert value == {"candidates": []}
     assert usage == {}
     assert trace == []
     command = seen["command"]
     assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
+    assert command[command.index("--effort") + 1] == cr.FINDER_EFFORT
     assert "--restricted" in command and "--safe-mode" in command
     assert command[command.index("--permission-prompts") + 1] == "none"
     assert json.loads(command[command.index("--mcp-config") + 1]) == {
@@ -360,7 +362,8 @@ def test_model_stream_keeps_structured_output_tool_uses_and_hook_events(tmp_path
 
     monkeypatch.setattr(cr, "_run", run)
     value, usage, trace = cr.run_pass(
-        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth"
+        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth",
+        effort=cr.FINDER_EFFORT,
     )
     assert value == {"candidates": []}
     assert usage == {"input_tokens": 3}
@@ -385,7 +388,10 @@ def test_failed_model_process_preserves_observed_usage(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cr, "_run", run)
     with pytest.raises(cr.ReviewError, match="usage limit") as raised:
-        cr.run_pass("claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth")
+        cr.run_pass(
+            "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth",
+            effort=cr.FINDER_EFFORT,
+        )
     assert raised.value.usage == {"input_tokens": 17}
 
 

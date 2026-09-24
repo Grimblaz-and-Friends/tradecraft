@@ -1,9 +1,36 @@
+import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "lib"))
+import connected_review as cr  # noqa: E402
+
+
+def test_tuned_reviewer_prompt_and_settings_hashes_are_frozen():
+    finder = ROOT / "skills/connected-review/references/finder.md"
+    checker = ROOT / "skills/connected-review/references/checker.md"
+    settings = cr.reviewer_settings()
+    assert settings == {
+        "checker_effort": "high",
+        "claude_cli_version": "2.1.280",
+        "finder_effort": "max",
+        "finder_passes": 1,
+        "max_candidates": 100,
+        "model": "claude-opus-5-5",
+    }
+    assert hashlib.sha256(finder.read_bytes()).hexdigest() == (
+        "e7924b3ebff9d15eb374954f8e6b16b3acf590322aa14cddafedb16ec8f5fd80"
+    )
+    assert hashlib.sha256(checker.read_bytes()).hexdigest() == (
+        "f342105d67de8e6ac9583c0f37f8d161b14d2f140bfbf3c8324622af299039ca"
+    )
+    assert hashlib.sha256(cr._json_bytes(settings)).hexdigest() == (
+        "6e6320cc5633b8d3423e36315bf443fe00f41c93e3d87b1a6e6f0529bf742ef4"
+    )
 
 
 def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
