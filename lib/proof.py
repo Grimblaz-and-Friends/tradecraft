@@ -250,6 +250,13 @@ def render(value: dict[str, object]) -> str:
         f"- evidence: use classification {use['classification']}; applicability "
         f"{use['applicability']}",
     ]
+    use_source = use["source"]
+    source_name = "none"
+    if isinstance(use_source, dict):
+        source_name = use_source.get("url") or f"{use_source['kind']}:{use_source['id']}"
+    lines.append(
+        f"- evidence: use reason {use['reason'] or 'none'}; source {source_name}"
+    )
     for reviewer in proof["reviewers"]:
         lines.append(f"- evidence: reviewer {reviewer['login']}: {reviewer['result']}")
     for disposition in proof["dispositions"]:

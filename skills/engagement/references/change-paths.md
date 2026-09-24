@@ -37,12 +37,13 @@ While the existing evaluation runs, its record issue carries the note. Afterward
 For each landed change, read only:
 
 - the authorized marker timeline on its work issue, ordered by GitHub creation time and retaining repeated markers, revisions and head values;
+- the recorded owner asks and rulings on the associated work issues and pull requests, including asks first made in conversation and then recorded there;
 - the pull request body, including its existing record and `**Path departures:**` paragraph;
 - the durable dispatch bundles belonging to the change, where retained.
 
 Do not read chat transcripts. Missing evidence stays unknown rather than being reconstructed.
 
-The ordered markers show what ran. The path-departure paragraph supplies the holder's unmarked calls. The dispatch bundles supply the request, returns, native usage, elapsed time where known and the products of each dispatch. Keep native quantities separate and keep unknowns unknown.
+The ordered markers show what ran. The path-departure paragraph supplies the holder's unmarked calls. The ask record supplies each put and ruling without turning a holder report into owner attention. The dispatch bundles supply the request, returns, native usage, elapsed time where known and the products of each dispatch. Keep native quantities separate and keep unknowns unknown.
 
 Derive the expected path from the practice version, repository configuration, change classification, bought use and review lane that applied to that change; there is no single sequence every change should resemble. Then state what the reader would have done in the same situation, clearly as a counterfactual.
 
@@ -50,7 +51,7 @@ Compare the actual, expected and reader paths by the evidence each actual path p
 
 ## The note and its exits
 
-Write one short narrative note for the interval. Name the changes and records consulted, describe each path and its material departures, compare outcomes and costs, and report no finding when the read found none.
+Write one short narrative note for the interval. Name the changes and records consulted, describe each path and its material departures, compare outcomes and costs, and report no finding when the read found none. Count and name every owner ask put, linking its source and recording why it qualified, its stated cost, the coordinating-session or precedent route, and the outcome when known. Repeated puts remain repeated owner attention linked to the same matter; an unknown record stays unknown.
 
 The note has no template, field list, score, severity scale or required finding count.
 

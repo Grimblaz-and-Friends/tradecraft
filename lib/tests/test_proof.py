@@ -119,6 +119,7 @@ def test_document_carries_one_json_object_readable_labels_and_legacy_no_use():
     assert rendered.count("<!-- tradecraft:proof:v1") == 1
     assert rendered.count("<!-- tradecraft:no-use:v1") == 1
     assert "- evidence:" in rendered
+    assert "use reason no changed path matches a use-bought rule; source none" in rendered
     assert "- declared:" in rendered
     assert "- verified:" not in rendered
 

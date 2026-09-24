@@ -28,4 +28,4 @@ gh issue list --repo OWNER/REPO --state all --limit 1000 --search "post-fix"
 
 **New issues name their ties at birth.** Where the evidence in hand shares one observed cause, state that work as one issue carrying the evidence together; shared location or origin alone does not make one cause.
 
-**An extending comment meets the same floor as an issue** (`../references/what-a-filing-carries.md`), inherits its host's incident-or-run admission, and takes the host as its tie. It may argue that the new evidence changes the work's value. Its shape is `../references/issue-template.md`'s.
+**An extending comment meets the same floor as an issue** (`../references/what-a-filing-carries.md`), inherits its host's incident-or-run admission, and takes the host as its tie. It states what the new facts add without proposing how the work should be solved. Its shape is `../references/issue-template.md`'s.

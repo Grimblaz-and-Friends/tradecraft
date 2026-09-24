@@ -9,11 +9,12 @@ import sys
 
 from winio import utf8_stdio
 
-LANES = {
-    "ordinary": "connected",
-    "elevated": "routine-panel",
-    "critical": "substantial-panel",
-}
+LANES = (
+    ("ordinary", "connected"),
+    ("ordinary", "mechanical"),
+    ("elevated", "routine-panel"),
+    ("critical", "substantial-panel"),
+)
 ELEMENTS = (
     "Shape",
     "Readers",
@@ -27,11 +28,13 @@ def review_lane(text: str) -> tuple[str, str] | None:
     """Return the single lawful risk/lane pair, or None."""
     risks = re.findall(r"(?im)^Review risk:\s*(ordinary|elevated|critical)\s*$", text)
     lanes = re.findall(
-        r"(?im)^Review lane:\s*(connected|routine-panel|substantial-panel)\s*$", text
+        r"(?im)^Review lane:\s*(connected|mechanical|routine-panel|substantial-panel)\s*$",
+        text,
     )
-    if len(risks) != 1 or len(lanes) != 1 or LANES[risks[0].lower()] != lanes[0].lower():
+    if len(risks) != 1 or len(lanes) != 1:
         return None
-    return risks[0].lower(), lanes[0].lower()
+    pair = risks[0].lower(), lanes[0].lower()
+    return pair if pair in LANES else None
 
 
 def _draft_review_lane(text: str) -> tuple[str, str] | None:

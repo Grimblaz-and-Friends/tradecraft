@@ -37,7 +37,7 @@ def test_heading_labels_may_carry_their_content_on_the_next_line():
     assert brief.missing_elements(draft()) == ()
 
 
-@pytest.mark.parametrize(("risk", "lane"), list(brief.LANES.items()))
+@pytest.mark.parametrize(("risk", "lane"), brief.LANES)
 def test_each_lawful_review_pair_is_accepted(risk, lane):
     text = draft().replace("ordinary", risk).replace("connected", lane)
     assert brief.missing_elements(text) == ()
@@ -62,8 +62,11 @@ def test_missing_elements_are_returned_in_stable_form_order():
     "Review risk: ordinary\n",
     "Review lane: connected\n",
     "Review risk: ordinary\nReview lane: substantial-panel\n",
+    "Review risk: elevated\nReview lane: mechanical\n",
+    "Review risk: critical\nReview lane: mechanical\n",
     "Review risk: ordinary\nReview risk: elevated\nReview lane: connected\n",
     "Review risk: ordinary\nReview lane: connected\nReview lane: connected\n",
+    "Review risk: ordinary\nReview lane: connected\nReview lane: mechanical\n",
 ])
 def test_missing_duplicate_or_crossed_review_rows_are_refused(rows):
     prefix = draft().split("Review risk:", 1)[0]

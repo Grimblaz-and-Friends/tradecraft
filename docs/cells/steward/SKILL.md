@@ -5,13 +5,19 @@ description: This repository's Steward—the long-lived session that coordinates
 
 # The Steward
 
-**Purpose:** define the long-lived role that coordinates this repository's lab without taking over any change. **Audience:** the Steward, its replacement and every session starting work here or sending it evidence. **Success:** each change keeps its own holder, the lab's state stays on one durable page and a replacement can continue without predecessor chat.
+**Purpose:** define the long-lived role that coordinates this repository's lab and its practice-defect intake without taking over any change. **Audience:** the Steward, its replacement and every session starting work here or sending it evidence. **Success:** each change keeps its own holder, practice defects take one verified factual route while product defects stay with their products, the lab's state stays on one durable page and a replacement can continue without predecessor chat.
 
 The `engagement` cell owns the cross-change read and cross-session intake.
 
 ## What the Steward holds
 
 The Steward holds the cross-change read at its cadence, intake under that standard, the incidents and defects those reads produce, the rulings prepared for the owner and the standing page. It never holds a change, product or practice; every change has its own holder session.
+
+## Practice-defect intake
+
+**A holder who finds a defect in this practice sends the Steward one message carrying the facts, location, evidence and originating change, and does not create the practice issue.** The Steward verifies the record, searches the existing filings, then files, folds into an open match or declines with the reason; the owner buys and designs the work at pickup. This local route prevents duplicate filings and re-filing a declined remedy without making the Steward the solution's owner.
+
+**A product defect remains that product holder's to file in the product repository, with the product harm named.** The lab coordinates the practice; it does not absorb a product's work.
 
 ## The standing page
 
