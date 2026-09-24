@@ -661,6 +661,24 @@ def test_unresolved_action_gate_candidate_waits_instead_of_routing_floor(
     assert work._floor_checks(fixture) == []
 
 
+def test_unreadable_rules_keep_resolved_red_action_run_out_of_the_floor():
+    fixture = proof_ready_fixture_without_gate()
+    fixture.required_gate = {
+        "status": "unidentified", "base": {}, "sources": [],
+        "reason": "rules returned 403",
+    }
+    fixture.checks = [gate_check(
+        conclusion="failure", repository="example/product",
+        path="/".join((".github", "workflows", "ordinary.yml")),
+    )]
+
+    decision = work.decide(fixture, RULES)
+
+    assert (decision.stage, decision.reason) == ("waiting", "required-gate-unidentified")
+    assert decision.dispatch is False
+    assert work._floor_checks(fixture) == []
+
+
 def proof_ready_fixture_without_gate():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
                     pr=True, draft=False, reviewer_ran=True)
@@ -2410,6 +2428,8 @@ def test_dirty_use_policy_does_not_change_proof_freshness_composition(
     fixture.record_root = work.records.default_record_root().expanduser().resolve()
     fixture.policy_sources = snapshot.sources
     committed_rules = json.loads(USE_RULES_BYTES)
+    work.prepare_use_evidence(fixture, object(), committed_rules)
+    assert fixture.applicable_use is not None
     current = work.compose_proof(fixture, committed_rules)
     fixture.pr_comments.append({
         "id": 71,
@@ -2425,7 +2445,6 @@ def test_dirty_use_policy_does_not_change_proof_freshness_composition(
     (root / "lib" / "use-rules.json").write_text(json.dumps(worktree_rules))
 
     monkeypatch.setattr(work, "read_state", lambda *_args, **_kwargs: fixture)
-    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args, **_kwargs: None)
     args = work.parser().parse_args([
         "--repo", "example/product", "--issue", "3", "--root", str(root),
     ])
@@ -2433,6 +2452,7 @@ def test_dirty_use_policy_does_not_change_proof_freshness_composition(
     assert work.run(args, transport=object()) == 0
     capsys.readouterr()
     assert fixture.proof_current is True
+    assert fixture.applicable_use is None
     assert any(item["code"] == "policy-uncommitted"
                for item in fixture.collection_diagnostics)
 

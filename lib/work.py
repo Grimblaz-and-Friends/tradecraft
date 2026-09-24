@@ -1496,16 +1496,22 @@ def latest_checks(state: WorkState) -> list[dict[str, object]]:
 
 
 def _floor_checks(state: WorkState) -> list[dict[str, object]]:
+    checks = latest_checks(state)
     gates = {id(check) for check in _matched_gate_checks(state)}
     requirement_status = _gate_requirement(state).get("status")
     unresolved = {
-        id(check) for check in latest_checks(state)
-        if requirement_status in {"identified", "unidentified"}
-        and _action_run_id(check) is not None
-        and isinstance(check.get("workflow_source_error"), str)
+        id(check) for check in checks
+        if _action_run_id(check) is not None
+        and (
+            requirement_status == "unidentified"
+            or (
+                requirement_status == "identified"
+                and isinstance(check.get("workflow_source_error"), str)
+            )
+        )
     }
     return [
-        check for check in latest_checks(state)
+        check for check in checks
         if id(check) not in gates and id(check) not in unresolved
     ]
 
@@ -4212,17 +4218,26 @@ def run(
         policy_diagnostics.append({
             "code": "policy-source-unavailable", "message": policy_problem, "source": None,
         })
-    prepare_use_evidence(state, github, rules)
-    if (state.pr is not None and _head_sha(state) is not None
-            and state.policy_sources):
-        freshness_rules = rules
+    freshness_rules = rules
+    freshness_state = state
+    has_freshness_context = (
+        state.pr is not None and _head_sha(state) is not None and bool(state.policy_sources)
+    )
+    if has_freshness_context:
         if policy_snapshot is not None:
             use_blob = policy_snapshot.blobs["use_rules"]
             if use_blob is not None:
                 freshness_rules = _use_rules_bytes(
                     use_blob, policy_snapshot.paths["use_rules"]
                 )
-        expected_proof = compose_proof(state, freshness_rules)
+        if freshness_rules != rules:
+            freshness_state = replace(
+                state, collection_diagnostics=list(state.collection_diagnostics)
+            )
+            prepare_use_evidence(freshness_state, github, freshness_rules)
+    prepare_use_evidence(state, github, rules)
+    if has_freshness_context:
+        expected_proof = compose_proof(freshness_state, freshness_rules)
         set_proof_freshness(state, expected_proof)
     elif state.pr is not None and _head_sha(state) is not None:
         state.proof_current = False
