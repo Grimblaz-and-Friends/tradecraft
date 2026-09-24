@@ -76,7 +76,7 @@ concurrency:
 
 env:
   TRADECRAFT_REPOSITORY: Grimblaz-and-Friends/tradecraft
-  TRADECRAFT_REVIEWER_REF: REPLACE_WITH_REVIEWED_COMMIT
+  TRADECRAFT_REVIEWER_REF: 94d791148219aec69c9413fb44490aaf06d76c6b
   CLAUDE_CLI_VERSION: 2.1.261
   REVIEW_OWNER_LOGIN: Grimblaz
 
@@ -120,6 +120,7 @@ jobs:
     outputs:
       status: ${{ steps.review.outputs.status }}
       cause: ${{ steps.review.outputs.cause }}
+      usage: ${{ steps.review.outputs.usage }}
     steps:
       - name: Fetch trusted reviewer
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -173,5 +174,6 @@ jobs:
           REVIEW_CAUSE: ${{ needs.review.outputs.cause }}
           REVIEW_RESULT: ${{ needs.review.result }}
           REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_USAGE: ${{ needs.review.outputs.usage }}
         run: python .connected-review-runtime/lib/connected_review.py report
 ```

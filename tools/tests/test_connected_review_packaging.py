@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +21,9 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in report
     assert "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09" in workflow
     assert "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1" in workflow
+    pin = re.search(r"TRADECRAFT_REVIEWER_REF: ([0-9a-f]{40})", workflow)
+    assert pin is not None
+    assert "REPLACE_WITH_REVIEWED_COMMIT" not in workflow
 
 
 def test_prompts_carry_opposite_burdens_and_all_named_exclusions():

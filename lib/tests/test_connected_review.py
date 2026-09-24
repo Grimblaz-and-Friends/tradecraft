@@ -222,6 +222,25 @@ def test_model_process_has_only_read_tools_and_no_github_credential(tmp_path, mo
     assert "GH_TOKEN" not in environment
 
 
+def test_failed_model_process_preserves_observed_usage(tmp_path, monkeypatch):
+    snapshot = tmp_path / "snapshot"
+    (tmp_path / "input").mkdir()
+    snapshot.mkdir()
+
+    def run(command, **_kwargs):
+        body = {
+            "is_error": True,
+            "result": "usage limit reached",
+            "usage": {"input_tokens": 17},
+        }
+        return subprocess.CompletedProcess(command, 0, json.dumps(body).encode(), b"")
+
+    monkeypatch.setattr(cr, "_run", run)
+    with pytest.raises(cr.ReviewError, match="usage limit") as raised:
+        cr.run_pass("claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth")
+    assert raised.value.usage == {"input_tokens": 17}
+
+
 def test_review_payload_is_one_completed_review_for_clean_or_survivor():
     clean = cr.review_payload([], HEAD, "91-1", {}, {})
     assert clean["event"] == "COMMENT"
@@ -269,12 +288,14 @@ def test_reporter_posts_one_cause_specific_notice_and_no_review(monkeypatch):
     monkeypatch.setattr(cr, "gh_json", get)
     monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset({cr.BOT_LOGIN}))
     result = cr.report_skip(
-        event(), "Grimblaz", "92-1", "failure", "authentication runtime failure", "92"
+        event(), "Grimblaz", "92-1", "failure", "authentication runtime failure", "92",
+        '{"finder":{"input_tokens":17},"checker":{"observed_usage":0,"status":"not-started"}}',
     )
     assert result["status"] == "skipped"
     assert len(calls) == 1
     assert calls[0]["body"].startswith("Review skipped: authentication runtime failure")
     assert "connected-review-attempt:92-1" in calls[0]["body"]
+    assert '"input_tokens":17' in calls[0]["body"]
 
 
 def test_offline_private_worker_gets_the_queue_expiry_cause(monkeypatch):
@@ -287,4 +308,3 @@ def test_offline_private_worker_gets_the_queue_expiry_cause(monkeypatch):
     assert cr._job_cause("owner/repo", "92", "cancelled", "public") == (
         "hosted review job was cancelled before it started"
     )
-
