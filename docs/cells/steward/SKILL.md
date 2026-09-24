@@ -17,6 +17,8 @@ The Steward holds the cross-change read at its cadence, intake under that standa
 
 ## Practice-defect intake
 
+**For practice defects in this repository, this local route overrides two shipped rules.** The holder files nothing rather than following the shipped cross-session intake direction to file what it can itself, and the Steward may file the factual defect before purchase rather than following the shipped filing rule that unbought work creates no issue. The owner still buys at pickup. Row 2 of #728's affirmed implementation brief makes both overrides lab doctrine only and expressly leaves the shipped sentences unchanged, so the exception lives here rather than traveling to adopters.
+
 **A holder who finds a defect in this practice sends the Steward one message carrying the facts, location, evidence and originating change, and does not create the practice issue.** The Steward verifies the record, searches the existing filings, then files, folds into an open match or declines with the reason; the owner buys and designs the work at pickup. This local route prevents duplicate filings and re-filing a declined remedy without making the Steward the solution's owner.
 
 **A product defect remains that product holder's to file in the product repository, with the product harm named.** The lab coordinates the practice; it does not absorb a product's work.

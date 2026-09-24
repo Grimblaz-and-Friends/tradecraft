@@ -2151,7 +2151,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         )
     brief, lane_pair = _affirmed_review(state)
     mechanical = lane_pair == ("ordinary", "mechanical")
-    artifact = None if mechanical else next(
+    explicit_artifact = decision.stage == "artifact"
+    artifact = None if mechanical and not explicit_artifact else next(
         (marker for marker in reversed(state.markers) if marker.name == "artifact"), None
     )
     if brief is None:
@@ -2170,8 +2171,12 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         "review_risk": lane_pair[0] if lane_pair else None,
         "review_lane": lane_pair[1] if lane_pair else None,
         "lane_reason": (
-            "owner-affirmed mechanical lane skips the artifact, cold seat, and use"
-            if mechanical else None
+            "holder-explicit artifact stage remains authoritative for the owner-affirmed "
+            "mechanical lane and advances no later stage"
+            if mechanical and explicit_artifact
+            else "owner-affirmed mechanical lane skips the artifact, cold seat, and use"
+            if mechanical
+            else None
         ),
     }
     fetches = [

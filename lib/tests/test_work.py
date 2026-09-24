@@ -1460,6 +1460,7 @@ def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch():
     assert b"Do not start or dispatch a later stage" in prompt
     evidence = json.loads(prompt.split(b"\n\n")[1])
     assert evidence["work"] == "example/product#12"
+    assert evidence["lane_reason"] is None
     assert AFFIRMED.encode("ascii") in prompt
     assert b"gh api --method GET repos/example/product/issues/12" in prompt
 
@@ -1484,6 +1485,31 @@ def test_mechanical_build_prompt_names_the_lane_reason_and_omits_an_old_artifact
     assert b"OBSOLETE ARTIFACT" not in prompt
 
 
+def test_mechanical_explicit_artifact_prompt_keeps_the_draft_and_names_its_authority():
+    draft = ARTIFACT + "\nMECHANICAL DRAFT\n"
+    prompt = work._stage_prompt(
+        state(MECHANICAL, draft), work.Decision("artifact", True, "resume", "fixture")
+    )
+    evidence = json.loads(prompt.split(b"\n\n")[1])
+
+    assert b"MECHANICAL DRAFT" in prompt
+    assert evidence["lane_reason"] == (
+        "holder-explicit artifact stage remains authoritative for the owner-affirmed "
+        "mechanical lane and advances no later stage"
+    )
+
+
+def test_connected_build_prompt_keeps_its_artifact_and_has_no_lane_exception():
+    artifact = ARTIFACT + "\nCONNECTED ARTIFACT\n"
+    prompt = work._stage_prompt(
+        state(AFFIRMED, artifact), work.Decision("build", True, "fresh", "fixture")
+    )
+    evidence = json.loads(prompt.split(b"\n\n")[1])
+
+    assert b"CONNECTED ARTIFACT" in prompt
+    assert evidence["lane_reason"] is None
+
+
 def test_unrelated_record_comments_do_not_change_a_composed_prompt():
     first = state(AFFIRMED, ARTIFACT, "unrelated first comment")
     second = state(AFFIRMED, ARTIFACT, "different unrelated comment")
@@ -1505,8 +1531,9 @@ def test_use_prompt_is_refused_while_build_omits_the_record():
     assert comment.encode("ascii") not in prompt
 
 
-def test_cold_seat_prompt_carries_only_artifact_brief_and_check_contract(tmp_path):
-    brief = AFFIRMED + "Brief text visible only to the cold seat.\n"
+@pytest.mark.parametrize("lane", ["connected", "mechanical"])
+def test_explicit_cold_seat_prompt_carries_artifact_brief_and_check_contract(tmp_path, lane):
+    brief = AFFIRMED.replace("connected", lane) + "Brief text visible only to the cold seat.\n"
     artifact = ARTIFACT + "\nArtifact text visible only to the cold seat.\n"
     fixture = state(brief, "OTHER COMMENT MUST STAY OUT", artifact)
     artifact_bytes = artifact.encode("utf-8")
