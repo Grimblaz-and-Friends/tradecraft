@@ -2,7 +2,7 @@
 
 **Purpose:** preserve why filings carry facts rather than solutions, how the owner affirms a mechanical lane, where post-affirmation questions go, and why a new guard is deleted in isolation before it ships. **Audience:** a future session changing filing, the implementation-brief lanes, the work entrance, or the owner-attention boundary. **Success:** that session can change one part without restoring solution-shaped filings, path-inferred mechanical work, artifact or use obligations for the mechanical lane, or unbounded asks after affirmation.
 
-Governed by the [affirmed implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/728#issuecomment-5789002677), the [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/728#issuecomment-5806352930), and the holder's [whole-change reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/728#issuecomment-5806355035). The implementation began at `777c723df2907b42d84684b202c6aafb83df2bc4` and ships as `0.155.0`.
+Governed by the [affirmed implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/728#issuecomment-5789002677), the [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/728#issuecomment-5806352930), and the holder's [whole-change reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/728#issuecomment-5806355035). The implementation began at `777c723df2907b42d84684b202c6aafb83df2bc4` and ships as `0.156.0`.
 
 ## Context
 
