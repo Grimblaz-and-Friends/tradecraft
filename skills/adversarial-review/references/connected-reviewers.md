@@ -52,3 +52,132 @@ Review pull requests only when they are marked ready; skip drafts. Post only P0/
 ```
 
 Codex has no configuration key for this contract; the section in the repository's own always-on agent file is the configuration.
+
+## `connected-review.yml` in the repository's GitHub Actions workflows directory
+
+Copy this block whole to that directory and set the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Before activation, install `gh`, Python 3.14 and Claude CLI 2.1.280 on a private repository's self-hosted runner. The hosted `prepare` job, and the hosted `report` job when it runs, consume a small amount of hosted time. After that repository's replay and identity checks pass, its enabling change sets the reviewer ref to the frozen merged commit on the default branch, sets the `CONNECTED_REVIEW_ENABLED` repository variable to `true`, and adds `github-actions[bot]` to `connected_reviewers`; the ref below and the absent variable deliberately leave this copy dormant, and the ref is not a release pin. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding `reviewers` requests the permitted non-mechanical second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
+
+```yaml
+name: connected-review
+
+on:
+  pull_request_target:
+    types: [ready_for_review, labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to retry
+        required: true
+        type: string
+
+env:
+  TRADECRAFT_REPOSITORY: Grimblaz-and-Friends/tradecraft
+  TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT
+  CLAUDE_CLI_VERSION: 2.1.280
+  REVIEW_OWNER_LOGIN: Grimblaz
+
+jobs:
+  prepare:
+    if: vars.CONNECTED_REVIEW_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      admitted: ${{ steps.eligibility.outputs.admitted }}
+      visibility: ${{ steps.eligibility.outputs.visibility }}
+      head: ${{ steps.eligibility.outputs.head }}
+      reason: ${{ steps.eligibility.outputs.reason }}
+      number: ${{ steps.eligibility.outputs.number }}
+    steps:
+      - name: Fetch trusted reviewer
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ env.TRADECRAFT_REPOSITORY }}
+          ref: ${{ env.TRADECRAFT_REVIEWER_REF }}
+          path: .connected-review-runtime
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.14"
+      - name: Check eligibility
+        id: eligibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .connected-review-runtime/lib/connected_review.py eligibility
+
+  review:
+    needs: prepare
+    if: needs.prepare.outputs.admitted == 'true'
+    runs-on: ${{ needs.prepare.outputs.visibility == 'private' && 'self-hosted' || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    concurrency:
+      group: connected-review-${{ github.repository }}-${{ needs.prepare.outputs.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      status: ${{ steps.review.outputs.status }}
+      cause: ${{ steps.review.outputs.cause }}
+      usage: ${{ steps.review.outputs.usage }}
+    steps:
+      - name: Fetch trusted reviewer
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ env.TRADECRAFT_REPOSITORY }}
+          ref: ${{ env.TRADECRAFT_REVIEWER_REF }}
+          path: .connected-review-runtime
+          persist-credentials: false
+      - name: Set up hosted Python
+        if: needs.prepare.outputs.visibility == 'public'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.14"
+      - name: Install hosted Claude CLI
+        if: needs.prepare.outputs.visibility == 'public'
+        run: npm install --global @anthropic-ai/claude-code@2.1.280
+      - name: Run finder and checker
+        id: review
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python .connected-review-runtime/lib/connected_review.py review
+          --finder-prompt ".connected-review-runtime/skills/connected-review/references/finder.md"
+          --checker-prompt ".connected-review-runtime/skills/connected-review/references/checker.md"
+
+  report:
+    needs: [prepare, review]
+    if: >-
+      always() && vars.CONNECTED_REVIEW_ENABLED == 'true' &&
+      (needs.prepare.result != 'success' || needs.prepare.outputs.admitted == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Fetch trusted reporter
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ env.TRADECRAFT_REPOSITORY }}
+          ref: ${{ env.TRADECRAFT_REVIEWER_REF }}
+          path: .connected-review-runtime
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.14"
+      - name: Reconcile review or report skip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          REVIEW_CAUSE: ${{ needs.review.outputs.cause }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_USAGE: ${{ needs.review.outputs.usage }}
+        run: python .connected-review-runtime/lib/connected_review.py report
+```

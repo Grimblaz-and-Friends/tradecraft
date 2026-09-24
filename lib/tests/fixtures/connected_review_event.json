@@ -1,0 +1,14 @@
+{
+  "action": "ready_for_review",
+  "pull_request": {
+    "number": 746
+  },
+  "repository": {
+    "id": 908172635,
+    "full_name": "Grimblaz-and-Friends/tradecraft",
+    "private": false
+  },
+  "sender": {
+    "login": "Grimblaz"
+  }
+}
