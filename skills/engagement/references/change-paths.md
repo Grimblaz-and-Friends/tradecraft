@@ -8,6 +8,8 @@
 
 A skipped stage was not required by the path that applied. A bypassed stage was required and the change continued without it. A stalled stage was attempted but could not advance. Absence of a marker alone proves none of the three, which is why the holder records the call rather than asking the later reader to infer it.
 
+At release, run `run release-report` after the required gate has evaluated the current head. It names the verdict and run it read. A `red`, `stale` or `absent` verdict requires this paragraph to be restated at that head with the gate bypass and its reason; a later head requires another release-report read. The paragraph records the bypass rather than forbidding it, because merging remains the owner's decision.
+
 The paragraph sits beside the change's existing record. It is the same convention in an adopting repository: no repository identity, product name or local tool is part of it.
 
 ## When the read fires

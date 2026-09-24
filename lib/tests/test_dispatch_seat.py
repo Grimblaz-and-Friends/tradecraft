@@ -112,7 +112,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
     flags = observed["argv"]
     if vendor == "claude":
         tools = "Read,Glob,Grep,Bash" if required_capability == "execute" else "Read,Glob,Grep"
-        assert flags == ["-p", "--model", "opus", "--effort", "xhigh", "--output-format", "json",
+        assert flags == ["-p", "--model", "claude-opus-5-5", "--effort", "high", "--output-format", "json",
                          "--no-session-persistence", "--safe-mode", "--tools", tools,
                          "--allowedTools", tools, "--permission-mode", "dontAsk", "--strict-mcp-config"]
     else:
@@ -405,7 +405,7 @@ def test_root_guard_surfaces_a_git_probe_failure(job, monkeypatch):
 
 
 @pytest.mark.parametrize("classification,expected", [
-    ("ordinary", "xhigh"), ("cold", "max"), ("terminal", "max"),
+    ("ordinary", "high"), ("cold", "max"), ("terminal", "max"),
 ])
 def test_claude_effort_defaults_from_judgment_classification(job, classification, expected):
     args, _ = job

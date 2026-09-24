@@ -1,6 +1,6 @@
 ---
 name: work
-description: The read-only decision and explicit execution entrance for one product change. Use when the owner names an issue to inspect or continue, when the holder runs one named stage, or when the holder builds a consumer tree; release and adopt remain registration commands. Not for deciding whether work is worth doing, changing an affirmed brief, choosing vendor defaults, merging, or answering an owner ask.
+description: The read-only decision and explicit execution entrance for one product change. Use when the owner names an issue to inspect or continue, when the holder runs one named stage, posts generated proof, prepares connected reviewers, or builds a consumer tree; release and adopt remain registration commands. Not for deciding whether work is worth doing, changing an affirmed brief, choosing vendor defaults, merging, or answering an owner ask.
 ---
 
 # work
@@ -10,6 +10,8 @@ description: The read-only decision and explicit execution entrance for one prod
 ## Where this cell's depth lives
 
 - **Recording or reading evidence that advances the entrance** → `references/markers.md`: each marker's exact form, lawful values, producer, surface and moment.
+- **Composing or consuming proof, preserving ancestor use, or preparing reviewers** → `references/proof.md`: the proof wire contract, public/declaration split, publication behavior and holder-owned commands.
+- **Implementing the independent proof consumer** → `references/proof-fixtures/README.md`: the positive document and semantic rejection cases shared with the gate.
 
 For the ordinary entrance, run:
 
@@ -23,11 +25,11 @@ In this repository, `<plugin-root>` is the repository checkout root. For an adop
 
 ## Decide, then run on the holder's word
 
-The ordinary entrance performs GitHub GETs and local reads only. It does not sweep or write the registry, create a directory or worktree, publish a branch, write a dispatch file or invoke a launcher. Its JSON report carries the schema version, `work`, `producer_version`, next stage, continuity, reason, detail, holder/runnable/waiting/terminal status, lawful and invalid marker claims, and the latest run selected for every exact check name. For checks, `started_at` and then numeric run id choose the latest run; an older conclusion never defeats a newer success or pending run.
+The ordinary entrance performs GitHub GETs and local reads only. It does not sweep or write the registry, create a directory or worktree, publish a branch, write a dispatch file or invoke a launcher. Its JSON report carries the schema version, `work`, `producer_version`, next stage, continuity, reason, detail, holder/runnable/waiting/terminal status, lawful and invalid marker claims, and the latest run selected for every exact check name and producer workflow. For checks, `started_at` and then numeric check id choose a genuine workflow's latest run; two workflows sharing a display name remain separate.
 
 An implementing pull request counts only through its own standalone closing reference or the issue's lawful `implementing-pr` marker. While the issue is open, an open candidate wins over every merged candidate because it is the change in flight. With no open candidate, one merged candidate returns a holder-owned state naming that pull request; it is neither a fresh build nor terminal. Multiple candidates in the winning class are refused, and a closed unmerged pull request does not count. A nonempty product list in `.tradecraft/work.json` makes the repository's issues practice-facing and requires a listed product incident unless an affirmed brief has already admitted the work; a missing or empty list disables that check because the practice exists to serve product work. The same file names connected-reviewer and marker-producer logins, so other accounts cannot satisfy review or advance the entrance; where no connected reviewer is configured, no connected review is required.
 
-An affirmed brief counts only with exactly one lawful `Review risk` and `Review lane` pair. Changed paths are matched against the schema-versioned use rules; a bought use requires a current-head use note, while the other branch requires its explicit current-head no-use line. These are evidence guards, not choices the entrance makes.
+An affirmed brief counts only with exactly one lawful `Review risk` and `Review lane` pair. Changed paths are matched against the schema-versioned use rules; a bought use requires a current-head use note or a proved ancestor use whose every intervening commit buys no use, while the other branch requires the proof command's current-head no-use carrier. These are evidence guards, not choices the entrance makes.
 
 Run a stage only when the holder says to:
 
@@ -38,7 +40,7 @@ python <plugin-root>/lib/work.py run STAGE \
   [--claude PATH] [--codex PATH]
 ```
 
-`STAGE` is `artifact`, `cold-seat`, `build`, `floor`, `use`, `review-disposition` or `release-report`. The named stage is authority: `run` validates and performs exactly it, without requiring it to equal the recommendation or advancing after the return. The default timeout is 7200 seconds for `build`, because a build must outlast a passing full check and 3600 seconds did not for this change; every other stage defaults to 3600 seconds. `--holder-session-id` is required when an implementer is launched or resumed; pass the runtime's session identifier, or a stable holder token when it exposes none, so launcher and registry keep holder and builder identities distinct. A holder-supplied dispatch must be outside the registered implementation root and reaches the launcher byte-for-byte; otherwise the composed implementer prompt carries one-stage bounds, the exact affirmed brief, the latest artifact, compact stage facts and explicit `gh api --method GET` commands, never the issue or pull-request record.
+`STAGE` is `artifact`, `cold-seat`, `build`, `floor`, `use`, `review-disposition`, `proof`, `ready-reviewers` or `release-report`. The named stage is authority: `run` validates and performs exactly it, without requiring it to equal the recommendation or advancing after the return. The default timeout is 7200 seconds for `build`, because a build must outlast a passing full check and 3600 seconds did not for this change; every other stage defaults to 3600 seconds. `--holder-session-id` is required when an implementer is launched or resumed; pass the runtime's session identifier, or a stable holder token when it exposes none, so launcher and registry keep holder and builder identities distinct. A holder-supplied dispatch must be outside the registered implementation root and reaches the launcher byte-for-byte; otherwise the composed implementer prompt carries one-stage bounds, the exact affirmed brief, the latest artifact, compact stage facts and explicit `gh api --method GET` commands, never the issue or pull-request record.
 
 Every decision and dispatch request records `work` and the producing plugin version. Before any registry mutation, branch publication, temporary root or launch, `run` checks the named stage's safety table. A refusal names the stage, found version, minimum version and missing mechanism. A resumed stage selects its matching bundle and valid session together and checks that bundle's version; matching bundle evidence with no session, an unsupported schema, or an unsafe or unstamped version refuses. Only when no matching bundle exists may the authorized `builder-session` marker supply continuity.
 
@@ -56,6 +58,8 @@ A merged implementing pull request on an open issue names that pull request and 
 
 `run cold-seat` creates an empty temporary repository outside the change, gives it one neutral detached commit and no remote or shared history, and removes it after the seat returns. Its prompt remains the exact artifact, exact brief and cold-check contract, with no fetch command or record.
 
+`run proof` and `run ready-reviewers` are holder-owned endpoints and launch nobody. The former composes and publishes the current-head proof from the record and requests a specifically identified gate rerun; the latter applies the optional configured reviewer label before marking the pull request ready. Their full contract is `references/proof.md`.
+
 `run use` requires both the holder's job and a tree produced below:
 
 ```text
@@ -63,7 +67,7 @@ python <plugin-root>/lib/work.py run use ... \
   --dispatch JOB --tree-metadata TREE.tradecraft-tree.json
 ```
 
-It validates the adjacent metadata, source revision, detached neutral repository and carried bytes before launching the consumer through `dispatch_seat.py`. `run release-report` launches nobody and returns the report handoff to the holder; it refuses a custom dispatch. Repeating either the ordinary decision or the release-report handoff cannot buy another recipient.
+It validates the adjacent metadata, source revision, detached neutral repository and carried bytes before launching the consumer through `dispatch_seat.py`. `run release-report` launches nobody and returns the report handoff to the holder; it refuses a custom dispatch. That handoff names the required gate verdict at the current head as `green`, `red`, `stale` or `absent`, with the identified run, and a non-green verdict directs the holder to restate the `**Path departures:**` paragraph at that head with the bypass and its reason. It records rather than forbids a bypass, because merging remains the owner's decision. Repeating either the ordinary decision or the release-report handoff cannot buy another recipient.
 
 Build a consumer tree with the same door:
 
@@ -77,7 +81,7 @@ python <plugin-root>/lib/work.py tree \
 
 Adopter mode requires one or more `--loading-surface` values. Repository-session mode requires `--front-page` and `--root-instructions` and accepts repeated `--directed-path` values. Repeated `--exclude-record` pathspecs remove records; repeated `--deny-text` probes refuse leaks. Without `--revision`, `tree` archives the active registered implementation root's clean committed `HEAD`. With `--revision`, it uses the holder repository without consulting or writing a registration, resolves the named commit, refreshes the selected remote's default-branch head, and refuses unless the commit is an ancestor of that remote head. Metadata always records the exact source revision and whether a registration was used. Both routes retain the same declared-path, loading-surface, exclusion, denied-text, raw-object-id, file-mode, detached-history and clean-tree guarantees. Before use, validation selects the registered source or holder source from the integrity-checked metadata claim, re-proves the recorded revision and carried bytes, and for an unregistered source refreshes and re-proves remote-default reachability. The holder still inspects the result and characterizes unavoidable residue before use.
 
-The entrance consumes the affirmed brief and recorded evidence; it never decides what work is for, the brief's terms, a vendor or model default, whether to merge, or an owner ask. An ambiguous pull request returns to the holder, who records the lawful `implementing-pr` marker or opens the pull request that should exist; holder reading, ready/reviewer setup, waiting, panel coordination and terminal states likewise return to the holder.
+The entrance consumes the affirmed brief and recorded evidence; it never decides what work is for, the brief's terms, a vendor or model default, whether to merge, or an owner ask. An ambiguous pull request returns to the holder, who records the lawful `implementing-pr` marker or opens the pull request that should exist; holder reading, waiting, panel coordination and terminal states likewise return to the holder.
 
 ## Registration commands
 

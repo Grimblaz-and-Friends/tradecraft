@@ -99,11 +99,23 @@ A later bare line returns every role to its standing default:
 
 - **Exact form:** `<!-- tradecraft:no-use:v1 head=SHA -->` followed in the same comment by `Use: not required` and its reason.
 - **Attributes and lawful values:** `head` is the pull-request head SHA whose changed paths were classified.
-- **Producer, surface, moment:** the holder, in an issue or pull-request comment, after the path rules conclude no use was bought and before the pull request is marked ready.
+- **Producer, surface, moment:** the proof command, in its pull-request proof comment, after the path rules conclude no use was bought and before the pull request is marked ready. The legacy holder-authored form remains accepted for the compatibility release.
 
 ```text
 <!-- tradecraft:no-use:v1 head=0123456789abcdef0123456789abcdef01234567 -->
 ```
+
+## `proof`
+
+- **Exact form:** `<!-- tradecraft:proof:v1 head=SHA -->` followed by the fenced version-one JSON object and its readable rendering.
+- **Attributes and lawful values:** `head` is the full pull-request head the object describes and equals `identity.head` inside the object.
+- **Producer, surface, moment:** the holder through `run proof`, in the command-owned pull-request comment, after any evidence update whose current state should be presented to the gate.
+
+```text
+<!-- tradecraft:proof:v1 head=0123456789abcdef0123456789abcdef01234567 -->
+```
+
+The object and publication contract are `proof.md`. For one compatibility release, the entrance continues to accept the marker family above as input and the proof comment also carries a generated `no-use` carrier when no use was bought.
 
 ## `connected-reviewer`
 

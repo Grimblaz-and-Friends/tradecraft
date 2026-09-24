@@ -1,8 +1,8 @@
 # D-736 — Make completion, landed work, and launch choices explicit
 
-**Purpose:** preserve why the entrance reads Codex completion from its stream, retains merged implementation evidence, admits a landed consumer-tree source, and resolves launch choices before invoking a launcher. **Audience:** a future session changing dispatch interpretation, work-state routing, consumer-tree sources, or per-change launch settings. **Success:** that session can change one mechanism without reviving the four manual routes this decision removes, and can see that no standing model or effort default moved.
+**Purpose:** preserve why the entrance reads Codex completion from its stream, retains merged implementation evidence, admits a landed consumer-tree source, and resolves launch choices before invoking a launcher. **Audience:** a future session changing dispatch interpretation, work-state routing, consumer-tree sources, or per-change launch settings. **Success:** that session can change one mechanism without reviving the four manual routes this decision removes, and can distinguish D-733's standing defaults from this decision's per-change routing.
 
-Governed by the affirmed implementation brief and settled artifact on [#727](https://github.com/Grimblaz-and-Friends/tradecraft/issues/727), carrying #729 and #730 with #688 folded into the completion rule. The implementation began at `35f67420ecf114dcd2dfa415de53ff66a9ca8489`.
+Governed by the affirmed implementation brief and settled artifact on [#727](https://github.com/Grimblaz-and-Friends/tradecraft/issues/727), carrying #729 and #730 with #688 folded into the completion rule. The implementation began at `35f67420ecf114dcd2dfa415de53ff66a9ca8489`, integrated Program B from `17f0f3abfabc843de1d1258f8a974ff105e01a6b`, and ships as `0.154.0`.
 
 ## Context
 
@@ -30,7 +30,9 @@ D-726's registered implementation root is no longer the only lawful source. `tre
 
 The latest lawful `model-override` issue marker is one whole role-scoped choice. It replaces earlier lines rather than merging with them; omitted roles and vendor mismatches use that launcher's standing default. The entrance resolves model and effort plus each value's source for the three roles it launches: implementer, cold seat and use consumer. It validates a holder-supplied runtime path or discovers one when none is supplied, and passes every selected path explicitly. Ordinary- and terminal-seat entries reach `dispatch_seat.py` only when the holder passes their resolved values directly with the marker comment as their source. A judging fallback therefore carries its own value/source pair rather than the primary vendor's override.
 
-No standing model or effort default changed. The launcher constants and their D-645 evidence remain intact; this decision changes how a per-change choice reaches them, not what they are.
+This decision chooses no standing model or effort default. After Program B is integrated, `_launch_settings` reads D-733's pinned interim launcher constants — Codex `gpt-5.6-sol` at `xhigh`, Claude `claude-opus-5-5` at ordinary `high` and cold or terminal `max` — while preserving `dispatch_implementer default`, `dispatch_seat default` and `classification mapping` as their respective sources. D-733 owns those defaults; this decision changes how a per-change choice reaches them.
+
+The `0.154.0` safety boundary covers every entrance stage that launches with explicit model, effort and runtime inputs, including the landed-tree use route. `tree --revision` checks the same boundary before resolving a commit, while the older registered-tree route retains its earlier minimum.
 
 ## Rejected alternatives and consequences
 
@@ -49,10 +51,11 @@ No standing model or effort default changed. The launcher constants and their D-
 - D-726's registered implementation root is no longer the only lawful consumer-tree source.
 - An open issue's merged implementing pull request is retained as holder-owned evidence rather than discarded or treated as terminal.
 - The entrance resolves and forwards settings and holder-supplied or discovered runtime executables for its implementer, cold-seat and use-consumer launches; ordinary- and terminal-seat settings remain holder-forwarded direct launcher inputs.
+- Stage safety requires `0.154.0` for those explicit launch inputs and the unregistered landed-tree routes, without raising the minimum for the registered-tree route.
 - Dispatch outcome reads Codex completion from the stream while historical bundle outcomes remain immutable.
 
 ## Evidence
 
 The stream parser, reconnect, no-output, reason, unavailable-runtime record, and immutable-history polarities are in `lib/tests/test_dispatch_record.py`, `lib/tests/test_dispatch_implementer.py`, `lib/tests/test_dispatch_seat.py`, and `lib/tests/test_work.py`. Merged-candidate precedence, active-registration refusal, exact whole-choice overrides, separate value sources, explicit executable forwarding, creation-and-use landed reachability, registration absence, and metadata integrity are in `lib/tests/test_work.py`; revision-pinned bytes and metadata are in `lib/tests/test_recipient_tree.py`.
 
-Run `python -m pytest lib/tests/test_dispatch_record.py lib/tests/test_dispatch_implementer.py lib/tests/test_dispatch_seat.py lib/tests/test_recipient_tree.py lib/tests/test_work.py -q -p no:cacheprovider`, `python tools/dev.py check`, and `git diff 35f67420ecf114dcd2dfa415de53ff66a9ca8489 -- .claude-plugin/plugin.json` on the tree under review. These commands and test surfaces are the evidence; no derived result is frozen here.
+Run `python -m pytest lib/tests/test_dispatch_record.py lib/tests/test_dispatch_implementer.py lib/tests/test_dispatch_seat.py lib/tests/test_recipient_tree.py lib/tests/test_work.py -q -p no:cacheprovider`, `python tools/dev.py check`, and `git diff 17f0f3abfabc843de1d1258f8a974ff105e01a6b -- .claude-plugin/plugin.json` on the tree under review. These commands and test surfaces are the evidence; no derived result is frozen here.

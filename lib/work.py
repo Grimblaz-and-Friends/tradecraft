@@ -19,18 +19,20 @@ import subprocess
 import sys
 import tempfile
 from typing import Callable
+import urllib.parse
 
 from brief import LANES, review_lane
 import dispatch_record as records
 import dispatch_implementer
 import dispatch_seat
+import proof as proof_document
 import recipient_tree
 import vendor_cli
 from winio import utf8_stdio
 
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
-    "review-disposition", "release-report",
+    "review-disposition", "proof", "ready-reviewers", "release-report",
 )
 DIRECT_COMMANDS = ("release", "adopt", "run", "tree")
 CLI_COMMANDS = DIRECT_COMMANDS
@@ -70,33 +72,68 @@ SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "no-use", "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
-    "builder-session",
-    "model-override",
+    "builder-session", "model-override", "proof",
 })
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
 }
 PENDING_CHECK_STATUSES = {"queued", "in_progress", "pending", "requested", "waiting"}
+REVIEW_NOTICE_PATTERNS = (
+    ("Review limit reached", re.compile(r"^\s*review limit reached\b", re.I | re.M)),
+    ("rate limited", re.compile(r"^\s*(?:review(?:er)?\s+)?rate limited\b", re.I | re.M)),
+    ("review limited", re.compile(
+        r"^\s*(?:the\s+)?review (?:was |is )?limited\b|^\s*limited review\b",
+        re.I | re.M,
+    )),
+    ("review skipped", re.compile(
+        r"^\s*(?:the\s+)?review (?:was |is )?skipped\b|^\s*skipped review\b",
+        re.I | re.M,
+    )),
+    ("Ask your admin to upgrade for code reviews", re.compile(
+        r"^\s*ask your admin to upgrade for code reviews\b", re.I | re.M,
+    )),
+    ("Running", re.compile(
+        r"^\|(?:[^|\n]*\|)*\s*running\s*\|(?:[^|\n]*\|)*\s*$", re.I | re.M,
+    )),
+)
 HEAD_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
 NEW_MECHANISM_VERSION = "0.152.0"
+PROOF_MECHANISM_VERSION = "0.153.0"
+TRUTHFUL_ENTRANCE_VERSION = "0.154.0"
 REGISTERED_ROOT_VERSION = "0.149.0"
 DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
 DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
 STAGE_SAFETY = {
-    "artifact": ((NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),),
-    "cold-seat": ((NEW_MECHANISM_VERSION, "neutral cold root and explicit run"),),
-    "build": ((NEW_MECHANISM_VERSION,
-               "bounded prompt, branch publication and explicit run"),),
+    "artifact": (
+        (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executable"),
+    ),
+    "cold-seat": (
+        (NEW_MECHANISM_VERSION, "neutral cold root and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executables"),
+    ),
+    "build": (
+        (NEW_MECHANISM_VERSION, "bounded prompt, branch publication and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executable"),
+    ),
     "floor": (
         (REGISTERED_ROOT_VERSION, "registered implementation root"),
         (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executable"),
     ),
-    "use": ((NEW_MECHANISM_VERSION, "validated consumer tree and explicit run"),),
+    "use": (
+        (NEW_MECHANISM_VERSION, "validated consumer tree and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION,
+         "landed consumer-tree use and explicit launch settings and runtime executables"),
+    ),
     "review-disposition": (
         (REGISTERED_ROOT_VERSION, "registered implementation root"),
         (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executable"),
     ),
+    "proof": ((PROOF_MECHANISM_VERSION, "composed proof publication"),),
+    "ready-reviewers": ((PROOF_MECHANISM_VERSION, "configured reviewer readiness"),),
     "release-report": ((NEW_MECHANISM_VERSION, "holder-owned release report"),),
 }
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
@@ -118,6 +155,8 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
             "surfaces": {"issue-comment", "pull-request-comment"}},
     "no-use": {"required": {"head"}, "optional": set(),
                "surfaces": {"issue-comment", "pull-request-comment"}},
+    "proof": {"required": {"head"}, "optional": set(),
+              "surfaces": {"pull-request-comment"}},
     "connected-reviewer": {"required": {"name", "status"}, "optional": set(),
                            "surfaces": {"review-comment", "pull-request-comment"}},
     "panel-stage": {"required": {"stage", "status"}, "optional": set(),
@@ -184,6 +223,7 @@ class WorkConfig:
     product_repositories: frozenset[str] = frozenset()
     connected_reviewers: frozenset[str] = frozenset()
     marker_producers: frozenset[str] = frozenset()
+    reviewer_label: str | None = None
 
 
 @dataclass
@@ -198,12 +238,18 @@ class WorkState:
     reviews: list[dict[str, object]] = field(default_factory=list)
     review_comments: list[dict[str, object]] = field(default_factory=list)
     checks: list[dict[str, object]] = field(default_factory=list)
+    files: list[dict[str, object]] = field(default_factory=list)
     changed_paths: list[str] = field(default_factory=list)
     ambiguous_prs: list[int] = field(default_factory=list)
     config: WorkConfig = field(default_factory=WorkConfig)
     record_root: Path | None = None
     validated_markers: list[Marker] | None = None
     invalid_marker_claims: list[dict[str, object]] = field(default_factory=list)
+    collection_diagnostics: list[dict[str, object]] = field(default_factory=list)
+    policy_sources: dict[str, dict[str, str]] = field(default_factory=dict)
+    applicable_use: Marker | None = None
+    use_application: dict[str, object] | None = None
+    proof_current: bool | None = None
 
     @property
     def issue_sources(self) -> list[tuple[str, str]]:
@@ -320,6 +366,35 @@ class GitHubREST:
                 return [item for page in pages for item in page]
         return value
 
+    def mutate(self, method: str, endpoint: str, payload: dict[str, object]) -> object:
+        if method not in {"POST", "PATCH"}:
+            raise WorkError(f"unsupported GitHub mutation method: {method}")
+        command = ["gh", "api", "--method", method, endpoint, "--input", "-"]
+        result = subprocess.run(
+            command, input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+        )
+        if result.returncode:
+            diagnostic = result.stderr.decode("utf-8", errors="backslashreplace").strip()
+            raise WorkError(
+                f"GitHub {method} failed for {endpoint}: {diagnostic or result.returncode}"
+            )
+        if not result.stdout.strip():
+            return {}
+        try:
+            return json.loads(result.stdout.decode("utf-8"))
+        except (UnicodeError, ValueError) as exc:
+            raise WorkError(f"GitHub {method} returned invalid JSON for {endpoint}") from exc
+
+    def post(self, endpoint: str, payload: dict[str, object]) -> object:
+        return self.mutate("POST", endpoint, payload)
+
+    def patch(self, endpoint: str, payload: dict[str, object]) -> object:
+        return self.mutate("PATCH", endpoint, payload)
+
+    def graphql(self, query: str, variables: dict[str, object]) -> object:
+        return self.mutate("POST", "graphql", {"query": query, "variables": variables})
+
 
 def _dict(value: object, endpoint: str) -> dict[str, object]:
     if not isinstance(value, dict):
@@ -427,6 +502,30 @@ def _candidate_prs(issue_number: int, issue: dict[str, object],
     return open_candidates or merged_candidates
 
 
+ACTION_RUN = re.compile(r"/actions/runs/([1-9][0-9]*)(?:/|\?|\Z)")
+
+
+def _action_run_id(check: dict[str, object]) -> int | None:
+    url = check.get("details_url")
+    match = ACTION_RUN.search(url) if isinstance(url, str) else None
+    return int(match.group(1)) if match else None
+
+
+def _get_check_runs(transport: GitHubREST, endpoint: str) -> tuple[list[dict[str, object]], int | None]:
+    value = transport.get(endpoint, paginate=True)
+    pages = value if isinstance(value, list) else [value]
+    runs: list[dict[str, object]] = []
+    totals: list[int] = []
+    for page in pages:
+        if not isinstance(page, dict):
+            raise WorkError(f"GitHub check-runs GET returned a non-object page for {endpoint}")
+        total = page.get("total_count")
+        if isinstance(total, int) and not isinstance(total, bool):
+            totals.append(total)
+        runs.extend(_list(page.get("check_runs", []), endpoint))
+    return runs, max(totals) if totals else None
+
+
 def read_state(transport: GitHubREST, repo: str, issue_number: int,
                config: WorkConfig | None = None) -> WorkState:
     work_config = config or WorkConfig()
@@ -456,13 +555,55 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     state.reviews = _get_list(transport, f"{pr_endpoint}/reviews")
     state.review_comments = _get_list(transport, f"{pr_endpoint}/comments")
     files = _get_list(transport, f"{pr_endpoint}/files")
-    state.changed_paths = [str(item["filename"]) for item in files if isinstance(item.get("filename"), str)]
+    state.files = files
+    paths: list[str] = []
+    for item in files:
+        for field_name in ("filename", "previous_filename"):
+            path = item.get(field_name)
+            if isinstance(path, str) and path not in paths:
+                paths.append(path)
+    state.changed_paths = paths
+    changed_files = state.pr.get("changed_files")
+    if not isinstance(changed_files, int) or isinstance(changed_files, bool) or changed_files < 0:
+        state.collection_diagnostics.append({
+            "code": "changed-file-count-unavailable",
+            "message": "pull request changed_files is missing or invalid",
+            "source": None,
+        })
+    elif len(files) != changed_files:
+        state.collection_diagnostics.append({
+            "code": "changed-files-incomplete",
+            "message": f"pull reports {changed_files} changed files; retrieved {len(files)}",
+            "source": None,
+        })
     head = state.pr.get("head")
     sha = head.get("sha") if isinstance(head, dict) else None
     if isinstance(sha, str) and sha:
-        checks_endpoint = f"{base}/commits/{sha}/check-runs"
-        checks_value = _dict(transport.get(checks_endpoint), checks_endpoint)
-        state.checks = _list(checks_value.get("check_runs", []), checks_endpoint)
+        checks_endpoint = f"{base}/commits/{sha}/check-runs?per_page=100"
+        state.checks, check_total = _get_check_runs(transport, checks_endpoint)
+        if check_total is not None and len(state.checks) != check_total:
+            state.collection_diagnostics.append({
+                "code": "check-runs-incomplete",
+                "message": f"head reports {check_total} check runs; retrieved {len(state.checks)}",
+                "source": None,
+            })
+        workflow_runs: dict[int, dict[str, object]] = {}
+        for check in state.checks:
+            run_id = _action_run_id(check)
+            if run_id is None:
+                continue
+            if run_id not in workflow_runs:
+                run_endpoint = f"{base}/actions/runs/{run_id}"
+                try:
+                    workflow_runs[run_id] = _dict(transport.get(run_endpoint), run_endpoint)
+                except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+                    state.collection_diagnostics.append({
+                        "code": "workflow-run-unavailable",
+                        "message": f"cannot read workflow run {run_id}: {exc}",
+                        "source": None,
+                    })
+                    continue
+            check["workflow_run"] = workflow_runs[run_id]
     return state
 
 
@@ -509,10 +650,16 @@ def load_work_config(root: Path) -> WorkConfig:
                 raise WorkError(f"each {field_name} entry must be a GitHub login")
             normalized.add(login.lower())
         identities[field_name] = frozenset(normalized)
+    label = value.get("reviewer_label")
+    if label is not None and (
+            not isinstance(label, str) or not label.strip() or len(label) > 50
+            or any(character in label for character in "\r\n")):
+        raise WorkError("reviewer_label must be null or a nonempty single-line string of at most 50 characters")
     return WorkConfig(
         product_repositories=frozenset(products),
         connected_reviewers=identities["connected_reviewers"],
         marker_producers=identities["marker_producers"],
+        reviewer_label=label.strip() if isinstance(label, str) else None,
     )
 
 
@@ -597,7 +744,7 @@ def _marker_value_error(marker: Marker) -> str | None:
     if marker.name == "builder-session" and SESSION_ID.fullmatch(
             values.get("session", "")) is None:
         return "builder session is not UUID-shaped"
-    if marker.name in {"floor", "use", "no-use"} and HEAD_SHA.fullmatch(
+    if marker.name in {"floor", "use", "no-use", "proof"} and HEAD_SHA.fullmatch(
             values.get("head", "")) is None:
         return "marker head is not a full hexadecimal revision"
     if marker.name == "floor" and values.get("status") != "pass":
@@ -712,7 +859,7 @@ def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[st
     return lawful, invalid
 
 
-def _marker_source(marker: Marker) -> str:
+def _marker_setting_source(marker: Marker) -> str:
     return marker.url or f"{marker.surface}:{marker.source_id or 'unknown'}"
 
 
@@ -747,7 +894,7 @@ def _launch_settings(state: WorkState, role: str, vendor: str,
             if selected_vendor == vendor:
                 model = selected_model
                 effort = selected_effort
-                model_source = effort_source = _marker_source(override)
+                model_source = effort_source = _marker_setting_source(override)
     return LaunchSettings(model, effort, model_source, effort_source)
 
 
@@ -818,16 +965,165 @@ def use_required(paths: list[str], rules: dict[str, object]) -> bool:
     return False
 
 
+def _proof_rendered_marker(marker: Marker) -> bool:
+    return marker.name != "proof" and any(
+        match.group(1).lower() == "proof" for match in MARKER.finditer(marker.body)
+    )
+
+
+def _public_marker_valid(state: WorkState, marker: Marker) -> bool:
+    contract = MARKER_CONTRACTS.get(marker.name)
+    return bool(
+        contract is not None
+        and marker.author.lower() in state.config.marker_producers
+        and marker.surface in contract["surfaces"]
+        and _attribute_error(marker) is None
+        and _marker_value_error(marker) is None
+        and not _proof_rendered_marker(marker)
+    )
+
+
+def _commit_files(transport: GitHubREST, repo: str, revision: str) -> list[str]:
+    endpoint = f"repos/{repo}/commits/{revision}?per_page=100"
+    value = transport.get(endpoint, paginate=True)
+    pages = value if isinstance(value, list) else [value]
+    paths: list[str] = []
+    for page in pages:
+        commit = _dict(page, endpoint)
+        if "files" not in commit:
+            raise WorkError(f"GitHub commit GET omitted files for {revision}")
+        files = _list(commit["files"], endpoint)
+        for item in files:
+            for field_name in ("filename", "previous_filename"):
+                path = item.get(field_name)
+                if isinstance(path, str) and path not in paths:
+                    paths.append(path)
+    return paths
+
+
+def _ancestor_application(transport: GitHubREST, state: WorkState, ancestor: str,
+                          head: str, rules: dict[str, object]) -> dict[str, object]:
+    base = urllib.parse.quote(ancestor, safe="")
+    current = urllib.parse.quote(head, safe="")
+    endpoint = f"repos/{state.repo}/compare/{base}...{current}"
+    comparison = _dict(transport.get(endpoint), endpoint)
+    merge_base = comparison.get("merge_base_commit")
+    merge_base_sha = merge_base.get("sha") if isinstance(merge_base, dict) else None
+    commits = _list(comparison.get("commits", []), endpoint)
+    ahead_by = comparison.get("ahead_by")
+    if (comparison.get("status") not in {"ahead", "identical"}
+            or merge_base_sha != ancestor):
+        return {"applicable": False, "reason": "use evidence head is not an ancestor"}
+    if not isinstance(ahead_by, int) or isinstance(ahead_by, bool) or ahead_by != len(commits):
+        return {"applicable": False, "reason": "complete intervening history is unavailable"}
+    intervening: list[dict[str, object]] = []
+    for commit in commits:
+        revision = commit.get("sha")
+        if not isinstance(revision, str) or HEAD_SHA.fullmatch(revision) is None:
+            return {"applicable": False, "reason": "intervening commit has no full revision"}
+        paths = _commit_files(transport, state.repo, revision)
+        intervening.append({"sha": revision, "paths": sorted(paths)})
+        if use_required(paths, rules):
+            return {
+                "applicable": False,
+                "reason": f"intervening commit {revision} changes a use-bought path",
+                "intervening_commits": intervening,
+            }
+    return {
+        "applicable": True,
+        "reason": "every intervening commit changes only paths outside the use-bought policy",
+        "intervening_commits": intervening,
+    }
+
+
+def prepare_use_evidence(state: WorkState, transport: GitHubREST,
+                         rules: dict[str, object]) -> None:
+    """Resolve current or lawful ancestor use evidence without mutating GitHub."""
+    validate_marker_claims(state)
+    state.applicable_use = None
+    state.use_application = None
+    head = _head_sha(state)
+    if head is None or not use_required(state.changed_paths, rules):
+        return
+    candidates = [
+        marker for marker in _state_markers(state)
+        if marker.name == "use" and _public_marker_valid(state, marker)
+        and marker.attributes.get("status") == "pass"
+        and marker.attributes.get("changed") == "false"
+    ]
+    indexed = list(enumerate(candidates))
+    indexed.sort(key=lambda item: _marker_recency(item[1], item[0]), reverse=True)
+    for _position, marker in indexed:
+        evidence_head = marker.attributes.get("head")
+        if evidence_head == head:
+            state.applicable_use = marker
+            state.use_application = {
+                "applicability": "current-head", "evidence_head": head,
+                "intervening_commits": [], "reason": "use evidence names the current head",
+                "lawful": marker in state.markers,
+            }
+            return
+        try:
+            application = _ancestor_application(
+                transport, state, str(evidence_head), head, rules
+            )
+        except (OSError, UnicodeError, ValueError, WorkError) as exc:
+            state.collection_diagnostics.append({
+                "code": "use-history-unavailable",
+                "message": f"cannot establish use ancestry from {evidence_head}: {exc}",
+                "source": _marker_source(state, marker),
+            })
+            continue
+        if application.get("applicable"):
+            state.applicable_use = marker
+            state.use_application = {
+                "applicability": "ancestor", "evidence_head": evidence_head,
+                "intervening_commits": application.get("intervening_commits", []),
+                "reason": application.get("reason"), "lawful": marker in state.markers,
+            }
+            return
+        state.collection_diagnostics.append({
+            "code": "use-evidence-stale",
+            "message": str(application.get("reason") or "use evidence is not applicable"),
+            "source": _marker_source(state, marker),
+        })
+
+
+def _check_workflow_identity(check: dict[str, object]) -> object:
+    run = check.get("workflow_run")
+    workflow_id = run.get("workflow_id") if isinstance(run, dict) else None
+    if workflow_id is not None:
+        return workflow_id
+    run_id = _action_run_id(check)
+    if run_id is not None:
+        # Without workflow metadata, keep distinct runs distinct rather than let one
+        # same-name producer mask another. The collection diagnostic explains why
+        # genuine reruns could not be collapsed to their shared workflow.
+        return f"unresolved-run-{run_id}"
+    app = check.get("app")
+    app_identity = app.get("id") if isinstance(app, dict) else None
+    return app_identity or "unknown-producer"
+
+
+def _check_group(check: dict[str, object]) -> tuple[str, str]:
+    return str(check.get("name") or ""), str(_check_workflow_identity(check))
+
+
+def _is_gate_check(check: dict[str, object]) -> bool:
+    pieces = [piece.strip().casefold() for piece in str(check.get("name") or "").split("/")]
+    return bool(pieces and pieces[-1] == "change proof")
+
+
 def latest_checks(state: WorkState) -> list[dict[str, object]]:
-    selected: dict[str, dict[str, object]] = {}
+    selected: dict[tuple[str, str], dict[str, object]] = {}
     for check in state.checks:
-        name = str(check.get("name") or "")
+        group = _check_group(check)
         identity = check.get("id")
         numeric_identity = identity if isinstance(identity, int) else -1
         key = (str(check.get("started_at") or ""), numeric_identity)
-        current = selected.get(name)
+        current = selected.get(group)
         if current is None:
-            selected[name] = check
+            selected[group] = check
             continue
         current_id = current.get("id")
         current_key = (
@@ -835,26 +1131,34 @@ def latest_checks(state: WorkState) -> list[dict[str, object]]:
             current_id if isinstance(current_id, int) else -1,
         )
         if key > current_key:
-            selected[name] = check
-    return [selected[name] for name in sorted(selected)]
+            selected[group] = check
+    return [selected[group] for group in sorted(selected)]
+
+
+def _floor_checks(state: WorkState) -> list[dict[str, object]]:
+    return [check for check in latest_checks(state) if not _is_gate_check(check)]
+
+
+def _gate_checks(state: WorkState) -> list[dict[str, object]]:
+    return [check for check in latest_checks(state) if _is_gate_check(check)]
 
 
 def _checks_red(state: WorkState) -> bool:
     return any(str(check.get("conclusion") or "").lower() in RED_CONCLUSIONS
-               for check in latest_checks(state))
+               for check in _floor_checks(state))
 
 
 def _checks_pending(state: WorkState) -> bool:
     return any(str(check.get("status") or "").lower() in PENDING_CHECK_STATUSES
-               for check in latest_checks(state))
+               for check in _floor_checks(state))
 
 
 def _decision_status(decision: Decision) -> str:
     if decision.dispatch:
         return "runnable"
     if decision.stage in {"artifact-cap", "open-pull-request", "merged-pull-request", "holder-read",
-                          "ready-reviewers", "use", "release-report", "ambiguous-pr",
-                          "panel"}:
+                          "ready-reviewers", "proof", "use", "release-report",
+                          "ambiguous-pr", "panel"}:
         return "holder-owned"
     if decision.stage == "terminal":
         return "terminal"
@@ -875,14 +1179,121 @@ def _reported_decision(state: WorkState, decision: Decision) -> Decision:
     )
 
 
+def _public_source(state: WorkState, item: dict[str, object], kind: str,
+                   *, revision: str | None = None) -> dict[str, object]:
+    timestamp = item.get("created_at") or item.get("submitted_at")
+    item_revision = item.get("commit_id")
+    return {
+        "kind": kind,
+        "repository": state.repo,
+        "id": item.get("id"),
+        "url": item.get("html_url") if isinstance(item.get("html_url"), str) else None,
+        "author": _author(item),
+        "timestamp": str(timestamp) if isinstance(timestamp, str) else None,
+        "revision": (
+            str(item_revision) if isinstance(item_revision, str) else revision
+        ),
+    }
+
+
+def _marker_source(state: WorkState, marker: Marker) -> dict[str, object]:
+    return {
+        "kind": marker.surface,
+        "repository": state.repo,
+        "id": int(marker.source_id) if marker.source_id and marker.source_id.isdigit()
+        else marker.source_id,
+        "url": marker.url,
+        "author": marker.author,
+        "timestamp": marker.timestamp,
+        "revision": marker.attributes.get("head"),
+    }
+
+
+def _review_notice(body: str) -> str | None:
+    leading_nonblank = "\n".join(
+        line for line in body.splitlines() if line.strip()
+    ).splitlines()[:3]
+    lead = "\n".join(leading_nonblank)
+    for name, pattern in REVIEW_NOTICE_PATTERNS:
+        subject = body if name == "Running" else lead
+        if pattern.search(subject):
+            return name
+    return None
+
+
+def _reviewer_receipts(state: WorkState) -> list[dict[str, object]]:
+    receipts: list[dict[str, object]] = []
+    for reviewer in sorted(state.config.connected_reviewers):
+        receipt = None
+        notices: list[str] = []
+        for kind, items in (
+                ("review", state.reviews), ("review-comment", state.review_comments)):
+            for item in items:
+                if _author(item) != reviewer:
+                    continue
+                notice = (
+                    _review_notice(str(item.get("body") or ""))
+                    if kind == "review" else None
+                )
+                if notice is not None:
+                    if notice not in notices:
+                        notices.append(notice)
+                    continue
+                receipt = _public_source(state, item, kind)
+                break
+            if receipt is not None:
+                break
+        if receipt is None:
+            for item in state.pr_comments:
+                if _author(item) != reviewer:
+                    continue
+                notice = _review_notice(str(item.get("body") or ""))
+                if notice is None:
+                    receipt = _public_source(state, item, "pull-request-comment")
+                    break
+                if notice not in notices:
+                    notices.append(notice)
+        receipts.append({
+            "login": reviewer,
+            "result": "present" if receipt else "notice-only" if notices else "missing",
+            "source": receipt,
+            "notices": notices,
+        })
+    return receipts
+
+
 def _reviewer_ran(state: WorkState) -> bool:
-    return any(_author(item) in state.config.connected_reviewers
-               for item in (*state.reviews, *state.review_comments, *state.pr_comments))
+    return all(item["result"] == "present" for item in _reviewer_receipts(state))
+
+
+def _strip_balanced_markdown_wrapper(value: str) -> str:
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "`*_":
+        return stripped
+    marker = stripped[0]
+    opening = len(stripped) - len(stripped.lstrip(marker))
+    closing = len(stripped) - len(stripped.rstrip(marker))
+    wrapper = marker * opening
+    if wrapper not in {"`", "*", "**", "_", "__"} or closing != opening:
+        return stripped
+    return stripped[opening:-closing].strip()
 
 
 def _disposition(body: str) -> bool:
-    normalized = body.lower().replace(chr(0x2014), "-").strip()
-    return any(normalized.startswith(prefix) for prefix in DISPOSITIONS)
+    first_line = body.splitlines()[0] if body.splitlines() else ""
+    normalized = (
+        _strip_balanced_markdown_wrapper(first_line)
+        .lower().replace(chr(0x2014), "-").strip()
+    )
+    for prefix in DISPOSITIONS:
+        if not normalized.startswith(prefix):
+            continue
+        if not prefix[-1].isalnum() or len(normalized) == len(prefix):
+            return True
+        following = normalized[len(prefix)]
+        if not (following.isalnum() or following == "_"):
+            return True
+    return False
 
 
 def _undisposed_threads(state: WorkState) -> tuple[list[int], list[str]]:
@@ -1047,12 +1458,22 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
         return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
     bought = use_required(state.changed_paths, rules)
     current_use = _current_marker(state, "use", head=sha, status="pass")
-    if bought and (current_use is None or not staffing_qualified(current_use)):
+    applicable_use = state.applicable_use or current_use
+    applicable_lawful = (
+        bool(state.use_application.get("lawful")) if state.use_application is not None
+        else applicable_use in state.markers if applicable_use is not None else False
+    )
+    if bought and (
+            applicable_use is None or not applicable_lawful
+            or not staffing_qualified(applicable_use)):
         return result("use", False, None, "current-head-use-absent", USE_HOLDER_DETAIL)
     if not bought:
         no_use = _current_marker(state, "no-use", head=sha)
         if no_use is None or "Use: not required" not in no_use.body:
-            return result("use", False, None, "path-rules-require-explicit-no-use-line")
+            return result(
+                "proof", False, "fresh", "path-rules-require-generated-no-use-carrier",
+                "Run proof to compose the current-head document and its legacy no-use carrier.",
+            )
     if bool(state.pr.get("draft")):
         return result("ready-reviewers", False, None, "floor-and-use-complete-pr-draft")
     reviewers = state.config.connected_reviewers
@@ -1067,6 +1488,28 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     panel_stage = _panel_next(state, lane)
     if panel_stage:
         return result("panel", False, None, "bought-panel-incomplete", panel_stage)
+    current_proof = _current_marker(state, "proof", head=sha)
+    if current_proof is None or state.proof_current is False:
+        return result("proof", False, "fresh", "current-head-proof-absent-or-outdated")
+    gates = _gate_checks(state)
+    if not gates:
+        detail = "No current-head gate evaluation is visible."
+        mergeable = state.pr.get("mergeable")
+        mergeable_state = str(state.pr.get("mergeable_state") or "").lower()
+        if mergeable is False or mergeable_state in {"dirty", "conflicting"}:
+            detail = "The pull request has a confirmed merge conflict, so no gate run may exist."
+        elif mergeable is None or mergeable_state in {"", "unknown"}:
+            detail += " Mergeability is unknown; this is not reported as a conflict."
+        return result("waiting", False, None, "current-head-gate-evaluation-absent", detail)
+    if any(str(check.get("status") or "").lower() in PENDING_CHECK_STATUSES
+           for check in gates):
+        return result("waiting", False, None, "latest-gate-evaluation-pending")
+    if any(str(check.get("conclusion") or "").lower() in RED_CONCLUSIONS
+           for check in gates):
+        return result("waiting", False, None, "latest-gate-evaluation-failed")
+    if any(str(check.get("conclusion") or "").lower() != "success"
+           for check in gates):
+        return result("waiting", False, None, "latest-gate-evaluation-not-successful")
     reason = "all-evidence-complete" if reviewers else "all-evidence-complete;no-connected-reviewer-configured"
     return result("release-report", False, None, reason)
 
@@ -1840,6 +2283,339 @@ def _matching_bundles(
     return sorted(candidates)
 
 
+def _latest_public_marker(state: WorkState, name: str, **attributes: str) -> Marker | None:
+    candidates = [
+        marker for marker in _state_markers(state)
+        if marker.name == name and _public_marker_valid(state, marker)
+        and all(marker.attributes.get(key) == value for key, value in attributes.items())
+    ]
+    return max(
+        enumerate(candidates), key=lambda item: _marker_recency(item[1], item[0])
+    )[1] if candidates else None
+
+
+def _check_head(state: WorkState, check: dict[str, object]) -> str | None:
+    for source in (check.get("workflow_run"), check.get("check_suite")):
+        head = source.get("head_sha") if isinstance(source, dict) else None
+        if isinstance(head, str) and head:
+            return head
+    direct = check.get("head_sha")
+    return direct if isinstance(direct, str) and direct else _head_sha(state)
+
+
+def _check_record(state: WorkState, check: dict[str, object]) -> dict[str, object]:
+    app = check.get("app")
+    workflow = check.get("workflow_run")
+    run_id = _action_run_id(check)
+    return {
+        "id": check.get("id") if isinstance(check.get("id"), int) else None,
+        "name": str(check.get("name") or "unnamed check"),
+        "app_id": app.get("id") if isinstance(app, dict) and isinstance(app.get("id"), int) else None,
+        "app_slug": app.get("slug") if isinstance(app, dict) and isinstance(app.get("slug"), str) else None,
+        "workflow_id": (
+            workflow.get("workflow_id") if isinstance(workflow, dict)
+            and isinstance(workflow.get("workflow_id"), int) else None
+        ),
+        "run_id": run_id,
+        "url": (
+            workflow.get("html_url") if isinstance(workflow, dict)
+            and isinstance(workflow.get("html_url"), str)
+            else check.get("details_url") if isinstance(check.get("details_url"), str) else None
+        ),
+        "head": _check_head(state, check),
+        "status": str(check.get("status")) if check.get("status") is not None else None,
+        "conclusion": (
+            str(check.get("conclusion")) if check.get("conclusion") is not None else None
+        ),
+        "started_at": (
+            str(check.get("started_at")) if check.get("started_at") is not None else None
+        ),
+        "completed_at": (
+            str(check.get("completed_at")) if check.get("completed_at") is not None else None
+        ),
+    }
+
+
+def _release_gate_status(state: WorkState, head: str | None = None) -> dict[str, object]:
+    current_head = head or _head_sha(state)
+    checks = _gate_checks(state)
+    runs = [_check_record(state, check) for check in checks]
+    if not checks:
+        verdict = "absent"
+        reason = "no required gate run is visible"
+    elif current_head is None or any(run.get("head") != current_head for run in runs):
+        verdict = "stale"
+        reason = "an identified gate run does not name the current pull-request head"
+    elif any(
+            str(check.get("status") or "").lower() in PENDING_CHECK_STATUSES
+            or check.get("conclusion") is None
+            for check in checks):
+        verdict = "absent"
+        reason = "an identified current-head gate run has no terminal verdict"
+    elif all(str(check.get("conclusion") or "").lower() == "success"
+             for check in checks):
+        verdict = "green"
+        reason = "every latest identified gate run succeeded at the current head"
+    else:
+        verdict = "red"
+        reason = "a latest identified current-head gate run is not successful"
+    return {"verdict": verdict, "head": current_head, "runs": runs, "reason": reason}
+
+
+def _unverifiable_declaration(stage: str, reason: str) -> dict[str, object]:
+    return {
+        "stage": stage, "status": "unverifiable", "reason": reason,
+        "dispatch_id": None, "completed_at": None, "revision": None,
+        "requested_vendor": None, "requested_model": None, "requested_effort": None,
+        "requested_classification": None, "actual_vendor": None,
+        "actual_model": None, "actual_effort": None, "fallback_reason": None,
+        "staffing_status": None, "same_vendor_reason": None,
+    }
+
+
+def _marker_declaration(state: WorkState, marker: Marker | None,
+                        stage: str) -> dict[str, object]:
+    if marker is None:
+        return _unverifiable_declaration(stage, f"{stage} public source is missing")
+    error = _bundle_marker_error(state, marker)
+    if error is not None:
+        return _unverifiable_declaration(stage, error)
+    if state.record_root is None:
+        return _unverifiable_declaration(stage, "dispatch record root is unavailable")
+    matched = _matching_bundles(
+        f"{state.repo}#{state.issue_number}", frozenset({stage}), state.record_root,
+        completed_no_later_than=marker.timestamp,
+    )
+    if not matched:
+        return _unverifiable_declaration(stage, "no matching successful dispatch bundle")
+    _completed, _path, request, run = matched[-1]
+    requested = request.get("requested")
+    if not isinstance(requested, dict):
+        return _unverifiable_declaration(stage, "matching dispatch request is incomplete")
+    attempts = [attempt for attempt in run.get("attempts", []) if isinstance(attempt, dict)]
+    actual_vendor = run.get("actual_vendor")
+    actual = next((
+        attempt for attempt in reversed(attempts)
+        if attempt.get("vendor") == actual_vendor and attempt.get("outcome") in {
+            "success", "success_uncontinuable",
+        }
+    ), None)
+    if actual is None:
+        actual = next((attempt for attempt in reversed(attempts)
+                       if attempt.get("outcome") in {"success", "success_uncontinuable"}), None)
+    observed = actual.get("observed") if isinstance(actual, dict) else None
+    usage = actual.get("usage") if isinstance(actual, dict) else None
+    usage_dispatch = usage.get("dispatch") if isinstance(usage, dict) else None
+    qualification = run.get("staffing_qualification")
+    staffing_status = run.get("staffing_status")
+    if staffing_status is None and isinstance(usage_dispatch, dict):
+        staffing_status = usage_dispatch.get("staffing_status")
+    return {
+        "stage": stage, "status": "declared", "reason": None,
+        "dispatch_id": str(request.get("dispatch_id")) if request.get("dispatch_id") else None,
+        "completed_at": str(run.get("completed_at")) if run.get("completed_at") else None,
+        "revision": str(run.get("revision_after")) if run.get("revision_after") else None,
+        "requested_vendor": (
+            str(requested.get("vendor")) if requested.get("vendor") else None
+        ),
+        "requested_model": str(requested.get("model")) if requested.get("model") else None,
+        "requested_effort": (
+            str(requested.get("effort")) if requested.get("effort") else None
+        ),
+        "requested_classification": (
+            str(requested.get("classification")) if requested.get("classification") else None
+        ),
+        "actual_vendor": (
+            str(actual.get("vendor")) if isinstance(actual, dict) and actual.get("vendor")
+            else str(actual_vendor) if actual_vendor else None
+        ),
+        "actual_model": (
+            str(actual.get("model")) if isinstance(actual, dict) and actual.get("model")
+            else None
+        ),
+        "actual_effort": (
+            str(observed.get("effort")) if isinstance(observed, dict) and observed.get("effort")
+            else str(actual.get("effort")) if isinstance(actual, dict) and actual.get("effort")
+            else None
+        ),
+        "fallback_reason": (
+            str(run.get("fallback_reason")) if run.get("fallback_reason") else None
+        ),
+        "staffing_status": str(staffing_status) if staffing_status else None,
+        "same_vendor_reason": (
+            str(qualification.get("same_vendor_reason"))
+            if isinstance(qualification, dict) and qualification.get("same_vendor_reason") else None
+        ),
+    }
+
+
+def _proof_dispositions(state: WorkState) -> list[dict[str, object]]:
+    replies: dict[int, list[dict[str, object]]] = {}
+    for item in state.review_comments:
+        parent = item.get("in_reply_to_id")
+        if isinstance(parent, int):
+            replies.setdefault(parent, []).append(item)
+    result: list[dict[str, object]] = []
+    for item in state.review_comments:
+        identity = item.get("id")
+        if (not isinstance(identity, int) or item.get("in_reply_to_id") is not None
+                or _author(item) not in state.config.connected_reviewers):
+            continue
+        reply = next((
+            candidate for candidate in replies.get(identity, [])
+            if _author(candidate) in state.config.marker_producers
+            and _disposition(str(candidate.get("body") or ""))
+        ), None)
+        result.append({
+            "thread_id": identity,
+            "reviewer": _author(item),
+            "source": _public_source(state, item, "review-comment"),
+            "reply": _public_source(state, reply, "review-comment") if reply else None,
+        })
+    return result
+
+
+def _invalid_marker_diagnostic(state: WorkState,
+                               claim: dict[str, object]) -> dict[str, object]:
+    source = {
+        "kind": str(claim.get("surface") or "unknown"),
+        "repository": state.repo,
+        "id": int(claim["source_id"]) if str(claim.get("source_id") or "").isdigit()
+        else claim.get("source_id"),
+        "url": claim.get("url") if isinstance(claim.get("url"), str) else None,
+        "author": None,
+        "timestamp": claim.get("timestamp") if isinstance(claim.get("timestamp"), str) else None,
+        "revision": None,
+    }
+    return {
+        "code": "invalid-marker-claim",
+        "message": f"{claim.get('name', 'unknown')} marker: {claim.get('reason', 'invalid')}",
+        "source": source,
+    }
+
+
+def _proof_diagnostics(state: WorkState, floor: Marker | None,
+                       use_marker: Marker | None, bought: bool,
+                       reviewers: list[dict[str, object]],
+                       dispositions: list[dict[str, object]]) -> list[dict[str, object]]:
+    diagnostics = [dict(item) for item in state.collection_diagnostics]
+    diagnostics.extend(_invalid_marker_diagnostic(state, claim)
+                       for claim in state.invalid_marker_claims
+                       if claim.get("name") != "proof")
+    if floor is None:
+        diagnostics.append({
+            "code": "floor-missing", "message": "current-head floor source is missing",
+            "source": None,
+        })
+    if bought and use_marker is None:
+        diagnostics.append({
+            "code": "use-missing", "message": "required applicable use source is missing",
+            "source": None,
+        })
+    for reviewer in reviewers:
+        if reviewer["result"] != "present":
+            diagnostics.append({
+                "code": "reviewer-missing",
+                "message": f"{reviewer['login']} has no credited completed review",
+                "source": reviewer["source"],
+            })
+    for disposition in dispositions:
+        if disposition["reply"] is None:
+            diagnostics.append({
+                "code": "disposition-missing",
+                "message": f"review thread {disposition['thread_id']} has no authorized disposition",
+                "source": disposition["source"],
+            })
+    return diagnostics
+
+
+def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, object]:
+    if state.pr is None or not isinstance(state.pr.get("number"), int):
+        raise WorkError("proof requires one implementing pull request")
+    head = _head_sha(state)
+    if head is None:
+        raise WorkError("proof requires a full pull-request head revision")
+    if not state.policy_sources:
+        raise WorkError("proof policy source identities are unavailable")
+    floor = _latest_public_marker(state, "floor", head=head, status="pass")
+    bought = use_required(state.changed_paths, rules)
+    use_marker = state.applicable_use if bought else None
+    application = state.use_application or {}
+    reviewers = _reviewer_receipts(state)
+    dispositions = _proof_dispositions(state)
+    if bought:
+        use = {
+            "required": True, "classification": "required",
+            "evidence_head": use_marker.attributes.get("head") if use_marker else None,
+            "applicability": str(application.get("applicability") or "missing"),
+            "source": _marker_source(state, use_marker) if use_marker else None,
+            "intervening_commits": application.get("intervening_commits", []),
+            "reason": str(application.get("reason")) if application.get("reason") else None,
+        }
+    else:
+        use = {
+            "required": False, "classification": "not-required", "evidence_head": head,
+            "applicability": "generated", "source": None, "intervening_commits": [],
+            "reason": (
+                "no changed path matches an include without also matching an exclude in "
+                "the schema-version-1 use policy"
+            ),
+        }
+    declarations = [_marker_declaration(state, floor, "floor")]
+    if bought:
+        declarations.append(_marker_declaration(state, use_marker, "use"))
+    evidence = {
+        "schema_version": 1,
+        "identity": {
+            "work": f"{state.repo}#{state.issue_number}", "repository": state.repo,
+            "issue": state.issue_number, "pull_request": int(state.pr["number"]),
+            "head": head, "producer_version": records.producer_version(),
+        },
+        "policy": state.policy_sources,
+        "floor": {
+            "head": floor.attributes.get("head") if floor else None,
+            "source": _marker_source(state, floor) if floor else None,
+            "checks": [_check_record(state, check) for check in _floor_checks(state)],
+        },
+        "use": use, "reviewers": reviewers, "dispositions": dispositions,
+        "declarations": declarations,
+        "diagnostics": _proof_diagnostics(
+            state, floor, use_marker, bought, reviewers, dispositions
+        ),
+    }
+    try:
+        return proof_document.compose(evidence)
+    except proof_document.ProofError as exc:
+        raise WorkError(f"cannot compose version-one proof: {exc}") from exc
+
+
+def _proof_payload(body: str) -> dict[str, object] | None:
+    marker = "```json\n"
+    if marker not in body:
+        return None
+    payload, separator, _tail = body.split(marker, 1)[1].partition("\n```")
+    if not separator:
+        return None
+    try:
+        value = json.loads(payload)
+        return proof_document.validate(value)
+    except (ValueError, proof_document.ProofError):
+        return None
+
+
+def set_proof_freshness(state: WorkState, expected: dict[str, object]) -> None:
+    head = _head_sha(state)
+    marker = _latest_public_marker(state, "proof", head=head or "")
+    if marker is None:
+        state.proof_current = False
+        return
+    payload = _proof_payload(marker.body)
+    state.proof_current = bool(
+        payload is not None
+        and proof_document.canonical_json(payload) == proof_document.canonical_json(expected)
+    )
+
+
 def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSource | None:
     allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
     matched = _matching_bundles(
@@ -2041,13 +2817,288 @@ def _resolved_use_holder_decision(state: WorkState, decision: Decision, holder_r
     return Decision("use", False, None, decision.reason, detail)
 
 
+def _policy_source(root: Path, repo: str, path: Path) -> dict[str, str]:
+    revision, _status = _git_snapshot(root)
+    try:
+        relative = path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        relative = path.name
+    if path.is_file():
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    else:
+        digest = "unavailable"
+    return {
+        "repository": repo, "path": relative,
+        "revision": revision or "unavailable", "sha256": digest,
+    }
+
+
+def _set_policy_sources(state: WorkState, root: Path, use_rules_path: Path) -> None:
+    state.policy_sources = {
+        "work_configuration": _policy_source(
+            root, state.repo, root / ".tradecraft" / "work.json"
+        ),
+        "use_rules": _policy_source(root, state.repo, use_rules_path),
+    }
+
+
+def _transport_mutation(transport: GitHubREST, name: str, *args) -> object:
+    operation = getattr(transport, name, None)
+    if not callable(operation):
+        raise WorkError(f"GitHub transport does not support {name}")
+    return operation(*args)
+
+
+def _proof_comment_records(state: WorkState, head: str) -> list[dict[str, object]]:
+    records_found: list[dict[str, object]] = []
+    for item in state.pr_comments:
+        item_markers = _marker_items([item], "pull-request-comment")
+        if any(marker.name == "proof" and marker.attributes.get("head") == head
+               and _public_marker_valid(state, marker) for marker in item_markers):
+            records_found.append(item)
+    return records_found
+
+
+def _publish_proof_comment(transport: GitHubREST, state: WorkState,
+                           body: str, head: str) -> dict[str, object]:
+    if state.pr is None or not isinstance(state.pr.get("number"), int):
+        raise WorkError("proof publication requires one implementing pull request")
+    existing = _proof_comment_records(state, head)
+    if len(existing) > 1:
+        raise WorkError("conflicting authorized proof documents exist for the current head")
+    actor_value = _dict(transport.get("user"), "user")
+    actor_login = actor_value.get("login")
+    actor = str(actor_login).lower() if isinstance(actor_login, str) else "unknown"
+    if actor not in state.config.marker_producers:
+        raise WorkError(f"authenticated GitHub user is not a configured marker producer: {actor}")
+    action = "created"
+    response: object
+    if existing:
+        current = existing[0]
+        if _author(current) != actor:
+            raise WorkError("the current-head proof document belongs to another producer")
+        if str(current.get("body") or "") == body:
+            response = current
+            action = "unchanged"
+        else:
+            identity = current.get("id")
+            if not isinstance(identity, int):
+                raise WorkError("the command-owned proof comment has no numeric identity")
+            endpoint = f"repos/{state.repo}/issues/comments/{identity}"
+            action = "updated"
+            try:
+                response = _transport_mutation(transport, "patch", endpoint, {"body": body})
+            except WorkError:
+                response = {}
+    else:
+        endpoint = f"repos/{state.repo}/issues/{int(state.pr['number'])}/comments"
+        try:
+            response = _transport_mutation(transport, "post", endpoint, {"body": body})
+        except WorkError:
+            response = {}
+    endpoint = f"repos/{state.repo}/issues/{int(state.pr['number'])}/comments"
+    comments = _get_list(transport, endpoint)
+    matches = [
+        item for item in comments
+        if _author(item) == actor and str(item.get("body") or "") == body
+    ]
+    if len(matches) != 1:
+        raise WorkError(
+            "proof publication could not be confirmed after rereading the comment record"
+        )
+    confirmed = matches[0]
+    if isinstance(response, dict) and response.get("id") not in {None, confirmed.get("id")}:
+        raise WorkError("proof publication response disagrees with the confirmed comment")
+    return {
+        "action": action,
+        "id": confirmed.get("id"),
+        "url": confirmed.get("html_url"),
+    }
+
+
+def _rerun_gate_evaluations(transport: GitHubREST, state: WorkState,
+                            head: str) -> list[dict[str, object]]:
+    results: list[dict[str, object]] = []
+    for check in _gate_checks(state):
+        run_id = _action_run_id(check)
+        workflow = check.get("workflow_run")
+        workflow_id = workflow.get("workflow_id") if isinstance(workflow, dict) else None
+        run_head = workflow.get("head_sha") if isinstance(workflow, dict) else None
+        row = {
+            "check_id": check.get("id"), "run_id": run_id,
+            "workflow_id": workflow_id, "requested": False,
+            "status": check.get("status"), "conclusion": check.get("conclusion"),
+        }
+        if run_id is None or workflow_id is None or run_head != head:
+            row["reason"] = "current-head workflow identity is unavailable"
+            results.append(row)
+            continue
+        status = str(check.get("status") or "").lower()
+        if status in PENDING_CHECK_STATUSES:
+            row["reason"] = "current-head gate run is already pending"
+            results.append(row)
+            continue
+        endpoint = f"repos/{state.repo}/actions/runs/{run_id}/rerun"
+        _transport_mutation(transport, "post", endpoint, {})
+        refreshed_endpoint = f"repos/{state.repo}/actions/runs/{run_id}"
+        refreshed = _dict(transport.get(refreshed_endpoint), refreshed_endpoint)
+        row.update({
+            "requested": True,
+            "status": refreshed.get("status"),
+            "conclusion": refreshed.get("conclusion"),
+            "reason": "rerun requested for the identified current-head workflow run",
+        })
+        results.append(row)
+    return results
+
+
+def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
+                   rules: dict[str, object], use_rules_path: Path,
+                   dispatch_path: Path | None, tree_metadata: Path | None) -> int:
+    if dispatch_path is not None or tree_metadata is not None:
+        raise WorkError("run proof accepts no caller-supplied proof body, dispatch, or tree")
+    fresh = read_state(transport, state.repo, state.issue_number, state.config)
+    fresh.record_root = state.record_root
+    _set_policy_sources(fresh, root, use_rules_path)
+    prepare_use_evidence(fresh, transport, rules)
+    composed = compose_proof(fresh, rules)
+    head = str(composed["identity"]["head"])
+    pull_number = int(composed["identity"]["pull_request"])
+    pull_endpoint = f"repos/{state.repo}/pulls/{pull_number}"
+    before = _dict(transport.get(pull_endpoint), pull_endpoint)
+    before_head = before.get("head")
+    before_sha = before_head.get("sha") if isinstance(before_head, dict) else None
+    if before_sha != head:
+        raise WorkError("pull-request head changed before proof publication; recompose and retry")
+    no_use_line = None
+    if not bool(composed["use"]["required"]):
+        no_use_line = (
+            "Use: not required - no changed path matches an included, non-excluded "
+            "schema-version-1 use rule."
+        )
+    body = proof_document.document(composed, no_use_line)
+    publication = _publish_proof_comment(transport, fresh, body, head)
+    after = _dict(transport.get(pull_endpoint), pull_endpoint)
+    after_head = after.get("head")
+    after_sha = after_head.get("sha") if isinstance(after_head, dict) else None
+    if after_sha != head:
+        raise WorkError(
+            "pull-request head changed during proof publication; the posted document is preserved "
+            "for the older head and completion is not current"
+        )
+    reruns = _rerun_gate_evaluations(transport, fresh, head)
+    print(json.dumps({
+        "schema_version": 1, "work": f"{state.repo}#{state.issue_number}",
+        "producer_version": records.producer_version(), "stage": "proof",
+        "status": "holder-owned", "head": head, "comment": publication,
+        "gate_reruns": reruns,
+    }, ensure_ascii=True, sort_keys=True))
+    return 0
+
+
+def _ready_evidence_error(state: WorkState, rules: dict[str, object]) -> str | None:
+    if state.pr is None:
+        return "ready-reviewers requires one implementing pull request"
+    head = _head_sha(state)
+    if head is None:
+        return "ready-reviewers requires a full pull-request head revision"
+    floor = _current_marker(state, "floor", head=head, status="pass")
+    if floor is None or _checks_red(state) or _checks_pending(state):
+        return "ready-reviewers requires a current-head floor and no failed or pending floor run"
+    if use_required(state.changed_paths, rules):
+        marker = state.applicable_use or _current_marker(state, "use", head=head, status="pass")
+        if marker is None or marker not in state.markers or not staffing_qualified(marker):
+            return "ready-reviewers requires a lawful current or applicable ancestor use"
+    else:
+        no_use = _current_marker(state, "no-use", head=head)
+        if no_use is None or "Use: not required" not in no_use.body:
+            return "ready-reviewers requires run proof to generate the current-head no-use carrier"
+    return None
+
+
+def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
+                             rules: dict[str, object], dispatch_path: Path | None,
+                             tree_metadata: Path | None) -> int:
+    if dispatch_path is not None or tree_metadata is not None:
+        raise WorkError("run ready-reviewers accepts no dispatch or consumer tree")
+    error = _ready_evidence_error(state, rules)
+    if error is not None:
+        raise WorkError(error)
+    assert state.pr is not None
+    validated_head = _head_sha(state)
+    assert validated_head is not None
+    number = int(state.pr["number"])
+    label = state.config.reviewer_label
+    label_applied = False
+    issue_endpoint = f"repos/{state.repo}/issues/{number}"
+    issue_record = _dict(transport.get(issue_endpoint), issue_endpoint)
+    labels = {
+        str(item.get("name")) for item in issue_record.get("labels", [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    if label is not None and label not in labels:
+        _transport_mutation(
+            transport, "post", f"{issue_endpoint}/labels", {"labels": [label]}
+        )
+        label_applied = True
+    verified_issue = _dict(transport.get(issue_endpoint), issue_endpoint)
+    verified_labels = {
+        str(item.get("name")) for item in verified_issue.get("labels", [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    if label is not None and label not in verified_labels:
+        raise WorkError("reviewer label write returned without the configured label being present")
+    pull_endpoint = f"repos/{state.repo}/pulls/{number}"
+    current_pull = _dict(transport.get(pull_endpoint), pull_endpoint)
+    current_head = current_pull.get("head")
+    current_sha = current_head.get("sha") if isinstance(current_head, dict) else None
+    if current_sha != validated_head:
+        raise WorkError(
+            "pull-request head changed after ready evidence validation; "
+            "retry ready-reviewers on the new head"
+        )
+    ready_changed = False
+    if bool(state.pr.get("draft")):
+        node_id = state.pr.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            detail = " after applying the reviewer label" if label_applied else ""
+            raise WorkError(f"pull request has no GraphQL node identity{detail}")
+        query = (
+            "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id})"
+            "{pullRequest{isDraft}}}"
+        )
+        _transport_mutation(transport, "graphql", query, {"id": node_id})
+        ready_changed = True
+    verified_pull = _dict(transport.get(pull_endpoint), pull_endpoint)
+    verified_head = verified_pull.get("head")
+    verified_sha = verified_head.get("sha") if isinstance(verified_head, dict) else None
+    if verified_sha != validated_head:
+        raise WorkError(
+            "pull-request head changed during the ready transition; "
+            "readiness is not confirmed for the validated head"
+        )
+    if bool(verified_pull.get("draft")):
+        detail = " reviewer label is present;" if label is not None else ""
+        raise WorkError(f"ready transition could not be confirmed;{detail} retry ready-reviewers")
+    print(json.dumps({
+        "schema_version": 1, "work": f"{state.repo}#{state.issue_number}",
+        "producer_version": records.producer_version(), "stage": "ready-reviewers",
+        "status": "holder-owned", "pull_request": number,
+        "reviewer_label": label, "label_applied": label_applied,
+        "ready_changed": ready_changed, "ready": True,
+    }, ensure_ascii=True, sort_keys=True))
+    return 0
+
+
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None, *, dispatch_path: Path | None = None,
                   tree_metadata: Path | None = None,
                   timeout_seconds: float | None = None,
                   transport: GitHubREST | None = None,
                   claude_path: Path | None = None,
-                  codex_path: Path | None = None) -> int:
+                  codex_path: Path | None = None,
+                  rules: dict[str, object] | None = None,
+                  use_rules_path: Path | None = None) -> int:
     if state.validated_markers is None:
         validate_marker_claims(state)
     effective_timeout = (
@@ -2080,6 +3131,18 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         print(json.dumps(_reported_decision(state, refused).as_dict(),
                          ensure_ascii=True, sort_keys=True))
         return 0
+    if decision.stage == "proof":
+        if transport is None or rules is None or use_rules_path is None:
+            raise WorkError("run proof requires the entrance GitHub and policy context")
+        return _execute_proof(
+            transport, state, root, rules, use_rules_path, dispatch_path, tree_metadata
+        )
+    if decision.stage == "ready-reviewers":
+        if transport is None or rules is None:
+            raise WorkError("run ready-reviewers requires the entrance GitHub and policy context")
+        return _execute_ready_reviewers(
+            transport, state, rules, dispatch_path, tree_metadata
+        )
     if decision.stage == "release-report":
         if dispatch_path is not None:
             raise WorkError("run release-report refuses --dispatch because it launches nobody")
@@ -2088,7 +3151,43 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             detail=(decision.detail or
                     "Write and deliver the release report from the completed evidence; launch nobody."),
         ))
-        print(json.dumps(report.as_dict(), ensure_ascii=True, sort_keys=True))
+        current_head = _head_sha(state)
+        if (transport is not None and state.pr is not None
+                and isinstance(state.pr.get("number"), int)):
+            endpoint = f"repos/{state.repo}/pulls/{int(state.pr['number'])}"
+            current_pr = _dict(transport.get(endpoint), endpoint)
+            live_head = current_pr.get("head")
+            live_sha = live_head.get("sha") if isinstance(live_head, dict) else None
+            if not isinstance(live_sha, str) or not live_sha:
+                raise WorkError("run release-report cannot establish the current pull-request head")
+            current_head = live_sha
+        required_gate = _release_gate_status(state, current_head)
+        verdict = required_gate["verdict"]
+        head = required_gate["head"] or "unknown-current-head"
+        if verdict == "green":
+            path_departures = {
+                "restate": False,
+                "instruction": (
+                    "The required gate is green at this head; no gate-bypass "
+                    "restatement is required."
+                ),
+            }
+        else:
+            path_departures = {
+                "restate": True,
+                "instruction": (
+                    f"Restate the **Path departures:** paragraph at head {head}, "
+                    f"recording the required gate bypass ({verdict}) and its reason. "
+                    "This records the bypass and does not forbid it; merging remains "
+                    "the owner's decision."
+                ),
+            }
+        payload = report.as_dict()
+        payload.update({
+            "required_gate": required_gate,
+            "path_departures": path_departures,
+        })
+        print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
         return 0
     if decision.stage == "use" and decision.dispatch:
         if dispatch_path is None or tree_metadata is None:
@@ -2341,7 +3440,7 @@ def parser() -> argparse.ArgumentParser:
 def _named_continuity(state: WorkState, stage: str, recommendation: Decision) -> str:
     if recommendation.stage == stage and recommendation.continuity is not None:
         return recommendation.continuity
-    if stage in {"cold-seat", "use", "release-report"}:
+    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report"}:
         return "fresh"
     if stage == "artifact":
         try:
@@ -2364,10 +3463,14 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
     if args.mode is None or args.output is None:
         raise WorkError("tree requires --mode and --output")
     current = records.producer_version()
-    if (_version_key(current) or (0, 0, 0)) < (_version_key(NEW_MECHANISM_VERSION) or (0, 0, 0)):
+    required, mechanism = (
+        (TRUTHFUL_ENTRANCE_VERSION, "landed revision consumer tree")
+        if args.revision is not None else
+        (NEW_MECHANISM_VERSION, "verified neutral consumer tree")
+    )
+    if (_version_key(current) or (0, 0, 0)) < (_version_key(required) or (0, 0, 0)):
         raise WorkError(
-            f"tree: found={current}; required={NEW_MECHANISM_VERSION}; "
-            "mechanism=verified neutral consumer tree"
+            f"tree: found={current}; required={required}; mechanism={mechanism}"
         )
     if args.revision is not None:
         source, source_revision = _landed_revision_source(
@@ -2443,13 +3546,20 @@ def run(
     config = load_work_config(root)
     state = read_state(github, args.repo, args.issue, config)
     state.record_root = records.default_record_root().expanduser().resolve()
-    rules = load_use_rules(args.use_rules or root / "lib" / "use-rules.json")
+    use_rules_path = (args.use_rules or root / "lib" / "use-rules.json").expanduser().resolve()
+    rules = load_use_rules(use_rules_path)
+    _set_policy_sources(state, root, use_rules_path)
+    prepare_use_evidence(state, github, rules)
+    if state.pr is not None and _head_sha(state) is not None:
+        expected_proof = compose_proof(state, rules)
+        set_proof_freshness(state, expected_proof)
     recommendation = decide(state, rules)
     if args.command is None:
         print(json.dumps(recommendation.as_dict(), ensure_ascii=True, sort_keys=True))
         return 0
     decision = _reported_decision(state, Decision(
-        args.stage, True, _named_continuity(state, args.stage, recommendation),
+        args.stage, args.stage not in {"proof", "ready-reviewers", "release-report"},
+        _named_continuity(state, args.stage, recommendation),
         "holder-named-stage",
         f"current recommendation: {recommendation.stage} ({recommendation.reason})",
     ))
@@ -2459,6 +3569,7 @@ def run(
             dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
             timeout_seconds=args.timeout_seconds, transport=github,
             claude_path=args.claude, codex_path=args.codex,
+            rules=rules, use_rules_path=use_rules_path,
         )
     return executor(state, decision, root, args.instalment, args.holder_session_id)
 
