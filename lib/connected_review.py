@@ -28,7 +28,8 @@ from winio import utf8_stdio
 BOT_LOGIN = "github-actions[bot]"
 DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_EFFORT = "high"
-DEFAULT_CLAUDE_VERSION = "2.1.261"
+# Claude Code 2.1.280 is the first version verified to support DEFAULT_MODEL.
+DEFAULT_CLAUDE_VERSION = "2.1.280"
 ATTEMPT_PREFIX = "connected-review-attempt:"
 MAX_ARCHIVE_BYTES = 1_000_000_000
 MAX_FILE_BYTES = 50_000_000
@@ -618,7 +619,7 @@ def run_pass(
         "--restricted",
         "--safe-mode",
         "--strict-mcp-config",
-        "--mcp-config", "{}",
+        "--mcp-config", '{"mcpServers":{}}',
         "--add-dir", str(snapshot),
         "--tools", "Read,Glob,Grep",
         "--permission-mode", "plan",
@@ -663,8 +664,11 @@ def run_pass(
                         "tool": block.get("name"),
                         "input": block.get("input"),
                     })
-        elif "hook" in str(event.get("type", "")).lower():
-            trace.append({"event": event.get("type")})
+        else:
+            event_type = str(event.get("type", ""))
+            event_subtype = str(event.get("subtype", ""))
+            if "hook" in event_type.lower() or "hook" in event_subtype.lower():
+                trace.append({"event": event_subtype or event_type})
     usage = parsed.get("usage")
     observed = usage if isinstance(usage, dict) else {}
     try:

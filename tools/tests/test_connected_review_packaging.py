@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +31,27 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
         "TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT"
     ) == 1
     assert "if: vars.CONNECTED_REVIEW_ENABLED == 'true'" in workflow
+
+
+def test_cli_pin_supports_the_pinned_model_and_matches_setup_surfaces():
+    runtime = (ROOT / "lib/connected_review.py").read_text(encoding="utf-8")
+    matched = re.search(r'DEFAULT_CLAUDE_VERSION = "(\d+)\.(\d+)\.(\d+)"', runtime)
+    assert matched is not None
+    version = tuple(int(part) for part in matched.groups())
+    assert version >= (2, 1, 280)
+    assert "2.1.280 is the first version verified to support DEFAULT_MODEL" in runtime
+    rendered = ".".join(str(part) for part in version)
+    workflow = (ROOT / "skills/connected-review/templates/connected-review.yml").read_text(
+        encoding="utf-8"
+    )
+    assert f"CLAUDE_CLI_VERSION: {rendered}" in workflow
+    assert f"@anthropic-ai/claude-code@{rendered}" in workflow
+    setup = (
+        ROOT / "skills/adversarial-review/references/connected-reviewers.md"
+    ).read_text(encoding="utf-8")
+    live = (ROOT / "tools/connected-review-live-checks.md").read_text(encoding="utf-8")
+    assert f"Claude CLI {rendered}" in setup
+    assert f"Claude CLI {rendered}" in live
 
 
 def test_prompts_carry_opposite_burdens_and_all_named_exclusions():
@@ -76,7 +98,7 @@ def test_setup_names_dormant_enablement_and_private_prerequisites():
     )[1].split("```yaml\n", 1)[0]
     assert "repository's GitHub Actions workflows directory" in reference
     assert "Copy this block whole to that directory" in prose
-    assert "install `gh`, Python 3.14 and the pinned Claude CLI" in prose
+    assert "install `gh`, Python 3.14 and Claude CLI 2.1.280" in prose
     assert "hosted `prepare` job" in prose and "hosted `report` job" in prose
     assert "permitted non-mechanical second look" in prose
     assert "frozen merged commit on the default branch" in prose

@@ -55,7 +55,7 @@ Codex has no configuration key for this contract; the section in the repository'
 
 ## `connected-review.yml` in the repository's GitHub Actions workflows directory
 
-Copy this block whole to that directory and set the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Before activation, install `gh`, Python 3.14 and the pinned Claude CLI on a private repository's self-hosted runner. The hosted `prepare` job, and the hosted `report` job when it runs, consume a small amount of hosted time. After that repository's replay and identity checks pass, its enabling change sets the reviewer ref to the frozen merged commit on the default branch, sets the `CONNECTED_REVIEW_ENABLED` repository variable to `true`, and adds `github-actions[bot]` to `connected_reviewers`; the ref below and the absent variable deliberately leave this copy dormant, and the ref is not a release pin. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding `reviewers` requests the permitted non-mechanical second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
+Copy this block whole to that directory and set the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Before activation, install `gh`, Python 3.14 and Claude CLI 2.1.280 on a private repository's self-hosted runner. The hosted `prepare` job, and the hosted `report` job when it runs, consume a small amount of hosted time. After that repository's replay and identity checks pass, its enabling change sets the reviewer ref to the frozen merged commit on the default branch, sets the `CONNECTED_REVIEW_ENABLED` repository variable to `true`, and adds `github-actions[bot]` to `connected_reviewers`; the ref below and the absent variable deliberately leave this copy dormant, and the ref is not a release pin. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding `reviewers` requests the permitted non-mechanical second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
 
 ```yaml
 name: connected-review
@@ -73,7 +73,7 @@ on:
 env:
   TRADECRAFT_REPOSITORY: Grimblaz-and-Friends/tradecraft
   TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT
-  CLAUDE_CLI_VERSION: 2.1.261
+  CLAUDE_CLI_VERSION: 2.1.280
   REVIEW_OWNER_LOGIN: Grimblaz
 
 jobs:
@@ -137,7 +137,7 @@ jobs:
           python-version: "3.14"
       - name: Install hosted Claude CLI
         if: needs.prepare.outputs.visibility == 'public'
-        run: npm install --global @anthropic-ai/claude-code@2.1.261
+        run: npm install --global @anthropic-ai/claude-code@2.1.280
       - name: Run finder and checker
         id: review
         env:

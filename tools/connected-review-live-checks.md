@@ -4,7 +4,7 @@
 
 ## Before running
 
-Use neutral public and private fixture repositories owned by the token owner. Copy the canonical workflow whole, replace its dormant reviewer ref with the frozen merged commit on the default branch, set `CONNECTED_REVIEW_ENABLED` to `true`, set `CLAUDE_CODE_OAUTH_TOKEN`, and list `github-actions[bot]` as a connected reviewer only in those fixtures. Install `gh`, Python 3.14 and the pinned Claude CLI on the private self-hosted runner. Record the fixture repository names, workflow run URLs, pull-request heads and the revision under test.
+Use neutral public and private fixture repositories owned by the token owner. Copy the canonical workflow whole, replace its dormant reviewer ref with the frozen merged commit on the default branch, set `CONNECTED_REVIEW_ENABLED` to `true`, set `CLAUDE_CODE_OAUTH_TOKEN`, and list `github-actions[bot]` as a connected reviewer only in those fixtures. Install `gh`, Python 3.14 and Claude CLI 2.1.280 on the private self-hosted runner. Record the fixture repository names, workflow run URLs, pull-request heads and the revision under test.
 
 Do not add the login to a product repository during these checks. Enumerate each fixture's other workflows and recent comments by `github-actions[bot]`; if any unrelated output can satisfy the existing entrance or gate, record activation as failed and return the identity problem to the holder.
 

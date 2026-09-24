@@ -163,7 +163,8 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
 
     monkeypatch.setattr(replay, "write_object", capture)
     result = replay.run_replay(
-        export, output, finder, checker, ["claude.cmd"], "2.1.261", HEAD,
+        export, output, finder, checker, ["claude.cmd"],
+        replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
     )
     assert snapshots == [["only-1.py"], ["only-1.py"], ["only-2.py"]]
     assert [len(record["cases"]) for record in writes] == [0, 1, 2]
@@ -196,7 +197,8 @@ def test_run_records_canaries_tool_trace_and_invalidates_outside_read(tmp_path, 
 
     monkeypatch.setattr(replay.cr, "run_pass", run)
     result = replay.run_replay(
-        export, output, finder, checker, "claude", "2.1.261", HEAD,
+        export, output, finder, checker, "claude",
+        replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
     )
     case = result["cases"][0]
     assert case["status"] == "invalid-leak"

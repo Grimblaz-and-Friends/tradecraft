@@ -322,12 +322,52 @@ def test_model_process_has_only_read_tools_and_no_github_credential(tmp_path, mo
     assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
     assert "--restricted" in command and "--safe-mode" in command
     assert command[command.index("--permission-prompts") + 1] == "none"
+    assert json.loads(command[command.index("--mcp-config") + 1]) == {
+        "mcpServers": {},
+    }
     environment = seen["kwargs"]["environment"]
     assert environment["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth"
     assert "GH_TOKEN" not in environment
+    profile = tmp_path / "pass" / "profile"
+    assert environment["HOME"] == str(profile)
+    assert environment["USERPROFILE"] == str(profile)
+    assert environment["XDG_CONFIG_HOME"] == str(profile / "config")
+    assert environment["CLAUDE_CONFIG_DIR"] == str(profile / "claude")
     assert Path(seen["kwargs"]["cwd"]) != snapshot
     assert Path(command[command.index("--add-dir") + 1]) == snapshot
     assert seen["kwargs"]["input_bytes"].startswith(b"prompt")
+
+
+def test_model_stream_keeps_structured_output_tool_uses_and_hook_events(tmp_path, monkeypatch):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    events = [
+        {"type": "system", "subtype": "init"},
+        {"type": "assistant", "message": {"content": [{
+            "type": "tool_use", "name": "Read", "input": {"file_path": "app.py"},
+        }]}},
+        {"type": "system", "subtype": "hook_started", "hook_name": "PreToolUse"},
+        {
+            "type": "result", "is_error": False,
+            "structured_output": {"candidates": []},
+            "usage": {"input_tokens": 3},
+        },
+    ]
+
+    def run(command, **_kwargs):
+        output = "\n".join(json.dumps(event) for event in events).encode()
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    monkeypatch.setattr(cr, "_run", run)
+    value, usage, trace = cr.run_pass(
+        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth"
+    )
+    assert value == {"candidates": []}
+    assert usage == {"input_tokens": 3}
+    assert trace == [
+        {"tool": "Read", "input": {"file_path": "app.py"}},
+        {"event": "hook_started"},
+    ]
 
 
 def test_failed_model_process_preserves_observed_usage(tmp_path, monkeypatch):
