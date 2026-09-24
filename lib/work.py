@@ -417,8 +417,14 @@ class GitHubREST:
     def graphql(self, query: str, variables: dict[str, object]) -> object:
         return self.mutate("POST", "graphql", {"query": query, "variables": variables})
 
-    def workflow_run_files(self, check_suite_ids: list[str]) -> object:
+    def workflow_run_files(self, query: str, variables: dict[str, object]) -> object:
         """Run the fixed read-only query that identifies workflow-run source files."""
+        if query != WORKFLOW_RUN_FILES_QUERY or set(variables) != {"ids"}:
+            raise WorkError("workflow provenance accepts only the fixed run-file query")
+        check_suite_ids = variables["ids"]
+        if (not isinstance(check_suite_ids, list)
+                or not all(isinstance(item, str) for item in check_suite_ids)):
+            raise WorkError("workflow provenance requires check suite node identities")
         payload = {
             "query": WORKFLOW_RUN_FILES_QUERY,
             "variables": {"ids": check_suite_ids},
@@ -597,7 +603,14 @@ def _pull_coordinates(pr: dict[str, object]) -> dict[str, object]:
             "pull request head or base metadata is unavailable"
             + (f": {problem}" if problem else "")
         )
-    return {"head": head_sha, "base": base}
+    return {
+        "head": head_sha,
+        "base": {
+            "repository": base["repository"],
+            "repository_id": base["repository_id"],
+            "ref": base["ref"],
+        },
+    }
 
 
 def _unidentified_gate(base: dict[str, object] | None, reason: str,
@@ -651,11 +664,17 @@ def _collect_required_gate(transport: GitHubREST,
                 "rules": [],
             })
             evidence = {
-                "id": rule.get("id") if isinstance(rule.get("id"), int) else None,
-                "name": rule.get("name") if isinstance(rule.get("name"), str) else None,
-                "source_type": (
-                    rule.get("source_type")
-                    if isinstance(rule.get("source_type"), str) else None
+                "ruleset_id": (
+                    rule.get("ruleset_id")
+                    if isinstance(rule.get("ruleset_id"), int) else None
+                ),
+                "ruleset_source": (
+                    rule.get("ruleset_source")
+                    if isinstance(rule.get("ruleset_source"), str) else None
+                ),
+                "ruleset_source_type": (
+                    rule.get("ruleset_source_type")
+                    if isinstance(rule.get("ruleset_source_type"), str) else None
                 ),
             }
             if evidence not in source["rules"]:
@@ -690,7 +709,10 @@ def _collect_required_gate(transport: GitHubREST,
         source["repository"] = resolved[key[0]]
         source["rules"] = sorted(
             source["rules"],
-            key=lambda item: (str(item.get("id") or ""), str(item.get("name") or "")),
+            key=lambda item: (
+                str(item.get("ruleset_id") or ""),
+                str(item.get("ruleset_source") or ""),
+            ),
         )
         sources.append(source)
     return {
@@ -713,10 +735,9 @@ def _collect_workflow_provenance(transport: GitHubREST,
         if not isinstance(run, dict):
             _provenance_error(check, "REST workflow run is unavailable")
             continue
-        suite = check.get("check_suite")
-        node_id = suite.get("node_id") if isinstance(suite, dict) else None
+        node_id = run.get("check_suite_node_id")
         if not isinstance(node_id, str) or not node_id:
-            _provenance_error(check, "check suite node identity is unavailable")
+            _provenance_error(check, "workflow run check suite node identity is unavailable")
             continue
         suites.setdefault(node_id, []).append(check)
     if not suites:
@@ -727,62 +748,66 @@ def _collect_workflow_provenance(transport: GitHubREST,
             for check in grouped:
                 _provenance_error(check, "GitHub transport cannot read workflow provenance")
         return
-    try:
-        response = reader(sorted(suites))
-    except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
-        for grouped in suites.values():
-            for check in grouped:
-                _provenance_error(check, f"workflow provenance read failed: {exc}")
-        return
-    if not isinstance(response, dict):
-        for grouped in suites.values():
-            for check in grouped:
-                _provenance_error(check, "workflow provenance response is not an object")
-        return
-    data = response.get("data")
-    nodes = data.get("nodes") if isinstance(data, dict) else None
-    if not isinstance(nodes, list):
-        for grouped in suites.values():
-            for check in grouped:
-                _provenance_error(check, "workflow provenance response has no nodes list")
-        return
-    by_id = {
-        str(node.get("id")): node for node in nodes
-        if isinstance(node, dict) and isinstance(node.get("id"), str)
-    }
-    has_errors = bool(response.get("errors"))
-    if has_errors:
-        for grouped in suites.values():
-            for check in grouped:
-                _provenance_error(check, "workflow provenance response contains GraphQL errors")
-        return
-    for node_id, grouped in suites.items():
-        node = by_id.get(node_id)
-        workflow_run = node.get("workflowRun") if isinstance(node, dict) else None
-        workflow = workflow_run.get("workflow") if isinstance(workflow_run, dict) else None
-        file = workflow_run.get("file") if isinstance(workflow_run, dict) else None
-        for check in grouped:
-            rest = check.get("workflow_run")
-            run_id = _action_run_id(check)
-            rest_workflow_id = rest.get("workflow_id") if isinstance(rest, dict) else None
-            graph_run_id = (
-                workflow_run.get("databaseId") if isinstance(workflow_run, dict) else None
-            )
-            graph_workflow_id = workflow.get("databaseId") if isinstance(workflow, dict) else None
-            path = file.get("path") if isinstance(file, dict) else None
-            repository = file.get("repositoryName") if isinstance(file, dict) else None
-            if (graph_run_id != run_id or graph_workflow_id != rest_workflow_id
-                    or not isinstance(path, str) or not path
-                    or not isinstance(repository, str) or not repository):
-                _provenance_error(
-                    check,
-                    "workflow provenance is missing or disagrees with REST identity",
+    suite_ids = sorted(suites)
+    for offset in range(0, len(suite_ids), 100):
+        batch = suite_ids[offset:offset + 100]
+        try:
+            response = reader(WORKFLOW_RUN_FILES_QUERY, {"ids": batch})
+        except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+            for node_id in batch:
+                for check in suites[node_id]:
+                    _provenance_error(check, f"workflow provenance read failed: {exc}")
+            continue
+        if not isinstance(response, dict):
+            for node_id in batch:
+                for check in suites[node_id]:
+                    _provenance_error(check, "workflow provenance response is not an object")
+            continue
+        data = response.get("data")
+        nodes = data.get("nodes") if isinstance(data, dict) else None
+        if not isinstance(nodes, list):
+            for node_id in batch:
+                for check in suites[node_id]:
+                    _provenance_error(check, "workflow provenance response has no nodes list")
+            continue
+        if response.get("errors"):
+            for node_id in batch:
+                for check in suites[node_id]:
+                    _provenance_error(check, "workflow provenance response contains GraphQL errors")
+            continue
+        by_id = {
+            str(node.get("id")): node for node in nodes
+            if isinstance(node, dict) and isinstance(node.get("id"), str)
+        }
+        for node_id in batch:
+            node = by_id.get(node_id)
+            workflow_run = node.get("workflowRun") if isinstance(node, dict) else None
+            workflow = workflow_run.get("workflow") if isinstance(workflow_run, dict) else None
+            file = workflow_run.get("file") if isinstance(workflow_run, dict) else None
+            for check in suites[node_id]:
+                rest = check.get("workflow_run")
+                run_id = _action_run_id(check)
+                rest_workflow_id = rest.get("workflow_id") if isinstance(rest, dict) else None
+                graph_run_id = (
+                    workflow_run.get("databaseId") if isinstance(workflow_run, dict) else None
                 )
-                continue
-            check["workflow_source"] = {
-                "repository": repository, "path": path,
-                "run_id": graph_run_id, "workflow_id": graph_workflow_id,
-            }
+                graph_workflow_id = (
+                    workflow.get("databaseId") if isinstance(workflow, dict) else None
+                )
+                path = file.get("path") if isinstance(file, dict) else None
+                repository = file.get("repositoryName") if isinstance(file, dict) else None
+                if (graph_run_id != run_id or graph_workflow_id != rest_workflow_id
+                        or not isinstance(path, str) or not path
+                        or not isinstance(repository, str) or not repository):
+                    _provenance_error(
+                        check,
+                        "workflow provenance is missing or disagrees with REST identity",
+                    )
+                    continue
+                check["workflow_source"] = {
+                    "repository": repository, "path": path,
+                    "run_id": graph_run_id, "workflow_id": graph_workflow_id,
+                }
 
 
 def read_state(transport: GitHubREST, repo: str, issue_number: int,
@@ -1392,11 +1417,6 @@ def prepare_use_evidence(state: WorkState, transport: GitHubREST,
 
 
 def _check_workflow_identity(check: dict[str, object]) -> object:
-    source = check.get("workflow_source")
-    repository = source.get("repository") if isinstance(source, dict) else None
-    path = source.get("path") if isinstance(source, dict) else None
-    if isinstance(repository, str) and repository and isinstance(path, str) and path:
-        return f"{repository.casefold()}:{path}"
     run = check.get("workflow_run")
     workflow_id = run.get("workflow_id") if isinstance(run, dict) else None
     if workflow_id is not None:
@@ -1477,7 +1497,17 @@ def latest_checks(state: WorkState) -> list[dict[str, object]]:
 
 def _floor_checks(state: WorkState) -> list[dict[str, object]]:
     gates = {id(check) for check in _matched_gate_checks(state)}
-    return [check for check in latest_checks(state) if id(check) not in gates]
+    requirement_status = _gate_requirement(state).get("status")
+    unresolved = {
+        id(check) for check in latest_checks(state)
+        if requirement_status in {"identified", "unidentified"}
+        and _action_run_id(check) is not None
+        and isinstance(check.get("workflow_source_error"), str)
+    }
+    return [
+        check for check in latest_checks(state)
+        if id(check) not in gates and id(check) not in unresolved
+    ]
 
 
 def _gate_checks(state: WorkState) -> list[dict[str, object]]:
@@ -1835,7 +1865,13 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     gate = _release_gate_status(state, sha)
     verdict = gate["verdict"]
     if verdict == "absent":
-        detail = str(gate["reason"])
+        detail = str(gate["reason"]).rstrip()
+        if detail and detail[-1] not in ".!?":
+            detail += "."
+        if gate.get("pending"):
+            return result(
+                "waiting", False, None, "latest-gate-evaluation-pending", detail
+            )
         mergeable = state.pr.get("mergeable")
         mergeable_state = str(state.pr.get("mergeable_state") or "").lower()
         if mergeable is False or mergeable_state in {"dirty", "conflicting"}:
@@ -2694,21 +2730,21 @@ def _release_gate_status(state: WorkState, head: str | None = None) -> dict[str,
         return {
             "verdict": "none", "head": current_head, "runs": [],
             "requirements": [], "reason": "no required gate",
-            "requirement_known": True,
+            "requirement_known": True, "pending": False,
         }
     if status != "identified":
         return {
             "verdict": "unidentified", "head": current_head, "runs": [],
             "requirements": [],
             "reason": str(requirement.get("reason") or "required gate is unidentified"),
-            "requirement_known": False,
+            "requirement_known": False, "pending": False,
         }
     sources = requirement.get("sources")
     if not isinstance(sources, list) or not sources:
         return {
             "verdict": "unidentified", "head": current_head, "runs": [],
             "requirements": [], "reason": "required-workflow sources are malformed",
-            "requirement_known": False,
+            "requirement_known": False, "pending": False,
         }
     selected = latest_checks(state)
     unknown = [
@@ -2736,33 +2772,36 @@ def _release_gate_status(state: WorkState, head: str | None = None) -> dict[str,
             and check.get("conclusion") is not None
             and str(check.get("conclusion") or "").lower() != "success"
         ]
+        pending = any(
+            str(check.get("status") or "").lower() in PENDING_CHECK_STATUSES
+            or check.get("conclusion") is None for check in current
+        )
         if current_failures:
             verdict = "red"
             reason = "an identified current-head gate evaluation finished unsuccessfully"
         elif any(_check_head(state, check) != current_head for check in matches):
             verdict = "stale"
             reason = "identified gate evidence names an older pull-request head"
-        elif any(
-                str(check.get("status") or "").lower() in PENDING_CHECK_STATUSES
-                or check.get("conclusion") is None for check in current):
+        elif pending:
             verdict = "absent"
-            reason = "the identified current-head gate evaluation has no terminal verdict"
-        elif current and all(
-                str(check.get("conclusion") or "").lower() == "success"
-                for check in current):
-            verdict = "green"
-            reason = "the identified gate source succeeded at the current head"
+            reason = "the identified current-head gate evaluation is pending"
         elif unknown:
             verdict = "unidentified"
             reason = (
                 "workflow provenance is unavailable for a run that could be the "
                 "required source"
             )
+        elif current and all(
+                str(check.get("conclusion") or "").lower() == "success"
+                for check in current):
+            verdict = "green"
+            reason = "the identified gate source succeeded at the current head"
         else:
             verdict = "absent"
             reason = "the required source has no visible evaluation"
         evaluations.append({
             "source": source, "verdict": verdict, "runs": runs, "reason": reason,
+            "pending": pending,
         })
     verdicts = {str(item["verdict"]) for item in evaluations}
     if "unidentified" in verdicts:
@@ -2776,7 +2815,10 @@ def _release_gate_status(state: WorkState, head: str | None = None) -> dict[str,
         reason = "identified gate evidence names an older pull-request head"
     elif "absent" in verdicts:
         verdict = "absent"
-        reason = "a required gate source lacks a successful current-head evaluation"
+        if any(bool(item.get("pending")) for item in evaluations):
+            reason = "an identified current-head gate evaluation is pending"
+        else:
+            reason = "a required gate source lacks a successful current-head evaluation"
     else:
         verdict = "green"
         reason = "every required gate source succeeded at the current head"
@@ -2784,6 +2826,7 @@ def _release_gate_status(state: WorkState, head: str | None = None) -> dict[str,
         "verdict": verdict, "head": current_head, "runs": all_runs,
         "requirements": evaluations, "reason": reason,
         "requirement_known": True,
+        "pending": any(bool(item.get("pending")) for item in evaluations),
     }
 
 
@@ -3249,9 +3292,25 @@ def _policy_relative_path(root: Path, path: Path) -> str:
         raise WorkError(f"policy path is outside the holder checkout: {path}") from exc
 
 
+def _require_repository_top_level(root: Path) -> None:
+    top = _git_top_level(root, "resolve repository top level")
+    if not _same_path(root, top):
+        raise WorkError(f"--root must be the repository top level: {top}")
+
+
+def _refuse_nested_repository_root(root: Path) -> None:
+    result = _git(["rev-parse", "--show-toplevel"], root)
+    if result.returncode:
+        return
+    top = Path(result.stdout.decode("utf-8", errors="backslashreplace").strip()).resolve()
+    if not _same_path(root, top):
+        raise WorkError(f"--root must be the repository top level: {top}")
+
+
 def _policy_status(root: Path, relative: str) -> bytes:
     result = _git([
-        "status", "--porcelain=v1", "-z", "--untracked-files=all", "--",
+        "status", "--porcelain=v1", "-z", "--untracked-files=all",
+        "--ignored=matching", "--",
         f":(literal){relative}",
     ], root)
     if result.returncode:
@@ -3285,6 +3344,7 @@ def _policy_blob(root: Path, revision: str, relative: str) -> bytes | None:
 
 def _capture_policy_snapshot(root: Path, repo: str, use_rules_path: Path, *,
                              enforce_clean: bool) -> PolicySnapshot:
+    _require_repository_top_level(root)
     revision = _git_text(["rev-parse", "HEAD"], root, "resolve policy revision")
     if HEAD_SHA.fullmatch(revision) is None:
         raise WorkError("policy checkout HEAD is not a full commit revision")
@@ -3317,13 +3377,31 @@ def _capture_policy_snapshot(root: Path, repo: str, use_rules_path: Path, *,
 
 
 def _verify_policy_snapshot(root: Path, repo: str, use_rules_path: Path,
-                            expected: PolicySnapshot) -> None:
-    current = _capture_policy_snapshot(
-        root, repo, use_rules_path, enforce_clean=True
-    )
+                            expected: PolicySnapshot, *, posted: bool = False) -> None:
+    try:
+        current = _capture_policy_snapshot(
+            root, repo, use_rules_path, enforce_clean=True
+        )
+    except WorkError as exc:
+        if posted:
+            raise WorkError(
+                "the proof document was posted for the earlier policy state and completion "
+                f"is not current: {exc}"
+            ) from exc
+        raise
     if current.revision != expected.revision:
+        if posted:
+            raise WorkError(
+                "the proof document was posted for the earlier policy revision and completion "
+                "is not current"
+            )
         raise WorkError("policy checkout HEAD changed before publication; recompose and retry")
     if current.sources != expected.sources or current.blobs != expected.blobs:
+        if posted:
+            raise WorkError(
+                "the proof document was posted for the earlier policy state and completion "
+                "is not current"
+            )
         raise WorkError("policy snapshot changed before publication; recompose and retry")
 
 
@@ -3517,7 +3595,9 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
             "pull-request head or base changed during proof publication; the posted document is "
             "preserved for the older identity and completion is not current"
         )
-    _verify_policy_snapshot(root, state.repo, use_rules_path, snapshot)
+    _verify_policy_snapshot(
+        root, state.repo, use_rules_path, snapshot, posted=True
+    )
     reruns = _rerun_gate_evaluations(transport, fresh, head)
     print(json.dumps({
         "schema_version": 1, "work": f"{state.repo}#{state.issue_number}",
@@ -4067,6 +4147,7 @@ def run(
     executor: Callable[..., int] = execute_stage,
 ) -> int:
     root = args.root.expanduser().resolve()
+    _refuse_nested_repository_root(root)
     github = transport or GitHubREST()
     if args.command == "release":
         if args.stage is not None:
@@ -4102,6 +4183,8 @@ def run(
     if args.command == "run" and args.stage is None:
         raise WorkError("run requires a stage")
     use_rules_path = (args.use_rules or root / "lib" / "use-rules.json").expanduser().resolve()
+    config = load_work_config(root)
+    rules = load_use_rules(use_rules_path)
     policy_snapshot: PolicySnapshot | None = None
     policy_problem: str | None = None
     try:
@@ -4110,37 +4193,34 @@ def run(
         )
     except WorkError as exc:
         policy_problem = str(exc)
-    if policy_snapshot is None:
-        config = load_work_config(root)
-        rules = load_use_rules(use_rules_path)
-    else:
-        config = _work_config_bytes(
-            policy_snapshot.blobs["work_configuration"],
-            policy_snapshot.paths["work_configuration"],
-        )
-        use_blob = policy_snapshot.blobs["use_rules"]
-        if use_blob is None:
-            raise WorkError("committed use policy is unavailable")
-        rules = _use_rules_bytes(use_blob, policy_snapshot.paths["use_rules"])
     state = read_state(github, args.repo, args.issue, config)
     state.record_root = records.default_record_root().expanduser().resolve()
+    policy_diagnostics: list[dict[str, object]] = []
     if policy_snapshot is not None:
         state.policy_sources = policy_snapshot.sources
         for problem in policy_snapshot.problems:
-            state.collection_diagnostics.append({
+            policy_diagnostics.append({
                 "code": "policy-uncommitted", "message": problem, "source": None,
             })
     elif policy_problem is not None:
-        state.collection_diagnostics.append({
+        policy_diagnostics.append({
             "code": "policy-source-unavailable", "message": policy_problem, "source": None,
         })
     prepare_use_evidence(state, github, rules)
     if (state.pr is not None and _head_sha(state) is not None
             and state.policy_sources):
-        expected_proof = compose_proof(state, rules)
+        freshness_rules = rules
+        if policy_snapshot is not None:
+            use_blob = policy_snapshot.blobs["use_rules"]
+            if use_blob is not None:
+                freshness_rules = _use_rules_bytes(
+                    use_blob, policy_snapshot.paths["use_rules"]
+                )
+        expected_proof = compose_proof(state, freshness_rules)
         set_proof_freshness(state, expected_proof)
     elif state.pr is not None and _head_sha(state) is not None:
         state.proof_current = False
+    state.collection_diagnostics.extend(policy_diagnostics)
     recommendation = decide(state, rules)
     if args.command is None:
         print(json.dumps(recommendation.as_dict(), ensure_ascii=True, sort_keys=True))
