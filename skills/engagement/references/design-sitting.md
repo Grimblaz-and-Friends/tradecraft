@@ -1,8 +1,10 @@
 # Designing in turns
 
-**Loaded when** you are designing any non-mechanical change with the owner, running a turn, or deciding whether the whole implementation brief is ready to put.
+**Loaded when** you are designing any change that owes an implementation brief with the owner, running a turn, or deciding whether the whole item is ready to put.
 
-**Designing an implementation brief always runs in turns.** This is the one conversation form for every non-mechanical change, not a mode selected by a fork count or by how the work was opened.
+**Designing an implementation brief always runs in turns.** This is the one conversation form for every change that owes one, not a mode selected by a fork count or by how the work was opened.
+
+**At pickup, the holder and owner design the solution from the filing's facts, and the implementation brief is the record of that sitting.** A suggested remedy in the filing is not a bought term. Where a filing marks a stated cost `unrun`, test it before designing against it; if it cannot be tested, keep it as an assumption rather than silently pricing the options with it.
 
 The form draws out what only the owner has — the problem's real shape, recognition on sight, the reframe, the ruling — and combines it with what the session has, without making them compose and without the session's fluency closing the space. It exists to end two failures they named, [in their own words](https://github.com/Grimblaz-and-Friends/tradecraft/issues/402): *"you solve for me, leaving nothing for me"*, and *"you force me to type things where I have no value to add, or I have to type it all myself."*
 

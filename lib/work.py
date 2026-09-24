@@ -42,6 +42,14 @@ USE_HOLDER_DETAIL = (
     "consumer through lib/dispatch_seat.py with the capability the job requires; write the "
     "session note and post the current-head use marker."
 )
+MECHANICAL_USE_REASON = (
+    "the owner-affirmed mechanical lane exempts use even when changed paths match the "
+    "schema-version-1 use policy"
+)
+PATH_NO_USE_REASON = (
+    "no changed path matches an include without also matching an exclude in the "
+    "schema-version-1 use policy"
+)
 BRIEF_GUIDANCE = (
     "Follow <plugin-root>/skills/engagement/references/the-brief.md and write Shape, Readers, "
     "a decision block, Not this, and exactly one lawful Review risk / Review lane pair. "
@@ -338,6 +346,17 @@ class LaunchSettings:
     effort: str
     model_source: str
     effort_source: str
+
+
+@dataclass(frozen=True)
+class EffectivePolicy:
+    risk: str | None
+    lane: str | None
+    mechanical: bool
+    path_requires_use: bool
+    use_required: bool
+    use_reason: str
+    affirmed: Marker | None
 
 
 @dataclass(frozen=True)
@@ -1292,6 +1311,28 @@ def use_required(paths: list[str], rules: dict[str, object]) -> bool:
     return False
 
 
+def _affirmed_review(state: WorkState) -> tuple[Marker | None, tuple[str, str] | None]:
+    affirmed = [marker for marker in state.issue_markers if marker.name == "affirmed-brief"]
+    marker = affirmed[-1] if affirmed else None
+    return marker, review_lane(marker.body) if marker is not None else None
+
+
+def effective_policy(state: WorkState, rules: dict[str, object]) -> EffectivePolicy:
+    """Return the brief-authorized lane and the one effective use classification."""
+    affirmed, pair = _affirmed_review(state)
+    path_requires_use = use_required(state.changed_paths, rules)
+    mechanical = pair == ("ordinary", "mechanical")
+    return EffectivePolicy(
+        risk=pair[0] if pair else None,
+        lane=pair[1] if pair else None,
+        mechanical=mechanical,
+        path_requires_use=path_requires_use,
+        use_required=path_requires_use and not mechanical,
+        use_reason=MECHANICAL_USE_REASON if mechanical else PATH_NO_USE_REASON,
+        affirmed=affirmed,
+    )
+
+
 def _proof_rendered_marker(marker: Marker) -> bool:
     return marker.name != "proof" and any(
         match.group(1).lower() == "proof" for match in MARKER.finditer(marker.body)
@@ -1370,7 +1411,7 @@ def prepare_use_evidence(state: WorkState, transport: GitHubREST,
     state.applicable_use = None
     state.use_application = None
     head = _head_sha(state)
-    if head is None or not use_required(state.changed_paths, rules):
+    if head is None or not effective_policy(state, rules).use_required:
         return
     candidates = [
         marker for marker in _state_markers(state)
@@ -1702,7 +1743,7 @@ def _undisposed_threads(state: WorkState) -> tuple[list[int], list[str]]:
 
 
 def _panel_next(state: WorkState, lane: str) -> str | None:
-    if lane == "connected":
+    if lane in {"connected", "mechanical"}:
         return None
     paths = state.changed_paths
     if lane == "routine-panel":
@@ -1778,43 +1819,45 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if lane_pair is None:
         return result("affirmation-invalid", False, None, "review-risk-lane-missing-or-mismatched")
     _risk, lane = lane_pair
-    indexed_markers = list(enumerate(state.markers))
-    artifacts = sorted(
-        ((position, marker) for position, marker in indexed_markers
-         if marker.name == "artifact"),
-        key=lambda item: _marker_recency(item[1], item[0]),
-    )
-    if not artifacts:
-        return result("artifact", True, "fresh", "artifact-marker-absent")
-    verdicts = sorted(
-        ((position, marker) for position, marker in indexed_markers
-         if marker.name == "cold-verdict" and staffing_qualified(marker)),
-        key=lambda item: _marker_recency(item[1], item[0]),
-    )
-    if not verdicts:
-        return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
-    verdict_position, verdict = verdicts[-1]
-    if verdict.attributes.get("verdict") == "would-not":
-        adverse_rounds = [marker for _position, marker in verdicts
-                          if marker.attributes.get("verdict") == "would-not"]
-        if len(adverse_rounds) >= 2:
-            return result(
-                "artifact-cap", False, None, "artifact-cold-round-cap-reached",
-                "Two qualifying would-not verdicts reached the cold-seat cap; "
-                "carry unresolved points to the owner under the artifact procedure.",
-            )
-        artifact_position, artifact = artifacts[-1]
-        if (artifact.attributes.get("status") == "draft"
-                and _marker_recency(artifact, artifact_position)
-                > _marker_recency(verdict, verdict_position)):
-            return result(
-                "cold-seat", True, "fresh", "newer-artifact-draft-after-would-not"
-            )
-        return result("artifact", True, "resume", "cold-verdict-would-not")
-    if verdict.attributes.get("verdict") != "would":
-        return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
-    if not any(marker.name == "holder-reading" for marker in state.markers):
-        return result("holder-read", False, None, "whole-change-holder-reading-absent")
+    policy = effective_policy(state, rules)
+    if not policy.mechanical:
+        indexed_markers = list(enumerate(state.markers))
+        artifacts = sorted(
+            ((position, marker) for position, marker in indexed_markers
+             if marker.name == "artifact"),
+            key=lambda item: _marker_recency(item[1], item[0]),
+        )
+        if not artifacts:
+            return result("artifact", True, "fresh", "artifact-marker-absent")
+        verdicts = sorted(
+            ((position, marker) for position, marker in indexed_markers
+             if marker.name == "cold-verdict" and staffing_qualified(marker)),
+            key=lambda item: _marker_recency(item[1], item[0]),
+        )
+        if not verdicts:
+            return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
+        verdict_position, verdict = verdicts[-1]
+        if verdict.attributes.get("verdict") == "would-not":
+            adverse_rounds = [marker for _position, marker in verdicts
+                              if marker.attributes.get("verdict") == "would-not"]
+            if len(adverse_rounds) >= 2:
+                return result(
+                    "artifact-cap", False, None, "artifact-cold-round-cap-reached",
+                    "Two qualifying would-not verdicts reached the cold-seat cap; the holder "
+                    "applies the post-affirmation decision boundary and records the resolution.",
+                )
+            artifact_position, artifact = artifacts[-1]
+            if (artifact.attributes.get("status") == "draft"
+                    and _marker_recency(artifact, artifact_position)
+                    > _marker_recency(verdict, verdict_position)):
+                return result(
+                    "cold-seat", True, "fresh", "newer-artifact-draft-after-would-not"
+                )
+            return result("artifact", True, "resume", "cold-verdict-would-not")
+        if verdict.attributes.get("verdict") != "would":
+            return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
+        if not any(marker.name == "holder-reading" for marker in state.markers):
+            return result("holder-read", False, None, "whole-change-holder-reading-absent")
     if state.pr is None:
         if any(marker.name == "builder-session" for marker in state.issue_markers):
             return result(
@@ -1833,7 +1876,7 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     latest_use = next((marker for marker in reversed(state.markers) if marker.name == "use"), None)
     if latest_use and latest_use.attributes.get("head") == sha and latest_use.attributes.get("changed") == "true":
         return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
-    bought = use_required(state.changed_paths, rules)
+    bought = policy.use_required
     current_use = _current_marker(state, "use", head=sha, status="pass")
     applicable_use = state.applicable_use or current_use
     applicable_lawful = (
@@ -1847,8 +1890,12 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if not bought:
         no_use = _current_marker(state, "no-use", head=sha)
         if no_use is None or "Use: not required" not in no_use.body:
+            reason = (
+                "mechanical-lane-requires-generated-no-use-carrier"
+                if policy.mechanical else "path-rules-require-generated-no-use-carrier"
+            )
             return result(
-                "proof", False, "fresh", "path-rules-require-generated-no-use-carrier",
+                "proof", False, "fresh", reason,
                 "Run proof to compose the current-head document and its legacy no-use carrier.",
             )
     if bool(state.pr.get("draft")):
@@ -2494,10 +2541,12 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             " Build and validate the affirmed work and any supplied settled artifact, commit "
             "the finished change, push the supplied branch, and then return to the holder."
         )
-    brief = next((marker for marker in reversed(state.issue_markers)
-                  if marker.name == "affirmed-brief"), None)
-    artifact = next((marker for marker in reversed(state.markers)
-                     if marker.name == "artifact"), None)
+    brief, lane_pair = _affirmed_review(state)
+    mechanical = lane_pair == ("ordinary", "mechanical")
+    explicit_artifact = decision.stage == "artifact"
+    artifact = None if mechanical and not explicit_artifact else next(
+        (marker for marker in reversed(state.markers) if marker.name == "artifact"), None
+    )
     if brief is None:
         raise WorkError(f"{decision.stage} dispatch requires an authorized affirmed brief")
     pr_number = state.pr.get("number") if state.pr else None
@@ -2511,6 +2560,16 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         "detail": decision.detail,
         "pull_request": pr_number,
         "head": _head_sha(state),
+        "review_risk": lane_pair[0] if lane_pair else None,
+        "review_lane": lane_pair[1] if lane_pair else None,
+        "lane_reason": (
+            "holder-explicit artifact stage remains authoritative for the owner-affirmed "
+            "mechanical lane and advances no later stage"
+            if mechanical and explicit_artifact
+            else "owner-affirmed mechanical lane skips the artifact, cold seat, and use"
+            if mechanical
+            else None
+        ),
     }
     fetches = [
         f"gh api --method GET repos/{state.repo}/issues/{state.issue_number}",
@@ -3012,7 +3071,8 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
     if not state.policy_sources:
         raise WorkError("proof policy source identities are unavailable")
     floor = _latest_public_marker(state, "floor", head=head, status="pass")
-    bought = use_required(state.changed_paths, rules)
+    policy = effective_policy(state, rules)
+    bought = policy.use_required
     use_marker = state.applicable_use if bought else None
     application = state.use_application or {}
     reviewers = _reviewer_receipts(state)
@@ -3029,11 +3089,12 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
     else:
         use = {
             "required": False, "classification": "not-required", "evidence_head": head,
-            "applicability": "generated", "source": None, "intervening_commits": [],
-            "reason": (
-                "no changed path matches an include without also matching an exclude in "
-                "the schema-version-1 use policy"
+            "applicability": "generated",
+            "source": (
+                _marker_source(state, policy.affirmed)
+                if policy.mechanical else None
             ),
+            "intervening_commits": [], "reason": policy.use_reason,
         }
     declarations = [_marker_declaration(state, floor, "floor")]
     if bought:
@@ -3588,10 +3649,7 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
         )
     no_use_line = None
     if not bool(composed["use"]["required"]):
-        no_use_line = (
-            "Use: not required - no changed path matches an included, non-excluded "
-            "schema-version-1 use rule."
-        )
+        no_use_line = f"Use: not required - {composed['use']['reason']}."
     body = proof_document.document(composed, no_use_line)
     _verify_policy_snapshot(root, state.repo, use_rules_path, snapshot)
     publication = _publish_proof_comment(transport, fresh, body, head)
@@ -3623,7 +3681,7 @@ def _ready_evidence_error(state: WorkState, rules: dict[str, object]) -> str | N
     floor = _current_marker(state, "floor", head=head, status="pass")
     if floor is None or _checks_red(state) or _checks_pending(state):
         return "ready-reviewers requires a current-head floor and no failed or pending floor run"
-    if use_required(state.changed_paths, rules):
+    if effective_policy(state, rules).use_required:
         marker = state.applicable_use or _current_marker(state, "use", head=head, status="pass")
         if marker is None or marker not in state.markers or not staffing_qualified(marker):
             return "ready-reviewers requires a lawful current or applicable ancestor use"

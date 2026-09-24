@@ -98,8 +98,8 @@ A later bare line returns every role to its standing default:
 ## `no-use`
 
 - **Exact form:** `<!-- tradecraft:no-use:v1 head=SHA -->` followed in the same comment by `Use: not required` and its reason.
-- **Attributes and lawful values:** `head` is the pull-request head SHA whose changed paths were classified.
-- **Producer, surface, moment:** the proof command, in its pull-request proof comment, after the path rules conclude no use was bought and before the pull request is marked ready. The legacy holder-authored form remains accepted for the compatibility release.
+- **Attributes and lawful values:** `head` is the pull-request head SHA whose effective use obligation was classified.
+- **Producer, surface, moment:** the proof command, in its pull-request proof comment, after the effective classification concludes no use was bought and before the pull request is marked ready. Its required prose states the actual reason — the affirmed mechanical lane or the path policy — and the proof object names the affirmed-comment source for a lane exemption. The legacy holder-authored form remains accepted for the compatibility release.
 
 ```text
 <!-- tradecraft:no-use:v1 head=0123456789abcdef0123456789abcdef01234567 -->
