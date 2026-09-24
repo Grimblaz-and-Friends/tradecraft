@@ -88,6 +88,29 @@ def test_repository_session_mode_carries_every_declared_surface(source, tmp_path
     assert not (output / "skill/SKILL.md").exists()
 
 
+def test_unregistered_tree_can_pin_an_earlier_commit_and_validate_after_head_advances(
+        source, tmp_path):
+    revision = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+    (source / "job/job.md").write_bytes(b"newer content\n")
+    git(source, "add", "job/job.md")
+    git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "advance")
+    output = tmp_path / "landed"
+    metadata = recipient_tree.create_consumer_tree(
+        source=source, output=output, work="acme/widget#7", producer_version="0.153.0",
+        mode="adopter", paths=["job"], loading_surfaces=["skill/SKILL.md"],
+        front_page=None, root_instructions=None, directed_paths=[], exclusions=[], deny_texts=[],
+        source_revision=revision, registration_used=False,
+    )
+    value = json.loads(metadata.read_bytes())
+    assert value["source_revision"] == revision
+    assert value["registration_used"] is False
+    assert (output / "job/job.md").read_bytes() == b"run the consumer\n"
+    assert recipient_tree.validate_consumer_tree(
+        metadata, work="acme/widget#7", source=source,
+    ) == output.resolve()
+
+
 @pytest.mark.parametrize("missing", ["front", "instructions"])
 def test_repository_session_refuses_each_missing_required_surface(source, tmp_path, missing):
     with pytest.raises(recipient_tree.RecipientTreeError, match="requires"):

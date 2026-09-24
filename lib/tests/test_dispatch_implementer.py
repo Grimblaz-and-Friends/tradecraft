@@ -91,6 +91,39 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     assert Path(logged["result"]["source_output"]).read_bytes() == b"built\n"
 
 
+def test_reconnect_uses_stream_message_and_keeps_success_reason_empty(job):
+    args, _ = job
+    stdout = "\n".join((
+        json.dumps({"type": "thread.started", "thread_id": "0199a213-81c0-7800-8aa1-bbab2a035a53"}),
+        json.dumps({"type": "error", "message": "reconnecting"}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "agent_message", "text": "built from stream\n",
+        }}),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}),
+    ))
+    configure(job, {"stdout": stdout, "message": ""})
+    assert implementer.run_implementer(args) == 0
+    logged = record(args)
+    attempt = logged["attempts"][0]
+    assert logged["outcome"] == attempt["outcome"] == "success"
+    assert attempt["reason"] == ""
+    assert attempt["observed"]["recovered_error_count"] == 1
+    assert args.output.read_bytes() == b"built from stream\n"
+
+
+def test_completed_turn_without_any_message_is_non_error_and_resumable(job):
+    args, _ = job
+    configure(job, {"stdout": success_events(), "message": ""})
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    attempt = logged["attempts"][0]
+    assert logged["outcome"] == attempt["outcome"] == "completed_no_output"
+    assert attempt["reason"] == "turn completed without a final message"
+    assert attempt["observed"]["session_id"]
+    assert logged["result"]["source_output"] is None
+    assert not args.output.exists()
+
+
 def test_implementer_runs_the_shared_automatic_resolution_result(tmp_path, monkeypatch):
     root = tmp_path / "root"
     root.mkdir()
@@ -114,6 +147,30 @@ def test_implementer_runs_the_shared_automatic_resolution_result(tmp_path, monke
     assert implementer.run_implementer(args) == 0
     assert seen(args)["argv"][:3] == ["exec", "--approve-for-me", "--json"]
     assert output.read_bytes() == b"built\n"
+
+
+def test_explicit_unavailable_reason_records_an_unavailable_attempt(job, monkeypatch):
+    args, _ = job
+    args.codex_unavailable_reason = "Codex CLI was not found by the entrance"
+    monkeypatch.setattr(
+        implementer, "resolve_command",
+        lambda *_args, **_kwargs: pytest.fail("an unavailable runtime must not be rediscovered"),
+    )
+
+    assert implementer.run_implementer(args) == 1
+
+    request = json.loads(
+        implementer.records.sidecar(args.output, ".request.json").read_bytes()
+    )
+    logged = record(args)
+    assert request["requested"]["command"] is None
+    assert request["runtime_version"] is None
+    assert request["runtime_version_unavailable_reason"] == args.codex_unavailable_reason
+    assert logged["outcome"] == "unavailable"
+    assert logged["attempts"][0]["outcome"] == "unavailable"
+    assert logged["attempts"][0]["reason"] == args.codex_unavailable_reason
+    assert logged["attempts"][0]["launched"] is False
+    assert not args.output.exists()
 
 
 def test_resume_names_exact_session_and_keeps_usage_scope_unknown(job):
@@ -246,6 +303,19 @@ def test_setting_sources_distinguish_defaults_from_explicit_values(job):
     assert sources["model"] == "dispatch_implementer default"
     assert sources["effort"] == "issuecomment-5655702442"
     assert sources["continuity"] == "launcher route (fresh)"
+
+
+def test_explicit_model_and_effort_sources_are_recorded_separately(job):
+    args, _ = job
+    args.model = "gpt-owner"
+    args.effort = "high"
+    args.model_source = "issue-comment:model"
+    args.effort_source = "issue-comment:effort"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    assert implementer.run_implementer(args) == 0
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert request["requested"]["sources"]["model"] == "issue-comment:model"
+    assert request["requested"]["sources"]["effort"] == "issue-comment:effort"
 
 
 @pytest.mark.parametrize("field", ["model", "effort"])

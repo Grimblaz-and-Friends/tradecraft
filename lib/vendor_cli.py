@@ -111,13 +111,31 @@ def resolve_command(
     path_lookup: Callable[[str], str | None] = which_on_path,
     platform: str = os.name,
 ) -> list[str]:
+    path = resolve_executable_path(
+        vendor, explicit, env=env, path_lookup=path_lookup, platform=platform,
+    )
+    return executable_command(vendor, path, path_lookup=path_lookup, platform=platform)
+
+
+def resolve_executable_path(
+    vendor: str,
+    explicit: str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    path_lookup: Callable[[str], str | None] = which_on_path,
+    platform: str = os.name,
+) -> Path:
+    """Return one validated executable path suitable for explicit forwarding."""
     if vendor != "codex":
         if env is not None or path_lookup is not which_on_path:
             raise CliError("env and path_lookup are only supported for automatic Codex resolution")
-        return executable_command(vendor, resolve_claude(explicit), platform=platform)
+        path = resolve_claude(explicit)
+        executable_command(vendor, path, platform=platform)
+        return path
     path = resolve_codex(explicit, env=env, path_lookup=path_lookup, platform=platform)
     try:
-        return executable_command(vendor, path, path_lookup=path_lookup, platform=platform)
+        executable_command(vendor, path, path_lookup=path_lookup, platform=platform)
+        return path
     except CliError as shim_error:
         if explicit:
             raise
@@ -127,8 +145,8 @@ def resolve_command(
             )
         except CliNotFound:
             raise shim_error from None
-        command = executable_command(vendor, bundled, path_lookup=path_lookup, platform=platform)
+        executable_command(vendor, bundled, path_lookup=path_lookup, platform=platform)
         shim = str(path).encode("ascii", errors="backslashreplace").decode("ascii")
         chosen = str(bundled).encode("ascii", errors="backslashreplace").decode("ascii")
         print(f"codex: skipped unusable PATH shim {shim}; using app-bundle executable {chosen}", file=sys.stderr)
-        return command
+        return bundled

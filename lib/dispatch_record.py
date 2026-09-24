@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import math
@@ -276,12 +277,41 @@ def request_record(
     }
 
 
-def _json_lines(raw: bytes) -> list[dict[str, object]]:
+@dataclass(frozen=True)
+class CodexStreamResult:
+    """The completion and final-message facts owned by one Codex JSONL stream."""
+
+    valid: bool
+    events: tuple[dict[str, object], ...]
+    completed: bool
+    failed_events: tuple[dict[str, object], ...]
+    error_events: tuple[dict[str, object], ...]
+    final_message: str | None
+
+
+def codex_stream_result(raw: bytes) -> CodexStreamResult:
+    """Parse a Codex JSONL stream once without treating recovered errors as failure."""
     try:
-        values = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
+        values = [json.loads(line) for line in raw.decode("utf-8").splitlines()
+                  if line.strip()]
     except (UnicodeError, ValueError):
-        return []
-    return values if all(isinstance(item, dict) for item in values) else []
+        return CodexStreamResult(False, (), False, (), (), None)
+    if not all(isinstance(item, dict) for item in values):
+        return CodexStreamResult(False, (), False, (), (), None)
+    events = tuple(values)
+    completed = any(event.get("type") == "turn.completed" for event in events)
+    failed = tuple(event for event in events if event.get("type") == "turn.failed")
+    errors = tuple(event for event in events if event.get("type") == "error")
+    messages: list[str] = []
+    for event in events:
+        item = event.get("item")
+        if (event.get("type") == "item.completed" and isinstance(item, dict)
+                and item.get("type") == "agent_message"
+                and isinstance(item.get("text"), str)):
+            messages.append(item["text"])
+    return CodexStreamResult(
+        True, events, completed, failed, errors, messages[-1] if messages else None,
+    )
 
 
 def _number(value: object) -> int | float | None:
@@ -295,7 +325,8 @@ def _reported_fields(raw: dict[str, object], names: tuple[str, ...]) -> dict[str
 
 
 def _codex_evidence(raw: bytes, continuity: str) -> dict[str, object]:
-    events = _json_lines(raw)
+    stream = codex_stream_result(raw)
+    events = list(stream.events)
     completed = [event for event in events if event.get("type") == "turn.completed"]
     usage = [event.get("usage") for event in completed if isinstance(event.get("usage"), dict)]
     thread_ids = [event.get("thread_id") for event in events
@@ -333,6 +364,10 @@ def _codex_evidence(raw: bytes, continuity: str) -> dict[str, object]:
         "reported_effort_unavailable_reason": "runtime returned no effort field",
         "thread_ids": thread_ids,
         "turn_ids": turn_ids,
+        "stream_valid": stream.valid,
+        "turn_completed": stream.completed,
+        "turn_failed_count": len(stream.failed_events),
+        "recovered_error_count": len(stream.error_events),
     }
 
 

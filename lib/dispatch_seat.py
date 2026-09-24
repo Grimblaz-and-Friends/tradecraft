@@ -245,29 +245,27 @@ def interpret(vendor, result, last_message):
         else:
             success = False
     else:
-        events = []
-        try:
-            events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
-            valid = all(isinstance(event, dict) for event in events)
-        except ValueError:
-            valid = False
-        if valid:
-            completed = any(event.get("type") == "turn.completed" for event in events)
-            failed = [event for event in events if event.get("type") == "turn.failed"]
-            success = completed and not failed
+        stream = records.codex_stream_result(result.stdout)
+        if stream.valid:
+            success = stream.completed and not stream.failed_events
             if not success:
-                errors = failed or [event for event in events if event.get("type") == "error"]
+                errors = list(stream.failed_events) or list(stream.error_events)
                 failure = error_reason(errors)
         else:
             success = False
-        if last_message.is_file():
+        if last_message.is_file() and last_message.read_bytes().strip():
             message = last_message.read_bytes().decode("utf-8")
+        elif stream.final_message is not None:
+            message = stream.final_message
     # Some CLI versions return a runtime diagnostic as a zero-exit final result.
-    failure = failure or diagnostic_reason(message)
+    if vendor == "claude" or not success:
+        failure = failure or diagnostic_reason(message)
     if failure:
         return "unavailable", failure, ""
-    if result.returncode == 0 and success and message.strip():
+    if success and message.strip() and (vendor == "codex" or result.returncode == 0):
         return "success", "", message
+    if vendor == "codex" and success and not message.strip():
+        return "completed_no_output", "turn completed without a final message", ""
     # Plain launch diagnostics have no JSON envelope. Do not scan echoed prompts.
     for diagnostic in (stdout, stderr):
         reason = diagnostic_reason(diagnostic)
@@ -296,11 +294,13 @@ def setting_sources(args, vendor):
     return {
         "vendor": args.settings_source,
         "model": (
-            args.settings_source if getattr(args, vendor + "_model") is not None
+            getattr(args, vendor + "_model_source") or args.settings_source
+            if getattr(args, vendor + "_model") is not None
             else "dispatch_seat default"
         ),
         "effort": (
-            args.settings_source if getattr(args, vendor + "_effort") is not None
+            getattr(args, vendor + "_effort_source") or args.settings_source
+            if getattr(args, vendor + "_effort") is not None
             else "classification mapping" if vendor == "claude"
             else "dispatch_seat default"
         ),
@@ -338,6 +338,8 @@ def run_dispatch(args, *, now=None) -> int:
         if not selected_model(args, vendor).strip() or not effort.strip():
             raise DispatchError(f"{vendor} model and effort must be nonempty")
         explicit = getattr(args, vendor)
+        if explicit and getattr(args, vendor + "_unavailable_reason"):
+            raise DispatchError(f"{vendor} cannot be both explicit and unavailable")
         if explicit and can_supply(vendor, args.requires):
             resolve_command(vendor, explicit)  # invalid overrides fail before spending
     record_path = sidecar(output, ".run.json")
@@ -419,6 +421,8 @@ def run_dispatch(args, *, now=None) -> int:
                 message = ""
                 if not can_supply(vendor, args.requires):
                     outcome, reason = "unavailable", capability_refusal(vendor, args.requires)
+                elif getattr(args, vendor + "_unavailable_reason"):
+                    outcome, reason = "unavailable", getattr(args, vendor + "_unavailable_reason")
                 elif reset and reset > current:
                     outcome, reason = "unavailable", f"owner hold until {reset.isoformat()}"
                 else:
@@ -499,6 +503,8 @@ def run_dispatch(args, *, now=None) -> int:
                         message = f"Fallback: {args.vendor} -> {vendor}; reason: {record['fallback_reason']}.\n\n" + message
                     verdict = message.replace("\r\n", "\n").encode("utf-8")
                     break
+                if outcome == "completed_no_output":
+                    break
                 print(f"seat: {vendor}: {reason}", file=sys.stderr)
                 if outcome != "unavailable":
                     break
@@ -532,6 +538,9 @@ def run_dispatch(args, *, now=None) -> int:
                     streams[source_path].flush()
                     record["result"]["source_output"] = str(source_path)
                     record["result"]["source_output_unavailable_reason"] = None
+                elif any(attempt["outcome"] == "completed_no_output"
+                         for attempt in record["attempts"]):
+                    record["outcome"] = "completed_no_output"
                 elif record.get("error") or any(
                     attempt["outcome"] == "error" for attempt in record["attempts"]
                 ):
@@ -638,10 +647,16 @@ def parser() -> argparse.ArgumentParser:
     )
     for vendor, model in DEFAULT_MODELS.items():
         cli.add_argument("--" + vendor, help="explicit CLI executable")
+        cli.add_argument("--" + vendor + "-unavailable-reason",
+                         help="record discovery failure without rediscovering the executable")
         cli.add_argument("--" + vendor + "-model", help=f"requested model (default: {model})")
+        cli.add_argument("--" + vendor + "-model-source",
+                         help="source of the explicitly selected model")
         effort_default = "classification" if vendor == "claude" else DEFAULT_CODEX_EFFORT
         cli.add_argument("--" + vendor + "-effort",
                          help=f"requested reasoning effort (default: {effort_default})")
+        cli.add_argument("--" + vendor + "-effort-source",
+                         help="source of the explicitly selected effort")
     return cli
 
 

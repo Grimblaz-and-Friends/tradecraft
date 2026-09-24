@@ -218,7 +218,8 @@ def create_consumer_tree(
     *, source: Path, output: Path, work: str, producer_version: str, mode: str,
     paths: list[str], loading_surfaces: list[str], front_page: str | None,
     root_instructions: str | None, directed_paths: list[str],
-    exclusions: list[str], deny_texts: list[str],
+    exclusions: list[str], deny_texts: list[str], source_revision: str | None = None,
+    registration_used: bool = True,
 ) -> Path:
     source = source.expanduser().resolve()
     output = output.expanduser().resolve()
@@ -230,7 +231,9 @@ def create_consumer_tree(
         raise RecipientTreeError("source root is not its Git top level")
     if _text(source, "status", "--porcelain"):
         raise RecipientTreeError("source root must be clean")
-    revision = _text(source, "rev-parse", "HEAD")
+    revision = _text(
+        source, "rev-parse", "--verify", f"{source_revision or 'HEAD'}^{{commit}}"
+    )
     job_paths = _unique(paths)
     if not job_paths:
         raise RecipientTreeError("tree requires at least one --path")
@@ -264,6 +267,7 @@ def create_consumer_tree(
         "tree_root": str(output),
         "source_root": str(source),
         "source_revision": revision,
+        "registration_used": registration_used,
         "mode": mode,
         "job_paths": job_paths,
         "carried_surfaces": surfaces,
@@ -280,7 +284,8 @@ def create_consumer_tree(
     return metadata_path(output)
 
 
-def validate_consumer_tree(metadata: Path, *, work: str, source: Path) -> Path:
+def load_consumer_tree_metadata(metadata: Path, *, work: str) -> dict[str, object]:
+    """Validate adjacent metadata integrity before a caller trusts its source claim."""
     metadata = metadata.expanduser().resolve()
     try:
         value = json.loads(metadata.read_bytes())
@@ -292,6 +297,19 @@ def validate_consumer_tree(metadata: Path, *, work: str, source: Path) -> Path:
         raise RecipientTreeError("consumer-tree metadata digest does not match")
     if value.get("work") != work:
         raise RecipientTreeError("consumer-tree metadata names another work item")
+    if not isinstance(value.get("registration_used", True), bool):
+        raise RecipientTreeError("consumer-tree metadata has an invalid registration claim")
+    return value
+
+
+def validate_consumer_tree(
+    metadata: Path, *, work: str, source: Path,
+    claim: dict[str, object] | None = None,
+) -> Path:
+    metadata = metadata.expanduser().resolve()
+    value = claim if claim is not None else load_consumer_tree_metadata(metadata, work=work)
+    if value.get("metadata_sha256") != _digest(value) or value.get("work") != work:
+        raise RecipientTreeError("consumer-tree metadata claim does not pass integrity checks")
     root_value = value.get("tree_root")
     files = value.get("files")
     if not isinstance(root_value, str) or not isinstance(files, dict):
@@ -300,7 +318,16 @@ def validate_consumer_tree(metadata: Path, *, work: str, source: Path) -> Path:
     source = source.expanduser().resolve()
     if not root.is_dir() or metadata != metadata_path(root):
         raise RecipientTreeError("consumer-tree metadata is not adjacent to its tree")
-    if value.get("source_revision") != _text(source, "rev-parse", "HEAD"):
+    revision = value.get("source_revision")
+    if not isinstance(revision, str):
+        raise RecipientTreeError("consumer-tree metadata lacks its source revision")
+    try:
+        resolved_revision = _text(source, "rev-parse", "--verify", f"{revision}^{{commit}}")
+    except RecipientTreeError as exc:
+        raise RecipientTreeError("consumer-tree source revision is absent") from exc
+    if resolved_revision != revision:
+        raise RecipientTreeError("consumer-tree source revision is not canonical")
+    if value.get("registration_used", True) and revision != _text(source, "rev-parse", "HEAD"):
         raise RecipientTreeError("consumer tree does not match the registered revision")
     if value.get("source_root") != str(source):
         raise RecipientTreeError("consumer-tree metadata names another source root")
@@ -323,7 +350,7 @@ def validate_consumer_tree(metadata: Path, *, work: str, source: Path) -> Path:
         manifest[name] = {"mode": expected["mode"], "oid": expected["oid"]}
     if _tree_files(root, "HEAD") != manifest:
         raise RecipientTreeError("consumer-tree committed paths do not match the manifest")
-    source_files = _tree_files(source, str(value["source_revision"]), list(manifest))
+    source_files = _tree_files(source, revision, list(manifest))
     if source_files != manifest:
         raise RecipientTreeError("consumer-tree manifest does not match the source revision")
     for name, expected in manifest.items():

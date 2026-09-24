@@ -23,8 +23,11 @@ import urllib.parse
 
 from brief import LANES, review_lane
 import dispatch_record as records
+import dispatch_implementer
+import dispatch_seat
 import proof as proof_document
 import recipient_tree
+import vendor_cli
 from winio import utf8_stdio
 
 COMMANDS = (
@@ -69,7 +72,7 @@ SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "no-use", "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
-    "builder-session", "proof",
+    "builder-session", "model-override", "proof",
 })
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
@@ -97,22 +100,37 @@ HEAD_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
 NEW_MECHANISM_VERSION = "0.152.0"
 PROOF_MECHANISM_VERSION = "0.153.0"
+TRUTHFUL_ENTRANCE_VERSION = "0.154.0"
 REGISTERED_ROOT_VERSION = "0.149.0"
 DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
 DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
 STAGE_SAFETY = {
-    "artifact": ((NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),),
-    "cold-seat": ((NEW_MECHANISM_VERSION, "neutral cold root and explicit run"),),
-    "build": ((NEW_MECHANISM_VERSION,
-               "bounded prompt, branch publication and explicit run"),),
+    "artifact": (
+        (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executable"),
+    ),
+    "cold-seat": (
+        (NEW_MECHANISM_VERSION, "neutral cold root and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executables"),
+    ),
+    "build": (
+        (NEW_MECHANISM_VERSION, "bounded prompt, branch publication and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executable"),
+    ),
     "floor": (
         (REGISTERED_ROOT_VERSION, "registered implementation root"),
         (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executable"),
     ),
-    "use": ((NEW_MECHANISM_VERSION, "validated consumer tree and explicit run"),),
+    "use": (
+        (NEW_MECHANISM_VERSION, "validated consumer tree and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION,
+         "landed consumer-tree use and explicit launch settings and runtime executables"),
+    ),
     "review-disposition": (
         (REGISTERED_ROOT_VERSION, "registered implementation root"),
         (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
+        (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executable"),
     ),
     "proof": ((PROOF_MECHANISM_VERSION, "composed proof publication"),),
     "ready-reviewers": ((PROOF_MECHANISM_VERSION, "configured reviewer readiness"),),
@@ -147,6 +165,21 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
                          "surfaces": {"issue", "issue-comment"}},
     "implementing-pr": {"required": {"number"}, "optional": set(),
                         "surfaces": {"issue-comment"}},
+    "model-override": {
+        "required": set(),
+        "optional": {
+            "implementer", "ordinary_seat", "cold_seat", "terminal_seat",
+            "use_consumer",
+        },
+        "surfaces": {"issue-comment"},
+    },
+}
+MODEL_OVERRIDE_ROLES = {
+    "implementer": "implementer",
+    "ordinary-seat": "ordinary_seat",
+    "cold-seat": "cold_seat",
+    "terminal-seat": "terminal_seat",
+    "use-consumer": "use_consumer",
 }
 RESUME_SOURCE_STAGES = {
     "artifact": frozenset({"artifact"}),
@@ -154,6 +187,8 @@ RESUME_SOURCE_STAGES = {
     "floor": frozenset({"build", "floor"}),
     "review-disposition": frozenset({"build", "floor", "review-disposition"}),
 }
+SUCCESSFUL_BUNDLE_OUTCOMES = frozenset({"success", "success_uncontinuable"})
+RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {"completed_no_output"}
 
 
 class WorkError(RuntimeError):
@@ -198,6 +233,7 @@ class WorkState:
     issue: dict[str, object]
     issue_comments: list[dict[str, object]] = field(default_factory=list)
     pr: dict[str, object] | None = None
+    merged_pr: dict[str, object] | None = None
     pr_comments: list[dict[str, object]] = field(default_factory=list)
     reviews: list[dict[str, object]] = field(default_factory=list)
     review_comments: list[dict[str, object]] = field(default_factory=list)
@@ -281,6 +317,14 @@ class Decision:
             "invalid_markers": list(self.invalid_markers),
             "latest_checks": list(self.latest_checks),
         }
+
+
+@dataclass(frozen=True)
+class LaunchSettings:
+    model: str
+    effort: str
+    model_source: str
+    effort_source: str
 
 
 @dataclass(frozen=True)
@@ -410,17 +454,10 @@ def _state_markers(state: WorkState) -> list[Marker]:
     return found
 
 
-def _candidate_prs(issue_number: int, issue: dict[str, object],
-                   comments: list[dict[str, object]], pulls: list[dict[str, object]],
-                   config: WorkConfig, *, include_closed: bool = False) -> set[int]:
+def _candidate_pr_classes(issue_number: int, issue: dict[str, object],
+                          comments: list[dict[str, object]], pulls: list[dict[str, object]],
+                          config: WorkConfig) -> tuple[set[int], set[int]]:
     found: set[int] = set()
-    issue_closed = str(issue.get("state") or "").lower() == "closed"
-    eligible = {
-        int(pull["number"]) for pull in pulls
-        if isinstance(pull.get("number"), int)
-        and (include_closed or issue_closed
-             or str(pull.get("state") or "").lower() == "open")
-    }
     if isinstance(issue.get("pull_request"), dict):
         found.add(issue_number)
     sources: list[tuple] = [(
@@ -442,7 +479,27 @@ def _candidate_prs(issue_number: int, issue: dict[str, object],
             int(match.group(1)) == issue_number for match in CLOSING_REFERENCE.finditer(body)
         ):
             found.add(number)
-    return found & eligible
+    open_candidates = {
+        int(pull["number"]) for pull in pulls
+        if isinstance(pull.get("number"), int)
+        and str(pull.get("state") or "").lower() == "open"
+    } & found
+    merged_candidates = {
+        int(pull["number"]) for pull in pulls
+        if isinstance(pull.get("number"), int) and bool(pull.get("merged_at"))
+    } & found
+    return open_candidates, merged_candidates
+
+
+def _candidate_prs(issue_number: int, issue: dict[str, object],
+                   comments: list[dict[str, object]], pulls: list[dict[str, object]],
+                   config: WorkConfig, *, include_closed: bool = False) -> set[int]:
+    """Return the winning candidate class; the retained argument is compatibility-only."""
+    del include_closed
+    open_candidates, merged_candidates = _candidate_pr_classes(
+        issue_number, issue, comments, pulls, config
+    )
+    return open_candidates or merged_candidates
 
 
 ACTION_RUN = re.compile(r"/actions/runs/([1-9][0-9]*)(?:/|\?|\Z)")
@@ -478,7 +535,10 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     issue_comments = _get_list(transport, f"{issue_endpoint}/comments")
     pulls_endpoint = f"{base}/pulls?state=all&per_page=100"
     pulls = _get_list(transport, pulls_endpoint)
-    candidates = sorted(_candidate_prs(issue_number, issue, issue_comments, pulls, work_config))
+    open_candidates, merged_candidates = _candidate_pr_classes(
+        issue_number, issue, issue_comments, pulls, work_config
+    )
+    candidates = sorted(open_candidates or merged_candidates)
     state = WorkState(repo, issue_number, issue, issue_comments, config=work_config)
     if len(candidates) > 1:
         state.ambiguous_prs = candidates
@@ -486,6 +546,9 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     if not candidates:
         return state
     number = candidates[0]
+    if not open_candidates:
+        state.merged_pr = next(pull for pull in pulls if pull.get("number") == number)
+        return state
     pr_endpoint = f"{base}/pulls/{number}"
     state.pr = _dict(transport.get(pr_endpoint), pr_endpoint)
     state.pr_comments = _get_list(transport, f"{base}/issues/{number}/comments")
@@ -712,6 +775,12 @@ def _marker_value_error(marker: Marker) -> str | None:
     if marker.name == "implementing-pr" and POSITIVE_INTEGER.fullmatch(
             values.get("number", "")) is None:
         return "implementing pull request number is invalid"
+    if marker.name == "model-override":
+        for value in values.values():
+            parts = value.split(":")
+            if (len(parts) != 3 or parts[0] not in {"codex", "claude"}
+                    or any(not part or re.search(r"[\s:]", part) for part in parts[1:])):
+                return "model override value is invalid"
     return None
 
 
@@ -788,6 +857,83 @@ def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[st
     state.validated_markers = lawful
     state.invalid_marker_claims = invalid
     return lawful, invalid
+
+
+def _marker_setting_source(marker: Marker) -> str:
+    return marker.url or f"{marker.surface}:{marker.source_id or 'unknown'}"
+
+
+def _launch_settings(state: WorkState, role: str, vendor: str,
+                     classification: str | None = None) -> LaunchSettings:
+    if role not in MODEL_OVERRIDE_ROLES:
+        raise WorkError(f"unknown launch role: {role}")
+    if vendor == "codex":
+        if role == "implementer":
+            model = dispatch_implementer.DEFAULT_MODEL
+            effort = dispatch_implementer.DEFAULT_EFFORT
+            model_source = effort_source = "dispatch_implementer default"
+        else:
+            model = dispatch_seat.DEFAULT_MODELS["codex"]
+            effort = dispatch_seat.DEFAULT_CODEX_EFFORT
+            model_source = effort_source = "dispatch_seat default"
+    elif vendor == "claude":
+        if classification not in records.CLASSIFICATIONS:
+            raise WorkError("Claude seat settings require a judgment classification")
+        model = dispatch_seat.DEFAULT_MODELS["claude"]
+        effort = dispatch_seat.CLAUDE_EFFORTS[classification]
+        model_source = "dispatch_seat default"
+        effort_source = "classification mapping"
+    else:
+        raise WorkError(f"unknown launch vendor: {vendor}")
+    override = next((marker for marker in reversed(state.issue_markers)
+                     if marker.name == "model-override"), None)
+    if override is not None:
+        value = override.attributes.get(MODEL_OVERRIDE_ROLES[role])
+        if value:
+            selected_vendor, selected_model, selected_effort = value.split(":")
+            if selected_vendor == vendor:
+                model = selected_model
+                effort = selected_effort
+                model_source = effort_source = _marker_setting_source(override)
+    return LaunchSettings(model, effort, model_source, effort_source)
+
+
+def _runtime_argument(vendor: str, explicit: Path | None = None) -> list[str]:
+    try:
+        path = vendor_cli.resolve_executable_path(
+            vendor, str(explicit) if explicit is not None else None,
+        )
+    except vendor_cli.CliError as exc:
+        if explicit is not None:
+            raise WorkError(str(exc)) from exc
+        return [f"--{vendor}-unavailable-reason", str(exc)]
+    return [f"--{vendor}", str(path)]
+
+
+def _selected_runtime_argument(vendor: str, explicit: Path | None) -> list[str]:
+    return _runtime_argument(vendor, explicit) if explicit is not None else _runtime_argument(vendor)
+
+
+def _setting_arguments(vendor: str, settings: LaunchSettings) -> list[str]:
+    return [
+        f"--{vendor}-model", settings.model,
+        f"--{vendor}-effort", settings.effort,
+        f"--{vendor}-model-source", settings.model_source,
+        f"--{vendor}-effort-source", settings.effort_source,
+    ]
+
+
+def _seat_launch_arguments(state: WorkState, role: str, classification: str, *,
+                           claude_path: Path | None = None,
+                           codex_path: Path | None = None) -> list[str]:
+    arguments: list[str] = []
+    explicit_paths = {"claude": claude_path, "codex": codex_path}
+    for vendor in dispatch_seat.VENDORS:
+        arguments.extend(_setting_arguments(
+            vendor, _launch_settings(state, role, vendor, classification)
+        ))
+        arguments.extend(_selected_runtime_argument(vendor, explicit_paths[vendor]))
+    return arguments
 
 
 def load_use_rules(path: Path) -> dict[str, object]:
@@ -1010,7 +1156,7 @@ def _checks_pending(state: WorkState) -> bool:
 def _decision_status(decision: Decision) -> str:
     if decision.dispatch:
         return "runnable"
-    if decision.stage in {"artifact-cap", "open-pull-request", "holder-read",
+    if decision.stage in {"artifact-cap", "open-pull-request", "merged-pull-request", "holder-read",
                           "ready-reviewers", "proof", "use", "release-report",
                           "ambiguous-pr", "panel"}:
         return "holder-owned"
@@ -1233,6 +1379,14 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     if state.ambiguous_prs:
         joined = ",".join(str(number) for number in state.ambiguous_prs)
         return result("ambiguous-pr", False, None, "multiple-candidate-pull-requests", joined)
+    if state.merged_pr is not None:
+        number = state.merged_pr.get("number")
+        return result(
+            "merged-pull-request", False, None,
+            "implementing-pull-request-merged-while-issue-open",
+            f"pull request #{number} merged; holder decides what the issue still owes: "
+            "close it, run another build, or run a use owed after the merge from a landed commit",
+        )
     if state.pr and (state.pr.get("merged_at") or str(state.pr.get("state") or "").lower() == "closed"):
         return result("terminal", False, None, "issue-or-pull-request-terminal")
     affirmed = [marker for marker in state.issue_markers if marker.name == "affirmed-brief"]
@@ -1551,6 +1705,64 @@ def canonical_holder_root(root: Path) -> Path:
     return holder
 
 
+def _selected_remote(root: Path, purpose: str) -> str:
+    remotes = [line for line in _git_text(["remote"], root, "list Git remotes").splitlines()
+               if line]
+    upstream = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], root)
+    if upstream.returncode == 0:
+        tracking = upstream.stdout.decode("utf-8", errors="backslashreplace").strip()
+        selected = next((remote for remote in remotes
+                         if tracking.startswith(remote + "/")), None)
+    else:
+        selected = remotes[0] if len(remotes) == 1 else None
+    if selected is None:
+        raise WorkError(
+            f"cannot {purpose}: select one tracked remote or leave exactly one remote"
+        )
+    return selected
+
+
+def _landed_revision_source(transport: GitHubREST, repo: str, root: Path,
+                            revision: str) -> tuple[Path, str]:
+    holder = canonical_holder_root(root)
+    if _git_text(["status", "--porcelain"], holder, "inspect holder status"):
+        raise WorkError("holder source root must be clean")
+    remote = _selected_remote(holder, "select landed-revision remote")
+    repository_endpoint = f"repos/{repo}"
+    repository = _dict(transport.get(repository_endpoint), repository_endpoint)
+    default_branch = repository.get("default_branch")
+    if not isinstance(default_branch, str) or not default_branch:
+        raise WorkError("repository has no readable default branch")
+    fetched = _git([
+        "fetch", "--no-tags", remote,
+        f"+refs/heads/{default_branch}:refs/remotes/{remote}/{default_branch}",
+    ], holder)
+    if fetched.returncode:
+        raise WorkError(f"cannot refresh remote default branch: {_git_failure(fetched)}")
+    advertised = _git([
+        "ls-remote", "--heads", remote, f"refs/heads/{default_branch}",
+    ], holder)
+    if advertised.returncode:
+        raise WorkError(f"cannot verify remote default branch: {_git_failure(advertised)}")
+    fields = advertised.stdout.decode("ascii", errors="replace").strip().split()
+    remote_head = _git_text(
+        ["rev-parse", "--verify", f"refs/remotes/{remote}/{default_branch}^{{commit}}"],
+        holder, "resolve refreshed remote default branch",
+    )
+    if len(fields) != 2 or fields[0] != remote_head:
+        raise WorkError("refreshed default branch does not match its remote head")
+    resolved = _git_text(
+        ["rev-parse", "--verify", f"{revision}^{{commit}}"],
+        holder, "resolve named consumer-tree revision",
+    )
+    reachable = _git(["merge-base", "--is-ancestor", resolved, remote_head], holder)
+    if reachable.returncode == 1:
+        raise WorkError("named revision is not reachable from the remote default branch head")
+    if reachable.returncode:
+        raise WorkError(f"cannot prove named revision reachability: {_git_failure(reachable)}")
+    return holder, resolved
+
+
 def _change_rows(repo: str, issue: int, instalment: str | None,
                  *, active_only: bool) -> list[dict[str, object]]:
     rows = read_registry()["worktrees"]
@@ -1707,21 +1919,10 @@ def publish_implementation_branch(root: Path, branch: str) -> str:
         "repair the remote selection, authentication, or connectivity and retry run build; "
         "the registered branch will be published and verified before launch"
     )
-    remotes = [line for line in _git_text(["remote"], root, "list Git remotes").splitlines()
-               if line]
-    upstream = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], root)
-    remote: str | None = None
-    if upstream.returncode == 0:
-        tracking = upstream.stdout.decode("utf-8", errors="backslashreplace").strip()
-        remote = next((candidate for candidate in remotes
-                       if tracking.startswith(candidate + "/")), None)
-    elif len(remotes) == 1:
-        remote = remotes[0]
-    if remote is None:
-        raise WorkError(
-            "cannot publish implementation branch: select one upstream or leave exactly one "
-            f"remote; {retry}"
-        )
+    try:
+        remote = _selected_remote(root, "publish implementation branch")
+    except WorkError as exc:
+        raise WorkError(f"{exc}; {retry}") from exc
     pushed = _git(["push", "--set-upstream", remote,
                    f"HEAD:refs/heads/{branch}"], root)
     if pushed.returncode:
@@ -2046,6 +2247,7 @@ def _time(value: str | None) -> datetime | None:
 def _matching_bundles(
     work_value: str, stages: set[str] | frozenset[str], record_root: Path, *,
     completed_no_later_than: str | None = None,
+    outcomes: frozenset[str] = SUCCESSFUL_BUNDLE_OUTCOMES,
 ) -> list[tuple[str, str, dict[str, object], dict[str, object]]]:
     candidates: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
     if not record_root.is_dir():
@@ -2069,7 +2271,7 @@ def _matching_bundles(
                 raise WorkError(
                     f"matching dispatch bundle has unsupported run schema: {run_path}"
                 )
-            if run.get("outcome") not in {"success", "success_uncontinuable"}:
+            if run.get("outcome") not in outcomes:
                 continue
             completed = str(run.get("completed_at") or "")
             completed_time = _time(completed)
@@ -2416,7 +2618,9 @@ def set_proof_freshness(state: WorkState, expected: dict[str, object]) -> None:
 
 def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSource | None:
     allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
-    matched = _matching_bundles(work_value, allowed_stages, record_root)
+    matched = _matching_bundles(
+        work_value, allowed_stages, record_root, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+    )
     candidates: list[ResumeSource] = []
     for completed, run_path, request, run in matched:
         attempts = run.get("attempts")
@@ -2556,6 +2760,13 @@ def _dispatch_root(state: WorkState, decision: Decision, holder_root: Path,
         )
         if resolved is not None:
             if decision.stage == "build" and decision.continuity == "fresh":
+                if state.merged_pr is not None:
+                    return Decision(
+                        "build", False, None, "fresh-build-requires-released-registration",
+                        "An active registration remains for the merged implementation; run "
+                        "release for this work before naming another fresh build.",
+                        status="refused",
+                    )
                 implementation_root, branch, _migrated = resolved
                 publish_implementation_branch(implementation_root, branch)
             return resolved
@@ -2884,8 +3095,12 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                   tree_metadata: Path | None = None,
                   timeout_seconds: float | None = None,
                   transport: GitHubREST | None = None,
+                  claude_path: Path | None = None,
+                  codex_path: Path | None = None,
                   rules: dict[str, object] | None = None,
                   use_rules_path: Path | None = None) -> int:
+    if state.validated_markers is None:
+        validate_marker_claims(state)
     effective_timeout = (
         timeout_seconds if timeout_seconds is not None else
         DEFAULT_BUILD_TIMEOUT_SECONDS if decision.stage == "build" else
@@ -2894,6 +3109,9 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     if not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise WorkError("--timeout-seconds must be finite and positive")
     timeout_argument = f"{effective_timeout:g}"
+    for vendor, path in (("claude", claude_path), ("codex", codex_path)):
+        if path is not None:
+            _runtime_argument(vendor, path)
     resume_source: ResumeSource | None = None
     if decision.continuity == "resume":
         record_root = state.record_root or records.default_record_root().expanduser().resolve()
@@ -2980,17 +3198,30 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             print(json.dumps(refused_use.as_dict(), ensure_ascii=True, sort_keys=True))
             return 0
         try:
-            resolved = resolve_implementation_root(
-                root, state.repo, state.issue_number, instalment
+            claim = recipient_tree.load_consumer_tree_metadata(
+                tree_metadata, work=f"{state.repo}#{state.issue_number}"
             )
-            if resolved is None:
-                raise WorkError(
-                    f"no active implementation registration matches {state.repo}#{state.issue_number}"
+            if claim.get("registration_used", True):
+                resolved = resolve_implementation_root(
+                    root, state.repo, state.issue_number, instalment
                 )
-            implementation_root, _branch, _migrated = resolved
+                if resolved is None:
+                    raise WorkError(
+                        f"no active implementation registration matches {state.repo}#{state.issue_number}"
+                    )
+                source_root, _branch, _migrated = resolved
+            else:
+                revision = claim.get("source_revision")
+                if not isinstance(revision, str):
+                    raise recipient_tree.RecipientTreeError(
+                        "consumer-tree metadata lacks its source revision"
+                    )
+                source_root, _resolved_revision = _landed_revision_source(
+                    transport or GitHubREST(), state.repo, root, revision,
+                )
             consumer_root = recipient_tree.validate_consumer_tree(
                 tree_metadata, work=f"{state.repo}#{state.issue_number}",
-                source=implementation_root,
+                source=source_root, claim=claim,
             )
         except (WorkError, recipient_tree.RecipientTreeError) as exc:
             refused_use = _reported_decision(state, Decision(
@@ -2999,8 +3230,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             print(json.dumps(refused_use.as_dict(), ensure_ascii=True, sort_keys=True))
             return 0
         dispatch = dispatch_path.expanduser().resolve()
-        if _path_inside(dispatch, implementation_root):
-            raise WorkError("use dispatch file must be outside the registered implementation root")
+        if _path_inside(dispatch, source_root):
+            raise WorkError("use dispatch file must be outside the selected source root")
         if not dispatch.is_file() or not dispatch.read_bytes().strip():
             raise WorkError(f"use dispatch file is absent or empty: {dispatch}")
         here = Path(__file__).resolve().parent
@@ -3008,10 +3239,14 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             sys.executable, str(here / "dispatch_seat.py"),
             "--dispatch", str(dispatch), "--root", str(consumer_root),
             "--work", f"{state.repo}#{state.issue_number}", "--stage", "use",
-            "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
-            "--settings-scope", "use", "--vendor", "claude", "--own-vendor", "codex",
+            "--settings-source", "work entrance use-consumer route",
+            "--settings-scope", "use-consumer", "--vendor", "claude", "--own-vendor", "codex",
             "--classification", "cold", "--requires", "execute",
             "--timeout-seconds", timeout_argument,
+            *_seat_launch_arguments(
+                state, "use-consumer", "cold",
+                claude_path=claude_path, codex_path=codex_path,
+            ),
         ]
         return subprocess.run(command).returncode
     if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
@@ -3109,13 +3344,17 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 common = [
                     "--dispatch", str(dispatch), "--root", str(recipient),
                     "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
-                    "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
-                    "--settings-scope", decision.stage,
+                    "--settings-source", "work entrance cold-seat route",
+                    "--settings-scope", "cold-seat",
                     "--timeout-seconds", timeout_argument,
                 ]
                 command = [sys.executable, str(here / "dispatch_seat.py"), *common,
                            "--vendor", "claude", "--own-vendor", "codex",
-                           "--classification", "cold", "--requires", "read"]
+                           "--classification", "cold", "--requires", "read",
+                            *_seat_launch_arguments(
+                                state, "cold-seat", "cold",
+                                claude_path=claude_path, codex_path=codex_path,
+                            )]
                 return subprocess.run(command).returncode
         else:
             if branch is not None:
@@ -3125,11 +3364,16 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             common = [
                 "--dispatch", str(dispatch), "--root", str(dispatch_root),
                 "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
-                "--settings-source", f"https://github.com/{state.repo}/issues/{state.issue_number}",
-                "--settings-scope", decision.stage,
+                "--settings-source", "work entrance implementer route",
+                "--settings-scope", "implementer",
                 "--timeout-seconds", timeout_argument,
             ]
+            settings = _launch_settings(state, "implementer", "codex")
             command = [sys.executable, str(here / "dispatch_implementer.py"), *common,
+                       "--model", settings.model, "--effort", settings.effort,
+                       "--model-source", settings.model_source,
+                       "--effort-source", settings.effort_source,
+                        *_selected_runtime_argument("codex", codex_path),
                        "--holder-session-id", holder_identity]
             if decision.continuity == "resume":
                 command.extend(("--resume", session))
@@ -3175,8 +3419,13 @@ def parser() -> argparse.ArgumentParser:
         "--timeout-seconds", type=float,
         help="launcher timeout; defaults to 7200 for build and 3600 for every other stage",
     )
+    cli.add_argument("--claude", type=Path,
+                     help="explicit Claude executable for run instead of discovery")
+    cli.add_argument("--codex", type=Path,
+                     help="explicit Codex executable for run instead of discovery")
     cli.add_argument("--mode", choices=("adopter", "repository-session"))
     cli.add_argument("--output", type=Path)
+    cli.add_argument("--revision", help="landed commit to archive without a registration")
     cli.add_argument("--path", action="append", default=[])
     cli.add_argument("--loading-surface", action="append", default=[])
     cli.add_argument("--front-page")
@@ -3198,6 +3447,7 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
             bundles = _matching_bundles(
                 f"{state.repo}#{state.issue_number}", frozenset({"artifact"}),
                 state.record_root or records.default_record_root().expanduser().resolve(),
+                outcomes=RESUMABLE_BUNDLE_OUTCOMES,
             )
         except WorkError:
             return "resume"
@@ -3207,21 +3457,33 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
     return "resume"
 
 
-def _tree_command(args: argparse.Namespace, root: Path) -> int:
+def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -> int:
     if args.stage is not None:
         raise WorkError("tree does not accept a stage")
     if args.mode is None or args.output is None:
         raise WorkError("tree requires --mode and --output")
     current = records.producer_version()
-    if (_version_key(current) or (0, 0, 0)) < (_version_key(NEW_MECHANISM_VERSION) or (0, 0, 0)):
+    required, mechanism = (
+        (TRUTHFUL_ENTRANCE_VERSION, "landed revision consumer tree")
+        if args.revision is not None else
+        (NEW_MECHANISM_VERSION, "verified neutral consumer tree")
+    )
+    if (_version_key(current) or (0, 0, 0)) < (_version_key(required) or (0, 0, 0)):
         raise WorkError(
-            f"tree: found={current}; required={NEW_MECHANISM_VERSION}; "
-            "mechanism=verified neutral consumer tree"
+            f"tree: found={current}; required={required}; mechanism={mechanism}"
         )
-    resolved = resolve_implementation_root(root, args.repo, args.issue, args.instalment)
-    if resolved is None:
-        raise WorkError(f"no active implementation registration matches {args.repo}#{args.issue}")
-    source, _branch, _migrated = resolved
+    if args.revision is not None:
+        source, source_revision = _landed_revision_source(
+            transport, args.repo, root, args.revision
+        )
+        registration_used = False
+    else:
+        resolved = resolve_implementation_root(root, args.repo, args.issue, args.instalment)
+        if resolved is None:
+            raise WorkError(f"no active implementation registration matches {args.repo}#{args.issue}")
+        source, _branch, _migrated = resolved
+        source_revision = None
+        registration_used = True
     try:
         metadata = recipient_tree.create_consumer_tree(
             source=source, output=args.output,
@@ -3231,6 +3493,7 @@ def _tree_command(args: argparse.Namespace, root: Path) -> int:
             front_page=args.front_page, root_instructions=args.root_instructions,
             directed_paths=args.directed_path, exclusions=args.exclude_record,
             deny_texts=args.deny_text,
+            source_revision=source_revision, registration_used=registration_used,
         )
     except recipient_tree.RecipientTreeError as exc:
         raise WorkError(str(exc)) from exc
@@ -3275,7 +3538,7 @@ def run(
         ))
         return 0
     if args.command == "tree":
-        return _tree_command(args, root)
+        return _tree_command(args, root, github)
     if args.command != "run" and args.stage is not None:
         raise WorkError("a stage is accepted only after the run command")
     if args.command == "run" and args.stage is None:
@@ -3304,8 +3567,9 @@ def run(
         return executor(
             state, decision, root, args.instalment, args.holder_session_id,
             dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
-            timeout_seconds=args.timeout_seconds,
-            transport=github, rules=rules, use_rules_path=use_rules_path,
+            timeout_seconds=args.timeout_seconds, transport=github,
+            claude_path=args.claude, codex_path=args.codex,
+            rules=rules, use_rules_path=use_rules_path,
         )
     return executor(state, decision, root, args.instalment, args.holder_session_id)
 

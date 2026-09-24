@@ -637,6 +637,115 @@ def test_authorized_marker_advances_the_entrance():
     assert work.decide(state(AFFIRMED), RULES).stage == "artifact"
 
 
+def test_latest_lawful_model_override_is_one_whole_choice():
+    first = (
+        "<!-- tradecraft:model-override:v1 "
+        "implementer=codex:gpt-fixture:high "
+        "ordinary_seat=claude:claude-fixture:high "
+        "cold_seat=claude:claude-fixture:max "
+        "terminal_seat=claude:claude-fixture:max "
+        "use_consumer=claude:claude-fixture:max -->"
+    )
+    fixture = state(AFFIRMED, first)
+    work.validate_marker_claims(fixture)
+    assert work._launch_settings(fixture, "implementer", "codex") == work.LaunchSettings(
+        "gpt-fixture", "high", "issue-comment:unknown", "issue-comment:unknown",
+    )
+    assert work._launch_settings(fixture, "cold-seat", "claude", "cold").effort == "max"
+    assert work._launch_settings(fixture, "use-consumer", "claude", "cold").model == (
+        "claude-fixture"
+    )
+    fixture.issue_comments.append({
+        "body": "<!-- tradecraft:model-override:v1 cold_seat=claude:new-cold:high -->",
+        "user": {"login": PRODUCER},
+    })
+    work.validate_marker_claims(fixture)
+    implementer = work._launch_settings(fixture, "implementer", "codex")
+    assert (implementer.model, implementer.effort, implementer.model_source) == (
+        work.dispatch_implementer.DEFAULT_MODEL,
+        work.dispatch_implementer.DEFAULT_EFFORT,
+        "dispatch_implementer default",
+    )
+    assert work._launch_settings(fixture, "cold-seat", "claude", "cold").model == "new-cold"
+    fixture.issue_comments.append({
+        "body": "<!-- tradecraft:model-override:v1 -->",
+        "user": {"login": PRODUCER},
+    })
+    work.validate_marker_claims(fixture)
+    restored = work._launch_settings(fixture, "cold-seat", "claude", "cold")
+    assert (restored.model, restored.effort, restored.model_source, restored.effort_source) == (
+        work.dispatch_seat.DEFAULT_MODELS["claude"],
+        work.dispatch_seat.CLAUDE_EFFORTS["cold"],
+        "dispatch_seat default", "classification mapping",
+    )
+
+
+def test_launch_settings_read_program_b_defaults_with_accurate_sources():
+    fixture = state(AFFIRMED)
+    work.validate_marker_claims(fixture)
+
+    implementer = work._launch_settings(fixture, "implementer", "codex")
+    codex_seat = work._launch_settings(fixture, "ordinary-seat", "codex", "ordinary")
+    ordinary = work._launch_settings(fixture, "ordinary-seat", "claude", "ordinary")
+    cold = work._launch_settings(fixture, "cold-seat", "claude", "cold")
+    terminal = work._launch_settings(fixture, "terminal-seat", "claude", "terminal")
+
+    assert implementer == work.LaunchSettings(
+        "gpt-5.6-sol", "xhigh", "dispatch_implementer default",
+        "dispatch_implementer default",
+    )
+    assert codex_seat == work.LaunchSettings(
+        "gpt-5.6-sol", "xhigh", "dispatch_seat default", "dispatch_seat default",
+    )
+    assert ordinary == work.LaunchSettings(
+        "claude-opus-5-5", "high", "dispatch_seat default", "classification mapping",
+    )
+    assert cold == work.LaunchSettings(
+        "claude-opus-5-5", "max", "dispatch_seat default", "classification mapping",
+    )
+    assert terminal == cold
+
+
+@pytest.mark.parametrize("claim", [
+    "<!-- tradecraft:model-override:v1 mystery=codex:model:high -->",
+    "<!-- tradecraft:model-override:v1 implementer=codex:model -->",
+    "<!-- tradecraft:model-override:v1 implementer=codex:model:high implementer=codex:other:max -->",
+])
+def test_invalid_model_override_claims_are_reported_and_do_not_change_defaults(claim):
+    fixture = state(AFFIRMED, claim)
+    decision = work.decide(fixture, RULES)
+    assert decision.invalid_markers
+    selected = work._launch_settings(fixture, "implementer", "codex")
+    assert (selected.model, selected.effort) == (
+        work.dispatch_implementer.DEFAULT_MODEL, work.dispatch_implementer.DEFAULT_EFFORT,
+    )
+
+
+def test_wrong_vendor_override_and_narrative_prose_leave_defaults_in_place():
+    fixture = state(
+        AFFIRMED,
+        "The owner discussed implementer=codex:narrative:max in prose.",
+        "<!-- tradecraft:model-override:v1 implementer=claude:opus:max -->",
+    )
+    work.validate_marker_claims(fixture)
+    selected = work._launch_settings(fixture, "implementer", "codex")
+    assert selected.model == work.dispatch_implementer.DEFAULT_MODEL
+    assert selected.model_source == "dispatch_implementer default"
+
+
+def test_wrong_surface_and_unauthorized_model_overrides_are_reported_invalid():
+    marker = "<!-- tradecraft:model-override:v1 implementer=codex:gpt-owner:max -->"
+    fixture = state(AFFIRMED)
+    fixture.issue["body"] = marker
+    fixture.issue_comments.append({
+        "body": marker, "user": {"login": "untrusted-commenter"},
+    })
+    decision = work.decide(fixture, RULES)
+    reasons = {claim["reason"] for claim in decision.invalid_markers}
+    assert "marker is not permitted on issue" in reasons
+    assert "marker producer is not authorized: untrusted-commenter" in reasons
+
+
 def test_unauthorized_comment_marker_is_ignored_and_names_its_author():
     fixture = state()
     fixture.issue_comments = [{
@@ -986,16 +1095,49 @@ def test_merged_pull_request_cited_as_evidence_is_not_a_candidate_or_terminal():
     assert work.decide(fixture, RULES).stage == "convergence"
 
 
-def test_reopened_issue_ignores_its_merged_former_implementing_pull_request():
+def test_reopened_issue_retains_its_merged_former_implementing_pull_request():
     issue = {"number": 12, "state": "open", "body": ""}
     pulls = [{
         "number": 9, "state": "closed", "merged_at": "2026-09-01T00:00:00Z",
         "body": "Closes #12",
     }]
     candidates = work._candidate_prs(12, issue, [], pulls, CONFIG)
-    fixture = work.WorkState("acme/widget", 12, issue, config=CONFIG)
-    assert candidates == set()
-    assert work.decide(fixture, RULES).stage == "convergence"
+    fixture = work.WorkState("acme/widget", 12, issue, merged_pr=pulls[0], config=CONFIG)
+    assert candidates == {9}
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.dispatch, decision.status) == (
+        "merged-pull-request", False, "holder-owned",
+    )
+    assert decision.detail == (
+        "pull request #9 merged; holder decides what the issue still owes: close it, "
+        "run another build, or run a use owed after the merge from a landed commit"
+    )
+
+
+def test_fresh_build_after_merged_pull_request_refuses_the_active_registration(
+        tmp_path, monkeypatch):
+    fixture = state(AFFIRMED)
+    fixture.merged_pr = {
+        "number": 9, "state": "closed", "merged_at": "2026-09-01T00:00:00Z",
+    }
+    implementation = tmp_path / "implementation"
+    monkeypatch.setattr(
+        work, "resolve_implementation_root",
+        lambda *_args, **_kwargs: (implementation, "tradecraft/12-former", False),
+    )
+    monkeypatch.setattr(
+        work, "publish_implementation_branch",
+        lambda *_args, **_kwargs: pytest.fail("the merged registration must not launch"),
+    )
+
+    selected = work._dispatch_root(
+        fixture, work.Decision("build", True, "fresh", "holder-named-stage"),
+        tmp_path, None, "holder-session",
+    )
+
+    assert isinstance(selected, work.Decision)
+    assert selected.reason == "fresh-build-requires-released-registration"
+    assert "run release" in (selected.detail or "")
 
 
 def test_closed_issue_keeps_its_merged_implementing_pull_request_terminal():
@@ -1014,6 +1156,39 @@ def test_open_issue_selects_its_open_implementing_pull_request():
     issue = {"number": 12, "state": "open", "body": ""}
     pulls = [{"number": 9, "state": "open", "body": "Closes #12"}]
     assert work._candidate_prs(12, issue, [], pulls, CONFIG) == {9}
+
+
+def test_open_implementing_pull_request_wins_over_merged_history():
+    issue = {"number": 12, "state": "open", "body": ""}
+    pulls = [
+        {"number": 8, "state": "closed", "merged_at": "2026-09-01T00:00:00Z",
+         "body": "Closes #12"},
+        {"number": 9, "state": "open", "merged_at": None, "body": "Closes #12"},
+    ]
+    assert work._candidate_prs(12, issue, [], pulls, CONFIG) == {9}
+
+
+def test_multiple_merged_candidates_are_ambiguous_only_without_an_open_candidate():
+    base = "repos/acme/widget"
+    values = {
+        f"{base}/issues/12": {"number": 12, "state": "open", "body": "", "labels": []},
+        f"{base}/issues/12/comments": [],
+        f"{base}/pulls?state=all&per_page=100": [
+            {"number": 7, "state": "closed", "merged_at": "2026-09-01T00:00:00Z",
+             "body": "Fixes #12"},
+            {"number": 8, "state": "closed", "merged_at": "2026-09-02T00:00:00Z",
+             "body": "Fixes #12"},
+        ],
+    }
+    fixture = work.read_state(FakeTransport(values), "acme/widget", 12)
+    assert fixture.ambiguous_prs == [7, 8]
+    assert work.decide(fixture, RULES).stage == "ambiguous-pr"
+
+
+def test_closed_unmerged_pull_request_never_counts():
+    issue = {"number": 12, "state": "open", "body": ""}
+    pulls = [{"number": 9, "state": "closed", "merged_at": None, "body": "Closes #12"}]
+    assert work._candidate_prs(12, issue, [], pulls, CONFIG) == set()
 
 
 def test_pull_request_body_standalone_closing_reference_is_the_candidate():
@@ -1195,29 +1370,39 @@ def test_cold_seat_prompt_carries_only_artifact_brief_and_check_contract(tmp_pat
 
 def test_execute_cold_seat_uses_the_bounded_prompt(tmp_path, monkeypatch):
     artifact = ARTIFACT + "\nArtifact body.\n"
-    fixture = state(AFFIRMED, "OTHER COMMENT MUST STAY OUT", artifact)
+    override = "<!-- tradecraft:model-override:v1 cold_seat=claude:cold-owner:max -->"
+    fixture = state(AFFIRMED, "OTHER COMMENT MUST STAY OUT", artifact, override)
     captured = []
     monkeypatch.setattr(work, "judging_root", lambda _root: nullcontext(tmp_path))
     monkeypatch.setattr(work, "_git_snapshot", lambda _root: (SHA, ""))
 
     def run(command):
         dispatch = Path(command[command.index("--dispatch") + 1])
-        captured.append(dispatch.read_bytes())
+        captured.append((command, dispatch.read_bytes()))
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(work.subprocess, "run", run)
+    runtime = Path(sys.executable).resolve()
     decision = work.Decision("cold-seat", True, "fresh", "fixture")
-    assert work.execute_stage(fixture, decision, tmp_path, None) == 0
-    assert artifact.encode("utf-8") in captured[0]
-    assert AFFIRMED.encode("utf-8") in captured[0]
-    assert b"OTHER COMMENT MUST STAY OUT" not in captured[0]
-    assert b'"issue_comments"' not in captured[0]
+    assert work.execute_stage(
+        fixture, decision, tmp_path, None, claude_path=runtime, codex_path=runtime,
+    ) == 0
+    command, prompt = captured[0]
+    assert artifact.encode("utf-8") in prompt
+    assert AFFIRMED.encode("utf-8") in prompt
+    assert b"OTHER COMMENT MUST STAY OUT" not in prompt
+    assert b'"issue_comments"' not in prompt
+    assert command[command.index("--claude-model") + 1] == "cold-owner"
+    assert command[command.index("--claude-effort") + 1] == "max"
+    assert command[command.index("--claude-model-source") + 1] == "issue-comment:unknown"
+    assert Path(command[command.index("--claude") + 1]) == runtime
+    assert Path(command[command.index("--codex") + 1]) == runtime
 
 
 def dispatch_bundle(record_root, *, work_value="example/product#12", stage="build",
                     session=SESSION, completed_at="2026-09-20T10:00:00+00:00",
                     name="result.md", producer_version=None,
-                    request_schema=2, run_schema=2):
+                    request_schema=2, run_schema=2, outcome="success"):
     if producer_version is None:
         producer_version = work.records.producer_version()
     bundle = record_root / stage
@@ -1230,7 +1415,7 @@ def dispatch_bundle(record_root, *, work_value="example/product#12", stage="buil
     }), encoding="utf-8")
     run.write_text(json.dumps({
         "schema_version": run_schema,
-        "outcome": "success",
+        "outcome": outcome,
         "completed_at": completed_at,
         "attempts": ([] if session is None else [{"observed": {"session_id": session}}]),
     }), encoding="utf-8")
@@ -1285,6 +1470,39 @@ def test_proof_marks_missing_bundle_unverifiable_instead_of_copying_qualified(tm
     assert declarations["use"]["status"] == "unverifiable"
     assert declarations["use"]["staffing_status"] is None
     assert "no matching successful dispatch bundle" in declarations["use"]["reason"]
+
+
+@pytest.mark.parametrize(("override", "invalid_override"), [
+    ("<!-- tradecraft:model-override:v1 ordinary_seat=claude:claude-owner:high -->", False),
+    ("<!-- tradecraft:model-override:v1 mystery=claude:claude-owner:high -->", True),
+])
+def test_proof_does_not_credit_no_output_or_model_override_claims(
+        tmp_path, override, invalid_override):
+    fixture = state(AFFIRMED, FLOOR, override, pr=True, paths=["README.md"])
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, stage="floor", outcome="completed_no_output")
+    fixture.policy_sources = {
+        "work_configuration": {
+            "repository": fixture.repo, "path": ".tradecraft/work.json",
+            "revision": SHA, "sha256": "1" * 64,
+        },
+        "use_rules": {
+            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "revision": SHA, "sha256": "2" * 64,
+        },
+    }
+    work.validate_marker_claims(fixture)
+
+    composed = work.compose_proof(fixture, RULES)
+    declarations = {item["stage"]: item for item in composed["declarations"]}
+    diagnostic_messages = [item["message"] for item in composed["diagnostics"]]
+
+    assert declarations["floor"]["status"] == "unverifiable"
+    assert declarations["floor"]["dispatch_id"] is None
+    assert all(item["stage"] != "model-override" for item in composed["declarations"])
+    assert any(message.startswith("floor marker:") for message in diagnostic_messages)
+    assert any(message.startswith("model-override marker:")
+               for message in diagnostic_messages) is invalid_override
 
 
 class ProofCommentTransport:
@@ -1360,6 +1578,31 @@ def test_version_refusal_happens_before_any_stage_side_effect(tmp_path, monkeypa
     assert "found=0.150.0" in report["detail"]
     assert "required=0.152.0" in report["detail"]
     assert "mechanism=" in report["detail"]
+
+
+@pytest.mark.parametrize(("stage", "mechanism"), [
+    ("artifact", "explicit launch settings"),
+    ("cold-seat", "explicit launch settings"),
+    ("build", "explicit launch settings"),
+    ("floor", "explicit launch settings"),
+    ("use", "landed consumer-tree use"),
+    ("review-disposition", "explicit launch settings"),
+])
+def test_truthful_entrance_launches_require_0_154_before_side_effects(
+        tmp_path, monkeypatch, capsys, stage, mechanism):
+    monkeypatch.setattr(work.records, "producer_version", lambda: "0.153.0")
+    monkeypatch.setattr(
+        work, "_dispatch_root",
+        lambda *_args, **_kwargs: pytest.fail("unsafe version must refuse before root access"),
+    )
+    decision = work.Decision(stage, True, "fresh", "holder-named-stage")
+
+    assert work.execute_stage(state(AFFIRMED), decision, tmp_path, None, "holder") == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == f"unsafe-running-version-for-{stage}"
+    assert "required=0.154.0" in report["detail"]
+    assert f"mechanism={mechanism}" in report["detail"]
 
 
 def test_unstamped_resume_bundle_is_refused_without_marker_fallback(
@@ -1506,6 +1749,40 @@ def test_artifact_revision_recovers_its_artifact_session(tmp_path):
     store = tmp_path / "dispatches"
     dispatch_bundle(store, stage="artifact")
     assert work.resume_session(state(), "artifact", store) == SESSION
+
+
+def test_completed_no_output_bundle_with_a_session_remains_resumable(tmp_path):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="build", outcome="completed_no_output")
+    assert work.resume_session(state(), "floor", store) == SESSION
+
+
+def test_completed_no_output_bundle_cannot_validate_a_floor_marker(tmp_path):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="floor", outcome="completed_no_output")
+    fixture = state(FLOOR, pr=True)
+    fixture.record_root = store
+
+    lawful, invalid = work.validate_marker_claims(fixture)
+
+    assert not any(marker.name == "floor" for marker in lawful)
+    floor_claim = next(claim for claim in invalid if claim["name"] == "floor")
+    assert floor_claim["reason"] == "no matching successful dispatch bundle"
+    assert work.resume_session(fixture, "floor", store) == SESSION
+
+
+def test_historical_error_bundle_is_never_rejudged_from_its_retained_stream(tmp_path):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="build", outcome="error")
+    log = store / "build" / "result.md.codex.stdout.log"
+    log.write_bytes(b'\n'.join((
+        b'{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
+        b'{"type":"turn.completed"}',
+    )))
+    before = {path: path.read_bytes() for path in store.rglob("*") if path.is_file()}
+    assert work.resume_session(state(), "floor", store) is None
+    after = {path: path.read_bytes() for path in store.rglob("*") if path.is_file()}
+    assert after == before
 
 
 def test_resume_session_falls_back_to_authorized_builder_session_marker(tmp_path):
@@ -1665,14 +1942,218 @@ def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(
+        work, "_runtime_argument", lambda vendor: [f"--{vendor}", f"/{vendor}-fixture"]
+    )
+    override = (
+        "<!-- tradecraft:model-override:v1 "
+        "use_consumer=claude:use-owner:max -->"
+    )
     assert work.execute_stage(
-        state(AFFIRMED), work.Decision("use", True, "fresh", "holder-named-stage"),
+        state(AFFIRMED, override),
+        work.Decision("use", True, "fresh", "holder-named-stage"),
         holder, None, dispatch_path=dispatch, tree_metadata=metadata,
     ) == 0
     assert len(launches) == 1
     command = launches[0]
     assert Path(command[command.index("--dispatch") + 1]) == dispatch.resolve()
     assert Path(command[command.index("--root") + 1]) == output.resolve()
+    assert command[command.index("--claude-model") + 1] == "use-owner"
+    assert command[command.index("--claude-effort") + 1] == "max"
+    assert command[command.index("--claude-effort-source") + 1] == "issue-comment:unknown"
+    assert command[command.index("--codex-model") + 1] == work.dispatch_seat.DEFAULT_MODELS["codex"]
+    assert command[command.index("--codex-model-source") + 1] == "dispatch_seat default"
+    assert command[command.index("--claude") + 1] == "/claude-fixture"
+
+
+def test_tree_revision_requires_0_154_before_source_resolution(tmp_path, monkeypatch):
+    args = work.parser().parse_args([
+        "tree", "--repo", "example/product", "--issue", "12", "--root", str(tmp_path),
+        "--revision", SHA, "--mode", "adopter", "--output", str(tmp_path / "tree"),
+        "--path", "README.md", "--loading-surface", "README.md",
+    ])
+    monkeypatch.setattr(work.records, "producer_version", lambda: "0.153.0")
+    monkeypatch.setattr(
+        work, "_landed_revision_source",
+        lambda *_args, **_kwargs: pytest.fail("unsafe version must refuse before source access"),
+    )
+
+    with pytest.raises(work.WorkError) as raised:
+        work._tree_command(args, tmp_path, object())
+
+    assert "required=0.154.0" in str(raised.value)
+    assert "mechanism=landed revision consumer tree" in str(raised.value)
+
+
+def test_registered_tree_keeps_its_earlier_version_boundary(tmp_path, monkeypatch, capsys):
+    output = tmp_path / "tree"
+    metadata = output.with_name("tree.tradecraft-tree.json")
+    args = work.parser().parse_args([
+        "tree", "--repo", "example/product", "--issue", "12", "--root", str(tmp_path),
+        "--mode", "adopter", "--output", str(output), "--path", "README.md",
+        "--loading-surface", "README.md",
+    ])
+    monkeypatch.setattr(work.records, "producer_version", lambda: "0.153.0")
+    monkeypatch.setattr(
+        work, "resolve_implementation_root",
+        lambda *_args, **_kwargs: (tmp_path / "source", "tradecraft/12-fixture", False),
+    )
+
+    def create_consumer_tree(**values):
+        assert values["registration_used"] is True
+        return metadata
+
+    monkeypatch.setattr(work.recipient_tree, "create_consumer_tree", create_consumer_tree)
+
+    assert work._tree_command(args, tmp_path, object()) == 0
+    assert json.loads(capsys.readouterr().out)["producer_version"] == "0.153.0"
+
+
+def test_tree_revision_and_run_use_need_no_registration(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    (holder / "job.md").write_bytes(b"consumer surface\n")
+    (holder / "SKILL.md").write_bytes(b"loading surface\n")
+    (holder / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
+    git(holder, "add", "job.md", "SKILL.md", ".gitattributes")
+    git(holder, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "landed consumer")
+    revision = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
+    branch = git(holder, "symbolic-ref", "--short", "HEAD").stdout.decode().strip()
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], stdin=subprocess.DEVNULL,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    git(holder, "remote", "add", "origin", str(remote))
+    git(holder, "push", "--set-upstream", "origin", branch)
+    transport = FakeTransport({
+        "repos/example/product": {"default_branch": branch},
+    })
+    output = tmp_path / "consumer"
+    args = work.parser().parse_args([
+        "tree", "--repo", "example/product", "--issue", "12", "--root", str(holder),
+        "--revision", revision, "--mode", "adopter", "--output", str(output),
+        "--path", "job.md", "--loading-surface", "SKILL.md",
+    ])
+    monkeypatch.setattr(
+        work, "resolve_implementation_root",
+        lambda *_args, **_kwargs: pytest.fail("named revision must not read registration"),
+    )
+    assert work.run(args, transport=transport) == 0
+    metadata = work.recipient_tree.metadata_path(output)
+    claim = json.loads(metadata.read_bytes())
+    assert claim["source_revision"] == revision
+    assert claim["registration_used"] is False
+
+    dispatch = tmp_path / "job.txt"
+    dispatch.write_bytes(b"Use the delivered mechanism on a real job.\n")
+    launches = []
+    monkeypatch.setattr(
+        work, "_runtime_argument", lambda vendor: [f"--{vendor}", sys.executable]
+    )
+    original_run = subprocess.run
+    def capture_seat(command, *run_args, **run_kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_seat.py":
+            launches.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *run_args, **run_kwargs)
+    monkeypatch.setattr(work.subprocess, "run", capture_seat)
+    assert work.execute_stage(
+        state(AFFIRMED), work.Decision("use", True, "fresh", "holder-named-stage"),
+        holder, None, dispatch_path=dispatch, tree_metadata=metadata, transport=transport,
+    ) == 0
+    assert len(launches) == 1
+    assert Path(launches[0][launches[0].index("--root") + 1]) == output.resolve()
+
+
+def test_run_use_refuses_recomputed_metadata_for_an_unlanded_commit(
+        tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    holder = repository(tmp_path, "holder")
+    (holder / "job.md").write_bytes(b"landed consumer\n")
+    (holder / "SKILL.md").write_bytes(b"loading surface\n")
+    (holder / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
+    git(holder, "add", "job.md", "SKILL.md", ".gitattributes")
+    git(holder, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "landed consumer")
+    branch = git(holder, "symbolic-ref", "--short", "HEAD").stdout.decode().strip()
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], stdin=subprocess.DEVNULL,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    git(holder, "remote", "add", "origin", str(remote))
+    git(holder, "push", "--set-upstream", "origin", branch)
+
+    (holder / "job.md").write_bytes(b"unlanded consumer\n")
+    git(holder, "add", "job.md")
+    git(holder, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "unlanded consumer")
+    unlanded = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
+    output = tmp_path / "consumer"
+    metadata = work.recipient_tree.create_consumer_tree(
+        source=holder, output=output, work="example/product#12",
+        producer_version=work.records.producer_version(), mode="adopter", paths=["job.md"],
+        loading_surfaces=["SKILL.md"], front_page=None, root_instructions=None,
+        directed_paths=[], exclusions=[], deny_texts=[], source_revision=unlanded,
+        registration_used=False,
+    )
+    dispatch = tmp_path / "job.txt"
+    dispatch.write_bytes(b"Use the delivered mechanism on a real job.\n")
+    launches = []
+    original_run = subprocess.run
+
+    def capture_seat(command, *run_args, **run_kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_seat.py":
+            launches.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *run_args, **run_kwargs)
+
+    monkeypatch.setattr(work.subprocess, "run", capture_seat)
+    transport = FakeTransport({
+        "repos/example/product": {"default_branch": branch},
+    })
+
+    assert work.execute_stage(
+        state(AFFIRMED), work.Decision("use", True, "fresh", "holder-named-stage"),
+        holder, None, dispatch_path=dispatch, tree_metadata=metadata, transport=transport,
+    ) == 0
+
+    returned = json.loads(capsys.readouterr().out)
+    assert returned["reason"] == "consumer-tree-unproved-for-use"
+    assert "not reachable" in returned["detail"]
+    assert launches == []
+
+
+def test_tree_revision_refuses_an_unlanded_commit_before_creating_output(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    holder = repository(tmp_path, "holder")
+    branch = git(holder, "symbolic-ref", "--short", "HEAD").stdout.decode().strip()
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], stdin=subprocess.DEVNULL,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    git(holder, "remote", "add", "origin", str(remote))
+    git(holder, "push", "--set-upstream", "origin", branch)
+    git(holder, "checkout", "-b", "side")
+    (holder / "side.txt").write_bytes(b"not landed\n")
+    git(holder, "add", "side.txt")
+    git(holder, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "side")
+    revision = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
+    output = tmp_path / "consumer"
+    args = work.parser().parse_args([
+        "tree", "--repo", "example/product", "--issue", "12", "--root", str(holder),
+        "--revision", revision, "--mode", "adopter", "--output", str(output),
+        "--path", "fixture.txt", "--loading-surface", ".gitignore",
+    ])
+    with pytest.raises(work.WorkError, match="not reachable"):
+        work.run(args, transport=FakeTransport({
+            "repos/example/product": {"default_branch": branch},
+        }))
+    assert not output.exists()
+    assert not work.recipient_tree.metadata_path(output).exists()
 
 
 def test_build_launch_forwards_holder_identity_and_default_timeout_to_the_launcher(
@@ -1681,25 +2162,53 @@ def test_build_launch_forwards_holder_identity_and_default_timeout_to_the_launch
     branch = "tradecraft/12-fixture"
     monkeypatch.setattr(work, "_dispatch_root", lambda *_args: (tmp_path, branch, False))
     monkeypatch.setattr(work, "_attached_branch", lambda _root: branch)
+    runtime = Path(sys.executable).resolve()
     monkeypatch.setattr(
         work.subprocess, "run",
         lambda command: commands.append(command) or subprocess.CompletedProcess(command, 0),
     )
     decision = work.Decision("build", True, "fresh", "pull-request-absent")
+    fixture = state(
+        AFFIRMED,
+        "<!-- tradecraft:model-override:v1 implementer=codex:gpt-owner:high -->",
+    )
     assert work.execute_stage(
-        state(AFFIRMED), decision, tmp_path, "2", "stable-holder-token"
+        fixture, decision, tmp_path, "2", "stable-holder-token", codex_path=runtime,
     ) == 0
     assert commands[0][-2:] == ["--holder-session-id", "stable-holder-token"]
     assert commands[0][commands[0].index("--root") + 1] == str(tmp_path)
     assert commands[0][commands[0].index("--timeout-seconds") + 1] == "7200"
+    assert commands[0][commands[0].index("--model") + 1] == "gpt-owner"
+    assert commands[0][commands[0].index("--effort") + 1] == "high"
+    assert commands[0][commands[0].index("--model-source") + 1] == "issue-comment:unknown"
+    assert commands[0][commands[0].index("--effort-source") + 1] == "issue-comment:unknown"
+    assert Path(commands[0][commands[0].index("--codex") + 1]) == runtime
 
 
-def test_run_parser_accepts_a_stage_timeout_override(tmp_path):
+def test_run_parser_accepts_timeout_and_explicit_runtime_paths(tmp_path):
+    runtime = Path(sys.executable).resolve()
     args = work.parser().parse_args([
         "run", "build", "--repo", "acme/widget", "--issue", "3",
         "--root", str(tmp_path), "--timeout-seconds", "42.5",
+        "--claude", str(runtime), "--codex", str(runtime),
     ])
     assert args.timeout_seconds == 42.5
+    assert args.claude == runtime
+    assert args.codex == runtime
+
+
+def test_invalid_explicit_runtime_refuses_before_root_selection(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        work, "_dispatch_root",
+        lambda *_args, **_kwargs: pytest.fail("invalid runtime must refuse before root access"),
+    )
+
+    with pytest.raises(work.WorkError, match="--codex does not name a file"):
+        work.execute_stage(
+            state(AFFIRMED),
+            work.Decision("build", True, "fresh", "holder-named-stage"),
+            tmp_path, None, "holder-session", codex_path=tmp_path / "missing-codex",
+        )
 
 
 def test_resume_marker_equal_to_holder_identity_is_rejected(
@@ -2466,17 +2975,17 @@ def test_sweep_releases_only_proven_terminal_rows_and_keeps_worktrees(
     work.sweep_registry(FakeTransport(values))
     recorded = {row["issue"]: row["active"] for row in work.read_registry()["worktrees"]}
     assert recorded == {
-        1: False, 2: False, 3: False, 4: True, 5: True, 6: True, 7: True,
+        1: True, 2: False, 3: False, 4: True, 5: True, 6: True, 7: True,
     }
     assert all(root.is_dir() for root in roots.values())
     warnings = capsys.readouterr().err
-    assert "acme/widget#6" in warnings
+    assert "acme/widget#6" not in warnings
     assert "acme/widget#7" in warnings
 
 
 @pytest.mark.parametrize(("pull_branch", "merged_at", "expected_active"), [
     ("tradecraft/12-former", "now", True),
-    ("tradecraft/12-current", None, False),
+    ("tradecraft/12-current", None, True),
     ("tradecraft/12-current", "now", False),
 ])
 def test_sweep_releases_only_a_terminal_pull_request_for_the_registered_branch(

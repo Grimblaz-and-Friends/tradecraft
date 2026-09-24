@@ -56,6 +56,25 @@ For a marker produced by a dispatched stage, the latest matching successful bund
 <!-- tradecraft:builder-session:v1 session=01234567-89ab-cdef-0123-456789abcdef -->
 ```
 
+## `model-override`
+
+- **Exact form:** `<!-- tradecraft:model-override:v1 [ROLE=VENDOR:MODEL:EFFORT ...] -->`, where each bracketed role attribute is optional and may appear at most once.
+- **Attributes and lawful values:** the lawful role attributes are `implementer`, `ordinary_seat`, `cold_seat`, `terminal_seat`, and `use_consumer`, corresponding to the roles `implementer`, `ordinary-seat`, `cold-seat`, `terminal-seat`, and `use-consumer`. Each present value is one complete `VENDOR:MODEL:EFFORT` triple; `VENDOR` is `codex` or `claude`, and `MODEL` and `EFFORT` are nonempty values containing no whitespace or colon. Unknown or duplicate attributes and malformed triples are invalid.
+- **Whole-line precedence:** the latest lawful line is the entire current override choice and replaces every earlier line rather than merging with it. A role absent from that line uses the selected launcher's standing default. A lawful line with no role attributes restores every role to its standing default.
+- **Producer, surface, moment:** a configured marker producer, in an issue comment on the work, after the owner gives the choice and before a launch it is to govern. Absence of a role on the latest lawful line means the named launcher's standing default, not an inferred choice from prose.
+
+The motivating choice, with ordinary seats at `high` and cold, terminal, and use seats at `max`, is one line:
+
+```text
+<!-- tradecraft:model-override:v1 ordinary_seat=claude:claude-opus-5-5:high cold_seat=claude:claude-opus-5-5:max terminal_seat=claude:claude-opus-5-5:max use_consumer=claude:claude-opus-5-5:max -->
+```
+
+A later bare line returns every role to its standing default:
+
+```text
+<!-- tradecraft:model-override:v1 -->
+```
+
 ## `floor`
 
 - **Exact form:** `<!-- tradecraft:floor:v1 head=SHA status=STATUS -->`.
