@@ -1,0 +1,22 @@
+{
+  "number": 746,
+  "state": "open",
+  "draft": false,
+  "user": {
+    "login": "Grimblaz"
+  },
+  "head": {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "repo": {
+      "id": 908172635,
+      "full_name": "Grimblaz-and-Friends/tradecraft"
+    }
+  },
+  "base": {
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "repo": {
+      "id": 908172635,
+      "full_name": "Grimblaz-and-Friends/tradecraft"
+    }
+  }
+}

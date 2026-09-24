@@ -1,0 +1,11 @@
+[
+  {
+    "id": 551,
+    "state": "COMMENTED",
+    "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "body": "No candidate survived independent checking.\n\nUsage: finder={}; checker={}\n\n<!-- connected-review-attempt:91-1 -->",
+    "user": {
+      "login": "github-actions[bot]"
+    }
+  }
+]
