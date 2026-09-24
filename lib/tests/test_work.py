@@ -2181,7 +2181,14 @@ def _dirty_policy(root, condition):
             root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
             "commit", "-m", "base",
         )
-        assert git(root, "merge", "policy-side", check=False).returncode != 0
+        merge = git(
+            root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "merge", "--no-edit", "policy-side", check=False,
+        )
+        assert merge.returncode != 0
+        assert git(
+            root, "ls-files", "-u", "--", "lib/use-rules.json"
+        ).stdout, (merge.stdout + merge.stderr).decode(errors="replace")
         return "lib/use-rules.json"
     raise AssertionError(condition)
 
@@ -2204,11 +2211,12 @@ def test_dirty_tracked_policy_refuses_proof_before_any_github_request(
             raise AssertionError("proof reached GitHub before policy refusal")
 
     transport = NoGitHub()
+    args = work.parser().parse_args([
+        "run", "proof", "--repo", "example/product", "--issue", "3",
+        "--root", str(root),
+    ])
     with pytest.raises(work.WorkError, match="commit or revert") as raised:
-        work._execute_proof(
-            transport, state(pr=True), root, RULES, root / "lib" / "use-rules.json",
-            None, None,
-        )
+        work.run(args, transport=transport)
     assert relative in str(raised.value)
     assert transport.calls == []
 
@@ -3214,9 +3222,15 @@ def test_judging_root_is_empty_detached_and_removes_it_afterward(tmp_path):
 @pytest.mark.parametrize("stage", work.COMMANDS)
 def test_power_user_commands_run_one_named_stage(stage, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    root = (
+        policy_repository(tmp_path, "proof-command") if stage == "proof" else tmp_path
+    )
+    use_rules = (
+        root / "lib" / "use-rules.json" if stage == "proof" else LIB / "use-rules.json"
+    )
     args = work.parser().parse_args([
-        "run", stage, "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
-        "--use-rules", str(LIB / "use-rules.json"),
+        "run", stage, "--repo", "acme/widget", "--issue", "3", "--root", str(root),
+        "--use-rules", str(use_rules),
     ])
     captured = []
 

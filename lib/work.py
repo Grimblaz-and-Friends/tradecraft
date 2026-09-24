@@ -4183,16 +4183,22 @@ def run(
     if args.command == "run" and args.stage is None:
         raise WorkError("run requires a stage")
     use_rules_path = (args.use_rules or root / "lib" / "use-rules.json").expanduser().resolve()
+    proof_preflight: PolicySnapshot | None = None
+    if args.command == "run" and args.stage == "proof":
+        proof_preflight = _capture_policy_snapshot(
+            root, args.repo, use_rules_path, enforce_clean=True
+        )
     config = load_work_config(root)
     rules = load_use_rules(use_rules_path)
-    policy_snapshot: PolicySnapshot | None = None
+    policy_snapshot = proof_preflight
     policy_problem: str | None = None
-    try:
-        policy_snapshot = _capture_policy_snapshot(
-            root, args.repo, use_rules_path, enforce_clean=False
-        )
-    except WorkError as exc:
-        policy_problem = str(exc)
+    if policy_snapshot is None:
+        try:
+            policy_snapshot = _capture_policy_snapshot(
+                root, args.repo, use_rules_path, enforce_clean=False
+            )
+        except WorkError as exc:
+            policy_problem = str(exc)
     state = read_state(github, args.repo, args.issue, config)
     state.record_root = records.default_record_root().expanduser().resolve()
     policy_diagnostics: list[dict[str, object]] = []
