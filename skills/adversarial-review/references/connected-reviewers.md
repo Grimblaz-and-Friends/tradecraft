@@ -53,9 +53,9 @@ Review pull requests only when they are marked ready; skip drafts. Post only P0/
 
 Codex has no configuration key for this contract; the section in the repository's own always-on agent file is the configuration.
 
-## `connected-review.yml`
+## `connected-review.yml` in the repository's GitHub Actions workflows directory
 
-Copy this block whole and set the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Before activation, install the pinned Python and Claude CLI on a private repository's self-hosted runner; its hosted `report` job still consumes a small amount of hosted time when it runs. Add `github-actions[bot]` to `connected_reviewers` only after that repository's replay and identity checks pass. Removing and re-adding `reviewers` then requests the permitted second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
+Copy this block whole to that directory and set the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Before activation, install `gh`, Python 3.14 and the pinned Claude CLI on a private repository's self-hosted runner. The hosted `prepare` job, and the hosted `report` job when it runs, consume a small amount of hosted time. After that repository's replay and identity checks pass, its enabling change sets the reviewer ref to the frozen merged commit on the default branch, sets the `CONNECTED_REVIEW_ENABLED` repository variable to `true`, and adds `github-actions[bot]` to `connected_reviewers`; the ref below and the absent variable deliberately leave this copy dormant, and the ref is not a release pin. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding `reviewers` requests the permitted non-mechanical second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
 
 ```yaml
 name: connected-review
@@ -70,18 +70,15 @@ on:
         required: true
         type: string
 
-concurrency:
-  group: connected-review-${{ github.repository }}-${{ github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: false
-
 env:
   TRADECRAFT_REPOSITORY: Grimblaz-and-Friends/tradecraft
-  TRADECRAFT_REVIEWER_REF: 94d791148219aec69c9413fb44490aaf06d76c6b
+  TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT
   CLAUDE_CLI_VERSION: 2.1.261
   REVIEW_OWNER_LOGIN: Grimblaz
 
 jobs:
   prepare:
+    if: vars.CONNECTED_REVIEW_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -91,6 +88,7 @@ jobs:
       visibility: ${{ steps.eligibility.outputs.visibility }}
       head: ${{ steps.eligibility.outputs.head }}
       reason: ${{ steps.eligibility.outputs.reason }}
+      number: ${{ steps.eligibility.outputs.number }}
     steps:
       - name: Fetch trusted reviewer
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -114,6 +112,9 @@ jobs:
     if: needs.prepare.outputs.admitted == 'true'
     runs-on: ${{ needs.prepare.outputs.visibility == 'private' && 'self-hosted' || 'ubuntu-latest' }}
     timeout-minutes: 120
+    concurrency:
+      group: connected-review-${{ github.repository }}-${{ needs.prepare.outputs.number }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
@@ -149,7 +150,9 @@ jobs:
 
   report:
     needs: [prepare, review]
-    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.admitted == 'true'
+    if: >-
+      always() && vars.CONNECTED_REVIEW_ENABLED == 'true' &&
+      (needs.prepare.result != 'success' || needs.prepare.outputs.admitted == 'true')
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -171,6 +174,7 @@ jobs:
       - name: Reconcile review or report skip
         env:
           GH_TOKEN: ${{ github.token }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
           REVIEW_CAUSE: ${{ needs.review.outputs.cause }}
           REVIEW_RESULT: ${{ needs.review.result }}
           REVIEW_RUN_ID: ${{ github.run_id }}
