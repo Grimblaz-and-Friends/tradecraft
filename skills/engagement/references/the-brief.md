@@ -13,7 +13,7 @@
 
 ## The implementation brief
 
-**An implementation brief is the whole item the owner affirms before a change is built: one Shape sentence; the Readers named once; each decision that matters as a row carrying its Why and one cell per reader; and Not this.** A blank cell is visible and unlawful; `unchanged` is a filled cell.
+**An implementation brief is the whole item the owner affirms before a change that owes one is built: one Shape sentence; the Readers named once; each decision that matters as a row carrying its Why and one cell per reader; and Not this.** A blank cell is visible and unlawful; `unchanged` is a filled cell.
 
 The form ends with these two lines:
 

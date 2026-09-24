@@ -22,10 +22,10 @@ gh issue list --repo OWNER/REPO --state all --limit 1000 --search "post-fix"
 
 **The defect's own words are the repository's, not yours.** The other two are printed on the artifact in front of you; this one guesses what somebody else called the same thing. Lift it from the material — the rule being breached, the term a decision entry used — rather than coining it, because a coined phrase is queried against a set that could never have contained it.
 
-**Extend an open issue when the new evidence supports the work it states.** Read its comments as well as its body, because the work can be clarified there. An instance of that cause is evidence on the issue, not a symptom issue and not a promise that every instance must later be fixed or re-filed. Distinct work that the host does not cover takes its own issue and a tie.
+**Extend an open issue when the new evidence supports the bought work and facts it records.** Read its comments as well as its body, because the work can be clarified there. An instance of that cause is evidence on the issue, not a symptom issue and not a promise that every instance must later be fixed or re-filed. Distinct work that the host does not cover takes its own issue and a tie.
 
 **A closed match is history, not an open destination.** Read why it closed, then file a recurrence on its own evidence and name the relationship. No command reopens it merely because it was met again.
 
-**New issues name their ties at birth.** Where the evidence in hand shares one observed cause, state that work as one issue carrying the evidence together; shared location or origin alone does not make one cause.
+**New issues name their ties at birth.** Where the evidence in hand shares one observed cause, record that bought work as one issue carrying the evidence together; shared location or origin alone does not make one cause.
 
 **An extending comment meets the same floor as an issue** (`../references/what-a-filing-carries.md`), inherits its host's incident-or-run admission, and takes the host as its tie. It states what the new facts add without proposing how the work should be solved. Its shape is `../references/issue-template.md`'s.

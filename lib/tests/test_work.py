@@ -169,7 +169,7 @@ def test_affirmed_mechanical_lane_skips_artifact_cold_seat_and_holder_reading():
     assert work.decide(state(AFFIRMED), RULES).stage == "artifact"
 
 
-def test_mechanical_lane_keeps_floor_reviewers_proof_and_release_report():
+def test_mechanical_lane_keeps_floor_reviewers_and_proof():
     fixture = state(MECHANICAL, pr=True)
     assert work.decide(fixture, RULES).stage == "floor"
 
@@ -193,6 +193,38 @@ def test_mechanical_lane_keeps_floor_reviewers_proof_and_release_report():
         "body": "review summary", "user": {"login": REVIEWER},
     })
     assert work.decide(fixture, RULES).stage == "proof"
+
+
+def test_mechanical_lane_keeps_dispositions_and_release_report():
+    fixture = state(
+        MECHANICAL, FLOOR,
+        f"<!-- tradecraft:no-use:v1 head={SHA} -->\nUse: not required - mechanical.",
+        pr=True, draft=False, reviewer_ran=True,
+    )
+    fixture.review_comments = [{
+        "id": 41, "body": "finding", "commit_id": SHA,
+        "user": {"login": REVIEWER, "type": "Bot"},
+    }]
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.detail) == ("review-disposition", "41")
+
+    fixture.review_comments.append({
+        "id": 42, "in_reply_to_id": 41, "body": "fixed",
+        "user": {"login": PRODUCER},
+    })
+    assert work.decide(fixture, RULES).stage == "proof"
+
+    fixture.pr_comments.append({
+        "id": 71, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+        "user": {"login": PRODUCER},
+    })
+    fixture.proof_current = True
+    fixture.checks = [{
+        "id": 91, "name": "Change proof / Change proof", "status": "completed",
+        "conclusion": "success", "started_at": "2026-09-23T12:00:00Z",
+        "workflow_run": {"workflow_id": 11, "id": 81, "head_sha": SHA},
+    }]
+    assert work.decide(fixture, RULES).stage == "release-report"
 
 
 def test_mechanical_no_use_is_head_specific_and_does_not_buy_a_panel():
@@ -229,11 +261,11 @@ def test_mechanical_no_use_is_head_specific_and_does_not_buy_a_panel():
 
 
 def test_unauthorized_or_crossed_mechanical_claim_cannot_grant_the_exemption():
-    unauthorized = state()
+    unauthorized = state(AFFIRMED)
     unauthorized.issue_comments.append({
         "body": MECHANICAL, "user": {"login": "unlisted-commenter"},
     })
-    assert work.decide(unauthorized, RULES).stage == "convergence"
+    assert work.decide(unauthorized, RULES).stage == "artifact"
 
     crossed = MECHANICAL.replace("ordinary", "elevated")
     assert work.decide(state(crossed), RULES).stage == "affirmation-invalid"
@@ -1064,7 +1096,12 @@ def test_effective_policy_uses_the_lane_not_path_smallness_to_exempt_use():
 
 
 def test_mechanical_policy_skips_ancestor_use_collection_even_for_use_paths():
-    fixture = state(MECHANICAL, pr=True, paths=["lib/runtime.py"])
+    ancestor = "b" * 40
+    marker = (
+        f"<!-- tradecraft:use:v1 head={ancestor} status=pass changed=false "
+        "staffing_status=qualified -->"
+    )
+    fixture = state(MECHANICAL, marker, pr=True, paths=["lib/runtime.py"])
 
     class NoTransport:
         def get(self, *_args, **_kwargs):
@@ -1632,6 +1669,42 @@ def test_mechanical_proof_is_generated_from_the_affirmed_comment_even_for_use_pa
     assert all(item["stage"] != "use" for item in composed["declarations"])
 
 
+def test_non_mechanical_generated_proof_has_no_affirmed_source(tmp_path):
+    fixture = state(AFFIRMED, FLOOR, pr=True, paths=["README.md"])
+    fixture.issue_comments[0].update({
+        "id": 42,
+        "html_url": "https://github.example/issues/12#issuecomment-42",
+        "created_at": "2026-09-23T12:01:00Z",
+    })
+    fixture.record_root = tmp_path / "dispatches"
+    fixture.policy_sources = {
+        "work_configuration": {
+            "repository": fixture.repo, "path": ".tradecraft/work.json",
+            "revision": SHA, "sha256": "1" * 64,
+        },
+        "use_rules": {
+            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "revision": SHA, "sha256": "2" * 64,
+        },
+    }
+    work.validate_marker_claims(fixture)
+
+    composed = work.compose_proof(fixture, RULES)
+
+    assert composed["use"]["required"] is False
+    assert composed["use"]["source"] is None
+    assert composed["use"]["reason"] == work.PATH_NO_USE_REASON
+
+
+def test_mechanical_readiness_without_generated_no_use_is_refused():
+    fixture = state(MECHANICAL, FLOOR, pr=True)
+    work.validate_marker_claims(fixture)
+
+    assert work._ready_evidence_error(fixture, RULES) == (
+        "ready-reviewers requires run proof to generate the current-head no-use carrier"
+    )
+
+
 def test_mechanical_readiness_requires_generated_no_use_not_a_use_bundle():
     fixture = state(
         MECHANICAL, FLOOR,
@@ -1641,6 +1714,59 @@ def test_mechanical_readiness_requires_generated_no_use_not_a_use_bundle():
     work.validate_marker_claims(fixture)
 
     assert work._ready_evidence_error(fixture, RULES) is None
+
+
+@pytest.mark.parametrize(("brief", "paths", "expected_reason"), [
+    (MECHANICAL, ["lib/runtime.py"], work.MECHANICAL_USE_REASON),
+    (AFFIRMED, ["README.md"], work.PATH_NO_USE_REASON),
+])
+def test_execute_proof_compatibility_line_uses_the_composed_lane_or_path_reason(
+        tmp_path, monkeypatch, capsys, brief, paths, expected_reason):
+    fixture = state(brief, FLOOR, pr=True, paths=paths)
+    fixture.issue_comments[0].update({
+        "id": 41,
+        "html_url": "https://github.example/issues/12#issuecomment-41",
+        "created_at": "2026-09-23T12:00:00Z",
+    })
+    fixture.record_root = tmp_path / "dispatches"
+    fixture.policy_sources = {
+        "work_configuration": {
+            "repository": fixture.repo, "path": ".tradecraft/work.json",
+            "revision": SHA, "sha256": "1" * 64,
+        },
+        "use_rules": {
+            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "revision": SHA, "sha256": "2" * 64,
+        },
+    }
+    work.validate_marker_claims(fixture)
+    published = []
+
+    class CurrentHeadTransport:
+        def get(self, endpoint, *, paginate=False):
+            assert endpoint == "repos/example/product/pulls/7"
+            assert paginate is False
+            return {"head": {"sha": SHA}}
+
+    monkeypatch.setattr(work, "read_state", lambda *_args, **_kwargs: fixture)
+    monkeypatch.setattr(work, "_set_policy_sources", lambda *_args: None)
+    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args: None)
+    monkeypatch.setattr(
+        work, "_publish_proof_comment",
+        lambda _transport, _state, body, _head: (
+            published.append(body) or {"action": "created", "id": 91, "url": "fixture"}
+        ),
+    )
+    monkeypatch.setattr(work, "_rerun_gate_evaluations", lambda *_args: [])
+
+    assert work._execute_proof(
+        CurrentHeadTransport(), fixture, tmp_path, RULES, LIB / "use-rules.json",
+        None, None,
+    ) == 0
+    capsys.readouterr()
+
+    assert len(published) == 1
+    assert f"Use: not required - {expected_reason}." in published[0]
 
 
 @pytest.mark.parametrize(("override", "invalid_override"), [

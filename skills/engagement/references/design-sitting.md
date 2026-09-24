@@ -1,8 +1,8 @@
 # Designing in turns
 
-**Loaded when** you are designing any non-mechanical change with the owner, running a turn, or deciding whether the whole implementation brief is ready to put.
+**Loaded when** you are designing any change that owes an implementation brief with the owner, running a turn, or deciding whether the whole item is ready to put.
 
-**Designing an implementation brief always runs in turns.** This is the one conversation form for every non-mechanical change, not a mode selected by a fork count or by how the work was opened.
+**Designing an implementation brief always runs in turns.** This is the one conversation form for every change that owes one, not a mode selected by a fork count or by how the work was opened.
 
 **At pickup, the holder and owner design the solution from the filing's facts, and the implementation brief is the record of that sitting.** A suggested remedy in the filing is not a bought term. Where a filing marks a stated cost `unrun`, test it before designing against it; if it cannot be tested, keep it as an assumption rather than silently pricing the options with it.
 

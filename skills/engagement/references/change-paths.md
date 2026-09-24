@@ -53,7 +53,7 @@ Compare the actual, expected and reader paths by the evidence each actual path p
 
 Write one short narrative note for the interval. Name the changes and records consulted, describe each path and its material departures, compare outcomes and costs, and report no finding when the read found none. Count and name every owner ask put, linking its source and recording why it qualified, its stated cost, the coordinating-session or precedent route, and the outcome when known. Repeated puts remain repeated owner attention linked to the same matter; an unknown record stays unknown.
 
-The note has no template, field list, score, severity scale or required finding count.
+The note has no fixed template, score, severity scale or required finding count; the required ask accounting above remains part of its narrative.
 
 Every finding takes exactly one exit:
 

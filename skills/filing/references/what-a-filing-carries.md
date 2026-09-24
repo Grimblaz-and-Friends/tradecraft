@@ -2,7 +2,7 @@
 
 **Loaded when** you are writing the body of an issue or an extending comment, or deciding whether a finding about governing prose has earned a number of its own. The fields are `../references/issue-template.md`'s; this file is the standard they meet.
 
-**A filing carries facts only:** what happened or the observed want, where it happened, the evidence, provenance, ties, and the change on which it was encountered. Observed product harm belongs with those facts. A filing carries no fix, option menu, recommendation, or argument for one remedy's value over another, because those pre-empt the owner's design judgment at pickup. Observed evidence survives a change in vocabulary; an invented solution does not substitute for it.
+**An issue states work the owner bought, and carries that work as facts only:** what happened or the observed want, where it happened, the evidence, provenance, ties, and the change on which it was encountered. Observed product harm belongs with those facts. A filing carries no fix, option menu, recommendation, or argument for one remedy's value over another, because purchase is not permission to pre-empt the owner's design judgment at pickup. Observed evidence survives a change in vocabulary; an invented solution does not substitute for it.
 
 **A stated cost carries its evidence status wherever it appears.** Give the run and result that establish it, or mark it `unrun`. At pickup, test an unrun cost before designing against it; if it cannot be tested, record it as an assumption rather than pricing the options as though it were established.
 

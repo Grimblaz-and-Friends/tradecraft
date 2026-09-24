@@ -11,7 +11,9 @@ The `engagement` cell owns the cross-change read and cross-session intake.
 
 ## What the Steward holds
 
-The Steward holds the cross-change read at its cadence, intake under that standard, the incidents and defects those reads produce, the rulings prepared for the owner and the standing page. It never holds a change, product or practice; every change has its own holder session.
+The Steward holds the cross-change read at its cadence, intake under that standard, the incidents and defects those reads produce, questions the record or a precedent can answer, the rulings prepared for the owner and the standing page. It never holds a change, product or practice; every change has its own holder session.
+
+**After affirmation, the Steward answers a holder's question from the record or precedent before it reaches the owner.** It escalates only when the answer changes an affirmed row or the expected saving exceeds the cost of asking, through the existing argued ask with that cost stated; otherwise it returns the answer and its source to the holder for the work record.
 
 ## Practice-defect intake
 
