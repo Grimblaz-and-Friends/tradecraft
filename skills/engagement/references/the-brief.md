@@ -13,7 +13,7 @@
 
 ## The implementation brief
 
-**An implementation brief is the whole item the owner affirms before a non-mechanical change is built: one Shape sentence; the Readers named once; each decision that matters as a row carrying its Why and one cell per reader; and Not this.** A blank cell is visible and unlawful; `unchanged` is a filled cell.
+**An implementation brief is the whole item the owner affirms before a change that owes one is built: one Shape sentence; the Readers named once; each decision that matters as a row carrying its Why and one cell per reader; and Not this.** A blank cell is visible and unlawful; `unchanged` is a filled cell.
 
 The form ends with these two lines:
 
@@ -22,7 +22,11 @@ Review risk: ordinary
 Review lane: connected
 ```
 
-The lawful pairs are `ordinary` with `connected`, `elevated` with `routine-panel`, and `critical` with `substantial-panel`; carrying the pair in the affirmed item makes its review depth available to the entrance rather than a later recollection.
+The lawful pairs are `ordinary` with `connected`, `ordinary` with `mechanical`, `elevated` with `routine-panel`, and `critical` with `substantial-panel`; carrying the pair in the affirmed item makes its review depth available to the entrance rather than a later recollection.
+
+**The holder proposes `mechanical`, and the owner's affirmation selects it.** It applies only to a determinate, bounded correction or application of an already settled outcome, with no substantive choice about the desired behavior or rule left for the builder. Restoring agreed behavior can qualify; a short diff alone cannot, and a one-sentence new behavior or rule still needs design. The entrance reads the affirmed pair rather than inferring it from paths, size or a casual mention. An affirmed mechanical lane skips the artifact, cold seat and use while retaining the executable floor, connected reviewers and their dispositions, proof and the release report; it buys no panel.
+
+A configured shared gate that does not read the affirmed mechanical lane may still fail when changed paths buy a use; the entrance preserves that result, and the explicit release report records it with any bypass and its reason.
 
 The Readers name the owner, the holding session that designs with them and runs the stretch, the builder that writes the artifact and builds, and a judging seat, cold or review or consumer. For shipped work, the adopter's owner and sessions are one reader when their outcome is identical in every row. Each row states the decision, its reason, and what every reader gets. Session-owned execution choices — implementation approach, file layout, tools, and work order — stay out and belong in the artifact and build.
 
@@ -56,4 +60,4 @@ Begin that recorded issue comment with the `work` cell's affirmation marker:
 
 ## Amendments
 
-**An amendment is a further comment, never an edit.** A recording of a settled conversation is not rewritten to reflect a later one; the later one is recorded too, naming what it changes. Which route it takes follows from who owns what: **an amendment that changes the implementation brief is re-agreed with the owner**, because the implementation brief is what they approve; one that changes only the reading is the session's, reported in that same comment and deliberately needing no second verdict, since a re-check per reading amendment costs more than it buys. **The latest comment governs, and every amendment obliges a pointer to it from the artifact** — the handoff sends an implementer to the artifact and the implementation brief it carries alone, so an amendment nothing points at is invisible exactly there, and the embedded copy is the stale one they would build from. An amended **implementation brief** obliges more: the artifact is settled again against it, because the reading was judged against a term that has since changed.
+**An amendment is a further comment, never an edit.** A recording of a settled conversation is not rewritten to reflect a later one; the later one is recorded too, naming what it changes. Which route it takes follows from who owns what: **an amendment that changes the implementation brief is re-agreed with the owner through the row-changing post-affirmation door, with the ask's cost stated**, because the implementation brief is what they approve; one that changes only the reading is the holder's, recorded with its reason in that same comment and deliberately needing no second verdict, since a re-check per reading amendment costs more than it buys. A question the record or precedent answers takes the coordinating-session route before either. **The latest comment governs. Where the governing implementation brief's lane owes an artifact, that artifact points to the amendment and carries the amended brief**, because an unpointed amendment is invisible to the implementer and the embedded copy is stale. If an artifact was already judged, it is settled again against the changed term; if an amendment moves the brief off the mechanical lane, its newly owed artifact is written and settled. An amendment that leaves or moves the brief on the mechanical lane owes no artifact, pointer or cold settlement.

@@ -16,7 +16,7 @@ description: How this practice writes code that behaves consistently across plat
 
 - **Choose one substrate for a repository and harden it**, because one substrate means one set of idioms and failure modes to learn.
 - **Tests ride beside the code they prove**, so the proof reaches every consumer of that code.
-- **Probe guard-shaped code in both polarities and include a negative control from the probe's own class**, because a guard that blocks lawful work or a probe that never could have changed its answer proves nothing.
+- **Probe guard-shaped code in both polarities and include a negative control from the probe's own class**, because a guard that blocks lawful work or a probe that never could have changed its answer proves nothing. Before a new guard ships, test its necessity by deleting it through the `spikes` cell; where two arms dispose of the same input, delete each arm separately, because a passing input test with both present establishes neither arm. A green deletion leaves necessity unestablished: remove the dead arm or demonstrate the distinct behavior it protects; deleting both arms together cannot establish either one.
 - **A calling contract names no harness token**, because a token one runtime substitutes and another reads literally binds only one of them.
 - **Machine-read output stays ASCII**, because platform text encodings can garble a diagnostic at the moment it is captured.
 - **A command-line parser receives an explicit description rather than a module docstring**, because help text can be written before the program configures its streams.

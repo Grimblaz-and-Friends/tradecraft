@@ -8,6 +8,8 @@
 
 A guess lets the owner correct rather than compose, and the strongest case against the recommendation keeps an argued choice from becoming advocacy for one. [The case against a recommendation travels with it](https://github.com/Grimblaz-and-Friends/tradecraft/issues/402). The real case gives them the instance they can judge on sight rather than an abstraction they have to imagine.
 
+**After affirmation, an ask about the affirmed work qualifies only when its answer changes an affirmed row or when the expected saving exceeds the cost of asking.** State which case applies and state the cost in this same argued form. A row-changing ask still states its cost without pretending savings are its reason; unknown cost or saving stays unknown rather than becoming invented arithmetic. A question the record or precedent can answer goes to the repository's assigned coordinating session first, or through the holder's recorded check when none is assigned. These constraints do not govern the `filing` cell's purchase ask for an unfixed finding outside the brief; that ask keeps its existing route. These are constraints on when the one form is used, not a second form.
+
 **The text the owner settles is kept exact.** For an implementation brief, the affirmed item and the one-time record of each row-changing push are governed by `../references/the-brief.md`; none of the item's words need to have been typed by the owner. For another ask, record the ruling in their own words or in the one restatement they approved, and keep that text exact thereafter.
 
 **An ask is anything a session needs from the owner that the session may not settle** — an implementation brief put for affirmation, an argued ask ruled at release, or a handback after time away. The occasions are not a closed list; what makes something an ask is that **the matter is not the session's to close**, whether or not the work waits on the answer. **Waiting is not the test and never was**: an argued ask ruled at release has the work proceeding on the recommendation, and it is an ask.
@@ -23,6 +25,8 @@ A guess lets the owner correct rather than compose, and the strongest case again
 **An ask that is not marked is not put, and nothing that later happens to what carries it rules on it.** A question written into a pull request body and marked nowhere is not answered by the merge; it was never asked.
 
 **An ask put to the owner in conversation is put, and carries no mark**, the conversation being the engagement surface. The mark is for an ask they are not in the room for.
+
+**Record every post-affirmation owner ask and its answer on the associated issue or pull request, including one put in conversation.** The record names which qualifying case applied, the stated cost, the coordinating-session or precedent route, and the outcome when known. Recording an answered conversational ask does not turn it into an unanswered labelled ask; a holder's internal call or report is not an owner ask.
 
 **One query is the whole of what waits, and it is scoped to the repository.** Unscoped, the label is a common one and the search returns other people's work.
 
