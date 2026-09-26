@@ -37,6 +37,7 @@ MAX_ARCHIVE_BYTES = 1_000_000_000
 MAX_FILE_BYTES = 50_000_000
 MAX_COMMENT_BODY = 60_000
 MAX_REVIEW_COMMENTS = 100
+MAX_FAILURE_EVIDENCE = 2_000
 
 
 class ReviewError(RuntimeError):
@@ -74,6 +75,7 @@ def _run(
     environment: dict[str, str] | None = None,
     input_bytes: bytes | None = None,
     timeout: int = 120,
+    check: bool = True,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         result = subprocess.run(
@@ -90,7 +92,7 @@ def _run(
         raise ReviewError(
             f"command timed out ({command[0]}) after {timeout} seconds"
         ) from exc
-    if result.returncode:
+    if check and result.returncode:
         diagnostic = _decode(result.stderr).strip()
         raise ReviewError(
             f"command failed ({command[0]}): {diagnostic or result.returncode}"
@@ -610,6 +612,61 @@ def _model_result(parsed: dict[str, Any]) -> Any:
     raise ReviewError("Claude returned no structured output")
 
 
+def _failure_text(value: Any, replacements: dict[str, str]) -> str:
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=True)
+    for secret, replacement in replacements.items():
+        if secret:
+            text = text.replace(secret, replacement)
+    text = " ".join(text.split())
+    return text[-MAX_FAILURE_EVIDENCE:]
+
+
+def _claude_failure(
+    result: subprocess.CompletedProcess[bytes],
+    parsed: dict[str, Any] | None,
+    *,
+    token: str,
+    run_root: Path,
+    snapshot: Path,
+) -> str:
+    replacements = {
+        token: "[redacted-token]",
+        str(run_root): "[run]",
+        str(snapshot): "[snapshot]",
+    }
+    evidence = []
+    if parsed is not None:
+        for key in ("subtype", "is_error", "api_error_status", "result"):
+            if key not in parsed:
+                continue
+            value = _failure_text(parsed.get(key), replacements)
+            if value:
+                evidence.append(f"{key}={value}")
+    stderr = _failure_text(_decode(result.stderr), replacements)
+    if stderr:
+        evidence.append(f"stderr_tail={stderr}")
+    joined = "; ".join(evidence) or f"exit_status={result.returncode}"
+    classification = joined.lower().replace("_", "-")
+    if any(marker in classification for marker in (
+        "usage limit", "hit your limit", "weekly limit", "monthly limit",
+    )):
+        cause = "Claude usage limit reached"
+    elif "rate limit" in classification or "rate-limit" in classification or (
+        parsed is not None and str(parsed.get("api_error_status")) == "429"
+    ):
+        cause = "Claude rate limit reached"
+    elif any(marker in classification for marker in (
+        "authentication", "authentication-error", "unauthorized",
+        "invalid authentication credentials",
+    )) or (parsed is not None and str(parsed.get("api_error_status")) == "401"):
+        cause = "Claude authentication failed"
+    else:
+        cause = "Claude command failed"
+    return f"{cause}: {joined}"
+
+
 def run_pass(
     executable: str | list[str],
     run_root: Path,
@@ -650,16 +707,24 @@ def run_pass(
         environment=environment,
         input_bytes=(prompt + "\n\nReturn only the required structure.\n").encode("utf-8"),
         timeout=3600,
+        check=False,
     )
     events = []
+    malformed_stream = False
     for line in _decode(result.stdout).splitlines():
         if not line.strip():
             continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError as exc:
+            if result.returncode:
+                malformed_stream = True
+                continue
             raise ReviewError("Claude process returned malformed JSON stream") from exc
         if not isinstance(event, dict):
+            if result.returncode:
+                malformed_stream = True
+                continue
             raise ReviewError("Claude process returned an invalid stream event")
         events.append(event)
     if len(events) == 1 and "type" not in events[0]:
@@ -669,7 +734,9 @@ def run_pass(
             (event for event in reversed(events) if event.get("type") == "result"),
             None,
         )
-    if not isinstance(parsed, dict):
+    if result.returncode and not isinstance(parsed, dict):
+        parsed = None
+    elif not isinstance(parsed, dict):
         raise ReviewError("Claude process returned no result event")
     trace = []
     for event in events:
@@ -685,8 +752,16 @@ def run_pass(
             event_subtype = str(event.get("subtype", ""))
             if "hook" in event_type.lower() or "hook" in event_subtype.lower():
                 trace.append({"event": event_subtype or event_type})
-    usage = parsed.get("usage")
+    usage = parsed.get("usage") if parsed is not None else None
     observed = usage if isinstance(usage, dict) else {}
+    if result.returncode or (parsed is not None and parsed.get("is_error")):
+        cause = _claude_failure(
+            result, parsed, token=token, run_root=run_root, snapshot=snapshot,
+        )
+        if malformed_stream:
+            cause += "; stdout_stream=partly-malformed"
+        raise ReviewError(cause, usage=observed or None)
+    assert parsed is not None
     try:
         value = _model_result(parsed)
     except ReviewError as exc:

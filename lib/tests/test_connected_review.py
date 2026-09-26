@@ -27,6 +27,13 @@ def fixture(name: str):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def cli_failure(name: str, command, *, stderr_suffix=""):
+    recorded = fixture(name)
+    stdout = "\n".join(json.dumps(event) for event in recorded["events"]).encode()
+    stderr = (recorded["stderr"] + stderr_suffix).encode()
+    return subprocess.CompletedProcess(command, recorded["returncode"], stdout, stderr)
+
+
 def event() -> dict:
     return fixture("connected_review_event.json")
 
@@ -393,6 +400,75 @@ def test_failed_model_process_preserves_observed_usage(tmp_path, monkeypatch):
             effort=cr.FINDER_EFFORT,
         )
     assert raised.value.usage == {"input_tokens": 17}
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "cause"),
+    [
+        ("connected_review_claude_usage_limit.json", "Claude usage limit reached"),
+        ("connected_review_claude_authentication.json", "Claude authentication failed"),
+    ],
+)
+def test_nonzero_model_process_classifies_recorded_failure_evidence(
+    tmp_path, monkeypatch, fixture_name, cause,
+):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+
+    def run(command, **kwargs):
+        assert kwargs["check"] is False
+        return cli_failure(fixture_name, command, stderr_suffix=" token=oauth-secret\n")
+
+    monkeypatch.setattr(cr, "_run", run)
+    with pytest.raises(cr.ReviewError, match=cause) as raised:
+        cr.run_pass(
+            "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA,
+            "oauth-secret", effort=cr.FINDER_EFFORT,
+        )
+    message = str(raised.value)
+    for field in ("subtype=", "is_error=", "api_error_status=", "result=", "stderr_tail="):
+        assert field in message
+    assert "oauth-secret" not in message
+    assert len(message) < 2 * cr.MAX_FAILURE_EVIDENCE + 500
+
+
+def test_recorded_usage_limit_cause_reaches_live_skip_notice(tmp_path, monkeypatch):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    monkeypatch.setattr(
+        cr, "_run",
+        lambda command, **_kwargs: cli_failure(
+            "connected_review_claude_usage_limit.json", command,
+        ),
+    )
+    with pytest.raises(cr.ReviewError) as raised:
+        cr.run_pass(
+            "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA,
+            "oauth", effort=cr.FINDER_EFFORT,
+        )
+    assert "usage limit" in str(raised.value).lower()
+    notices = []
+
+    def get(endpoint, **kwargs):
+        if endpoint.endswith("/pulls/746"):
+            return pull()
+        if endpoint.endswith("/pulls/746/reviews"):
+            return []
+        if endpoint.endswith("/issues/746/comments") and kwargs.get("method") == "POST":
+            notices.append(kwargs["payload"]["body"])
+            return {"id": 1}
+        if endpoint.endswith("/issues/746/comments"):
+            return []
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(cr, "gh_json", get)
+    monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset({cr.BOT_LOGIN}))
+    cr.report_skip(
+        event(), "Grimblaz", "94", "failure", str(raised.value), "94",
+        json.dumps({"finder": raised.value.usage}),
+    )
+    assert len(notices) == 1
+    assert notices[0].startswith("Review skipped: Claude usage limit reached")
 
 
 def test_subprocess_timeout_becomes_named_review_failure(monkeypatch):

@@ -12,6 +12,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = ROOT / "lib/tests/fixtures"
 sys.path.insert(0, str(ROOT / "tools"))
 import connected_review_replay as replay  # noqa: E402
 
@@ -223,6 +224,179 @@ def test_run_records_canaries_tool_trace_and_invalidates_outside_read(tmp_path, 
     assert set(case["canaries"]) == {"answer-key", "pull-request-thread", "later-commit"}
     assert case["finder_trace"] and case["checker_trace"]
     assert result["complete"] is False
+
+
+def test_tool_result_spill_is_pass_local_but_canary_and_sibling_reads_leak(tmp_path):
+    snapshot = tmp_path / "case" / "snapshot"
+    inputs = tmp_path / "case" / "input"
+    pass_root = tmp_path / "case" / "finder"
+    snapshot.mkdir(parents=True)
+    inputs.mkdir()
+    spill = (
+        pass_root / "profile/claude/projects/project/session/tool-results/toolu_123.txt"
+    )
+    spill.parent.mkdir(parents=True)
+    spill.write_text("large tool result", encoding="utf-8")
+    canary = tmp_path / "prohibited" / "answer-key.txt"
+    sibling = tmp_path / "sibling-case/finder/profile/claude/projects/p/s/tool-results/x.txt"
+    nearby = pass_root / "profile/claude/projects/project/session/other/x.txt"
+    canary.parent.mkdir()
+    sibling.parent.mkdir(parents=True)
+    nearby.parent.mkdir(parents=True)
+    canary.write_text("canary", encoding="utf-8")
+    sibling.write_text("sibling", encoding="utf-8")
+    nearby.write_text("not a tool-result spill", encoding="utf-8")
+    trace = [
+        {"tool": "Read", "input": {"file_path": str(spill)}},
+        {"tool": "Read", "input": {"file_path": str(canary)}},
+        {"tool": "Read", "input": {"file_path": str(sibling)}},
+        {"tool": "Read", "input": {"file_path": str(nearby)}},
+    ]
+    assert replay._outside_trace_reads(trace, snapshot, inputs, pass_root) == sorted([
+        str(canary.resolve()), str(sibling.resolve()), str(nearby.resolve()),
+    ])
+
+
+def test_recorded_usage_limit_becomes_replay_case_error(tmp_path, monkeypatch):
+    export = build_export(tmp_path / "export", cases=1)
+    output = tmp_path / "results.json"
+    finder = tmp_path / "finder.md"
+    checker = tmp_path / "checker.md"
+    finder.write_text("finder", encoding="utf-8")
+    checker.write_text("checker", encoding="utf-8")
+    recorded = json.loads(
+        (FIXTURES / "connected_review_claude_usage_limit.json").read_text(encoding="utf-8")
+    )
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
+    monkeypatch.setattr(replay.cr, "verify_managed_settings", lambda: None)
+    monkeypatch.setattr(replay.cr, "verify_claude_version", lambda *_: None)
+
+    def run(command, **_kwargs):
+        stdout = "\n".join(json.dumps(event) for event in recorded["events"]).encode()
+        return replay.cr.subprocess.CompletedProcess(
+            command, recorded["returncode"], stdout, recorded["stderr"].encode(),
+        )
+
+    monkeypatch.setattr(replay.cr, "_run", run)
+    result = replay.run_replay(
+        export, output, finder, checker, "claude",
+        replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+    )
+    assert result["complete"] is False
+    assert result["cases"][0]["status"] == "error"
+    assert "usage limit" in result["cases"][0]["error"].lower()
+    assert "api_error_status=429" in result["cases"][0]["error"]
+
+
+def test_resume_reruns_only_incomplete_cases_and_preserves_completed_case(tmp_path, monkeypatch):
+    export = build_export(tmp_path / "export", cases=3)
+    source = tmp_path / "partial-results.json"
+    output = tmp_path / "resumed-results.json"
+    finder = tmp_path / "finder.md"
+    checker = tmp_path / "checker.md"
+    finder.write_text("finder", encoding="utf-8")
+    checker.write_text("checker", encoding="utf-8")
+    reviewer = replay.reviewer_record(
+        finder, checker, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+    )
+    reviewer["harness_sha256"] = "0" * 64
+    completed = {
+        "case_id": "pr-1", "head": "1" * 40, "base": BASE,
+        "status": "completed", "survivors": [{"id": "kept-byte-for-byte"}],
+        "finder_usage": {"input_tokens": 1}, "checker_usage": {"input_tokens": 2},
+        "finder_trace": [], "checker_trace": [], "outside_reads": [], "canaries": {},
+    }
+    previous = {
+        "schema_version": 1,
+        "repository": "owner/repo",
+        "manifest_cases": [
+            {"case_id": f"pr-{index}", "head": str(index) * 40, "base": BASE}
+            for index in range(1, 4)
+        ],
+        "reviewer": reviewer,
+        "complete": False,
+        "cases": [
+            completed,
+            {"case_id": "pr-2", "head": "2" * 40, "base": BASE,
+             "status": "invalid-leak", "outside_reads": ["old-false-positive"]},
+            {"case_id": "pr-3", "head": "3" * 40, "base": BASE,
+             "status": "error", "error": "usage limit"},
+        ],
+    }
+    write(source, previous)
+    source_bytes = source.read_bytes()
+    completed_bytes = replay.cr._json_bytes(completed)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
+    monkeypatch.setattr(replay.cr, "verify_managed_settings", lambda: None)
+    monkeypatch.setattr(replay.cr, "verify_claude_version", lambda *_: None)
+    visited = []
+
+    def run(_executable, _root, snapshot, _prompt, schema, _token, *, effort):
+        visited.append((next(snapshot.iterdir()).name, schema, effort))
+        if schema is replay.cr.FINDER_SCHEMA:
+            return {"candidates": []}, {}, []
+        return {"decisions": []}, {}, []
+
+    monkeypatch.setattr(replay.cr, "run_pass", run)
+    result = replay.run_replay(
+        export, output, finder, checker, "claude",
+        replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, source,
+    )
+    assert [name for name, _schema, _effort in visited] == [
+        "only-2.py", "only-2.py", "only-3.py", "only-3.py",
+    ]
+    assert result["resumed_cases"] == ["pr-2", "pr-3"]
+    assert replay.cr._json_bytes(result["cases"][0]) == completed_bytes
+    assert source.read_bytes() == source_bytes
+    current_harness = replay.harness_digest()
+    assert result["case_harness_sha256"] == {
+        "pr-1": "0" * 64, "pr-2": current_harness, "pr-3": current_harness,
+    }
+    assert result["complete"] is True
+    assert output.is_file() and output != source
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "revision", "model", "finder_effort", "checker_effort",
+        "claude_cli_version", "finder_prompt_sha256", "checker_prompt_sha256",
+        "settings_sha256",
+    ],
+)
+def test_resume_refuses_changed_reviewer_identity(tmp_path, field):
+    export = build_export(tmp_path / "export", cases=1)
+    source = tmp_path / "partial-results.json"
+    finder = tmp_path / "finder.md"
+    checker = tmp_path / "checker.md"
+    finder.write_text("finder", encoding="utf-8")
+    checker.write_text("checker", encoding="utf-8")
+    reviewer = replay.reviewer_record(
+        finder, checker, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+    )
+    reviewer[field] = "different"
+    write(source, {
+        "schema_version": 1,
+        "repository": "owner/repo",
+        "manifest_cases": [{"case_id": "pr-1", "head": "1" * 40, "base": BASE}],
+        "reviewer": reviewer,
+        "complete": False,
+        "cases": [],
+    })
+    with pytest.raises(replay.ReplayError, match=field):
+        replay.run_replay(
+            export, tmp_path / "new-results.json", finder, checker, "claude",
+            replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, source,
+        )
+
+
+def test_run_parser_accepts_resume_results_path():
+    args = replay.parser().parse_args([
+        "run", "--export", "export", "--output", "new.json",
+        "--finder-prompt", "finder.md", "--checker-prompt", "checker.md",
+        "--revision", HEAD, "--resume", "partial.json",
+    ])
+    assert args.resume == Path("partial.json")
 
 
 def result_record(survivors: list[dict], *, complete=True, include_case=True) -> dict:

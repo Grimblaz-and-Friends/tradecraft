@@ -161,6 +161,111 @@ def validate_export(root: Path) -> dict[str, Any]:
     return manifest
 
 
+def harness_digest() -> str:
+    digest = hashlib.sha256()
+    for name, path in (
+        ("runtime", Path(cr.__file__)),
+        ("replay", Path(__file__)),
+    ):
+        digest.update(name.encode("ascii"))
+        digest.update(bytes.fromhex(file_digest(path)))
+    return digest.hexdigest()
+
+
+def reviewer_record(
+    finder_prompt: Path,
+    checker_prompt: Path,
+    version: str,
+    revision: str,
+) -> dict[str, Any]:
+    settings = cr.reviewer_settings(version)
+    return {
+        "revision": revision,
+        **settings,
+        "settings_sha256": hashlib.sha256(cr._json_bytes(settings)).hexdigest(),
+        "finder_prompt_sha256": file_digest(finder_prompt),
+        "checker_prompt_sha256": file_digest(checker_prompt),
+        "harness_sha256": harness_digest(),
+    }
+
+
+def _resume_cases(
+    resume: Path,
+    manifest: dict[str, Any],
+    current_reviewer: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, str]]:
+    previous = read_object(resume)
+    expected_manifest = [
+        {"case_id": case["id"], "head": case["head"], "base": case["base"]}
+        for case in manifest["cases"]
+    ]
+    if (
+        previous.get("repository") != manifest["repository"]
+        or previous.get("manifest_cases") != expected_manifest
+    ):
+        raise ReplayError("resume results do not match the exported manifest")
+    stored_reviewer = previous.get("reviewer")
+    if not isinstance(stored_reviewer, dict):
+        raise ReplayError("resume results have no reviewer identity")
+    identity_fields = tuple(
+        key for key in current_reviewer if key != "harness_sha256"
+    )
+    mismatched = [
+        key for key in identity_fields
+        if stored_reviewer.get(key) != current_reviewer.get(key)
+    ]
+    if mismatched:
+        raise ReplayError(
+            "resume reviewer identity differs: " + ", ".join(sorted(mismatched))
+        )
+    old_harness = stored_reviewer.get("harness_sha256")
+    if (
+        not isinstance(old_harness, str)
+        or len(old_harness) != 64
+        or any(char not in "0123456789abcdef" for char in old_harness)
+    ):
+        raise ReplayError("resume results have no harness hash")
+    rows = previous.get("cases")
+    if not isinstance(rows, list):
+        raise ReplayError("resume results have no case records")
+    manifest_by_id = {case["id"]: case for case in manifest["cases"]}
+    previous_by_id = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ReplayError("resume results contain a malformed case record")
+        identifier = row.get("case_id")
+        expected = manifest_by_id.get(identifier)
+        if (
+            expected is None
+            or identifier in previous_by_id
+            or row.get("head") != expected["head"]
+            or row.get("base") != expected["base"]
+        ):
+            raise ReplayError("resume results contain a mismatched case record")
+        previous_by_id[identifier] = row
+    previous_harnesses = previous.get("case_harness_sha256", {})
+    if not isinstance(previous_harnesses, dict):
+        raise ReplayError("resume case harness record is malformed")
+    completed = {
+        identifier: row for identifier, row in previous_by_id.items()
+        if row.get("status") == "completed"
+    }
+    case_harnesses = {}
+    for identifier in completed:
+        value = previous_harnesses.get(identifier, old_harness)
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(char not in "0123456789abcdef" for char in value)
+        ):
+            raise ReplayError(f"resume case {identifier} has no harness hash")
+        case_harnesses[identifier] = value
+    resumed = [
+        case["id"] for case in manifest["cases"] if case["id"] not in completed
+    ]
+    return completed, resumed, case_harnesses
+
+
 def run_replay(
     export_root: Path,
     output: Path,
@@ -169,16 +274,29 @@ def run_replay(
     executable: str | list[str],
     version: str,
     revision: str,
+    resume: Path | None = None,
 ) -> dict[str, Any]:
     manifest = validate_export(export_root)
-    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    if not token:
-        raise ReplayError("CLAUDE_CODE_OAUTH_TOKEN is unavailable")
-    cr.verify_managed_settings()
-    cr.verify_claude_version(executable, version)
     finder_text = finder_prompt.read_text(encoding="utf-8")
     checker_text = checker_prompt.read_text(encoding="utf-8")
-    settings = cr.reviewer_settings(version)
+    current_reviewer = reviewer_record(finder_prompt, checker_prompt, version, revision)
+    completed: dict[str, dict[str, Any]] = {}
+    resumed_cases: list[str] = []
+    case_harnesses: dict[str, str] = {}
+    if resume is not None:
+        if output.resolve() == resume.resolve() or output.exists():
+            raise ReplayError("resume output must be a new results file")
+        completed, resumed_cases, case_harnesses = _resume_cases(
+            resume, manifest, current_reviewer,
+        )
+    pending = [case for case in manifest["cases"] if case["id"] not in completed]
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if pending and not token:
+        raise ReplayError("CLAUDE_CODE_OAUTH_TOKEN is unavailable")
+    if pending:
+        cr.verify_managed_settings()
+        cr.verify_claude_version(executable, version)
+    order = {case["id"]: index for index, case in enumerate(manifest["cases"])}
     record = {
         "schema_version": 1,
         "repository": manifest["repository"],
@@ -186,19 +304,19 @@ def run_replay(
             {"case_id": case["id"], "head": case["head"], "base": case["base"]}
             for case in manifest["cases"]
         ],
-        "reviewer": {
-            "revision": revision,
-            **settings,
-            "settings_sha256": hashlib.sha256(cr._json_bytes(settings)).hexdigest(),
-            "finder_prompt_sha256": file_digest(finder_prompt),
-            "checker_prompt_sha256": file_digest(checker_prompt),
-            "harness_sha256": file_digest(Path(cr.__file__)),
-        },
+        "reviewer": current_reviewer,
+        "resumed_cases": resumed_cases,
+        "case_harness_sha256": case_harnesses,
         "complete": False,
-        "cases": [],
+        "cases": list(completed.values()),
     }
+    record["cases"].sort(key=lambda row: order[row["case_id"]])
+    record["complete"] = (
+        len(record["cases"]) == len(record["manifest_cases"])
+        and all(case.get("status") == "completed" for case in record["cases"])
+    )
     write_object(output, record)
-    for case in manifest["cases"]:
+    for case in pending:
         case_result: dict[str, Any] = {
             "case_id": case["id"], "head": case["head"], "base": case["base"],
         }
@@ -245,7 +363,11 @@ def run_replay(
                     effort=cr.CHECKER_EFFORT,
                 )
                 survivors = cr.validate_decisions(checker_value, candidates, lines)
-                leaks = _outside_trace_reads(finder_trace + checker_trace, snapshot)
+                leaks = sorted(set(_outside_trace_reads(
+                    finder_trace, snapshot, input_dir, case_root / "finder",
+                ) + _outside_trace_reads(
+                    checker_trace, snapshot, input_dir, case_root / "checker",
+                )))
                 case_result.update({
                     "status": "invalid-leak" if leaks else "completed",
                     "survivors": survivors,
@@ -259,6 +381,8 @@ def run_replay(
         except (ReplayError, cr.ReviewError, OSError) as exc:
             case_result.update({"status": "error", "error": str(exc)})
         record["cases"].append(case_result)
+        record["cases"].sort(key=lambda row: order[row["case_id"]])
+        record["case_harness_sha256"][case["id"]] = current_reviewer["harness_sha256"]
         record["complete"] = (
             len(record["cases"]) == len(record["manifest_cases"])
             and all(case.get("status") == "completed" for case in record["cases"])
@@ -267,24 +391,48 @@ def run_replay(
     return record
 
 
-def _outside_trace_reads(trace: list[dict[str, Any]], snapshot: Path) -> list[str]:
+def _is_pass_tool_result(path: Path, pass_root: Path) -> bool:
+    projects = (pass_root / "profile" / "claude" / "projects").resolve()
+    try:
+        relative = path.relative_to(projects)
+    except ValueError:
+        return False
+    parts = relative.parts
+    return len(parts) >= 4 and parts[2] == "tool-results" and path.is_file()
+
+
+def _within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _outside_trace_reads(
+    trace: list[dict[str, Any]],
+    snapshot: Path,
+    inputs: Path,
+    pass_root: Path,
+) -> list[str]:
     outside = []
-    snapshot = snapshot.resolve()
+    allowed = (snapshot.resolve(), inputs.resolve())
     for event in trace:
         tool = event.get("tool")
-        inputs = event.get("input")
-        if tool not in {"Read", "Glob", "Grep"} or not isinstance(inputs, dict):
+        event_input = event.get("input")
+        if tool not in {"Read", "Glob", "Grep"} or not isinstance(event_input, dict):
             continue
         for key in ("file_path", "path"):
-            raw = inputs.get(key)
+            raw = event_input.get(key)
             if not isinstance(raw, str) or not raw:
                 continue
             path = Path(raw)
             resolved = path.resolve() if path.is_absolute() else path.resolve()
-            try:
-                resolved.relative_to(snapshot)
-            except ValueError:
-                outside.append(str(resolved))
+            if any(_within(resolved, root) for root in allowed):
+                continue
+            if _is_pass_tool_result(resolved, pass_root):
+                continue
+            outside.append(str(resolved))
     return sorted(set(outside))
 
 
@@ -452,6 +600,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--claude")
     run.add_argument("--claude-version", default=cr.DEFAULT_CLAUDE_VERSION)
     run.add_argument("--revision", required=True)
+    run.add_argument("--resume", type=Path)
     grade = commands.add_parser("grade")
     grade.add_argument("--results", required=True, type=Path)
     grade.add_argument("--answer-key", required=True, type=Path)
@@ -470,7 +619,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             executable = cr.resolve_command("claude", args.claude)
             result = run_replay(
                 args.export, args.output, args.finder_prompt, args.checker_prompt,
-                executable, args.claude_version, args.revision,
+                executable, args.claude_version, args.revision, args.resume,
             )
         else:
             result = grade_replay(args.results, args.answer_key, args.decisions)
