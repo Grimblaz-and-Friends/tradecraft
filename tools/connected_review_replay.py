@@ -346,14 +346,11 @@ def run_replay(
                 rules_path = input_dir / "repository-rules.md"
                 diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
                 rules_text = rules_path.read_text(encoding="utf-8", errors="replace")
-                finder_value, finder_usage, finder_trace = cr.run_pass(
-                    executable, case_root / "finder", snapshot,
-                    cr._pass_prompt(finder_text, snapshot, diff_text, rules_text),
-                    cr.FINDER_SCHEMA, token,
-                    effort=cr.FINDER_EFFORT,
-                )
                 lines = cr.changed_lines(diff_text)
-                candidates = cr.validate_candidates(finder_value, lines)
+                candidates, finder_usage, finder_trace = cr.run_finders(
+                    executable, case_root, snapshot, finder_text, diff_text,
+                    rules_text, lines, token,
+                )
                 checker_value, checker_usage, checker_trace = cr.run_pass(
                     executable, case_root / "checker", snapshot,
                     cr._pass_prompt(
@@ -363,9 +360,12 @@ def run_replay(
                     effort=cr.CHECKER_EFFORT,
                 )
                 survivors = cr.validate_decisions(checker_value, candidates, lines)
-                leaks = sorted(set(_outside_trace_reads(
-                    finder_trace, snapshot, input_dir, case_root / "finder",
-                ) + _outside_trace_reads(
+                finder_leaks = []
+                for name, trace in finder_trace.items():
+                    finder_leaks.extend(_outside_trace_reads(
+                        trace, snapshot, input_dir, case_root / f"finder-{name}",
+                    ))
+                leaks = sorted(set(finder_leaks + _outside_trace_reads(
                     checker_trace, snapshot, input_dir, case_root / "checker",
                 )))
                 case_result.update({

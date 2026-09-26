@@ -27,9 +27,21 @@ from winio import utf8_stdio
 
 BOT_LOGIN = "github-actions[bot]"
 DEFAULT_MODEL = "claude-opus-5-5"
-FINDER_EFFORT = "max"
+FINDER_EFFORT = "xhigh"
 CHECKER_EFFORT = "high"
-FINDER_PASSES = 1
+FINDER_PASSES = (
+    (
+        "contracts",
+        "Trace each change through callers, consumers, tests, documented contracts, "
+        "and analogous paths; seek contradictions with unchanged behavior.",
+    ),
+    (
+        "state-inputs",
+        "Probe each changed branch or guard with unconsidered inputs and state transitions; "
+        "seek bypasses, lost state, refused valid cases, and wrong records or results.",
+    ),
+)
+MAX_FINDER_CANDIDATES_PER_PASS = 50
 # Claude Code 2.1.280 is the first version verified to support DEFAULT_MODEL.
 DEFAULT_CLAUDE_VERSION = "2.1.280"
 ATTEMPT_PREFIX = "connected-review-attempt:"
@@ -58,7 +70,10 @@ def reviewer_settings(cli_version: str = DEFAULT_CLAUDE_VERSION) -> dict[str, An
         "checker_effort": CHECKER_EFFORT,
         "claude_cli_version": cli_version,
         "finder_effort": FINDER_EFFORT,
-        "finder_passes": FINDER_PASSES,
+        "finder_passes": [
+            {"name": name, "focus": focus} for name, focus in FINDER_PASSES
+        ],
+        "finder_candidates_per_pass": MAX_FINDER_CANDIDATES_PER_PASS,
         "max_candidates": MAX_REVIEW_COMMENTS,
         "model": DEFAULT_MODEL,
     }
@@ -486,7 +501,7 @@ FINDER_SCHEMA = {
     "properties": {
         "candidates": {
             "type": "array",
-            "maxItems": MAX_REVIEW_COMMENTS,
+            "maxItems": MAX_FINDER_CANDIDATES_PER_PASS,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -498,12 +513,13 @@ FINDER_SCHEMA = {
                     "severity": {"type": "string"},
                     "input": {"type": "string"},
                     "execution_path": {"type": "string"},
+                    "root_cause": {"type": "string"},
                     "wrong_result": {"type": "string"},
                     "evidence": {"type": "string"},
                 },
                 "required": [
                     "id", "path", "line", "side", "severity", "input",
-                    "execution_path", "wrong_result", "evidence",
+                    "execution_path", "root_cause", "wrong_result", "evidence",
                 ],
             },
         }
@@ -779,7 +795,10 @@ def validate_candidates(value: Any, lines: dict[tuple[str, str], set[int]]) -> l
         raise ReviewError("finder output has no candidate list")
     seen: set[str] = set()
     validated = []
-    required_text = ("id", "path", "severity", "input", "execution_path", "wrong_result", "evidence")
+    required_text = (
+        "id", "path", "severity", "input", "execution_path", "root_cause",
+        "wrong_result", "evidence",
+    )
     for row in rows:
         if not isinstance(row, dict) or not all(_nonempty(row.get(key)) for key in required_text):
             raise ReviewError("finder emitted an incomplete candidate")
@@ -791,8 +810,8 @@ def validate_candidates(value: Any, lines: dict[tuple[str, str], set[int]]) -> l
         if not isinstance(line, int) or line < 1 or row.get("side") not in ("LEFT", "RIGHT"):
             raise ReviewError(f"candidate {identifier} has a malformed anchor")
         validated.append(row)
-    if len(validated) > MAX_REVIEW_COMMENTS:
-        raise ReviewError("finder exceeded the review comment limit")
+    if len(validated) > MAX_FINDER_CANDIDATES_PER_PASS:
+        raise ReviewError("finder exceeded its per-pass candidate limit")
     return validated
 
 
@@ -824,10 +843,15 @@ def validate_decisions(
     if set(decisions) != set(by_id):
         raise ReviewError("checker did not decide every finder candidate")
     survivors = []
+    kept_root_causes: set[str] = set()
     for candidate in candidates:
         decision = decisions[candidate["id"]]
         if decision["decision"] != "keep":
             continue
+        root_cause = " ".join(candidate["root_cause"].casefold().split())
+        if root_cause in kept_root_causes:
+            continue
+        kept_root_causes.add(root_cause)
         path = decision.get("path", candidate["path"])
         line = decision.get("line", candidate["line"])
         side = decision.get("side", candidate["side"])
@@ -935,6 +959,61 @@ def _pass_prompt(
     )
 
 
+def finder_usage_template() -> dict[str, dict[str, Any]]:
+    return {
+        name: {"status": "not-started", "observed_usage": 0}
+        for name, _focus in FINDER_PASSES
+    }
+
+
+def run_finders(
+    executable: str | list[str],
+    run_root: Path,
+    snapshot: Path,
+    instructions: str,
+    diff: str,
+    rules: str,
+    lines: dict[tuple[str, str], set[int]],
+    token: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    candidates = []
+    usage: dict[str, Any] = finder_usage_template()
+    traces = {}
+    for name, focus in FINDER_PASSES:
+        pass_instructions = (
+            instructions
+            + f"\n\nIndependent finder pass: {name}. "
+            + focus
+            + f" Return at most {MAX_FINDER_CANDIDATES_PER_PASS} candidates."
+        )
+        try:
+            value, pass_usage, trace = run_pass(
+                executable,
+                run_root / f"finder-{name}",
+                snapshot,
+                _pass_prompt(pass_instructions, snapshot, diff, rules),
+                FINDER_SCHEMA,
+                token,
+                effort=FINDER_EFFORT,
+            )
+            usage[name] = pass_usage
+            traces[name] = trace
+            rows = validate_candidates(value, lines)
+        except ReviewError as exc:
+            if exc.usage is not None:
+                usage[name] = exc.usage
+            elif usage[name].get("status") == "not-started":
+                usage[name] = {"status": "unavailable"}
+            raise ReviewError(str(exc), usage=usage) from exc
+        for row in rows:
+            candidate = dict(row)
+            candidate["id"] = f"{name}:{row['id']}"
+            candidates.append(candidate)
+    if len(candidates) > MAX_REVIEW_COMMENTS:
+        raise ReviewError("finder passes exceeded the merged candidate limit", usage=usage)
+    return candidates, usage, traces
+
+
 def execute_review(
     event: dict[str, Any],
     owner_login: str,
@@ -945,7 +1024,7 @@ def execute_review(
     checker_prompt: Path,
 ) -> dict[str, Any]:
     ledger: dict[str, Any] = {
-        "finder": {"status": "not-started", "observed_usage": 0},
+        "finder": finder_usage_template(),
         "checker": {"status": "not-started", "observed_usage": 0},
     }
     try:
@@ -970,25 +1049,21 @@ def execute_review(
             diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
             rules_text = rules_path.read_text(encoding="utf-8", errors="replace")
             lines = changed_lines(diff_text)
-            ledger["finder"] = {"status": "unavailable"}
             try:
-                finder_value, finder_usage, _finder_trace = run_pass(
+                candidates, finder_usage, _finder_traces = run_finders(
                     executable,
-                    root / "finder",
+                    root,
                     snapshot,
-                    _pass_prompt(
-                        finder_prompt.read_text(encoding="utf-8"), snapshot,
-                        diff_text, rules_text,
-                    ),
-                    FINDER_SCHEMA,
+                    finder_prompt.read_text(encoding="utf-8"),
+                    diff_text,
+                    rules_text,
+                    lines,
                     token,
-                    effort=FINDER_EFFORT,
                 )
             except ReviewError as exc:
-                ledger["finder"] = exc.usage or {"status": "unavailable"}
+                ledger["finder"] = exc.usage or ledger["finder"]
                 raise ReviewError(str(exc), usage=ledger) from exc
             ledger["finder"] = finder_usage
-            candidates = validate_candidates(finder_value, lines)
             ledger["checker"] = {"status": "unavailable"}
             try:
                 checker_value, checker_usage, _checker_trace = run_pass(

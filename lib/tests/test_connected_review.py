@@ -150,7 +150,8 @@ def candidate(**changes):
     value = {
         "id": "one", "path": "app.py", "line": 2, "side": "RIGHT",
         "severity": "P1", "input": "x", "execution_path": "f -> g",
-        "wrong_result": "returns old", "evidence": "app.py:2",
+        "root_cause": "g returns the stale value", "wrong_result": "returns old",
+        "evidence": "app.py:2",
     }
     value.update(changes)
     return value
@@ -171,6 +172,21 @@ def test_diff_parser_and_candidate_validator_accept_off_diff_finder_anchor():
     assert cr.validate_candidates({"candidates": [proposed]}, lines) == [proposed]
     proposed["line"] = 3
     assert cr.validate_candidates({"candidates": [proposed]}, lines) == [proposed]
+
+
+def test_checker_collapses_candidates_with_the_same_root_cause():
+    first = candidate(id="first")
+    second = candidate(id="second", line=3, wrong_result="prints a second symptom")
+    decisions = {"decisions": [
+        {"id": "first", "decision": "keep", "evidence": "app.py:2",
+         "explanation": "shown"},
+        {"id": "second", "decision": "keep", "evidence": "app.py:3",
+         "explanation": "same root cause"},
+    ]}
+    survivors = cr.validate_decisions(
+        decisions, [first, second], {("app.py", "RIGHT"): {2, 3}},
+    )
+    assert [row["id"] for row in survivors] == ["first"]
 
 
 def test_diff_parser_anchors_deleted_file_to_old_path():
@@ -249,7 +265,7 @@ def test_checker_drops_uncertain_candidate_and_keeps_proven_one():
     candidates = [
         {"id": name, "path": "app.py", "line": 2, "side": "RIGHT",
          "severity": "P1", "input": "x", "execution_path": "f -> g",
-         "wrong_result": "wrong", "evidence": "finder"}
+         "root_cause": f"root {name}", "wrong_result": "wrong", "evidence": "finder"}
         for name in ("proven", "uncertain")
     ]
     decisions = {"decisions": [
@@ -345,6 +361,36 @@ def test_model_process_has_only_read_tools_and_no_github_credential(tmp_path, mo
     assert Path(seen["kwargs"]["cwd"]) != snapshot
     assert Path(command[command.index("--add-dir") + 1]) == snapshot
     assert seen["kwargs"]["input_bytes"].startswith(b"prompt")
+
+
+def test_two_finder_lenses_run_independently_and_merge_prefixed_candidates(
+    tmp_path, monkeypatch,
+):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    calls = []
+
+    def run(_executable, run_root, _snapshot, prompt, _schema, _token, *, effort):
+        calls.append((run_root.name, prompt, effort))
+        row = candidate(id="one", root_cause=f"root in {run_root.name}")
+        return {"candidates": [row]}, {"output_tokens": 3}, []
+
+    monkeypatch.setattr(cr, "run_pass", run)
+    candidates, usage, traces = cr.run_finders(
+        "claude", tmp_path, snapshot, "finder instructions", "diff", "rules",
+        {("app.py", "RIGHT"): {2}}, "oauth",
+    )
+    assert [row["id"] for row in candidates] == [
+        "contracts:one", "state-inputs:one",
+    ]
+    assert [name for name, _prompt, _effort in calls] == [
+        "finder-contracts", "finder-state-inputs",
+    ]
+    assert all(effort == "xhigh" for _name, _prompt, effort in calls)
+    assert "callers, consumers" in calls[0][1]
+    assert "state transitions" in calls[1][1]
+    assert set(usage) == {"contracts", "state-inputs"}
+    assert set(traces) == {"contracts", "state-inputs"}
 
 
 def test_model_stream_keeps_structured_output_tool_uses_and_hook_events(tmp_path, monkeypatch):
@@ -597,6 +643,7 @@ def run_execute(finder, checker):
 def test_execute_review_preserves_both_pass_usages_on_validation_failure(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
         ({"candidates": [candidate()]}, {"input_tokens": 11}, []),
+        ({"candidates": []}, {"input_tokens": 12}, []),
         ({"decisions": [{
             "id": "invented", "decision": "keep", "evidence": "x", "explanation": "x",
         }]}, {"input_tokens": 22}, []),
@@ -604,29 +651,41 @@ def test_execute_review_preserves_both_pass_usages_on_validation_failure(tmp_pat
     with pytest.raises(cr.ReviewError, match="invented") as raised:
         run_execute(finder, checker)
     assert raised.value.usage == {
-        "finder": {"input_tokens": 11}, "checker": {"input_tokens": 22},
+        "finder": {
+            "contracts": {"input_tokens": 11},
+            "state-inputs": {"input_tokens": 12},
+        },
+        "checker": {"input_tokens": 22},
     }
 
 
 def test_execute_review_preserves_usage_when_head_turns_stale(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
         ({"candidates": []}, {"input_tokens": 11}, []),
+        ({"candidates": []}, {"input_tokens": 12}, []),
         ({"decisions": []}, {"input_tokens": 22}, []),
     ], current_head="c" * 40)
     with pytest.raises(cr.ReviewError, match="head changed") as raised:
         run_execute(finder, checker)
-    assert raised.value.usage["finder"] == {"input_tokens": 11}
+    assert raised.value.usage["finder"] == {
+        "contracts": {"input_tokens": 11},
+        "state-inputs": {"input_tokens": 12},
+    }
     assert raised.value.usage["checker"] == {"input_tokens": 22}
 
 
 def test_execute_review_preserves_usage_on_publication_failure(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
         ({"candidates": []}, {"input_tokens": 11}, []),
+        ({"candidates": []}, {"input_tokens": 12}, []),
         ({"decisions": []}, {"input_tokens": 22}, []),
     ], post_error=cr.ReviewError("publication transport failed"))
     with pytest.raises(cr.ReviewError, match="publication transport") as raised:
         run_execute(finder, checker)
-    assert raised.value.usage["finder"] == {"input_tokens": 11}
+    assert raised.value.usage["finder"] == {
+        "contracts": {"input_tokens": 11},
+        "state-inputs": {"input_tokens": 12},
+    }
     assert raised.value.usage["checker"] == {"input_tokens": 22}
 
 
@@ -638,7 +697,11 @@ def test_execute_review_names_timeout_and_preserves_prior_pass_usage(tmp_path, m
     with pytest.raises(cr.ReviewError, match="command timed out") as raised:
         run_execute(finder, checker)
     assert raised.value.usage == {
-        "finder": {"input_tokens": 11}, "checker": {"status": "unavailable"},
+        "finder": {
+            "contracts": {"input_tokens": 11},
+            "state-inputs": {"status": "unavailable"},
+        },
+        "checker": {"status": "not-started", "observed_usage": 0},
     }
 
 
@@ -651,7 +714,8 @@ def test_review_payload_is_one_completed_review_for_clean_or_survivor():
     survivor = {
         "id": "one", "path": "app.py", "line": 2, "side": "RIGHT",
         "severity": "P1", "input": "x", "execution_path": "f -> g",
-        "wrong_result": "returns wrong", "checker_evidence": "app.py:2",
+        "root_cause": "g returns the stale value", "wrong_result": "returns wrong",
+        "checker_evidence": "app.py:2",
         "checker_explanation": "the bad return is unconditional",
     }
     payload = cr.review_payload([survivor], HEAD, "91", {"input_tokens": 1}, {})

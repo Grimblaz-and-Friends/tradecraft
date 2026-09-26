@@ -151,7 +151,7 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
         calls += 1
         snapshots.append(sorted(path.name for path in snapshot.iterdir()))
         efforts.append(effort)
-        if calls == 3:
+        if calls == 4:
             raise replay.cr.ReviewError("case-specific failure")
         if schema is replay.cr.FINDER_SCHEMA:
             return {"candidates": []}, {"input_tokens": 1}, []
@@ -170,11 +170,14 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
         export, output, finder, checker, ["claude.cmd"],
         replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
     )
-    assert snapshots == [["only-1.py"], ["only-1.py"], ["only-2.py"]]
-    assert efforts == [
-        replay.cr.FINDER_EFFORT, replay.cr.CHECKER_EFFORT, replay.cr.FINDER_EFFORT,
+    assert snapshots == [
+        ["only-1.py"], ["only-1.py"], ["only-1.py"], ["only-2.py"],
     ]
-    assert result["reviewer"]["finder_effort"] == "max"
+    assert efforts == [
+        replay.cr.FINDER_EFFORT, replay.cr.FINDER_EFFORT,
+        replay.cr.CHECKER_EFFORT, replay.cr.FINDER_EFFORT,
+    ]
+    assert result["reviewer"]["finder_effort"] == "xhigh"
     assert result["reviewer"]["checker_effort"] == "high"
     settings = replay.cr.reviewer_settings(replay.cr.DEFAULT_CLAUDE_VERSION)
     assert result["reviewer"]["settings_sha256"] == hashlib.sha256(
@@ -343,7 +346,8 @@ def test_resume_reruns_only_incomplete_cases_and_preserves_completed_case(tmp_pa
         replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, source,
     )
     assert [name for name, _schema, _effort in visited] == [
-        "only-2.py", "only-2.py", "only-3.py", "only-3.py",
+        "only-2.py", "only-2.py", "only-2.py",
+        "only-3.py", "only-3.py", "only-3.py",
     ]
     assert result["resumed_cases"] == ["pr-2", "pr-3"]
     assert replay.cr._json_bytes(result["cases"][0]) == completed_bytes
