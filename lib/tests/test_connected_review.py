@@ -152,6 +152,9 @@ def candidate(**changes):
         "severity": "P1", "input": "x", "execution_path": "f -> g",
         "root_cause": "g returns the stale value", "wrong_result": "returns old",
         "evidence": "app.py:2",
+        "proof_targets": [
+            {"path": "app.py", "line": 2, "reason": "shows the stale return"},
+        ],
     }
     value.update(changes)
     return value
@@ -172,6 +175,16 @@ def test_diff_parser_and_candidate_validator_accept_off_diff_finder_anchor():
     assert cr.validate_candidates({"candidates": [proposed]}, lines) == [proposed]
     proposed["line"] = 3
     assert cr.validate_candidates({"candidates": [proposed]}, lines) == [proposed]
+
+
+def test_candidate_requires_exact_bounded_proof_targets():
+    proposed = candidate()
+    proposed["proof_targets"] = []
+    with pytest.raises(cr.ReviewError, match="bounded proof targets"):
+        cr.validate_candidates({"candidates": [proposed]}, {})
+    proposed["proof_targets"] = [{"path": "app.py", "line": 0, "reason": "read it"}]
+    with pytest.raises(cr.ReviewError, match="malformed proof target"):
+        cr.validate_candidates({"candidates": [proposed]}, {})
 
 
 def test_checker_collapses_candidates_with_the_same_root_cause():
@@ -265,7 +278,10 @@ def test_checker_drops_uncertain_candidate_and_keeps_proven_one():
     candidates = [
         {"id": name, "path": "app.py", "line": 2, "side": "RIGHT",
          "severity": "P1", "input": "x", "execution_path": "f -> g",
-         "root_cause": f"root {name}", "wrong_result": "wrong", "evidence": "finder"}
+         "root_cause": f"root {name}", "wrong_result": "wrong", "evidence": "finder",
+         "proof_targets": [
+             {"path": "app.py", "line": 2, "reason": "shows the return"},
+         ]}
         for name in ("proven", "uncertain")
     ]
     decisions = {"decisions": [
@@ -363,7 +379,7 @@ def test_model_process_has_only_read_tools_and_no_github_credential(tmp_path, mo
     assert seen["kwargs"]["input_bytes"].startswith(b"prompt")
 
 
-def test_two_finder_lenses_run_independently_and_merge_prefixed_candidates(
+def test_one_finder_combines_coverage_lenses_and_prefixes_candidates(
     tmp_path, monkeypatch,
 ):
     snapshot = tmp_path / "snapshot"
@@ -380,17 +396,62 @@ def test_two_finder_lenses_run_independently_and_merge_prefixed_candidates(
         "claude", tmp_path, snapshot, "finder instructions", "diff", "rules",
         {("app.py", "RIGHT"): {2}}, "oauth",
     )
-    assert [row["id"] for row in candidates] == [
-        "contracts:one", "state-inputs:one",
-    ]
-    assert [name for name, _prompt, _effort in calls] == [
-        "finder-contracts", "finder-state-inputs",
-    ]
+    assert [row["id"] for row in candidates] == ["coverage:one"]
+    assert [name for name, _prompt, _effort in calls] == ["finder-coverage"]
     assert all(effort == "xhigh" for _name, _prompt, effort in calls)
     assert "callers, consumers" in calls[0][1]
-    assert "state transitions" in calls[1][1]
-    assert set(usage) == {"contracts", "state-inputs"}
-    assert set(traces) == {"contracts", "state-inputs"}
+    assert "state transitions" in calls[0][1]
+    assert set(usage) == {"coverage"}
+    assert set(traces) == {"coverage"}
+
+
+def test_checker_uses_fresh_xhigh_batches_and_decides_every_candidate(
+    tmp_path, monkeypatch,
+):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    candidates = [
+        candidate(id=f"candidate-{index}", root_cause=f"root {index}")
+        for index in range(26)
+    ]
+    candidates[-1]["root_cause"] = candidates[0]["root_cause"]
+    calls = []
+
+    def run(_executable, run_root, _snapshot, prompt, _schema, _token, *, effort):
+        start = len(calls) * cr.MAX_CHECKER_CANDIDATES_PER_BATCH
+        batch = candidates[start:start + cr.MAX_CHECKER_CANDIDATES_PER_BATCH]
+        calls.append((run_root.name, prompt, effort, len(batch)))
+        return {
+            "decisions": [
+                {
+                    "id": row["id"],
+                    "decision": (
+                        "keep" if row["id"] in {"candidate-0", "candidate-25"}
+                        else "drop"
+                    ),
+                    "evidence": (
+                        "app.py:2" if row["id"] in {"candidate-0", "candidate-25"}
+                        else ""
+                    ),
+                    "explanation": "trace completed",
+                }
+                for row in batch
+            ],
+        }, {"output_tokens": len(batch)}, []
+
+    monkeypatch.setattr(cr, "run_pass", run)
+    survivors, usage, traces = cr.run_checkers(
+        "claude", tmp_path, snapshot, "checker instructions", "diff", "rules",
+        candidates, {("app.py", "RIGHT"): {2}}, "oauth",
+    )
+    assert [row["id"] for row in survivors] == ["candidate-0"]
+    assert [(name, effort, count) for name, _prompt, effort, count in calls] == [
+        ("checker-batch-1", "xhigh", 25),
+        ("checker-batch-2", "xhigh", 1),
+    ]
+    assert all("Decide all" in prompt for _name, prompt, _effort, _count in calls)
+    assert set(usage) == {"batch-1", "batch-2"}
+    assert set(traces) == {"batch-1", "batch-2"}
 
 
 def test_model_stream_keeps_structured_output_tool_uses_and_hook_events(tmp_path, monkeypatch):
@@ -643,7 +704,6 @@ def run_execute(finder, checker):
 def test_execute_review_preserves_both_pass_usages_on_validation_failure(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
         ({"candidates": [candidate()]}, {"input_tokens": 11}, []),
-        ({"candidates": []}, {"input_tokens": 12}, []),
         ({"decisions": [{
             "id": "invented", "decision": "keep", "evidence": "x", "explanation": "x",
         }]}, {"input_tokens": 22}, []),
@@ -651,42 +711,31 @@ def test_execute_review_preserves_both_pass_usages_on_validation_failure(tmp_pat
     with pytest.raises(cr.ReviewError, match="invented") as raised:
         run_execute(finder, checker)
     assert raised.value.usage == {
-        "finder": {
-            "contracts": {"input_tokens": 11},
-            "state-inputs": {"input_tokens": 12},
-        },
-        "checker": {"input_tokens": 22},
+        "finder": {"coverage": {"input_tokens": 11}},
+        "checker": {"batch-1": {"input_tokens": 22}},
     }
 
 
 def test_execute_review_preserves_usage_when_head_turns_stale(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
         ({"candidates": []}, {"input_tokens": 11}, []),
-        ({"candidates": []}, {"input_tokens": 12}, []),
         ({"decisions": []}, {"input_tokens": 22}, []),
     ], current_head="c" * 40)
     with pytest.raises(cr.ReviewError, match="head changed") as raised:
         run_execute(finder, checker)
-    assert raised.value.usage["finder"] == {
-        "contracts": {"input_tokens": 11},
-        "state-inputs": {"input_tokens": 12},
-    }
-    assert raised.value.usage["checker"] == {"input_tokens": 22}
+    assert raised.value.usage["finder"] == {"coverage": {"input_tokens": 11}}
+    assert raised.value.usage["checker"] == {"batch-1": {"input_tokens": 22}}
 
 
 def test_execute_review_preserves_usage_on_publication_failure(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
         ({"candidates": []}, {"input_tokens": 11}, []),
-        ({"candidates": []}, {"input_tokens": 12}, []),
         ({"decisions": []}, {"input_tokens": 22}, []),
     ], post_error=cr.ReviewError("publication transport failed"))
     with pytest.raises(cr.ReviewError, match="publication transport") as raised:
         run_execute(finder, checker)
-    assert raised.value.usage["finder"] == {
-        "contracts": {"input_tokens": 11},
-        "state-inputs": {"input_tokens": 12},
-    }
-    assert raised.value.usage["checker"] == {"input_tokens": 22}
+    assert raised.value.usage["finder"] == {"coverage": {"input_tokens": 11}}
+    assert raised.value.usage["checker"] == {"batch-1": {"input_tokens": 22}}
 
 
 def test_execute_review_names_timeout_and_preserves_prior_pass_usage(tmp_path, monkeypatch):
@@ -697,11 +746,8 @@ def test_execute_review_names_timeout_and_preserves_prior_pass_usage(tmp_path, m
     with pytest.raises(cr.ReviewError, match="command timed out") as raised:
         run_execute(finder, checker)
     assert raised.value.usage == {
-        "finder": {
-            "contracts": {"input_tokens": 11},
-            "state-inputs": {"status": "unavailable"},
-        },
-        "checker": {"status": "not-started", "observed_usage": 0},
+        "finder": {"coverage": {"input_tokens": 11}},
+        "checker": {"batch-1": {"status": "unavailable"}},
     }
 
 

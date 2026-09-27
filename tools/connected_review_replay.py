@@ -351,23 +351,21 @@ def run_replay(
                     executable, case_root, snapshot, finder_text, diff_text,
                     rules_text, lines, token,
                 )
-                checker_value, checker_usage, checker_trace = cr.run_pass(
-                    executable, case_root / "checker", snapshot,
-                    cr._pass_prompt(
-                        checker_text, snapshot, diff_text, rules_text, candidates,
-                    ),
-                    cr.CHECKER_SCHEMA, token,
-                    effort=cr.CHECKER_EFFORT,
+                survivors, checker_usage, checker_trace = cr.run_checkers(
+                    executable, case_root, snapshot, checker_text, diff_text,
+                    rules_text, candidates, lines, token,
                 )
-                survivors = cr.validate_decisions(checker_value, candidates, lines)
                 finder_leaks = []
                 for name, trace in finder_trace.items():
                     finder_leaks.extend(_outside_trace_reads(
                         trace, snapshot, input_dir, case_root / f"finder-{name}",
                     ))
-                leaks = sorted(set(finder_leaks + _outside_trace_reads(
-                    checker_trace, snapshot, input_dir, case_root / "checker",
-                )))
+                checker_leaks = []
+                for name, trace in checker_trace.items():
+                    checker_leaks.extend(_outside_trace_reads(
+                        trace, snapshot, input_dir, case_root / f"checker-{name}",
+                    ))
+                leaks = sorted(set(finder_leaks + checker_leaks))
                 case_result.update({
                     "status": "invalid-leak" if leaks else "completed",
                     "survivors": survivors,

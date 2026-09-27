@@ -28,20 +28,18 @@ from winio import utf8_stdio
 BOT_LOGIN = "github-actions[bot]"
 DEFAULT_MODEL = "claude-opus-5-5"
 FINDER_EFFORT = "xhigh"
-CHECKER_EFFORT = "high"
+CHECKER_EFFORT = "xhigh"
 FINDER_PASSES = (
     (
-        "contracts",
+        "coverage",
         "Trace each change through callers, consumers, tests, documented contracts, "
-        "and analogous paths; seek contradictions with unchanged behavior.",
-    ),
-    (
-        "state-inputs",
-        "Probe each changed branch or guard with unconsidered inputs and state transitions; "
-        "seek bypasses, lost state, refused valid cases, and wrong records or results.",
+        "and analogous paths, then probe each changed branch or guard with unconsidered "
+        "inputs and state transitions. Seek contradictions with unchanged behavior, "
+        "bypasses, lost state, refused valid cases, and wrong records or results.",
     ),
 )
 MAX_FINDER_CANDIDATES_PER_PASS = 50
+MAX_CHECKER_CANDIDATES_PER_BATCH = 25
 # Claude Code 2.1.280 is the first version verified to support DEFAULT_MODEL.
 DEFAULT_CLAUDE_VERSION = "2.1.280"
 ATTEMPT_PREFIX = "connected-review-attempt:"
@@ -74,7 +72,8 @@ def reviewer_settings(cli_version: str = DEFAULT_CLAUDE_VERSION) -> dict[str, An
             {"name": name, "focus": focus} for name, focus in FINDER_PASSES
         ],
         "finder_candidates_per_pass": MAX_FINDER_CANDIDATES_PER_PASS,
-        "max_candidates": MAX_REVIEW_COMMENTS,
+        "checker_candidates_per_batch": MAX_CHECKER_CANDIDATES_PER_BATCH,
+        "max_candidates": MAX_FINDER_CANDIDATES_PER_PASS * len(FINDER_PASSES),
         "model": DEFAULT_MODEL,
     }
 
@@ -516,10 +515,26 @@ FINDER_SCHEMA = {
                     "root_cause": {"type": "string"},
                     "wrong_result": {"type": "string"},
                     "evidence": {"type": "string"},
+                    "proof_targets": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "path": {"type": "string"},
+                                "line": {"type": "integer", "minimum": 1},
+                                "reason": {"type": "string"},
+                            },
+                            "required": ["path", "line", "reason"],
+                        },
+                    },
                 },
                 "required": [
                     "id", "path", "line", "side", "severity", "input",
                     "execution_path", "root_cause", "wrong_result", "evidence",
+                    "proof_targets",
                 ],
             },
         }
@@ -534,7 +549,7 @@ CHECKER_SCHEMA = {
     "properties": {
         "decisions": {
             "type": "array",
-            "maxItems": MAX_REVIEW_COMMENTS,
+            "maxItems": MAX_CHECKER_CANDIDATES_PER_BATCH,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -809,6 +824,18 @@ def validate_candidates(value: Any, lines: dict[tuple[str, str], set[int]]) -> l
         line = row.get("line")
         if not isinstance(line, int) or line < 1 or row.get("side") not in ("LEFT", "RIGHT"):
             raise ReviewError(f"candidate {identifier} has a malformed anchor")
+        proof_targets = row.get("proof_targets")
+        if not isinstance(proof_targets, list) or not 1 <= len(proof_targets) <= 8:
+            raise ReviewError(f"candidate {identifier} has no bounded proof targets")
+        for target in proof_targets:
+            if (
+                not isinstance(target, dict)
+                or not _nonempty(target.get("path"))
+                or not isinstance(target.get("line"), int)
+                or target["line"] < 1
+                or not _nonempty(target.get("reason"))
+            ):
+                raise ReviewError(f"candidate {identifier} has a malformed proof target")
         validated.append(row)
     if len(validated) > MAX_FINDER_CANDIDATES_PER_PASS:
         raise ReviewError("finder exceeded its per-pass candidate limit")
@@ -1014,6 +1041,73 @@ def run_finders(
     return candidates, usage, traces
 
 
+def checker_usage_template(candidate_count: int) -> dict[str, dict[str, Any]]:
+    batch_count = max(
+        1,
+        (candidate_count + MAX_CHECKER_CANDIDATES_PER_BATCH - 1)
+        // MAX_CHECKER_CANDIDATES_PER_BATCH,
+    )
+    return {
+        f"batch-{index}": {"status": "not-started", "observed_usage": 0}
+        for index in range(1, batch_count + 1)
+    }
+
+
+def run_checkers(
+    executable: str | list[str],
+    run_root: Path,
+    snapshot: Path,
+    instructions: str,
+    diff: str,
+    rules: str,
+    candidates: list[dict[str, Any]],
+    lines: dict[tuple[str, str], set[int]],
+    token: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    batches = [
+        candidates[start:start + MAX_CHECKER_CANDIDATES_PER_BATCH]
+        for start in range(0, len(candidates), MAX_CHECKER_CANDIDATES_PER_BATCH)
+    ] or [[]]
+    usage: dict[str, Any] = checker_usage_template(len(candidates))
+    traces = {}
+    survivors = []
+    for index, batch in enumerate(batches, start=1):
+        name = f"batch-{index}"
+        batch_instructions = (
+            instructions
+            + f"\n\nThis is checker {name}. Decide all {len(batch)} supplied candidates."
+        )
+        try:
+            value, pass_usage, trace = run_pass(
+                executable,
+                run_root / f"checker-{name}",
+                snapshot,
+                _pass_prompt(batch_instructions, snapshot, diff, rules, batch),
+                CHECKER_SCHEMA,
+                token,
+                effort=CHECKER_EFFORT,
+            )
+            usage[name] = pass_usage
+            traces[name] = trace
+            survivors.extend(validate_decisions(value, batch, lines))
+        except ReviewError as exc:
+            if exc.usage is not None:
+                usage[name] = exc.usage
+            elif usage[name].get("status") == "not-started":
+                usage[name] = {"status": "unavailable"}
+            raise ReviewError(str(exc), usage=usage) from exc
+
+    unique_survivors = []
+    kept_root_causes: set[str] = set()
+    for survivor in survivors:
+        root_cause = " ".join(survivor["root_cause"].casefold().split())
+        if root_cause in kept_root_causes:
+            continue
+        kept_root_causes.add(root_cause)
+        unique_survivors.append(survivor)
+    return unique_survivors, usage, traces
+
+
 def execute_review(
     event: dict[str, Any],
     owner_login: str,
@@ -1064,25 +1158,23 @@ def execute_review(
                 ledger["finder"] = exc.usage or ledger["finder"]
                 raise ReviewError(str(exc), usage=ledger) from exc
             ledger["finder"] = finder_usage
-            ledger["checker"] = {"status": "unavailable"}
+            ledger["checker"] = checker_usage_template(len(candidates))
             try:
-                checker_value, checker_usage, _checker_trace = run_pass(
+                survivors, checker_usage, _checker_traces = run_checkers(
                     executable,
-                    root / "checker",
+                    root,
                     snapshot,
-                    _pass_prompt(
-                        checker_prompt.read_text(encoding="utf-8"), snapshot,
-                        diff_text, rules_text, candidates,
-                    ),
-                    CHECKER_SCHEMA,
+                    checker_prompt.read_text(encoding="utf-8"),
+                    diff_text,
+                    rules_text,
+                    candidates,
+                    lines,
                     token,
-                    effort=CHECKER_EFFORT,
                 )
             except ReviewError as exc:
-                ledger["checker"] = exc.usage or {"status": "unavailable"}
+                ledger["checker"] = exc.usage or ledger["checker"]
                 raise ReviewError(str(exc), usage=ledger) from exc
             ledger["checker"] = checker_usage
-            survivors = validate_decisions(checker_value, candidates, lines)
             current = gh_json(f"repos/{repo}/pulls/{number}")
             current_head = current.get("head", {}).get("sha") if isinstance(current, dict) else None
             if current_head != head_sha:

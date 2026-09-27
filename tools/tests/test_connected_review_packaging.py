@@ -15,39 +15,34 @@ def test_tuned_reviewer_prompt_and_settings_hashes_are_frozen():
     checker = ROOT / "skills/connected-review/references/checker.md"
     settings = cr.reviewer_settings()
     assert settings == {
-        "checker_effort": "high",
+        "checker_candidates_per_batch": 25,
+        "checker_effort": "xhigh",
         "claude_cli_version": "2.1.280",
         "finder_candidates_per_pass": 50,
         "finder_effort": "xhigh",
         "finder_passes": [
             {
-                "name": "contracts",
+                "name": "coverage",
                 "focus": (
                     "Trace each change through callers, consumers, tests, documented "
-                    "contracts, and analogous paths; seek contradictions with unchanged "
-                    "behavior."
-                ),
-            },
-            {
-                "name": "state-inputs",
-                "focus": (
-                    "Probe each changed branch or guard with unconsidered inputs and state "
-                    "transitions; seek bypasses, lost state, refused valid cases, and wrong "
+                    "contracts, and analogous paths, then probe each changed branch or guard "
+                    "with unconsidered inputs and state transitions. Seek contradictions with "
+                    "unchanged behavior, bypasses, lost state, refused valid cases, and wrong "
                     "records or results."
                 ),
             },
         ],
-        "max_candidates": 100,
+        "max_candidates": 50,
         "model": "claude-opus-5-5",
     }
     assert hashlib.sha256(finder.read_bytes()).hexdigest() == (
-        "b04f167c85d26310e18b31bae19463a2173c255dc47995efb1616669cf4ed306"
+        "3b13819ec50d747a655c3634a6b663592c052bca8d1f3fa7c0f8ebc8473bf247"
     )
     assert hashlib.sha256(checker.read_bytes()).hexdigest() == (
-        "a1026a460bdf131ec3c97f3495bda17855b0f38eb76c8fbf2de693c0082ed03c"
+        "c7c352d97e6b971ffff6343d113cbc299dd2a3c6c72363b6debee28e665a3f83"
     )
     assert hashlib.sha256(cr._json_bytes(settings)).hexdigest() == (
-        "9c502583df11b2ed2c0909b92bc80001a93b7f5aa78d6ac98150412343a98487"
+        "82627e87edf005808cb64bbb3ce4e89623f4f163fefcda1675711ae70a4b70d6"
     )
 
 
@@ -109,8 +104,10 @@ def test_prompts_carry_opposite_burdens_and_all_named_exclusions():
     assert "P0/P1" not in finder
     assert "root cause" in finder
     assert "coverage sweep across all hunks" in finder
+    assert "proof targets" in finder
     assert "Never create a candidate" in checker
-    assert "uncertain, drop" in checker
+    assert "uncertain after the trace, drop" in checker
+    assert "trace its stated execution path" in checker
     assert "not present in the snapshot or diff" in checker
     assert "Keep at most one candidate for one root cause" in checker
 
