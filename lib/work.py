@@ -67,6 +67,11 @@ DISPOSITIONS = (
 )
 MARKER = re.compile(r"<!--\s*tradecraft:([a-z-]+):v1(?:\s+([^>]*?))?\s*-->", re.I)
 ATTRIBUTE = re.compile(r"([a-z_]+)=([^\s]+)", re.I)
+SETTLEMENT_ROUTES = frozenset({"would", "cap", "discharge", "unobtainable"})
+TRAVELS_WITH = {
+    "proof": frozenset({"no-use"}),
+    "implementing-pr": frozenset({"builder-session"}),
+}
 CLOSING_REFERENCE = re.compile(
     r"(?im)^\s*(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\s*$"
 )
@@ -147,7 +152,7 @@ STAGE_SAFETY = {
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
     "affirmed-brief": {"required": set(), "optional": set(),
                        "surfaces": {"issue-comment"}},
-    "artifact": {"required": {"status"}, "optional": set(),
+    "artifact": {"required": {"status"}, "optional": {"route"},
                  "surfaces": {"issue-comment"}},
     "cold-verdict": {"required": {"verdict", "staffing_status"},
                      "optional": {"same_vendor_reason"},
@@ -226,6 +231,8 @@ class Marker:
     timestamp: str | None = None
     url: str | None = None
     raw_attributes: str = ""
+    source_order: int = 0
+    occurrence_order: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -236,6 +243,12 @@ class Marker:
             "timestamp": self.timestamp,
             "url": self.url,
         }
+
+
+@dataclass(frozen=True)
+class SourceClassification:
+    claims: tuple[Marker, ...]
+    quotations: tuple[Marker, ...]
 
 
 @dataclass(frozen=True)
@@ -265,6 +278,8 @@ class WorkState:
     record_root: Path | None = None
     validated_markers: list[Marker] | None = None
     invalid_marker_claims: list[dict[str, object]] = field(default_factory=list)
+    quotation_claims: list[dict[str, object]] = field(default_factory=list)
+    artifact_phase: ArtifactPhase | None = None
     collection_diagnostics: list[dict[str, object]] = field(default_factory=list)
     required_gate: dict[str, object] | None = None
     policy_sources: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -321,6 +336,7 @@ class Decision:
     status: str | None = None
     lawful_markers: tuple[dict[str, object], ...] = ()
     invalid_markers: tuple[dict[str, object], ...] = ()
+    quotations: tuple[dict[str, object], ...] = ()
     latest_checks: tuple[dict[str, object], ...] = ()
 
     def as_dict(self) -> dict[str, object]:
@@ -336,6 +352,7 @@ class Decision:
             "detail": self.detail,
             "lawful_markers": list(self.lawful_markers),
             "invalid_markers": list(self.invalid_markers),
+            "quotations": list(self.quotations),
             "latest_checks": list(self.latest_checks),
         }
 
@@ -491,36 +508,52 @@ def _authorized_markers(found: list[Marker], producers: frozenset[str]) -> list[
     return [marker for marker in found if marker.author.lower() in producers]
 
 
-def _marker_items(items: list[dict[str, object]], surface: str) -> list[Marker]:
-    found: list[Marker] = []
+def _marker_sources(items: list[dict[str, object]], surface: str) -> list[tuple]:
+    sources: list[tuple] = []
     for item in items:
         text = str(item.get("body") or "")
         timestamp = item.get("created_at") or item.get("submitted_at")
         identity = item.get("id")
         url = item.get("html_url")
-        found.extend(markers([(
+        sources.append((
             text, _author(item), surface,
             str(identity) if identity is not None else None,
             str(timestamp) if isinstance(timestamp, str) else None,
             str(url) if isinstance(url, str) else None,
-        )]))
-    return found
+            surface == "review-comment" and isinstance(item.get("in_reply_to_id"), int),
+        ))
+    return sources
 
 
-def _state_markers(state: WorkState) -> list[Marker]:
+def _state_sources(state: WorkState) -> list[tuple]:
     issue_timestamp = state.issue.get("created_at")
     issue_url = state.issue.get("html_url")
-    found = markers([(
+    sources: list[tuple] = [(
         str(state.issue.get("body") or ""), _author(state.issue), "issue",
         str(state.issue.get("id")) if state.issue.get("id") is not None else None,
         str(issue_timestamp) if isinstance(issue_timestamp, str) else None,
         str(issue_url) if isinstance(issue_url, str) else None,
-    )])
-    found.extend(_marker_items(state.issue_comments, "issue-comment"))
-    found.extend(_marker_items(state.pr_comments, "pull-request-comment"))
-    found.extend(_marker_items(state.reviews, "review"))
-    found.extend(_marker_items(state.review_comments, "review-comment"))
-    return found
+        False,
+    )]
+    sources.extend(_marker_sources(state.issue_comments, "issue-comment"))
+    if state.pr is not None:
+        pr_timestamp = state.pr.get("created_at")
+        pr_url = state.pr.get("html_url")
+        sources.append((
+            str(state.pr.get("body") or ""), _author(state.pr), "pull-request",
+            str(state.pr.get("id")) if state.pr.get("id") is not None else None,
+            str(pr_timestamp) if isinstance(pr_timestamp, str) else None,
+            str(pr_url) if isinstance(pr_url, str) else None,
+            False,
+        ))
+    sources.extend(_marker_sources(state.pr_comments, "pull-request-comment"))
+    sources.extend(_marker_sources(state.reviews, "review"))
+    sources.extend(_marker_sources(state.review_comments, "review-comment"))
+    return sources
+
+
+def _state_markers(state: WorkState) -> list[Marker]:
+    return list(_classify_sources(_state_sources(state)).claims)
 
 
 def _candidate_pr_classes(issue_number: int, issue: dict[str, object],
@@ -929,21 +962,142 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     return state
 
 
-def markers(sources: list[tuple]) -> list[Marker]:
-    found: list[Marker] = []
-    for source in sources:
+def _mask_markdown_quotations(text: str) -> str:
+    """Blank Markdown quotation regions while retaining offsets and newlines."""
+    masked = list(text)
+    offset = 0
+    fence: tuple[str, int] | None = None
+    for line_with_end in text.splitlines(keepends=True):
+        line = line_with_end.rstrip("\r\n")
+        quoted = False
+        fence_match = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence is not None:
+            quoted = True
+            closing = re.match(rf"^ {{0,3}}{re.escape(fence[0])}{{{fence[1]},}}\s*$", line)
+            if closing is not None:
+                fence = None
+        elif fence_match is not None:
+            token = fence_match.group(1)
+            fence = (token[0], len(token))
+            quoted = True
+        elif re.match(r"^ {0,3}>", line) is not None or re.match(r"^(?: {4}|\t)", line):
+            quoted = True
+        if quoted:
+            for index in range(offset, offset + len(line)):
+                masked[index] = " "
+        offset += len(line_with_end)
+    cursor = 0
+    while cursor < len(masked):
+        candidate = "".join(masked)
+        opener = re.search(r"`+", candidate[cursor:])
+        if opener is None:
+            break
+        start = cursor + opener.start()
+        ticks = opener.group(0)
+        closing = re.search(
+            rf"(?<!`){re.escape(ticks)}(?!`)", candidate[start + len(ticks):]
+        )
+        if closing is None:
+            cursor = start + len(ticks)
+            continue
+        close = start + len(ticks) + closing.start()
+        for index in range(start, close + len(ticks)):
+            if masked[index] not in "\r\n":
+                masked[index] = " "
+        cursor = close + len(ticks)
+    return "".join(masked)
+
+
+def _first_content_span(text: str) -> tuple[int, int] | None:
+    offset = 0
+    for line_with_end in text.splitlines(keepends=True):
+        line = line_with_end.rstrip("\r\n")
+        if line.strip():
+            leading = len(line) - len(line.lstrip())
+            trailing = len(line.rstrip())
+            return offset + leading, offset + trailing
+        offset += len(line_with_end)
+    if text.strip():
+        leading = len(text) - len(text.lstrip())
+        return leading, len(text.rstrip())
+    return None
+
+
+def _first_content_line(text: str) -> str:
+    return next((line for line in text.splitlines() if line.strip()), "")
+
+
+def _block_quoted_line(line: str) -> bool:
+    return bool(
+        re.match(r"^ {0,3}>", line)
+        or re.match(r"^(?: {4}|\t)", line)
+        or re.match(r"^ {0,3}(?:`{3,}|~{3,})", line)
+    )
+
+
+def _marker_from_match(match: re.Match[str], text: str, author: str, surface: str,
+                       source_id: str | None, timestamp: str | None, url: str | None,
+                       source_order: int, occurrence_order: int) -> Marker:
+    attributes = {
+        key.lower(): value for key, value in ATTRIBUTE.findall(match.group(2) or "")
+    }
+    return Marker(
+        match.group(1).lower(), attributes, text, author, surface,
+        source_id, timestamp, url, match.group(2) or "", source_order, occurrence_order,
+    )
+
+
+def _classify_sources(sources: list[tuple]) -> SourceClassification:
+    claims: list[Marker] = []
+    quotations: list[Marker] = []
+    for source_order, source in enumerate(sources):
         text, author = source[:2]
         surface = source[2] if len(source) > 2 else "unknown"
         source_id = source[3] if len(source) > 3 else None
         timestamp = source[4] if len(source) > 4 else None
         url = source[5] if len(source) > 5 else None
-        for match in MARKER.finditer(text):
-            attributes = {key.lower(): value for key, value in ATTRIBUTE.findall(match.group(2) or "")}
-            found.append(Marker(
-                match.group(1).lower(), attributes, text, author, surface,
-                source_id, timestamp, url, match.group(2) or "",
-            ))
-    return found
+        reviewer_reply = bool(source[6]) if len(source) > 6 else False
+        masked = _mask_markdown_quotations(text)
+        unquoted_spans = {(match.start(), match.end()) for match in MARKER.finditer(masked)}
+        occurrences: list[tuple[re.Match[str], Marker]] = []
+        for occurrence_order, match in enumerate(MARKER.finditer(text)):
+            occurrences.append((match, _marker_from_match(
+                match, text, author, surface, source_id, timestamp, url,
+                source_order, occurrence_order,
+            )))
+        first_span = _first_content_span(text)
+        opener_index = None
+        if first_span is not None:
+            for index, (match, _marker) in enumerate(occurrences):
+                if (match.start(), match.end()) == first_span and first_span in unquoted_spans:
+                    opener_index = index
+                    break
+        companion_names: frozenset[str] = frozenset()
+        asserted_indexes: set[int] = set()
+        if opener_index is not None:
+            opener = occurrences[opener_index][1]
+            if opener.name != "connected-reviewer":
+                asserted_indexes.add(opener_index)
+                if opener.name == "artifact" and opener.attributes.get("status") == "settled":
+                    companion_names = frozenset({"cold-verdict"})
+                else:
+                    companion_names = TRAVELS_WITH.get(opener.name, frozenset())
+        elif reviewer_reply and first_span is not None:
+            first_line = _first_content_line(text)
+            if not _block_quoted_line(first_line) and _disposition(first_line):
+                companion_names = frozenset({"connected-reviewer"})
+        for index, (match, marker) in enumerate(occurrences):
+            if index in asserted_indexes:
+                claims.append(marker)
+            elif (match.start(), match.end()) in unquoted_spans and marker.name in companion_names:
+                claims.append(marker)
+            else:
+                quotations.append(marker)
+    return SourceClassification(tuple(claims), tuple(quotations))
+
+
+def markers(sources: list[tuple]) -> list[Marker]:
+    return list(_classify_sources(sources).claims)
 
 
 def _work_config(value: object, source: str) -> WorkConfig:
@@ -1063,8 +1217,15 @@ def _attribute_error(marker: Marker) -> str | None:
 
 def _marker_value_error(marker: Marker) -> str | None:
     values = marker.attributes
-    if marker.name == "artifact" and values.get("status") not in {"draft", "settled"}:
-        return "artifact status is invalid"
+    if marker.name == "artifact":
+        status = values.get("status")
+        route = values.get("route")
+        if status not in {"draft", "settled"}:
+            return "artifact status is invalid"
+        if status == "draft" and route is not None:
+            return "artifact draft cannot name a settlement route"
+        if route is not None and route not in SETTLEMENT_ROUTES:
+            return "artifact settlement route is invalid"
     if marker.name == "cold-verdict":
         if values.get("verdict") not in {"would", "would-not", "not-settleable"}:
             return "cold verdict is invalid"
@@ -1168,7 +1329,12 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
 def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[str, object]]]:
     lawful: list[Marker] = []
     invalid: list[dict[str, object]] = []
-    for marker in _state_markers(state):
+    state.artifact_phase = None
+    classified = _classify_sources(_state_sources(state))
+    state.quotation_claims = [
+        _quotation_claim(state, marker) for marker in classified.quotations
+    ]
+    for marker in classified.claims:
         contract = MARKER_CONTRACTS.get(marker.name)
         if contract is None:
             continue
@@ -1191,7 +1357,179 @@ def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[st
             invalid.append(claim)
     state.validated_markers = lawful
     state.invalid_marker_claims = invalid
-    return lawful, invalid
+    phase = _artifact_phase(state)
+    _apply_artifact_invalids(state, phase)
+    state.artifact_phase = phase
+    return state.validated_markers, state.invalid_marker_claims
+
+
+def _quotation_claim(state: WorkState, marker: Marker) -> dict[str, object]:
+    return {
+        "name": marker.name,
+        "source": {
+            "kind": marker.surface,
+            "repository": state.repo,
+            "id": int(marker.source_id) if marker.source_id and marker.source_id.isdigit()
+            else marker.source_id,
+            "url": marker.url,
+            "author": marker.author,
+            "timestamp": marker.timestamp,
+        },
+    }
+
+
+@dataclass(frozen=True)
+class ArtifactPhase:
+    latest_draft: Marker | None
+    latest_settlement: Marker | None
+    settlement_order: tuple[datetime, int, int] | None
+    latest_holder_reading: Marker | None
+    holder_reading_order: tuple[datetime, int, int] | None
+    current_verdicts: tuple[Marker, ...]
+    would_not_count: int
+    invalid_settlements: tuple[tuple[Marker, str], ...]
+
+
+def _source_order(marker: Marker) -> tuple[datetime, int, int]:
+    return _marker_recency(marker, marker.source_order)
+
+
+def _settlement_error(route: str | None, current_verdicts: list[Marker],
+                      would_not_count: int) -> str | None:
+    if route is None:
+        return (
+            "settled artifact route is missing; re-post it once with route=would, "
+            "route=cap, route=discharge or route=unobtainable as supported by the record"
+        )
+    verdicts = [marker.attributes.get("verdict") for marker in current_verdicts]
+    if route == "would" and (not verdicts or verdicts[-1] != "would"):
+        return "artifact settlement route=would requires the latest verdict for the latest draft to be would"
+    if route == "cap" and (
+            would_not_count < 2 or any(verdict == "would" for verdict in verdicts)):
+        return (
+            "artifact settlement route=cap requires two qualifying would-not verdicts "
+            "in the term and no would verdict for the latest draft"
+        )
+    if route == "discharge" and "not-settleable" not in verdicts:
+        return (
+            "artifact settlement route=discharge requires a qualifying not-settleable "
+            "verdict for the latest draft"
+        )
+    if route == "unobtainable" and verdicts:
+        return (
+            "artifact settlement route=unobtainable requires no qualifying verdict for "
+            "the latest draft"
+        )
+    return None
+
+
+def _artifact_phase(state: WorkState) -> ArtifactPhase:
+    selected = state.markers
+    groups: dict[int, list[Marker]] = {}
+    for marker in selected:
+        groups.setdefault(marker.source_order, []).append(marker)
+    ordered_groups = sorted(
+        groups.values(), key=lambda group: _source_order(group[0])
+    )
+    active = False
+    latest_draft: Marker | None = None
+    latest_draft_identity: tuple[int, int] | None = None
+    latest_settlement: Marker | None = None
+    settlement_order: tuple[datetime, int, int] | None = None
+    latest_holder_reading: Marker | None = None
+    holder_reading_order: tuple[datetime, int, int] | None = None
+    verdicts: list[tuple[Marker, tuple[int, int] | None]] = []
+    invalid: list[tuple[Marker, str]] = []
+    migration_candidate: tuple[Marker, tuple[datetime, int, int], int] | None = None
+    migration_generation = 0
+
+    for group in ordered_groups:
+        if any(marker.name == "affirmed-brief" for marker in group):
+            active = True
+            latest_draft = None
+            latest_draft_identity = None
+            latest_settlement = None
+            settlement_order = None
+            latest_holder_reading = None
+            holder_reading_order = None
+            verdicts = []
+            migration_candidate = None
+            migration_generation = 0
+            continue
+        if not active:
+            continue
+        events = sorted(group, key=lambda marker: marker.occurrence_order)
+        if any(marker.name == "artifact" and marker.attributes.get("status") == "settled"
+               for marker in events):
+            events = (
+                [marker for marker in events if marker.name == "cold-verdict"]
+                + [marker for marker in events if marker.name != "cold-verdict"]
+            )
+        order = _source_order(group[0])
+        for marker in events:
+            if marker.name == "artifact" and marker.attributes.get("status") == "draft":
+                latest_draft = marker
+                latest_draft_identity = (marker.source_order, marker.occurrence_order)
+                latest_settlement = None
+                settlement_order = None
+                migration_candidate = None
+                migration_generation += 1
+            elif marker.name == "cold-verdict" and staffing_qualified(marker):
+                if latest_draft is not None:
+                    verdicts.append((marker, latest_draft_identity))
+                migration_candidate = None
+                migration_generation += 1
+            elif marker.name == "artifact" and marker.attributes.get("status") == "settled":
+                current = [
+                    verdict for verdict, draft_identity in verdicts
+                    if draft_identity == latest_draft_identity and latest_draft is not None
+                ]
+                would_not_count = sum(
+                    verdict.attributes.get("verdict") == "would-not"
+                    for verdict, _draft_identity in verdicts
+                )
+                route = marker.attributes.get("route")
+                error = _settlement_error(route, current, would_not_count)
+                if error is not None:
+                    invalid.append((marker, error))
+                    if route is None:
+                        migration_candidate = (marker, order, migration_generation)
+                    continue
+                effective_order = order
+                if (migration_candidate is not None
+                        and migration_candidate[2] == migration_generation):
+                    effective_order = migration_candidate[1]
+                latest_settlement = marker
+                settlement_order = effective_order
+            elif marker.name == "holder-reading":
+                latest_holder_reading = marker
+                holder_reading_order = order
+
+    current_verdicts = tuple(
+        verdict for verdict, draft_identity in verdicts
+        if draft_identity == latest_draft_identity and latest_draft is not None
+    )
+    would_not_count = sum(
+        verdict.attributes.get("verdict") == "would-not"
+        for verdict, _draft_identity in verdicts
+    )
+    return ArtifactPhase(
+        latest_draft, latest_settlement, settlement_order,
+        latest_holder_reading, holder_reading_order, current_verdicts,
+        would_not_count, tuple(invalid),
+    )
+
+
+def _apply_artifact_invalids(state: WorkState, phase: ArtifactPhase) -> None:
+    invalid_ids = {id(marker) for marker, _reason in phase.invalid_settlements}
+    for marker, reason in phase.invalid_settlements:
+        claim = marker.as_dict()
+        claim["reason"] = reason
+        state.invalid_marker_claims.append(claim)
+    if state.validated_markers is not None:
+        state.validated_markers = [
+            marker for marker in state.validated_markers if id(marker) not in invalid_ids
+        ]
 
 
 def _marker_setting_source(marker: Marker) -> str:
@@ -1333,12 +1671,6 @@ def effective_policy(state: WorkState, rules: dict[str, object]) -> EffectivePol
     )
 
 
-def _proof_rendered_marker(marker: Marker) -> bool:
-    return marker.name != "proof" and any(
-        match.group(1).lower() == "proof" for match in MARKER.finditer(marker.body)
-    )
-
-
 def _public_marker_valid(state: WorkState, marker: Marker) -> bool:
     contract = MARKER_CONTRACTS.get(marker.name)
     return bool(
@@ -1347,7 +1679,6 @@ def _public_marker_valid(state: WorkState, marker: Marker) -> bool:
         and marker.surface in contract["surfaces"]
         and _attribute_error(marker) is None
         and _marker_value_error(marker) is None
-        and not _proof_rendered_marker(marker)
     )
 
 
@@ -1574,7 +1905,8 @@ def _checks_pending(state: WorkState) -> bool:
 def _decision_status(decision: Decision) -> str:
     if decision.dispatch:
         return "runnable"
-    if decision.stage in {"artifact-cap", "open-pull-request", "merged-pull-request", "holder-read",
+    if decision.stage in {"artifact-cap", "artifact-settlement", "open-pull-request",
+                          "merged-pull-request", "holder-read",
                           "ready-reviewers", "proof", "use", "release-report",
                           "ambiguous-pr", "panel"}:
         return "holder-owned"
@@ -1593,6 +1925,7 @@ def _reported_decision(state: WorkState, decision: Decision) -> Decision:
         status=decision.status or _decision_status(decision),
         lawful_markers=tuple(marker.as_dict() for marker in state.markers),
         invalid_markers=tuple(state.invalid_marker_claims),
+        quotations=tuple(state.quotation_claims),
         latest_checks=tuple(latest_checks(state)),
     )
 
@@ -1697,10 +2030,28 @@ def _strip_balanced_markdown_wrapper(value: str) -> str:
     return stripped[opening:-closing].strip()
 
 
+def _strip_opening_word_formatting(value: str) -> str:
+    stripped = _strip_balanced_markdown_wrapper(value)
+    for wrapper in ("**", "__", "*", "_", "`"):
+        if not stripped.startswith(wrapper):
+            continue
+        close = stripped.find(wrapper, len(wrapper))
+        if close < 0:
+            continue
+        word = stripped[len(wrapper):close]
+        if re.fullmatch(r"[A-Za-z]+", word) is None:
+            continue
+        following = stripped[close + len(wrapper):]
+        if following and (following[0].isalnum() or following[0] == "_"):
+            continue
+        return word + following
+    return stripped
+
+
 def _disposition(body: str) -> bool:
-    first_line = body.splitlines()[0] if body.splitlines() else ""
+    first_line = next((line for line in body.splitlines() if line.strip()), "")
     normalized = (
-        _strip_balanced_markdown_wrapper(first_line)
+        _strip_opening_word_formatting(first_line)
         .lower().replace(chr(0x2014), "-").strip()
     )
     for prefix in DISPOSITIONS:
@@ -1820,43 +2171,46 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
         return result("affirmation-invalid", False, None, "review-risk-lane-missing-or-mismatched")
     _risk, lane = lane_pair
     policy = effective_policy(state, rules)
+    phase = state.artifact_phase or _artifact_phase(state)
     if not policy.mechanical:
-        indexed_markers = list(enumerate(state.markers))
-        artifacts = sorted(
-            ((position, marker) for position, marker in indexed_markers
-             if marker.name == "artifact"),
-            key=lambda item: _marker_recency(item[1], item[0]),
-        )
-        if not artifacts:
+        if phase.latest_draft is None and phase.latest_settlement is None:
             return result("artifact", True, "fresh", "artifact-marker-absent")
-        verdicts = sorted(
-            ((position, marker) for position, marker in indexed_markers
-             if marker.name == "cold-verdict" and staffing_qualified(marker)),
-            key=lambda item: _marker_recency(item[1], item[0]),
-        )
-        if not verdicts:
-            return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
-        verdict_position, verdict = verdicts[-1]
-        if verdict.attributes.get("verdict") == "would-not":
-            adverse_rounds = [marker for _position, marker in verdicts
-                              if marker.attributes.get("verdict") == "would-not"]
-            if len(adverse_rounds) >= 2:
+        if phase.latest_settlement is None:
+            current_verdicts = list(phase.current_verdicts)
+            current_values = [marker.attributes.get("verdict") for marker in current_verdicts]
+            if (phase.would_not_count >= 2
+                    and "would" not in current_values):
                 return result(
                     "artifact-cap", False, None, "artifact-cold-round-cap-reached",
                     "Two qualifying would-not verdicts reached the cold-seat cap; the holder "
-                    "applies the post-affirmation decision boundary and records the resolution.",
+                    "applies the post-affirmation decision boundary and records a route=cap "
+                    "settlement.",
                 )
-            artifact_position, artifact = artifacts[-1]
-            if (artifact.attributes.get("status") == "draft"
-                    and _marker_recency(artifact, artifact_position)
-                    > _marker_recency(verdict, verdict_position)):
+            if not current_verdicts:
                 return result(
-                    "cold-seat", True, "fresh", "newer-artifact-draft-after-would-not"
+                    "cold-seat", True, "fresh",
+                    "newer-artifact-draft-after-would-not"
+                    if phase.would_not_count else "qualifying-cold-verdict-absent",
                 )
-            return result("artifact", True, "resume", "cold-verdict-would-not")
-        if verdict.attributes.get("verdict") != "would":
-            return result("cold-seat", True, "fresh", "qualifying-cold-verdict-absent")
-        if not any(marker.name == "holder-reading" for marker in state.markers):
+            latest_verdict = current_verdicts[-1].attributes.get("verdict")
+            if latest_verdict == "would-not":
+                return result("artifact", True, "resume", "cold-verdict-would-not")
+            route = "would" if latest_verdict == "would" else "discharge"
+            detail = (
+                f"Post a settled artifact marker with route={route}; invalid settlement "
+                "claims, if any, are listed in invalid_markers."
+            )
+            return result(
+                "artifact-settlement", False, None,
+                f"supported-artifact-settlement-route-{route}-absent", detail,
+            )
+        reading_is_current = (
+            phase.latest_holder_reading is not None
+            and phase.holder_reading_order is not None
+            and phase.settlement_order is not None
+            and phase.holder_reading_order > phase.settlement_order
+        )
+        if not reading_is_current:
             return result("holder-read", False, None, "whole-change-holder-reading-absent")
     if state.pr is None:
         if any(marker.name == "builder-session" for marker in state.issue_markers):
@@ -2544,8 +2898,11 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     brief, lane_pair = _affirmed_review(state)
     mechanical = lane_pair == ("ordinary", "mechanical")
     explicit_artifact = decision.stage == "artifact"
-    artifact = None if mechanical and not explicit_artifact else next(
-        (marker for marker in reversed(state.markers) if marker.name == "artifact"), None
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    phase = state.artifact_phase or _artifact_phase(state)
+    artifact = None if mechanical and not explicit_artifact else (
+        phase.latest_draft if explicit_artifact else phase.latest_settlement
     )
     if brief is None:
         raise WorkError(f"{decision.stage} dispatch requires an authorized affirmed brief")
@@ -2610,8 +2967,10 @@ def _bind_prompt_branch(prompt: bytes, branch: str | None) -> bytes:
 
 
 def _cold_stage_prompt(state: WorkState, root: Path) -> bytes:
-    artifact = next((marker for marker in reversed(state.markers)
-                     if marker.name == "artifact"), None)
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    phase = state.artifact_phase or _artifact_phase(state)
+    artifact = phase.latest_draft
     brief = next((marker for marker in reversed(state.issue_markers)
                   if marker.name == "affirmed-brief"), None)
     if artifact is None or brief is None:
@@ -3482,7 +3841,7 @@ def _transport_mutation(transport: GitHubREST, name: str, *args) -> object:
 def _proof_comment_records(state: WorkState, head: str) -> list[dict[str, object]]:
     records_found: list[dict[str, object]] = []
     for item in state.pr_comments:
-        item_markers = _marker_items([item], "pull-request-comment")
+        item_markers = markers(_marker_sources([item], "pull-request-comment"))
         if any(marker.name == "proof" and marker.attributes.get("head") == head
                and _public_marker_valid(state, marker) for marker in item_markers):
             records_found.append(item)
