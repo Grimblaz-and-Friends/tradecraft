@@ -796,64 +796,56 @@ def execute_fixture(monkeypatch, tmp_path, pass_results, *, current_head=HEAD, p
     return finder, checker
 
 
-def run_execute(finder, checker, *, preload_changed_files=False):
+def run_execute(finder, _checker=None, *, preload_changed_files=False):
     return cr.execute_review(
         event(), "Grimblaz", "92", ["claude.cmd"], cr.DEFAULT_CLAUDE_VERSION,
-        finder, checker, preload_changed_files,
+        finder, preload_changed_files=preload_changed_files,
     )
 
 
-def test_execute_review_preserves_both_pass_usages_on_validation_failure(tmp_path, monkeypatch):
+def test_execute_review_preserves_finder_usage_on_validation_failure(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
-        ({"candidates": [candidate()]}, {"input_tokens": 11}, []),
-        ({"decisions": [{
-            "id": "invented", "decision": "keep", "evidence": "x", "explanation": "x",
-        }]}, {"input_tokens": 22}, []),
+        ({"candidates": [candidate(proof_targets=[])]}, {"input_tokens": 11}, []),
     ])
-    with pytest.raises(cr.ReviewError, match="invented") as raised:
+    with pytest.raises(cr.ReviewError, match="bounded proof targets") as raised:
         run_execute(finder, checker)
     assert raised.value.usage == {
         "finder": {"coverage": {"input_tokens": 11}},
-        "checker": {"batch-1": {"input_tokens": 22}},
     }
 
 
 def test_execute_review_preserves_usage_when_head_turns_stale(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
         ({"candidates": []}, {"input_tokens": 11}, []),
-        ({"decisions": []}, {"input_tokens": 22}, []),
     ], current_head="c" * 40)
     with pytest.raises(cr.ReviewError, match="head changed") as raised:
         run_execute(finder, checker)
     assert raised.value.usage["finder"] == {"coverage": {"input_tokens": 11}}
-    assert raised.value.usage["checker"] == {"batch-1": {"input_tokens": 22}}
+    assert "checker" not in raised.value.usage
 
 
 def test_execute_review_preserves_usage_on_publication_failure(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
         ({"candidates": []}, {"input_tokens": 11}, []),
-        ({"decisions": []}, {"input_tokens": 22}, []),
     ], post_error=cr.ReviewError("publication transport failed"))
     with pytest.raises(cr.ReviewError, match="publication transport") as raised:
         run_execute(finder, checker)
     assert raised.value.usage["finder"] == {"coverage": {"input_tokens": 11}}
-    assert raised.value.usage["checker"] == {"batch-1": {"input_tokens": 22}}
+    assert "checker" not in raised.value.usage
 
 
-def test_execute_review_names_timeout_and_preserves_prior_pass_usage(tmp_path, monkeypatch):
+def test_execute_review_names_finder_timeout_and_marks_usage_unavailable(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
-        ({"candidates": [candidate()]}, {"input_tokens": 11}, []),
         cr.ReviewError("command timed out (claude.cmd) after 3600 seconds"),
     ])
     with pytest.raises(cr.ReviewError, match="command timed out") as raised:
         run_execute(finder, checker)
     assert raised.value.usage == {
-        "finder": {"coverage": {"input_tokens": 11}},
-        "checker": {"batch-1": {"status": "unavailable"}},
+        "finder": {"coverage": {"status": "unavailable"}},
     }
 
 
-def test_execute_review_gives_the_same_changed_file_preload_to_each_pass(
+def test_execute_review_gives_changed_file_preload_to_its_only_finder(
     tmp_path, monkeypatch,
 ):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [])
@@ -861,42 +853,77 @@ def test_execute_review_gives_the_same_changed_file_preload_to_each_pass(
 
     def run(_executable, _root, _snapshot, prompt, schema, _token, *, effort):
         prompts.append((schema, prompt, effort))
-        if schema is cr.FINDER_SCHEMA:
-            return {"candidates": []}, {}, []
-        return {"decisions": []}, {}, []
+        return {"candidates": []}, {}, []
 
     monkeypatch.setattr(cr, "run_pass", run)
     assert run_execute(finder, checker, preload_changed_files=True)["status"] == "reviewed"
-    assert [schema for schema, _prompt, _effort in prompts] == [
-        cr.FINDER_SCHEMA, cr.CHECKER_SCHEMA,
+    assert [(schema, effort) for schema, _prompt, effort in prompts] == [
+        (cr.FINDER_SCHEMA, "high"),
     ]
-    blocks = [
-        prompt.split("\n<preloaded_changed_files>\n", 1)[1].split(
-            "\n</preloaded_changed_files>\n", 1,
-        )[0]
-        for _schema, prompt, _effort in prompts
+    block = prompts[0][1].split("\n<preloaded_changed_files>\n", 1)[1].split(
+        "\n</preloaded_changed_files>\n", 1,
+    )[0]
+    assert json.loads(block)["entries"][0]["content"].splitlines() == ["new"]
+
+
+def test_live_default_runs_one_high_finder_and_publishes_validated_deduplicated_findings(
+    tmp_path, monkeypatch,
+):
+    finder, checker = execute_fixture(monkeypatch, tmp_path, [])
+    calls = []
+    posts = []
+
+    def run(_executable, _root, _snapshot, prompt, schema, _token, *, effort):
+        calls.append((prompt, schema, effort))
+        return {"candidates": [
+            candidate(id="first"),
+            candidate(id="duplicate", root_cause=" G RETURNS   THE STALE VALUE "),
+            candidate(
+                id="body", line=99, root_cause="another root cause",
+                wrong_result="returns another wrong value", evidence="app.py:99",
+            ),
+        ]}, {"input_tokens": 11}, []
+
+    def gh(endpoint, **kwargs):
+        if endpoint.endswith("/pulls/746"):
+            return {"head": {"sha": HEAD}}
+        if endpoint.endswith("/pulls/746/reviews") and kwargs.get("method") == "POST":
+            posts.append(kwargs["payload"])
+            return {"id": 1}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(cr, "run_pass", run)
+    monkeypatch.setattr(cr, "gh_json", gh)
+    result = run_execute(finder, checker)
+    assert [(schema, effort) for _prompt, schema, effort in calls] == [
+        (cr.FINDER_SCHEMA, "high"),
     ]
-    assert blocks[0] == blocks[1]
-    assert json.loads(blocks[0])["entries"][0]["content"].splitlines() == ["new"]
+    assert calls[0][0].startswith("finder")
+    assert result["survivors"] == 2
+    assert "checker_usage" not in result
+    assert len(posts) == 1 and len(posts[0]["comments"]) == 1
+    assert posts[0]["comments"][0]["body"].count("Proof: app.py:2") == 1
+    assert "`app.py:99`" in posts[0]["body"]
+    assert "checker=" not in posts[0]["body"]
 
 
 def test_review_payload_is_one_completed_review_for_clean_or_survivor():
-    clean = cr.review_payload([], HEAD, "91", {}, {})
+    clean = cr.review_payload([], HEAD, "91", {})
     assert clean["event"] == "COMMENT"
     assert clean["commit_id"] == HEAD
     assert clean["comments"] == []
-    assert "No candidate survived" in clean["body"]
+    assert "No findings were found" in clean["body"]
     survivor = {
         "id": "one", "path": "app.py", "line": 2, "side": "RIGHT",
         "severity": "P1", "input": "x", "execution_path": "f -> g",
         "root_cause": "g returns the stale value", "wrong_result": "returns wrong",
-        "checker_evidence": "app.py:2",
-        "checker_explanation": "the bad return is unconditional",
+        "evidence": "app.py:2", "inline": True,
     }
-    payload = cr.review_payload([survivor], HEAD, "91", {"input_tokens": 1}, {})
+    payload = cr.review_payload([survivor], HEAD, "91", {"input_tokens": 1})
     assert len(payload["comments"]) == 1
     assert payload["comments"][0]["path"] == "app.py"
     assert "finder={\"input_tokens\":1}" in payload["body"]
+    assert "checker=" not in payload["body"]
 
 
 def test_reporter_reconciles_review_and_skip_before_writing(monkeypatch):
@@ -931,13 +958,14 @@ def test_reporter_posts_one_cause_specific_notice_and_no_review(monkeypatch):
     monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset({cr.BOT_LOGIN}))
     result = cr.report_skip(
         event(), "Grimblaz", "92", "failure", "authentication runtime failure", "92",
-        '{"finder":{"input_tokens":17},"checker":{"observed_usage":0,"status":"not-started"}}',
+        '{"finder":{"input_tokens":17}}',
     )
     assert result["status"] == "skipped"
     assert len(calls) == 1
     assert calls[0]["body"].startswith("Review skipped: authentication runtime failure")
     assert "connected-review-attempt:92" in calls[0]["body"]
     assert '"input_tokens":17' in calls[0]["body"]
+    assert "checker" not in calls[0]["body"]
 
 
 def test_reporter_posts_prepare_failure_only_after_rederiving_eligibility(monkeypatch):
@@ -964,6 +992,7 @@ def test_reporter_posts_prepare_failure_only_after_rederiving_eligibility(monkey
     assert result["status"] == "skipped"
     assert calls[0].startswith("Review skipped: preparation job failure")
     assert '"status":"not-started"' in calls[0]
+    assert "checker" not in calls[0]
 
 
 def test_reporter_prepare_failure_posts_nothing_when_eligibility_is_unreadable(monkeypatch):
@@ -1000,7 +1029,6 @@ def test_live_preload_configuration_is_optional_and_off_by_default(monkeypatch):
     common = [
         "review", "--event", "event.json", "--owner-login", "Grimblaz",
         "--attempt", "700", "--finder-prompt", "finder.md",
-        "--checker-prompt", "checker.md",
     ]
     monkeypatch.delenv("CONNECTED_REVIEW_PRELOAD_CHANGED_FILES", raising=False)
     assert cr.parser().parse_args(common).preload_changed_files is False
@@ -1014,14 +1042,12 @@ def test_live_preload_configuration_is_optional_and_off_by_default(monkeypatch):
 def test_main_resolves_windows_compatible_claude_command(tmp_path, monkeypatch):
     event_path = tmp_path / "event.json"
     finder = tmp_path / "finder.md"
-    checker = tmp_path / "checker.md"
     event_path.write_text(json.dumps(event()), encoding="utf-8")
     finder.write_text("finder", encoding="utf-8")
-    checker.write_text("checker", encoding="utf-8")
     seen = {}
     monkeypatch.setattr(cr, "resolve_command", lambda vendor, explicit: ["claude.cmd"])
 
-    def execute(*args):
+    def execute(*args, **_kwargs):
         seen["executable"] = args[3]
         return {"status": "reviewed"}
 
@@ -1029,7 +1055,6 @@ def test_main_resolves_windows_compatible_claude_command(tmp_path, monkeypatch):
     assert cr.main([
         "review", "--event", str(event_path), "--owner-login", "Grimblaz",
         "--attempt", "700", "--finder-prompt", str(finder),
-        "--checker-prompt", str(checker),
     ]) == 0
     assert seen["executable"] == ["claude.cmd"]
 
@@ -1049,12 +1074,9 @@ def test_generated_reviews_and_all_skip_causes_have_correct_entrance_credit():
             }]
         return work._reviewer_receipts(state)[0]["result"]
 
-    clean = cr.review_payload([], HEAD, "700", {}, {})["body"]
+    clean = cr.review_payload([], HEAD, "700", {})["body"]
     survivor = candidate(inline=True)
-    survivor.update({
-        "checker_evidence": "proof", "checker_explanation": "shown",
-    })
-    findings = cr.review_payload([survivor], HEAD, "701", {}, {})["body"]
+    findings = cr.review_payload([survivor], HEAD, "701", {})["body"]
     assert receipt(review_body=clean) == "present"
     assert receipt(review_body=findings) == "present"
     for cause in (

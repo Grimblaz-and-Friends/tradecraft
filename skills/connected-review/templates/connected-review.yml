@@ -79,7 +79,7 @@ jobs:
       - name: Install hosted Claude CLI
         if: needs.prepare.outputs.visibility == 'public'
         run: npm install --global @anthropic-ai/claude-code@2.1.280
-      - name: Run finder and checker
+      - name: Run connected review
         id: review
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -87,7 +87,6 @@ jobs:
         run: >-
           python .connected-review-runtime/lib/connected_review.py review
           --finder-prompt ".connected-review-runtime/skills/connected-review/references/finder.md"
-          --checker-prompt ".connected-review-runtime/skills/connected-review/references/checker.md"
 
   report:
     needs: [prepare, review]

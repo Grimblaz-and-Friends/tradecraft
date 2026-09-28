@@ -1,4 +1,4 @@
-"""Trusted runtime for the connected reviewer's two-pass review.
+"""Trusted runtime for the connected reviewer's live single-pass review.
 
 The model processes in this module can read an exported repository snapshot and
 the pull-request diff.  They never receive GitHub credentials or publication
@@ -29,6 +29,7 @@ BOT_LOGIN = "github-actions[bot]"
 DEFAULT_MODEL = "claude-opus-5-5"
 FINDER_EFFORT = "xhigh"
 CHECKER_EFFORT = "xhigh"
+LIVE_FINDER_EFFORT = "high"
 FINDER_PASSES = (
     (
         "coverage",
@@ -81,6 +82,29 @@ def reviewer_settings(
         "checker_candidates_per_batch": MAX_CHECKER_CANDIDATES_PER_BATCH,
         "max_candidates": MAX_FINDER_CANDIDATES_PER_PASS * len(FINDER_PASSES),
         "model": DEFAULT_MODEL,
+        "preload_changed_files": preload_changed_files,
+        "preload_budget_bytes": preload_budget_bytes,
+    }
+
+
+def live_reviewer_settings(
+    cli_version: str = DEFAULT_CLAUDE_VERSION,
+    *,
+    preload_changed_files: bool = False,
+    preload_budget_bytes: int = DEFAULT_PRELOAD_BUDGET_BYTES,
+) -> dict[str, Any]:
+    """Return the chosen settings for the connected reviewer's live path."""
+    return {
+        "checker_effort": None,
+        "claude_cli_version": cli_version,
+        "finder_candidates_per_pass": MAX_FINDER_CANDIDATES_PER_PASS,
+        "finder_effort": LIVE_FINDER_EFFORT,
+        "finder_passes": [
+            {"name": name, "focus": focus} for name, focus in FINDER_PASSES
+        ],
+        "max_candidates": MAX_FINDER_CANDIDATES_PER_PASS * len(FINDER_PASSES),
+        "model": DEFAULT_MODEL,
+        "pass_structure": "single-pass",
         "preload_changed_files": preload_changed_files,
         "preload_budget_bytes": preload_budget_bytes,
     }
@@ -1004,6 +1028,32 @@ def validate_candidates(value: Any, lines: dict[tuple[str, str], set[int]]) -> l
     return validated
 
 
+def deduplicate_root_causes(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    survivors = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        root_cause = " ".join(candidate["root_cause"].casefold().split())
+        if root_cause in seen:
+            continue
+        seen.add(root_cause)
+        survivors.append(candidate)
+    return survivors
+
+
+def single_pass_survivors(
+    candidates: list[dict[str, Any]],
+    lines: dict[tuple[str, str], set[int]],
+) -> list[dict[str, Any]]:
+    survivors = []
+    for candidate in deduplicate_root_causes(candidates):
+        survivor = dict(candidate)
+        survivor["inline"] = candidate["line"] in lines.get(
+            (candidate["path"], candidate["side"]), set()
+        )
+        survivors.append(survivor)
+    return survivors
+
+
 def validate_decisions(
     value: Any,
     candidates: list[dict[str, Any]],
@@ -1061,10 +1111,16 @@ def validate_decisions(
     return survivors
 
 
-def _usage_text(finder: dict[str, Any], checker: dict[str, Any]) -> str:
+def _usage_text(
+    finder: dict[str, Any],
+    checker: dict[str, Any] | None = None,
+) -> str:
     def one(name: str, usage: dict[str, Any]) -> str:
         return f"{name}=" + json.dumps(usage, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return f"Usage: {one('finder', finder)}; {one('checker', checker)}"
+    result = f"Usage: {one('finder', finder)}"
+    if checker is not None:
+        result += f"; {one('checker', checker)}"
+    return result
 
 
 def review_payload(
@@ -1072,22 +1128,24 @@ def review_payload(
     head_sha: str,
     attempt: str,
     finder_usage: dict[str, Any],
-    checker_usage: dict[str, Any],
+    checker_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if survivors:
-        summary = f"{len(survivors)} independently demonstrated defect(s) survived."
+        summary = f"{len(survivors)} validated finding(s)."
     else:
-        summary = "No candidate survived independent checking."
+        summary = "No findings were found."
     body_only = [row for row in survivors if not row.get("inline", True)]
     body_parts = [summary]
     for row in body_only:
+        evidence = row.get("checker_evidence", row.get("evidence", ""))
+        explanation = row.get("checker_explanation")
         body_parts.append(
             f"**{row['severity']} - {row['wrong_result']}** "
             f"(`{row['path']}:{row['line']}`)\n\n"
             f"Trigger: {row['input']}\n\n"
             f"Path: {row['execution_path']}\n\n"
-            f"Proof: {row['checker_evidence']}\n\n"
-            f"{row['checker_explanation']}"
+            f"Proof: {evidence}"
+            + (f"\n\n{explanation}" if explanation else "")
         )
     body_parts.extend((
         _usage_text(finder_usage, checker_usage),
@@ -1100,12 +1158,14 @@ def review_payload(
     for row in survivors:
         if not row.get("inline", True):
             continue
+        evidence = row.get("checker_evidence", row.get("evidence", ""))
+        explanation = row.get("checker_explanation")
         comment = (
             f"**{row['severity']} - {row['wrong_result']}**\n\n"
             f"Trigger: {row['input']}\n\n"
             f"Path: {row['execution_path']}\n\n"
-            f"Proof: {row['checker_evidence']}\n\n"
-            f"{row['checker_explanation']}"
+            f"Proof: {evidence}"
+            + (f"\n\n{explanation}" if explanation else "")
         )
         if len(comment) > MAX_COMMENT_BODY:
             raise ReviewError(f"candidate {row['id']} exceeds GitHub's comment limit")
@@ -1174,6 +1234,8 @@ def run_finders(
     lines: dict[tuple[str, str], set[int]],
     token: str,
     preloaded_changed_files: dict[str, Any] | None = None,
+    *,
+    effort: str = FINDER_EFFORT,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     candidates = []
     usage: dict[str, Any] = finder_usage_template()
@@ -1196,7 +1258,7 @@ def run_finders(
                 ),
                 FINDER_SCHEMA,
                 token,
-                effort=FINDER_EFFORT,
+                effort=effort,
             )
             usage[name] = pass_usage
             traces[name] = trace
@@ -1276,15 +1338,7 @@ def run_checkers(
                 usage[name] = {"status": "unavailable"}
             raise ReviewError(str(exc), usage=usage) from exc
 
-    unique_survivors = []
-    kept_root_causes: set[str] = set()
-    for survivor in survivors:
-        root_cause = " ".join(survivor["root_cause"].casefold().split())
-        if root_cause in kept_root_causes:
-            continue
-        kept_root_causes.add(root_cause)
-        unique_survivors.append(survivor)
-    return unique_survivors, usage, traces
+    return deduplicate_root_causes(survivors), usage, traces
 
 
 def execute_review(
@@ -1294,14 +1348,10 @@ def execute_review(
     executable: str | list[str],
     expected_version: str,
     finder_prompt: Path,
-    checker_prompt: Path,
     preload_changed_files: bool = False,
     preload_budget_bytes: int = DEFAULT_PRELOAD_BUDGET_BYTES,
 ) -> dict[str, Any]:
-    ledger: dict[str, Any] = {
-        "finder": finder_usage_template(),
-        "checker": {"status": "not-started", "observed_usage": 0},
-    }
+    ledger: dict[str, Any] = {"finder": finder_usage_template()}
     try:
         admitted = eligibility(event, owner_login)
         if admitted.get("admitted") != "true":
@@ -1339,36 +1389,20 @@ def execute_review(
                     lines,
                     token,
                     preloaded,
+                    effort=LIVE_FINDER_EFFORT,
                 )
             except ReviewError as exc:
                 ledger["finder"] = exc.usage or ledger["finder"]
                 raise ReviewError(str(exc), usage=ledger) from exc
             ledger["finder"] = finder_usage
-            ledger["checker"] = checker_usage_template(len(candidates))
-            try:
-                survivors, checker_usage, _checker_traces = run_checkers(
-                    executable,
-                    root,
-                    snapshot,
-                    checker_prompt.read_text(encoding="utf-8"),
-                    diff_text,
-                    rules_text,
-                    candidates,
-                    lines,
-                    token,
-                    preloaded,
-                )
-            except ReviewError as exc:
-                ledger["checker"] = exc.usage or ledger["checker"]
-                raise ReviewError(str(exc), usage=ledger) from exc
-            ledger["checker"] = checker_usage
+            survivors = single_pass_survivors(candidates, lines)
             current = gh_json(f"repos/{repo}/pulls/{number}")
             current_head = current.get("head", {}).get("sha") if isinstance(current, dict) else None
             if current_head != head_sha:
                 raise ReviewError("pull request head changed during review")
             if completed_review_at_head(repo, number, head_sha) is not None:
                 return {"status": "suppressed", "cause": "review appeared before publication"}
-            payload = review_payload(survivors, head_sha, attempt, finder_usage, checker_usage)
+            payload = review_payload(survivors, head_sha, attempt, finder_usage)
             try:
                 gh_json(f"repos/{repo}/pulls/{number}/reviews", method="POST", payload=payload)
             except ReviewError:
@@ -1379,7 +1413,6 @@ def execute_review(
                 "head": head_sha,
                 "survivors": len(survivors),
                 "finder_usage": finder_usage,
-                "checker_usage": checker_usage,
             }
     except ReviewError as exc:
         raise ReviewError(str(exc), usage=exc.usage or ledger) from exc
@@ -1473,10 +1506,7 @@ def report_skip(
         or "did not start" in named
         or "before it started" in named
     ):
-        usage_line = (
-            'Usage: {"checker":{"observed_usage":0,"status":"not-started"},'
-            '"finder":{"observed_usage":0,"status":"not-started"}}'
-        )
+        usage_line = 'Usage: {"finder":{"observed_usage":0,"status":"not-started"}}'
     body = f"Review skipped: {named}\n\n{usage_line}\n\n{_attempt_marker(attempt)}"
     gh_json(f"repos/{repo}/issues/{number}/comments", method="POST", payload={"body": body})
     return {"status": "skipped", "cause": named}
@@ -1516,7 +1546,7 @@ def parser() -> argparse.ArgumentParser:
         required="REVIEW_OWNER_LOGIN" not in os.environ,
     )
     eligible.add_argument("--output", default=os.environ.get("GITHUB_OUTPUT"))
-    review = sub.add_parser("review", help="run finder and checker, then publish")
+    review = sub.add_parser("review", help="run the finder, then publish")
     review.add_argument(
         "--event", default=os.environ.get("GITHUB_EVENT_PATH"),
         required="GITHUB_EVENT_PATH" not in os.environ,
@@ -1532,7 +1562,6 @@ def parser() -> argparse.ArgumentParser:
         "--claude-version", default=os.environ.get("CLAUDE_CLI_VERSION", DEFAULT_CLAUDE_VERSION)
     )
     review.add_argument("--finder-prompt", required=True, type=Path)
-    review.add_argument("--checker-prompt", required=True, type=Path)
     review.add_argument(
         "--preload-changed-files",
         action="store_true",
@@ -1578,7 +1607,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             executable = resolve_command("claude", args.claude)
             result = execute_review(
                 event, args.owner_login, args.attempt, executable, args.claude_version,
-                args.finder_prompt, args.checker_prompt, args.preload_changed_files,
+                args.finder_prompt,
+                preload_changed_files=args.preload_changed_files,
             )
         else:
             result = report_skip(
@@ -1595,7 +1625,6 @@ def main(argv: Iterable[str] | None = None) -> int:
             if observed is None:
                 observed = {
                     "finder": {"status": "not-started", "observed_usage": 0},
-                    "checker": {"status": "not-started", "observed_usage": 0},
                 }
             result["usage"] = json.dumps(
                 observed, ensure_ascii=True, sort_keys=True, separators=(",", ":")

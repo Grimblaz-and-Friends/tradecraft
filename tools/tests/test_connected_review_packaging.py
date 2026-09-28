@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 import connected_review as cr  # noqa: E402
 
 
-def test_tuned_reviewer_prompt_and_settings_hashes_are_frozen():
+def test_measured_two_pass_replay_defaults_and_prompt_hashes_remain_reproducible():
     finder = ROOT / "skills/connected-review/references/finder.md"
     checker = ROOT / "skills/connected-review/references/checker.md"
     settings = cr.reviewer_settings()
@@ -48,6 +48,40 @@ def test_tuned_reviewer_prompt_and_settings_hashes_are_frozen():
     )
 
 
+def test_live_reviewer_standard_is_one_high_finder_with_frozen_prompt():
+    finder = ROOT / "skills/connected-review/references/finder.md"
+    skill = (ROOT / "skills/connected-review/SKILL.md").read_text(encoding="utf-8")
+    assert cr.live_reviewer_settings() == {
+        "checker_effort": None,
+        "claude_cli_version": "2.1.280",
+        "finder_candidates_per_pass": 50,
+        "finder_effort": "high",
+        "finder_passes": [
+            {
+                "name": "coverage",
+                "focus": (
+                    "Trace each change through callers, consumers, tests, documented "
+                    "contracts, and analogous paths, then probe each changed branch or guard "
+                    "with unconsidered inputs and state transitions. Seek contradictions with "
+                    "unchanged behavior, bypasses, lost state, refused valid cases, and wrong "
+                    "records or results."
+                ),
+            },
+        ],
+        "max_candidates": 50,
+        "model": "claude-opus-5-5",
+        "pass_structure": "single-pass",
+        "preload_budget_bytes": 600000,
+        "preload_changed_files": False,
+    }
+    assert hashlib.sha256(finder.read_bytes()).hexdigest() == (
+        "3b13819ec50d747a655c3634a6b663592c052bca8d1f3fa7c0f8ebc8473bf247"
+    )
+    assert "One fresh read-only finder process runs at `high`" in skill
+    assert "historical checker contract retained for replay reproducibility" in skill
+    assert "the live workflow never loads it" in skill
+
+
 def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
     workflow = (ROOT / "skills/connected-review/templates/connected-review.yml").read_text(
         encoding="utf-8"
@@ -73,6 +107,10 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
         "TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT"
     ) == 1
     assert "if: vars.CONNECTED_REVIEW_ENABLED == 'true'" in workflow
+    assert "Run connected review" in workflow
+    assert "--finder-prompt" in workflow
+    assert "--checker-prompt" not in workflow
+    assert "Run finder and checker" not in workflow
     assert (
         "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES: "
         "${{ vars.CONNECTED_REVIEW_PRELOAD_CHANGED_FILES }}"
@@ -100,7 +138,7 @@ def test_cli_pin_supports_the_pinned_model_and_matches_setup_surfaces():
     assert f"Claude CLI {rendered}" in live
 
 
-def test_prompts_carry_opposite_burdens_and_all_named_exclusions():
+def test_finder_prompt_stays_frozen_and_historical_checker_remains_replayable():
     finder = (ROOT / "skills/connected-review/references/finder.md").read_text(encoding="utf-8")
     checker = (ROOT / "skills/connected-review/references/checker.md").read_text(encoding="utf-8")
     for phrase in ("docstring coverage", "linter", "grammar", "before merge", "does not state"):
@@ -153,8 +191,9 @@ def test_setup_names_dormant_enablement_and_private_prerequisites():
     assert "install `gh`, Python 3.14 and Claude CLI 2.1.280" in prose
     assert "hosted `prepare` job" in prose and "hosted `report` job" in prose
     assert "permitted non-mechanical second look" in prose
-    assert "frozen merged commit on the default branch" in prose
+    assert "reviewed merged commit on the default branch" in prose
     assert "deliberately leave this copy dormant" in prose
+    assert "one finder at `high`" in prose
     assert "optional `CONNECTED_REVIEW_PRELOAD_CHANGED_FILES`" in prose
     assert "600,000 raw bytes" in prose
     assert ".github/" not in reference

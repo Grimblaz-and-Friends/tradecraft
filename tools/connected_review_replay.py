@@ -440,7 +440,7 @@ def _run_checkers_at_effort(
             elif usage[name].get("status") == "not-started":
                 usage[name] = {"status": "unavailable"}
             raise cr.ReviewError(str(exc), usage=usage) from exc
-    return _deduplicate_root_causes(survivors), usage, traces
+    return cr.deduplicate_root_causes(survivors), usage, traces
 
 
 def _run_checkers_for_replay(
@@ -465,18 +465,6 @@ def _run_checkers_for_replay(
         executable, run_root, snapshot, instructions, diff, rules,
         candidates, lines, token, effort, preloaded_changed_files,
     )
-
-
-def _deduplicate_root_causes(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    survivors = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        root_cause = " ".join(candidate["root_cause"].casefold().split())
-        if root_cause in seen:
-            continue
-        seen.add(root_cause)
-        survivors.append(candidate)
-    return survivors
 
 
 def run_replay(
@@ -587,7 +575,7 @@ def run_replay(
                     rules_text, lines, token, finder_effort, preloaded,
                 )
                 if single_pass:
-                    survivors = _deduplicate_root_causes(candidates)
+                    survivors = cr.deduplicate_root_causes(candidates)
                     checker_usage = None
                     checker_trace = None
                 else:

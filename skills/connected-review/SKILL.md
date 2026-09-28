@@ -1,16 +1,16 @@
 ---
 name: connected-review
-description: Run or configure the automatic two-pass connected reviewer that proposes concrete defects, independently proves them, and publishes only survivors. Use for this reviewer's finder, checker, workflow, retry, or replay. Do not use as an internal review stage or for dispositioning comments after publication.
+description: Run or configure the automatic connected reviewer whose single finder pass reports concrete, evidenced defects. Use for this reviewer's finder, workflow, retry, or replay. Do not use as an internal review stage or for dispositioning comments after publication.
 ---
 
 # Connected review
 
-**Purpose:** give a pull request one head-scoped review whose comments have each survived an independent proof pass. **Audience:** the automatic reviewer runtime and adopters configuring it. **Success:** an eligible event creates one completed review at the captured head, or one visible skip notice that cannot count as review.
+**Purpose:** give a pull request one head-scoped review from the lab's chosen single finder pass. **Audience:** the automatic reviewer runtime and adopters configuring it. **Success:** an eligible event creates one completed review at the captured head, or one visible skip notice that cannot count as review.
 
 ## Where this cell's depth lives
 
-- **Running the candidate-finding pass** -> `references/finder.md`: the concrete-failure contract, exclusions and structured fields.
-- **Running the independent proof pass** -> `references/checker.md`: the opposite burden, candidate-only boundary and uncertainty rule.
+- **Running the finder pass** -> `references/finder.md`: the concrete-failure contract, exclusions and structured fields.
+- **Replaying the measured two-pass configurations** -> `references/checker.md`: the historical checker contract retained for replay reproducibility; the live workflow never loads it.
 
 The canonical copy-whole workflow is `templates/connected-review.yml`. Copy it without extracting steps, because its unprivileged admission job, trusted runtime checkout, credential placement, runner split and hosted reporter form one security boundary.
 
@@ -18,12 +18,12 @@ The canonical copy-whole workflow is `templates/connected-review.yml`. Copy it w
 
 Run only for an open, ready pull request authored by the token owner in the same repository, after this reviewer's login is present in the base branch's connected-reviewer configuration. Ready and `reviewers`-label events may admit work; pushes and synchronize events do not. A completed review suppresses only another event at the same head, so a later explicitly requested look at a new head remains possible.
 
-The finder and each bounded checker batch are fresh read-only processes. The finder applies both coverage lenses to every changed hunk and names an input, execution path, root cause, wrong result and exact proof targets for each candidate. Trusted code divides the candidates into batches of at most 25. Each checker evaluates only its supplied candidate IDs, traces their named paths before deciding, keeps at most one per root cause, and keeps one only when the supplied tree or permitted verification demonstrates the same failure. Uncertainty after tracing or proof that depends on absent content drops the candidate. Model processes receive no GitHub credential and cannot publish.
+One fresh read-only finder process runs at `high`. It applies both coverage lenses to every changed hunk and names an input, execution path, root cause, wrong result and exact proof targets for each candidate. Trusted code validates the structured output and anchor shape, collapses candidates with the same root cause, and alone holds publication authority; the model process receives no GitHub credential and cannot publish.
 
-Changed-file preloading is optional and off by default. When enabled, trusted code orders changed files by the number of lines they change and places at most 600,000 raw bytes of their post-change UTF-8 text in each pass's untrusted prompt data. Deleted, binary and over-budget files are named but not preloaded; Read, Glob and Grep remain available for those files and for unchanged context.
+Changed-file preloading is optional and off by default. When enabled, trusted code orders changed files by the number of lines they change and places at most 600,000 raw bytes of their post-change UTF-8 text in the finder's untrusted prompt data. Deleted, binary and over-budget files are named but not preloaded; Read, Glob and Grep remain available for those files and for unchanged context.
 
-Trusted code validates eligibility, changed-line anchors, schemas, candidate identity, evidence, payload limits and the head immediately before publication. It submits every survivor in one completed review; a clean completed run submits the same review with no inline comments. Usage from the finder and every checker batch stays in that review.
+Trusted code validates eligibility, schemas, candidate identity, evidence, payload limits and the head immediately before publication. It submits every deduplicated finding in one completed review; a finding whose anchor is not a commentable changed line stays in that review's body, and a clean completed run submits the same review with no inline comments. Finder usage stays in that review.
 
 An admitted run that cannot complete gets one ordinary pull-request comment beginning `Review skipped:` and no review. Retry the workflow explicitly after the cause clears. Duplicate trigger events and already-reviewed heads are suppressed without a notice because they are not failed review attempts.
 
-On a public repository the review job uses a hosted runner and installs its pinned toolchain. On a private repository it uses the owner's self-hosted runner and a preinstalled pinned toolchain; both passes remain read-only there. The hosted report job checks out no pull-request content and receives no Claude token.
+On a public repository the review job uses a hosted runner and installs its pinned toolchain. On a private repository it uses the owner's self-hosted runner and a preinstalled pinned toolchain; the finder remains read-only there. The hosted report job checks out no pull-request content and receives no Claude token.

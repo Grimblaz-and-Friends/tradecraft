@@ -31,7 +31,7 @@ def test_probe_plants_boundary_canaries_and_reports_real_launch_trace(tmp_path, 
     result = probe.run_probe(["claude.cmd"], output)
     assert seen["executable"] == ["claude.cmd"]
     assert seen["snapshot"] != seen["run_root"]
-    assert seen["effort"] == probe.cr.FINDER_EFFORT
+    assert seen["effort"] == probe.cr.LIVE_FINDER_EFFORT
     assert "hooks" in seen["settings"]
     assert "outside-canary.txt" in seen["readme"]
     assert probe.CANARY_NAME in seen["readme"]

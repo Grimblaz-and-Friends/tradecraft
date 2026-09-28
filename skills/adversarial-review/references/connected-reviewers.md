@@ -55,7 +55,7 @@ Codex has no configuration key for this contract; the section in the repository'
 
 ## `connected-review.yml` in the repository's GitHub Actions workflows directory
 
-Copy this block whole to that directory and set the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Before activation, install `gh`, Python 3.14 and Claude CLI 2.1.280 on a private repository's self-hosted runner. The hosted `prepare` job, and the hosted `report` job when it runs, consume a small amount of hosted time. After that repository's replay and identity checks pass, its enabling change sets the reviewer ref to the frozen merged commit on the default branch, sets the `CONNECTED_REVIEW_ENABLED` repository variable to `true`, and adds `github-actions[bot]` to `connected_reviewers`; the ref below and the absent variable deliberately leave this copy dormant, and the ref is not a release pin. The optional `CONNECTED_REVIEW_PRELOAD_CHANGED_FILES` repository variable is off when absent; set it to `true` to place up to 600,000 raw bytes of changed text files in every pass prompt while retaining Read, Glob and Grep for the rest of the snapshot. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding `reviewers` requests the permitted non-mechanical second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
+Copy this block whole to that directory and set the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Before activation, install `gh`, Python 3.14 and Claude CLI 2.1.280 on a private repository's self-hosted runner. The hosted `prepare` job, and the hosted `report` job when it runs, consume a small amount of hosted time. An enabling change sets the reviewer ref to the reviewed merged commit on the default branch, sets the `CONNECTED_REVIEW_ENABLED` repository variable to `true`, and adds `github-actions[bot]` to `connected_reviewers`; the ref below and the absent variable deliberately leave this copy dormant, and the ref is not a release pin. The workflow runs one finder at `high`; its optional `CONNECTED_REVIEW_PRELOAD_CHANGED_FILES` repository variable is off when absent, and `true` places up to 600,000 raw bytes of changed text files in that finder's prompt while retaining Read, Glob and Grep for the rest of the snapshot. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding `reviewers` requests the permitted non-mechanical second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
 
 ```yaml
 name: connected-review
@@ -139,7 +139,7 @@ jobs:
       - name: Install hosted Claude CLI
         if: needs.prepare.outputs.visibility == 'public'
         run: npm install --global @anthropic-ai/claude-code@2.1.280
-      - name: Run finder and checker
+      - name: Run connected review
         id: review
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -147,7 +147,6 @@ jobs:
         run: >-
           python .connected-review-runtime/lib/connected_review.py review
           --finder-prompt ".connected-review-runtime/skills/connected-review/references/finder.md"
-          --checker-prompt ".connected-review-runtime/skills/connected-review/references/checker.md"
 
   report:
     needs: [prepare, review]
