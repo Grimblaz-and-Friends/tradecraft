@@ -1385,6 +1385,7 @@ def _quotation_claim(state: WorkState, marker: Marker) -> dict[str, object]:
 class ArtifactPhase:
     latest_draft: Marker | None
     prior_artifact: Marker | None
+    prior_holder_reading: Marker | None
     latest_settlement: Marker | None
     settlement_order: tuple[datetime, int, int] | None
     latest_holder_reading: Marker | None
@@ -1440,7 +1441,8 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
     active = False
     latest_draft: Marker | None = None
     prior_artifact: Marker | None = None
-    current_artifact: Marker | None = None
+    prior_holder_reading: Marker | None = None
+    current_artifact_text: Marker | None = None
     latest_draft_identity: tuple[int, int] | None = None
     latest_settlement: Marker | None = None
     settlement_order: tuple[datetime, int, int] | None = None
@@ -1467,11 +1469,11 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                     else (marker, reason)
                     for marker, reason in invalid
                 ]
-                if current_artifact is not None:
-                    prior_artifact = current_artifact
+                prior_artifact = current_artifact_text
+                prior_holder_reading = latest_holder_reading
             active = True
             latest_draft = None
-            current_artifact = None
+            current_artifact_text = None
             latest_draft_identity = None
             latest_settlement = None
             settlement_order = None
@@ -1494,7 +1496,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
         for marker in events:
             if marker.name == "artifact" and marker.attributes.get("status") == "draft":
                 latest_draft = marker
-                current_artifact = marker
+                current_artifact_text = marker
                 latest_draft_identity = (marker.source_order, marker.occurrence_order)
                 latest_settlement = None
                 settlement_order = None
@@ -1506,6 +1508,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                 migration_candidate = None
                 migration_generation += 1
             elif marker.name == "artifact" and marker.attributes.get("status") == "settled":
+                current_artifact_text = marker
                 current = [
                     verdict for verdict, draft_identity in verdicts
                     if draft_identity == latest_draft_identity and latest_draft is not None
@@ -1528,7 +1531,6 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                         and migration_candidate[2] == migration_generation):
                     effective_order = migration_candidate[1]
                 latest_settlement = marker
-                current_artifact = marker
                 settlement_order = effective_order
                 migration_candidate = None
             elif marker.name == "holder-reading":
@@ -1546,6 +1548,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
     return ArtifactPhase(
         latest_draft=latest_draft,
         prior_artifact=prior_artifact,
+        prior_holder_reading=prior_holder_reading,
         latest_settlement=latest_settlement,
         settlement_order=settlement_order,
         latest_holder_reading=latest_holder_reading,
@@ -2937,10 +2940,13 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     if state.validated_markers is None:
         validate_marker_claims(state)
     phase = state.artifact_phase or _artifact_phase(state)
+    prior_holder_reading = None
     if mechanical and not explicit_artifact:
         artifact = None
     elif explicit_artifact:
         artifact = phase.latest_draft or phase.prior_artifact
+        if phase.latest_draft is None and artifact is not None:
+            prior_holder_reading = phase.prior_holder_reading
     else:
         artifact = phase.latest_settlement
     if brief is None:
@@ -2987,6 +2993,15 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         sections.append(
             f"--- {artifact_label} begin ---\n" + artifact.body
             + f"\n--- {artifact_label} end ---"
+        )
+    if prior_holder_reading is not None:
+        reading_label = (
+            "holder reading made against artifact under revision "
+            "(governs where it differs)"
+        )
+        sections.append(
+            f"--- {reading_label} begin ---\n" + prior_holder_reading.body
+            + f"\n--- {reading_label} end ---"
         )
     sections.append("Fetch current state only if this stage needs it:\n" + "\n".join(fetches))
     return ("\n\n".join(sections) + "\n").encode("utf-8")

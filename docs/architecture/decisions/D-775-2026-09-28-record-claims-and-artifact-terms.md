@@ -32,7 +32,7 @@ For a change already in flight, a later marker that only adds a route to an earl
 
 Latest-term reduction was chosen because the report must describe the record the authors reached, not whichever historical state a fixed check happens to encounter first. Amendments restart the term; newer drafts supersede old support except where qualifying would-not verdicts still count toward the current term's cap.
 
-An explicit artifact dispatch after an amendment carries the latest prior artifact as the artifact under revision until the new term has its own draft. This keeps the amendment path a revision, as the engagement contract requires, without letting prior-term verdicts or settlement state advance the new term.
+An explicit artifact dispatch after an amendment carries the prior term's latest artifact text as the artifact under revision until the new term has its own draft. It prefers the latest settlement text even when that settlement's route is invalid, otherwise carries the latest draft, because route validity decides whether a term is settled rather than which text the amendment revises. The prompt follows that artifact with the prior term's latest holder reading, labelled as governing where it differs. A current-term draft replaces both prior-term sections. This keeps the amendment path a revision, as the engagement contract requires, without letting prior-term verdicts or settlement state advance the new term.
 
 ### Disposition formatting is presentation, and every disposition reader agrees
 
@@ -60,7 +60,7 @@ This boundary was chosen because an optional reviewer had found real defects, wh
 
 - Marker consumers use one source-level claim classification, and set-aside quotations become visible diagnostics rather than hidden state.
 - Artifact routing and builder prompts come from the latest term rather than record-wide marker presence.
-- A settlement cannot stand in for its term's missing draft, one migration correction cannot lend its inherited order to a second settlement, and an amendment dispatch retains the prior artifact only as revision input.
+- A settlement cannot stand in for its term's missing draft, one migration correction cannot lend its inherited order to a second settlement, and an amendment dispatch retains prior artifact and holder-reading text only as revision input; settlement validity does not select that text.
 - Plain and permitted-inline-formatted disposition openers have the same meaning in the entrance and any gate that reads them.
 - Release guidance distinguishes authorized optional reviewers from other commenters without treating either group's text as instructions.
 

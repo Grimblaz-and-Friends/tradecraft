@@ -588,29 +588,75 @@ def test_build_prompt_uses_only_the_latest_terms_settled_artifact():
     assert b"FIRST TERM" not in prompt
 
 
-def test_artifact_decision_after_amendment_carries_the_prior_artifact_for_revision():
+def test_artifact_decision_after_amendment_prefers_routeless_prior_settlement_text():
     prior_draft = ARTIFACT + "\nPRIOR DRAFT"
-    prior_settlement = _settled("would", "would") + "\nPRIOR SETTLED ARTIFACT"
+    prior_settlement = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "PRIOR ROUTELESS SETTLEMENT"
+    )
     fixture = state(
-        AFFIRMED, prior_draft, prior_settlement, HOLDER, AFFIRMED,
+        AFFIRMED, prior_draft, prior_settlement, AFFIRMED,
     )
     decision = work.decide(fixture, RULES)
 
     assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
     prompt = work._stage_prompt(fixture, decision)
     assert b"--- artifact under revision begin ---" in prompt
-    assert b"PRIOR SETTLED ARTIFACT" in prompt
+    assert b"PRIOR ROUTELESS SETTLEMENT" in prompt
+    assert b"PRIOR DRAFT" not in prompt
     assert b"--- settled artifact begin ---" not in prompt
+    assert fixture.artifact_phase.latest_settlement is None
+    assert any("no re-post is needed" in item["reason"]
+               for item in decision.invalid_markers)
+
+
+def test_artifact_decision_after_amendment_carries_prior_draft_without_settlement():
+    prior_draft = ARTIFACT + "\nPRIOR DRAFT ONLY"
+    fixture = state(AFFIRMED, prior_draft, AFFIRMED)
+    decision = work.decide(fixture, RULES)
+
+    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
+    prompt = work._stage_prompt(fixture, decision)
+    assert b"PRIOR DRAFT ONLY" in prompt
+    assert b"holder reading made against artifact under revision" not in prompt
+
+
+def test_artifact_decision_after_amendment_carries_prior_holder_reading_after_artifact():
+    prior_settlement = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "PRIOR ROUTELESS SETTLEMENT WITH READING"
+    )
+    earlier_reading = HOLDER + "\nEARLIER HOLDER READING"
+    prior_reading = HOLDER + "\nLATEST HOLDER READING"
+    fixture = state(
+        AFFIRMED, ARTIFACT, prior_settlement,
+        earlier_reading, prior_reading, AFFIRMED,
+    )
+    decision = work.decide(fixture, RULES)
+
+    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
+    prompt = work._stage_prompt(fixture, decision)
+    artifact_end = prompt.index(b"--- artifact under revision end ---")
+    reading_start = prompt.index(
+        b"--- holder reading made against artifact under revision "
+        b"(governs where it differs) begin ---"
+    )
+    assert reading_start > artifact_end
+    assert b"LATEST HOLDER READING" in prompt
+    assert b"EARLIER HOLDER READING" not in prompt
 
 
 def test_current_term_draft_replaces_the_prior_artifact_in_an_artifact_prompt():
     prior_draft = ARTIFACT + "\nPRIOR DRAFT"
     prior_settlement = _settled("would", "would") + "\nPRIOR SETTLED ARTIFACT"
+    prior_reading = HOLDER + "\nPRIOR HOLDER READING"
     current_draft = ARTIFACT + "\nCURRENT TERM DRAFT"
     fixture = state(
-        AFFIRMED, prior_draft, prior_settlement, HOLDER,
+        AFFIRMED, prior_draft, prior_settlement, prior_reading,
         AFFIRMED, current_draft,
     )
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.stage == "cold-seat"
     prompt = work._stage_prompt(
         fixture, work.Decision("artifact", True, "resume", "holder-named-stage"),
     )
@@ -618,6 +664,8 @@ def test_current_term_draft_replaces_the_prior_artifact_in_an_artifact_prompt():
     assert b"--- artifact under revision begin ---" in prompt
     assert b"CURRENT TERM DRAFT" in prompt
     assert b"PRIOR SETTLED ARTIFACT" not in prompt
+    assert b"PRIOR HOLDER READING" not in prompt
+    assert b"holder reading made against artifact under revision" not in prompt
 
 
 def test_governing_references_carry_route_disposition_and_optional_reviewer_rules():
