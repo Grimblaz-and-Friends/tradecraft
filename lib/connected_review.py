@@ -1566,7 +1566,7 @@ def _job_cause(repo: str, run_id: str, review_result: str, visibility: str) -> s
         ] if isinstance(jobs, list) else []
         if review_jobs and all(not job.get("runner_name") for job in review_jobs):
             if visibility == "private":
-                return "self-hosted review job did not start before GitHub cancelled the queued job"
+                return "self-hosted review job was cancelled before it started"
             return "hosted review job was cancelled before it started"
         return "review job was cancelled after it started"
     if review_result == "success":
@@ -1598,7 +1598,10 @@ def report_skip(
     if existing_skip(repo, number, attempt):
         return {"status": "already-reported"}
     if prepare_result != "success":
-        named = f"preparation job {prepare_result} before eligibility could be handed to review"
+        if prepare_result == "cancelled":
+            named = "preparation job was cancelled before eligibility could be handed to review"
+        else:
+            named = f"preparation job {prepare_result} before eligibility could be handed to review"
     else:
         named = cause.strip() if isinstance(cause, str) and cause.strip() else _job_cause(
             repo, run_id, review_result, admitted["visibility"]

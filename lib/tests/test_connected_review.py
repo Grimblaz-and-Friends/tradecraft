@@ -1065,6 +1065,38 @@ def test_reporter_posts_prepare_failure_only_after_rederiving_eligibility(monkey
     assert "checker" not in calls[0]
 
 
+def test_reporter_names_a_cancelled_prepare_from_recorded_job_state(monkeypatch):
+    calls = []
+    recorded = fixture("connected_review_cancelled_jobs.json")["prepare_cancelled"]
+    prepare_result = next(
+        job["conclusion"] for job in recorded["jobs"] if job["name"] == "prepare"
+    )
+
+    def get(endpoint, **kwargs):
+        if endpoint.endswith("/pulls/746"):
+            return pull()
+        if endpoint.endswith("/pulls/746/reviews"):
+            return []
+        if endpoint.endswith("/issues/746/comments") and kwargs.get("method") == "POST":
+            calls.append(kwargs["payload"]["body"])
+            return {"id": 1}
+        if endpoint.endswith("/issues/746/comments"):
+            return []
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(cr, "gh_json", get)
+    monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset({cr.BOT_LOGIN}))
+    result = cr.report_skip(
+        event(), "Grimblaz", "36474657693", "skipped", None, "36474657693",
+        prepare_result=prepare_result,
+    )
+    assert result["status"] == "skipped"
+    assert calls[0].startswith(
+        "Review skipped: preparation job was cancelled before eligibility could be handed to review"
+    )
+    assert '"status":"not-started"' in calls[0]
+
+
 def test_reporter_prepare_failure_posts_nothing_when_eligibility_is_unreadable(monkeypatch):
     posts = []
 
@@ -1243,13 +1275,18 @@ def test_generated_reviews_and_all_skip_causes_have_correct_entrance_credit():
         assert receipt(comment_body=body) == "notice-only"
 
 
-def test_offline_private_worker_gets_the_queue_expiry_cause(monkeypatch):
-    monkeypatch.setattr(cr, "gh_json", lambda *_args, **_kwargs: {
-        "jobs": [{"name": "review", "conclusion": "cancelled", "runner_name": None}]
-    })
-    assert cr._job_cause("owner/repo", "92", "cancelled", "private") == (
-        "self-hosted review job did not start before GitHub cancelled the queued job"
+def test_queued_private_worker_cancellation_uses_neutral_recorded_cause(monkeypatch):
+    recorded = fixture("connected_review_cancelled_jobs.json")[
+        "queued_review_cancelled"
+    ]
+    monkeypatch.setattr(cr, "gh_json", lambda *_args, **_kwargs: recorded)
+    assert cr._job_cause(
+        "owner/repo", "36478971897", "cancelled", "private",
+    ) == (
+        "self-hosted review job was cancelled before it started"
     )
-    assert cr._job_cause("owner/repo", "92", "cancelled", "public") == (
+    assert cr._job_cause(
+        "owner/repo", "36478971897", "cancelled", "public",
+    ) == (
         "hosted review job was cancelled before it started"
     )
