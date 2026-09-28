@@ -91,9 +91,6 @@ def reviewer_settings(
 
 def live_reviewer_settings(
     cli_version: str = DEFAULT_CLAUDE_VERSION,
-    *,
-    preload_changed_files: bool = False,
-    preload_budget_bytes: int = DEFAULT_PRELOAD_BUDGET_BYTES,
 ) -> dict[str, Any]:
     """Return the chosen settings for the connected reviewer's live path."""
     return {
@@ -107,8 +104,6 @@ def live_reviewer_settings(
         "max_candidates": MAX_FINDER_CANDIDATES_PER_PASS * len(FINDER_PASSES),
         "model": DEFAULT_MODEL,
         "pass_structure": "single-pass",
-        "preload_changed_files": preload_changed_files,
-        "preload_budget_bytes": preload_budget_bytes,
     }
 
 
@@ -1461,8 +1456,6 @@ def execute_review(
     executable: str | list[str],
     expected_version: str,
     finder_prompt: Path,
-    preload_changed_files: bool = False,
-    preload_budget_bytes: int = DEFAULT_PRELOAD_BUDGET_BYTES,
 ) -> dict[str, Any]:
     ledger: dict[str, Any] = {"finder": finder_usage_template()}
     try:
@@ -1487,10 +1480,6 @@ def execute_review(
             diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
             rules_text = rules_path.read_text(encoding="utf-8", errors="replace")
             lines = changed_lines(diff_text)
-            preloaded = (
-                preload_changed_file_data(snapshot, diff_text, preload_budget_bytes)
-                if preload_changed_files else None
-            )
             try:
                 candidates, finder_usage, _finder_traces = run_finders(
                     executable,
@@ -1501,7 +1490,7 @@ def execute_review(
                     rules_text,
                     lines,
                     token,
-                    preloaded,
+                    None,
                     effort=LIVE_FINDER_EFFORT,
                 )
             except ReviewError as exc:
@@ -1683,14 +1672,6 @@ def parser() -> argparse.ArgumentParser:
         default=os.environ.get("CONNECTED_REVIEW_VISIBILITY", "public"),
     )
     review.add_argument("--finder-prompt", required=True, type=Path)
-    review.add_argument(
-        "--preload-changed-files",
-        action="store_true",
-        default=(
-            os.environ.get("CONNECTED_REVIEW_PRELOAD_CHANGED_FILES", "").casefold()
-            == "true"
-        ),
-    )
     review.add_argument("--output", default=os.environ.get("GITHUB_OUTPUT"))
     report = sub.add_parser("report", help="reconcile completion and publish one skip")
     report.add_argument(
@@ -1740,7 +1721,6 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = execute_review(
                 event, args.owner_login, args.attempt, executable, args.claude_version,
                 args.finder_prompt,
-                preload_changed_files=args.preload_changed_files,
             )
         else:
             result = report_skip(

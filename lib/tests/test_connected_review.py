@@ -866,10 +866,10 @@ def execute_fixture(monkeypatch, tmp_path, pass_results, *, current_head=HEAD, p
     return finder, checker
 
 
-def run_execute(finder, _checker=None, *, preload_changed_files=False):
+def run_execute(finder, _checker=None):
     return cr.execute_review(
         event(), "Grimblaz", "92", ["claude.cmd"], cr.DEFAULT_CLAUDE_VERSION,
-        finder, preload_changed_files=preload_changed_files,
+        finder,
     )
 
 
@@ -915,7 +915,7 @@ def test_execute_review_names_finder_timeout_and_marks_usage_unavailable(tmp_pat
     }
 
 
-def test_execute_review_gives_changed_file_preload_to_its_only_finder(
+def test_execute_review_live_prompt_never_preloads_changed_files(
     tmp_path, monkeypatch,
 ):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [])
@@ -926,14 +926,11 @@ def test_execute_review_gives_changed_file_preload_to_its_only_finder(
         return {"candidates": []}, {}, []
 
     monkeypatch.setattr(cr, "run_pass", run)
-    assert run_execute(finder, checker, preload_changed_files=True)["status"] == "reviewed"
+    assert run_execute(finder, checker)["status"] == "reviewed"
     assert [(schema, effort) for schema, _prompt, effort in prompts] == [
         (cr.FINDER_SCHEMA, "high"),
     ]
-    block = prompts[0][1].split("\n<preloaded_changed_files>\n", 1)[1].split(
-        "\n</preloaded_changed_files>\n", 1,
-    )[0]
-    assert json.loads(block)["entries"][0]["content"].splitlines() == ["new"]
+    assert "<preloaded_changed_files>" not in prompts[0][1]
 
 
 def test_live_default_runs_one_high_finder_and_publishes_validated_deduplicated_findings(
@@ -1127,18 +1124,15 @@ def test_attempt_identity_is_run_id_not_reporter_retry(monkeypatch):
     assert args.attempt == "700"
 
 
-def test_live_preload_configuration_is_optional_and_off_by_default(monkeypatch):
+def test_live_review_command_exposes_no_preload_configuration(monkeypatch):
     common = [
         "review", "--event", "event.json", "--owner-login", "Grimblaz",
         "--attempt", "700", "--finder-prompt", "finder.md",
     ]
-    monkeypatch.delenv("CONNECTED_REVIEW_PRELOAD_CHANGED_FILES", raising=False)
-    assert cr.parser().parse_args(common).preload_changed_files is False
-    assert cr.parser().parse_args([
-        *common, "--preload-changed-files",
-    ]).preload_changed_files is True
     monkeypatch.setenv("CONNECTED_REVIEW_PRELOAD_CHANGED_FILES", "true")
-    assert cr.parser().parse_args(common).preload_changed_files is True
+    assert not hasattr(cr.parser().parse_args(common), "preload_changed_files")
+    with pytest.raises(SystemExit):
+        cr.parser().parse_args([*common, "--preload-changed-files"])
 
 
 def test_main_resolves_windows_compatible_claude_command(tmp_path, monkeypatch):

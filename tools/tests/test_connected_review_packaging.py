@@ -167,8 +167,6 @@ def test_live_reviewer_standard_is_one_high_finder_with_frozen_prompt():
         "max_candidates": 50,
         "model": "claude-opus-5-5",
         "pass_structure": "single-pass",
-        "preload_budget_bytes": 600000,
-        "preload_changed_files": False,
     }
     assert hashlib.sha256(finder.read_bytes()).hexdigest() == (
         "3b13819ec50d747a655c3634a6b663592c052bca8d1f3fa7c0f8ebc8473bf247"
@@ -176,6 +174,7 @@ def test_live_reviewer_standard_is_one_high_finder_with_frozen_prompt():
     assert "One fresh read-only finder process runs at `high`" in skill
     assert "historical checker contract retained for replay reproducibility" in skill
     assert "the live workflow never loads it" in skill
+    assert "preload" not in skill.casefold()
 
 
 def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
@@ -202,15 +201,19 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
     assert workflow.count(
         "TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT"
     ) == 1
-    assert "if: vars.CONNECTED_REVIEW_ENABLED == 'true'" in workflow
+    assert "CONNECTED_REVIEW_ENABLED" not in workflow
+    assert "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES" not in workflow
+    assert "${{ vars." not in workflow
+    assert set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)) == {
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    }
+    lint = (ROOT / "tools/lint.py").read_text(encoding="utf-8")
+    assert "connected-review.yml" not in lint
+    assert "github-actions[bot]" not in lint
     assert "Run connected review" in workflow
     assert "--finder-prompt" in workflow
     assert "--checker-prompt" not in workflow
     assert "Run finder and checker" not in workflow
-    assert (
-        "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES: "
-        "${{ vars.CONNECTED_REVIEW_PRELOAD_CHANGED_FILES }}"
-    ) in workflow
     assert "CONNECTED_REVIEW_VISIBILITY: ${{ needs.prepare.outputs.visibility }}" in workflow
     assert 'DISABLE_AUTOUPDATER: "1"' in workflow
 
@@ -327,7 +330,7 @@ def test_repository_copy_is_dormant_until_its_login_is_configured():
     assert "github-actions[bot]" not in configuration["connected_reviewers"]
 
 
-def test_setup_names_dormant_enablement_and_private_prerequisites():
+def test_setup_names_login_only_enablement_and_private_prerequisites():
     reference = (
         ROOT / "skills/adversarial-review/references/connected-reviewers.md"
     ).read_text(encoding="utf-8")
@@ -335,7 +338,10 @@ def test_setup_names_dormant_enablement_and_private_prerequisites():
         "## `connected-review.yml` in the repository's GitHub Actions workflows directory", 1
     )[1].split("```yaml\n", 1)[0]
     assert "repository's GitHub Actions workflows directory" in reference
-    assert "Copy this block whole to that directory" in prose
+    assert (
+        "copy the one workflow file, set the one secret, and, on a private "
+        "repository, install the runner"
+    ) in prose
     assert "`gh`, Python 3.14, Node and npm" in prose
     assert "`RUNNER_TOOL_CACHE` a stable writable location" in prose
     assert "cache's `claude-cli` directory" in prose
@@ -346,9 +352,11 @@ def test_setup_names_dormant_enablement_and_private_prerequisites():
     assert "permitted non-mechanical second look" in prose
     assert "reviewed merged commit on the default branch" in prose
     assert "deliberately leave this copy dormant" in prose
+    assert "only activation switch" in prose
     assert "one finder at `high`" in prose
-    assert "optional `CONNECTED_REVIEW_PRELOAD_CHANGED_FILES`" in prose
-    assert "600,000 raw bytes" in prose
+    assert "CONNECTED_REVIEW_ENABLED" not in prose
+    assert "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES" not in prose
+    assert "preload" not in prose.casefold()
     assert ".github/" not in reference
 
     live = (ROOT / "tools/connected-review-live-checks.md").read_text(encoding="utf-8")
@@ -356,4 +364,6 @@ def test_setup_names_dormant_enablement_and_private_prerequisites():
     assert "`RUNNER_TOOL_CACHE` a stable writable location" in live
     assert "under its `claude-cli` directory" in live
     assert "disables the auto-updater" in live
+    assert "executes nothing from the pull request" in live
+    assert "CONNECTED_REVIEW_ENABLED" not in live
     assert "`.path`" not in live

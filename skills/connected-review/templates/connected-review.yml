@@ -14,12 +14,10 @@ env:
   TRADECRAFT_REPOSITORY: Grimblaz-and-Friends/tradecraft
   TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT
   CLAUDE_CLI_VERSION: 2.1.280
-  CONNECTED_REVIEW_PRELOAD_CHANGED_FILES: ${{ vars.CONNECTED_REVIEW_PRELOAD_CHANGED_FILES }}
   REVIEW_OWNER_LOGIN: Grimblaz
 
 jobs:
   prepare:
-    if: vars.CONNECTED_REVIEW_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,7 +91,7 @@ jobs:
   report:
     needs: [prepare, review]
     if: >-
-      always() && vars.CONNECTED_REVIEW_ENABLED == 'true' &&
+      always() &&
       (needs.prepare.result != 'success' || needs.prepare.outputs.admitted == 'true')
     runs-on: ubuntu-latest
     permissions:

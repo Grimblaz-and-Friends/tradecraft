@@ -57,7 +57,7 @@ Codex has no configuration key for this contract; the section in the repository'
 
 ## `connected-review.yml` in the repository's GitHub Actions workflows directory
 
-Copy this block whole to that directory and set the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Before activation, put `gh`, Python 3.14, Node and npm on a private repository's self-hosted runner PATH and give `RUNNER_TOOL_CACHE` a stable writable location. The trusted runtime maintains Claude CLI 2.1.280 under that cache's `claude-cli` directory, uses only that pinned installation, and disables its auto-updater. Installation finishes before pull-request snapshot handling and never installs or executes pull-request content; an unavailable npm registry or failed install takes the ordinary `Review skipped:` path rather than falling back to another CLI. The hosted `prepare` job, and the hosted `report` job when it runs, consume a small amount of hosted time. An enabling change sets the reviewer ref to the reviewed merged commit on the default branch, sets the `CONNECTED_REVIEW_ENABLED` repository variable to `true`, and adds `github-actions[bot]` to `connected_reviewers`; the ref below and the absent variable deliberately leave this copy dormant, and the ref is not a release pin. The workflow runs one finder at `high`; its optional `CONNECTED_REVIEW_PRELOAD_CHANGED_FILES` repository variable is off when absent, and `true` places up to 600,000 raw bytes of changed text files in that finder's prompt while retaining Read, Glob and Grep for the rest of the snapshot. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding `reviewers` requests the permitted non-mechanical second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
+**Adopter cost:** copy the one workflow file, set the one secret, and, on a private repository, install the runner. Set the secret as `CLAUDE_CODE_OAUTH_TOKEN`. Before activation, put `gh`, Python 3.14, Node and npm on a private repository's self-hosted runner PATH and give `RUNNER_TOOL_CACHE` a stable writable location. The review job installs Claude CLI 2.1.280 under that cache's `claude-cli` directory, uses only that pinned installation, and disables its auto-updater. Installation is trusted runner setup: it finishes before pull-request snapshot handling and never installs or executes pull-request content; an unavailable npm registry or failed install takes the ordinary `Review skipped:` path rather than falling back to another CLI. The hosted `prepare` job, and the hosted `report` job when it runs, consume a small amount of hosted time. An enabling change sets the reviewer ref to the reviewed merged commit on the default branch and adds `github-actions[bot]` to `connected_reviewers`; the ref below and the absent login deliberately leave this copy dormant, and the ref is not a release pin. The login in the base branch's connected-reviewer configuration is the only activation switch. The workflow runs one finder at `high`. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding `reviewers` requests the permitted non-mechanical second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
 
 ```yaml
 name: connected-review
@@ -76,12 +76,10 @@ env:
   TRADECRAFT_REPOSITORY: Grimblaz-and-Friends/tradecraft
   TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT
   CLAUDE_CLI_VERSION: 2.1.280
-  CONNECTED_REVIEW_PRELOAD_CHANGED_FILES: ${{ vars.CONNECTED_REVIEW_PRELOAD_CHANGED_FILES }}
   REVIEW_OWNER_LOGIN: Grimblaz
 
 jobs:
   prepare:
-    if: vars.CONNECTED_REVIEW_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -155,7 +153,7 @@ jobs:
   report:
     needs: [prepare, review]
     if: >-
-      always() && vars.CONNECTED_REVIEW_ENABLED == 'true' &&
+      always() &&
       (needs.prepare.result != 'success' || needs.prepare.outputs.admitted == 'true')
     runs-on: ubuntu-latest
     permissions:
