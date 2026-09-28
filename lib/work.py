@@ -986,21 +986,24 @@ def _mask_markdown_quotations(text: str) -> str:
             for index in range(offset, offset + len(line)):
                 masked[index] = " "
         offset += len(line_with_end)
+    candidate = "".join(masked)
+    opener_pattern = re.compile(r"`+")
     cursor = 0
-    while cursor < len(masked):
-        candidate = "".join(masked)
-        opener = re.search(r"`+", candidate[cursor:])
+    while cursor < len(candidate):
+        opener = opener_pattern.search(candidate, cursor)
         if opener is None:
             break
-        start = cursor + opener.start()
+        start = opener.start()
         ticks = opener.group(0)
-        closing = re.search(
-            rf"(?<!`){re.escape(ticks)}(?!`)", candidate[start + len(ticks):]
+        closing = re.compile(
+            rf"(?<!`){re.escape(ticks)}(?!`)"
+        ).search(
+            candidate, start + len(ticks)
         )
         if closing is None:
             cursor = start + len(ticks)
             continue
-        close = start + len(ticks) + closing.start()
+        close = closing.start()
         for index in range(start, close + len(ticks)):
             if masked[index] not in "\r\n":
                 masked[index] = " "
@@ -1381,6 +1384,7 @@ def _quotation_claim(state: WorkState, marker: Marker) -> dict[str, object]:
 @dataclass(frozen=True)
 class ArtifactPhase:
     latest_draft: Marker | None
+    prior_artifact: Marker | None
     latest_settlement: Marker | None
     settlement_order: tuple[datetime, int, int] | None
     latest_holder_reading: Marker | None
@@ -1395,7 +1399,9 @@ def _source_order(marker: Marker) -> tuple[datetime, int, int]:
 
 
 def _settlement_error(route: str | None, current_verdicts: list[Marker],
-                      would_not_count: int) -> str | None:
+                      would_not_count: int, has_draft: bool) -> str | None:
+    if not has_draft:
+        return "artifact settlement requires an artifact draft in the current term"
     if route is None:
         return (
             "settled artifact route is missing; re-post it once with route=would, "
@@ -1433,6 +1439,8 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
     )
     active = False
     latest_draft: Marker | None = None
+    prior_artifact: Marker | None = None
+    current_artifact: Marker | None = None
     latest_draft_identity: tuple[int, int] | None = None
     latest_settlement: Marker | None = None
     settlement_order: tuple[datetime, int, int] | None = None
@@ -1445,8 +1453,25 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
 
     for group in ordered_groups:
         if any(marker.name == "affirmed-brief" for marker in group):
+            if active:
+                invalid = [
+                    (
+                        marker,
+                        (
+                            "settled artifact route is missing in a term superseded by "
+                            "a later affirmed brief; no re-post is needed"
+                        ),
+                    )
+                    if marker.attributes.get("route") is None
+                    and "route is missing" in reason
+                    else (marker, reason)
+                    for marker, reason in invalid
+                ]
+                if current_artifact is not None:
+                    prior_artifact = current_artifact
             active = True
             latest_draft = None
+            current_artifact = None
             latest_draft_identity = None
             latest_settlement = None
             settlement_order = None
@@ -1469,6 +1494,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
         for marker in events:
             if marker.name == "artifact" and marker.attributes.get("status") == "draft":
                 latest_draft = marker
+                current_artifact = marker
                 latest_draft_identity = (marker.source_order, marker.occurrence_order)
                 latest_settlement = None
                 settlement_order = None
@@ -1489,10 +1515,12 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                     for verdict, _draft_identity in verdicts
                 )
                 route = marker.attributes.get("route")
-                error = _settlement_error(route, current, would_not_count)
+                error = _settlement_error(
+                    route, current, would_not_count, latest_draft is not None,
+                )
                 if error is not None:
                     invalid.append((marker, error))
-                    if route is None:
+                    if route is None and latest_draft is not None:
                         migration_candidate = (marker, order, migration_generation)
                     continue
                 effective_order = order
@@ -1500,7 +1528,9 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                         and migration_candidate[2] == migration_generation):
                     effective_order = migration_candidate[1]
                 latest_settlement = marker
+                current_artifact = marker
                 settlement_order = effective_order
+                migration_candidate = None
             elif marker.name == "holder-reading":
                 latest_holder_reading = marker
                 holder_reading_order = order
@@ -1514,9 +1544,15 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
         for verdict, _draft_identity in verdicts
     )
     return ArtifactPhase(
-        latest_draft, latest_settlement, settlement_order,
-        latest_holder_reading, holder_reading_order, current_verdicts,
-        would_not_count, tuple(invalid),
+        latest_draft=latest_draft,
+        prior_artifact=prior_artifact,
+        latest_settlement=latest_settlement,
+        settlement_order=settlement_order,
+        latest_holder_reading=latest_holder_reading,
+        holder_reading_order=holder_reading_order,
+        current_verdicts=current_verdicts,
+        would_not_count=would_not_count,
+        invalid_settlements=tuple(invalid),
     )
 
 
@@ -2901,9 +2937,12 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     if state.validated_markers is None:
         validate_marker_claims(state)
     phase = state.artifact_phase or _artifact_phase(state)
-    artifact = None if mechanical and not explicit_artifact else (
-        phase.latest_draft if explicit_artifact else phase.latest_settlement
-    )
+    if mechanical and not explicit_artifact:
+        artifact = None
+    elif explicit_artifact:
+        artifact = phase.latest_draft or phase.prior_artifact
+    else:
+        artifact = phase.latest_settlement
     if brief is None:
         raise WorkError(f"{decision.stage} dispatch requires an authorized affirmed brief")
     pr_number = state.pr.get("number") if state.pr else None
@@ -2944,9 +2983,10 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         + "\n--- affirmed implementation brief end ---",
     ]
     if artifact is not None:
+        artifact_label = "artifact under revision" if explicit_artifact else "settled artifact"
         sections.append(
-            "--- settled artifact begin ---\n" + artifact.body
-            + "\n--- settled artifact end ---"
+            f"--- {artifact_label} begin ---\n" + artifact.body
+            + f"\n--- {artifact_label} end ---"
         )
     sections.append("Fetch current state only if this stage needs it:\n" + "\n".join(fetches))
     return ("\n\n".join(sections) + "\n").encode("utf-8")

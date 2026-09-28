@@ -26,11 +26,13 @@ This source-level contract was chosen because the observed failure came from a w
 
 An artifact term begins at the latest affirmed brief or amendment. Verdicts, settlements, drafts and holder readings are interpreted in order within that term: a verdict must judge the applicable draft, a supported routed settlement closes the phase, a newer draft reopens it, and a holder reading counts only after the latest effective settlement. Earlier states cannot win merely because the old implementation checked their booleans first.
 
-A settlement names `route=would`, `route=cap`, `route=discharge` or `route=unobtainable`, and the route must be supported by the term's qualifying verdicts. A missing or unsupported route is reported as invalid and does not settle the artifact. A cold verdict carried by its settled artifact is reduced immediately before that settlement, regardless of textual order, so it can support the route; the same companion beside a draft does not become a verdict claim.
+A settlement names `route=would`, `route=cap`, `route=discharge` or `route=unobtainable`, and the route must be supported by the term's qualifying verdicts. Every settlement, including `unobtainable`, requires a draft in its current term. A missing or unsupported route is reported as invalid and does not settle the artifact. A routeless settlement in a superseded term remains historical invalid evidence but no longer tells a holder to re-post it into the current term. A cold verdict carried by its settled artifact is reduced immediately before that settlement, regardless of textual order, so it can support the route; the same companion beside a draft does not become a verdict claim.
 
-For a change already in flight, a later marker that only adds a route to an earlier routeless settlement keeps the earlier settlement's position when no brief, draft or verdict intervenes. An intervening holder reading does not break that migration: it remains after the effective settlement and no second reading is manufactured. The routeless marker stays invalid, and the routed marker remains the validating source. This ordering exception was chosen to honor the affirmed requirement that an in-flight change re-post once rather than turn a data migration into another artifact round.
+For a change already in flight, a later marker that only adds a route to an earlier routeless settlement keeps the earlier settlement's position when no brief, draft or verdict intervenes. An intervening holder reading does not break that migration: it remains after the effective settlement and no second reading is manufactured. The routeless marker stays invalid, and the routed marker remains the validating source. The inherited position is consumed by that routed marker; another settlement has its own position and therefore needs a holder reading after it. This ordering exception was chosen to honor the affirmed requirement that an in-flight change re-post once rather than turn a data migration into another artifact round.
 
 Latest-term reduction was chosen because the report must describe the record the authors reached, not whichever historical state a fixed check happens to encounter first. Amendments restart the term; newer drafts supersede old support except where qualifying would-not verdicts still count toward the current term's cap.
+
+An explicit artifact dispatch after an amendment carries the latest prior artifact as the artifact under revision until the new term has its own draft. This keeps the amendment path a revision, as the engagement contract requires, without letting prior-term verdicts or settlement state advance the new term.
 
 ### Disposition formatting is presentation, and every disposition reader agrees
 
@@ -58,6 +60,7 @@ This boundary was chosen because an optional reviewer had found real defects, wh
 
 - Marker consumers use one source-level claim classification, and set-aside quotations become visible diagnostics rather than hidden state.
 - Artifact routing and builder prompts come from the latest term rather than record-wide marker presence.
+- A settlement cannot stand in for its term's missing draft, one migration correction cannot lend its inherited order to a second settlement, and an amendment dispatch retains the prior artifact only as revision input.
 - Plain and permitted-inline-formatted disposition openers have the same meaning in the entrance and any gate that reads them.
 - Release guidance distinguishes authorized optional reviewers from other commenters without treating either group's text as instructions.
 

@@ -47,16 +47,16 @@ A `cold-verdict` beside an artifact with `status=draft` is therefore a quotation
 
 An artifact term begins at the latest affirmed brief or amendment, so only later artifact claims belong to it. A cold verdict qualifies only after the artifact draft it judges. Only a qualifying verdict for the latest draft can support `would` or `discharge`; a newer draft ends that power but retains each qualifying `would-not` in the term's cap count. Only an amended brief starts a new term and restarts the count.
 
-A settled artifact follows the verdicts supporting its route. A qualifying verdict carried in the settlement's own source is ordered immediately before the settlement and can support it. The routes mean:
+A settled artifact follows the draft it settles and the verdicts supporting its route. Every settlement requires a draft in its current term; `unobtainable` means no qualifying verdict judges that draft, not that the draft is absent. A qualifying verdict carried in the settlement's own source is ordered immediately before the settlement and can support it. The routes mean:
 
 - `would` requires the latest qualifying verdict for the latest draft to be `would`.
 - `cap` requires two qualifying `would-not` verdicts in the term, across any drafts, and no qualifying `would` for the latest draft.
 - `discharge` requires a qualifying `not-settleable` verdict for the latest draft.
 - `unobtainable` requires no qualifying verdict for the latest draft.
 
-An unsupported route does not settle the phase. A settled marker without a route is also invalid, and its diagnostic tells a change in flight to re-post it once with the route the record supports.
+An unsupported route does not settle the phase. A settled marker without a route is also invalid. In the current term its diagnostic tells a change in flight to re-post it once with the route the record supports; after a later affirmed brief supersedes that term, the diagnostic records the historical invalid claim and says no re-post is needed.
 
-That route-only re-post retains the earlier routeless settlement's place in the term when no affirmed brief, amendment, artifact draft or cold verdict intervenes. A holder reading may intervene: the old marker remains invalid and reported, the new marker supplies the route and source, and the earlier position decides whether that reading follows the settlement. The latest eligible routeless marker supplies the position when more than one exists.
+That route-only re-post retains the earlier routeless settlement's place in the term when no affirmed brief, amendment, artifact draft or cold verdict intervenes. A holder reading may intervene: the old marker remains invalid and reported, the new marker supplies the route and source, and the earlier position decides whether that reading follows the settlement. The latest eligible routeless marker supplies the position when more than one exists. That inherited position is spent by the first routed settlement that uses it, so a later settlement takes its own position and requires a later holder reading.
 
 A holder reading counts only after the latest effective settlement. A newer draft reopens the phase; a later supported settlement closes it again.
 

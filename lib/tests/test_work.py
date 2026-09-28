@@ -280,6 +280,41 @@ def test_first_nonblank_line_opens_an_ordinary_marker_claim():
     assert fixture.quotation_claims == []
 
 
+def test_inline_code_masking_reuses_one_candidate_with_forward_searches(monkeypatch):
+    real_compile = work.re.compile
+    searches = []
+
+    class TrackingPattern:
+        def __init__(self, pattern):
+            self.pattern = pattern
+
+        def search(self, text, position=0):
+            searches.append((id(text), position, len(text)))
+            return self.pattern.search(text, position)
+
+    def tracking_compile(pattern, flags=0):
+        return TrackingPattern(real_compile(pattern, flags))
+
+    monkeypatch.setattr(work.re, "compile", tracking_compile)
+    pieces = [f"`item-{index}`" for index in range(32)]
+    body = " ".join(pieces)
+
+    masked = work._mask_markdown_quotations(body)
+
+    assert masked == " ".join(" " * len(piece) for piece in pieces)
+    assert searches
+    assert len({identity for identity, _position, _length in searches}) == 1
+    assert [position for _identity, position, _length in searches] == sorted(
+        position for _identity, position, _length in searches
+    )
+    assert {length for _identity, _position, length in searches} == {len(body)}
+
+
+@pytest.mark.parametrize("body", ["plain text", "`unterminated", "``unterminated"])
+def test_inline_code_masking_leaves_non_code_text_unchanged(body):
+    assert work._mask_markdown_quotations(body) == body
+
+
 def test_travels_with_contract_accepts_only_listed_companions():
     fixture = state(
         AFFIRMED + "\n<!-- tradecraft:product-incident:v1 repo=acme/app issue=3 -->",
@@ -417,6 +452,23 @@ def test_routeless_settlement_requests_one_supported_route_repost():
     assert all(f"route={route}" in reason for route in work.SETTLEMENT_ROUTES)
 
 
+def test_superseded_routeless_settlement_reports_history_without_repost_guidance():
+    routeless = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    )
+    decision = work.decide(
+        state(AFFIRMED, ARTIFACT, routeless, AFFIRMED), RULES,
+    )
+
+    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
+    reason = next(item["reason"] for item in decision.invalid_markers
+                  if item["name"] == "artifact")
+    assert "superseded by a later affirmed brief" in reason
+    assert "no re-post is needed" in reason
+    assert "re-post it once" not in reason
+
+
 def test_newer_draft_reopens_a_settlement_and_a_later_settlement_closes_it():
     reopened = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, ARTIFACT)
     assert work.decide(reopened, RULES).stage == "cold-seat"
@@ -431,6 +483,23 @@ def test_newer_draft_reopens_a_settlement_and_a_later_settlement_closes_it():
 def test_new_affirmed_brief_starts_a_new_artifact_term():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, AFFIRMED)
     assert work.decide(fixture, RULES).stage == "artifact"
+
+
+@pytest.mark.parametrize("route", sorted(work.SETTLEMENT_ROUTES))
+def test_settlement_without_a_current_term_draft_is_invalid_for_every_route(route):
+    decision = work.decide(state(AFFIRMED, _settled(route), HOLDER), RULES)
+
+    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
+    reasons = [item["reason"] for item in decision.invalid_markers
+               if item["name"] == "artifact"]
+    assert reasons == ["artifact settlement requires an artifact draft in the current term"]
+
+
+def test_unobtainable_settlement_with_a_current_term_draft_closes_the_phase():
+    decision = work.decide(
+        state(AFFIRMED, ARTIFACT, _settled("unobtainable"), HOLDER), RULES,
+    )
+    assert (decision.stage, decision.reason) == ("build", "pull-request-absent")
 
 
 def test_stale_would_verdict_cannot_support_a_newer_draft():
@@ -473,6 +542,19 @@ def test_routed_repost_inherits_routeless_order_across_a_holder_reading():
     assert len(routed) == 1
 
 
+def test_routeless_migration_position_is_spent_after_one_routed_settlement():
+    routeless = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    )
+    fixture = state(
+        AFFIRMED, ARTIFACT, routeless, HOLDER,
+        _settled("would"), _settled("would"),
+    )
+
+    assert work.decide(fixture, RULES).stage == "holder-read"
+
+
 @pytest.mark.parametrize("breaker", ["draft", "verdict", "brief"])
 def test_term_changing_claim_breaks_routeless_order_inheritance(breaker):
     routeless = (
@@ -506,6 +588,38 @@ def test_build_prompt_uses_only_the_latest_terms_settled_artifact():
     assert b"FIRST TERM" not in prompt
 
 
+def test_artifact_decision_after_amendment_carries_the_prior_artifact_for_revision():
+    prior_draft = ARTIFACT + "\nPRIOR DRAFT"
+    prior_settlement = _settled("would", "would") + "\nPRIOR SETTLED ARTIFACT"
+    fixture = state(
+        AFFIRMED, prior_draft, prior_settlement, HOLDER, AFFIRMED,
+    )
+    decision = work.decide(fixture, RULES)
+
+    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
+    prompt = work._stage_prompt(fixture, decision)
+    assert b"--- artifact under revision begin ---" in prompt
+    assert b"PRIOR SETTLED ARTIFACT" in prompt
+    assert b"--- settled artifact begin ---" not in prompt
+
+
+def test_current_term_draft_replaces_the_prior_artifact_in_an_artifact_prompt():
+    prior_draft = ARTIFACT + "\nPRIOR DRAFT"
+    prior_settlement = _settled("would", "would") + "\nPRIOR SETTLED ARTIFACT"
+    current_draft = ARTIFACT + "\nCURRENT TERM DRAFT"
+    fixture = state(
+        AFFIRMED, prior_draft, prior_settlement, HOLDER,
+        AFFIRMED, current_draft,
+    )
+    prompt = work._stage_prompt(
+        fixture, work.Decision("artifact", True, "resume", "holder-named-stage"),
+    )
+
+    assert b"--- artifact under revision begin ---" in prompt
+    assert b"CURRENT TERM DRAFT" in prompt
+    assert b"PRIOR SETTLED ARTIFACT" not in prompt
+
+
 def test_governing_references_carry_route_disposition_and_optional_reviewer_rules():
     if not (LIB.parent / "skills").is_dir():
         pytest.skip("repository references are absent from a relocated lib-only copy")
@@ -521,6 +635,9 @@ def test_governing_references_carry_route_disposition_and_optional_reviewer_rule
     ).read_text(encoding="utf-8")
 
     assert "route=would|cap|discharge|unobtainable" in markers_reference
+    assert "Every settlement requires a draft in its current term" in markers_reference
+    assert "no re-post is needed" in markers_reference
+    assert "That inherited position is spent" in markers_reference
     assert "permitted inline formatting around the opening word" in markers_reference
     for text in (release_reference, reviewer_reference):
         assert "installed repository apps" in text
