@@ -161,7 +161,7 @@ The object and publication contract are `proof.md`. For one compatibility releas
 <!-- tradecraft:connected-reviewer:v1 name=review-bot status=complete -->
 ```
 
-The lawful disposition words are maintained in `../../adversarial-review/references/connected-reviewers.md`. For matching, the entrance removes permitted inline formatting around the reply's opening word and then applies the same word-and-delimiter test as an unformatted disposition. Formatting never makes a word outside that closed vocabulary lawful. The shared gate must make the same reading before this entrance change is released.
+The connected-reviewer reference maintains the lawful disposition words as a closed vocabulary. For matching, the entrance removes permitted inline formatting around the reply's opening word and then applies the same word-and-delimiter test as an unformatted disposition. Formatting never makes a word outside that vocabulary lawful. A gate that reads dispositions must apply the same rule, or the entrance and gate disagree about whether the reply is complete.
 
 ## `panel-stage`
 
