@@ -184,8 +184,14 @@ def reviewer_record(
     single_pass: bool = False,
     finder_effort: str | None = None,
     checker_effort: str | None = None,
+    preload_changed_files: bool = False,
+    preload_budget_bytes: int = cr.DEFAULT_PRELOAD_BUDGET_BYTES,
 ) -> dict[str, Any]:
-    settings = cr.reviewer_settings(version)
+    settings = cr.reviewer_settings(
+        version,
+        preload_changed_files=preload_changed_files,
+        preload_budget_bytes=preload_budget_bytes,
+    )
     record = {
         "revision": revision,
         **settings,
@@ -195,7 +201,12 @@ def reviewer_record(
     }
     if checker_prompt is not None:
         record["checker_prompt_sha256"] = file_digest(checker_prompt)
-    if single_pass or finder_effort is not None or checker_effort is not None:
+    if (
+        single_pass
+        or finder_effort is not None
+        or checker_effort is not None
+        or preload_changed_files
+    ):
         record.update({
             "pass_structure": "single-pass" if single_pass else "finder-checker",
             "finder_effort": finder_effort or cr.FINDER_EFFORT,
@@ -204,6 +215,7 @@ def reviewer_record(
                 **({"single_pass": True} if single_pass else {}),
                 **({"finder_effort": finder_effort} if finder_effort is not None else {}),
                 **({"checker_effort": checker_effort} if checker_effort is not None else {}),
+                **({"preload_changed_files": True} if preload_changed_files else {}),
             },
         })
     return record
@@ -312,6 +324,7 @@ def _run_finders_at_effort(
     lines: dict[tuple[str, str], set[int]],
     token: str,
     effort: str,
+    preloaded_changed_files: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     candidates = []
     usage: dict[str, Any] = cr.finder_usage_template()
@@ -328,7 +341,10 @@ def _run_finders_at_effort(
                 executable,
                 run_root / f"finder-{name}",
                 snapshot,
-                cr._pass_prompt(pass_instructions, snapshot, diff, rules),
+                cr._pass_prompt(
+                    pass_instructions, snapshot, diff, rules,
+                    preloaded_changed_files=preloaded_changed_files,
+                ),
                 cr.FINDER_SCHEMA,
                 token,
                 effort=effort,
@@ -363,13 +379,16 @@ def _run_finders_for_replay(
     lines: dict[tuple[str, str], set[int]],
     token: str,
     effort: str | None,
+    preloaded_changed_files: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     if effort is None:
         return cr.run_finders(
             executable, run_root, snapshot, instructions, diff, rules, lines, token,
+            preloaded_changed_files,
         )
     return _run_finders_at_effort(
         executable, run_root, snapshot, instructions, diff, rules, lines, token, effort,
+        preloaded_changed_files,
     )
 
 
@@ -384,6 +403,7 @@ def _run_checkers_at_effort(
     lines: dict[tuple[str, str], set[int]],
     token: str,
     effort: str,
+    preloaded_changed_files: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     batches = [
         candidates[start:start + cr.MAX_CHECKER_CANDIDATES_PER_BATCH]
@@ -403,7 +423,10 @@ def _run_checkers_at_effort(
                 executable,
                 run_root / f"checker-{name}",
                 snapshot,
-                cr._pass_prompt(batch_instructions, snapshot, diff, rules, batch),
+                cr._pass_prompt(
+                    batch_instructions, snapshot, diff, rules, batch,
+                    preloaded_changed_files,
+                ),
                 cr.CHECKER_SCHEMA,
                 token,
                 effort=effort,
@@ -431,15 +454,16 @@ def _run_checkers_for_replay(
     lines: dict[tuple[str, str], set[int]],
     token: str,
     effort: str | None,
+    preloaded_changed_files: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     if effort is None:
         return cr.run_checkers(
             executable, run_root, snapshot, instructions, diff, rules,
-            candidates, lines, token,
+            candidates, lines, token, preloaded_changed_files,
         )
     return _run_checkers_at_effort(
         executable, run_root, snapshot, instructions, diff, rules,
-        candidates, lines, token, effort,
+        candidates, lines, token, effort, preloaded_changed_files,
     )
 
 
@@ -468,6 +492,8 @@ def run_replay(
     single_pass: bool = False,
     finder_effort: str | None = None,
     checker_effort: str | None = None,
+    preload_changed_files: bool = False,
+    preload_budget_bytes: int = cr.DEFAULT_PRELOAD_BUDGET_BYTES,
 ) -> dict[str, Any]:
     _validate_run_options(checker_prompt, single_pass, finder_effort, checker_effort)
     manifest = validate_export(export_root)
@@ -480,6 +506,8 @@ def run_replay(
         single_pass=single_pass,
         finder_effort=finder_effort,
         checker_effort=checker_effort,
+        preload_changed_files=preload_changed_files,
+        preload_budget_bytes=preload_budget_bytes,
     )
     completed: dict[str, dict[str, Any]] = {}
     resumed_cases: list[str] = []
@@ -548,9 +576,15 @@ def run_replay(
                 diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
                 rules_text = rules_path.read_text(encoding="utf-8", errors="replace")
                 lines = cr.changed_lines(diff_text)
+                preloaded = (
+                    cr.preload_changed_file_data(
+                        snapshot, diff_text, preload_budget_bytes,
+                    )
+                    if preload_changed_files else None
+                )
                 candidates, finder_usage, finder_trace = _run_finders_for_replay(
                     executable, case_root, snapshot, finder_text, diff_text,
-                    rules_text, lines, token, finder_effort,
+                    rules_text, lines, token, finder_effort, preloaded,
                 )
                 if single_pass:
                     survivors = _deduplicate_root_causes(candidates)
@@ -561,6 +595,7 @@ def run_replay(
                     survivors, checker_usage, checker_trace = _run_checkers_for_replay(
                         executable, case_root, snapshot, checker_text, diff_text,
                         rules_text, candidates, lines, token, checker_effort,
+                        preloaded,
                     )
                 finder_leaks = []
                 for name, trace in finder_trace.items():
@@ -814,6 +849,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--single-pass", action="store_true")
     run.add_argument("--finder-effort", choices=EFFORT_LEVELS)
     run.add_argument("--checker-effort", choices=EFFORT_LEVELS)
+    run.add_argument("--preload-changed-files", action="store_true")
     grade = commands.add_parser("grade")
     grade.add_argument("--results", required=True, type=Path)
     grade.add_argument("--answer-key", required=True, type=Path)
@@ -836,6 +872,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 single_pass=args.single_pass,
                 finder_effort=args.finder_effort,
                 checker_effort=args.checker_effort,
+                preload_changed_files=args.preload_changed_files,
             )
         else:
             result = grade_replay(args.results, args.answer_key, args.decisions)

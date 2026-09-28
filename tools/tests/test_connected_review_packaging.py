@@ -34,6 +34,8 @@ def test_tuned_reviewer_prompt_and_settings_hashes_are_frozen():
         ],
         "max_candidates": 50,
         "model": "claude-opus-5-5",
+        "preload_budget_bytes": 600000,
+        "preload_changed_files": False,
     }
     assert hashlib.sha256(finder.read_bytes()).hexdigest() == (
         "3b13819ec50d747a655c3634a6b663592c052bca8d1f3fa7c0f8ebc8473bf247"
@@ -42,7 +44,7 @@ def test_tuned_reviewer_prompt_and_settings_hashes_are_frozen():
         "c7c352d97e6b971ffff6343d113cbc299dd2a3c6c72363b6debee28e665a3f83"
     )
     assert hashlib.sha256(cr._json_bytes(settings)).hexdigest() == (
-        "82627e87edf005808cb64bbb3ce4e89623f4f163fefcda1675711ae70a4b70d6"
+        "b7d4b103c9ed31d42258e6f774161bad1f060a42d00c666ac484f800cdbd92a6"
     )
 
 
@@ -71,6 +73,10 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
         "TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT"
     ) == 1
     assert "if: vars.CONNECTED_REVIEW_ENABLED == 'true'" in workflow
+    assert (
+        "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES: "
+        "${{ vars.CONNECTED_REVIEW_PRELOAD_CHANGED_FILES }}"
+    ) in workflow
 
 
 def test_cli_pin_supports_the_pinned_model_and_matches_setup_surfaces():
@@ -149,4 +155,6 @@ def test_setup_names_dormant_enablement_and_private_prerequisites():
     assert "permitted non-mechanical second look" in prose
     assert "frozen merged commit on the default branch" in prose
     assert "deliberately leave this copy dormant" in prose
+    assert "optional `CONNECTED_REVIEW_PRELOAD_CHANGED_FILES`" in prose
+    assert "600,000 raw bytes" in prose
     assert ".github/" not in reference

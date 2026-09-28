@@ -185,9 +185,11 @@ def test_single_pass_high_launches_only_finder_and_deduplicates_root_cause(
     checker.write_text("checker", encoding="utf-8")
     prepare_run(monkeypatch)
     commands = []
+    prompts = []
 
-    def run(command, **_kwargs):
+    def run(command, **kwargs):
         commands.append(command)
+        prompts.append(kwargs["input_bytes"])
         rows = [candidate("first", "same root"), candidate("second", " SAME   ROOT ")]
         body = {
             "is_error": False,
@@ -205,6 +207,7 @@ def test_single_pass_high_launches_only_finder_and_deduplicates_root_cause(
         single_pass=True, finder_effort="high",
     )
     assert len(commands) == 1
+    assert b"<preloaded_changed_files>" not in prompts[0]
     assert commands[0][commands[0].index("--effort") + 1] == "high"
     assert [row["id"] for row in result["cases"][0]["survivors"]] == [
         "coverage:first",
@@ -222,6 +225,52 @@ def test_single_pass_high_launches_only_finder_and_deduplicates_root_cause(
     assert result["reviewer"]["checker_effort"] is None
     assert result["reviewer"]["overrides"] == {
         "single_pass": True, "finder_effort": "high",
+    }
+
+
+def test_preload_combines_with_single_pass_effort_and_reaches_the_launched_prompt(
+    tmp_path, monkeypatch,
+):
+    export = build_export(tmp_path / "export", cases=1)
+    output = tmp_path / "results.json"
+    finder = tmp_path / "finder.md"
+    checker = tmp_path / "checker.md"
+    finder.write_text("finder", encoding="utf-8")
+    checker.write_text("checker", encoding="utf-8")
+    prepare_run(monkeypatch)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["input_bytes"].decode("utf-8")))
+        body = {
+            "is_error": False,
+            "structured_output": {"candidates": []},
+            "usage": {},
+        }
+        return replay.cr.subprocess.CompletedProcess(
+            command, 0, json.dumps(body).encode(), b"",
+        )
+
+    monkeypatch.setattr(replay.cr, "_run", run)
+    result = replay.run_replay(
+        export, output, finder, checker, ["claude.cmd"],
+        replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+        single_pass=True, finder_effort="medium", preload_changed_files=True,
+    )
+    assert len(calls) == 1
+    assert calls[0][0][calls[0][0].index("--effort") + 1] == "medium"
+    block = calls[0][1].split("\n<preloaded_changed_files>\n", 1)[1].split(
+        "\n</preloaded_changed_files>\n", 1,
+    )[0]
+    preload = json.loads(block)
+    assert preload["budget_bytes"] == replay.cr.DEFAULT_PRELOAD_BUDGET_BYTES
+    assert preload["entries"][0]["content"].splitlines() == ["value = 1"]
+    assert result["reviewer"]["preload_changed_files"] is True
+    assert result["reviewer"]["preload_budget_bytes"] == 600000
+    assert result["reviewer"]["overrides"] == {
+        "single_pass": True,
+        "finder_effort": "medium",
+        "preload_changed_files": True,
     }
 
 
@@ -548,6 +597,18 @@ def test_single_pass_parser_keeps_existing_checker_prompt_argument():
     assert args.checker_prompt == Path("checker.md")
 
 
+def test_run_parser_accepts_changed_file_preload_with_measurement_options():
+    args = replay.parser().parse_args([
+        "run", "--export", "export", "--output", "results.json",
+        "--finder-prompt", "finder.md", "--checker-prompt", "checker.md",
+        "--revision", HEAD, "--single-pass", "--finder-effort", "low",
+        "--preload-changed-files",
+    ])
+    assert args.single_pass is True
+    assert args.finder_effort == "low"
+    assert args.preload_changed_files is True
+
+
 def test_single_pass_refuses_unused_checker_effort(tmp_path):
     with pytest.raises(replay.ReplayError, match="cannot be used"):
         replay.run_replay(
@@ -574,6 +635,17 @@ def test_single_pass_refuses_unused_checker_effort(tmp_path):
             {"single_pass": True, "finder_effort": "xhigh"},
             {"finder_effort": "xhigh"},
             "pass_structure",
+        ),
+        (
+            {"single_pass": True, "finder_effort": "high",
+             "preload_changed_files": True},
+            {"single_pass": True, "finder_effort": "high"},
+            "preload_changed_files",
+        ),
+        (
+            {"preload_changed_files": True, "preload_budget_bytes": 599999},
+            {"preload_changed_files": True},
+            "preload_budget_bytes",
         ),
     ],
 )
