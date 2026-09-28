@@ -23,6 +23,9 @@ class ReplayError(RuntimeError):
     """A replay input or result cannot establish a score."""
 
 
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
 def read_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -174,19 +177,36 @@ def harness_digest() -> str:
 
 def reviewer_record(
     finder_prompt: Path,
-    checker_prompt: Path,
+    checker_prompt: Path | None,
     version: str,
     revision: str,
+    *,
+    single_pass: bool = False,
+    finder_effort: str | None = None,
+    checker_effort: str | None = None,
 ) -> dict[str, Any]:
     settings = cr.reviewer_settings(version)
-    return {
+    record = {
         "revision": revision,
         **settings,
         "settings_sha256": hashlib.sha256(cr._json_bytes(settings)).hexdigest(),
         "finder_prompt_sha256": file_digest(finder_prompt),
-        "checker_prompt_sha256": file_digest(checker_prompt),
         "harness_sha256": harness_digest(),
     }
+    if checker_prompt is not None:
+        record["checker_prompt_sha256"] = file_digest(checker_prompt)
+    if single_pass or finder_effort is not None or checker_effort is not None:
+        record.update({
+            "pass_structure": "single-pass" if single_pass else "finder-checker",
+            "finder_effort": finder_effort or cr.FINDER_EFFORT,
+            "checker_effort": None if single_pass else checker_effort or cr.CHECKER_EFFORT,
+            "overrides": {
+                **({"single_pass": True} if single_pass else {}),
+                **({"finder_effort": finder_effort} if finder_effort is not None else {}),
+                **({"checker_effort": checker_effort} if checker_effort is not None else {}),
+            },
+        })
+    return record
 
 
 def _resume_cases(
@@ -207,9 +227,9 @@ def _resume_cases(
     stored_reviewer = previous.get("reviewer")
     if not isinstance(stored_reviewer, dict):
         raise ReplayError("resume results have no reviewer identity")
-    identity_fields = tuple(
-        key for key in current_reviewer if key != "harness_sha256"
-    )
+    identity_fields = (
+        set(current_reviewer) | set(stored_reviewer)
+    ) - {"harness_sha256"}
     mismatched = [
         key for key in identity_fields
         if stored_reviewer.get(key) != current_reviewer.get(key)
@@ -266,20 +286,201 @@ def _resume_cases(
     return completed, resumed, case_harnesses
 
 
+def _validate_run_options(
+    checker_prompt: Path | None,
+    single_pass: bool,
+    finder_effort: str | None,
+    checker_effort: str | None,
+) -> None:
+    if finder_effort is not None and finder_effort not in EFFORT_LEVELS:
+        raise ReplayError(f"unsupported finder effort: {finder_effort}")
+    if checker_effort is not None and checker_effort not in EFFORT_LEVELS:
+        raise ReplayError(f"unsupported checker effort: {checker_effort}")
+    if single_pass and checker_effort is not None:
+        raise ReplayError("--checker-effort cannot be used with --single-pass")
+    if not single_pass and checker_prompt is None:
+        raise ReplayError("--checker-prompt is required unless --single-pass is used")
+
+
+def _run_finders_at_effort(
+    executable: str | list[str],
+    run_root: Path,
+    snapshot: Path,
+    instructions: str,
+    diff: str,
+    rules: str,
+    lines: dict[tuple[str, str], set[int]],
+    token: str,
+    effort: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    candidates = []
+    usage: dict[str, Any] = cr.finder_usage_template()
+    traces = {}
+    for name, focus in cr.FINDER_PASSES:
+        pass_instructions = (
+            instructions
+            + f"\n\nIndependent finder pass: {name}. "
+            + focus
+            + f" Return at most {cr.MAX_FINDER_CANDIDATES_PER_PASS} candidates."
+        )
+        try:
+            value, pass_usage, trace = cr.run_pass(
+                executable,
+                run_root / f"finder-{name}",
+                snapshot,
+                cr._pass_prompt(pass_instructions, snapshot, diff, rules),
+                cr.FINDER_SCHEMA,
+                token,
+                effort=effort,
+            )
+            usage[name] = pass_usage
+            traces[name] = trace
+            rows = cr.validate_candidates(value, lines)
+        except cr.ReviewError as exc:
+            if exc.usage is not None:
+                usage[name] = exc.usage
+            elif usage[name].get("status") == "not-started":
+                usage[name] = {"status": "unavailable"}
+            raise cr.ReviewError(str(exc), usage=usage) from exc
+        for row in rows:
+            candidate = dict(row)
+            candidate["id"] = f"{name}:{row['id']}"
+            candidates.append(candidate)
+    if len(candidates) > cr.MAX_REVIEW_COMMENTS:
+        raise cr.ReviewError(
+            "finder passes exceeded the merged candidate limit", usage=usage,
+        )
+    return candidates, usage, traces
+
+
+def _run_finders_for_replay(
+    executable: str | list[str],
+    run_root: Path,
+    snapshot: Path,
+    instructions: str,
+    diff: str,
+    rules: str,
+    lines: dict[tuple[str, str], set[int]],
+    token: str,
+    effort: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    if effort is None:
+        return cr.run_finders(
+            executable, run_root, snapshot, instructions, diff, rules, lines, token,
+        )
+    return _run_finders_at_effort(
+        executable, run_root, snapshot, instructions, diff, rules, lines, token, effort,
+    )
+
+
+def _run_checkers_at_effort(
+    executable: str | list[str],
+    run_root: Path,
+    snapshot: Path,
+    instructions: str,
+    diff: str,
+    rules: str,
+    candidates: list[dict[str, Any]],
+    lines: dict[tuple[str, str], set[int]],
+    token: str,
+    effort: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    batches = [
+        candidates[start:start + cr.MAX_CHECKER_CANDIDATES_PER_BATCH]
+        for start in range(0, len(candidates), cr.MAX_CHECKER_CANDIDATES_PER_BATCH)
+    ] or [[]]
+    usage: dict[str, Any] = cr.checker_usage_template(len(candidates))
+    traces = {}
+    survivors = []
+    for index, batch in enumerate(batches, start=1):
+        name = f"batch-{index}"
+        batch_instructions = (
+            instructions
+            + f"\n\nThis is checker {name}. Decide all {len(batch)} supplied candidates."
+        )
+        try:
+            value, pass_usage, trace = cr.run_pass(
+                executable,
+                run_root / f"checker-{name}",
+                snapshot,
+                cr._pass_prompt(batch_instructions, snapshot, diff, rules, batch),
+                cr.CHECKER_SCHEMA,
+                token,
+                effort=effort,
+            )
+            usage[name] = pass_usage
+            traces[name] = trace
+            survivors.extend(cr.validate_decisions(value, batch, lines))
+        except cr.ReviewError as exc:
+            if exc.usage is not None:
+                usage[name] = exc.usage
+            elif usage[name].get("status") == "not-started":
+                usage[name] = {"status": "unavailable"}
+            raise cr.ReviewError(str(exc), usage=usage) from exc
+    return _deduplicate_root_causes(survivors), usage, traces
+
+
+def _run_checkers_for_replay(
+    executable: str | list[str],
+    run_root: Path,
+    snapshot: Path,
+    instructions: str,
+    diff: str,
+    rules: str,
+    candidates: list[dict[str, Any]],
+    lines: dict[tuple[str, str], set[int]],
+    token: str,
+    effort: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    if effort is None:
+        return cr.run_checkers(
+            executable, run_root, snapshot, instructions, diff, rules,
+            candidates, lines, token,
+        )
+    return _run_checkers_at_effort(
+        executable, run_root, snapshot, instructions, diff, rules,
+        candidates, lines, token, effort,
+    )
+
+
+def _deduplicate_root_causes(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    survivors = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        root_cause = " ".join(candidate["root_cause"].casefold().split())
+        if root_cause in seen:
+            continue
+        seen.add(root_cause)
+        survivors.append(candidate)
+    return survivors
+
+
 def run_replay(
     export_root: Path,
     output: Path,
     finder_prompt: Path,
-    checker_prompt: Path,
+    checker_prompt: Path | None,
     executable: str | list[str],
     version: str,
     revision: str,
     resume: Path | None = None,
+    *,
+    single_pass: bool = False,
+    finder_effort: str | None = None,
+    checker_effort: str | None = None,
 ) -> dict[str, Any]:
+    _validate_run_options(checker_prompt, single_pass, finder_effort, checker_effort)
     manifest = validate_export(export_root)
     finder_text = finder_prompt.read_text(encoding="utf-8")
-    checker_text = checker_prompt.read_text(encoding="utf-8")
-    current_reviewer = reviewer_record(finder_prompt, checker_prompt, version, revision)
+    checker_text = (
+        checker_prompt.read_text(encoding="utf-8") if checker_prompt is not None else None
+    )
+    current_reviewer = reviewer_record(
+        finder_prompt, checker_prompt, version, revision,
+        single_pass=single_pass,
+        finder_effort=finder_effort,
+        checker_effort=checker_effort,
+    )
     completed: dict[str, dict[str, Any]] = {}
     resumed_cases: list[str] = []
     case_harnesses: dict[str, str] = {}
@@ -347,35 +548,46 @@ def run_replay(
                 diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
                 rules_text = rules_path.read_text(encoding="utf-8", errors="replace")
                 lines = cr.changed_lines(diff_text)
-                candidates, finder_usage, finder_trace = cr.run_finders(
+                candidates, finder_usage, finder_trace = _run_finders_for_replay(
                     executable, case_root, snapshot, finder_text, diff_text,
-                    rules_text, lines, token,
+                    rules_text, lines, token, finder_effort,
                 )
-                survivors, checker_usage, checker_trace = cr.run_checkers(
-                    executable, case_root, snapshot, checker_text, diff_text,
-                    rules_text, candidates, lines, token,
-                )
+                if single_pass:
+                    survivors = _deduplicate_root_causes(candidates)
+                    checker_usage = None
+                    checker_trace = None
+                else:
+                    assert checker_text is not None
+                    survivors, checker_usage, checker_trace = _run_checkers_for_replay(
+                        executable, case_root, snapshot, checker_text, diff_text,
+                        rules_text, candidates, lines, token, checker_effort,
+                    )
                 finder_leaks = []
                 for name, trace in finder_trace.items():
                     finder_leaks.extend(_outside_trace_reads(
                         trace, snapshot, input_dir, case_root / f"finder-{name}",
                     ))
                 checker_leaks = []
-                for name, trace in checker_trace.items():
-                    checker_leaks.extend(_outside_trace_reads(
-                        trace, snapshot, input_dir, case_root / f"checker-{name}",
-                    ))
+                if checker_trace is not None:
+                    for name, trace in checker_trace.items():
+                        checker_leaks.extend(_outside_trace_reads(
+                            trace, snapshot, input_dir, case_root / f"checker-{name}",
+                        ))
                 leaks = sorted(set(finder_leaks + checker_leaks))
-                case_result.update({
+                completed_result = {
                     "status": "invalid-leak" if leaks else "completed",
                     "survivors": survivors,
                     "finder_usage": finder_usage,
-                    "checker_usage": checker_usage,
                     "finder_trace": finder_trace,
-                    "checker_trace": checker_trace,
                     "outside_reads": leaks,
                     "canaries": canary_record,
-                })
+                }
+                if checker_usage is not None and checker_trace is not None:
+                    completed_result.update({
+                        "checker_usage": checker_usage,
+                        "checker_trace": checker_trace,
+                    })
+                case_result.update(completed_result)
         except (ReplayError, cr.ReviewError, OSError) as exc:
             case_result.update({"status": "error", "error": str(exc)})
         record["cases"].append(case_result)
@@ -599,6 +811,9 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--claude-version", default=cr.DEFAULT_CLAUDE_VERSION)
     run.add_argument("--revision", required=True)
     run.add_argument("--resume", type=Path)
+    run.add_argument("--single-pass", action="store_true")
+    run.add_argument("--finder-effort", choices=EFFORT_LEVELS)
+    run.add_argument("--checker-effort", choices=EFFORT_LEVELS)
     grade = commands.add_parser("grade")
     grade.add_argument("--results", required=True, type=Path)
     grade.add_argument("--answer-key", required=True, type=Path)
@@ -618,6 +833,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = run_replay(
                 args.export, args.output, args.finder_prompt, args.checker_prompt,
                 executable, args.claude_version, args.revision, args.resume,
+                single_pass=args.single_pass,
+                finder_effort=args.finder_effort,
+                checker_effort=args.checker_effort,
             )
         else:
             result = grade_replay(args.results, args.answer_key, args.decisions)

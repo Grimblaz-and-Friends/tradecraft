@@ -132,6 +132,138 @@ def build_export(root: Path, cases=2) -> Path:
     return root
 
 
+def candidate(identifier: str, root_cause: str) -> dict:
+    return {
+        "id": identifier,
+        "path": "only-1.py",
+        "line": 1,
+        "side": "RIGHT",
+        "severity": "P1",
+        "input": "value is one",
+        "execution_path": "load -> use",
+        "root_cause": root_cause,
+        "wrong_result": "uses the wrong value",
+        "evidence": "only-1.py:1",
+        "proof_targets": [{
+            "path": "only-1.py", "line": 1, "reason": "shows the changed value",
+        }],
+    }
+
+
+def prepare_run(monkeypatch) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
+    monkeypatch.setattr(replay.cr, "verify_managed_settings", lambda: None)
+    monkeypatch.setattr(replay.cr, "verify_claude_version", lambda *_: None)
+
+
+def test_default_reviewer_identity_is_unchanged_without_measurement_options(tmp_path):
+    finder = tmp_path / "finder.md"
+    checker = tmp_path / "checker.md"
+    finder.write_text("finder", encoding="utf-8")
+    checker.write_text("checker", encoding="utf-8")
+    settings = replay.cr.reviewer_settings(replay.cr.DEFAULT_CLAUDE_VERSION)
+    assert replay.reviewer_record(
+        finder, checker, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+    ) == {
+        "revision": HEAD,
+        **settings,
+        "settings_sha256": hashlib.sha256(replay.cr._json_bytes(settings)).hexdigest(),
+        "finder_prompt_sha256": replay.file_digest(finder),
+        "checker_prompt_sha256": replay.file_digest(checker),
+        "harness_sha256": replay.harness_digest(),
+    }
+
+
+def test_single_pass_high_launches_only_finder_and_deduplicates_root_cause(
+    tmp_path, monkeypatch,
+):
+    export = build_export(tmp_path / "export", cases=1)
+    output = tmp_path / "results.json"
+    finder = tmp_path / "finder.md"
+    checker = tmp_path / "checker.md"
+    finder.write_text("finder", encoding="utf-8")
+    checker.write_text("checker", encoding="utf-8")
+    prepare_run(monkeypatch)
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        rows = [candidate("first", "same root"), candidate("second", " SAME   ROOT ")]
+        body = {
+            "is_error": False,
+            "structured_output": {"candidates": rows},
+            "usage": {"input_tokens": 1},
+        }
+        return replay.cr.subprocess.CompletedProcess(
+            command, 0, json.dumps(body).encode(), b"",
+        )
+
+    monkeypatch.setattr(replay.cr, "_run", run)
+    result = replay.run_replay(
+        export, output, finder, checker, ["claude.cmd"],
+        replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+        single_pass=True, finder_effort="high",
+    )
+    assert len(commands) == 1
+    assert commands[0][commands[0].index("--effort") + 1] == "high"
+    assert [row["id"] for row in result["cases"][0]["survivors"]] == [
+        "coverage:first",
+    ]
+    assert "checker_usage" not in result["cases"][0]
+    assert "checker_trace" not in result["cases"][0]
+    assert result["reviewer"] == {
+        **replay.reviewer_record(
+            finder, checker, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+            single_pass=True, finder_effort="high",
+        ),
+    }
+    assert result["reviewer"]["pass_structure"] == "single-pass"
+    assert result["reviewer"]["finder_effort"] == "high"
+    assert result["reviewer"]["checker_effort"] is None
+    assert result["reviewer"]["overrides"] == {
+        "single_pass": True, "finder_effort": "high",
+    }
+
+
+def test_effort_overrides_reach_finder_and_checker_command_lines(tmp_path, monkeypatch):
+    export = build_export(tmp_path / "export", cases=1)
+    output = tmp_path / "results.json"
+    finder = tmp_path / "finder.md"
+    checker = tmp_path / "checker.md"
+    finder.write_text("finder", encoding="utf-8")
+    checker.write_text("checker", encoding="utf-8")
+    prepare_run(monkeypatch)
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        schema = json.loads(command[command.index("--json-schema") + 1])
+        structured = (
+            {"candidates": []}
+            if "candidates" in schema["properties"] else {"decisions": []}
+        )
+        body = {"is_error": False, "structured_output": structured, "usage": {}}
+        return replay.cr.subprocess.CompletedProcess(
+            command, 0, json.dumps(body).encode(), b"",
+        )
+
+    monkeypatch.setattr(replay.cr, "_run", run)
+    result = replay.run_replay(
+        export, output, finder, checker, ["claude.cmd"],
+        replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+        finder_effort="medium", checker_effort="low",
+    )
+    assert [command[command.index("--effort") + 1] for command in commands] == [
+        "medium", "low",
+    ]
+    assert result["reviewer"]["pass_structure"] == "finder-checker"
+    assert result["reviewer"]["finder_effort"] == "medium"
+    assert result["reviewer"]["checker_effort"] == "low"
+    assert result["reviewer"]["overrides"] == {
+        "finder_effort": "medium", "checker_effort": "low",
+    }
+
+
 def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_path, monkeypatch):
     export = build_export(tmp_path / "export")
     output = tmp_path / "results.json"
@@ -394,6 +526,86 @@ def test_resume_refuses_changed_reviewer_identity(tmp_path, field):
         )
 
 
+@pytest.mark.parametrize("level", replay.EFFORT_LEVELS)
+def test_run_parser_accepts_every_supported_effort(level):
+    args = replay.parser().parse_args([
+        "run", "--export", "export", "--output", "results.json",
+        "--finder-prompt", "finder.md", "--checker-prompt", "checker.md",
+        "--revision", HEAD, "--finder-effort", level, "--checker-effort", level,
+    ])
+    assert args.finder_effort == level
+    assert args.checker_effort == level
+
+
+def test_single_pass_parser_keeps_existing_checker_prompt_argument():
+    args = replay.parser().parse_args([
+        "run", "--export", "export", "--output", "results.json",
+        "--finder-prompt", "finder.md", "--checker-prompt", "checker.md",
+        "--revision", HEAD,
+        "--single-pass", "--finder-effort", "medium",
+    ])
+    assert args.single_pass is True
+    assert args.checker_prompt == Path("checker.md")
+
+
+def test_single_pass_refuses_unused_checker_effort(tmp_path):
+    with pytest.raises(replay.ReplayError, match="cannot be used"):
+        replay.run_replay(
+            tmp_path / "export", tmp_path / "results.json", tmp_path / "finder.md",
+            tmp_path / "checker.md", "claude", replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+            single_pass=True, checker_effort="low",
+        )
+
+
+@pytest.mark.parametrize(
+    ("stored_options", "current_options", "difference"),
+    [
+        (
+            {"single_pass": True, "finder_effort": "high"},
+            {"single_pass": True, "finder_effort": "medium"},
+            "finder_effort",
+        ),
+        (
+            {"finder_effort": "high", "checker_effort": "medium"},
+            {"finder_effort": "high", "checker_effort": "low"},
+            "checker_effort",
+        ),
+        (
+            {"single_pass": True, "finder_effort": "xhigh"},
+            {"finder_effort": "xhigh"},
+            "pass_structure",
+        ),
+    ],
+)
+def test_resume_refuses_changed_measurement_configuration(
+    tmp_path, stored_options, current_options, difference,
+):
+    export = build_export(tmp_path / "export", cases=1)
+    source = tmp_path / "partial-results.json"
+    finder = tmp_path / "finder.md"
+    checker = tmp_path / "checker.md"
+    finder.write_text("finder", encoding="utf-8")
+    checker.write_text("checker", encoding="utf-8")
+    reviewer = replay.reviewer_record(
+        finder, checker, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+        **stored_options,
+    )
+    write(source, {
+        "schema_version": 1,
+        "repository": "owner/repo",
+        "manifest_cases": [{"case_id": "pr-1", "head": "1" * 40, "base": BASE}],
+        "reviewer": reviewer,
+        "complete": False,
+        "cases": [],
+    })
+    with pytest.raises(replay.ReplayError, match=difference):
+        replay.run_replay(
+            export, tmp_path / "new-results.json", finder, checker, "claude",
+            replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, source,
+            **current_options,
+        )
+
+
 def test_run_parser_accepts_resume_results_path():
     args = replay.parser().parse_args([
         "run", "--export", "export", "--output", "new.json",
@@ -462,6 +674,23 @@ def test_tradecraft_grade_requires_every_affirmed_bar_and_population(tmp_path):
     del key["thresholds"]["maximum_harmful"]
     score = grade_files(tmp_path, result_record(survivors), key, classifications(12))
     assert score["status"] == "unscorable" and score["pass"] is False
+
+
+def test_grade_carries_measurement_identity_through(tmp_path):
+    reviewer = {
+        "revision": HEAD,
+        "model": replay.cr.DEFAULT_MODEL,
+        "pass_structure": "single-pass",
+        "finder_effort": "high",
+        "checker_effort": None,
+        "overrides": {"single_pass": True, "finder_effort": "high"},
+    }
+    results = result_record(
+        [{"id": f"candidate-{index}"} for index in range(12)],
+    )
+    results["reviewer"] = reviewer
+    score = grade_files(tmp_path, results, tradecraft_key(), classifications(12))
+    assert score["reviewer"] == reviewer
 
 
 def test_grade_requires_every_frozen_manifest_case(tmp_path):
