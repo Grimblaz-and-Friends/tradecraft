@@ -21,7 +21,7 @@ import tarfile
 import tempfile
 from typing import Any, Iterable
 
-from vendor_cli import CliError, resolve_command
+from vendor_cli import CliError, resolve_command, which_on_path
 from winio import utf8_stdio
 
 
@@ -44,6 +44,8 @@ MAX_CHECKER_CANDIDATES_PER_BATCH = 25
 DEFAULT_PRELOAD_BUDGET_BYTES = 600_000
 # Claude Code 2.1.280 is the first version verified to support DEFAULT_MODEL.
 DEFAULT_CLAUDE_VERSION = "2.1.280"
+PRIVATE_CLAUDE_TOOLS_DIRECTORY = "claude-cli"
+CLAUDE_NPM_PACKAGE = "@anthropic-ai/claude-code"
 ATTEMPT_PREFIX = "connected-review-attempt:"
 MAX_ARCHIVE_BYTES = 1_000_000_000
 MAX_FILE_BYTES = 50_000_000
@@ -144,6 +146,116 @@ def _run(
             f"command failed ({command[0]}): {diagnostic or result.returncode}"
         )
     return result
+
+
+def _npm_command(platform: str = os.name) -> list[str]:
+    located = which_on_path("npm")
+    if not located:
+        raise ReviewError("npm is unavailable on PATH")
+    path = Path(located)
+    if platform != "nt" or path.suffix.lower() not in {".cmd", ".bat", ".ps1"}:
+        return [str(path)]
+    node = which_on_path("node")
+    script = path.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    if (
+        not node
+        or Path(node).suffix.lower() in {".cmd", ".bat", ".ps1"}
+        or not script.is_file()
+    ):
+        raise ReviewError("npm's Windows launcher cannot be resolved without a batch shell")
+    return [node, str(script)]
+
+
+def _private_cli_paths(
+    tools_directory: Path,
+    *,
+    platform: str = os.name,
+) -> tuple[Path, Path, Path]:
+    package = tools_directory / "node_modules" / CLAUDE_NPM_PACKAGE
+    executable = tools_directory / "node_modules" / ".bin" / (
+        "claude.cmd" if platform == "nt" else "claude"
+    )
+    return package / "package.json", executable.parent, executable
+
+
+def _installed_package_version(package_record: Path) -> str | None:
+    try:
+        value = json.loads(package_record.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    version = value.get("version") if isinstance(value, dict) else None
+    return version if isinstance(version, str) else None
+
+
+def private_claude_tools_directory(
+    expected_version: str,
+    *,
+    environment: dict[str, str] | None = None,
+) -> Path:
+    values = os.environ if environment is None else environment
+    cache = values.get("RUNNER_TOOL_CACHE")
+    if not cache:
+        raise ReviewError(
+            f"failed to install pinned Claude CLI {expected_version}: "
+            "RUNNER_TOOL_CACHE is unavailable"
+        )
+    return Path(cache) / PRIVATE_CLAUDE_TOOLS_DIRECTORY
+
+
+def ensure_private_claude_cli(
+    tools_directory: Path,
+    expected_version: str,
+    *,
+    npm_command: list[str] | None = None,
+    platform: str = os.name,
+) -> tuple[Path, Path]:
+    package_record, executable_directory, executable = _private_cli_paths(
+        tools_directory, platform=platform,
+    )
+    installed = _installed_package_version(package_record)
+    if installed == expected_version and executable.is_file():
+        print(f"connected-review: found Claude CLI {expected_version}", file=sys.stderr)
+        return executable_directory, executable
+    previous = installed or "not installed"
+    try:
+        tools_directory.mkdir(parents=True, exist_ok=True)
+        command = list(npm_command) if npm_command is not None else _npm_command(platform)
+        command.extend((
+            "install", "--prefix", str(tools_directory),
+            f"{CLAUDE_NPM_PACKAGE}@{expected_version}",
+        ))
+        install_environment = {
+            key: value for key, value in os.environ.items()
+            if key.upper() in {
+                "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
+                "LANG", "LC_ALL", "TMP", "TEMP", "TMPDIR", "HTTP_PROXY",
+                "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS",
+                "NPM_CONFIG_REGISTRY",
+            }
+        }
+        _run(command, environment=install_environment, timeout=600)
+    except (OSError, ReviewError) as exc:
+        raise ReviewError(
+            f"failed to install pinned Claude CLI {expected_version}: {exc}"
+        ) from exc
+    actual = _installed_package_version(package_record)
+    if actual != expected_version or not executable.is_file():
+        found = actual or "unavailable"
+        raise ReviewError(
+            f"failed to install pinned Claude CLI {expected_version}: "
+            f"installation produced version {found} or no launcher"
+        )
+    print(
+        f"connected-review: installed Claude CLI {expected_version} "
+        f"(previously {previous})",
+        file=sys.stderr,
+    )
+    return executable_directory, executable
+
+
+def _prepend_path(directory: Path) -> None:
+    existing = os.environ.get("PATH", "")
+    os.environ["PATH"] = str(directory) + (os.pathsep + existing if existing else "")
 
 
 def gh_json(
@@ -770,6 +882,7 @@ def _runtime_environment(run_root: Path, token: str) -> dict[str, str]:
     }
     environment.update({
         "CLAUDE_CODE_OAUTH_TOKEN": token,
+        "DISABLE_AUTOUPDATER": "1",
         "HOME": str(profile),
         "USERPROFILE": str(profile),
         "XDG_CONFIG_HOME": str(profile / "config"),
@@ -1561,6 +1674,11 @@ def parser() -> argparse.ArgumentParser:
     review.add_argument(
         "--claude-version", default=os.environ.get("CLAUDE_CLI_VERSION", DEFAULT_CLAUDE_VERSION)
     )
+    review.add_argument(
+        "--visibility",
+        choices=("public", "private"),
+        default=os.environ.get("CONNECTED_REVIEW_VISIBILITY", "public"),
+    )
     review.add_argument("--finder-prompt", required=True, type=Path)
     review.add_argument(
         "--preload-changed-files",
@@ -1604,7 +1722,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.command == "eligibility":
             result = eligibility(event, args.owner_login)
         elif args.command == "review":
-            executable = resolve_command("claude", args.claude)
+            os.environ["DISABLE_AUTOUPDATER"] = "1"
+            if args.visibility == "private":
+                tools_directory = private_claude_tools_directory(args.claude_version)
+                # This installs only pinned trusted tooling, before snapshot export;
+                # it neither installs nor executes anything from the pull request.
+                executable_directory, installed_executable = ensure_private_claude_cli(
+                    tools_directory, args.claude_version,
+                )
+                _prepend_path(executable_directory)
+                executable = resolve_command("claude", str(installed_executable))
+            else:
+                executable = resolve_command("claude", args.claude)
             result = execute_review(
                 event, args.owner_login, args.attempt, executable, args.claude_version,
                 args.finder_prompt,

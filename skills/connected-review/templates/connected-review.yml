@@ -83,6 +83,8 @@ jobs:
         id: review
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CONNECTED_REVIEW_VISIBILITY: ${{ needs.prepare.outputs.visibility }}
+          DISABLE_AUTOUPDATER: "1"
           GH_TOKEN: ${{ github.token }}
         run: >-
           python .connected-review-runtime/lib/connected_review.py review

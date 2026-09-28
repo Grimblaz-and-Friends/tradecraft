@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import base64
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -32,6 +33,17 @@ def cli_failure(name: str, command, *, stderr_suffix=""):
     stdout = "\n".join(json.dumps(event) for event in recorded["events"]).encode()
     stderr = (recorded["stderr"] + stderr_suffix).encode()
     return subprocess.CompletedProcess(command, recorded["returncode"], stdout, stderr)
+
+
+def private_cli_fixture(tools: Path, version: str, *, platform: str = "posix"):
+    record, executable_directory, executable = cr._private_cli_paths(
+        tools, platform=platform,
+    )
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({"version": version}), encoding="utf-8")
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_bytes(b"fixture")
+    return executable_directory, executable
 
 
 def event() -> dict:
@@ -469,6 +481,7 @@ def test_model_process_has_only_read_tools_and_no_github_credential(tmp_path, mo
     }
     environment = seen["kwargs"]["environment"]
     assert environment["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth"
+    assert environment["DISABLE_AUTOUPDATER"] == "1"
     assert "GH_TOKEN" not in environment
     profile = tmp_path / "pass" / "profile"
     assert environment["HOME"] == str(profile)
@@ -478,6 +491,63 @@ def test_model_process_has_only_read_tools_and_no_github_credential(tmp_path, mo
     assert Path(seen["kwargs"]["cwd"]) != snapshot
     assert Path(command[command.index("--add-dir") + 1]) == snapshot
     assert seen["kwargs"]["input_bytes"].startswith(b"prompt")
+
+
+def test_private_cli_reuses_the_pinned_tools_installation(tmp_path, monkeypatch, capsys):
+    tools = tmp_path / "tool-cache" / "claude-cli"
+    expected = private_cli_fixture(tools, cr.DEFAULT_CLAUDE_VERSION)
+    monkeypatch.setattr(
+        cr, "_run", lambda *_args, **_kwargs: pytest.fail("must not install"),
+    )
+    assert cr.ensure_private_claude_cli(
+        tools, cr.DEFAULT_CLAUDE_VERSION, npm_command=["npm"], platform="posix",
+    ) == expected
+    assert f"found Claude CLI {cr.DEFAULT_CLAUDE_VERSION}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("previous", [None, "2.1.261"])
+def test_private_cli_installs_when_absent_or_different(tmp_path, monkeypatch, capsys, previous):
+    tools = tmp_path / "tool-cache" / "claude-cli"
+    if previous is not None:
+        private_cli_fixture(tools, previous)
+    calls = []
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "must-not-reach-npm")
+    monkeypatch.setenv("GH_TOKEN", "must-not-reach-npm")
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        private_cli_fixture(tools, cr.DEFAULT_CLAUDE_VERSION)
+        return subprocess.CompletedProcess(command, 0, b"installed", b"")
+
+    monkeypatch.setattr(cr, "_run", run)
+    executable_directory, executable = cr.ensure_private_claude_cli(
+        tools, cr.DEFAULT_CLAUDE_VERSION, npm_command=["npm"], platform="posix",
+    )
+    assert executable.parent == executable_directory
+    assert calls[0][0] == [
+        "npm", "install", "--prefix", str(tools),
+        f"{cr.CLAUDE_NPM_PACKAGE}@{cr.DEFAULT_CLAUDE_VERSION}",
+    ]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in calls[0][1]["environment"]
+    assert "GH_TOKEN" not in calls[0][1]["environment"]
+    assert calls[0][1]["timeout"] == 600
+    assert f"installed Claude CLI {cr.DEFAULT_CLAUDE_VERSION}" in capsys.readouterr().err
+
+
+def test_private_cli_install_failure_names_pin_and_never_falls_back(tmp_path, monkeypatch):
+    tools = tmp_path / "tool-cache" / "claude-cli"
+
+    def fail(*_args, **_kwargs):
+        raise cr.ReviewError("command failed (npm): registry unavailable")
+
+    monkeypatch.setattr(cr, "_run", fail)
+    with pytest.raises(
+        cr.ReviewError,
+        match=r"failed to install pinned Claude CLI 2\.1\.280.*registry unavailable",
+    ):
+        cr.ensure_private_claude_cli(
+            tools, cr.DEFAULT_CLAUDE_VERSION, npm_command=["npm"], platform="posix",
+        )
 
 
 def test_one_finder_combines_coverage_lenses_and_prefixes_candidates(
@@ -1057,6 +1127,89 @@ def test_main_resolves_windows_compatible_claude_command(tmp_path, monkeypatch):
         "--attempt", "700", "--finder-prompt", str(finder),
     ]) == 0
     assert seen["executable"] == ["claude.cmd"]
+
+
+def test_private_main_resolves_only_the_tools_installation_ahead_of_path(
+    tmp_path, monkeypatch,
+):
+    event_path = tmp_path / "event.json"
+    finder = tmp_path / "finder.md"
+    event_path.write_text(json.dumps(event()), encoding="utf-8")
+    finder.write_text("finder", encoding="utf-8")
+    tools = tmp_path / "cache" / cr.PRIVATE_CLAUDE_TOOLS_DIRECTORY
+    executable_directory, installed = private_cli_fixture(
+        tools, cr.DEFAULT_CLAUDE_VERSION, platform="nt",
+    )
+    monkeypatch.setenv("RUNNER_TOOL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("PATH", "older-tools")
+    seen = {}
+
+    def ensure(directory, version):
+        seen.update(tools_directory=directory, version=version)
+        return executable_directory, installed
+
+    monkeypatch.setattr(cr, "ensure_private_claude_cli", ensure)
+
+    def resolve(vendor, explicit):
+        seen.update(vendor=vendor, explicit=explicit, path=os.environ["PATH"])
+        return ["trusted-claude"]
+
+    def execute(*args, **_kwargs):
+        seen["executable"] = args[3]
+        return {"status": "reviewed"}
+
+    monkeypatch.setattr(cr, "resolve_command", resolve)
+    monkeypatch.setattr(cr, "execute_review", execute)
+    assert cr.main([
+        "review", "--event", str(event_path), "--owner-login", "Grimblaz",
+        "--attempt", "700", "--finder-prompt", str(finder),
+        "--visibility", "private",
+    ]) == 0
+    assert seen["vendor"] == "claude"
+    assert seen["tools_directory"] == tools
+    assert seen["version"] == cr.DEFAULT_CLAUDE_VERSION
+    assert seen["explicit"] == str(installed)
+    assert seen["path"].split(os.pathsep, 1) == [str(executable_directory), "older-tools"]
+    assert seen["executable"] == ["trusted-claude"]
+    assert os.environ["DISABLE_AUTOUPDATER"] == "1"
+
+
+def test_private_main_install_failure_exports_skip_cause_without_review(
+    tmp_path, monkeypatch,
+):
+    event_path = tmp_path / "event.json"
+    finder = tmp_path / "finder.md"
+    output = tmp_path / "output"
+    event_path.write_text(json.dumps(event()), encoding="utf-8")
+    finder.write_text("finder", encoding="utf-8")
+    monkeypatch.setenv("RUNNER_TOOL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        cr,
+        "ensure_private_claude_cli",
+        lambda *_args: (_ for _ in ()).throw(
+            cr.ReviewError("failed to install pinned Claude CLI 2.1.280: npm unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        cr, "resolve_command", lambda *_args: pytest.fail("must not fall back"),
+    )
+    monkeypatch.setattr(
+        cr, "execute_review", lambda *_args, **_kwargs: pytest.fail("must not review"),
+    )
+    assert cr.main([
+        "review", "--event", str(event_path), "--owner-login", "Grimblaz",
+        "--attempt", "700", "--finder-prompt", str(finder),
+        "--visibility", "private", "--output", str(output),
+    ]) == 1
+    values = dict(
+        line.split("=", 1)
+        for line in output.read_text(encoding="utf-8").splitlines()
+    )
+    assert values["status"] == "failed"
+    assert values["cause"] == (
+        "failed to install pinned Claude CLI 2.1.280: npm unavailable"
+    )
+    assert json.loads(values["usage"])["finder"]["status"] == "not-started"
 
 
 def test_generated_reviews_and_all_skip_causes_have_correct_entrance_credit():

@@ -211,6 +211,8 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
         "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES: "
         "${{ vars.CONNECTED_REVIEW_PRELOAD_CHANGED_FILES }}"
     ) in workflow
+    assert "CONNECTED_REVIEW_VISIBILITY: ${{ needs.prepare.outputs.visibility }}" in workflow
+    assert 'DISABLE_AUTOUPDATER: "1"' in workflow
 
 
 def test_workflow_permissions_exactly_cover_each_job_api_call_graph():
@@ -334,9 +336,12 @@ def test_setup_names_dormant_enablement_and_private_prerequisites():
     )[1].split("```yaml\n", 1)[0]
     assert "repository's GitHub Actions workflows directory" in reference
     assert "Copy this block whole to that directory" in prose
-    assert "install `gh`, Python 3.14 and Claude CLI 2.1.280" in prose
-    assert "first on the runner's PATH through the runner's `.path` file" in prose
-    assert "refuses and names a detected version mismatch" in prose
+    assert "`gh`, Python 3.14, Node and npm" in prose
+    assert "`RUNNER_TOOL_CACHE` a stable writable location" in prose
+    assert "cache's `claude-cli` directory" in prose
+    assert "never installs or executes pull-request content" in prose
+    assert "rather than falling back to another CLI" in prose
+    assert "`.path`" not in prose
     assert "hosted `prepare` job" in prose and "hosted `report` job" in prose
     assert "permitted non-mechanical second look" in prose
     assert "reviewed merged commit on the default branch" in prose
@@ -347,5 +352,8 @@ def test_setup_names_dormant_enablement_and_private_prerequisites():
     assert ".github/" not in reference
 
     live = (ROOT / "tools/connected-review-live-checks.md").read_text(encoding="utf-8")
-    assert "first on that runner's PATH with its `.path` file" in live
-    assert "refuse and name a detected version mismatch" in live
+    assert "`gh`, Python 3.14, Node and npm" in live
+    assert "`RUNNER_TOOL_CACHE` a stable writable location" in live
+    assert "under its `claude-cli` directory" in live
+    assert "disables the auto-updater" in live
+    assert "`.path`" not in live
