@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 import hashlib
+from itertools import product
 import json
 from pathlib import Path
 import subprocess
@@ -588,84 +589,128 @@ def test_build_prompt_uses_only_the_latest_terms_settled_artifact():
     assert b"FIRST TERM" not in prompt
 
 
-def test_artifact_decision_after_amendment_prefers_routeless_prior_settlement_text():
-    prior_draft = ARTIFACT + "\nPRIOR DRAFT"
-    prior_settlement = (
-        "<!-- tradecraft:artifact:v1 status=settled -->\n"
-        "PRIOR ROUTELESS SETTLEMENT"
+ARTIFACT_PROMPT_TERM_KINDS = ("draft", "routeless", "reading", "empty")
+ARTIFACT_PROMPT_TERM_SEQUENCES = tuple(
+    sequence
+    for length in range(1, 4)
+    for sequence in product(ARTIFACT_PROMPT_TERM_KINDS, repeat=length)
+)
+
+
+def _artifact_prompt_term(kind, index):
+    draft_token = f"TERM {index} DRAFT"
+    draft = ARTIFACT + f"\n{draft_token}"
+    if kind == "empty":
+        return [], None, None, []
+    if kind == "draft":
+        return [draft], draft_token.encode("ascii"), None, []
+    settlement_token = f"TERM {index} SETTLEMENT"
+    if kind == "routeless":
+        settlement = (
+            "<!-- tradecraft:artifact:v1 status=settled -->\n"
+            + settlement_token
+        )
+        return [draft, settlement], settlement_token.encode("ascii"), None, []
+    earlier_reading_token = f"TERM {index} EARLIER HOLDER READING"
+    reading_token = f"TERM {index} HOLDER READING"
+    settlement = _settled("would", "would") + f"\n{settlement_token}"
+    earlier_reading = HOLDER + f"\n{earlier_reading_token}"
+    reading = HOLDER + f"\n{reading_token}"
+    return (
+        [draft, settlement, earlier_reading, reading],
+        settlement_token.encode("ascii"),
+        reading_token.encode("ascii"),
+        [earlier_reading_token.encode("ascii"), reading_token.encode("ascii")],
     )
-    fixture = state(
-        AFFIRMED, prior_draft, prior_settlement, AFFIRMED,
-    )
-    decision = work.decide(fixture, RULES)
-
-    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
-    prompt = work._stage_prompt(fixture, decision)
-    assert b"--- artifact under revision begin ---" in prompt
-    assert b"PRIOR ROUTELESS SETTLEMENT" in prompt
-    assert b"PRIOR DRAFT" not in prompt
-    assert b"--- settled artifact begin ---" not in prompt
-    assert fixture.artifact_phase.latest_settlement is None
-    assert any("no re-post is needed" in item["reason"]
-               for item in decision.invalid_markers)
 
 
-def test_artifact_decision_after_amendment_carries_prior_draft_without_settlement():
-    prior_draft = ARTIFACT + "\nPRIOR DRAFT ONLY"
-    fixture = state(AFFIRMED, prior_draft, AFFIRMED)
-    decision = work.decide(fixture, RULES)
+@pytest.mark.parametrize(
+    ("term_sequence", "current_has_draft"),
+    [
+        pytest.param(
+            sequence, current_has_draft,
+            id=(
+                f"{'-'.join(sequence)}-current-"
+                f"{'draft' if current_has_draft else 'empty'}"
+            ),
+        )
+        for sequence in ARTIFACT_PROMPT_TERM_SEQUENCES
+        for current_has_draft in (False, True)
+    ],
+)
+def test_artifact_prompt_selects_latest_prior_term_pair(
+        term_sequence, current_has_draft):
+    comments = []
+    artifact_tokens = []
+    reading_tokens = []
+    expected_artifact = None
+    expected_reading = None
+    for index, kind in enumerate(term_sequence, start=1):
+        comments.append(AFFIRMED)
+        term_comments, artifact_token, reading_token, term_reading_tokens = (
+            _artifact_prompt_term(kind, index)
+        )
+        comments.extend(term_comments)
+        if artifact_token is not None:
+            artifact_tokens.append(artifact_token)
+            expected_artifact = artifact_token
+            expected_reading = reading_token
+        reading_tokens.extend(term_reading_tokens)
 
-    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
-    prompt = work._stage_prompt(fixture, decision)
-    assert b"PRIOR DRAFT ONLY" in prompt
-    assert b"holder reading made against artifact under revision" not in prompt
+    comments.append(AFFIRMED)
+    current_token = b"CURRENT TERM DRAFT"
+    if current_has_draft:
+        comments.append(ARTIFACT + "\n" + current_token.decode("ascii"))
+        artifact_tokens.append(current_token)
+        expected_artifact = current_token
+        expected_reading = None
 
-
-def test_artifact_decision_after_amendment_carries_prior_holder_reading_after_artifact():
-    prior_settlement = (
-        "<!-- tradecraft:artifact:v1 status=settled -->\n"
-        "PRIOR ROUTELESS SETTLEMENT WITH READING"
-    )
-    earlier_reading = HOLDER + "\nEARLIER HOLDER READING"
-    prior_reading = HOLDER + "\nLATEST HOLDER READING"
-    fixture = state(
-        AFFIRMED, ARTIFACT, prior_settlement,
-        earlier_reading, prior_reading, AFFIRMED,
-    )
-    decision = work.decide(fixture, RULES)
-
-    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
-    prompt = work._stage_prompt(fixture, decision)
-    artifact_end = prompt.index(b"--- artifact under revision end ---")
-    reading_start = prompt.index(
-        b"--- holder reading made against artifact under revision "
-        b"(governs where it differs) begin ---"
-    )
-    assert reading_start > artifact_end
-    assert b"LATEST HOLDER READING" in prompt
-    assert b"EARLIER HOLDER READING" not in prompt
-
-
-def test_current_term_draft_replaces_the_prior_artifact_in_an_artifact_prompt():
-    prior_draft = ARTIFACT + "\nPRIOR DRAFT"
-    prior_settlement = _settled("would", "would") + "\nPRIOR SETTLED ARTIFACT"
-    prior_reading = HOLDER + "\nPRIOR HOLDER READING"
-    current_draft = ARTIFACT + "\nCURRENT TERM DRAFT"
-    fixture = state(
-        AFFIRMED, prior_draft, prior_settlement, prior_reading,
-        AFFIRMED, current_draft,
-    )
+    fixture = state(*comments)
     recommendation = work.decide(fixture, RULES)
-    assert recommendation.stage == "cold-seat"
-    prompt = work._stage_prompt(
-        fixture, work.Decision("artifact", True, "resume", "holder-named-stage"),
-    )
+    if current_has_draft:
+        assert recommendation.stage == "cold-seat"
+        decision = work.Decision("artifact", True, "resume", "holder-named-stage")
+    else:
+        assert (recommendation.stage, recommendation.reason) == (
+            "artifact", "artifact-marker-absent",
+        )
+        decision = recommendation
+    prompt = work._stage_prompt(fixture, decision)
 
-    assert b"--- artifact under revision begin ---" in prompt
-    assert b"CURRENT TERM DRAFT" in prompt
-    assert b"PRIOR SETTLED ARTIFACT" not in prompt
-    assert b"PRIOR HOLDER READING" not in prompt
-    assert b"holder reading made against artifact under revision" not in prompt
+    assert (b"--- artifact under revision begin ---" in prompt) == (
+        expected_artifact is not None
+    )
+    assert b"--- settled artifact begin ---" not in prompt
+    for token in artifact_tokens:
+        assert (token in prompt) == (token == expected_artifact)
+    reading_label = b"holder reading made against artifact under revision"
+    assert (reading_label in prompt) == (expected_reading is not None)
+    for token in reading_tokens:
+        assert (token in prompt) == (token == expected_reading)
+    if expected_reading is not None:
+        assert prompt.index(reading_label) > prompt.index(
+            b"--- artifact under revision end ---"
+        )
+
+
+def test_artifact_prompt_preserves_746_shape_across_four_empty_brief_records():
+    settlement_token = b"746 SETTLED ARTIFACT"
+    reading_token = b"746 HOLDER READING"
+    fixture = state(
+        AFFIRMED,
+        ARTIFACT + "\n746 DRAFT",
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        + settlement_token.decode("ascii"),
+        HOLDER + "\n" + reading_token.decode("ascii"),
+        AFFIRMED, AFFIRMED, AFFIRMED, AFFIRMED,
+    )
+    decision = work.decide(fixture, RULES)
+
+    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
+    prompt = work._stage_prompt(fixture, decision)
+    assert settlement_token in prompt
+    assert reading_token in prompt
+    assert b"746 DRAFT" not in prompt
 
 
 def test_governing_references_carry_route_disposition_and_optional_reviewer_rules():

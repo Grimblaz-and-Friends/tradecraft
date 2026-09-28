@@ -1469,8 +1469,9 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                     else (marker, reason)
                     for marker, reason in invalid
                 ]
-                prior_artifact = current_artifact_text
-                prior_holder_reading = latest_holder_reading
+                if current_artifact_text is not None:
+                    prior_artifact = current_artifact_text
+                    prior_holder_reading = latest_holder_reading
             active = True
             latest_draft = None
             current_artifact_text = None
