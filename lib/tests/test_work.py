@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 import hashlib
+from itertools import product
 import json
 from pathlib import Path
 import subprocess
@@ -34,7 +35,8 @@ Review lane: connected
 """
 MECHANICAL = AFFIRMED.replace("connected", "mechanical")
 ARTIFACT = "<!-- tradecraft:artifact:v1 status=draft -->"
-WOULD = "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+WOULD = """<!-- tradecraft:artifact:v1 status=settled route=would -->
+<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"""
 HOLDER = "<!-- tradecraft:holder-reading:v1 result=no-amendment -->"
 FLOOR = f"<!-- tradecraft:floor:v1 head={SHA} status=pass -->"
 USE = f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=false staffing_status=qualified -->"
@@ -247,6 +249,494 @@ def test_second_would_not_reaches_the_two_round_holder_cap():
     )
     assert decision.reason == "artifact-cold-round-cap-reached"
     assert "post-affirmation decision boundary" in decision.detail
+
+
+@pytest.mark.parametrize("body", [
+    "`<!-- tradecraft:affirmed-brief:v1 -->`",
+    "``quoted\n<!-- tradecraft:affirmed-brief:v1 -->\nrecord``",
+    "```md\n<!-- tradecraft:affirmed-brief:v1 -->\n```",
+    "    <!-- tradecraft:affirmed-brief:v1 -->",
+    "> <!-- tradecraft:affirmed-brief:v1 -->",
+    "# copied record\n<!-- tradecraft:affirmed-brief:v1 -->",
+    "The record said:\n<!-- tradecraft:affirmed-brief:v1 -->",
+])
+def test_quoted_and_nonopening_markers_are_reported_without_advancing(body):
+    decision = work.decide(state(body), RULES)
+
+    assert decision.stage == "convergence"
+    assert decision.quotations == ({
+        "name": "affirmed-brief",
+        "source": {
+            "kind": "issue-comment", "repository": "example/product",
+            "id": None, "url": None,
+            "author": PRODUCER, "timestamp": None,
+        },
+    },)
+    assert "body" not in decision.quotations[0]
+
+
+def test_first_nonblank_line_opens_an_ordinary_marker_claim():
+    fixture = state("\n\n" + AFFIRMED)
+    assert work.decide(fixture, RULES).stage == "artifact"
+    assert fixture.quotation_claims == []
+
+
+def test_inline_code_masking_reuses_one_candidate_with_forward_searches(monkeypatch):
+    real_compile = work.re.compile
+    searches = []
+
+    class TrackingPattern:
+        def __init__(self, pattern):
+            self.pattern = pattern
+
+        def search(self, text, position=0):
+            searches.append((id(text), position, len(text)))
+            return self.pattern.search(text, position)
+
+    def tracking_compile(pattern, flags=0):
+        return TrackingPattern(real_compile(pattern, flags))
+
+    monkeypatch.setattr(work.re, "compile", tracking_compile)
+    pieces = [f"`item-{index}`" for index in range(32)]
+    body = " ".join(pieces)
+
+    masked = work._mask_markdown_quotations(body)
+
+    assert masked == " ".join(" " * len(piece) for piece in pieces)
+    assert searches
+    assert len({identity for identity, _position, _length in searches}) == 1
+    assert [position for _identity, position, _length in searches] == sorted(
+        position for _identity, position, _length in searches
+    )
+    assert {length for _identity, _position, length in searches} == {len(body)}
+
+
+@pytest.mark.parametrize("body", ["plain text", "`unterminated", "``unterminated"])
+def test_inline_code_masking_leaves_non_code_text_unchanged(body):
+    assert work._mask_markdown_quotations(body) == body
+
+
+def test_travels_with_contract_accepts_only_listed_companions():
+    fixture = state(
+        AFFIRMED + "\n<!-- tradecraft:product-incident:v1 repo=acme/app issue=3 -->",
+        ARTIFACT + "\n<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->",
+        WOULD,
+        (
+            f"<!-- tradecraft:proof:v1 head={SHA} -->\n"
+            f"<!-- tradecraft:no-use:v1 head={SHA} -->\nUse: not required - fixture."
+        ),
+        (
+            "<!-- tradecraft:implementing-pr:v1 number=7 -->\n"
+            f"<!-- tradecraft:builder-session:v1 session={SESSION} -->"
+        ),
+    )
+    fixture.pr_comments = [fixture.issue_comments.pop(3)]
+    lawful, _invalid = work.validate_marker_claims(fixture)
+
+    names = [marker.name for marker in lawful]
+    assert names.count("cold-verdict") == 1
+    assert {"proof", "no-use", "implementing-pr", "builder-session"} <= set(names)
+    quotations = {(item["name"], item["source"]["kind"])
+                  for item in fixture.quotation_claims}
+    assert ("product-incident", "issue-comment") in quotations
+    assert ("cold-verdict", "issue-comment") in quotations
+
+
+def test_implementing_pr_marker_after_prose_does_not_select_a_candidate():
+    comments = [{
+        "body": "Copied from the handoff:\n<!-- tradecraft:implementing-pr:v1 number=7 -->",
+        "user": {"login": PRODUCER},
+    }]
+    pulls = [{"number": 7, "state": "open", "merged_at": None, "body": ""}]
+    issue = {"number": 12, "state": "open", "body": "", "user": {"login": PRODUCER}}
+
+    assert work._candidate_prs(12, issue, comments, pulls, CONFIG) == set()
+
+
+def test_665_regression_keeps_mid_source_product_markers_as_quotations():
+    config = work.WorkConfig(
+        product_repositories=frozenset({"organizations-of-verra/product"}),
+        marker_producers=frozenset({PRODUCER}),
+    )
+    fixture = state(config=config)
+    fixture.issue["number"] = 665
+    fixture.issue["body"] = (
+        "Practice defect found while working elsewhere.\n"
+        "<!-- tradecraft:product-incident:v1 "
+        "repo=organizations-of-verra/product issue=44 -->"
+    )
+    fixture.issue_comments = [{
+        "id": 2,
+        "body": "> <!-- tradecraft:product-incident:v1 "
+                "repo=organizations-of-verra/product issue=44 -->",
+        "user": {"login": PRODUCER},
+    }]
+
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "product-incident-required", "practice-work-has-no-product-incident",
+    )
+    assert [item["name"] for item in decision.quotations] == [
+        "product-incident", "product-incident",
+    ]
+
+
+def test_pull_request_body_uses_the_same_source_classifier():
+    fixture = state(AFFIRMED, pr=True)
+    fixture.pr.update({
+        "id": 70, "body": "Quoted record:\n<!-- tradecraft:floor:v1 "
+                         f"head={SHA} status=pass -->",
+        "user": {"login": PRODUCER},
+    })
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "artifact"
+    assert any(item["name"] == "floor" and item["source"]["kind"] == "pull-request"
+               for item in decision.quotations)
+
+
+def _settled(route, verdict=None):
+    body = f"<!-- tradecraft:artifact:v1 status=settled route={route} -->"
+    if verdict is not None:
+        body += (
+            "\n<!-- tradecraft:cold-verdict:v1 "
+            f"verdict={verdict} staffing_status=qualified -->"
+        )
+    return body
+
+
+@pytest.mark.parametrize(("comments", "route"), [
+    ((ARTIFACT, _settled("would", "would")), "would"),
+    ((ARTIFACT, WOULD_NOT, ARTIFACT, WOULD_NOT, _settled("cap")), "cap"),
+    ((ARTIFACT, _settled("discharge", "not-settleable")), "discharge"),
+    ((ARTIFACT, _settled("unobtainable")), "unobtainable"),
+])
+def test_each_supported_settlement_route_closes_the_phase(comments, route):
+    fixture = state(AFFIRMED, *comments, HOLDER)
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == ("build", "pull-request-absent")
+    artifact = next(marker for marker in decision.lawful_markers
+                    if marker["name"] == "artifact"
+                    and marker["attributes"].get("route") == route)
+    assert artifact["attributes"]["route"] == route
+
+
+@pytest.mark.parametrize(("comments", "route"), [
+    ((ARTIFACT, _settled("would")), "would"),
+    ((ARTIFACT, WOULD_NOT, _settled("cap")), "cap"),
+    ((ARTIFACT, _settled("discharge", "would")), "discharge"),
+    ((ARTIFACT, _settled("unobtainable", "would")), "unobtainable"),
+])
+def test_each_unsupported_settlement_route_is_invalid_and_does_not_close(comments, route):
+    decision = work.decide(state(AFFIRMED, *comments, HOLDER), RULES)
+    assert decision.stage != "build"
+    reasons = [item["reason"] for item in decision.invalid_markers
+               if item["name"] == "artifact"]
+    assert any(f"route={route}" in reason for reason in reasons)
+
+
+def test_routeless_settlement_requests_one_supported_route_repost():
+    routeless = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    )
+    fixture = state(AFFIRMED, ARTIFACT, routeless)
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert not any(marker.name == "artifact" and marker.attributes.get("status") == "settled"
+                   for marker in lawful)
+    assert any("route is missing" in item["reason"] for item in invalid)
+
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "artifact-settlement"
+    reason = next(item["reason"] for item in decision.invalid_markers
+                  if item["name"] == "artifact")
+    assert "re-post it once" in reason
+    assert all(f"route={route}" in reason for route in work.SETTLEMENT_ROUTES)
+
+
+def test_superseded_routeless_settlement_reports_history_without_repost_guidance():
+    routeless = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    )
+    decision = work.decide(
+        state(AFFIRMED, ARTIFACT, routeless, AFFIRMED), RULES,
+    )
+
+    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
+    reason = next(item["reason"] for item in decision.invalid_markers
+                  if item["name"] == "artifact")
+    assert "superseded by a later affirmed brief" in reason
+    assert "no re-post is needed" in reason
+    assert "re-post it once" not in reason
+
+
+def test_newer_draft_reopens_a_settlement_and_a_later_settlement_closes_it():
+    reopened = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, ARTIFACT)
+    assert work.decide(reopened, RULES).stage == "cold-seat"
+
+    reopened.issue_comments.extend([
+        {"body": WOULD, "user": {"login": PRODUCER}},
+        {"body": HOLDER, "user": {"login": PRODUCER}},
+    ])
+    assert work.decide(reopened, RULES).stage == "build"
+
+
+def test_new_affirmed_brief_starts_a_new_artifact_term():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, AFFIRMED)
+    assert work.decide(fixture, RULES).stage == "artifact"
+
+
+@pytest.mark.parametrize("route", sorted(work.SETTLEMENT_ROUTES))
+def test_settlement_without_a_current_term_draft_is_invalid_for_every_route(route):
+    decision = work.decide(state(AFFIRMED, _settled(route), HOLDER), RULES)
+
+    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
+    reasons = [item["reason"] for item in decision.invalid_markers
+               if item["name"] == "artifact"]
+    assert reasons == ["artifact settlement requires an artifact draft in the current term"]
+
+
+def test_unobtainable_settlement_with_a_current_term_draft_closes_the_phase():
+    decision = work.decide(
+        state(AFFIRMED, ARTIFACT, _settled("unobtainable"), HOLDER), RULES,
+    )
+    assert (decision.stage, decision.reason) == ("build", "pull-request-absent")
+
+
+def test_stale_would_verdict_cannot_support_a_newer_draft():
+    cold_would = "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    fixture = state(
+        AFFIRMED, ARTIFACT, cold_would, ARTIFACT, _settled("would"), HOLDER,
+    )
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "cold-seat"
+    assert any("route=would" in item["reason"] for item in decision.invalid_markers)
+
+
+def test_would_not_verdicts_across_drafts_support_the_cap_route():
+    fixture = state(
+        AFFIRMED, ARTIFACT, WOULD_NOT, ARTIFACT, WOULD_NOT,
+        _settled("cap"), HOLDER,
+    )
+    assert work.decide(fixture, RULES).stage == "build"
+
+
+def test_holder_reading_before_the_latest_settlement_is_stale():
+    fixture = state(AFFIRMED, ARTIFACT, HOLDER, _settled("unobtainable"))
+    assert work.decide(fixture, RULES).stage == "holder-read"
+
+
+def test_routed_repost_inherits_routeless_order_across_a_holder_reading():
+    routeless = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    )
+    fixture = state(
+        AFFIRMED, ARTIFACT, routeless, HOLDER, _settled("would"),
+    )
+    decision = work.decide(fixture, RULES)
+
+    assert decision.stage == "build"
+    assert any("route is missing" in item["reason"] for item in decision.invalid_markers)
+    routed = [item for item in decision.lawful_markers
+              if item["name"] == "artifact" and item["attributes"].get("route") == "would"]
+    assert len(routed) == 1
+
+
+def test_routeless_migration_position_is_spent_after_one_routed_settlement():
+    routeless = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    )
+    fixture = state(
+        AFFIRMED, ARTIFACT, routeless, HOLDER,
+        _settled("would"), _settled("would"),
+    )
+
+    assert work.decide(fixture, RULES).stage == "holder-read"
+
+
+@pytest.mark.parametrize("breaker", ["draft", "verdict", "brief"])
+def test_term_changing_claim_breaks_routeless_order_inheritance(breaker):
+    routeless = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    )
+    cold_would = "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    comments = [AFFIRMED, ARTIFACT, routeless, HOLDER]
+    if breaker == "draft":
+        comments.extend((ARTIFACT, cold_would))
+    elif breaker == "verdict":
+        comments.append(cold_would)
+    else:
+        comments.extend((AFFIRMED, ARTIFACT, cold_would))
+    comments.append(_settled("would"))
+
+    assert work.decide(state(*comments), RULES).stage == "holder-read"
+
+
+def test_build_prompt_uses_only_the_latest_terms_settled_artifact():
+    first = _settled("would", "would") + "\nFIRST TERM"
+    second = _settled("would", "would") + "\nSECOND TERM"
+    fixture = state(
+        AFFIRMED, ARTIFACT, first, HOLDER,
+        AFFIRMED, ARTIFACT, second, HOLDER,
+    )
+    prompt = work._stage_prompt(
+        fixture, work.Decision("build", True, "fresh", "fixture")
+    )
+    assert b"SECOND TERM" in prompt
+    assert b"FIRST TERM" not in prompt
+
+
+ARTIFACT_PROMPT_TERM_KINDS = ("draft", "routeless", "reading", "empty")
+ARTIFACT_PROMPT_TERM_SEQUENCES = tuple(
+    sequence
+    for length in range(1, 4)
+    for sequence in product(ARTIFACT_PROMPT_TERM_KINDS, repeat=length)
+)
+
+
+def _artifact_prompt_term(kind, index):
+    draft_token = f"TERM {index} DRAFT"
+    draft = ARTIFACT + f"\n{draft_token}"
+    if kind == "empty":
+        return [], None, None, []
+    if kind == "draft":
+        return [draft], draft_token.encode("ascii"), None, []
+    settlement_token = f"TERM {index} SETTLEMENT"
+    if kind == "routeless":
+        settlement = (
+            "<!-- tradecraft:artifact:v1 status=settled -->\n"
+            + settlement_token
+        )
+        return [draft, settlement], settlement_token.encode("ascii"), None, []
+    earlier_reading_token = f"TERM {index} EARLIER HOLDER READING"
+    reading_token = f"TERM {index} HOLDER READING"
+    settlement = _settled("would", "would") + f"\n{settlement_token}"
+    earlier_reading = HOLDER + f"\n{earlier_reading_token}"
+    reading = HOLDER + f"\n{reading_token}"
+    return (
+        [draft, settlement, earlier_reading, reading],
+        settlement_token.encode("ascii"),
+        reading_token.encode("ascii"),
+        [earlier_reading_token.encode("ascii"), reading_token.encode("ascii")],
+    )
+
+
+@pytest.mark.parametrize(
+    ("term_sequence", "current_has_draft"),
+    [
+        pytest.param(
+            sequence, current_has_draft,
+            id=(
+                f"{'-'.join(sequence)}-current-"
+                f"{'draft' if current_has_draft else 'empty'}"
+            ),
+        )
+        for sequence in ARTIFACT_PROMPT_TERM_SEQUENCES
+        for current_has_draft in (False, True)
+    ],
+)
+def test_artifact_prompt_selects_latest_prior_term_pair(
+        term_sequence, current_has_draft):
+    comments = []
+    artifact_tokens = []
+    reading_tokens = []
+    expected_artifact = None
+    expected_reading = None
+    for index, kind in enumerate(term_sequence, start=1):
+        comments.append(AFFIRMED)
+        term_comments, artifact_token, reading_token, term_reading_tokens = (
+            _artifact_prompt_term(kind, index)
+        )
+        comments.extend(term_comments)
+        if artifact_token is not None:
+            artifact_tokens.append(artifact_token)
+            expected_artifact = artifact_token
+            expected_reading = reading_token
+        reading_tokens.extend(term_reading_tokens)
+
+    comments.append(AFFIRMED)
+    current_token = b"CURRENT TERM DRAFT"
+    if current_has_draft:
+        comments.append(ARTIFACT + "\n" + current_token.decode("ascii"))
+        artifact_tokens.append(current_token)
+        expected_artifact = current_token
+        expected_reading = None
+
+    fixture = state(*comments)
+    recommendation = work.decide(fixture, RULES)
+    if current_has_draft:
+        assert recommendation.stage == "cold-seat"
+        decision = work.Decision("artifact", True, "resume", "holder-named-stage")
+    else:
+        assert (recommendation.stage, recommendation.reason) == (
+            "artifact", "artifact-marker-absent",
+        )
+        decision = recommendation
+    prompt = work._stage_prompt(fixture, decision)
+
+    assert (b"--- artifact under revision begin ---" in prompt) == (
+        expected_artifact is not None
+    )
+    assert b"--- settled artifact begin ---" not in prompt
+    for token in artifact_tokens:
+        assert (token in prompt) == (token == expected_artifact)
+    reading_label = b"holder reading made against artifact under revision"
+    assert (reading_label in prompt) == (expected_reading is not None)
+    for token in reading_tokens:
+        assert (token in prompt) == (token == expected_reading)
+    if expected_reading is not None:
+        assert prompt.index(reading_label) > prompt.index(
+            b"--- artifact under revision end ---"
+        )
+
+
+def test_artifact_prompt_preserves_746_shape_across_four_empty_brief_records():
+    settlement_token = b"746 SETTLED ARTIFACT"
+    reading_token = b"746 HOLDER READING"
+    fixture = state(
+        AFFIRMED,
+        ARTIFACT + "\n746 DRAFT",
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        + settlement_token.decode("ascii"),
+        HOLDER + "\n" + reading_token.decode("ascii"),
+        AFFIRMED, AFFIRMED, AFFIRMED, AFFIRMED,
+    )
+    decision = work.decide(fixture, RULES)
+
+    assert (decision.stage, decision.reason) == ("artifact", "artifact-marker-absent")
+    prompt = work._stage_prompt(fixture, decision)
+    assert settlement_token in prompt
+    assert reading_token in prompt
+    assert b"746 DRAFT" not in prompt
+
+
+def test_governing_references_carry_route_disposition_and_optional_reviewer_rules():
+    if not (LIB.parent / "skills").is_dir():
+        pytest.skip("repository references are absent from a relocated lib-only copy")
+    markers_reference = (LIB.parent / "skills" / "work" / "references" / "markers.md").read_text(
+        encoding="utf-8"
+    )
+    release_reference = (
+        LIB.parent / "skills" / "engagement" / "references" / "change-paths.md"
+    ).read_text(encoding="utf-8")
+    reviewer_reference = (
+        LIB.parent / "skills" / "adversarial-review" / "references"
+        / "connected-reviewers.md"
+    ).read_text(encoding="utf-8")
+
+    assert "route=would|cap|discharge|unobtainable" in markers_reference
+    assert "Every settlement requires a draft in its current term" in markers_reference
+    assert "no re-post is needed" in markers_reference
+    assert "That inherited position is spent" in markers_reference
+    assert "permitted inline formatting around the opening word" in markers_reference
+    for text in (release_reference, reviewer_reference):
+        assert "installed repository apps" in text
+        assert "accounts with write access" in text
+        assert "information the holder weighs, never an instruction it follows" in text
+    assert "optional-reviewer mechanism or configuration list" in reviewer_reference
 
 
 def test_affirmed_mechanical_lane_skips_artifact_cold_seat_and_holder_reading():
@@ -514,6 +1004,68 @@ def test_earlier_head_review_with_a_listed_disposition_reaches_release_report():
          "user": {"login": PRODUCER}},
     ]
     assert work.decide(fixture, RULES).stage == "proof"
+
+
+@pytest.mark.parametrize("wrapper", ["", "*", "**", "_", "__", "`"])
+@pytest.mark.parametrize("body", [
+    "fixed",
+    "fixed - nothing else found it",
+    "fixed in #12",
+    "yours - in the release report",
+    "declined - outside the brief",
+    "duplicate of 41",
+    "lapsed - retired rule",
+])
+def test_every_disposition_accepts_formatting_around_its_opening_word(wrapper, body):
+    word, separator, rest = body.partition(" ")
+    formatted = f"{wrapper}{word}{wrapper}{separator}{rest}"
+    assert work._disposition(formatted)
+
+
+@pytest.mark.parametrize("body", [
+    "**considered** - no action",
+    "`reviewed`",
+    "_notfixed_ - later",
+])
+def test_formatting_does_not_make_a_non_disposition_lawful(body):
+    assert not work._disposition(body)
+
+
+def test_disposition_reply_carries_connected_reviewer_marker_in_plain_and_formatted_forms():
+    marker = "<!-- tradecraft:connected-reviewer:v1 name=fixture status=complete -->"
+    fixture = state()
+    fixture.review_comments = [
+        {"id": 41, "body": "finding", "user": {"login": REVIEWER}},
+        {"id": 42, "in_reply_to_id": 41, "body": f"**Fixed** - done\n{marker}",
+         "user": {"login": PRODUCER}},
+    ]
+    lawful, _invalid = work.validate_marker_claims(fixture)
+    assert [item.name for item in lawful] == ["connected-reviewer"]
+    assert fixture.quotation_claims == []
+
+    fixture.review_comments[1]["body"] = f"Considered - no action\n{marker}"
+    lawful, _invalid = work.validate_marker_claims(fixture)
+    assert lawful == []
+    assert [item["name"] for item in fixture.quotation_claims] == ["connected-reviewer"]
+
+
+def test_connected_reviewer_marker_in_an_ordinary_comment_or_quoted_region_does_not_count():
+    marker = "<!-- tradecraft:connected-reviewer:v1 name=fixture status=complete -->"
+    fixture = state()
+    fixture.pr_comments = [{
+        "id": 51, "body": f"Fixed - ordinary comment\n{marker}",
+        "user": {"login": PRODUCER},
+    }]
+    fixture.review_comments = [
+        {"id": 41, "body": "finding", "user": {"login": REVIEWER}},
+        {"id": 42, "in_reply_to_id": 41,
+         "body": f"Fixed - done\n`{marker}`", "user": {"login": PRODUCER}},
+    ]
+    lawful, _invalid = work.validate_marker_claims(fixture)
+    assert lawful == []
+    assert [item["name"] for item in fixture.quotation_claims] == [
+        "connected-reviewer", "connected-reviewer",
+    ]
 
 
 def test_unlisted_disposition_author_is_ignored_and_named():
@@ -836,7 +1388,7 @@ def test_degraded_cross_vendor_evidence_needs_a_stage_local_reason(marker_name):
         fixture.issue_comments[-1]["body"] = degraded.replace(
             " -->", " same_vendor_reason=primary-unavailable -->"
         )
-        assert work.decide(fixture, RULES).stage == "holder-read"
+        assert work.decide(fixture, RULES).stage == "artifact-settlement"
     else:
         degraded = f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=false staffing_status=degraded -->"
         fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, degraded, pr=True)
@@ -1955,7 +2507,10 @@ def test_cross_reference_timeline_is_not_read_as_a_candidate():
 
 def test_review_disposition_marker_is_part_of_the_entrance_evidence():
     fixture = state()
-    fixture.review_comments = [{"body": REVIEWED, "user": {"login": PRODUCER}}]
+    fixture.review_comments = [{
+        "id": 42, "in_reply_to_id": 41, "body": "Fixed\n" + REVIEWED,
+        "user": {"login": PRODUCER},
+    }]
     assert {marker.name for marker in fixture.markers} == {"connected-reviewer"}
 
 
@@ -2064,8 +2619,12 @@ def test_mechanical_explicit_artifact_prompt_keeps_the_draft_and_names_its_autho
 
 def test_connected_build_prompt_keeps_its_artifact_and_has_no_lane_exception():
     artifact = ARTIFACT + "\nCONNECTED ARTIFACT\n"
+    settled = """<!-- tradecraft:artifact:v1 status=settled route=would -->
+CONNECTED ARTIFACT
+<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"""
     prompt = work._stage_prompt(
-        state(AFFIRMED, artifact), work.Decision("build", True, "fresh", "fixture")
+        state(AFFIRMED, artifact, settled),
+        work.Decision("build", True, "fresh", "fixture")
     )
     evidence = json.loads(prompt.split(b"\n\n")[1])
 
@@ -2173,6 +2732,7 @@ def test_bundle_backed_builder_marker_must_match_the_observed_session(tmp_path):
     marker = f"<!-- tradecraft:builder-session:v1 session={SESSION} -->"
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, marker)
     fixture.issue_comments[2]["created_at"] = "2026-09-20T09:00:00Z"
+    fixture.issue_comments[3]["created_at"] = "2026-09-20T09:30:00Z"
     fixture.issue_comments[-1]["created_at"] = "2026-09-20T11:00:00Z"
     fixture.record_root = tmp_path / "dispatches"
     cold = fixture.record_root / "cold-seat"

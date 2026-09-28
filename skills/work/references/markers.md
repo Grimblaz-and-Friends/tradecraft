@@ -6,6 +6,23 @@ The entrance validates every claim against the contract below before using it: t
 
 For a marker produced by a dispatched stage, the latest matching successful bundle for the same work and stage, completed no later than the marker, is the source of truth. `builder-session` agrees with the build bundle's observed session; `floor` agrees with the floor bundle's revision and successful return; and `cold-verdict` and `use` take staffing, fallback and same-vendor facts from the seat run record. An absent or ambiguous bundle, or marker text disagreeing with it, does not satisfy the claim. Intrinsic holder-authored markers with no dispatched producer remain governed by their own contract here.
 
+## How a source makes a claim
+
+Before interpreting a source, the entrance sets aside marker text inside inline code, fenced or indented code blocks, and blockquotes. Those occurrences are quotations and never assert a claim.
+
+A source's first line of content is its first nonblank line. An ordinary issue body, issue comment, pull-request body or pull-request comment opens with a marker only when that first line is an unquoted marker. The source asserts that marker kind and the unquoted marker kinds its contract lists as travelling with it; every other marker in that source is a quotation. A heading or prose before the first marker therefore makes every marker in that source a quotation. The entrance reports every marker it sets aside with its kind and source, so a holder can locate a real co-claim that the contract does not carry.
+
+A reviewer-thread reply instead opens with a disposition when its first line of content begins with a lawful disposition word after permitted inline formatting around the opening word is removed. The `connected-reviewer` marker travels with that disposition and counts anywhere unquoted in the reply. It counts nowhere else: the disposition remains first and the marker remains appended to the reply.
+
+| Opening claim | Claims that travel with it |
+|---|---|
+| `artifact` with `status=settled` | `cold-verdict` |
+| `proof` | `no-use` |
+| `implementing-pr` | `builder-session` |
+| lawful disposition opening a reviewer-thread reply | `connected-reviewer` |
+
+A `cold-verdict` beside an artifact with `status=draft` is therefore a quotation. A marker kind absent from the applicable row does not acquire meaning merely by appearing in the same source. A source opening with neither an unquoted marker nor a reviewer-thread disposition asserts no marker claims.
+
 ## `affirmed-brief`
 
 - **Exact form:** `<!-- tradecraft:affirmed-brief:v1 -->`.
@@ -18,13 +35,30 @@ For a marker produced by a dispatched stage, the latest matching successful bund
 
 ## `artifact`
 
-- **Exact form:** `<!-- tradecraft:artifact:v1 status=STATUS -->`.
-- **Attributes and lawful values:** `status=draft|settled`.
+- **Exact form:** `<!-- tradecraft:artifact:v1 status=STATUS [route=ROUTE] -->`.
+- **Attributes and lawful values:** `status=draft|settled`; a settled artifact requires `route=would|cap|discharge|unobtainable`, while a draft carries no route.
 - **Producer, surface, moment:** the holder, in the issue comment carrying the artifact return, when the draft arrives and again when it takes a lawful settlement route.
 
 ```text
 <!-- tradecraft:artifact:v1 status=draft -->
 ```
+
+### Artifact terms and settlement routes
+
+An artifact term begins at the latest affirmed brief or amendment, so only later artifact claims belong to it. A cold verdict qualifies only after the artifact draft it judges. Only a qualifying verdict for the latest draft can support `would` or `discharge`; a newer draft ends that power but retains each qualifying `would-not` in the term's cap count. Only an amended brief starts a new term and restarts the count.
+
+A settled artifact follows the draft it settles and the verdicts supporting its route. Every settlement requires a draft in its current term; `unobtainable` means no qualifying verdict judges that draft, not that the draft is absent. A qualifying verdict carried in the settlement's own source is ordered immediately before the settlement and can support it. The routes mean:
+
+- `would` requires the latest qualifying verdict for the latest draft to be `would`.
+- `cap` requires two qualifying `would-not` verdicts in the term, across any drafts, and no qualifying `would` for the latest draft.
+- `discharge` requires a qualifying `not-settleable` verdict for the latest draft.
+- `unobtainable` requires no qualifying verdict for the latest draft.
+
+An unsupported route does not settle the phase. A settled marker without a route is also invalid. In the current term its diagnostic tells a change in flight to re-post it once with the route the record supports; after a later affirmed brief supersedes that term, the diagnostic records the historical invalid claim and says no re-post is needed.
+
+That route-only re-post retains the earlier routeless settlement's place in the term when no affirmed brief, amendment, artifact draft or cold verdict intervenes. A holder reading may intervene: the old marker remains invalid and reported, the new marker supplies the route and source, and the earlier position decides whether that reading follows the settlement. The latest eligible routeless marker supplies the position when more than one exists. That inherited position is spent by the first routed settlement that uses it, so a later settlement takes its own position and requires a later holder reading.
+
+A holder reading counts only after the latest effective settlement. A newer draft reopens the phase; a later supported settlement closes it again.
 
 ## `cold-verdict`
 
@@ -126,6 +160,8 @@ The object and publication contract are `proof.md`. For one compatibility releas
 ```text
 <!-- tradecraft:connected-reviewer:v1 name=review-bot status=complete -->
 ```
+
+The connected-reviewer reference maintains the lawful disposition words as a closed vocabulary. For matching, the entrance removes permitted inline formatting around the reply's opening word and then applies the same word-and-delimiter test as an unformatted disposition. Formatting never makes a word outside that vocabulary lawful. A gate that reads dispositions must apply the same rule, or the entrance and gate disagree about whether the reply is complete.
 
 ## `panel-stage`
 
