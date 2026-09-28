@@ -97,8 +97,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Fetch trusted reporter
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09

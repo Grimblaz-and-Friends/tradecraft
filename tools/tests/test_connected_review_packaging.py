@@ -67,8 +67,11 @@ def _permission_for_api_call(method, endpoint):
     access = "write" if method != "GET" else "read"
     if "/actions/" in endpoint:
         return "actions", access
-    if "/issues/" in endpoint:
-        return "issues", access
+    if re.fullmatch(r"repos/\{\}/issues/\{\}/comments", endpoint):
+        # The reporter's target is always a pull request. Permission-probe run
+        # https://github.com/Grimblaz-and-Friends/reviewer-sandbox-private/actions/runs/36466795215
+        # proved that its workflow token needs pull-requests: write to POST here.
+        return "pull-requests", access
     if any(part in endpoint for part in ("/contents/", "/tarball/", "/compare/")):
         assert access == "read"
         return "contents", "read"
@@ -248,8 +251,7 @@ def test_workflow_permissions_exactly_cover_each_job_api_call_graph():
         "report": {
             "actions": "read",
             "contents": "read",
-            "issues": "write",
-            "pull-requests": "read",
+            "pull-requests": "write",
         },
     }
     for job, entrypoint in entrypoints.items():
