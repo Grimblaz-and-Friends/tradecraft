@@ -32,6 +32,7 @@ AFFIRMED = """<!-- tradecraft:affirmed-brief:v1 -->
 Review risk: ordinary
 Review lane: connected
 """
+MECHANICAL = AFFIRMED.replace("connected", "mechanical")
 ARTIFACT = "<!-- tradecraft:artifact:v1 status=draft -->"
 WOULD = "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
 HOLDER = "<!-- tradecraft:holder-reading:v1 result=no-amendment -->"
@@ -245,6 +246,106 @@ def test_second_would_not_reaches_the_two_round_holder_cap():
         "artifact-cap", False, None, "holder-owned",
     )
     assert decision.reason == "artifact-cold-round-cap-reached"
+    assert "post-affirmation decision boundary" in decision.detail
+
+
+def test_affirmed_mechanical_lane_skips_artifact_cold_seat_and_holder_reading():
+    assert work.decide(state(MECHANICAL), RULES).stage == "build"
+    assert work.decide(state(AFFIRMED), RULES).stage == "artifact"
+
+
+def test_mechanical_lane_keeps_floor_reviewers_and_proof():
+    fixture = state(MECHANICAL, pr=True)
+    assert work.decide(fixture, RULES).stage == "floor"
+
+    fixture.issue_comments.append({
+        "body": FLOOR, "user": {"login": PRODUCER},
+    })
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "proof", "mechanical-lane-requires-generated-no-use-carrier",
+    )
+
+    fixture.issue_comments.append({
+        "body": f"<!-- tradecraft:no-use:v1 head={SHA} -->\nUse: not required - mechanical.",
+        "user": {"login": PRODUCER},
+    })
+    assert work.decide(fixture, RULES).stage == "ready-reviewers"
+
+    fixture.pr["draft"] = False
+    assert work.decide(fixture, RULES).stage == "waiting"
+    fixture.pr_comments.append({
+        "body": "review summary", "user": {"login": REVIEWER},
+    })
+    assert work.decide(fixture, RULES).stage == "proof"
+
+
+def test_mechanical_lane_keeps_dispositions_and_release_report():
+    fixture = state(
+        MECHANICAL, FLOOR,
+        f"<!-- tradecraft:no-use:v1 head={SHA} -->\nUse: not required - mechanical.",
+        pr=True, draft=False, reviewer_ran=True,
+    )
+    fixture.review_comments = [{
+        "id": 41, "body": "finding", "commit_id": SHA,
+        "user": {"login": REVIEWER, "type": "Bot"},
+    }]
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.detail) == ("review-disposition", "41")
+
+    fixture.review_comments.append({
+        "id": 42, "in_reply_to_id": 41, "body": "fixed",
+        "user": {"login": PRODUCER},
+    })
+    assert work.decide(fixture, RULES).stage == "proof"
+
+    fixture.pr_comments.append({
+        "id": 71, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+        "user": {"login": PRODUCER},
+    })
+    fixture.proof_current = True
+    fixture.checks = [gate_check()]
+    assert work.decide(fixture, RULES).stage == "release-report"
+
+
+def test_mechanical_no_use_is_head_specific_and_does_not_buy_a_panel():
+    old_head = "b" * 40
+    fixture = state(
+        MECHANICAL, FLOOR,
+        f"<!-- tradecraft:no-use:v1 head={old_head} -->\nUse: not required - mechanical.",
+        pr=True,
+    )
+    assert work.decide(fixture, RULES).reason == (
+        "mechanical-lane-requires-generated-no-use-carrier"
+    )
+
+    fixture.issue_comments[-1]["body"] = (
+        f"<!-- tradecraft:no-use:v1 head={SHA} -->\nUse: not required - mechanical."
+    )
+    fixture.pr["draft"] = False
+    fixture.pr_comments.extend((
+        {"body": "review summary", "user": {"login": REVIEWER}},
+        {"body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+         "user": {"login": PRODUCER}},
+    ))
+    fixture.proof_current = True
+    fixture.checks = [gate_check(conclusion="failure")]
+
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "waiting", "latest-gate-evaluation-failed",
+    )
+
+
+def test_unauthorized_or_crossed_mechanical_claim_cannot_grant_the_exemption():
+    unauthorized = state(AFFIRMED)
+    unauthorized.issue_comments.append({
+        "body": MECHANICAL, "user": {"login": "unlisted-commenter"},
+    })
+    assert work.decide(unauthorized, RULES).stage == "artifact"
+
+    crossed = MECHANICAL.replace("ordinary", "elevated")
+    assert work.decide(state(crossed), RULES).stage == "affirmation-invalid"
 
 
 def test_bought_use_returns_an_actionable_holder_handoff():
@@ -771,7 +872,7 @@ def test_closed_completed_issue_is_terminal_before_three_candidate_pull_requests
     }
 
 
-@pytest.mark.parametrize(("risk", "lane"), list(work.LANES.items()))
+@pytest.mark.parametrize(("risk", "lane"), work.LANES)
 def test_each_lawful_review_risk_lane_pair_is_affirmed(risk, lane):
     assert work.review_lane(f"Review risk: {risk}\nReview lane: {lane}\n") == (risk, lane)
 
@@ -806,6 +907,8 @@ def test_missing_affirmation_routes_to_the_form_and_presence_check():
     "Review lane: connected\n",
     "Review risk: ordinary\n",
     "Review risk: ordinary\nReview lane: substantial-panel\n",
+    "Review risk: elevated\nReview lane: mechanical\n",
+    "Review risk: critical\nReview lane: mechanical\n",
     "Review risk: ordinary\nReview risk: elevated\nReview lane: connected\n",
 ])
 def test_missing_or_crossed_review_rows_cannot_become_affirmed_state(text):
@@ -1157,6 +1260,40 @@ def test_proof_decision_is_holder_owned():
 def test_path_rules_buy_runtime_use_and_decline_docs_and_tests():
     assert work.use_required(["lib/runtime.py"], RULES) is True
     assert work.use_required(["lib/tests/test_runtime.py", "README.md"], RULES) is False
+
+
+def test_effective_policy_uses_the_lane_not_path_smallness_to_exempt_use():
+    connected = work.effective_policy(state(AFFIRMED, paths=["lib/runtime.py"]), RULES)
+    mechanical = work.effective_policy(state(MECHANICAL, paths=["lib/runtime.py"]), RULES)
+    docs_only = work.effective_policy(state(AFFIRMED, paths=["README.md"]), RULES)
+
+    assert (connected.mechanical, connected.path_requires_use, connected.use_required) == (
+        False, True, True,
+    )
+    assert (mechanical.mechanical, mechanical.path_requires_use, mechanical.use_required) == (
+        True, True, False,
+    )
+    assert (docs_only.mechanical, docs_only.path_requires_use, docs_only.use_required) == (
+        False, False, False,
+    )
+
+
+def test_mechanical_policy_skips_ancestor_use_collection_even_for_use_paths():
+    ancestor = "b" * 40
+    marker = (
+        f"<!-- tradecraft:use:v1 head={ancestor} status=pass changed=false "
+        "staffing_status=qualified -->"
+    )
+    fixture = state(MECHANICAL, marker, pr=True, paths=["lib/runtime.py"])
+
+    class NoTransport:
+        def get(self, *_args, **_kwargs):
+            pytest.fail("mechanical classification must not query use ancestry")
+
+    work.prepare_use_evidence(fixture, NoTransport(), RULES)
+
+    assert fixture.applicable_use is None
+    assert fixture.use_application is None
 
 
 def test_false_use_branch_requires_marker_and_explicit_line():
@@ -1886,6 +2023,7 @@ def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch():
     assert b"Do not start or dispatch a later stage" in prompt
     evidence = json.loads(prompt.split(b"\n\n")[1])
     assert evidence["work"] == "example/product#12"
+    assert evidence["lane_reason"] is None
     assert AFFIRMED.encode("ascii") in prompt
     assert b"gh api --method GET repos/example/product/issues/12" in prompt
 
@@ -1895,6 +2033,44 @@ def test_build_prompt_tells_the_holder_to_post_the_builder_session_marker():
         state(AFFIRMED), work.Decision("build", True, "fresh", "fixture")
     )
     assert b"<!-- tradecraft:builder-session:v1 session=SESSION -->" in prompt
+
+
+def test_mechanical_build_prompt_names_the_lane_reason_and_omits_an_old_artifact():
+    obsolete = ARTIFACT + "\nOBSOLETE ARTIFACT\n"
+    prompt = work._stage_prompt(
+        state(MECHANICAL, obsolete), work.Decision("build", True, "fresh", "fixture")
+    )
+    evidence = json.loads(prompt.split(b"\n\n")[1])
+
+    assert evidence["review_lane"] == "mechanical"
+    assert "skips the artifact, cold seat, and use" in evidence["lane_reason"]
+    assert MECHANICAL.encode("ascii") in prompt
+    assert b"OBSOLETE ARTIFACT" not in prompt
+
+
+def test_mechanical_explicit_artifact_prompt_keeps_the_draft_and_names_its_authority():
+    draft = ARTIFACT + "\nMECHANICAL DRAFT\n"
+    prompt = work._stage_prompt(
+        state(MECHANICAL, draft), work.Decision("artifact", True, "resume", "fixture")
+    )
+    evidence = json.loads(prompt.split(b"\n\n")[1])
+
+    assert b"MECHANICAL DRAFT" in prompt
+    assert evidence["lane_reason"] == (
+        "holder-explicit artifact stage remains authoritative for the owner-affirmed "
+        "mechanical lane and advances no later stage"
+    )
+
+
+def test_connected_build_prompt_keeps_its_artifact_and_has_no_lane_exception():
+    artifact = ARTIFACT + "\nCONNECTED ARTIFACT\n"
+    prompt = work._stage_prompt(
+        state(AFFIRMED, artifact), work.Decision("build", True, "fresh", "fixture")
+    )
+    evidence = json.loads(prompt.split(b"\n\n")[1])
+
+    assert b"CONNECTED ARTIFACT" in prompt
+    assert evidence["lane_reason"] is None
 
 
 def test_unrelated_record_comments_do_not_change_a_composed_prompt():
@@ -1918,8 +2094,9 @@ def test_use_prompt_is_refused_while_build_omits_the_record():
     assert comment.encode("ascii") not in prompt
 
 
-def test_cold_seat_prompt_carries_only_artifact_brief_and_check_contract(tmp_path):
-    brief = AFFIRMED + "Brief text visible only to the cold seat.\n"
+@pytest.mark.parametrize("lane", ["connected", "mechanical"])
+def test_explicit_cold_seat_prompt_carries_artifact_brief_and_check_contract(tmp_path, lane):
+    brief = AFFIRMED.replace("connected", lane) + "Brief text visible only to the cold seat.\n"
     artifact = ARTIFACT + "\nArtifact text visible only to the cold seat.\n"
     fixture = state(brief, "OTHER COMMENT MUST STAY OUT", artifact)
     artifact_bytes = artifact.encode("utf-8")
@@ -2041,6 +2218,135 @@ def test_proof_marks_missing_bundle_unverifiable_instead_of_copying_qualified(tm
     assert declarations["use"]["status"] == "unverifiable"
     assert declarations["use"]["staffing_status"] is None
     assert "no matching successful dispatch bundle" in declarations["use"]["reason"]
+
+
+def test_mechanical_proof_is_generated_from_the_affirmed_comment_even_for_use_paths(tmp_path):
+    fixture = state(MECHANICAL, FLOOR, pr=True, paths=["lib/runtime.py"])
+    fixture.issue_comments[0].update({
+        "id": 41,
+        "html_url": "https://github.example/issues/12#issuecomment-41",
+        "created_at": "2026-09-23T12:00:00Z",
+    })
+    fixture.record_root = tmp_path / "dispatches"
+    fixture.policy_sources = {
+        "work_configuration": {
+            "repository": fixture.repo, "path": ".tradecraft/work.json",
+            "revision": SHA, "sha256": "1" * 64,
+        },
+        "use_rules": {
+            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "revision": SHA, "sha256": "2" * 64,
+        },
+    }
+    work.validate_marker_claims(fixture)
+
+    composed = work.compose_proof(fixture, RULES)
+
+    assert composed["use"] == {
+        "required": False,
+        "classification": "not-required",
+        "evidence_head": SHA,
+        "applicability": "generated",
+        "source": {
+            "kind": "issue-comment", "repository": "example/product", "id": 41,
+            "url": "https://github.example/issues/12#issuecomment-41",
+            "author": PRODUCER, "timestamp": "2026-09-23T12:00:00Z",
+            "revision": None,
+        },
+        "intervening_commits": [],
+        "reason": work.MECHANICAL_USE_REASON,
+    }
+    assert all(item["stage"] != "use" for item in composed["declarations"])
+
+
+def test_non_mechanical_generated_proof_has_no_affirmed_source(tmp_path):
+    fixture = state(AFFIRMED, FLOOR, pr=True, paths=["README.md"])
+    fixture.issue_comments[0].update({
+        "id": 42,
+        "html_url": "https://github.example/issues/12#issuecomment-42",
+        "created_at": "2026-09-23T12:01:00Z",
+    })
+    fixture.record_root = tmp_path / "dispatches"
+    fixture.policy_sources = {
+        "work_configuration": {
+            "repository": fixture.repo, "path": ".tradecraft/work.json",
+            "revision": SHA, "sha256": "1" * 64,
+        },
+        "use_rules": {
+            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "revision": SHA, "sha256": "2" * 64,
+        },
+    }
+    work.validate_marker_claims(fixture)
+
+    composed = work.compose_proof(fixture, RULES)
+
+    assert composed["use"]["required"] is False
+    assert composed["use"]["source"] is None
+    assert composed["use"]["reason"] == work.PATH_NO_USE_REASON
+
+
+def test_mechanical_readiness_without_generated_no_use_is_refused():
+    fixture = state(MECHANICAL, FLOOR, pr=True)
+    work.validate_marker_claims(fixture)
+
+    assert work._ready_evidence_error(fixture, RULES) == (
+        "ready-reviewers requires run proof to generate the current-head no-use carrier"
+    )
+
+
+def test_mechanical_readiness_requires_generated_no_use_not_a_use_bundle():
+    fixture = state(
+        MECHANICAL, FLOOR,
+        f"<!-- tradecraft:no-use:v1 head={SHA} -->\nUse: not required - mechanical.",
+        pr=True,
+    )
+    work.validate_marker_claims(fixture)
+
+    assert work._ready_evidence_error(fixture, RULES) is None
+
+
+@pytest.mark.parametrize(("brief", "paths", "expected_reason"), [
+    (MECHANICAL, ["lib/runtime.py"], work.MECHANICAL_USE_REASON),
+    (AFFIRMED, ["README.md"], work.PATH_NO_USE_REASON),
+])
+def test_execute_proof_compatibility_line_uses_the_composed_lane_or_path_reason(
+        tmp_path, monkeypatch, capsys, brief, paths, expected_reason):
+    root = policy_repository(tmp_path)
+    fixture = state(brief, FLOOR, pr=True, paths=paths)
+    fixture.issue_comments[0].update({
+        "id": 41,
+        "html_url": "https://github.example/issues/12#issuecomment-41",
+        "created_at": "2026-09-23T12:00:00Z",
+    })
+    fixture.record_root = tmp_path / "dispatches"
+    work.validate_marker_claims(fixture)
+    published = []
+
+    class CurrentHeadTransport:
+        def get(self, endpoint, *, paginate=False):
+            assert endpoint == "repos/example/product/pulls/7"
+            assert paginate is False
+            return fixture.pr
+
+    monkeypatch.setattr(work, "read_state", lambda *_args, **_kwargs: fixture)
+    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args: None)
+    monkeypatch.setattr(
+        work, "_publish_proof_comment",
+        lambda _transport, _state, body, _head: (
+            published.append(body) or {"action": "created", "id": 91, "url": "fixture"}
+        ),
+    )
+    monkeypatch.setattr(work, "_rerun_gate_evaluations", lambda *_args: [])
+
+    assert work._execute_proof(
+        CurrentHeadTransport(), fixture, root, RULES, root / "lib" / "use-rules.json",
+        None, None,
+    ) == 0
+    capsys.readouterr()
+
+    assert len(published) == 1
+    assert f"Use: not required - {expected_reason}." in published[0]
 
 
 @pytest.mark.parametrize(("override", "invalid_override"), [
