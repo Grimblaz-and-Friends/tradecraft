@@ -33,6 +33,8 @@ def test_probe_plants_boundary_canaries_and_reports_real_launch_trace(tmp_path, 
     assert seen["snapshot"] != seen["run_root"]
     assert seen["effort"] == probe.cr.LIVE_FINDER_EFFORT
     assert "hooks" in seen["settings"]
+    hook_command = seen["settings"]["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert hook_command.startswith(f'"{sys.executable}" -c ')
     assert "outside-canary.txt" in seen["readme"]
     assert probe.CANARY_NAME in seen["readme"]
     assert result == json.loads(output.read_text(encoding="utf-8"))
@@ -40,3 +42,16 @@ def test_probe_plants_boundary_canaries_and_reports_real_launch_trace(tmp_path, 
     assert result["outside_path_read"] is False
     assert result["environment_canary_leaked"] is False
     assert result["outside_canary_leaked"] is False
+
+
+def test_probe_counts_a_hook_trace_event_as_firing(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
+    monkeypatch.setattr(
+        probe.cr,
+        "run_pass",
+        lambda *_args, **_kwargs: (
+            {"candidates": []}, {}, [{"event": "PreToolUseHook"}],
+        ),
+    )
+    result = probe.run_probe(["claude.cmd"], tmp_path / "probe.json")
+    assert result["hook_fired"] is True

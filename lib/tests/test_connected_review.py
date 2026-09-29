@@ -280,6 +280,29 @@ def test_diff_parser_decodes_git_quoted_paths():
     }
 
 
+@pytest.mark.parametrize(
+    ("old_header", "new_header"),
+    [
+        ("a/my file.py\t", "b/my file.py\t"),
+        ('"a/my file.py"\t', '"b/my file.py"\t'),
+    ],
+)
+def test_diff_parser_removes_git_separator_tab_from_spaced_paths(
+    old_header, new_header,
+):
+    diff = (
+        "diff --git a/my file.py b/my file.py\n"
+        f"--- {old_header}\n"
+        f"+++ {new_header}\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    assert cr.changed_lines(diff) == {
+        ("my file.py", "LEFT"): {1}, ("my file.py", "RIGHT"): {1},
+    }
+
+
 def test_diff_parser_does_not_count_no_newline_marker():
     diff = """diff --git a/app.py b/app.py
 --- a/app.py
@@ -855,7 +878,10 @@ def test_repository_rules_api_failure_is_not_mistaken_for_no_rules(monkeypatch):
         cr.repository_review_rules("owner/repo", BASE)
 
 
-def execute_fixture(monkeypatch, tmp_path, pass_results, *, current_head=HEAD, post_error=None):
+def execute_fixture(
+    monkeypatch, tmp_path, pass_results, *, current_head=HEAD,
+    current_draft=False, post_error=None,
+):
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
     monkeypatch.setattr(cr, "eligibility", lambda *_: {
         "admitted": "true", "repo": "owner/repo", "number": "746",
@@ -895,7 +921,7 @@ def execute_fixture(monkeypatch, tmp_path, pass_results, *, current_head=HEAD, p
 
     def gh(endpoint, **kwargs):
         if endpoint.endswith("/pulls/746"):
-            return {"head": {"sha": current_head}}
+            return {"head": {"sha": current_head}, "draft": current_draft}
         if endpoint.endswith("/pulls/746/reviews") and kwargs.get("method") == "POST":
             if post_error is not None:
                 raise post_error
@@ -938,6 +964,17 @@ def test_execute_review_preserves_usage_when_head_turns_stale(tmp_path, monkeypa
     assert "checker" not in raised.value.usage
 
 
+def test_execute_review_refuses_publication_when_pull_request_becomes_draft(
+    tmp_path, monkeypatch,
+):
+    finder, checker = execute_fixture(monkeypatch, tmp_path, [
+        ({"candidates": []}, {"input_tokens": 11}, []),
+    ], current_draft=True)
+    with pytest.raises(cr.ReviewError, match="became draft") as raised:
+        run_execute(finder, checker)
+    assert raised.value.usage["finder"] == {"coverage": {"input_tokens": 11}}
+
+
 def test_execute_review_preserves_usage_on_publication_failure(tmp_path, monkeypatch):
     finder, checker = execute_fixture(monkeypatch, tmp_path, [
         ({"candidates": []}, {"input_tokens": 11}, []),
@@ -946,6 +983,45 @@ def test_execute_review_preserves_usage_on_publication_failure(tmp_path, monkeyp
         run_execute(finder, checker)
     assert raised.value.usage["finder"] == {"coverage": {"input_tokens": 11}}
     assert "checker" not in raised.value.usage
+
+
+@pytest.mark.parametrize("line", [2, 99])
+def test_execute_review_refuses_token_in_inline_or_body_payload_without_echoing_it(
+    tmp_path, monkeypatch, line,
+):
+    finder, checker = execute_fixture(monkeypatch, tmp_path, [
+        ({"candidates": [candidate(
+            line=line,
+            wrong_result="publishes oauth to the pull request",
+        )]}, {"input_tokens": 11}, []),
+    ])
+    posts = []
+
+    def gh(endpoint, **kwargs):
+        if endpoint.endswith("/pulls/746"):
+            return {"head": {"sha": HEAD}, "draft": False}
+        if endpoint.endswith("/pulls/746/reviews") and kwargs.get("method") == "POST":
+            posts.append(kwargs["payload"])
+            return {"id": 1}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(cr, "gh_json", gh)
+    with pytest.raises(cr.ReviewError, match="model credential") as raised:
+        run_execute(finder, checker)
+    assert "oauth" not in str(raised.value)
+    assert posts == []
+    notices = []
+    monkeypatch.setattr(cr, "existing_skip", lambda *_args: False)
+    monkeypatch.setattr(
+        cr, "gh_json",
+        lambda _endpoint, **kwargs: notices.append(kwargs["payload"]["body"]),
+    )
+    assert cr.report_skip(
+        event(), "Grimblaz", "92", "failure", str(raised.value), "92",
+        json.dumps(raised.value.usage),
+    )["status"] == "skipped"
+    assert notices[0].startswith("Review skipped: finder output contained")
+    assert "oauth" not in notices[0]
 
 
 def test_execute_review_names_finder_timeout_and_marks_usage_unavailable(tmp_path, monkeypatch):
@@ -997,7 +1073,7 @@ def test_live_default_runs_one_high_finder_and_publishes_validated_deduplicated_
 
     def gh(endpoint, **kwargs):
         if endpoint.endswith("/pulls/746"):
-            return {"head": {"sha": HEAD}}
+            return {"head": {"sha": HEAD}, "draft": False}
         if endpoint.endswith("/pulls/746/reviews") and kwargs.get("method") == "POST":
             posts.append(kwargs["payload"])
             return {"id": 1}

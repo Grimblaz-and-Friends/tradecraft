@@ -41,7 +41,7 @@ def run_probe(executable: str | list[str], output: Path) -> dict[str, object]:
                     "matcher": "Read",
                     "hooks": [{
                         "type": "command",
-                        "command": f'python -c "from pathlib import Path; Path(r\'{hook_sentinel}\').write_text(\'fired\')"',
+                        "command": f'"{sys.executable}" -c "from pathlib import Path; Path(r\'{hook_sentinel}\').write_text(\'fired\')"',
                     }],
                 }]
             }
@@ -79,7 +79,10 @@ def run_probe(executable: str | list[str], output: Path) -> dict[str, object]:
                     outside_reads.append(path)
         result = {
             "schema_version": 1,
-            "hook_fired": hook_sentinel.exists(),
+            "hook_fired": hook_sentinel.exists() or any(
+                isinstance(event, dict) and "event" in event
+                for event in trace
+            ),
             "outside_path_read": bool(outside_reads),
             "environment_canary_leaked": CANARY_VALUE in rendered,
             "outside_canary_leaked": outside_value in rendered,

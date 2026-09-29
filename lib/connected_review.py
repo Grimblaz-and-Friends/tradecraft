@@ -554,6 +554,7 @@ def export_inputs(
 
 
 def _decode_git_path(value: str) -> str | None:
+    value = value.rstrip("\t")
     if value == "/dev/null":
         return None
     if value.startswith('"') and value.endswith('"'):
@@ -1303,6 +1304,20 @@ def review_payload(
     }
 
 
+def _payload_contains_secret(value: Any, secret: str) -> bool:
+    if isinstance(value, str):
+        return secret in value
+    if isinstance(value, dict):
+        return any(
+            _payload_contains_secret(key, secret)
+            or _payload_contains_secret(item, secret)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_payload_contains_secret(item, secret) for item in value)
+    return False
+
+
 def _pass_prompt(
     instructions: str,
     snapshot: Path,
@@ -1514,9 +1529,15 @@ def execute_review(
             current_head = current.get("head", {}).get("sha") if isinstance(current, dict) else None
             if current_head != head_sha:
                 raise ReviewError("pull request head changed during review")
+            if not isinstance(current, dict) or current.get("draft") is not False:
+                raise ReviewError("pull request became draft during review")
             if completed_review_at_head(repo, number, head_sha) is not None:
                 return {"status": "suppressed", "cause": "review appeared before publication"}
             payload = review_payload(survivors, head_sha, attempt, finder_usage)
+            if _payload_contains_secret(payload, token):
+                raise ReviewError(
+                    "finder output contained the model credential; nothing was published"
+                )
             try:
                 gh_json(f"repos/{repo}/pulls/{number}/reviews", method="POST", payload=payload)
             except ReviewError:

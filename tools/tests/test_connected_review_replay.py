@@ -373,6 +373,48 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
     assert result["complete"] is False
 
 
+def test_run_copies_only_the_two_manifest_hashed_input_files(tmp_path, monkeypatch):
+    export = build_export(tmp_path / "export", cases=1)
+    manifest_path = export / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    case = manifest["cases"][0]
+    default_inputs = export / "cases/pr-1/input"
+    (default_inputs / "unverified-neighbour.txt").write_text(
+        "must not be copied", encoding="utf-8",
+    )
+    (default_inputs / "repository-rules.md").write_text(
+        "wrong neighbouring rules", encoding="utf-8",
+    )
+    selected_rules = export / "cases/pr-1/selected/rules.md"
+    selected_rules.parent.mkdir()
+    selected_rules.write_text("selected rules", encoding="utf-8")
+    case["rules"] = "cases/pr-1/selected/rules.md"
+    case["rules_sha256"] = replay.file_digest(selected_rules)
+    write(manifest_path, manifest)
+    finder = tmp_path / "finder.md"
+    finder.write_text("finder", encoding="utf-8")
+    output = tmp_path / "results.json"
+    prepare_run(monkeypatch)
+
+    def run(_executable, run_root, _snapshot, prompt, _schema, _token, *, effort):
+        assert effort == replay.cr.LIVE_FINDER_EFFORT
+        inputs = run_root.parent / "input"
+        assert sorted(path.name for path in inputs.iterdir()) == [
+            "pull-request.diff", "repository-rules.md",
+        ]
+        assert "selected rules" in prompt
+        assert "wrong neighbouring rules" not in prompt
+        return {"candidates": []}, {}, []
+
+    monkeypatch.setattr(replay.cr, "run_pass", run)
+    result = replay.run_replay(
+        export, output, finder, None, ["claude.cmd"],
+        replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+        single_pass=True, finder_effort=replay.cr.LIVE_FINDER_EFFORT,
+    )
+    assert result["complete"] is True
+
+
 def test_run_records_canaries_tool_trace_and_invalidates_outside_read(tmp_path, monkeypatch):
     export = build_export(tmp_path / "export", cases=1)
     output = tmp_path / "results.json"
@@ -439,6 +481,27 @@ def test_tool_result_spill_is_pass_local_but_canary_and_sibling_reads_leak(tmp_p
     assert replay._outside_trace_reads(trace, snapshot, inputs, pass_root) == sorted([
         str(canary.resolve()), str(sibling.resolve()), str(nearby.resolve()),
     ])
+
+
+def test_relative_trace_paths_resolve_from_the_pass_working_directory(tmp_path):
+    case = tmp_path / "case"
+    snapshot = case / "snapshot"
+    inputs = case / "input"
+    pass_root = case / "finder"
+    snapshot.mkdir(parents=True)
+    inputs.mkdir()
+    (pass_root / "work").mkdir(parents=True)
+    source = snapshot / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    trace = [
+        {"tool": "Read", "input": {"file_path": "../../snapshot/app.py"}},
+        {"tool": "Read", "input": {"file_path": "../../../outside.txt"}},
+    ]
+    assert replay._outside_trace_reads(trace, snapshot, inputs, pass_root) == [
+        str(outside.resolve()),
+    ]
 
 
 def test_recorded_usage_limit_becomes_replay_case_error(tmp_path, monkeypatch):

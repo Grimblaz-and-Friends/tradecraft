@@ -12,7 +12,7 @@ description: Run or configure the automatic connected reviewer whose single find
 - **Running the finder pass** -> `references/finder.md`: the concrete-failure contract, exclusions and structured fields.
 - **Replaying the measured two-pass configurations** -> `references/checker.md`: the historical checker contract retained for replay reproducibility; the live workflow never loads it.
 
-The canonical copy-whole workflow is `templates/connected-review.yml`. Copy it without extracting steps, because its unprivileged admission job, trusted runtime checkout, credential placement, runner split and hosted reporter form one security boundary.
+The canonical copy-whole workflow is `templates/connected-review.yml`. An enabling change installs it only after replacing its marked reviewer ref with the merged commit on tradecraft's default branch, and adds the reviewer login in that same change; the marked placeholder is not runnable. With a real ref installed, an absent reviewer login leaves the workflow dormant. Copy the workflow without extracting steps, because its unprivileged admission job, trusted runtime checkout, credential placement, runner split and hosted reporter form one security boundary.
 
 ## Contract
 

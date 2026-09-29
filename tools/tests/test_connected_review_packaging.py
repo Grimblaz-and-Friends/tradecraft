@@ -309,11 +309,8 @@ def test_finder_prompt_stays_frozen_and_historical_checker_remains_replayable():
     assert "Keep at most one candidate for one root cause" in checker
 
 
-def test_workflow_template_repository_copy_and_documented_block_are_identical():
+def test_workflow_template_and_documented_block_are_identical_until_enablement():
     template = (ROOT / "skills/connected-review/templates/connected-review.yml").read_text(
-        encoding="utf-8"
-    )
-    repository_copy = (ROOT / ".github/workflows/connected-review.yml").read_text(
         encoding="utf-8"
     )
     reference = (
@@ -323,13 +320,8 @@ def test_workflow_template_repository_copy_and_documented_block_are_identical():
         "## `connected-review.yml` in the repository's GitHub Actions workflows directory", 1
     )[1]
     documented = section.split("```yaml\n", 1)[1].split("\n```", 1)[0] + "\n"
-    assert repository_copy == template
     assert documented == template
-
-
-def test_repository_copy_is_dormant_until_its_login_is_configured():
-    configuration = json.loads((ROOT / ".tradecraft/work.json").read_text(encoding="utf-8"))
-    assert "github-actions[bot]" not in configuration["connected_reviewers"]
+    assert not (ROOT / ".github/workflows/connected-review.yml").exists()
 
 
 def test_setup_names_login_only_enablement_and_private_prerequisites():
@@ -370,8 +362,11 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
     ) in prose
     assert "`identical` or `ahead` means it is on `main`" in prose
     assert "base branch's `.tradecraft/work.json`" in prose
-    assert "`github-actions[bot]` missing from `connected_reviewers`" in prose
-    assert "deliberately leave this copy dormant" in prose
+    assert "`github-actions[bot]` is missing from `connected_reviewers`" in prose
+    assert "placeholder ref below is not runnable" in prose
+    assert "do not install the template unchanged" in prose
+    assert "installed with a real ref" in prose
+    assert "is dormant" in prose
     assert "only activation switch" in prose
     assert "label named by `reviewer_label` in `.tradecraft/work.json`" in prose
     assert "default is `reviewers`" in prose

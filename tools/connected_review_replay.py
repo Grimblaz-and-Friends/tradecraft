@@ -558,9 +558,11 @@ def run_replay(
                         "path": str(path), "sha256": file_digest(path),
                     }
                 shutil.copytree(export_root / case["snapshot"], snapshot)
-                shutil.copytree((export_root / case["diff"]).parent, input_dir)
+                input_dir.mkdir()
                 diff_path = input_dir / "pull-request.diff"
                 rules_path = input_dir / "repository-rules.md"
+                shutil.copyfile(export_root / case["diff"], diff_path)
+                shutil.copyfile(export_root / case["rules"], rules_path)
                 diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
                 rules_text = rules_path.read_text(encoding="utf-8", errors="replace")
                 lines = cr.changed_lines(diff_text)
@@ -660,7 +662,11 @@ def _outside_trace_reads(
             if not isinstance(raw, str) or not raw:
                 continue
             path = Path(raw)
-            resolved = path.resolve() if path.is_absolute() else path.resolve()
+            resolved = (
+                path.resolve()
+                if path.is_absolute()
+                else (pass_root / "work" / path).resolve()
+            )
             if any(_within(resolved, root) for root in allowed):
                 continue
             if _is_pass_tool_result(resolved, pass_root):
