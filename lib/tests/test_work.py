@@ -3808,17 +3808,21 @@ def test_marker_only_codex_session_cannot_handover_without_its_record(tmp_path, 
         )
 
 
+@pytest.mark.parametrize("stage", ["floor", "artifact"])
 def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, stage):
     home = tmp_path / "home"
     (home / ".tradecraft").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: home)
     setting = home / ".tradecraft" / "implementer-vendor"
     setting.write_bytes(b"claude\n")
     root = repository(tmp_path, "implementation")
-    fixture = state(AFFIRMED)
+    source_stage = "artifact" if stage == "artifact" else "build"
+    role = "artifact_author" if stage == "artifact" else "implementer"
+    texts = (AFFIRMED, ARTIFACT) if stage == "artifact" else (AFFIRMED,)
+    fixture = state(*texts)
     fixture.record_root = tmp_path / "dispatches"
-    dispatch_bundle(fixture.record_root, stage="build", session=SESSION)
+    dispatch_bundle(fixture.record_root, stage=source_stage, session=SESSION)
     monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
     monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
     original_run = subprocess.run
@@ -3831,7 +3835,7 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", capture)
-    decision = work.Decision("floor", True, "resume", "fixture")
+    decision = work.Decision(stage, True, "resume", "fixture")
     assert work.execute_stage(fixture, decision, root, None, "holder") == 0
     first = launches[-1]
     assert first[first.index("--vendor") + 1] == "claude"
@@ -3840,7 +3844,7 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
     with pytest.raises(work.WorkError, match="reconcile"):
         work.execute_stage(fixture, decision, root, None, "holder")
     assert len(launches) == 1
-    handover = work._handover_path(fixture, "implementer", root, None)
+    handover = work._handover_path(fixture, role, root, None)
     value = json.loads(handover.read_bytes())
     value["phase"] = "completed"
     handover.write_bytes(json.dumps(value).encode())
@@ -3850,6 +3854,20 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
     assert second[second.index("--vendor") + 1] == "claude"
     assert second[second.index("--resume") + 1] == replacement
     assert len(launches) == 2
+
+    conflicting = state(
+        *texts, f"<!-- tradecraft:model-override:v1 {role}=codex:chosen:xhigh -->"
+    )
+    conflicting.record_root = fixture.record_root
+    before = handover.read_bytes()
+    monkeypatch.setattr(
+        work, "_handover_context",
+        lambda *_a, **_k: pytest.fail("conflicting override must not assemble a handover"),
+    )
+    with pytest.raises(work.WorkError, match="override.*codex.*pinned Claude"):
+        work.execute_stage(conflicting, decision, root, None, "holder")
+    assert len(launches) == 2
+    assert handover.read_bytes() == before
 
 
 def test_unavailable_claude_does_not_reserve_handover_before_a_retry(tmp_path, monkeypatch):
