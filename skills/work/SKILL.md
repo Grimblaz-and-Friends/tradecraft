@@ -39,10 +39,12 @@ Run a stage only when the holder says to:
 python <plugin-root>/lib/work.py run STAGE \
   --repo OWNER/REPO --issue N --root HOLDER_PATH \
   --holder-session-id ID [--dispatch FILE] [--timeout-seconds N] \
-  [--claude PATH] [--codex PATH]
+  [--claude PATH] [--codex PATH] [--handover-recovery-session UUID]
 ```
 
 `STAGE` is `artifact`, `cold-seat`, `build`, `floor`, `use`, `review-disposition`, `proof`, `ready-reviewers` or `release-report`. The named stage is authority: `run` validates and performs exactly it, without requiring it to equal the recommendation or advancing after the return. The default timeout is 7200 seconds for `build`, because a build must outlast a passing full check and 3600 seconds did not for this change; every other stage defaults to 3600 seconds. `--holder-session-id` is required when an implementer is launched or resumed; pass the runtime's session identifier, or a stable holder token when it exposes none, so launcher and registry keep holder and builder identities distinct. A holder-supplied dispatch must be outside the registered implementation root and reaches the launcher byte-for-byte; otherwise the composed implementer prompt carries one-stage bounds, the exact affirmed brief, the latest artifact where the lane owes one, compact stage facts and explicit `gh api --method GET` commands, never the issue or pull-request record.
+
+`--handover-recovery-session` is for an unresolved handover with no retained native session result. The refusal names its bundle and reserved UUID. The holder inspects Claude's saved session for that exact UUID; if it exists, repeat the same `run STAGE` command with `--handover-recovery-session UUID` to resume and record it. If it does not exist, return the unresolved bundle and UUID to the owner; do not start another replacement. The option never creates a session.
 
 When an explicit artifact stage follows an amendment and the current term has no draft, its prompt carries the latest artifact text from any earlier term as the artifact under revision: that term's latest settlement even when its route is invalid, otherwise its latest draft. It follows the artifact with the latest holder reading made against it in the same term, labelled as governing where it differs, because revision must start from the whole text and judgment that produced it. An intervening term with no artifact changes neither; a newer artifact without a reading clears the older reading; and a current-term draft replaces both prior-term sections.
 

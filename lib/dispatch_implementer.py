@@ -338,8 +338,10 @@ def run_implementer(args: argparse.Namespace) -> int:
             started = time.monotonic()
             try:
                 try:
-                    if args.handover_state and args.session_id:
-                        _handover_phase(args.handover_state, args.session_id, "running")
+                    if args.handover_state:
+                        _handover_phase(
+                            args.handover_state, args.session_id or args.resume, "running"
+                        )
                     result = run_process(command, input=effective_prompt, cwd=root, timeout=args.timeout_seconds)
                 except subprocess.TimeoutExpired as exc:
                     result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
@@ -480,9 +482,9 @@ def run_implementer(args: argparse.Namespace) -> int:
                     if published:
                         output.unlink(missing_ok=True)
                     raise
-                if args.handover_state and args.session_id:
+                if args.handover_state:
                     _handover_phase(
-                        args.handover_state, args.session_id,
+                        args.handover_state, args.session_id or args.resume,
                         "completed" if return_code == 0 and published else "unresolved",
                     )
             if publication_error is not None:

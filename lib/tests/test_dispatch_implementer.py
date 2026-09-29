@@ -542,3 +542,29 @@ def test_fresh_claude_handover_moves_reservation_to_completed_only_after_publica
     assert json.loads(args.handover_state.read_bytes())["phase"] == "completed"
     assert record(args)["handover"]["from_bundle"] == "predecessor-bundle"
     assert args.output.read_bytes() == b"continued"
+
+
+@pytest.mark.parametrize(("result_text", "expected_phase", "expected_code"), [
+    ("continued", "completed", 0),
+    (None, "unresolved", 1),
+])
+def test_resumed_claude_handover_updates_the_same_reservation(
+        job, monkeypatch, result_text, expected_phase, expected_code):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.resume = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    args.handover_state = args.dispatch.with_name("handover.json")
+    args.handover_from = "predecessor-bundle"
+    args.handover_state.write_bytes(json.dumps({
+        "replacement_session": args.resume, "phase": "unresolved",
+    }).encode())
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": args.resume, "result": result_text,
+    })}}).encode())
+
+    assert implementer.run_implementer(args) == expected_code
+    assert json.loads(args.handover_state.read_bytes())["phase"] == expected_phase
+    assert record(args)["handover"]["phase"] == "resume"

@@ -3850,9 +3850,10 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
     assert first[first.index("--vendor") + 1] == "claude"
     replacement = first[first.index("--session-id") + 1]
     assert "--resume" not in first
-    with pytest.raises(work.WorkError, match="reconcile"):
-        work.execute_stage(fixture, decision, root, None, "holder")
-    assert len(launches) == 1
+    assert work.execute_stage(fixture, decision, root, None, "holder") == 0
+    retry = launches[-1]
+    assert retry[retry.index("--session-id") + 1] == replacement
+    assert len(launches) == 2
     handover = work._handover_path(fixture, role, root, None)
     value = json.loads(handover.read_bytes())
     value["phase"] = "completed"
@@ -3862,7 +3863,7 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
     second = launches[-1]
     assert second[second.index("--vendor") + 1] == "claude"
     assert second[second.index("--resume") + 1] == replacement
-    assert len(launches) == 2
+    assert len(launches) == 3
 
     same_vendor = state(
         *texts, f"<!-- tradecraft:model-override:v1 {role}=claude:chosen:high -->"
@@ -3876,7 +3877,7 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
     assert "issue-comment" in overridden[overridden.index("--model-source") + 1]
     assert "issue-comment" in overridden[overridden.index("--effort-source") + 1]
     assert overridden[overridden.index("--resume") + 1] == replacement
-    assert len(launches) == 3
+    assert len(launches) == 4
 
     conflicting = state(
         *texts, f"<!-- tradecraft:model-override:v1 {role}=codex:chosen:xhigh -->"
@@ -3889,8 +3890,121 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
     )
     with pytest.raises(work.WorkError, match="override.*codex.*pinned Claude"):
         work.execute_stage(conflicting, decision, root, None, "holder")
-    assert len(launches) == 3
+    assert len(launches) == 4
     assert handover.read_bytes() == before
+
+
+@pytest.mark.parametrize("stage", ["floor", "artifact"])
+@pytest.mark.parametrize("machine_vendor", ["codex", "claude"])
+@pytest.mark.parametrize("case", [
+    "reserved", "no_launch_record", "observed", "completed_no_output",
+    "missing_result", "missing_session",
+])
+def test_incomplete_handover_keeps_its_replacement_session(
+        tmp_path, monkeypatch, stage, machine_vendor, case):
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    (home / ".tradecraft" / "implementer-vendor").write_bytes(
+        (machine_vendor + "\n").encode()
+    )
+    monkeypatch.setattr(Path, "home", lambda: home)
+    root = repository(tmp_path, "implementation")
+    source_stage = "artifact" if stage == "artifact" else "build"
+    role = "artifact_author" if stage == "artifact" else "implementer"
+    fixture = state(AFFIRMED, ARTIFACT) if stage == "artifact" else state(AFFIRMED)
+    store = tmp_path / "dispatches"
+    fixture.record_root = store
+    dispatch_bundle(store, stage=source_stage, session=SESSION)
+    predecessor = str(store / source_stage / "result.md.run.json")
+    handover = work._handover_path(fixture, role, root, None)
+    handover.parent.mkdir(parents=True)
+    handover.write_bytes(json.dumps({
+        "schema_version": 1, "from_vendor": "codex", "to_vendor": "claude",
+        "from_session": SESSION, "from_bundle": predecessor,
+        "replacement_session": OTHER_SESSION,
+        "phase": "reserved" if case == "reserved" else "unresolved",
+    }).encode())
+    attempt_request = store / stage / "handover-attempt.request.json"
+    if case != "reserved":
+        attempt_request.parent.mkdir(parents=True, exist_ok=True)
+        attempt_request.write_bytes(json.dumps({
+            "schema_version": 2, "work": "example/product#12", "stage": stage,
+            "producer_version": work.records.producer_version(),
+            "dispatch_id": "handover-attempt", "root": str(root),
+            "requested": {"vendor": "claude"},
+            "handover": {
+                "state": str(handover), "from_bundle": predecessor,
+                "replacement_session": OTHER_SESSION, "phase": "fresh",
+            },
+        }).encode())
+        if case != "missing_result":
+            attempt_request.with_name("handover-attempt.run.json").write_bytes(
+                json.dumps({
+                    "schema_version": 2, "actual_vendor": "claude",
+                    "outcome": (
+                        "completed_no_output" if case == "completed_no_output" else "error"
+                    ),
+                    "completed_at": "2026-09-20T11:00:00+00:00",
+                    "attempts": [{
+                        "vendor": "claude", "launched": case != "no_launch_record",
+                        "observed": {
+                            "session_id": (
+                                OTHER_SESSION if case in {"observed", "completed_no_output"}
+                                else None
+                            ),
+                            "session_id_source": (
+                                "claude JSON result.session_id"
+                                if case in {"observed", "completed_no_output"} else None
+                            ),
+                        },
+                    }],
+                }).encode()
+            )
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
+    monkeypatch.setattr(work, "_runtime_argument",
+                        lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    original_run = subprocess.run
+    launches = []
+
+    def capture(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            launches.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work.subprocess, "run", capture)
+    decision = work.Decision(stage, True, "resume", "fixture")
+    if case in {"missing_result", "missing_session"}:
+        with pytest.raises(work.WorkError) as error:
+            work.execute_stage(fixture, decision, root, None, "holder")
+        assert str(attempt_request) in str(error.value)
+        assert OTHER_SESSION in str(error.value)
+        assert "--handover-recovery-session" in str(error.value)
+        assert launches == []
+        with pytest.raises(work.WorkError, match="must name that exact session"):
+            work.execute_stage(
+                fixture, decision, root, None, "holder",
+                handover_recovery_session=SESSION,
+            )
+        assert work.execute_stage(
+            fixture, decision, root, None, "holder",
+            handover_recovery_session=OTHER_SESSION,
+        ) == 0
+        recovered = launches[-1]
+        assert recovered[recovered.index("--resume") + 1] == OTHER_SESSION
+        assert "--session-id" not in recovered
+        assert len(launches) == 1
+    else:
+        assert work.execute_stage(fixture, decision, root, None, "holder") == 0
+        command = launches[-1]
+        assert command[command.index("--vendor") + 1] == "claude"
+        assert command[command.index(
+            "--session-id" if case in {"reserved", "no_launch_record"} else "--resume"
+        ) + 1] == OTHER_SESSION
+        if case == "completed_no_output":
+            assert command[command.index("--handover-state") + 1] == str(handover)
+        assert len(launches) == 1
+    assert json.loads(handover.read_bytes())["replacement_session"] == OTHER_SESSION
 
 
 def test_unavailable_claude_does_not_reserve_handover_before_a_retry(tmp_path, monkeypatch):

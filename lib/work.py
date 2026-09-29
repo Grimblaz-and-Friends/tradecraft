@@ -1718,7 +1718,47 @@ def _handover_context(state: WorkState, source: ResumeSource, root: Path,
     ).encode("utf-8")
 
 
-def _reserve_handover(path: Path, source: ResumeSource, trigger: str) -> tuple[dict[str, object], bool]:
+def _handover_attempts(path: Path, source: ResumeSource,
+                       session: str) -> list[tuple[Path, dict[str, object],
+                                                   dict[str, object] | None]]:
+    attempts = []
+    try:
+        requests = path.parent.parent.rglob("*.request.json")
+        for request_path in requests:
+            request = _json_object(request_path)
+            handover = request.get("handover") if request else None
+            if not isinstance(handover, dict):
+                continue
+            if (handover.get("state") != str(path)
+                    or handover.get("from_bundle") != source.path
+                    or handover.get("replacement_session") != session):
+                continue
+            source_stage = source.request.get("stage")
+            allowed_stages = RESUME_SOURCE_STAGES.get(
+                source_stage, frozenset({source_stage})
+            )
+            requested = request.get("requested")
+            if (request.get("schema_version") != records.SCHEMA_VERSION
+                    or request.get("work") != source.request.get("work")
+                    or request.get("stage") not in allowed_stages
+                    or not isinstance(requested, dict)
+                    or requested.get("vendor") != "claude"
+                    or handover.get("phase") not in {"fresh", "resume"}):
+                raise WorkError(f"handover attempt bundle is inconsistent: {request_path}")
+            run_path = request_path.with_name(
+                request_path.name.removesuffix(".request.json") + ".run.json"
+            )
+            attempts.append((request_path, request, _json_object(run_path)))
+    except OSError as exc:
+        raise WorkError(f"cannot inspect handover dispatch bundles below {path.parent.parent}") from exc
+    return sorted(attempts, key=lambda item: (str(item[1].get("started_at") or ""), str(item[0])))
+
+
+def _reserve_handover(path: Path, source: ResumeSource, trigger: str, *,
+                      recovery_session: str | None = None) -> tuple[dict[str, object], bool,
+                                                                     str | None]:
+    if recovery_session is not None and not path.is_file():
+        raise WorkError(f"no recorded handover at {path} to recover")
     record = {
         "schema_version": 1, "from_vendor": "codex", "to_vendor": "claude",
         "from_session": source.session, "from_bundle": source.path,
@@ -1731,20 +1771,77 @@ def _reserve_handover(path: Path, source: ResumeSource, trigger: str) -> tuple[d
             stream.write(records.json_bytes(record))
             stream.flush()
             os.fsync(stream.fileno())
-        return record, True
+        return record, True, None
     except FileExistsError:
         value = _json_object(path)
         if (value is None or value.get("schema_version") != 1
                 or value.get("from_bundle") != source.path
                 or value.get("from_session") != source.session
-                or not isinstance(value.get("replacement_session"), str)):
+                or value.get("to_vendor") != "claude"
+                or not isinstance(value.get("replacement_session"), str)
+                or SESSION_ID.fullmatch(value["replacement_session"]) is None):
             raise WorkError(f"handover reservation is unresolved: {path}")
-        if value.get("phase") != "completed":
+        session = value["replacement_session"]
+        if recovery_session is not None and recovery_session != session:
             raise WorkError(
-                f"handover {path} is {value.get('phase') or 'unrecorded'}; "
-                "reconcile its reserved Claude session before another launch"
+                f"handover {path} reserves Claude session {session}; "
+                f"--handover-recovery-session must name that exact session"
             )
-        return value, False
+        if value.get("phase") == "completed":
+            if recovery_session is not None:
+                raise WorkError(f"handover {path} is complete; omit recovery for session {session}")
+            return value, False, None
+        attempts = _handover_attempts(path, source, session)
+        attempt_path, request, _run = attempts[-1] if attempts else (None, None, None)
+        retry_of = request.get("dispatch_id") if request else None
+        bundle = str(attempt_path) if attempt_path else f"missing (predecessor {source.path})"
+        proved_session = False
+        possible_launch = value.get("phase") != "reserved" and not attempts
+        for request_path, attempt_request, run in attempts:
+            rows = run.get("attempts") if run else None
+            row = rows[0] if isinstance(rows, list) and len(rows) == 1 else None
+            launched = row.get("launched") if isinstance(row, dict) else None
+            observed = row.get("observed") if isinstance(row, dict) else None
+            session_id = observed.get("session_id") if isinstance(observed, dict) else None
+            session_source = (observed.get("session_id_source")
+                              if isinstance(observed, dict) else None)
+            proved_run = (
+                run is not None and run.get("schema_version") == records.SCHEMA_VERSION
+                and run.get("actual_vendor") == "claude"
+                and (run.get("request") is None
+                     or run.get("request") == str(request_path))
+                and isinstance(row, dict) and row.get("vendor") == "claude"
+                and isinstance(launched, bool)
+            )
+            if (proved_run and launched is True and session_id == session
+                    and session_source == "claude JSON result.session_id"):
+                proved_session = True
+            elif proved_run and launched is False and session_id is None:
+                continue
+            elif (run is None and value.get("phase") == "reserved"
+                  and attempt_request["handover"]["phase"] == "fresh"):
+                continue
+            else:
+                possible_launch = True
+                bundle = str(request_path)
+        if proved_session:
+            return value, False, retry_of if isinstance(retry_of, str) else None
+        if not possible_launch:
+            if recovery_session is not None:
+                raise WorkError(
+                    f"handover {path} has no launched session; omit recovery for {session}"
+                )
+            return value, True, retry_of if isinstance(retry_of, str) else None
+        if recovery_session is not None:
+            return value, False, retry_of if isinstance(retry_of, str) else None
+        raise WorkError(
+            f"handover {path} is {value.get('phase') or 'unrecorded'}; "
+            f"bundle {bundle}; reserved Claude session {session} has no proved "
+            "native session result. Inspect Claude's saved session for that UUID; "
+            f"if it exists, rerun this stage with --handover-recovery-session {session} "
+            "to resume it. If it does not exist, return the unresolved bundle "
+            "and UUID to the owner; do not start a new session."
+        )
 
 
 def _runtime_argument(vendor: str, explicit: Path | None = None) -> list[str]:
@@ -4387,6 +4484,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                   transport: GitHubREST | None = None,
                   claude_path: Path | None = None,
                   codex_path: Path | None = None,
+                  handover_recovery_session: str | None = None,
                   rules: dict[str, object] | None = None,
                   use_rules_path: Path | None = None) -> int:
     if state.validated_markers is None:
@@ -4703,12 +4801,15 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     handover_state_path: Path | None = None
     handover_runtime: list[str] | None = None
     handover_unavailable = False
+    handover_retry_of: str | None = None
     if prepared_dispatch is not None and _path_inside(prepared_dispatch, dispatch_root):
         raise WorkError("dispatch file must be outside the registered implementation root")
     if (uses_implementer and decision.continuity == "resume" and resume_source is not None
             and resume_source.request.get("requested", {}).get("vendor") == "codex"):
         handover_state_path = _handover_path(state, implementer_role, dispatch_root, branch)
         recorded_handover = handover_state_path.is_file()
+        if handover_recovery_session is not None and not recorded_handover:
+            raise WorkError(f"no recorded handover at {handover_state_path} to recover")
         effective_pin = "claude" if recorded_handover else "codex"
         if role_overridden and selected_vendor != effective_pin:
             if recorded_handover:
@@ -4727,12 +4828,39 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 handover_runtime = _selected_runtime_argument("claude", claude_path)
                 handover_unavailable = handover_runtime[0] == "--claude-unavailable-reason"
             if not handover_unavailable:
-                handover_record, handover_new = _reserve_handover(
-                    handover_state_path, resume_source, vendor_source
+                handover_record, handover_new, handover_retry_of = _reserve_handover(
+                    handover_state_path, resume_source, vendor_source,
+                    recovery_session=handover_recovery_session,
                 )
             selected_vendor = "claude"
-            vendor_source = (vendor_source if handover_new or handover_unavailable else
+            vendor_source = (vendor_source if not recorded_handover or handover_unavailable else
                              f"recorded handover {handover_state_path}")
+            if handover_recovery_session is not None:
+                vendor_source += f"; holder-confirmed Claude session {handover_recovery_session}"
+    elif (uses_implementer and decision.continuity == "resume"
+          and resume_source is not None
+          and resume_source.request.get("requested", {}).get("vendor") == "claude"
+          and isinstance(resume_source.request.get("handover"), dict)):
+        source_handover = resume_source.request["handover"]
+        handover_state_path = _handover_path(state, implementer_role, dispatch_root, branch)
+        if source_handover.get("state") != str(handover_state_path):
+            raise WorkError("Claude resume bundle names a different handover lineage")
+        handover_record = _json_object(handover_state_path)
+        if (handover_record is None or handover_record.get("schema_version") != 1
+                or handover_record.get("from_bundle") != source_handover.get("from_bundle")
+                or handover_record.get("replacement_session") != session
+                or handover_record.get("to_vendor") != "claude"):
+            raise WorkError(
+                f"Claude resume bundle disagrees with handover {handover_state_path}"
+            )
+        if handover_record.get("phase") == "completed":
+            handover_record = None
+        else:
+            handover_retry_of = resume_source.request.get("dispatch_id")
+        if handover_recovery_session is not None:
+            raise WorkError("Claude resume bundle already proves the reserved session; omit recovery")
+    elif handover_recovery_session is not None:
+        raise WorkError("--handover-recovery-session requires an incomplete Codex-to-Claude handover")
     if migrated:
         detail = (
             f"{decision.detail}; {MIGRATION_NOTICE}"
@@ -4803,6 +4931,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                                selected_vendor, claude_path if selected_vendor == "claude" else codex_path
                            )),
                         "--holder-session-id", holder_identity]
+            if handover_retry_of is not None:
+                command.extend(("--retry-of", handover_retry_of))
             if selected_vendor == "claude":
                 context = Path(temporary) / "context.txt"
                 preamble = (
@@ -4878,6 +5008,8 @@ def parser() -> argparse.ArgumentParser:
                      help="explicit Claude executable for run instead of discovery")
     cli.add_argument("--codex", type=Path,
                      help="explicit Codex executable for run instead of discovery")
+    cli.add_argument("--handover-recovery-session",
+                     help="reserved Claude session confirmed by the holder for an unresolved handover")
     cli.add_argument("--mode", choices=("adopter", "repository-session"))
     cli.add_argument("--output", type=Path)
     cli.add_argument("--revision", help="landed commit to archive without a registration")
@@ -4999,6 +5131,11 @@ def run(
         raise WorkError("a stage is accepted only after the run command")
     if args.command == "run" and args.stage is None:
         raise WorkError("run requires a stage")
+    if args.handover_recovery_session is not None and (
+            args.command != "run" or args.stage not in {
+                "artifact", "build", "floor", "review-disposition",
+            }):
+        raise WorkError("--handover-recovery-session requires an implementer run stage")
     use_rules_path = (args.use_rules or root / "lib" / "use-rules.json").expanduser().resolve()
     proof_preflight: PolicySnapshot | None = None
     if args.command == "run" and args.stage == "proof":
@@ -5069,6 +5206,7 @@ def run(
             dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
             timeout_seconds=args.timeout_seconds, transport=github,
             claude_path=args.claude, codex_path=args.codex,
+            handover_recovery_session=args.handover_recovery_session,
             rules=rules, use_rules_path=use_rules_path,
         )
     return executor(state, decision, root, args.instalment, args.holder_session_id)
