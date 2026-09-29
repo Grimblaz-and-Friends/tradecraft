@@ -1537,7 +1537,7 @@ def test_launch_settings_read_program_b_defaults_with_accurate_sources():
     terminal = work._launch_settings(fixture, "terminal-seat", "claude", "terminal")
 
     assert implementer == work.LaunchSettings(
-        "gpt-6-sol", "xhigh", "dispatch_implementer default",
+        "gpt-6.1-sol", "xhigh", "dispatch_implementer default",
         "dispatch_implementer default",
     )
     assert codex_seat == work.LaunchSettings(
