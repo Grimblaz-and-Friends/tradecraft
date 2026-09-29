@@ -3,12 +3,6 @@ name: connected-review
 on:
   pull_request_target:
     types: [ready_for_review, labeled]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request number to retry
-        required: true
-        type: string
 
 env:
   TRADECRAFT_REPOSITORY: Grimblaz-and-Friends/tradecraft

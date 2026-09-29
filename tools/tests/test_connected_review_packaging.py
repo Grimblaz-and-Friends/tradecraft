@@ -183,6 +183,7 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
     )
     assert "pull_request_target:" in workflow
     assert "types: [ready_for_review, labeled]" in workflow
+    assert "workflow_dispatch:" not in workflow
     assert "synchronize" not in workflow
     assert "push:" not in workflow
     assert workflow.count("concurrency:") == 1
@@ -375,6 +376,10 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
     assert "label named by `reviewer_label` in `.tradecraft/work.json`" in prose
     assert "default is `reviewers`" in prose
     assert "label trigger fires only when that label is added" in prose
+    assert "gh run rerun <run-id> --failed" in prose
+    assert "review job deliberately remains failed" in prose
+    assert "A separate workflow dispatch is not offered" in prose
+    assert "default branch and cannot repair" in prose
     assert "one finder at `high`" in prose
     assert "CONNECTED_REVIEW_ENABLED" not in prose
     assert "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES" not in prose

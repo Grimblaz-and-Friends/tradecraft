@@ -63,7 +63,9 @@ Before activation, put `gh`, Python 3.14, Node and npm on a private repository's
 
 An enabling change sets `TRADECRAFT_REVIEWER_REF` to a commit on tradecraft's default branch that contains the reviewer, normally the merge commit of the change that shipped it. Check the commit, replacing `<sha>`, with `gh api repos/Grimblaz-and-Friends/tradecraft/compare/<sha>...main --jq .status`; `identical` or `ahead` means it is on `main`. Then add `github-actions[bot]` to `connected_reviewers` of the base branch's `.tradecraft/work.json`. The ref below and that absent login — `github-actions[bot]` missing from `connected_reviewers` — deliberately leave this copy dormant, and the ref is not a release pin. The reviewer login in that configuration file is the only activation switch.
 
-The repository must have the label named by `reviewer_label` in `.tradecraft/work.json`, whose default is `reviewers`, because the label trigger fires only when that label is added. The workflow runs one finder at `high`. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding the configured label requests the permitted non-mechanical second look at a new head; use the workflow's explicit dispatch to retry a skipped attempt.
+The repository must have the label named by `reviewer_label` in `.tradecraft/work.json`, whose default is `reviewers`, because the label trigger fires only when that label is added. The workflow runs one finder at `high`. Two eligible events may prepare concurrently, but their review jobs serialize per pull request; the second rechecks the head and buys nothing when the first already completed it. A report also runs after preparation fails, re-derives eligibility without checking out pull-request content, and posts a skip only when it can establish that the attempt was eligible; an unreadable eligibility state stays visibly failed and posts nothing. Removing and re-adding the configured label requests the permitted non-mechanical second look at a new head.
+
+After a `Review skipped:` cause clears, retry that same run with `gh run rerun <run-id> --failed`. The review job deliberately remains failed after handing a skip to the reporter, and a cancelled job remains cancelled, so this retry replaces the connected-review checks on the pull-request head. It either completes the review or turns green after suppressing itself because that head already has one. A separate workflow dispatch is not offered: its checks belong to the default branch and cannot repair the failed or cancelled check on the pull-request head.
 
 ```yaml
 name: connected-review
@@ -71,12 +73,6 @@ name: connected-review
 on:
   pull_request_target:
     types: [ready_for_review, labeled]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request number to retry
-        required: true
-        type: string
 
 env:
   TRADECRAFT_REPOSITORY: Grimblaz-and-Friends/tradecraft

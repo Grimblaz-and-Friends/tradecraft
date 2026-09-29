@@ -291,11 +291,6 @@ def _event_pr_number(event: dict[str, Any]) -> int:
     pull_request = event.get("pull_request")
     if isinstance(pull_request, dict) and isinstance(pull_request.get("number"), int):
         return pull_request["number"]
-    inputs = event.get("inputs")
-    if isinstance(inputs, dict):
-        raw = inputs.get("pr_number")
-        if isinstance(raw, str) and raw.isdecimal() and int(raw) > 0:
-            return int(raw)
     raise ReviewError("event has no pull request number")
 
 
@@ -306,7 +301,7 @@ def _event_trigger_allowed(event: dict[str, Any]) -> bool:
     if action == "labeled":
         label = event.get("label")
         return isinstance(label, dict) and label.get("name") == "reviewers"
-    return event.get("inputs") is not None
+    return False
 
 
 def _repository_name(event: dict[str, Any]) -> str:

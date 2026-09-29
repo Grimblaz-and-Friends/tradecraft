@@ -97,7 +97,7 @@ def test_eligibility_separates_actor_from_pull_request_author(monkeypatch):
     assert cr.eligibility(current_event, "Grimblaz")["admitted"] == "true"
 
 
-def test_only_ready_reviewers_label_and_explicit_retry_are_triggers(monkeypatch):
+def test_only_ready_and_reviewers_label_events_are_triggers(monkeypatch):
     api_fixture(monkeypatch)
     opened = event()
     opened["action"] = "opened"
@@ -106,11 +106,13 @@ def test_only_ready_reviewers_label_and_explicit_retry_are_triggers(monkeypatch)
     labeled["action"] = "labeled"
     labeled["label"] = {"name": "reviewers"}
     assert cr.eligibility(labeled, "Grimblaz")["admitted"] == "true"
-    retry = event()
-    retry.pop("action")
-    retry.pop("pull_request")
-    retry["inputs"] = {"pr_number": "746"}
-    assert cr.eligibility(retry, "Grimblaz")["admitted"] == "true"
+    dispatch = event()
+    dispatch.pop("action")
+    dispatch["inputs"] = {"pr_number": "746"}
+    assert cr.eligibility(dispatch, "Grimblaz")["admitted"] == "false"
+    dispatch.pop("pull_request")
+    with pytest.raises(cr.ReviewError, match="event has no pull request number"):
+        cr.eligibility(dispatch, "Grimblaz")
 
 
 def test_activation_is_read_from_base_configuration(monkeypatch):
