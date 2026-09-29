@@ -54,7 +54,10 @@ def pull() -> dict:
     return fixture("connected_review_pull.json")
 
 
-def api_fixture(monkeypatch, pull_value=None, reviews=None, comments=None):
+def api_fixture(
+    monkeypatch, pull_value=None, reviews=None, comments=None, *,
+    reviewers=frozenset({cr.BOT_LOGIN}), reviewer_label="reviewers",
+):
     pull_value = pull_value or pull()
     reviews = [] if reviews is None else reviews
     comments = [] if comments is None else comments
@@ -69,7 +72,9 @@ def api_fixture(monkeypatch, pull_value=None, reviews=None, comments=None):
         raise AssertionError(endpoint)
 
     monkeypatch.setattr(cr, "gh_json", get)
-    monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset({cr.BOT_LOGIN}))
+    monkeypatch.setattr(
+        cr, "_review_configuration", lambda *_: (reviewers, reviewer_label),
+    )
 
 
 @pytest.mark.parametrize(
@@ -115,9 +120,43 @@ def test_only_ready_and_reviewers_label_events_are_triggers(monkeypatch):
         cr.eligibility(dispatch, "Grimblaz")
 
 
-def test_activation_is_read_from_base_configuration(monkeypatch):
+def test_label_trigger_uses_trusted_base_configuration(monkeypatch):
+    configured = event()
+    configured["action"] = "labeled"
+    configured["label"] = {"name": "needs-review"}
     api_fixture(monkeypatch)
-    monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset())
+    reads = []
+
+    def configuration(repo, base_sha):
+        reads.append((repo, base_sha))
+        return frozenset({cr.BOT_LOGIN}), "needs-review"
+
+    monkeypatch.setattr(cr, "_review_configuration", configuration)
+    assert cr.eligibility(configured, "Grimblaz")["admitted"] == "true"
+
+    configured["label"] = {"name": "reviewers"}
+    result = cr.eligibility(configured, "Grimblaz")
+    assert result["admitted"] == "false"
+    assert result["reason"] == "event is not a review trigger"
+    assert reads == [
+        ("Grimblaz-and-Friends/tradecraft", BASE),
+        ("Grimblaz-and-Friends/tradecraft", BASE),
+    ]
+
+
+def test_review_configuration_defaults_absent_label_to_reviewers(monkeypatch):
+    monkeypatch.setattr(
+        cr, "_repository_file", lambda *_: json.dumps({
+            "connected_reviewers": [cr.BOT_LOGIN],
+        }).encode(),
+    )
+    assert cr._review_configuration("owner/repo", BASE) == (
+        frozenset({cr.BOT_LOGIN}), "reviewers",
+    )
+
+
+def test_activation_is_read_from_base_configuration(monkeypatch):
+    api_fixture(monkeypatch, reviewers=frozenset())
     result = cr.eligibility(event(), "Grimblaz")
     assert result == {
         "admitted": "false",
@@ -742,7 +781,10 @@ def test_recorded_usage_limit_cause_reaches_live_skip_notice(tmp_path, monkeypat
         raise AssertionError(endpoint)
 
     monkeypatch.setattr(cr, "gh_json", get)
-    monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset({cr.BOT_LOGIN}))
+    monkeypatch.setattr(
+        cr, "_review_configuration",
+        lambda *_: (frozenset({cr.BOT_LOGIN}), "reviewers"),
+    )
     cr.report_skip(
         event(), "Grimblaz", "94", "failure", str(raised.value), "94",
         json.dumps({"finder": raised.value.usage}),
@@ -1024,7 +1066,10 @@ def test_reporter_posts_one_cause_specific_notice_and_no_review(monkeypatch):
         raise AssertionError(endpoint)
 
     monkeypatch.setattr(cr, "gh_json", get)
-    monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset({cr.BOT_LOGIN}))
+    monkeypatch.setattr(
+        cr, "_review_configuration",
+        lambda *_: (frozenset({cr.BOT_LOGIN}), "reviewers"),
+    )
     result = cr.report_skip(
         event(), "Grimblaz", "92", "failure", "authentication runtime failure", "92",
         '{"finder":{"input_tokens":17}}',
@@ -1053,7 +1098,10 @@ def test_reporter_posts_prepare_failure_only_after_rederiving_eligibility(monkey
         raise AssertionError(endpoint)
 
     monkeypatch.setattr(cr, "gh_json", get)
-    monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset({cr.BOT_LOGIN}))
+    monkeypatch.setattr(
+        cr, "_review_configuration",
+        lambda *_: (frozenset({cr.BOT_LOGIN}), "reviewers"),
+    )
     result = cr.report_skip(
         event(), "Grimblaz", "93", "skipped", None, "93",
         prepare_result="failure",
@@ -1084,7 +1132,10 @@ def test_reporter_names_a_cancelled_prepare_from_recorded_job_state(monkeypatch)
         raise AssertionError(endpoint)
 
     monkeypatch.setattr(cr, "gh_json", get)
-    monkeypatch.setattr(cr, "_configured_reviewers", lambda *_: frozenset({cr.BOT_LOGIN}))
+    monkeypatch.setattr(
+        cr, "_review_configuration",
+        lambda *_: (frozenset({cr.BOT_LOGIN}), "reviewers"),
+    )
     result = cr.report_skip(
         event(), "Grimblaz", "36474657693", "skipped", None, "36474657693",
         prepare_result=prepare_result,

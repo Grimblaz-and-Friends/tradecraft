@@ -26,6 +26,7 @@ from winio import utf8_stdio
 
 
 BOT_LOGIN = "github-actions[bot]"
+DEFAULT_REVIEWER_LABEL = "reviewers"
 DEFAULT_MODEL = "claude-opus-5-5"
 FINDER_EFFORT = "xhigh"
 CHECKER_EFFORT = "xhigh"
@@ -294,13 +295,17 @@ def _event_pr_number(event: dict[str, Any]) -> int:
     raise ReviewError("event has no pull request number")
 
 
-def _event_trigger_allowed(event: dict[str, Any]) -> bool:
+def _event_trigger_allowed(event: dict[str, Any], reviewer_label: str | None) -> bool:
     action = event.get("action")
     if action == "ready_for_review":
         return True
     if action == "labeled":
         label = event.get("label")
-        return isinstance(label, dict) and label.get("name") == "reviewers"
+        return (
+            reviewer_label is not None
+            and isinstance(label, dict)
+            and label.get("name") == reviewer_label
+        )
     return False
 
 
@@ -312,7 +317,9 @@ def _repository_name(event: dict[str, Any]) -> str:
     return value
 
 
-def _configured_reviewers(repo: str, base_sha: str) -> frozenset[str]:
+def _review_configuration(
+    repo: str, base_sha: str,
+) -> tuple[frozenset[str], str | None]:
     content = _repository_file(repo, ".tradecraft/work.json", base_sha)
     try:
         parsed = json.loads(_decode(content))
@@ -321,7 +328,15 @@ def _configured_reviewers(repo: str, base_sha: str) -> frozenset[str]:
     values = parsed.get("connected_reviewers") if isinstance(parsed, dict) else None
     if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
         raise ReviewError("base branch connected reviewer list is malformed")
-    return frozenset(values)
+    label = parsed.get("reviewer_label", DEFAULT_REVIEWER_LABEL)
+    if label is not None and (
+        not isinstance(label, str)
+        or not label.strip()
+        or len(label) > 50
+        or any(character in label for character in "\r\n")
+    ):
+        raise ReviewError("base branch reviewer label is malformed")
+    return frozenset(values), label.strip() if isinstance(label, str) else None
 
 
 def _repository_file(repo: str, path: str, revision: str) -> bytes:
@@ -390,8 +405,6 @@ def completed_review_for_attempt(
 def eligibility(event: dict[str, Any], owner_login: str) -> dict[str, str]:
     repo = _repository_name(event)
     number = _event_pr_number(event)
-    if not _event_trigger_allowed(event):
-        return {"admitted": "false", "reason": "event is not a review trigger"}
     pull = gh_json(f"repos/{repo}/pulls/{number}")
     if not isinstance(pull, dict):
         raise ReviewError("pull request metadata is malformed")
@@ -432,7 +445,11 @@ def eligibility(event: dict[str, Any], owner_login: str) -> dict[str, str]:
     if not isinstance(author, dict) or author.get("login") != owner_login:
         result["reason"] = "pull request is not authored by the token owner"
         return result
-    if BOT_LOGIN not in _configured_reviewers(repo, base_sha):
+    reviewers, reviewer_label = _review_configuration(repo, base_sha)
+    if not _event_trigger_allowed(event, reviewer_label):
+        result["reason"] = "event is not a review trigger"
+        return result
+    if BOT_LOGIN not in reviewers:
         result["reason"] = "reviewer is not enabled in the base configuration"
         return result
     if completed_review_at_head(repo, number, head_sha) is not None:
