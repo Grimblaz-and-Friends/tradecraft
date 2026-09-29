@@ -2,7 +2,7 @@
 
 **Purpose:** preserve why a Windows Codex judging seat imports exactly its machine owner's sandbox mode, and why an unusable mode is pre-launch unavailability rather than a result interpreted after the seat returns. **Audience:** a future session changing Codex seat isolation, Windows launch configuration, availability fallback, or dispatch records. **Success:** that session can revise the mechanism without restoring a fixed sandbox mode, importing the owner's wider configuration, or accepting a blind seat as a successful judge.
 
-Governed by [issue #771](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771), its [affirmed implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771#issuecomment-5880944839), [pre-implementation artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771#issuecomment-5881033567), [cold verdict](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771#issuecomment-5881144979), and [holder reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771#issuecomment-5881148328). The implementation is commit `9e87c5537ecb363dc465b5d9eba9684569fc8b0e` in [pull request #784](https://github.com/Grimblaz-and-Friends/tradecraft/pull/784).
+Governed by [issue #771](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771), its [affirmed implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771#issuecomment-5880944839), [pre-implementation artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771#issuecomment-5881033567), [`would`-route settlement](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771#issuecomment-5881145237), [cold verdict](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771#issuecomment-5881144979), and [holder reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/771#issuecomment-5881148328). The implementation is commit `9e87c5537ecb363dc465b5d9eba9684569fc8b0e` in [pull request #784](https://github.com/Grimblaz-and-Friends/tradecraft/pull/784).
 
 ## Context
 
@@ -28,7 +28,7 @@ For a launched Windows Codex attempt, the request and attempt boundaries state b
 
 ## Rejected alternatives and boundaries
 
-**Fix the launcher to `elevated`, `unelevated`, or another universal mode.** Rejected because the probe demonstrated materially different behavior from the two owner values, and the brief establishes that no one value serves every machine. A launcher constant would silently replace the machine owner's working choice.
+**Fix the launcher to `elevated`, `unelevated`, or another universal mode.** Rejected because the probe demonstrated materially different behavior from the two sandbox values tried—the machine owner's configured `elevated` value and the comparison arm `unelevated`—and the brief establishes that no one value serves every machine. A launcher constant would silently replace the machine owner's working choice.
 
 **Load the owner's whole Codex configuration, drop `--ignore-user-config`, or carry apps and plugins with the sandbox setting.** Rejected because it reverses the isolation bought when signed-in apps were removed from judging seats. Parsing the file does not make its other values launch inputs or record values; only `windows.sandbox` crosses.
 
