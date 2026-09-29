@@ -50,6 +50,24 @@ class ImplementerError(RuntimeError):
     """The implementer launch cannot produce trustworthy continuation evidence."""
 
 
+def read_machine_vendor(setting_path: Path | None = None) -> tuple[str, str]:
+    """Read the fresh implementer vendor once, including its reportable source."""
+    path = setting_path or Path.home() / ".tradecraft" / "implementer-vendor"
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
+        return "codex", f"absent machine file: {path}"
+    except OSError as exc:
+        raise ImplementerError(f"cannot read implementer vendor setting {path}: {exc}") from exc
+    try:
+        vendor = content.decode("utf-8").strip()
+    except UnicodeError as exc:
+        raise ImplementerError(f"invalid UTF-8 in implementer vendor setting {path}") from exc
+    if vendor not in {"codex", "claude"}:
+        raise ImplementerError(f"implementer vendor setting {path} must contain codex or claude")
+    return vendor, f"machine file {path}: {vendor}"
+
+
 def build_command(args: argparse.Namespace, executable: list[str], last_message: Path) -> list[str]:
     if args.vendor == "claude":
         command = [
@@ -85,6 +103,8 @@ def _claude_result(raw: bytes) -> tuple[bool, bytes, str | None, str]:
     session = value.get("session_id")
     if not isinstance(session, str) or not re.fullmatch(r"[0-9a-f-]{36}", session, re.I):
         session = None
+    if value.get("permission_denials"):
+        return False, b"", session, "Claude reported a tool permission denial; see its stdout log"
     if value.get("is_error") is not False or value.get("subtype") != "success":
         return False, b"", session, str(value.get("result") or "claude reported an error")
     message = value.get("result")
@@ -123,6 +143,15 @@ def _thread_id(events: list[dict[str, object]], stderr: bytes) -> tuple[str | No
 
 def run_implementer(args: argparse.Namespace) -> int:
     role = "artifact_author" if args.stage == "artifact" else "implementer"
+    machine_vendor, machine_source = read_machine_vendor()
+    if args.vendor is None:
+        if args.resume:
+            raise ImplementerError("direct resume requires --vendor from the recorded session")
+        if args.vendor_source:
+            raise ImplementerError("--vendor-source requires --vendor")
+        args.vendor, args.vendor_source = machine_vendor, machine_source
+    elif not args.vendor_source:
+        args.vendor_source = f"explicit --vendor {args.vendor}"
     if args.vendor not in ("codex", "claude"):
         raise ImplementerError(f"unknown implementer vendor: {args.vendor}")
     model_defaulted = args.model is None
@@ -158,6 +187,10 @@ def run_implementer(args: argparse.Namespace) -> int:
         raise ImplementerError("--session-id is only supported for Claude")
     if args.handover_state and (not args.handover_from or not (args.session_id or args.resume)):
         raise ImplementerError("handover requires a predecessor bundle and replacement session")
+    if (args.handover_from and not args.handover_state
+            and not (args.vendor == "claude" and unavailable_reason is not None
+                     and not args.resume and not args.session_id)):
+        raise ImplementerError("handover without a reservation requires an unavailable Claude attempt")
     if args.holder_session_id and args.resume == args.holder_session_id:
         raise ImplementerError("a builder session cannot also identify the holder session")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
@@ -211,7 +244,7 @@ def run_implementer(args: argparse.Namespace) -> int:
                 retry_of=args.retry_of,
                 holder_session_id=args.holder_session_id,
                 setting_sources={
-                    "vendor": args.vendor_source or "dispatch_implementer direct default",
+                    "vendor": args.vendor_source,
                     "model": (args.model_source or (
                         "dispatch_implementer default" if model_defaulted else args.settings_source
                     )),
@@ -235,6 +268,11 @@ def run_implementer(args: argparse.Namespace) -> int:
                     "state": str(args.handover_state), "from_bundle": args.handover_from,
                     "to_vendor": args.vendor, "replacement_session": args.session_id or args.resume,
                     "phase": "fresh" if args.session_id else "resume",
+                }
+            elif args.handover_from and unavailable_reason and args.vendor == "claude":
+                request["handover"] = {
+                    "from_bundle": args.handover_from, "to_vendor": "claude",
+                    "replacement_session": None, "phase": "unavailable",
                 }
             request["runtime_version"] = (
                 records.runtime_version(executable) if executable is not None else None
@@ -269,7 +307,7 @@ def run_implementer(args: argparse.Namespace) -> int:
                            "published_output_unavailable_reason": "no completed final source return",
                            "assessment": "unassessed"},
             }
-            if args.handover_state:
+            if "handover" in request:
                 record["handover"] = request["handover"]
             if unavailable_reason is not None:
                 attempt.update(outcome="unavailable", reason=unavailable_reason)
@@ -287,7 +325,10 @@ def run_implementer(args: argparse.Namespace) -> int:
                     stream.close()
                 streams.streams.clear()
                 records.finalize_reserved_json(record_path, record)
-                print(f"implementer: {unavailable_reason}", file=sys.stderr)
+                print(
+                    f"implementer: {args.vendor} (source {args.vendor_source}) unavailable: "
+                    f"{unavailable_reason}", file=sys.stderr,
+                )
                 return 1
             verdict: bytes | None = None
             source_ready = False
@@ -458,10 +499,13 @@ def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(
         description="Run a recorded Codex or Claude implementer turn; resume an explicit session id.",
         epilog=(
-            "The launcher always uses --approve-for-me and JSONL. It never uses --ephemeral, "
-            "--last, a read-only sandbox, or vendor fallback. Outputs default to the machine-local "
-            ".tradecraft dispatch store and must be new. A successful turn without a returned "
-            "session id publishes its result but exits nonzero because it cannot be continued."
+            "A fresh direct launch reads ~/.tradecraft/implementer-vendor unless --vendor is "
+            "supplied; a named resume requires --vendor from its recorded session. Codex uses "
+            "--approve-for-me and JSONL; Claude uses auto mode and a JSON result. Neither route "
+            "uses --ephemeral, --last, a read-only sandbox, or vendor fallback. Outputs default "
+            "to the machine-local .tradecraft dispatch store and must be new. A successful turn "
+            "without a returned session id publishes its result but exits nonzero because it "
+            "cannot be continued."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -476,7 +520,8 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--output", type=Path)
     cli.add_argument("--resume")
     cli.add_argument("--session-id", help="reserved identity for a fresh Claude handover")
-    cli.add_argument("--vendor", choices=("codex", "claude"), default="codex")
+    cli.add_argument("--vendor", choices=("codex", "claude"),
+                     help="explicit vendor; a fresh direct launch otherwise reads the machine file")
     cli.add_argument("--vendor-source", help="source of the selected implementer vendor")
     cli.add_argument("--context", type=Path, help="separate launcher context, retained beside dispatch bytes")
     cli.add_argument("--handover-state", type=Path)

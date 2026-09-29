@@ -2763,6 +2763,129 @@ def dispatch_bundle(record_root, *, work_value="example/product#12", stage="buil
     }), encoding="utf-8")
 
 
+@pytest.mark.parametrize("merge", [False, True])
+def test_use_producer_vendor_accepts_later_commit_or_merge_descendant(tmp_path, merge):
+    source = repository(tmp_path, "source")
+    if merge:
+        base_branch = git(source, "symbolic-ref", "--short", "HEAD").stdout.decode().strip()
+        git(source, "switch", "-c", "builder")
+    (source / "built.txt").write_bytes(b"built\n")
+    git(source, "add", "built.txt")
+    git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "builder result")
+    producer = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+    if merge:
+        git(source, "switch", base_branch)
+    (source / "later.txt").write_bytes(b"later\n")
+    git(source, "add", "later.txt")
+    git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "later source")
+    unrelated = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+    if merge:
+        git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "merge", "--no-ff", "builder", "-m", "landed merge")
+    tree_revision = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+
+    fixture = state(AFFIRMED, pr=True)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    run_path = fixture.record_root / "build" / "result.md.run.json"
+    run = json.loads(run_path.read_bytes())
+    run["revision_after"] = producer
+    run_path.write_bytes(json.dumps(run).encode())
+
+    vendor, path = work._producer_vendor(
+        fixture, work.RESUME_SOURCE_STAGES["build"],
+        revision=tree_revision, source_root=source,
+    )
+    assert vendor == "codex"
+    assert path == str(run_path)
+    if merge:
+        with pytest.raises(work.WorkError, match="no implementation bundle proves"):
+            work._producer_vendor(
+                fixture, work.RESUME_SOURCE_STAGES["build"],
+                revision=unrelated, source_root=source,
+            )
+
+
+def test_use_producer_vendor_follows_a_squash_merge_through_the_pr_head(tmp_path):
+    source = repository(tmp_path, "source")
+    base_branch = git(source, "symbolic-ref", "--short", "HEAD").stdout.decode().strip()
+    git(source, "switch", "-c", "builder")
+    (source / "built.txt").write_bytes(b"built\n")
+    git(source, "add", "built.txt")
+    git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "builder result")
+    producer = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+    (source / "later.txt").write_bytes(b"later\n")
+    git(source, "add", "later.txt")
+    git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "PR head")
+    pr_head = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+    git(source, "switch", base_branch)
+    git(source, "merge", "--squash", "builder")
+    git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "landed squash")
+    merge_commit = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+    (source / "subsequent.txt").write_bytes(b"later source\n")
+    git(source, "add", "subsequent.txt")
+    git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "later source")
+    tree_revision = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+
+    fixture = state(AFFIRMED, pr=True)
+    fixture.pr["head"]["sha"] = pr_head
+    fixture.pr["merge_commit_sha"] = merge_commit
+    fixture.pr["merged_at"] = "2026-09-29T12:00:00Z"
+    fixture.merged_pr = fixture.pr
+    fixture.pr = None
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    run_path = fixture.record_root / "build" / "result.md.run.json"
+    run = json.loads(run_path.read_bytes())
+    run["revision_after"] = producer
+    run_path.write_bytes(json.dumps(run).encode())
+
+    assert work._producer_vendor(
+        fixture, work.RESUME_SOURCE_STAGES["build"],
+        revision=tree_revision, source_root=source,
+    ) == ("codex", str(run_path))
+
+
+def test_use_producer_vendor_stays_with_its_pull_request_branch(tmp_path):
+    source = repository(tmp_path, "source")
+    producer = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+    (source / "later.txt").write_bytes(b"later\n")
+    git(source, "add", "later.txt")
+    git(source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "later source")
+    tree_revision = git(source, "rev-parse", "HEAD").stdout.decode().strip()
+    fixture = state(AFFIRMED, pr=True)
+    fixture.pr["head"]["ref"] = "tradecraft/current"
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, name="current.md")
+    dispatch_bundle(fixture.record_root, name="other.md",
+                    completed_at="2026-09-20T11:00:00+00:00")
+    for name, branch, vendor in (
+            ("current.md", "tradecraft/current", "codex"),
+            ("other.md", "tradecraft/other", "claude")):
+        request_path = fixture.record_root / "build" / f"{name}.request.json"
+        run_path = fixture.record_root / "build" / f"{name}.run.json"
+        request = json.loads(request_path.read_bytes())
+        request["lineage_branch"] = branch
+        request["requested"]["vendor"] = vendor
+        request_path.write_bytes(json.dumps(request).encode())
+        run = json.loads(run_path.read_bytes())
+        run["revision_after"] = producer
+        run["actual_vendor"] = vendor
+        run_path.write_bytes(json.dumps(run).encode())
+
+    assert work._producer_vendor(
+        fixture, work.RESUME_SOURCE_STAGES["build"],
+        revision=tree_revision, source_root=source,
+    ) == ("codex", str(fixture.record_root / "build" / "current.md.run.json"))
+
+
 def test_bundle_backed_builder_marker_must_match_the_observed_session(tmp_path):
     marker = f"<!-- tradecraft:builder-session:v1 session={SESSION} -->"
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, marker)
@@ -3729,6 +3852,45 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
     assert len(launches) == 2
 
 
+def test_unavailable_claude_does_not_reserve_handover_before_a_retry(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    (home / ".tradecraft" / "implementer-vendor").write_bytes(b"claude\n")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    root = repository(tmp_path, "implementation")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, stage="build", session=SESSION)
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
+    available = False
+
+    def runtime(vendor, explicit=None):
+        if vendor == "claude" and not available:
+            return ["--claude-unavailable-reason", "Claude CLI not installed"]
+        return [f"--{vendor}", "fixture"]
+
+    monkeypatch.setattr(work, "_runtime_argument", runtime)
+    original_run = subprocess.run
+    launches = []
+
+    def capture(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            launches.append(command)
+            return subprocess.CompletedProcess(command, 1 if not available else 0)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work.subprocess, "run", capture)
+    decision = work.Decision("floor", True, "resume", "fixture")
+    assert work.execute_stage(fixture, decision, root, None, "holder") == 1
+    handover = work._handover_path(fixture, "implementer", root, None)
+    assert not handover.exists()
+    assert "--claude-unavailable-reason" in launches[-1]
+    available = True
+    assert work.execute_stage(fixture, decision, root, None, "holder") == 0
+    assert "--session-id" in launches[-1]
+    assert json.loads(handover.read_bytes())["phase"] == "reserved"
+
+
 def test_resume_without_bundle_or_marker_returns_a_non_dispatching_decision(
         tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: None)
@@ -3849,7 +4011,13 @@ def test_use_handoff_migrates_legacy_registration_and_names_the_proof_gap(
 
 def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
         tmp_path, monkeypatch):
-    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "builder bundle"))
+    producer_calls = []
+
+    def producer_vendor(*_args, **kwargs):
+        producer_calls.append(kwargs)
+        return "codex", "builder bundle"
+
+    monkeypatch.setattr(work, "_producer_vendor", producer_vendor)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -3895,6 +4063,10 @@ def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
         holder, None, dispatch_path=dispatch, tree_metadata=metadata,
     ) == 0
     assert len(launches) == 1
+    assert producer_calls == [{
+        "revision": git(implementation, "rev-parse", "HEAD").stdout.decode().strip(),
+        "source_root": implementation,
+    }]
     command = launches[0]
     assert Path(command[command.index("--dispatch") + 1]) == dispatch.resolve()
     assert Path(command[command.index("--root") + 1]) == output.resolve()

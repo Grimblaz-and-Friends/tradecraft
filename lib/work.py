@@ -1633,21 +1633,10 @@ def _launch_settings(state: WorkState, role: str, vendor: str,
 def _implementer_vendor(state: WorkState, role: str, *,
                         setting_path: Path | None = None) -> tuple[str, str, bool]:
     """Resolve one fresh choice, validating the machine file even under an override."""
-    path = setting_path or Path.home() / ".tradecraft" / "implementer-vendor"
     try:
-        content = path.read_bytes()
-    except FileNotFoundError:
-        machine_vendor, machine_source = "codex", f"absent machine file: {path}"
-    except OSError as exc:
-        raise WorkError(f"cannot read implementer vendor setting {path}: {exc}") from exc
-    else:
-        try:
-            machine_vendor = content.decode("utf-8").strip()
-        except UnicodeError as exc:
-            raise WorkError(f"invalid UTF-8 in implementer vendor setting {path}") from exc
-        if machine_vendor not in {"codex", "claude"}:
-            raise WorkError(f"implementer vendor setting {path} must contain codex or claude")
-        machine_source = f"machine file {path}: {machine_vendor}"
+        machine_vendor, machine_source = dispatch_implementer.read_machine_vendor(setting_path)
+    except dispatch_implementer.ImplementerError as exc:
+        raise WorkError(str(exc)) from exc
     override = next((marker for marker in reversed(state.issue_markers)
                      if marker.name == "model-override"), None)
     value = override.attributes.get(MODEL_OVERRIDE_ROLES[role]) if override else None
@@ -3744,15 +3733,51 @@ def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSour
 
 
 def _producer_vendor(state: WorkState, stages: frozenset[str], *,
-                     revision: str | None = None) -> tuple[str, str]:
+                     revision: str | None = None,
+                     source_root: Path | None = None) -> tuple[str, str]:
+    def ancestor(older: str, newer: str, bundle: str) -> bool:
+        result = _git(["merge-base", "--is-ancestor", older, newer], source_root)
+        if result.returncode not in {0, 1}:
+            raise WorkError(
+                f"cannot prove implementation ancestry for bundle {bundle}: "
+                f"{_git_failure(result)}"
+            )
+        return result.returncode == 0
+
     store = state.record_root or records.default_record_root().expanduser().resolve()
     matches = _matching_bundles(
         f"{state.repo}#{state.issue_number}", stages, store,
         outcomes=RESUMABLE_BUNDLE_OUTCOMES,
     )
+    integration = state.pr or state.merged_pr
     for _completed, path, request, run in reversed(matches):
-        if revision is not None and run.get("revision_after") != revision:
+        prior_pr = request.get("lineage_pull_request")
+        current_pr = integration.get("number") if integration else None
+        if prior_pr is not None and current_pr is not None and prior_pr != current_pr:
             continue
+        prior_branch = request.get("lineage_branch")
+        head = integration.get("head") if integration else None
+        current_branch = head.get("ref") if isinstance(head, dict) else None
+        if prior_branch and current_branch and prior_branch != current_branch:
+            continue
+        if revision is not None:
+            producer_revision = run.get("revision_after")
+            if producer_revision != revision:
+                if (source_root is None or not isinstance(producer_revision, str)
+                        or not HEAD_SHA.fullmatch(producer_revision)):
+                    continue
+                if not ancestor(producer_revision, revision, path):
+                    pr = integration or {}
+                    merged = pr.get("merge_commit_sha")
+                    head = pr.get("head")
+                    pr_head = head.get("sha") if isinstance(head, dict) else None
+                    if (not pr.get("merged_at") or not isinstance(merged, str)
+                            or not HEAD_SHA.fullmatch(merged)
+                            or not isinstance(pr_head, str) or not HEAD_SHA.fullmatch(pr_head)
+                            or not ancestor(merged, revision, path)
+                            or not (producer_revision == pr_head
+                                    or ancestor(producer_revision, pr_head, path))):
+                        continue
         requested = request.get("requested")
         vendor = requested.get("vendor") if isinstance(requested, dict) else None
         actual = run.get("actual_vendor")
@@ -4576,6 +4601,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         own_vendor, own_vendor_source = _producer_vendor(
             state, RESUME_SOURCE_STAGES["build"],
             revision=str(claim.get("source_revision")) if claim.get("source_revision") else None,
+            source_root=source_root,
         )
         command = [
             sys.executable, str(here / "dispatch_seat.py"),
@@ -4676,19 +4702,25 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     handover_new = False
     handover_context = b""
     handover_state_path: Path | None = None
+    handover_runtime: list[str] | None = None
+    handover_unavailable = False
+    if prepared_dispatch is not None and _path_inside(prepared_dispatch, dispatch_root):
+        raise WorkError("dispatch file must be outside the registered implementation root")
     if (uses_implementer and decision.continuity == "resume" and resume_source is not None
             and resume_source.request.get("requested", {}).get("vendor") == "codex"):
         handover_state_path = _handover_path(state, implementer_role, dispatch_root, branch)
         if handover or handover_state_path.is_file():
             handover_context = _handover_context(state, resume_source, dispatch_root, branch)
-            handover_record, handover_new = _reserve_handover(
-                handover_state_path, resume_source, vendor_source
-            )
+            if handover and not handover_state_path.exists():
+                handover_runtime = _selected_runtime_argument("claude", claude_path)
+                handover_unavailable = handover_runtime[0] == "--claude-unavailable-reason"
+            if not handover_unavailable:
+                handover_record, handover_new = _reserve_handover(
+                    handover_state_path, resume_source, vendor_source
+                )
             selected_vendor = "claude"
-            vendor_source = (vendor_source if handover_new else
+            vendor_source = (vendor_source if handover_new or handover_unavailable else
                              f"recorded handover {handover_state_path}")
-    if prepared_dispatch is not None and _path_inside(prepared_dispatch, dispatch_root):
-        raise WorkError("dispatch file must be outside the registered implementation root")
     if migrated:
         detail = (
             f"{decision.detail}; {MIGRATION_NOTICE}"
@@ -4754,9 +4786,10 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                         "--model", settings.model, "--effort", settings.effort,
                         "--model-source", settings.model_source,
                         "--effort-source", settings.effort_source,
-                         *_selected_runtime_argument(
-                             selected_vendor, claude_path if selected_vendor == "claude" else codex_path
-                         ),
+                         *(handover_runtime if handover_runtime is not None else
+                           _selected_runtime_argument(
+                               selected_vendor, claude_path if selected_vendor == "claude" else codex_path
+                           )),
                         "--holder-session-id", holder_identity]
             if selected_vendor == "claude":
                 context = Path(temporary) / "context.txt"
@@ -4776,13 +4809,15 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                     command.extend(("--session-id", str(handover_record["replacement_session"])))
                 else:
                     command.extend(("--resume", str(handover_record["replacement_session"])))
+            elif handover_unavailable:
+                command.extend(("--handover-from", resume_source.path))
             elif decision.continuity == "resume":
                 command.extend(("--resume", session))
             print(json.dumps({
                 "stage": decision.stage, "implementer_role": implementer_role,
                 "selected_vendor": selected_vendor, "vendor_source": vendor_source,
                 "model": settings.model, "effort": settings.effort,
-                "continuity": "handover" if handover_record else decision.continuity,
+                "continuity": "handover" if handover_record or handover_unavailable else decision.continuity,
                 "handover_state": str(handover_state_path) if handover_record else None,
             }, ensure_ascii=True, sort_keys=True))
             return subprocess.run(command).returncode
