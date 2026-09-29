@@ -66,10 +66,19 @@ def is_windows() -> bool:
 
 
 def windows_codex_sandbox() -> WindowsSandboxSelection:
-    if "CODEX_HOME" in os.environ:
-        config = (Path(os.environ["CODEX_HOME"]).expanduser() / "config.toml").resolve()
-    else:
+    codex_home = os.environ.get("CODEX_HOME")
+    if not codex_home:
         config = (Path.home() / ".codex" / "config.toml").resolve()
+    else:
+        configured_home = Path(codex_home)
+        if not configured_home.is_absolute():
+            source = f"CODEX_HOME={codex_home!r}"
+            reason = (
+                "windows.sandbox is unavailable: CODEX_HOME must be an absolute path "
+                f"so discovery and launch use the same directory; got {codex_home!r}"
+            )
+            return WindowsSandboxSelection(None, source, reason)
+        config = (configured_home / "config.toml").resolve()
     source = f"{config} key [windows].sandbox"
     try:
         raw = config.read_bytes()

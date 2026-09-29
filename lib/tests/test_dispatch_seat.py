@@ -363,18 +363,62 @@ def test_windows_codex_unreadable_sandbox_source_is_unavailable(tmp_path, monkey
     assert "could not be read" in selection.unavailable_reason
 
 
-def test_windows_codex_uses_normal_user_config_without_codex_home(tmp_path, monkeypatch):
-    config = tmp_path / ".codex" / "config.toml"
-    config.parent.mkdir()
+@pytest.mark.parametrize("codex_home", [None, ""])
+def test_windows_codex_uses_normal_user_config_when_codex_home_is_unset_or_empty(
+    job, monkeypatch, codex_home
+):
+    args, _ = job
+    home = args.root.parent / "user-home"
+    config = home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
     config.write_bytes(b'[windows]\nsandbox = "elevated"\n')
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    if codex_home is None:
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+    else:
+        monkeypatch.setenv("CODEX_HOME", codex_home)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(seat, "is_windows", lambda: True)
+    args.vendor = args.own_vendor = "codex"
+    configure(job, {"codex": {"message": "isolated"}})
 
-    selection = seat.windows_codex_sandbox()
+    assert seat.run_dispatch(args) == 0
 
-    assert selection.mode == "elevated"
-    assert selection.source == f"{config.resolve()} key [windows].sandbox"
-    assert selection.unavailable_reason is None
+    source = f"{config.resolve()} key [windows].sandbox"
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    attempt = record(args)["attempts"][0]
+    assert request["requested"]["sources"]["windows_sandbox"] == source
+    assert attempt["setting_sources"]["windows_sandbox"] == source
+    assert "windows_sandbox=elevated" in attempt["permission_boundary"]
+    assert attempt["outcome"] == "success"
+
+
+def test_windows_codex_relative_home_is_unavailable_before_launch(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setenv("CODEX_HOME", "relative-codex-home")
+    monkeypatch.setattr(seat, "is_windows", lambda: True)
+    args.vendor = "codex"
+    args.own_vendor = "claude"
+    configure(job, {"claude": {"message": "fallback"}})
+    calls = []
+    resolver = seat.resolve_command
+
+    def tracked(vendor, explicit):
+        calls.append(vendor)
+        return resolver(vendor, explicit)
+
+    monkeypatch.setattr(seat, "resolve_command", tracked)
+
+    assert seat.run_dispatch(args) == 0
+
+    logged = record(args)
+    codex, claude = logged["attempts"]
+    assert calls == ["claude"]
+    assert codex["launched"] is False
+    assert codex["outcome"] == "unavailable"
+    assert "CODEX_HOME must be an absolute path" in codex["reason"]
+    assert "relative-codex-home" in codex["reason"]
+    assert logged["fallback_reason"] == codex["reason"]
+    assert claude["outcome"] == "success"
 
 
 def test_windows_codex_missing_sandbox_survives_unavailable_fallback(job, monkeypatch):
