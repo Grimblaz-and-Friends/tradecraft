@@ -111,6 +111,12 @@ def test_windows_legacy_npm_uses_the_injected_node_lookup(tmp_path):
     ) == [str(node), str(script)]
 
 
+def test_windows_local_prefix_npm_shim_resolves_its_package(tmp_path):
+    shim = file(tmp_path / "node_modules/.bin/claude.cmd")
+    native = file(tmp_path / "node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+    assert cli.executable_command("claude", shim, platform="nt") == [str(native)]
+
+
 def test_unknown_windows_shim_refused_and_posix_launcher_untouched(tmp_path):
     path = file(tmp_path / "claude.cmd")
     with pytest.raises(cli.CliError, match="native executable"):
