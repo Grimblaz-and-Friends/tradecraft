@@ -1308,6 +1308,9 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
     except WorkError as exc:
         return str(exc)
     if not matched:
+        if marker.name == "builder-session" and marker.attributes.get("vendor") in {
+                "codex", "claude"}:
+            return None
         return "no matching successful dispatch bundle"
     completed, path, request, run = matched[-1]
     if len(matched) > 1 and matched[-2][0] == completed:
@@ -1323,7 +1326,9 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
             return "builder-session claim disagrees with its build bundle"
         requested = request.get("requested")
         vendor = requested.get("vendor") if isinstance(requested, dict) else None
-        actual_vendor = run.get("actual_vendor") or vendor
+        actual_vendor = run.get("actual_vendor")
+        if vendor not in {"codex", "claude"} or actual_vendor != vendor:
+            return "builder-session bundle does not prove its vendor"
         if marker.attributes.get("vendor") and marker.attributes["vendor"] != actual_vendor:
             return "builder-session vendor disagrees with its build bundle"
     if marker.name == "floor":
@@ -4430,6 +4435,11 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         elif pinned_vendor == "codex" and selected_vendor == "claude":
             if role_overridden:
                 raise WorkError("model override conflicts with pinned Codex session; only the machine switch can hand over")
+            if resume_source is None:
+                raise WorkError(
+                    "Codex-to-Claude handover requires the predecessor dispatch bundle; "
+                    "a vendor-qualified marker alone does not carry its record"
+                )
             handover = True
         elif pinned_vendor and pinned_vendor != selected_vendor:
             raise WorkError(f"selected {selected_vendor} conflicts with pinned {pinned_vendor} session")

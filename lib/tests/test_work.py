@@ -3653,6 +3653,38 @@ def test_resume_session_falls_back_to_authorized_builder_session_marker(tmp_path
     assert work.resume_session(fixture, "floor", tmp_path / "missing") == SESSION
 
 
+def test_vendor_qualified_builder_marker_recovers_without_a_bundle(tmp_path):
+    store = tmp_path / "dispatches"
+    store.mkdir()
+    fixture = state(AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=claude -->")
+    fixture.record_root = store
+    work.validate_marker_claims(fixture)
+    assert any(marker.name == "builder-session" for marker in fixture.issue_markers)
+    assert work.resume_session(fixture, "floor", store) == SESSION
+
+    legacy = state(AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={SESSION} -->")
+    legacy.record_root = store
+    work.validate_marker_claims(legacy)
+    assert not any(marker.name == "builder-session" for marker in legacy.issue_markers)
+
+
+def test_marker_only_codex_session_cannot_handover_without_its_record(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    (home / ".tradecraft" / "implementer-vendor").write_bytes(b"claude\n")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    store = tmp_path / "dispatches"
+    store.mkdir()
+    fixture = state(AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->")
+    fixture.record_root = store
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("no root mutation"))
+    with pytest.raises(work.WorkError, match="requires the predecessor dispatch bundle"):
+        work.execute_stage(
+            fixture, work.Decision("floor", True, "resume", "fixture"), tmp_path, None,
+            "holder-session",
+        )
+
+
 def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
         tmp_path, monkeypatch):
     home = tmp_path / "home"
