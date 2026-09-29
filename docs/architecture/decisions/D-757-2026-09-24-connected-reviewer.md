@@ -70,6 +70,8 @@ The shared login leaves a residual risk: a later workflow that comments or revie
 
 ## Evidence
 
+The [first adopter experience session](https://github.com/Grimblaz-and-Friends/tradecraft/pull/757#issuecomment-5881131117) found six setup gaps: the switch's file, owner-login meaning, merged-ref check, Windows runner account, token source and scope, and label prerequisite were implicit or absent. The shipped setup now names each one, and `test_setup_names_login_only_enablement_and_private_prerequisites` demonstrates those instructions alongside the canonical workflow identity check.
+
 The live single-pass launch, deterministic validation and deduplication, absence of live preload, usage propagation, attempt reconciliation, body fallback, workflow serialization, login-only activation, repository-rule extraction, receipt crediting, replay fail-closed behavior and incremental case records are exercised in `lib/tests/test_connected_review.py`, `tools/tests/test_connected_review_replay.py` and the connected-review packaging checks. The replay suite separately preserves the measured checker and preload configurations. `tools/probe_connected_review_confinement.py` and `tools/connected-review-live-checks.md` are procedures for evidence this build cannot honestly manufacture.
 
 Run `python tools/lint.py` and `python -m pytest tools/tests skills lib/tests -q -n auto --dist loadfile` on the tree under review. Those commands and test surfaces are the evidence; this entry freezes no derived result.

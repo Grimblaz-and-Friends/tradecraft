@@ -201,6 +201,7 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
     assert workflow.count(
         "TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT"
     ) == 1
+    assert workflow.count("REVIEW_OWNER_LOGIN: Grimblaz") == 1
     assert "CONNECTED_REVIEW_ENABLED" not in workflow
     assert "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES" not in workflow
     assert "${{ vars." not in workflow
@@ -342,7 +343,17 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
         "copy the one workflow file, set the one secret, and, on a private "
         "repository, install the runner"
     ) in prose
+    assert "`claude setup-token` as the owner" in prose
+    assert "long-lived token" in prose
+    assert "on the repository or organization" in prose
+    assert "`REVIEW_OWNER_LOGIN` names the one account" in prose
+    assert "already names the lab owner, `Grimblaz`" in prose
+    assert "any other author is refused without a notice" in prose
     assert "`gh`, Python 3.14, Node and npm" in prose
+    assert "run the runner as the account whose PATH holds them" in prose
+    assert "runner installed as a service runs under a service account" in prose
+    assert "for example from a logon task" in prose
+    assert "install the tools for all users" in prose
     assert "`RUNNER_TOOL_CACHE` a stable writable location" in prose
     assert "cache's `claude-cli` directory" in prose
     assert "never installs or executes pull-request content" in prose
@@ -350,9 +361,20 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
     assert "`.path`" not in prose
     assert "hosted `prepare` job" in prose and "hosted `report` job" in prose
     assert "permitted non-mechanical second look" in prose
-    assert "reviewed merged commit on the default branch" in prose
+    assert "`TRADECRAFT_REVIEWER_REF` to a commit on tradecraft's default branch" in prose
+    assert "normally the merge commit of the change that shipped it" in prose
+    assert (
+        "gh api repos/Grimblaz-and-Friends/tradecraft/compare/<sha>...main "
+        "--jq .status"
+    ) in prose
+    assert "`identical` or `ahead` means it is on `main`" in prose
+    assert "base branch's `.tradecraft/work.json`" in prose
+    assert "`github-actions[bot]` missing from `connected_reviewers`" in prose
     assert "deliberately leave this copy dormant" in prose
     assert "only activation switch" in prose
+    assert "label named by `reviewer_label` in `.tradecraft/work.json`" in prose
+    assert "default is `reviewers`" in prose
+    assert "label trigger fires only when that label is added" in prose
     assert "one finder at `high`" in prose
     assert "CONNECTED_REVIEW_ENABLED" not in prose
     assert "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES" not in prose
