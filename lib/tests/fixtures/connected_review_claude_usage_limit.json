@@ -1,0 +1,21 @@
+{
+  "events": [
+    {
+      "subtype": "init",
+      "type": "system"
+    },
+    {
+      "api_error_status": 429,
+      "is_error": true,
+      "result": "You've hit your usage limit; retry after the plan window resets",
+      "subtype": "error_during_execution",
+      "type": "result",
+      "usage": {
+        "input_tokens": 1700,
+        "output_tokens": 20
+      }
+    }
+  ],
+  "returncode": 1,
+  "stderr": "Request failed after retries: rate_limit_error"
+}

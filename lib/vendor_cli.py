@@ -84,7 +84,10 @@ def executable_command(
     """Resolve npm's Windows launcher to its payload; never invoke a batch shell."""
     if platform != "nt" or path.suffix.lower() not in {".cmd", ".bat", ".ps1"}:
         return [str(path)]
-    package = path.parent / "node_modules" / (
+    node_modules = (
+        path.parent.parent if path.parent.name == ".bin" else path.parent / "node_modules"
+    )
+    package = node_modules / (
         "@anthropic-ai/claude-code" if vendor == "claude" else "@openai/codex"
     )
     native = package / "bin" / f"{vendor}.exe"

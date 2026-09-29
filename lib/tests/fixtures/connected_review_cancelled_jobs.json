@@ -1,0 +1,56 @@
+{
+  "prepare_cancelled": {
+    "total_count": 2,
+    "jobs": [
+      {
+        "id": 1036474657693,
+        "run_id": 36474657693,
+        "name": "prepare",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "started_at": "2026-09-28T14:00:00Z",
+        "completed_at": "2026-09-28T14:00:02Z",
+        "runner_name": "GitHub Actions 1000000000"
+      },
+      {
+        "id": 1036474657694,
+        "run_id": 36474657693,
+        "name": "report",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-09-28T14:00:03Z",
+        "completed_at": "2026-09-28T14:00:08Z",
+        "runner_name": "GitHub Actions 1000000001"
+      }
+    ]
+  },
+  "queued_review_cancelled": {
+    "total_count": 2,
+    "jobs": [
+      {
+        "id": 1036478971897,
+        "run_id": 36478971897,
+        "name": "review",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "started_at": null,
+        "completed_at": "2026-09-28T16:00:00Z",
+        "runner_name": null,
+        "labels": [
+          "self-hosted",
+          "connected-review"
+        ]
+      },
+      {
+        "id": 1036478971898,
+        "run_id": 36478971897,
+        "name": "report",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-09-28T16:00:01Z",
+        "completed_at": "2026-09-28T16:00:05Z",
+        "runner_name": "GitHub Actions 1000000002"
+      }
+    ]
+  }
+}
