@@ -1,0 +1,35 @@
+# Connected reviewer live checks
+
+**Purpose:** give the holder the live GitHub checks that cannot be proved inside the build tree. **Audience:** the holder running post-build fixture checks with the owner's token and runners. **Success:** every live-only falsifier has an observed result or a named departure; no simulated result is reported as the live check.
+
+## Before running
+
+Use neutral public and private fixture repositories owned by the token owner. Copy the canonical workflow whole, replace its placeholder reviewer ref with the reviewed merged commit on the default branch, set `CLAUDE_CODE_OAUTH_TOKEN`, and list `github-actions[bot]` as a connected reviewer only in those fixtures. Put `gh`, Python 3.14, Node and npm on the private self-hosted runner PATH and give `RUNNER_TOOL_CACHE` a stable writable location. Confirm the review job installs Claude CLI 2.1.280 under its `claude-cli` directory when needed, puts only that installation first for its own launch, and disables the auto-updater. The trusted installation happens before snapshot handling and executes nothing from the pull request. Record the fixture repository names, workflow run URLs, pull-request heads and the revision under test.
+
+Do not add the login to a product repository during these checks. Enumerate each fixture's other workflows and recent comments by `github-actions[bot]`; if any unrelated output can satisfy the existing entrance or gate, record activation as failed and return the identity problem to the holder.
+
+## Event and publication matrix
+
+In both fixtures, open an owner-authored draft and exercise: ready, `reviewers` label, ready plus label, ordinary push, synchronize, non-reviewer label, another member's pull request, bot author, missing head metadata through the recorded fixture, owner fork and outsider fork. Confirm only eligible ready and label events can reach the token-bearing job; recovery re-runs one of those event runs rather than creating a default-branch dispatch. Confirm public work uses `ubuntu-latest`, private work uses the self-hosted runner, and the hosted report job receives no Claude token and checks out no pull-request tree.
+
+For a clean result and a result with a finding, retain the reviews API responses. Confirm one completed review at the captured head, exact inline comments, finder usage in the review body, and no checker process. Push head B after a completed review at head A, remove and re-add the label, and confirm one review at B; repeat the label event at B and confirm no further review or skip.
+
+Change the head during analysis, lose the client response after an accepted review in the instrumented fixture, and fail after accepted publication. Confirm reconciliation produces neither a duplicate review nor a contradictory skip.
+
+## Isolation probes
+
+Run `python tools/probe_connected_review_confinement.py --output confinement.json` with the owner's token and the same Claude executable the workflow will use. Retain its CLI tool trace and report. This build supplies the probe but does not claim the real-CLI boundary passed; a firing hook, outside-path read or leaked environment canary fails the check.
+
+Use a pull request containing hooks, repository and user settings, MCP configuration, build/install scripts, command-shaped titles and filenames, symlinks that point outside the tree, and environment canary names. On the private runner, retain the process trace and canary state showing that the finder did not execute pull-request content, follow links, write outside its unique run directory, open a network tool, or receive shell, write, web, delegation or arbitrary MCP capability. Inspect the launched CLI arguments and effective managed-settings preflight result as well as the prompt.
+
+On the public runner, confirm the finder remains read-only. If a later revision adds an optional verification tool, repeat the credential-read, host-write, container-socket and outbound-network probes inside its disposable token-free sandbox before treating public execution as available.
+
+## Failure delivery and recovery
+
+Inject a usage limit, authentication failure, malformed finder output, execution timeout, cancellation while running and a publication transport failure. For every admitted unfinished attempt, retain exactly one ordinary comment whose first line begins `Review skipped:` and names the observed cause, no completed review, and the existing entrance/gate result showing review still owed. Retry the hosted reporter and confirm it does not duplicate the notice. Clear the cause, run `gh run rerun <run-id> --failed` on the original failed or cancelled event run, and confirm its connected-review checks on the pull-request head become green after one completed review or after same-head suppression when a completed review already exists. Confirm no default-branch dispatch run is needed and that the entrance no longer reports the recovered head red.
+
+For the private fixture, take the self-hosted runner offline before dispatch and leave it offline through GitHub's actual queue expiry. Retain the review job record showing cancellation without a runner and the dependent hosted `report` job starting under `always()`. Confirm its single cause-specific notice and no review. Separately cancel once while queued and once while running; record whether GitHub schedules the dependent reporter in each case. If it does not, this delivery design fails the check; record a departure rather than substituting a mocked `needs.review.result`.
+
+## Record
+
+For each check record `pass`, `fail`, or `departure`, the workflow run and pull-request URLs, the exact reviewed head, and the retained API response or process trace. A check that cannot run because a token, runner, fixture repository or 24-hour observation window is unavailable is a departure with that reason, never a pass.

@@ -1,0 +1,13 @@
+{
+  "events": [
+    {
+      "api_error_status": 401,
+      "is_error": true,
+      "result": "[claude-code:authentication_error] Invalid authentication credentials",
+      "subtype": "error_during_execution",
+      "type": "result"
+    }
+  ],
+  "returncode": 1,
+  "stderr": "Authentication failed for OAuth token"
+}
