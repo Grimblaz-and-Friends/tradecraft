@@ -1631,7 +1631,7 @@ def _launch_settings(state: WorkState, role: str, vendor: str,
 
 
 def _implementer_vendor(state: WorkState, role: str, *,
-                        setting_path: Path | None = None) -> tuple[str, str, bool]:
+                        setting_path: Path | None = None) -> tuple[str, str, bool, str, str]:
     """Resolve one fresh choice, validating the machine file even under an override."""
     try:
         machine_vendor, machine_source = dispatch_implementer.read_machine_vendor(setting_path)
@@ -1641,8 +1641,10 @@ def _implementer_vendor(state: WorkState, role: str, *,
                      if marker.name == "model-override"), None)
     value = override.attributes.get(MODEL_OVERRIDE_ROLES[role]) if override else None
     if value:
-        return value.split(":", 1)[0], f"model-override {role}: {_marker_setting_source(override)}", True
-    return machine_vendor, machine_source, False
+        return (value.split(":", 1)[0],
+                f"model-override {role}: {_marker_setting_source(override)}", True,
+                machine_vendor, machine_source)
+    return machine_vendor, machine_source, False, machine_vendor, machine_source
 
 
 def _handover_path(state: WorkState, role: str, root: Path, branch: str | None) -> Path:
@@ -4501,6 +4503,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     selected_vendor = "codex"
     vendor_source = ""
     role_overridden = False
+    machine_vendor: str | None = None
+    machine_source = ""
     handover = False
     for vendor, path in (("claude", claude_path), ("codex", codex_path)):
         if path is not None:
@@ -4534,9 +4538,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             ))
             print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
             return 0
-        selected_vendor, vendor_source, role_overridden = _implementer_vendor(
-            state, implementer_role
-        )
+        (selected_vendor, vendor_source, role_overridden,
+         machine_vendor, machine_source) = _implementer_vendor(state, implementer_role)
         pinned_vendor = None
         if resume_source is not None:
             requested = resume_source.request.get("requested")
@@ -4557,8 +4560,12 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             vendor_source = f"pinned Claude session from {resume_source.path if resume_source else 'builder-session marker'}"
         elif pinned_vendor == "codex" and selected_vendor == "claude":
             if resume_source is None:
-                if role_overridden:
-                    raise WorkError("model override conflicts with pinned Codex session; only the machine switch can hand over")
+                if role_overridden and machine_vendor != "claude":
+                    raise WorkError(
+                        "model override conflicts with pinned Codex session; a per-issue "
+                        "entry alone cannot hand over. Set ~/.tradecraft/implementer-vendor "
+                        "to claude for a machine switch, then rerun"
+                    )
                 raise WorkError(
                     "Codex-to-Claude handover requires the predecessor dispatch bundle; "
                     "a vendor-qualified marker alone does not carry its record"
@@ -4811,17 +4818,22 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         if handover_recovery_session is not None and not recorded_handover:
             raise WorkError(f"no recorded handover at {handover_state_path} to recover")
         effective_pin = "claude" if recorded_handover else "codex"
-        if role_overridden and selected_vendor != effective_pin:
+        machine_handover = (
+            not recorded_handover and machine_vendor == "claude"
+            and selected_vendor == "claude"
+        )
+        if role_overridden and selected_vendor != effective_pin and not machine_handover:
             if recorded_handover:
                 raise WorkError(
                     f"{vendor_source} selects {selected_vendor}, but the recorded handover "
                     "has a pinned Claude session; the override cannot change its vendor"
                 )
             raise WorkError(
-                "model override conflicts with pinned Codex session; "
-                "only the machine switch can hand over"
+                "model override conflicts with pinned Codex session; a per-issue "
+                "entry alone cannot hand over. Set ~/.tradecraft/implementer-vendor "
+                "to claude for a machine switch, then rerun"
             )
-        handover = selected_vendor == "claude" and not recorded_handover
+        handover = machine_handover
         if handover or recorded_handover:
             handover_context = _handover_context(state, resume_source, dispatch_root, branch)
             if handover and not handover_state_path.exists():
@@ -4829,7 +4841,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 handover_unavailable = handover_runtime[0] == "--claude-unavailable-reason"
             if not handover_unavailable:
                 handover_record, handover_new, handover_retry_of = _reserve_handover(
-                    handover_state_path, resume_source, vendor_source,
+                    handover_state_path, resume_source, machine_source,
                     recovery_session=handover_recovery_session,
                 )
             selected_vendor = "claude"

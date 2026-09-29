@@ -3809,6 +3809,71 @@ def test_marker_only_codex_session_cannot_handover_without_its_record(tmp_path, 
 
 
 @pytest.mark.parametrize("stage", ["floor", "artifact"])
+@pytest.mark.parametrize(("machine_vendor", "override_vendor", "outcome"), [
+    ("absent", "claude", "refuse"),
+    ("claude", "claude", "handover"),
+    ("claude", "codex", "resume"),
+])
+def test_codex_lineage_requires_machine_trigger_and_honors_matching_override(
+        tmp_path, monkeypatch, stage, machine_vendor, override_vendor, outcome):
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    if machine_vendor != "absent":
+        (home / ".tradecraft" / "implementer-vendor").write_bytes(
+            (machine_vendor + "\n").encode()
+        )
+    monkeypatch.setattr(Path, "home", lambda: home)
+    root = repository(tmp_path, "implementation")
+    source_stage = "artifact" if stage == "artifact" else "build"
+    role = "artifact_author" if stage == "artifact" else "implementer"
+    texts = (AFFIRMED, ARTIFACT) if stage == "artifact" else (AFFIRMED,)
+    effort = "high" if override_vendor == "claude" else "xhigh"
+    fixture = state(
+        *texts,
+        f"<!-- tradecraft:model-override:v1 {role}={override_vendor}:chosen:{effort} -->",
+    )
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, stage=source_stage, session=SESSION)
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
+    monkeypatch.setattr(work, "_runtime_argument",
+                        lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    original_run = subprocess.run
+    launches = []
+
+    def capture(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            launches.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work.subprocess, "run", capture)
+    decision = work.Decision(stage, True, "resume", "fixture")
+    handover = work._handover_path(fixture, role, root, None)
+    if outcome == "refuse":
+        with pytest.raises(work.WorkError, match="machine switch") as error:
+            work.execute_stage(fixture, decision, root, None, "holder")
+        assert "~/.tradecraft/implementer-vendor" in str(error.value)
+        assert launches == []
+    else:
+        assert work.execute_stage(fixture, decision, root, None, "holder") == 0
+        command = launches[-1]
+        assert command[command.index("--vendor") + 1] == override_vendor
+        assert command[command.index("--model") + 1] == "chosen"
+        assert command[command.index("--effort") + 1] == effort
+        assert "model-override" in command[command.index("--vendor-source") + 1]
+        assert "issue-comment" in command[command.index("--model-source") + 1]
+        if outcome == "handover":
+            assert command[command.index("--session-id") + 1] != SESSION
+            assert "--resume" not in command
+            assert json.loads(handover.read_bytes())["trigger"].startswith("machine file")
+        else:
+            assert command[command.index("--resume") + 1] == SESSION
+            assert "--session-id" not in command
+        assert len(launches) == 1
+    assert handover.exists() == (outcome == "handover")
+
+
+@pytest.mark.parametrize("stage", ["floor", "artifact"])
 def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
         tmp_path, monkeypatch, stage):
     home = tmp_path / "home"
@@ -3836,15 +3901,6 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
 
     monkeypatch.setattr(work.subprocess, "run", capture)
     decision = work.Decision(stage, True, "resume", "fixture")
-    premature = state(
-        *texts, f"<!-- tradecraft:model-override:v1 {role}=claude:chosen:high -->"
-    )
-    premature.record_root = fixture.record_root
-    with pytest.raises(work.WorkError, match="override conflicts with pinned Codex"):
-        work.execute_stage(premature, decision, root, None, "holder")
-    assert launches == []
-    assert not work._handover_path(fixture, role, root, None).exists()
-
     assert work.execute_stage(fixture, decision, root, None, "holder") == 0
     first = launches[-1]
     assert first[first.index("--vendor") + 1] == "claude"
