@@ -20,6 +20,7 @@ import sys
 import tempfile
 from typing import Callable
 import urllib.parse
+import uuid
 
 from brief import LANES, review_lane
 import dispatch_record as records
@@ -114,6 +115,7 @@ POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
 NEW_MECHANISM_VERSION = "0.152.0"
 PROOF_MECHANISM_VERSION = "0.153.0"
 TRUTHFUL_ENTRANCE_VERSION = "0.154.0"
+VENDOR_IMPLEMENTER_VERSION = "0.158.0"
 REGISTERED_ROOT_VERSION = "0.149.0"
 DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
 DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
@@ -159,7 +161,7 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
                      "surfaces": {"issue-comment"}},
     "holder-reading": {"required": {"result"}, "optional": set(),
                        "surfaces": {"issue-comment"}},
-    "builder-session": {"required": {"session"}, "optional": set(),
+    "builder-session": {"required": {"session"}, "optional": {"vendor"},
                         "surfaces": {"issue-comment"}},
     "floor": {"required": {"head", "status"}, "optional": set(),
               "surfaces": {"issue-comment", "pull-request-comment"}},
@@ -181,13 +183,14 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
     "model-override": {
         "required": set(),
         "optional": {
-            "implementer", "ordinary_seat", "cold_seat", "terminal_seat",
+            "artifact_author", "implementer", "ordinary_seat", "cold_seat", "terminal_seat",
             "use_consumer",
         },
         "surfaces": {"issue-comment"},
     },
 }
 MODEL_OVERRIDE_ROLES = {
+    "artifact_author": "artifact_author",
     "implementer": "implementer",
     "ordinary-seat": "ordinary_seat",
     "cold-seat": "cold_seat",
@@ -197,7 +200,7 @@ MODEL_OVERRIDE_ROLES = {
 RESUME_SOURCE_STAGES = {
     "artifact": frozenset({"artifact"}),
     "build": frozenset({"build", "floor", "review-disposition"}),
-    "floor": frozenset({"build", "floor"}),
+    "floor": frozenset({"build", "floor", "review-disposition"}),
     "review-disposition": frozenset({"build", "floor", "review-disposition"}),
 }
 SUCCESSFUL_BUNDLE_OUTCOMES = frozenset({"success", "success_uncontinuable"})
@@ -1243,6 +1246,9 @@ def _marker_value_error(marker: Marker) -> str | None:
     if marker.name == "builder-session" and SESSION_ID.fullmatch(
             values.get("session", "")) is None:
         return "builder session is not UUID-shaped"
+    if marker.name == "builder-session" and values.get("vendor", "codex") not in {
+            "codex", "claude"}:
+        return "builder session vendor is invalid"
     if marker.name in {"floor", "use", "no-use", "proof"} and HEAD_SHA.fullmatch(
             values.get("head", "")) is None:
         return "marker head is not a full hexadecimal revision"
@@ -1315,6 +1321,11 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
                 sessions.append(session)
         if not sessions or sessions[-1].casefold() != marker.attributes["session"].casefold():
             return "builder-session claim disagrees with its build bundle"
+        requested = request.get("requested")
+        vendor = requested.get("vendor") if isinstance(requested, dict) else None
+        actual_vendor = run.get("actual_vendor") or vendor
+        if marker.attributes.get("vendor") and marker.attributes["vendor"] != actual_vendor:
+            return "builder-session vendor disagrees with its build bundle"
     if marker.name == "floor":
         if run.get("revision_after") != marker.attributes["head"]:
             return "floor head disagrees with its successful bundle"
@@ -1581,21 +1592,24 @@ def _launch_settings(state: WorkState, role: str, vendor: str,
     if role not in MODEL_OVERRIDE_ROLES:
         raise WorkError(f"unknown launch role: {role}")
     if vendor == "codex":
-        if role == "implementer":
-            model = dispatch_implementer.DEFAULT_MODEL
-            effort = dispatch_implementer.DEFAULT_EFFORT
+        if role in {"artifact_author", "implementer"}:
+            model, effort = dispatch_implementer.PROFILES[role][vendor]
             model_source = effort_source = "dispatch_implementer default"
         else:
             model = dispatch_seat.DEFAULT_MODELS["codex"]
             effort = dispatch_seat.DEFAULT_CODEX_EFFORT
             model_source = effort_source = "dispatch_seat default"
     elif vendor == "claude":
-        if classification not in records.CLASSIFICATIONS:
-            raise WorkError("Claude seat settings require a judgment classification")
-        model = dispatch_seat.DEFAULT_MODELS["claude"]
-        effort = dispatch_seat.CLAUDE_EFFORTS[classification]
-        model_source = "dispatch_seat default"
-        effort_source = "classification mapping"
+        if role in {"artifact_author", "implementer"}:
+            model, effort = dispatch_implementer.PROFILES[role][vendor]
+            model_source = effort_source = "dispatch_implementer default"
+        else:
+            if classification not in records.CLASSIFICATIONS:
+                raise WorkError("Claude seat settings require a judgment classification")
+            model = dispatch_seat.DEFAULT_MODELS["claude"]
+            effort = dispatch_seat.CLAUDE_EFFORTS[classification]
+            model_source = "dispatch_seat default"
+            effort_source = "classification mapping"
     else:
         raise WorkError(f"unknown launch vendor: {vendor}")
     override = next((marker for marker in reversed(state.issue_markers)
@@ -1609,6 +1623,134 @@ def _launch_settings(state: WorkState, role: str, vendor: str,
                 effort = selected_effort
                 model_source = effort_source = _marker_setting_source(override)
     return LaunchSettings(model, effort, model_source, effort_source)
+
+
+def _implementer_vendor(state: WorkState, role: str, *,
+                        setting_path: Path | None = None) -> tuple[str, str, bool]:
+    """Resolve one fresh choice, validating the machine file even under an override."""
+    path = setting_path or Path.home() / ".tradecraft" / "implementer-vendor"
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
+        machine_vendor, machine_source = "codex", f"absent machine file: {path}"
+    except OSError as exc:
+        raise WorkError(f"cannot read implementer vendor setting {path}: {exc}") from exc
+    else:
+        try:
+            machine_vendor = content.decode("utf-8").strip()
+        except UnicodeError as exc:
+            raise WorkError(f"invalid UTF-8 in implementer vendor setting {path}") from exc
+        if machine_vendor not in {"codex", "claude"}:
+            raise WorkError(f"implementer vendor setting {path} must contain codex or claude")
+        machine_source = f"machine file {path}: {machine_vendor}"
+    override = next((marker for marker in reversed(state.issue_markers)
+                     if marker.name == "model-override"), None)
+    value = override.attributes.get(MODEL_OVERRIDE_ROLES[role]) if override else None
+    if value:
+        return value.split(":", 1)[0], f"model-override {role}: {_marker_setting_source(override)}", True
+    return machine_vendor, machine_source, False
+
+
+def _handover_path(state: WorkState, role: str, root: Path, branch: str | None) -> Path:
+    identity = json.dumps({
+        "work": f"{state.repo}#{state.issue_number}", "role": role,
+        "root": str(root.resolve()), "branch": branch,
+        "pull_request": state.pr.get("number") if state.pr else None,
+    }, ensure_ascii=True, sort_keys=True).encode("ascii")
+    store = state.record_root or records.default_record_root()
+    return store.expanduser().resolve() / "handovers" / (hashlib.sha256(identity).hexdigest() + ".json")
+
+
+def _handover_context(state: WorkState, source: ResumeSource, root: Path,
+                      branch: str | None) -> bytes:
+    """Keep the handover's source record and live tree evidence separate from dispatch bytes."""
+    revision, status = _git_snapshot(root)
+    if not revision:
+        raise WorkError("handover requires a readable implementation revision")
+    brief, _lane = _affirmed_review(state)
+    if brief is None:
+        raise WorkError("handover requires the affirmed implementation brief")
+    phase = state.artifact_phase or _artifact_phase(state)
+    artifact = (
+        phase.latest_draft or phase.prior_artifact
+        if source.request.get("stage") == "artifact" else phase.latest_settlement
+    )
+    if source.request.get("stage") == "artifact" and artifact is None:
+        raise WorkError("artifact handover requires the artifact under revision")
+    source_request = source.request.get("requested")
+    facts = {
+        "handover": "codex-to-claude", "source_bundle": source.path,
+        "source_dispatch": source.request.get("dispatch_id"),
+        "source_session": source.session, "source_vendor": "codex",
+        "root": str(root.resolve()), "branch": branch,
+        "revision": revision, "status": status,
+        "source_request": source_request,
+        "pull_request": state.pr.get("number") if state.pr else None,
+        "affirmed_brief": {"source": _marker_setting_source(brief), "text": brief.body},
+        "artifact": (
+            {"source": _marker_setting_source(artifact), "text": artifact.body}
+            if artifact else None
+        ),
+        "issue_records": [
+            {"id": row.get("id"), "body": row.get("body"), "url": row.get("html_url")}
+            for row in state.issue_comments if isinstance(row.get("body"), str)
+        ],
+    }
+    unstaged = _git(["diff", "--binary"], root)
+    staged = _git(["diff", "--cached", "--binary"], root)
+    if unstaged.returncode or staged.returncode:
+        raise WorkError("handover cannot read uncommitted implementation diff")
+    facts["unstaged_diff"] = unstaged.stdout.decode("utf-8", errors="backslashreplace")
+    facts["staged_diff"] = staged.stdout.decode("utf-8", errors="backslashreplace")
+    if state.pr is not None:
+        base = state.pr.get("base")
+        base_sha = base.get("sha") if isinstance(base, dict) else None
+        if not isinstance(base_sha, str) or not HEAD_SHA.fullmatch(base_sha):
+            raise WorkError("handover requires the implementing pull request base revision")
+        diff = _git(["diff", "--binary", f"{base_sha}...HEAD"], root)
+        if diff.returncode:
+            raise WorkError("handover cannot read the current pull request diff")
+        facts["pull_request_diff"] = diff.stdout.decode("utf-8", errors="backslashreplace")
+    findings = [
+        {"id": row.get("id"), "body": row.get("body"), "url": row.get("html_url")}
+        for rows in (state.reviews, state.review_comments, state.pr_comments)
+        for row in rows if isinstance(row.get("body"), str) and row.get("body")
+    ]
+    facts["findings"] = findings
+    return (
+        "Implementer handover. Continue exactly the named stage. Preserve uncommitted work; "
+        "do not reset the tree. The exact affirmed brief and artifact follow in the dispatch.\n"
+        + json.dumps(facts, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def _reserve_handover(path: Path, source: ResumeSource, trigger: str) -> tuple[dict[str, object], bool]:
+    record = {
+        "schema_version": 1, "from_vendor": "codex", "to_vendor": "claude",
+        "from_session": source.session, "from_bundle": source.path,
+        "trigger": trigger, "replacement_session": str(uuid.uuid4()),
+        "phase": "reserved",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("xb") as stream:
+            stream.write(records.json_bytes(record))
+            stream.flush()
+            os.fsync(stream.fileno())
+        return record, True
+    except FileExistsError:
+        value = _json_object(path)
+        if (value is None or value.get("schema_version") != 1
+                or value.get("from_bundle") != source.path
+                or value.get("from_session") != source.session
+                or not isinstance(value.get("replacement_session"), str)):
+            raise WorkError(f"handover reservation is unresolved: {path}")
+        if value.get("phase") != "completed":
+            raise WorkError(
+                f"handover {path} is {value.get('phase') or 'unrecorded'}; "
+                "reconcile its reserved Claude session before another launch"
+            )
+        return value, False
 
 
 def _runtime_argument(vendor: str, explicit: Path | None = None) -> list[str]:
@@ -3573,6 +3715,11 @@ def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSour
     )
     candidates: list[ResumeSource] = []
     for completed, run_path, request, run in matched:
+        requested = request.get("requested")
+        vendor = requested.get("vendor") if isinstance(requested, dict) else None
+        actual = run.get("actual_vendor")
+        if vendor not in {"codex", "claude"} or actual not in {"codex", "claude"} or vendor != actual:
+            raise WorkError(f"matching dispatch bundle has unproved vendor: {run_path}")
         attempts = run.get("attempts")
         if not isinstance(attempts, list):
             continue
@@ -3591,6 +3738,28 @@ def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSour
     return max(candidates, key=lambda item: (item.completed, item.path)) if candidates else None
 
 
+def _producer_vendor(state: WorkState, stages: frozenset[str], *,
+                     revision: str | None = None) -> tuple[str, str]:
+    store = state.record_root or records.default_record_root().expanduser().resolve()
+    matches = _matching_bundles(
+        f"{state.repo}#{state.issue_number}", stages, store,
+        outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+    )
+    for _completed, path, request, run in reversed(matches):
+        if revision is not None and run.get("revision_after") != revision:
+            continue
+        requested = request.get("requested")
+        vendor = requested.get("vendor") if isinstance(requested, dict) else None
+        actual = run.get("actual_vendor")
+        if vendor in {"codex", "claude"} and vendor == actual:
+            return vendor, path
+        raise WorkError(f"implementation vendor is unproved in bundle: {path}")
+    raise WorkError(
+        f"no implementation bundle proves the producer vendor"
+        + (f" at revision {revision}" if revision else "")
+    )
+
+
 def _bundle_session(work_value: str, stage: str, record_root: Path) -> str | None:
     source = _resume_source(work_value, stage, record_root)
     return source.session if source is not None else None
@@ -3606,7 +3775,7 @@ def resume_session(state: WorkState, stage: str, record_root: Path | None = None
     if stage == "artifact":
         return None
     sessions = [marker.attributes.get("session") for marker in state.issue_markers
-                if marker.name == "builder-session"]
+                if marker.name == "builder-session" and marker.attributes.get("vendor")]
     return next((session for session in reversed(sessions)
                  if isinstance(session, str) and SESSION_ID.fullmatch(session)), None)
 
@@ -4200,6 +4369,11 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     if not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise WorkError("--timeout-seconds must be finite and positive")
     timeout_argument = f"{effective_timeout:g}"
+    implementer_role = "artifact_author" if decision.stage == "artifact" else "implementer"
+    selected_vendor = "codex"
+    vendor_source = ""
+    role_overridden = False
+    handover = False
     for vendor, path in (("claude", claude_path), ("codex", codex_path)):
         if path is not None:
             _runtime_argument(vendor, path)
@@ -4222,6 +4396,43 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         print(json.dumps(_reported_decision(state, refused).as_dict(),
                          ensure_ascii=True, sort_keys=True))
         return 0
+    if decision.dispatch and decision.stage in {"artifact", "build", "floor", "review-disposition"}:
+        found = records.producer_version()
+        if (_version_key(found) or ()) < (_version_key(VENDOR_IMPLEMENTER_VERSION) or ()):
+            refused = _reported_decision(state, Decision(
+                decision.stage, False, None, f"unsafe-running-version-for-{decision.stage}",
+                f"stage={decision.stage}; found={found}; required={VENDOR_IMPLEMENTER_VERSION}; "
+                "mechanism=vendor-aware implementer launch", status="refused",
+            ))
+            print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+            return 0
+        selected_vendor, vendor_source, role_overridden = _implementer_vendor(
+            state, implementer_role
+        )
+        pinned_vendor = None
+        if resume_source is not None:
+            requested = resume_source.request.get("requested")
+            pinned_vendor = requested.get("vendor") if isinstance(requested, dict) else None
+        elif decision.continuity == "resume" and decision.stage != "artifact":
+            markers = [m for m in state.issue_markers if m.name == "builder-session"]
+            if markers:
+                pinned_vendor = markers[-1].attributes.get("vendor")
+                if pinned_vendor is None:
+                    raise WorkError(
+                        "builder-session marker has no proving bundle or vendor; "
+                        "post an authorized vendor-qualified marker from the original runtime record"
+                    )
+        if pinned_vendor == "claude":
+            if role_overridden and selected_vendor != "claude":
+                raise WorkError("model override conflicts with pinned Claude implementer session")
+            selected_vendor = "claude"
+            vendor_source = f"pinned Claude session from {resume_source.path if resume_source else 'builder-session marker'}"
+        elif pinned_vendor == "codex" and selected_vendor == "claude":
+            if role_overridden:
+                raise WorkError("model override conflicts with pinned Codex session; only the machine switch can hand over")
+            handover = True
+        elif pinned_vendor and pinned_vendor != selected_vendor:
+            raise WorkError(f"selected {selected_vendor} conflicts with pinned {pinned_vendor} session")
     if decision.stage == "proof":
         if transport is None or rules is None or use_rules_path is None:
             raise WorkError("run proof requires the entrance GitHub and policy context")
@@ -4352,14 +4563,21 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         if not dispatch.is_file() or not dispatch.read_bytes().strip():
             raise WorkError(f"use dispatch file is absent or empty: {dispatch}")
         here = Path(__file__).resolve().parent
+        own_vendor, own_vendor_source = _producer_vendor(
+            state, RESUME_SOURCE_STAGES["build"],
+            revision=str(claim.get("source_revision")) if claim.get("source_revision") else None,
+        )
         command = [
             sys.executable, str(here / "dispatch_seat.py"),
             "--dispatch", str(dispatch), "--root", str(consumer_root),
             "--work", f"{state.repo}#{state.issue_number}", "--stage", "use",
             "--settings-source", "work entrance use-consumer route",
-            "--settings-scope", "use-consumer", "--vendor", "claude", "--own-vendor", "codex",
+            "--settings-scope", "use-consumer", "--vendor", "claude", "--own-vendor", own_vendor,
+            "--own-vendor-source", own_vendor_source,
             "--classification", "cold", "--requires", "execute",
             "--timeout-seconds", timeout_argument,
+            *(["--same-vendor-reason", "owner-selected-claude-implementer"]
+              if own_vendor == "claude" else []),
             *_seat_launch_arguments(
                 state, "use-consumer", "cold",
                 claude_path=claude_path, codex_path=codex_path,
@@ -4432,6 +4650,33 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                          ensure_ascii=True, sort_keys=True))
         return 0
     dispatch_root, branch, migrated = selected
+    if resume_source is not None:
+        prior_root = resume_source.request.get("root")
+        if isinstance(prior_root, str) and prior_root and not _same_path(
+                Path(prior_root), dispatch_root):
+            raise WorkError("resume bundle belongs to a different implementation root")
+        prior_branch = resume_source.request.get("lineage_branch")
+        if prior_branch and branch and prior_branch != branch:
+            raise WorkError("resume bundle belongs to a different implementation branch")
+        prior_pr = resume_source.request.get("lineage_pull_request")
+        current_pr = state.pr.get("number") if state.pr else None
+        if prior_pr is not None and current_pr is not None and prior_pr != current_pr:
+            raise WorkError("resume bundle belongs to a different implementing pull request")
+    handover_record: dict[str, object] | None = None
+    handover_new = False
+    handover_context = b""
+    handover_state_path: Path | None = None
+    if (uses_implementer and decision.continuity == "resume" and resume_source is not None
+            and resume_source.request.get("requested", {}).get("vendor") == "codex"):
+        handover_state_path = _handover_path(state, implementer_role, dispatch_root, branch)
+        if handover or handover_state_path.is_file():
+            handover_context = _handover_context(state, resume_source, dispatch_root, branch)
+            handover_record, handover_new = _reserve_handover(
+                handover_state_path, resume_source, vendor_source
+            )
+            selected_vendor = "claude"
+            vendor_source = (vendor_source if handover_new else
+                             f"recorded handover {handover_state_path}")
     if prepared_dispatch is not None and _path_inside(prepared_dispatch, dispatch_root):
         raise WorkError("dispatch file must be outside the registered implementation root")
     if migrated:
@@ -4456,6 +4701,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             if dispatch_path is not None:
                 raise WorkError("cold-seat uses the exact bounded artifact-and-brief prompt")
             with judging_root(dispatch_root) as recipient:
+                own_vendor, own_vendor_source = _producer_vendor(state, frozenset({"artifact"}))
                 prompt = _stage_prompt(state, decision, recipient)
                 dispatch.write_bytes(prompt)
                 common = [
@@ -4466,8 +4712,11 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                     "--timeout-seconds", timeout_argument,
                 ]
                 command = [sys.executable, str(here / "dispatch_seat.py"), *common,
-                           "--vendor", "claude", "--own-vendor", "codex",
-                           "--classification", "cold", "--requires", "read",
+                            "--vendor", "claude", "--own-vendor", own_vendor,
+                            "--own-vendor-source", own_vendor_source,
+                            "--classification", "cold", "--requires", "read",
+                            *(["--same-vendor-reason", "owner-selected-claude-implementer"]
+                              if own_vendor == "claude" else []),
                             *_seat_launch_arguments(
                                 state, "cold-seat", "cold",
                                 claude_path=claude_path, codex_path=codex_path,
@@ -4482,18 +4731,50 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "--dispatch", str(dispatch), "--root", str(dispatch_root),
                 "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
                 "--settings-source", "work entrance implementer route",
-                "--settings-scope", "implementer",
+                "--settings-scope", implementer_role,
                 "--timeout-seconds", timeout_argument,
             ]
-            settings = _launch_settings(state, "implementer", "codex")
+            if branch:
+                common.extend(("--lineage-branch", branch))
+            if state.pr and isinstance(state.pr.get("number"), int):
+                common.extend(("--lineage-pull-request", str(state.pr["number"])))
+            settings = _launch_settings(state, implementer_role, selected_vendor)
             command = [sys.executable, str(here / "dispatch_implementer.py"), *common,
-                       "--model", settings.model, "--effort", settings.effort,
-                       "--model-source", settings.model_source,
-                       "--effort-source", settings.effort_source,
-                        *_selected_runtime_argument("codex", codex_path),
-                       "--holder-session-id", holder_identity]
-            if decision.continuity == "resume":
+                       "--vendor", selected_vendor, "--vendor-source", vendor_source,
+                        "--model", settings.model, "--effort", settings.effort,
+                        "--model-source", settings.model_source,
+                        "--effort-source", settings.effort_source,
+                         *_selected_runtime_argument(
+                             selected_vendor, claude_path if selected_vendor == "claude" else codex_path
+                         ),
+                        "--holder-session-id", holder_identity]
+            if selected_vendor == "claude":
+                context = Path(temporary) / "context.txt"
+                preamble = (
+                    "You are the implementer for this stage. Read the repository root instructions "
+                    "and applicable ancestor and nested instructions before editing. "
+                    f"The shipped tradecraft plugin is at {here.parent}. "
+                    "Project and local Claude settings are omitted so the holder hook does not "
+                    "run in this child; retain user and managed policy.\n"
+                ).encode("utf-8")
+                context.write_bytes(preamble + handover_context)
+                command.extend(("--context", str(context)))
+            if handover_record is not None:
+                command.extend(("--handover-state", str(handover_state_path),
+                                "--handover-from", str(handover_record["from_bundle"])))
+                if handover_new:
+                    command.extend(("--session-id", str(handover_record["replacement_session"])))
+                else:
+                    command.extend(("--resume", str(handover_record["replacement_session"])))
+            elif decision.continuity == "resume":
                 command.extend(("--resume", session))
+            print(json.dumps({
+                "stage": decision.stage, "implementer_role": implementer_role,
+                "selected_vendor": selected_vendor, "vendor_source": vendor_source,
+                "model": settings.model, "effort": settings.effort,
+                "continuity": "handover" if handover_record else decision.continuity,
+                "handover_state": str(handover_state_path) if handover_record else None,
+            }, ensure_ascii=True, sort_keys=True))
             return subprocess.run(command).returncode
 
 

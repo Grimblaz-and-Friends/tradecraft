@@ -1537,7 +1537,7 @@ def test_launch_settings_read_program_b_defaults_with_accurate_sources():
     terminal = work._launch_settings(fixture, "terminal-seat", "claude", "terminal")
 
     assert implementer == work.LaunchSettings(
-        "gpt-5.6-sol", "xhigh", "dispatch_implementer default",
+        "gpt-6-sol", "xhigh", "dispatch_implementer default",
         "dispatch_implementer default",
     )
     assert codex_seat == work.LaunchSettings(
@@ -1550,6 +1550,38 @@ def test_launch_settings_read_program_b_defaults_with_accurate_sources():
         "claude-opus-5-5", "max", "dispatch_seat default", "classification mapping",
     )
     assert terminal == cold
+
+
+def test_implementer_vendor_file_and_role_overrides_are_independent(tmp_path):
+    setting = tmp_path / "implementer-vendor"
+    fixture = state(AFFIRMED)
+    work.validate_marker_claims(fixture)
+    assert work._implementer_vendor(fixture, "artifact_author", setting_path=setting)[0] == "codex"
+    assert work._launch_settings(fixture, "artifact_author", "codex").model == "gpt-6-astra"
+    setting.write_bytes(b"claude\n")
+    assert work._implementer_vendor(fixture, "artifact_author", setting_path=setting)[0] == "claude"
+    assert work._launch_settings(fixture, "artifact_author", "claude") == work.LaunchSettings(
+        "claude-opus-5-5", "high", "dispatch_implementer default", "dispatch_implementer default",
+    )
+    fixture = state(AFFIRMED, (
+        "<!-- tradecraft:model-override:v1 artifact_author=codex:author:xhigh "
+        "implementer=claude:builder:high -->"
+    ))
+    work.validate_marker_claims(fixture)
+    assert work._implementer_vendor(fixture, "artifact_author", setting_path=setting)[0] == "codex"
+    assert work._implementer_vendor(fixture, "implementer", setting_path=setting)[0] == "claude"
+    assert work._launch_settings(fixture, "artifact_author", "codex").model == "author"
+    assert work._launch_settings(fixture, "implementer", "claude").model == "builder"
+
+
+@pytest.mark.parametrize("content", [b"", b"CLAUDE", b"claude # note", b"\xff", b"codex claude"])
+def test_invalid_machine_vendor_refuses_even_with_role_override(tmp_path, content):
+    setting = tmp_path / "implementer-vendor"
+    setting.write_bytes(content)
+    fixture = state(AFFIRMED, "<!-- tradecraft:model-override:v1 implementer=codex:model:high -->")
+    work.validate_marker_claims(fixture)
+    with pytest.raises(work.WorkError, match="implementer vendor setting"):
+        work._implementer_vendor(fixture, "implementer", setting_path=setting)
 
 
 @pytest.mark.parametrize("claim", [
@@ -2681,6 +2713,7 @@ def test_execute_cold_seat_uses_the_bounded_prompt(tmp_path, monkeypatch):
     fixture = state(AFFIRMED, "OTHER COMMENT MUST STAY OUT", artifact, override)
     captured = []
     monkeypatch.setattr(work, "judging_root", lambda _root: nullcontext(tmp_path))
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "artifact bundle"))
     monkeypatch.setattr(work, "_git_snapshot", lambda _root: (SHA, ""))
 
     def run(command):
@@ -2719,9 +2752,11 @@ def dispatch_bundle(record_root, *, work_value="example/product#12", stage="buil
     request.write_text(json.dumps({
         "schema_version": request_schema, "work": work_value, "stage": stage,
         "producer_version": producer_version,
+        "requested": {"vendor": "codex"},
     }), encoding="utf-8")
     run.write_text(json.dumps({
         "schema_version": run_schema,
+        "actual_vendor": "codex",
         "outcome": outcome,
         "completed_at": completed_at,
         "attempts": ([] if session is None else [{"observed": {"session_id": session}}]),
@@ -3614,8 +3649,52 @@ def test_historical_error_bundle_is_never_rejudged_from_its_retained_stream(tmp_
 
 
 def test_resume_session_falls_back_to_authorized_builder_session_marker(tmp_path):
-    fixture = state(f"<!-- tradecraft:builder-session:v1 session={SESSION} -->")
+    fixture = state(f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->")
     assert work.resume_session(fixture, "floor", tmp_path / "missing") == SESSION
+
+
+def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
+        tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    setting = home / ".tradecraft" / "implementer-vendor"
+    setting.write_bytes(b"claude\n")
+    root = repository(tmp_path, "implementation")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, stage="build", session=SESSION)
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    original_run = subprocess.run
+    launches = []
+
+    def capture(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            launches.append(command)
+            return subprocess.CompletedProcess(command, 0)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work.subprocess, "run", capture)
+    decision = work.Decision("floor", True, "resume", "fixture")
+    assert work.execute_stage(fixture, decision, root, None, "holder") == 0
+    first = launches[-1]
+    assert first[first.index("--vendor") + 1] == "claude"
+    replacement = first[first.index("--session-id") + 1]
+    assert "--resume" not in first
+    with pytest.raises(work.WorkError, match="reconcile"):
+        work.execute_stage(fixture, decision, root, None, "holder")
+    assert len(launches) == 1
+    handover = work._handover_path(fixture, "implementer", root, None)
+    value = json.loads(handover.read_bytes())
+    value["phase"] = "completed"
+    handover.write_bytes(json.dumps(value).encode())
+    setting.write_bytes(b"codex\n")
+    assert work.execute_stage(fixture, decision, root, None, "holder") == 0
+    second = launches[-1]
+    assert second[second.index("--vendor") + 1] == "claude"
+    assert second[second.index("--resume") + 1] == replacement
+    assert len(launches) == 2
 
 
 def test_resume_without_bundle_or_marker_returns_a_non_dispatching_decision(
@@ -3738,6 +3817,7 @@ def test_use_handoff_migrates_legacy_registration_and_names_the_proof_gap(
 
 def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
         tmp_path, monkeypatch):
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "builder bundle"))
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -3838,6 +3918,7 @@ def test_registered_tree_keeps_its_earlier_version_boundary(tmp_path, monkeypatc
 
 
 def test_tree_revision_and_run_use_need_no_registration(tmp_path, monkeypatch):
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "landed builder bundle"))
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -4041,7 +4122,7 @@ def test_invalid_explicit_runtime_refuses_before_root_selection(tmp_path, monkey
 
 def test_resume_marker_equal_to_holder_identity_is_rejected(
         tmp_path, monkeypatch, capsys):
-    fixture = state(f"<!-- tradecraft:builder-session:v1 session={SESSION} -->", pr=True)
+    fixture = state(f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->", pr=True)
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
     monkeypatch.setattr(
         work.subprocess, "run",
@@ -4448,6 +4529,7 @@ def test_failed_initial_publication_is_retried_and_verified_before_launch(
 
 def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
         tmp_path, monkeypatch):
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "producer bundle"))
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -4645,7 +4727,7 @@ def test_legacy_registration_migrates_before_dispatch_and_names_the_proof_gap(
         "implementation registration migrated; recorded-holder check was not "
         "enforced on this run"
     )
-    emitted = json.loads(capsys.readouterr().out)
+    emitted = json.loads(capsys.readouterr().out.splitlines()[0])
     assert emitted["detail"] == f"existing detail; {notice}"
     assert len(launches) == 1
     command, prompt = launches[0]

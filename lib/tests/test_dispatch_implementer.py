@@ -67,7 +67,7 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     assert "--last" not in flags
     assert "resume" not in flags
     assert flags[-1] == "-"
-    assert flags[flags.index("--model") + 1] == "gpt-5.6-sol"
+    assert flags[flags.index("--model") + 1] == "gpt-6-sol"
     assert 'model_reasoning_effort="xhigh"' in flags
     logged = record(args)
     attempt = logged["attempts"][0]
@@ -342,3 +342,101 @@ def test_publication_failure_is_recorded_without_a_false_published_path(job, mon
     assert logged["result"]["published_output"] is None
     assert "hard link failed" in logged["result"]["published_output_unavailable_reason"]
     assert not args.output.exists()
+
+
+def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.stage = "artifact"
+    args.vendor_source = "machine file: claude"
+    context = args.dispatch.with_name("context.md")
+    context.write_bytes(b"Read the root instructions before authoring.\n")
+    args.context = context
+    session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    scenario.write_bytes(json.dumps({"claude": {
+        "stdout": json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "session_id": session, "result": "artifact written",
+            "modelUsage": {"claude-opus-5-5": {"inputTokens": 5}},
+            "permission_denials": [], "total_cost_usd": 0.12,
+        }),
+    }}).encode())
+    assert implementer.run_implementer(args) == 0
+    flags = json.loads((args.root / "seen-claude.json").read_bytes())["argv"]
+    assert flags[:2] == ["-p", "--model"]
+    assert flags[flags.index("--model") + 1] == "claude-opus-5-5"
+    assert flags[flags.index("--effort") + 1] == "high"
+    assert flags[flags.index("--permission-mode") + 1] == "auto"
+    assert flags[flags.index("--setting-sources") + 1] == "user"
+    assert "--no-session-persistence" not in flags
+    assert "--safe-mode" not in flags
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert request["requested"]["vendor"] == "claude"
+    assert request["requested"]["sources"]["vendor"] == "machine file: claude"
+    assert request["implementer_role"] == "artifact_author"
+    assert implementer.records.sidecar(args.output, ".dispatch.bin").read_bytes() == args.dispatch.read_bytes()
+    assert implementer.records.sidecar(args.output, ".context.bin").read_bytes() == context.read_bytes()
+    assert record(args)["attempts"][0]["observed"]["session_id"] == session
+
+
+def test_claude_resume_keeps_identity_and_unknown_usage_scope(job, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.resume = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    scenario.write_bytes(json.dumps({"claude": {
+        "stdout": json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "session_id": args.resume, "result": "fixed",
+            "modelUsage": {"claude-opus-5-5": {"inputTokens": 7}},
+        }),
+    }}).encode())
+    assert implementer.run_implementer(args) == 0
+    flags = json.loads((args.root / "seen-claude.json").read_bytes())["argv"]
+    assert flags[-2:] == ["--resume", args.resume]
+    observed = record(args)["attempts"][0]["observed"]
+    assert observed["normalized"] is None
+    assert "scope is not established" in observed["normalized_unavailable_reason"]
+
+
+@pytest.mark.parametrize("payload", [
+    "not json",
+    json.dumps({"type": "result", "is_error": True, "subtype": "error_during_execution",
+                "result": "permission denied"}),
+    json.dumps({"type": "result", "is_error": False, "subtype": "success",
+                "session_id": "f0cb89b1-e040-4e6e-919b-4b4e58c717d2", "result": None}),
+])
+def test_claude_bad_completion_never_publishes(job, payload, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    scenario.write_bytes(json.dumps({"claude": {"stdout": payload}}).encode())
+    assert implementer.run_implementer(args) == 1
+    assert record(args)["outcome"] == "error"
+    assert not args.output.exists()
+
+
+def test_fresh_claude_handover_moves_reservation_to_completed_only_after_publication(
+        job, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.session_id = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    args.handover_state = args.dispatch.with_name("handover.json")
+    args.handover_from = "predecessor-bundle"
+    args.handover_state.write_bytes(json.dumps({
+        "replacement_session": args.session_id, "phase": "reserved",
+    }).encode())
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": args.session_id, "result": "continued",
+    })}}).encode())
+    assert implementer.run_implementer(args) == 0
+    assert json.loads(args.handover_state.read_bytes())["phase"] == "completed"
+    assert record(args)["handover"]["from_bundle"] == "predecessor-bundle"
+    assert args.output.read_bytes() == b"continued"
