@@ -3836,6 +3836,15 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
 
     monkeypatch.setattr(work.subprocess, "run", capture)
     decision = work.Decision(stage, True, "resume", "fixture")
+    premature = state(
+        *texts, f"<!-- tradecraft:model-override:v1 {role}=claude:chosen:high -->"
+    )
+    premature.record_root = fixture.record_root
+    with pytest.raises(work.WorkError, match="override conflicts with pinned Codex"):
+        work.execute_stage(premature, decision, root, None, "holder")
+    assert launches == []
+    assert not work._handover_path(fixture, role, root, None).exists()
+
     assert work.execute_stage(fixture, decision, root, None, "holder") == 0
     first = launches[-1]
     assert first[first.index("--vendor") + 1] == "claude"
@@ -3855,6 +3864,20 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
     assert second[second.index("--resume") + 1] == replacement
     assert len(launches) == 2
 
+    same_vendor = state(
+        *texts, f"<!-- tradecraft:model-override:v1 {role}=claude:chosen:high -->"
+    )
+    same_vendor.record_root = fixture.record_root
+    assert work.execute_stage(same_vendor, decision, root, None, "holder") == 0
+    overridden = launches[-1]
+    assert overridden[overridden.index("--vendor") + 1] == "claude"
+    assert overridden[overridden.index("--model") + 1] == "chosen"
+    assert overridden[overridden.index("--effort") + 1] == "high"
+    assert "issue-comment" in overridden[overridden.index("--model-source") + 1]
+    assert "issue-comment" in overridden[overridden.index("--effort-source") + 1]
+    assert overridden[overridden.index("--resume") + 1] == replacement
+    assert len(launches) == 3
+
     conflicting = state(
         *texts, f"<!-- tradecraft:model-override:v1 {role}=codex:chosen:xhigh -->"
     )
@@ -3866,7 +3889,7 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
     )
     with pytest.raises(work.WorkError, match="override.*codex.*pinned Claude"):
         work.execute_stage(conflicting, decision, root, None, "holder")
-    assert len(launches) == 2
+    assert len(launches) == 3
     assert handover.read_bytes() == before
 
 

@@ -4458,14 +4458,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             selected_vendor = "claude"
             vendor_source = f"pinned Claude session from {resume_source.path if resume_source else 'builder-session marker'}"
         elif pinned_vendor == "codex" and selected_vendor == "claude":
-            if role_overridden:
-                raise WorkError("model override conflicts with pinned Codex session; only the machine switch can hand over")
             if resume_source is None:
+                if role_overridden:
+                    raise WorkError("model override conflicts with pinned Codex session; only the machine switch can hand over")
                 raise WorkError(
                     "Codex-to-Claude handover requires the predecessor dispatch bundle; "
                     "a vendor-qualified marker alone does not carry its record"
                 )
-            handover = True
         elif pinned_vendor and pinned_vendor != selected_vendor:
             raise WorkError(f"selected {selected_vendor} conflicts with pinned {pinned_vendor} session")
     if decision.stage == "proof":
@@ -4709,12 +4708,20 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     if (uses_implementer and decision.continuity == "resume" and resume_source is not None
             and resume_source.request.get("requested", {}).get("vendor") == "codex"):
         handover_state_path = _handover_path(state, implementer_role, dispatch_root, branch)
-        if handover or handover_state_path.is_file():
-            if role_overridden and selected_vendor != "claude":
+        recorded_handover = handover_state_path.is_file()
+        effective_pin = "claude" if recorded_handover else "codex"
+        if role_overridden and selected_vendor != effective_pin:
+            if recorded_handover:
                 raise WorkError(
                     f"{vendor_source} selects {selected_vendor}, but the recorded handover "
                     "has a pinned Claude session; the override cannot change its vendor"
                 )
+            raise WorkError(
+                "model override conflicts with pinned Codex session; "
+                "only the machine switch can hand over"
+            )
+        handover = selected_vendor == "claude" and not recorded_handover
+        if handover or recorded_handover:
             handover_context = _handover_context(state, resume_source, dispatch_root, branch)
             if handover and not handover_state_path.exists():
                 handover_runtime = _selected_runtime_argument("claude", claude_path)
