@@ -1,6 +1,6 @@
 # Launch settings and the ruling bridge
 
-**Purpose:** let a holder see a launch's settings and let a sourced machine ruling reach still-defaulted fields. **Audience:** holders, the Steward and callers of either launcher. **Success:** the report, printed plan, command and retained sources agree, and a ruling yields to explicit choices and lapses when its replaced default changes.
+**Purpose:** let a holder see a launch's settings and let a sourced machine ruling reach still-defaulted fields. **Audience:** holders, whoever records a machine ruling on the owner's word, and callers of either launcher. **Success:** the report, printed plan, command and retained sources agree, and a ruling yields to explicit choices and lapses when its replaced default changes.
 
 The entrance's `launch_settings` names the stage, role, continuity, primary vendor/model/effort and each source. Judging stages also show fallback settings and their eligibility. Each selection includes its running `baseline`, which is the pair a bridge entry must replace. A resume separately shows the selected session's recorded request and native observations; the current request is not evidence of the historical model. `run` resolves afresh and prints that plan before invoking a launcher. Both launchers print settings before the recipient starts.
 
