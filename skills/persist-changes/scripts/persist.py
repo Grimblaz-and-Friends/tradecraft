@@ -18,7 +18,8 @@ Mechanical contract:
     the saved staged tree before pushing the identified commit explicitly
   - retracts only this run's unpushed mismatching commit on its recorded start
     head, using an index lock and an expected-old branch update; working files
-    stay untouched, and uncertain identity/state never authorizes an undo
+    stay untouched; only the run's changed index paths are restored, preserving
+    unrelated entries and flags; uncertain state never authorizes an undo
   - commit identity uses a unique reflog action; a repository with reflogs
     disabled gains a branch reflog (no persistent configuration change)
   - verifies the pushed commit is the remote branch head before claiming success
@@ -90,36 +91,99 @@ def git_path(name: str) -> Path:
 def identify_commit(ref: str, start: str, action: str) -> tuple[str | None, str]:
     """Find this invocation's unique reflog transition from its recorded start.
 
-    A post-commit descendant may inherit the token, so the old object and
-    sole parent must agree as well. Read the recorded branch, even if HEAD
-    has switched since commit. Missing or ambiguous evidence permits no undo.
+    Git's reflog interface works with both files and reftable storage. A
+    descendant can inherit the token, so require the sole parent to be the
+    recorded start, and the preceding event to agree when one is available.
+    With reflogs previously disabled, the run can be the first recorded event.
     """
-    try:
-        events = git_path(f"logs/{ref}").read_bytes().splitlines()
-    except OSError as exc:
-        return None, f"branch reflog unavailable: {exc}"
+    log = run_git("reflog", "show", "--format=%H%x00%gs", "-z", ref)
+    if log.returncode or not log.stdout:
+        return None, f"branch reflog unavailable: {detail(log) or 'no recorded events'}"
+    fields = log.stdout.split(b"\0")
+    if fields[-1] or len(fields) % 2 != 1:
+        return None, "branch reflog evidence is malformed"
+    events = list(zip(fields[::2], fields[1::2]))
     candidates = []
-    for event in events:
-        fields, sep, message = event.partition(b"\t")
-        if sep and message.startswith(action.encode("ascii") + b": "):
-            objects = fields.split()
-            if len(objects) >= 2 and objects[0] == start.encode("ascii"):
-                candidates.append(objects[1].decode("ascii", errors="replace"))
+    matched_token = False
+    for position, (obj, message) in enumerate(events):
+        if not message.startswith(action.encode("ascii") + b": "):
+            continue
+        matched_token = True
+        commit = obj.decode("ascii", errors="replace")
+        parents = run_git("rev-list", "--parents", "-n", "1", commit)
+        if not parents.returncode and decoded(parents.stdout).split() == [commit, start]:
+            candidates.append((commit, position))
     if len(candidates) != 1:
+        if matched_token and not candidates:
+            return None, "run's commit does not have the recorded start as its sole parent"
         return None, "run's commit identity is missing or ambiguous"
-    commit = candidates[0]
-    parents = run_git("rev-list", "--parents", "-n", "1", commit)
-    if parents.returncode or decoded(parents.stdout).split() != [commit, start]:
-        return None, "run's commit does not have the recorded start as its sole parent"
+    commit, position = candidates[0]
+    if position + 1 < len(events) and events[position + 1][0] != start.encode("ascii"):
+        return None, "run's reflog transition disagrees with the recorded start"
     return commit, ""
+
+
+def index_entries(env: dict[str, str] | None = None) -> dict:
+    """Snapshot content, stat data and every exposed flag, including sparse dirs.
+
+    Compare Git's debug records verbatim rather than interpreting flag bits.
+    This format is for inspection and may evolve: an unfamiliar record refuses
+    recovery before the ref is moved, rather than weakening the comparison.
+    """
+    proc = run_git("ls-files", "--stage", "--debug", "--sparse", "-z", env=env)
+    if proc.returncode:
+        raise ValueError(f"cannot inspect index entries: {detail(proc)}")
+    entries = {}
+    data = proc.stdout
+    while data:
+        header, sep, rest = data.partition(b"\0")
+        lines = rest.split(b"\n", 5)
+        content, tab, path = header.partition(b"\t")
+        parts = content.split()
+        if (not sep or not tab or len(parts) != 3 or len(lines) != 6
+                or b"flags: " not in lines[4]):
+            raise ValueError("unrecognized index inspection record")
+        flags = lines[4].rpartition(b"flags: ")[2]
+        int(flags, 16)  # Unknown output never counts as evidence of preserved flags.
+        key = (path, parts[2])
+        if key in entries:
+            raise ValueError("duplicate index inspection record")
+        entries[key] = (content, b"\n".join(lines[:5]), flags)
+        data = lines[5]
+    return entries
+
+
+def verify_restored_entries(before: dict, after: dict, start: str, commit: str) -> None:
+    changed = run_git("diff", "--no-renames", "--name-only", "-z", start, commit, "--")
+    tree = run_git("ls-tree", "-r", "-z", "--full-tree", start)
+    if changed.returncode or tree.returncode:
+        raise ValueError("cannot establish the run's changed paths and start entries")
+    paths = set(changed.stdout.split(b"\0")) - {b""}
+    if ({k: v for k, v in before.items() if k[0] not in paths}
+            != {k: v for k, v in after.items() if k[0] not in paths}):
+        raise ValueError("unrelated index entries or flags would change")
+    expected = {}
+    for record in tree.stdout.split(b"\0"):
+        if not record:
+            continue
+        fields, _, path = record.partition(b"\t")
+        mode, _, obj = fields.split()
+        if path in paths:
+            expected[(path, b"0")] = mode + b" " + obj + b" 0"
+    actual = {k: v[0] for k, v in after.items() if k[0] in paths}
+    if actual != expected:
+        raise ValueError("the run's index paths do not match the recorded start")
+    for key in before.keys() & after.keys():
+        if before[key][2] != after[key][2]:
+            raise ValueError("index entry flags would change")
 
 
 def undo_mismatch(ref: str, start: str, commit: str) -> tuple[bool, str]:
     """Restore ref/index under the index lock, without writing working files.
 
-    Prepare a complete index separately. The lock excludes normal commits
-    and checkouts; update-ref's expected-old comparison also protects against
-    writers of the ref alone. Never retry or undo intervening work.
+    Copy the live index under its lock, then let Git carry forward unrelated
+    entries in a two-tree, index-only merge. Verify content and flags before
+    changing the ref. Never retry or undo intervening work.
     """
     index = git_path("index")
     lock = index.with_name(index.name + ".lock")
@@ -130,12 +194,16 @@ def undo_mismatch(ref: str, start: str, commit: str) -> tuple[bool, str]:
         with tempfile.TemporaryDirectory(prefix="persist-index-", dir=index.parent) as scratch, ExitStack() as cleanup:
             prepared = Path(scratch) / "index"
             env = dict(os.environ, GIT_INDEX_FILE=str(prepared))
-            preparation = run_git("-c", "core.splitIndex=false", "read-tree", start, env=env)
-            if preparation.returncode:
-                return False, f"undo skipped: could not prepare start index: {detail(preparation)}"
             with lock.open("xb") as stream:
                 owns_lock = True
                 cleanup.callback(lambda: lock.unlink() if owns_lock else None)
+                prepared.write_bytes(index.read_bytes())
+                before = index_entries(env)
+                preparation = run_git("read-tree", "-m", "-i", commit, start, env=env)
+                if preparation.returncode:
+                    return False, f"undo skipped: could not prepare restored index: {detail(preparation)}"
+                expected_entries = index_entries(env)
+                verify_restored_entries(before, expected_entries, start, commit)
                 stream.write(prepared.read_bytes())
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -155,19 +223,19 @@ def undo_mismatch(ref: str, start: str, commit: str) -> tuple[bool, str]:
             os.replace(lock, index)
             owns_lock = False
             installed = True
-            tree = run_git("write-tree")
-            expected = run_git("rev-parse", f"{start}^{{tree}}")
+            actual_entries = index_entries()
             symbolic = run_git("symbolic-ref", "-q", "HEAD")
             head = run_git("rev-parse", ref)
-            if (tree.returncode or expected.returncode or symbolic.returncode or head.returncode
-                    or decoded(tree.stdout) != decoded(expected.stdout)
+            if (symbolic.returncode or head.returncode
+                    or actual_entries != expected_entries
                     or decoded(symbolic.stdout) != ref or decoded(head.stdout) != start):
                 return False, ("undo incomplete: branch update and index replacement ran, "
-                               "but final branch/index no longer match the recorded start; "
+                               "but final branch/index no longer match the verified recovery; "
                                "intervening work was retained")
-            return True, f"undo completed: branch and index restored to {start}"
-    except OSError as exc:
-        state = ("incomplete: branch/index restoration ran but cleanup failed" if installed
+            return True, (f"undo completed: branch and run's index paths restored to {start}; "
+                          "unrelated index entries and flags retained")
+    except (OSError, ValueError) as exc:
+        state = ("incomplete: branch/index restoration ran but verification or cleanup failed" if installed
                  else "incomplete: branch update ran but index restoration failed" if moved
                  else "skipped")
         return False, f"undo {state}: {exc}"
@@ -188,7 +256,9 @@ def refuse_mismatch(ref: str, start: str, commit: str, checked: str, tree: str) 
     fail(f"committed content differs from staged content: {changed}; "
          f"run commit {commit}; checked tree {checked}; {undo}; "
          f"all paths: git diff --no-renames --name-only {checked} {commit}; "
-         f"{inspect}check the rewritten files and run again, or restore intended paths "
+         f"{inspect}running again lands the working files exactly as the hook left them: "
+         "run again only after checking and accepting that rewrite; for a byte-exact file, "
+         "take the restore route: restore intended paths "
          f"with git restore --source={checked} --worktree -- <paths> and inspect/remove "
          "hook-only additions; restore promptly: routine git gc may prune the "
          "unreferenced checked tree")

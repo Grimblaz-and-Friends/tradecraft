@@ -63,8 +63,23 @@ def _seed_repository(tmp_path_factory):
     _SEED = None
 
 
-def make_repo(tmp_path, origin_name="origin.git"):
+def make_repo(tmp_path, origin_name="origin.git", ref_format="files"):
     origin = tmp_path / origin_name
+    if ref_format == "reftable":
+        work = tmp_path / "work"
+        capability = run(["git", "init", "--ref-format=reftable", "-b", "main", str(work)], cwd=tmp_path)
+        if capability.returncode:
+            pytest.skip("Git cannot create a reftable repository: " + capability.stderr.strip())
+        value(tmp_path, "init", "--bare", "--ref-format=reftable", "-b", "main", str(origin))
+        value(work, "config", "user.email", "t@example.com")
+        value(work, "config", "user.name", "tester")
+        (work / "README.md").write_bytes(b"seed\n")
+        (work / "unrelated.txt").write_bytes(b"seed unrelated\n")
+        value(work, "add", "README.md", "unrelated.txt")
+        value(work, "commit", "-m", "seed commit")
+        value(work, "remote", "add", "origin", str(origin))
+        value(work, "push", "-u", "origin", "main")
+        return work
     shutil.copytree(_SEED / "origin.git", origin)
     work = tmp_path / "work"
     shutil.copytree(_SEED / "work", work)
@@ -265,9 +280,137 @@ def mismatch_ids(result, checked):
     commit = re.search(r"run commit ([0-9a-f]{40,64});", result.stdout).group(1)
     assert tree == checked
     assert "restore promptly" in result.stdout and "git gc may prune" in result.stdout
-    assert "check the rewritten files and run again" in result.stdout
+    assert "running again lands the working files exactly as the hook left them" in result.stdout
+    assert "run again only after checking and accepting that rewrite" in result.stdout
+    assert "for a byte-exact file, take the restore route" in result.stdout
     assert f"git restore --source={tree} --worktree -- <paths>" in result.stdout
     return commit
+
+
+@pytest.mark.parametrize("ref_format", ["files", "reftable"])
+@pytest.mark.parametrize("rewrite", [False, True])
+def test_ref_backends_persist_or_undo_hook_rewrite(tmp_path, ref_format, rewrite):
+    work = make_repo(tmp_path, ref_format=ref_format)
+    start, checked = checked_change(work)
+    witness = witness_push(work)
+    if rewrite:
+        hook(work, "pre-commit", "Path('README.md').write_bytes(b'hook output\\n')\ngit('add', 'README.md')\n")
+    result = persist(work, "-m", "identify the run through Git's reflog interface", "README.md")
+    if rewrite:
+        mismatch_ids(result, checked)
+        assert "undo completed" in result.stdout
+        assert value(work, "rev-parse", "HEAD") == start
+        assert value(work, "diff", "--cached", "--name-only") == ""
+        assert (work / "README.md").read_bytes() == b"hook output\n"
+        assert value(work, "ls-remote", "origin", "refs/heads/main").startswith(start)
+        assert not witness.exists()
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        commit = value(work, "rev-parse", "HEAD")
+        assert value(work, "rev-parse", f"{commit}^{{tree}}") == checked
+        assert value(work, "ls-remote", "origin", "refs/heads/main").startswith(commit)
+        assert witness.exists()
+
+
+def scoped_change(work):
+    start = value(work, "rev-parse", "HEAD")
+    (work / "src/in/checked.txt").write_bytes(b"checked\n")
+    value(work, "add", "src/in/checked.txt")
+    checked = value(work, "write-tree")
+    value(work, "reset", "HEAD", "--", "src/in/checked.txt")
+    hook(work, "pre-commit", "Path('src/in/checked.txt').write_bytes(b'hook output\\n')\n"
+         "git('add', 'src/in/checked.txt')\n")
+    return start, checked
+
+
+def scoped_seed(work):
+    for name in ("src/in/checked.txt", "src/out/hidden.txt"):
+        path = work / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"seed\n")
+    value(work, "add", "src")
+    value(work, "commit", "-m", "seed directory-scoped fixture")
+    value(work, "push", "origin", "main")
+
+
+def assert_directory_retry_preserves_hidden_entry(work, start, checked, hidden, before):
+    witness = witness_push(work)
+    first = persist(work, "-m", "refuse rewrite without losing hidden index state", "src")
+    rejected = mismatch_ids(first, checked)
+    assert "undo completed" in first.stdout
+    assert value(work, "rev-parse", "HEAD") == start
+    assert value(work, "ls-files", "--stage", "--debug", "--sparse", "--", hidden) == before
+    assert value(work, "diff", "--cached", "--name-only") == ""
+    status = value(work, "status", "--porcelain")
+    assert hidden not in status and " D " not in status
+    assert value(work, "ls-remote", "origin", "refs/heads/main").startswith(start)
+    assert not witness.exists()
+    # Accept the observed, now checked rewrite and follow the directory route.
+    assert (work / "src/in/checked.txt").read_bytes() == b"hook output\n"
+    second = persist(work, "-m", "land only the accepted rewrite through a directory", "src")
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert value(work, "diff", "--name-status", start, "HEAD") == "M\tsrc/in/checked.txt"
+    assert value(work, "show", f"HEAD:{hidden}") == "seed"
+    assert value(work, "ls-files", "--stage", "--debug", "--sparse", "--", hidden) == before
+    assert run(["git", "merge-base", "--is-ancestor", rejected, "HEAD"], cwd=work).returncode == 1
+    assert value(work, "ls-remote", "origin", "refs/heads/main").startswith(value(work, "rev-parse", "HEAD"))
+
+
+@pytest.mark.parametrize("sparse_index", [False, True])
+def test_sparse_cone_undo_and_directory_retry_keep_out_of_cone_file(tmp_path, sparse_index):
+    work = make_repo(tmp_path)
+    scoped_seed(work)
+    value(work, "sparse-checkout", "init", "--cone",
+          "--sparse-index" if sparse_index else "--no-sparse-index")
+    value(work, "sparse-checkout", "set", "src/in")
+    hidden = "src/out/hidden.txt"
+    assert not (work / hidden).exists()
+    sparse_patterns = git_file(work, "info/sparse-checkout").read_bytes()
+    sparse_config = value(work, "config", "--get-regexp", "sparse|cone")
+    before = value(work, "ls-files", "--stage", "--debug", "--sparse", "--", hidden)
+    start, checked = scoped_change(work)
+    assert_directory_retry_preserves_hidden_entry(work, start, checked, hidden, before)
+    assert not (work / hidden).exists()
+    assert git_file(work, "info/sparse-checkout").read_bytes() == sparse_patterns
+    assert value(work, "config", "--get-regexp", "sparse|cone") == sparse_config
+
+
+@pytest.mark.parametrize("flag", ["--skip-worktree", "--assume-unchanged"])
+def test_hidden_edit_undo_and_directory_retry_preserve_index_flags(tmp_path, flag):
+    work = make_repo(tmp_path)
+    scoped_seed(work)
+    hidden = "src/out/hidden.txt"
+    value(work, "update-index", flag, hidden)
+    (work / hidden).write_bytes(b"private local configuration\n")
+    before = value(work, "ls-files", "--stage", "--debug", "--sparse", "--", hidden)
+    start, checked = scoped_change(work)
+    assert_directory_retry_preserves_hidden_entry(work, start, checked, hidden, before)
+    assert (work / hidden).read_bytes() == b"private local configuration\n"
+
+
+def test_post_commit_staging_survives_undo_and_blocks_directory_retry(tmp_path):
+    work = make_repo(tmp_path)
+    scoped_seed(work)
+    start, checked = scoped_change(work)
+    witness = witness_push(work)
+    hook(work, "post-commit", "Path('unrelated.txt').write_bytes(b'another actor staged this\\n')\n"
+         "git('add', 'unrelated.txt')\n"
+         "Path('.post-index-entry').write_bytes(git('ls-files', '--stage', '--debug', '--', 'unrelated.txt').stdout)\n")
+    first = persist(work, "-m", "retain unrelated staging created before undo", "src")
+    mismatch_ids(first, checked)
+    assert "undo completed" in first.stdout
+    assert "unrelated index entries and flags retained" in first.stdout
+    assert value(work, "rev-parse", "HEAD") == start
+    assert value(work, "diff", "--cached", "--name-only") == "unrelated.txt"
+    assert value(work, "show", ":unrelated.txt") == "another actor staged this"
+    entry = run(["git", "ls-files", "--stage", "--debug", "--", "unrelated.txt"], cwd=work)
+    assert entry.stdout.encode().replace(b"\r\n", b"\n") == (work / ".post-index-entry").read_bytes()
+    assert "M  unrelated.txt" in value(work, "status", "--porcelain")
+    second = persist(work, "-m", "do not inherit another actor's staged change", "src")
+    assert second.returncode == 1 and "index already has staged changes" in second.stdout
+    assert value(work, "diff", "--cached", "--name-only") == "unrelated.txt"
+    assert value(work, "ls-remote", "origin", "refs/heads/main").startswith(start)
+    assert not witness.exists()
 
 
 @pytest.mark.parametrize("body", [
@@ -655,6 +798,27 @@ def test_missing_run_event_never_authorizes_undo(tmp_path):
     assert value(work, "diff", "--cached", "--name-only") == ""
 
 
+def test_inconsistent_preceding_reflog_event_refuses_identity(tmp_path):
+    work = make_repo(tmp_path)
+    start, _ = checked_change(work)
+    witness = witness_push(work)
+    hook(work, "post-commit",
+         "log = Path(git('rev-parse', '--git-path', 'logs/refs/heads/main').stdout.decode().strip())\n"
+         "lines = log.read_bytes().splitlines()\n"
+         f"other = git('commit-tree', 'HEAD^{{tree}}', '-p', '{start}', '-m', 'other event').stdout.strip()\n"
+         "fields, message = lines[-2].split(b'\\t', 1)\n"
+         "parts = fields.split(b' ')\n"
+         "parts[1] = other\n"
+         "lines[-2] = b' '.join(parts) + b'\\t' + message\n"
+         "log.write_bytes(b'\\n'.join(lines) + b'\\n')\n")
+    result = persist(work, "-m", "require parent and preceding reflog evidence to agree", "README.md")
+    assert result.returncode == 1 and "reflog transition disagrees" in result.stdout
+    assert "no undo or push" in result.stdout
+    assert value(work, "rev-parse", "HEAD") != start
+    assert value(work, "diff", "--cached", "--name-only") == ""
+    assert not witness.exists()
+
+
 def test_index_preparation_failure_changes_neither_head_nor_index(tmp_path, implementation, monkeypatch, capsys):
     work = make_repo(tmp_path)
     _, checked = checked_change(work)
@@ -672,9 +836,50 @@ def test_index_preparation_failure_changes_neither_head_nor_index(tmp_path, impl
     monkeypatch.setattr(implementation, "run_git", denied)
     result = invoke_main(implementation, work, monkeypatch, capsys)
     mismatch_ids(result, checked)
-    assert "undo skipped: could not prepare start index" in result.stdout
+    assert "undo skipped: could not prepare restored index" in result.stdout
     assert value(work, "rev-parse", "HEAD") == observed["head"]
     assert git_file(work, "index").read_bytes() == observed["index"]
+
+
+@pytest.mark.parametrize("change, reason", [
+    ("unrelated", "unrelated index entries or flags would change"),
+    ("content", "run's index paths do not match the recorded start"),
+    ("flags", "index entry flags would change"),
+    ("format", "unrecognized index inspection record"),
+])
+def test_prepared_index_invariants_refuse_before_moving_ref(tmp_path, implementation, monkeypatch, capsys, change, reason):
+    work = make_repo(tmp_path)
+    _, checked = checked_change(work)
+    witness = witness_push(work)
+    hook(work, "pre-commit", "Path('README.md').write_bytes(b'hook output\\n')\ngit('add', 'README.md')\n")
+    original = implementation.run_git
+    observed = {}
+
+    def corrupt_preparation(*args, **kwargs):
+        if args[0] == "ls-files" and change == "format" and kwargs.get("env"):
+            return subprocess.CompletedProcess([], 0, b"unknown inspection format", b"")
+        result = original(*args, **kwargs)
+        if args[0] == "read-tree":
+            observed["head"] = value(work, "rev-parse", "HEAD")
+            observed["index"] = git_file(work, "index").read_bytes()
+            env = kwargs["env"]
+            if change == "unrelated":
+                original("update-index", "--force-remove", "unrelated.txt", env=env)
+            elif change == "content":
+                blob = value(work, "rev-parse", "HEAD:README.md")
+                original("update-index", "--cacheinfo", "100644," + blob + ",README.md", env=env)
+            elif change == "flags":
+                original("update-index", "--assume-unchanged", "README.md", env=env)
+        return result
+
+    monkeypatch.setattr(implementation, "run_git", corrupt_preparation)
+    result = invoke_main(implementation, work, monkeypatch, capsys)
+    rejected = mismatch_ids(result, checked)
+    assert "undo skipped" in result.stdout and reason in result.stdout, result.stdout
+    assert value(work, "rev-parse", "HEAD") == rejected
+    if change != "format":
+        assert git_file(work, "index").read_bytes() == observed["index"]
+    assert not git_file(work, "index.lock").exists() and not witness.exists()
 
 
 def test_index_lock_excludes_normal_git_writes_during_undo(tmp_path, implementation, monkeypatch, capsys):
@@ -700,7 +905,7 @@ def test_index_lock_excludes_normal_git_writes_during_undo(tmp_path, implementat
     assert (work / "concurrent.txt").read_bytes() == b"concurrent working edit\n"
 
 
-@pytest.mark.parametrize("move", ["index", "symbolic"])
+@pytest.mark.parametrize("move", ["index", "symbolic", "unrelated", "flags"])
 def test_final_recovery_verification_detects_later_index_or_symbolic_movement(tmp_path, implementation, monkeypatch, capsys, move):
     work = make_repo(tmp_path)
     start, checked = checked_change(work)
@@ -713,9 +918,14 @@ def test_final_recovery_verification_detects_later_index_or_symbolic_movement(tm
         real_replace(source, target)
         if move == "index":
             value(work, "read-tree", observed["commit"])
-        else:
+        elif move == "symbolic":
             value(work, "update-ref", "refs/heads/another", start)
             value(work, "symbolic-ref", "HEAD", "refs/heads/another")
+        elif move == "unrelated":
+            (work / "unrelated.txt").write_bytes(b"new staged work after install\n")
+            value(work, "add", "unrelated.txt")
+        else:
+            value(work, "update-index", "--skip-worktree", "unrelated.txt")
 
     monkeypatch.setattr(implementation.os, "replace", install_then_move)
     result = invoke_main(implementation, work, monkeypatch, capsys)
@@ -723,5 +933,10 @@ def test_final_recovery_verification_detects_later_index_or_symbolic_movement(tm
     assert "undo incomplete" in result.stdout
     if move == "index":
         assert value(work, "write-tree") == value(work, "rev-parse", f"{rejected}^{{tree}}")
-    else:
+    elif move == "symbolic":
         assert value(work, "symbolic-ref", "HEAD") == "refs/heads/another"
+    elif move == "unrelated":
+        assert value(work, "show", ":unrelated.txt") == "new staged work after install"
+        assert value(work, "diff", "--cached", "--name-only") == "unrelated.txt"
+    else:
+        assert value(work, "ls-files", "-v", "--", "unrelated.txt") == "S unrelated.txt"
