@@ -1612,9 +1612,13 @@ def _launch_settings(state: WorkState, role: str, vendor: str,
             if classification not in records.CLASSIFICATIONS:
                 raise WorkError("Claude seat settings require a judgment classification")
             model = dispatch_seat.DEFAULT_MODELS["claude"]
-            effort = dispatch_seat.CLAUDE_EFFORTS[classification]
             model_source = "dispatch_seat default"
-            effort_source = "classification mapping"
+            if role == "use-consumer":
+                effort = "max"
+                effort_source = "work entrance use-consumer default"
+            else:
+                effort = dispatch_seat.CLAUDE_EFFORTS[classification]
+                effort_source = "classification mapping"
     else:
         raise WorkError(f"unknown launch vendor: {vendor}")
     override = next((marker for marker in reversed(state.issue_markers)

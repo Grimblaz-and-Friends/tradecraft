@@ -40,7 +40,7 @@ The posted row uses the one ask block and mark in `../references/the-ask.md`, na
 
 **The experience consumer also runs on the runtime the change's users run.** Both requirements apply. Where no qualifying consumer can be supplied, record the missing use and why under the instrument's omission route.
 
-**An experience consumer takes the cold judging effort (`max` on Claude).** The run must notice unbriefed friction while operating the result, so `run use` classifies it as cold rather than borrowing an ordinary review seat's effort. An owner's recorded per-change instruction wins over this default without moving the stage between vendors.
+**An experience consumer runs at `max` on Claude, above the cold seat's `xhigh`.** The run must notice unbriefed friction while operating the result, so `run use` classifies it as cold rather than borrowing an ordinary review seat's effort, and keeps it at the highest effort. An owner's recorded per-change instruction wins over this default without moving the stage between vendors.
 
 **Staffing is read from the actual returned vendor against the author or builder whose work is judged.** A returned seat on that same vendor records `degraded` even when the owner requested it first; the stage carries its reason, such as `owner-selected-claude-implementer`, before accepting it. A cross-vendor return records `qualified` even if an unrelated requested runtime was unavailable. Requested vendor, actual vendor, comparison vendor and their sources stay in the record, because matching the request alone does not establish independence. Where a fallback cannot supply the declared capability, no judgment returns and the instrument's missing-seat or omission route applies.
 
