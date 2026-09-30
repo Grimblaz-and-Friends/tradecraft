@@ -26,7 +26,7 @@ An entry applies only while its complete replaced pair exactly matches that call
 
 A bridge-supplied field keeps the resolved file path, entry ID, role/vendor, replaced and ruled pairs and ruling locator in the existing requested-source fields and seat attempt sources. No new provenance schema is needed. The printed plan and command use the same snapshot, including across a seat's availability fallback, so an edited or removed machine file cannot erase or silently change that launch's choice.
 
-The mechanism first ships as `0.162.0`; older versions ignore the file. In this lab, the Steward writes a bridge entry when the owner rules, in place of an interim override line for holders to copy, as the affirmed brief's row 2 Steward cell records. The ruling still enters a release as the standing default. This lab arrangement belongs here rather than in shipped guidance.
+The mechanism first ships as `0.163.0`; older versions ignore the file. In this lab, the Steward writes a bridge entry when the owner rules, in place of an interim override line for holders to copy, as the affirmed brief's row 2 Steward cell records. The ruling still enters a release as the standing default. This lab arrangement belongs here rather than in shipped guidance.
 
 ## Evidence
 
