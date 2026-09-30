@@ -26,6 +26,8 @@ from brief import LANES, review_lane
 import dispatch_record as records
 import dispatch_implementer
 import dispatch_seat
+import launch_settings as setting_resolution
+from launch_settings import LaunchSettings
 import proof as proof_document
 import recipient_tree
 import vendor_cli
@@ -289,6 +291,8 @@ class WorkState:
     applicable_use: Marker | None = None
     use_application: dict[str, object] | None = None
     proof_current: bool | None = None
+    holder_root: Path | None = None
+    instalment: str | None = None
 
     @property
     def issue_sources(self) -> list[tuple[str, str]]:
@@ -341,6 +345,7 @@ class Decision:
     invalid_markers: tuple[dict[str, object], ...] = ()
     quotations: tuple[dict[str, object], ...] = ()
     latest_checks: tuple[dict[str, object], ...] = ()
+    launch_settings: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -357,15 +362,8 @@ class Decision:
             "invalid_markers": list(self.invalid_markers),
             "quotations": list(self.quotations),
             "latest_checks": list(self.latest_checks),
+            "launch_settings": self.launch_settings,
         }
-
-
-@dataclass(frozen=True)
-class LaunchSettings:
-    model: str
-    effort: str
-    model_source: str
-    effort_source: str
 
 
 @dataclass(frozen=True)
@@ -1593,7 +1591,8 @@ def _marker_setting_source(marker: Marker) -> str:
 
 
 def _launch_settings(state: WorkState, role: str, vendor: str,
-                     classification: str | None = None) -> LaunchSettings:
+                     classification: str | None = None, *,
+                     bridge: setting_resolution.Bridge | None = None) -> LaunchSettings:
     if role not in MODEL_OVERRIDE_ROLES:
         raise WorkError(f"unknown launch role: {role}")
     if vendor == "codex":
@@ -1621,6 +1620,7 @@ def _launch_settings(state: WorkState, role: str, vendor: str,
                 effort_source = "classification mapping"
     else:
         raise WorkError(f"unknown launch vendor: {vendor}")
+    explicit_model = explicit_effort = explicit_source = None
     override = next((marker for marker in reversed(state.issue_markers)
                      if marker.name == "model-override"), None)
     if override is not None:
@@ -1628,10 +1628,15 @@ def _launch_settings(state: WorkState, role: str, vendor: str,
         if value:
             selected_vendor, selected_model, selected_effort = value.split(":")
             if selected_vendor == vendor:
-                model = selected_model
-                effort = selected_effort
-                model_source = effort_source = _marker_setting_source(override)
-    return LaunchSettings(model, effort, model_source, effort_source)
+                explicit_model = selected_model
+                explicit_effort = selected_effort
+                explicit_source = _marker_setting_source(override)
+    return setting_resolution.resolve(
+        MODEL_OVERRIDE_ROLES[role], vendor, model, effort, model_source, effort_source,
+        bridge=bridge if bridge is not None else setting_resolution.read_bridge(),
+        explicit_model=explicit_model, explicit_effort=explicit_effort,
+        explicit_model_source=explicit_source, explicit_effort_source=explicit_source,
+    )
 
 
 def _implementer_vendor(state: WorkState, role: str, *,
@@ -1779,76 +1784,81 @@ def _reserve_handover(path: Path, source: ResumeSource, trigger: str, *,
             os.fsync(stream.fileno())
         return record, True, None
     except FileExistsError:
-        value = _json_object(path)
-        if (value is None or value.get("schema_version") != 1
-                or value.get("from_bundle") != source.path
-                or value.get("from_session") != source.session
-                or value.get("to_vendor") != "claude"
-                or not isinstance(value.get("replacement_session"), str)
-                or SESSION_ID.fullmatch(value["replacement_session"]) is None):
-            raise WorkError(f"handover reservation is unresolved: {path}")
-        session = value["replacement_session"]
-        if recovery_session is not None and recovery_session != session:
-            raise WorkError(
-                f"handover {path} reserves Claude session {session}; "
-                f"--handover-recovery-session must name that exact session"
-            )
-        if value.get("phase") == "completed":
-            if recovery_session is not None:
-                raise WorkError(f"handover {path} is complete; omit recovery for session {session}")
-            return value, False, None
-        attempts = _handover_attempts(path, source, session)
-        attempt_path, request, _run = attempts[-1] if attempts else (None, None, None)
-        retry_of = request.get("dispatch_id") if request else None
-        bundle = str(attempt_path) if attempt_path else f"missing (predecessor {source.path})"
-        proved_session = False
-        possible_launch = value.get("phase") != "reserved" and not attempts
-        for request_path, attempt_request, run in attempts:
-            rows = run.get("attempts") if run else None
-            row = rows[0] if isinstance(rows, list) and len(rows) == 1 else None
-            launched = row.get("launched") if isinstance(row, dict) else None
-            observed = row.get("observed") if isinstance(row, dict) else None
-            session_id = observed.get("session_id") if isinstance(observed, dict) else None
-            session_source = (observed.get("session_id_source")
-                              if isinstance(observed, dict) else None)
-            proved_run = (
-                run is not None and run.get("schema_version") == records.SCHEMA_VERSION
-                and run.get("actual_vendor") == "claude"
-                and (run.get("request") is None
-                     or run.get("request") == str(request_path))
-                and isinstance(row, dict) and row.get("vendor") == "claude"
-                and isinstance(launched, bool)
-            )
-            if (proved_run and launched is True and session_id == session
-                    and session_source == "claude JSON result.session_id"):
-                proved_session = True
-            elif proved_run and launched is False and session_id is None:
-                continue
-            elif (run is None and value.get("phase") == "reserved"
-                  and attempt_request["handover"]["phase"] == "fresh"):
-                continue
-            else:
-                possible_launch = True
-                bundle = str(request_path)
-        if proved_session:
-            return value, False, retry_of if isinstance(retry_of, str) else None
-        if not possible_launch:
-            if recovery_session is not None:
-                raise WorkError(
-                    f"handover {path} has no launched session; omit recovery for {session}"
-                )
-            return value, True, retry_of if isinstance(retry_of, str) else None
-        if recovery_session is not None:
-            return value, False, retry_of if isinstance(retry_of, str) else None
-        raise WorkError(
-            f"handover {path} is {value.get('phase') or 'unrecorded'}; "
-            f"bundle {bundle}; reserved Claude session {session} has no proved "
-            "native session result. Inspect Claude's saved session for that UUID; "
-            f"if it exists, rerun this stage with --handover-recovery-session {session} "
-            "to resume it. If it does not exist, return the unresolved bundle "
-            "and UUID to the owner; do not start a new session."
-        )
+        return _inspect_handover(path, source, recovery_session=recovery_session)
 
+
+def _inspect_handover(path: Path, source: ResumeSource, *,
+                      recovery_session: str | None = None) -> tuple[dict[str, object], bool, str | None]:
+    """Inspect a reservation and native results without allocating or writing."""
+    value = _json_object(path)
+    if (value is None or value.get("schema_version") != 1
+            or value.get("from_bundle") != source.path
+            or value.get("from_session") != source.session
+            or value.get("to_vendor") != "claude"
+            or not isinstance(value.get("replacement_session"), str)
+            or SESSION_ID.fullmatch(value["replacement_session"]) is None):
+        raise WorkError(f"handover reservation is unresolved: {path}")
+    session = value["replacement_session"]
+    if recovery_session is not None and recovery_session != session:
+        raise WorkError(
+            f"handover {path} reserves Claude session {session}; "
+            f"--handover-recovery-session must name that exact session"
+        )
+    if value.get("phase") == "completed":
+        if recovery_session is not None:
+            raise WorkError(f"handover {path} is complete; omit recovery for session {session}")
+        return value, False, None
+    attempts = _handover_attempts(path, source, session)
+    attempt_path, request, _run = attempts[-1] if attempts else (None, None, None)
+    retry_of = request.get("dispatch_id") if request else None
+    bundle = str(attempt_path) if attempt_path else f"missing (predecessor {source.path})"
+    proved_session = False
+    possible_launch = value.get("phase") != "reserved" and not attempts
+    for request_path, attempt_request, run in attempts:
+        rows = run.get("attempts") if run else None
+        row = rows[0] if isinstance(rows, list) and len(rows) == 1 else None
+        launched = row.get("launched") if isinstance(row, dict) else None
+        observed = row.get("observed") if isinstance(row, dict) else None
+        session_id = observed.get("session_id") if isinstance(observed, dict) else None
+        session_source = (observed.get("session_id_source")
+                          if isinstance(observed, dict) else None)
+        proved_run = (
+            run is not None and run.get("schema_version") == records.SCHEMA_VERSION
+            and run.get("actual_vendor") == "claude"
+            and (run.get("request") is None
+                 or run.get("request") == str(request_path))
+            and isinstance(row, dict) and row.get("vendor") == "claude"
+            and isinstance(launched, bool)
+        )
+        if (proved_run and launched is True and session_id == session
+                and session_source == "claude JSON result.session_id"):
+            proved_session = True
+        elif proved_run and launched is False and session_id is None:
+            continue
+        elif (run is None and value.get("phase") == "reserved"
+              and attempt_request["handover"]["phase"] == "fresh"):
+            continue
+        else:
+            possible_launch = True
+            bundle = str(request_path)
+    if proved_session:
+        return value, False, retry_of if isinstance(retry_of, str) else None
+    if not possible_launch:
+        if recovery_session is not None:
+            raise WorkError(
+                f"handover {path} has no launched session; omit recovery for {session}"
+            )
+        return value, True, retry_of if isinstance(retry_of, str) else None
+    if recovery_session is not None:
+        return value, False, retry_of if isinstance(retry_of, str) else None
+    raise WorkError(
+        f"handover {path} is {value.get('phase') or 'unrecorded'}; "
+        f"bundle {bundle}; reserved Claude session {session} has no proved "
+        "native session result. Inspect Claude's saved session for that UUID; "
+        f"if it exists, rerun this stage with --handover-recovery-session {session} "
+        "to resume it. If it does not exist, return the unresolved bundle "
+        "and UUID to the owner; do not start a new session."
+    )
 
 def _runtime_argument(vendor: str, explicit: Path | None = None) -> list[str]:
     try:
@@ -1877,13 +1887,19 @@ def _setting_arguments(vendor: str, settings: LaunchSettings) -> list[str]:
 
 def _seat_launch_arguments(state: WorkState, role: str, classification: str, *,
                            claude_path: Path | None = None,
-                           codex_path: Path | None = None) -> list[str]:
-    arguments: list[str] = []
+                           codex_path: Path | None = None,
+                           plan: dict[str, object] | None = None) -> list[str]:
+    arguments: list[str] = ["--role", MODEL_OVERRIDE_ROLES[role]]
+    bridge = setting_resolution.read_bridge() if plan is None else None
     explicit_paths = {"claude": claude_path, "codex": codex_path}
     for vendor in dispatch_seat.VENDORS:
-        arguments.extend(_setting_arguments(
-            vendor, _launch_settings(state, role, vendor, classification)
-        ))
+        if plan is None:
+            settings = _launch_settings(state, role, vendor, classification, bridge=bridge)
+        else:
+            row = plan["vendors"][vendor]
+            settings = LaunchSettings(row["model"], row["effort"],
+                                      row["sources"]["model"], row["sources"]["effort"])
+        arguments.extend(_setting_arguments(vendor, settings))
         arguments.extend(_selected_runtime_argument(vendor, explicit_paths[vendor]))
     return arguments
 
@@ -2197,6 +2213,10 @@ def _decision_status(decision: Decision) -> str:
 
 
 def _reported_decision(state: WorkState, decision: Decision) -> Decision:
+    try:
+        plan = _launch_plan(state, decision)
+    except (WorkError, setting_resolution.SettingsError, OSError, ValueError) as exc:
+        plan = {"status": "unresolved", "stage": decision.stage, "reason": str(exc)}
     return replace(
         decision,
         work=f"{state.repo}#{state.issue_number}",
@@ -2206,6 +2226,7 @@ def _reported_decision(state: WorkState, decision: Decision) -> Decision:
         invalid_markers=tuple(state.invalid_marker_claims),
         quotations=tuple(state.quotation_claims),
         latest_checks=tuple(latest_checks(state)),
+        launch_settings=plan,
     )
 
 
@@ -3913,6 +3934,169 @@ def resume_session(state: WorkState, stage: str, record_root: Path | None = None
                  if isinstance(session, str) and SESSION_ID.fullmatch(session)), None)
 
 
+def _session_settings(source: ResumeSource) -> dict[str, object]:
+    requested = source.request["requested"]
+    sources = source.request.get("setting_sources", {})
+    if not sources:
+        sources = requested.get("sources", {})
+    observations = [attempt["observed"] for attempt in source.run.get("attempts", [])
+                    if isinstance(attempt, dict) and isinstance(attempt.get("observed"), dict)
+                    and attempt["observed"].get("session_id") == source.session]
+    return {"id": source.session, "source": source.path, "vendor": requested.get("vendor"),
+            "requested": {"model": requested.get("model"), "effort": requested.get("effort"),
+                          "sources": sources,
+                          "unavailable_reason": (None if requested.get("model") and requested.get("effort")
+                                                 else "source bundle did not record model or effort")},
+            "observations": observations}
+
+
+def _handover_session_settings(path: Path, source: ResumeSource,
+                               reservation: dict[str, object]) -> dict[str, object]:
+    session = reservation["replacement_session"]
+    for request_path, request, run in reversed(_handover_attempts(path, source, session)):
+        if run and any(isinstance(attempt, dict) and
+                       isinstance(attempt.get("observed"), dict) and
+                       attempt["observed"].get("session_id") == session
+                       for attempt in run.get("attempts", [])):
+            return _session_settings(ResumeSource("", str(request_path), request, run, session))
+    return {"id": session, "vendor": "claude", "source": str(path),
+            "requested": {"model": None, "effort": None, "sources": {},
+                          "unavailable_reason": "recovery supplies no recorded model or effort"},
+            "observations": []}
+
+
+def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = None,
+                 recovery_session: str | None = None,
+                 resolve_comparison: bool = True) -> dict[str, object] | None:
+    """Plan a recipient using only reads; execution still proves its preconditions."""
+    implementer = decision.stage in {"artifact", "build", "floor", "review-disposition"}
+    judging = decision.stage in {"cold-seat", "use"}
+    if not (implementer or judging) or (not decision.dispatch and decision.stage != "use"):
+        return None
+    bridge = setting_resolution.read_bridge()
+    role = ("artifact_author" if decision.stage == "artifact" else "implementer") if implementer else (
+        "cold-seat" if decision.stage == "cold-seat" else "use-consumer")
+    plan = {"status": "resolved", "stage": decision.stage, "role": MODEL_OVERRIDE_ROLES[role],
+            "continuity": decision.continuity or "fresh"}
+    if judging:
+        settings = {vendor: _launch_settings(state, role, vendor, "cold", bridge=bridge).as_dict(
+            vendor, f"work entrance {role} route" if vendor == "claude" else "availability fallback to comparison vendor"
+        ) for vendor in dispatch_seat.VENDORS}
+        plan.update(primary=settings["claude"], vendors=settings)
+        try:
+            if not resolve_comparison:
+                raise WorkError("comparison vendor awaits validated recipient tree")
+            stages = frozenset({"artifact"}) if decision.stage == "cold-seat" else RESUME_SOURCE_STAGES["build"]
+            own, own_source = _producer_vendor(state, stages)
+            fallback = {**settings[own], **dispatch_seat.fallback_plan("claude", own,
+                        "read" if decision.stage == "cold-seat" else "execute"),
+                        "comparison_vendor_source": own_source}
+        except WorkError as exc:
+            eligibility = dispatch_seat.fallback_plan("claude", "codex",
+                          "read" if decision.stage == "cold-seat" else "execute")
+            fallback = {**settings["codex"], **eligibility,
+                        "eligible": None if eligibility["eligible"] else False,
+                        "comparison_vendor": None, "comparison_vendor_source": None,
+                        "comparison_vendor_unavailable_reason": str(exc)}
+        plan["fallback"] = fallback
+        return plan
+    vendor, vendor_source, overridden, machine, machine_source = _implementer_vendor(state, role)
+    source = None
+    if decision.continuity == "resume":
+        source = _resume_source(f"{state.repo}#{state.issue_number}", decision.stage,
+                                state.record_root or records.default_record_root().expanduser().resolve())
+        if source is not None:
+            plan["session"] = _session_settings(source)
+            pinned = source.request["requested"]["vendor"]
+        else:
+            markers = [marker for marker in state.issue_markers if marker.name == "builder-session"
+                       and marker.attributes.get("vendor") and decision.stage != "artifact"]
+            marker = markers[-1] if markers else None
+            if marker is None:
+                raise WorkError("resume has no proving bundle or authorized vendor-qualified marker")
+            pinned = marker.attributes["vendor"]
+            plan["session"] = {"id": marker.attributes["session"], "vendor": pinned,
+                "source": _marker_setting_source(marker), "requested": {"model": None, "effort": None,
+                "sources": {}, "unavailable_reason": "marker supplies no historical model or effort"},
+                "observations": []}
+        prior_root = source.request.get("root") if source else None
+        prior_branch = source.request.get("lineage_branch") if source else None
+        selected_root = Path(prior_root) if isinstance(prior_root, str) and prior_root else root or state.holder_root
+        rows = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
+        if rows:
+            if len(rows) != 1:
+                raise WorkError("multiple active implementation roots prevent launch planning")
+            selected_root = Path(rows[0]["root"])
+            prior_branch = rows[0].get("branch") or prior_branch or _attached_branch(selected_root)
+            if source is not None:
+                recorded_root = source.request.get("root")
+                if recorded_root and not _same_path(Path(recorded_root), selected_root):
+                    raise WorkError("resume bundle belongs to a different implementation root")
+                recorded_branch = source.request.get("lineage_branch")
+                if recorded_branch and prior_branch and recorded_branch != prior_branch:
+                    raise WorkError("resume bundle belongs to a different implementation branch")
+        if source and state.pr:
+            recorded_pr = source.request.get("lineage_pull_request")
+            if recorded_pr is not None and recorded_pr != state.pr.get("number"):
+                raise WorkError("resume bundle belongs to a different implementing pull request")
+        handover_path = (_handover_path(state, role, selected_root, prior_branch)
+                         if source and selected_root is not None else None)
+        recorded = handover_path is not None and handover_path.is_file()
+        if pinned == "claude":
+            if overridden and vendor != pinned:
+                raise WorkError("model override conflicts with pinned Claude implementer session")
+            vendor, vendor_source = pinned, f"pinned Claude session from {source.path if source else 'builder-session marker'}"
+            if source and isinstance(source.request.get("handover"), dict):
+                carried = source.request["handover"]
+                reservation = _json_object(handover_path) if handover_path else None
+                if (reservation is None or carried.get("state") != str(handover_path)
+                        or reservation.get("schema_version") != 1
+                        or reservation.get("from_bundle") != carried.get("from_bundle")
+                        or reservation.get("replacement_session") != source.session
+                        or reservation.get("to_vendor") != "claude"):
+                    raise WorkError("Claude resume bundle disagrees with handover lineage")
+                plan["handover"] = {"state": str(handover_path), **reservation,
+                                    "replacement_continuity": "resume"}
+        elif recorded or (pinned == "codex" and vendor == "claude"):
+            if source is None:
+                raise WorkError("Codex-to-Claude handover requires the predecessor dispatch bundle")
+            effective_pin = "claude" if recorded else "codex"
+            machine_handover = not recorded and machine == vendor == "claude"
+            if overridden and vendor != effective_pin and not machine_handover:
+                if recorded:
+                    raise WorkError(f"{vendor_source} selects {vendor}, but the recorded handover "
+                                    "has a pinned Claude session; the override cannot change its vendor")
+                raise WorkError("model override conflicts with pinned Codex session; a per-issue "
+                                "entry alone cannot hand over. Set ~/.tradecraft/implementer-vendor "
+                                "to claude for a machine switch, then rerun")
+            plan["continuity"] = "handover"
+            plan["predecessor"] = plan.pop("session")
+            vendor = "claude"
+            if recorded:
+                try:
+                    reservation, fresh, _retry = _inspect_handover(
+                        handover_path, source, recovery_session=recovery_session)
+                except WorkError as exc:
+                    reservation, fresh = _json_object(handover_path) or {}, None
+                    plan.update(status="unresolved", reason=str(exc))
+                vendor_source = f"recorded handover {handover_path}"
+                plan["handover"] = {"state": str(handover_path), **reservation,
+                                    "replacement_continuity": ("fresh" if fresh is True else
+                                                               "resume" if fresh is False else "unresolved")}
+                if fresh is False:
+                    plan["session"] = _handover_session_settings(handover_path, source, reservation)
+                if recovery_session:
+                    vendor_source += f"; holder-confirmed Claude session {recovery_session}"
+            else:
+                plan["handover"] = {"state": str(handover_path) if handover_path else None,
+                                    "replacement_session": None, "phase": "not-reserved",
+                                    "trigger": machine_source, "replacement_continuity": "fresh"}
+        elif pinned != vendor:
+            raise WorkError(f"selected {vendor} conflicts with pinned {pinned} session")
+    plan["primary"] = _launch_settings(state, role, vendor, bridge=bridge).as_dict(vendor, vendor_source)
+    return plan
+
+
 def _version_key(value: str) -> tuple[object, ...] | None:
     if records.SEMANTIC_VERSION.fullmatch(value) is None:
         return None
@@ -4661,6 +4845,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
         return 0
     if decision.stage == "use" and decision.dispatch:
+        launch_plan = _launch_plan(state, decision, resolve_comparison=False)
         if dispatch_path is None or tree_metadata is None:
             refused_use = _reported_decision(state, Decision(
                 "use", False, None, "use-requires-holder-job-and-tree",
@@ -4725,8 +4910,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             *_seat_launch_arguments(
                 state, "use-consumer", "cold",
                 claude_path=claude_path, codex_path=codex_path,
+                plan=launch_plan,
             ),
         ]
+        launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
+            **dispatch_seat.fallback_plan("claude", own_vendor, "execute"),
+            "comparison_vendor_source": own_vendor_source}
+        setting_resolution.print_plan(launch_plan, label="work")
         return subprocess.run(command).returncode
     if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
         decision = _resolved_use_holder_decision(state, decision, root, instalment)
@@ -4786,6 +4976,10 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             ))
             print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
             return 0
+    launch_plan = _launch_plan(state, decision, root=root,
+                               recovery_session=handover_recovery_session)
+    if launch_plan is not None and launch_plan["status"] == "unresolved":
+        raise WorkError(launch_plan["reason"])
     selected = _dispatch_root(
         state, decision, root, instalment, holder_identity
     )
@@ -4918,7 +5112,12 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                             *_seat_launch_arguments(
                                 state, "cold-seat", "cold",
                                 claude_path=claude_path, codex_path=codex_path,
+                                plan=launch_plan,
                             )]
+                launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
+                    **dispatch_seat.fallback_plan("claude", own_vendor, "read"),
+                    "comparison_vendor_source": own_vendor_source}
+                setting_resolution.print_plan(launch_plan, label="work")
                 return subprocess.run(command).returncode
         else:
             if branch is not None:
@@ -4936,7 +5135,17 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 common.extend(("--lineage-branch", branch))
             if state.pr and isinstance(state.pr.get("number"), int):
                 common.extend(("--lineage-pull-request", str(state.pr["number"])))
-            settings = _launch_settings(state, implementer_role, selected_vendor)
+            planned = launch_plan["primary"]
+            if planned["vendor"] != selected_vendor:
+                raise WorkError("implementer lineage changed after launch planning; reread and retry")
+            if resume_source is not None:
+                current_source = _resume_source(
+                    f"{state.repo}#{state.issue_number}", decision.stage,
+                    state.record_root or records.default_record_root().expanduser().resolve())
+                if current_source != resume_source:
+                    raise WorkError("resume source changed after launch planning; reread and retry")
+            settings = LaunchSettings(planned["model"], planned["effort"],
+                                      planned["sources"]["model"], planned["sources"]["effort"])
             command = [sys.executable, str(here / "dispatch_implementer.py"), *common,
                        "--vendor", selected_vendor, "--vendor-source", vendor_source,
                         "--model", settings.model, "--effort", settings.effort,
@@ -4975,9 +5184,20 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "stage": decision.stage, "implementer_role": implementer_role,
                 "selected_vendor": selected_vendor, "vendor_source": vendor_source,
                 "model": settings.model, "effort": settings.effort,
+                "model_source": settings.model_source, "effort_source": settings.effort_source,
                 "continuity": "handover" if handover_record or handover_unavailable else decision.continuity,
                 "handover_state": str(handover_state_path) if handover_record else None,
-            }, ensure_ascii=True, sort_keys=True))
+            }, ensure_ascii=True, sort_keys=True), flush=True)
+            if handover_record is not None:
+                planned_session = launch_plan.get("handover", {}).get("replacement_session")
+                if planned_session and planned_session != handover_record["replacement_session"]:
+                    raise WorkError("handover identity changed after launch planning; reread and retry")
+                launch_plan["handover"] = {"state": str(handover_state_path), **handover_record,
+                    "replacement_continuity": "fresh" if handover_new else "resume"}
+                if not handover_new:
+                    launch_plan["session"] = _handover_session_settings(
+                        handover_state_path, resume_source, handover_record)
+            setting_resolution.print_plan(launch_plan, label="work")
             return subprocess.run(command).returncode
 
 
@@ -5171,6 +5391,8 @@ def run(
             policy_problem = str(exc)
     state = read_state(github, args.repo, args.issue, config)
     state.record_root = records.default_record_root().expanduser().resolve()
+    state.holder_root = root
+    state.instalment = args.instalment
     policy_diagnostics: list[dict[str, object]] = []
     if policy_snapshot is not None:
         state.policy_sources = policy_snapshot.sources

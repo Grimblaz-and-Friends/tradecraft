@@ -30,6 +30,7 @@ import tomllib
 import uuid
 
 import dispatch_record as records
+import launch_settings
 from vendor_cli import CliError, CliNotFound, resolve_command
 from seat_process import run_process
 from winio import utf8_stdio
@@ -350,6 +351,8 @@ sidecar = records.sidecar
 
 
 def selected_effort(args, vendor):
+    if hasattr(args, "resolved_settings"):
+        return args.resolved_settings[vendor].effort
     if vendor == "claude" and args.claude_effort is None:
         return CLAUDE_EFFORTS[args.classification]
     if vendor == "codex" and args.codex_effort is None:
@@ -358,13 +361,16 @@ def selected_effort(args, vendor):
 
 
 def selected_model(args, vendor):
+    if hasattr(args, "resolved_settings"):
+        return args.resolved_settings[vendor].model
     value = getattr(args, vendor + "_model")
     return DEFAULT_MODELS[vendor] if value is None else value
 
 
 def setting_sources(args, vendor, windows_sandbox=None):
     sources = {
-        "vendor": args.settings_source,
+        "vendor": (args.settings_source if vendor == args.vendor else
+                   "availability fallback to comparison vendor"),
         "model": (
             getattr(args, vendor + "_model_source") or args.settings_source
             if getattr(args, vendor + "_model") is not None
@@ -381,6 +387,9 @@ def setting_sources(args, vendor, windows_sandbox=None):
         "permission_boundary": args.settings_source,
         "required_capability": args.settings_source,
     }
+    if hasattr(args, "resolved_settings"):
+        sources.update(model=args.resolved_settings[vendor].model_source,
+                       effort=args.resolved_settings[vendor].effort_source)
     if windows_sandbox is not None and windows_sandbox.mode is not None:
         sources["windows_sandbox"] = windows_sandbox.source
     return sources
@@ -397,7 +406,57 @@ def request_permission_boundary(args, root, windows_sandbox):
     return boundary
 
 
+def selected_role(args):
+    role = getattr(args, "role", None)
+    if role is None:
+        role = ({"use": "use_consumer", "cold-seat": "cold_seat"}.get(args.stage)
+                or {"ordinary": "ordinary_seat", "cold": "cold_seat",
+                    "terminal": "terminal_seat"}[args.classification])
+    required = {"ordinary_seat": "ordinary", "cold_seat": "cold",
+                "terminal_seat": "terminal", "use_consumer": "cold"}.get(role)
+    if required != args.classification:
+        raise DispatchError(f"role {role} does not agree with classification {args.classification}")
+    return role
+
+
+def fallback_plan(primary, own_vendor, required_capability):
+    if primary == own_vendor:
+        reason = "primary and comparison vendor are the same; no second attempt"
+    elif not can_supply(own_vendor, required_capability):
+        reason = capability_refusal(own_vendor, required_capability)
+    else:
+        reason = None
+    return {"condition": "primary availability failure only", "eligible": reason is None,
+            "unavailable_reason": reason}
+
+
+def resolve_settings(args):
+    role = selected_role(args)
+    needs_defaults = any(getattr(args, vendor + "_" + name) is None
+                         for vendor in VENDORS for name in ("model", "effort"))
+    bridge = (launch_settings.read_bridge() if needs_defaults else
+              launch_settings.Bridge(launch_settings.default_path().resolve()))
+    selections = {}
+    for vendor in VENDORS:
+        selections[vendor] = launch_settings.resolve(
+            role, vendor, DEFAULT_MODELS[vendor],
+            CLAUDE_EFFORTS[args.classification] if vendor == "claude" else DEFAULT_CODEX_EFFORT,
+            "dispatch_seat default", "classification mapping" if vendor == "claude" else "dispatch_seat default",
+            bridge=bridge, explicit_model=getattr(args, vendor + "_model"),
+            explicit_effort=getattr(args, vendor + "_effort"),
+            explicit_model_source=getattr(args, vendor + "_model_source") or args.settings_source,
+            explicit_effort_source=getattr(args, vendor + "_effort_source") or args.settings_source,
+        )
+    args.resolved_settings = selections
+    return {"stage": args.stage, "role": role, "continuity": "fresh",
+            "primary": selections[args.vendor].as_dict(args.vendor, args.settings_source),
+            "fallback": {**selections[args.own_vendor].as_dict(args.own_vendor, "availability fallback to comparison vendor"),
+                         **fallback_plan(args.vendor, args.own_vendor, args.requires)}}
+
+
 def run_dispatch(args, *, now=None) -> int:
+    plan = resolve_settings(args)
+    launch_settings.print_plan(plan, label="seat")
     dispatch = args.dispatch.expanduser().resolve()
     root = args.root.expanduser().resolve()
     output = records.resolved_output(args.output, args.work, args.stage)
@@ -505,6 +564,9 @@ def run_dispatch(args, *, now=None) -> int:
             for vendor in vendors:
                 model = selected_model(args, vendor)
                 effort = selected_effort(args, vendor)
+                launch_settings.print_plan({"attempt_vendor": vendor,
+                    "settings": args.resolved_settings[vendor].as_dict(vendor, setting_sources(args, vendor)["vendor"])
+                }, label="seat attempt")
                 attempt = {"vendor": vendor, "model": model, "effort": effort,
                            "classification": args.classification, "launched": False,
                            "exit_code": None, "outcome": "error", "reason": "",
@@ -732,6 +794,8 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--own-vendor-source", help="bundle or record proving the implementer vendor")
     cli.add_argument("--work", required=True, help="issue or other work identifier")
     cli.add_argument("--stage", required=True, help="dispatch stage")
+    cli.add_argument("--role", choices=launch_settings.ROLES,
+                     help="bridge role; must agree with judgment classification")
     cli.add_argument("--settings-source", required=True, help="issue comment or named default")
     cli.add_argument("--settings-scope", required=True,
                      help="stages and vendor reached by the issue choice or named default")
@@ -777,7 +841,8 @@ def main(argv=None) -> int:
     utf8_stdio()
     try:
         return run_dispatch(parser().parse_args(argv))
-    except (OSError, UnicodeError, CliError, records.RecordError, DispatchError) as exc:
+    except (OSError, UnicodeError, CliError, records.RecordError, DispatchError,
+            launch_settings.SettingsError) as exc:
         print(f"seat: {exc}", file=sys.stderr)
         return 1
 
