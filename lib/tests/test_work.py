@@ -2001,7 +2001,8 @@ def actions_job(**patch):
     }
 
 
-def actions_transport(*, reviews=None, run=None, job_pages=None, config=ACTIONS_CONFIG):
+def actions_transport(*, reviews=None, run=None, job_pages=None, config=ACTIONS_CONFIG,
+                      run_id=REVIEW_RUN):
     template = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
                      pr=True, draft=False, config=config)
     base = "repos/example/product"
@@ -2018,9 +2019,11 @@ def actions_transport(*, reviews=None, run=None, job_pages=None, config=ACTIONS_
         f"{base}/pulls/7/comments": [],
         f"{base}/pulls/7/files": [{"filename": "lib/runtime.py"}],
         f"{base}/commits/{SHA}/check-runs?per_page=100": {"check_runs": []},
-        f"{base}/actions/runs/{REVIEW_RUN}": run if run is not None else actions_run(),
-        f"{base}/actions/runs/{REVIEW_RUN}/jobs?filter=all&per_page=100": (
-            job_pages if job_pages is not None else [{"total_count": 1, "jobs": [actions_job()]}]
+        f"{base}/actions/runs/{run_id}": run if run is not None else actions_run(id=run_id),
+        f"{base}/actions/runs/{run_id}/jobs?filter=all&per_page=100": (
+            job_pages if job_pages is not None else [
+                {"total_count": 1, "jobs": [actions_job(run_id=run_id)]}
+            ]
         ),
     }
     return FakeTransport(values)
