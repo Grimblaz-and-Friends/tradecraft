@@ -5831,6 +5831,104 @@ def test_named_run_plan_is_snapshot_and_agrees_with_command(tmp_path, monkeypatc
                               tmp_path, None, "holder") == 0
 
 
+@pytest.mark.parametrize("root_fields", [{}, {"root": None}, {"root": ""},
+                                        {"root": False}, {"root": []}, {"root": {}}])
+def test_report_invalid_registration_root_is_unresolved_and_read_only(tmp_path, monkeypatch, root_fields):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    row = {"repository": fixture.repo, "issue": fixture.issue_number, "active": True}
+    row.update(root_fields)
+    write_registry_rows([row])
+    before = work.registry_path().read_bytes()
+    monkeypatch.setattr(work, "write_registry", lambda *_a: pytest.fail("report wrote registry"))
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("report proved a root"))
+    monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_k: pytest.fail("report ran a process"))
+    report = work._reported_decision(fixture, work.Decision("floor", True, "resume", "fixture")).as_dict()
+    assert report["stage"] == "floor" and report["dispatch"] is True
+    assert report["launch_settings"]["status"] == "unresolved"
+    assert "invalid root evidence" in report["launch_settings"]["reason"]
+    assert work.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+@pytest.mark.parametrize("case", ["multiple", "missing-legacy"])
+def test_run_planning_root_failure_retains_structured_refusal(tmp_path, monkeypatch, capsys, stage, case):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    holder = repository(tmp_path, "holder")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    row = {"root": str(tmp_path / "missing"), "repository": fixture.repo,
+           "issue": fixture.issue_number, "active": True}
+    write_registry_rows([row, dict(row)] if case == "multiple" else [row])
+    before = work.registry_path().read_bytes()
+    monkeypatch.setattr(work, "create_implementation_root", lambda *_a: pytest.fail("created a root"))
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    assert work.execute_stage(fixture, work.Decision(stage, True, "resume", "fixture"),
+                              holder, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == stage and report["dispatch"] is False
+    assert report["status"] == "refused"
+    assert report["reason"] == f"implementation-root-unproved-for-{stage}"
+    assert report["detail"]
+    assert work.registry_path().read_bytes() == before
+
+
+def test_resume_plan_source_change_then_reversion_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    run_path = fixture.record_root / "build" / "result.md.run.json"
+    original = run_path.read_bytes()
+    root = tmp_path / "implementation"
+    root.mkdir()
+    original_plan = work._launch_plan
+    def changed_plan(*a, **kw):
+        run = json.loads(original)
+        run["attempts"][0]["observed"]["session_id"] = OTHER_SESSION
+        run_path.write_bytes(json.dumps(run).encode())
+        return original_plan(*a, **kw)
+    def reverted_source(*_a, **_kw):
+        run_path.write_bytes(original)
+        return root, None, False
+    monkeypatch.setattr(work, "_launch_plan", changed_plan)
+    monkeypatch.setattr(work, "_dispatch_root", reverted_source)
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_kw: pytest.fail("launched a session different from the plan"))
+    with pytest.raises(work.WorkError, match="resume source changed after launch planning"):
+        work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"),
+                           tmp_path, None, "holder")
+
+
+def test_use_report_defers_comparison_until_consumer_tree_is_validated(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, name="codex.md")
+    dispatch_bundle(fixture.record_root, name="claude.md", completed_at="2026-09-21T10:00:00+00:00")
+    for name, vendor, revision in (("codex", "codex", SHA), ("claude", "claude", BASE_SHA)):
+        request_path = fixture.record_root / "build" / f"{name}.md.request.json"
+        run_path = fixture.record_root / "build" / f"{name}.md.run.json"
+        request = json.loads(request_path.read_bytes())
+        request["requested"]["vendor"] = vendor
+        request_path.write_bytes(json.dumps(request).encode())
+        run = json.loads(run_path.read_bytes())
+        run.update(actual_vendor=vendor, revision_after=revision)
+        run_path.write_bytes(json.dumps(run).encode())
+    assert work._producer_vendor(fixture, work.RESUME_SOURCE_STAGES["build"])[0] == "claude"
+    assert work._producer_vendor(fixture, work.RESUME_SOURCE_STAGES["build"], revision=SHA)[0] == "codex"
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_kw: pytest.fail("report guessed the tree's producer"))
+    before = sorted(tmp_path.rglob("*"))
+    plan = work._reported_decision(fixture, work.Decision("use", False, None, "holder job pending")).launch_settings
+    assert plan["fallback"]["comparison_vendor"] is None
+    assert plan["fallback"]["comparison_vendor_source"] is None
+    assert "validated recipient tree" in plan["fallback"]["comparison_vendor_unavailable_reason"]
+    assert sorted(tmp_path.rglob("*")) == before
+
+
 def test_report_handover_preview_keeps_reservation_and_predecessor(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".tradecraft").mkdir(parents=True)

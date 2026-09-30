@@ -225,6 +225,10 @@ class WorkError(RuntimeError):
     """The entrance cannot preserve its read-only, single-stage contract."""
 
 
+class _LaunchRootError(WorkError):
+    """Read-only planning could not prove the registered root's shape."""
+
+
 @dataclass(frozen=True)
 class Marker:
     name: str
@@ -3984,7 +3988,7 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
         ) for vendor in dispatch_seat.VENDORS}
         plan.update(primary=settings["claude"], vendors=settings)
         try:
-            if not resolve_comparison:
+            if not resolve_comparison or decision.stage == "use":
                 raise WorkError("comparison vendor awaits validated recipient tree")
             stages = frozenset({"artifact"}) if decision.stage == "cold-seat" else RESUME_SOURCE_STAGES["build"]
             own, own_source = _producer_vendor(state, stages)
@@ -4025,9 +4029,15 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
         rows = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
         if rows:
             if len(rows) != 1:
-                raise WorkError("multiple active implementation roots prevent launch planning")
-            selected_root = Path(rows[0]["root"])
-            prior_branch = rows[0].get("branch") or prior_branch or _attached_branch(selected_root)
+                raise _LaunchRootError("multiple active implementation roots prevent launch planning")
+            root_value = rows[0].get("root")
+            if not isinstance(root_value, str) or not root_value:
+                raise _LaunchRootError("active registration has invalid root evidence")
+            selected_root = Path(root_value)
+            try:
+                prior_branch = rows[0].get("branch") or prior_branch or _attached_branch(selected_root)
+            except WorkError as exc:
+                raise _LaunchRootError(str(exc)) from exc
             if source is not None:
                 recorded_root = source.request.get("root")
                 if recorded_root and not _same_path(Path(recorded_root), selected_root):
@@ -4976,8 +4986,14 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             ))
             print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
             return 0
-    launch_plan = _launch_plan(state, decision, root=root,
-                               recovery_session=handover_recovery_session)
+    try:
+        launch_plan = _launch_plan(state, decision, root=root,
+                                   recovery_session=handover_recovery_session)
+    except _LaunchRootError as exc:
+        refused = _implementation_root_decision(state, decision, str(exc))
+        print(json.dumps(_reported_decision(state, refused).as_dict(),
+                         ensure_ascii=True, sort_keys=True))
+        return 0
     if launch_plan is not None and launch_plan["status"] == "unresolved":
         raise WorkError(launch_plan["reason"])
     selected = _dispatch_root(
@@ -5138,11 +5154,16 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             planned = launch_plan["primary"]
             if planned["vendor"] != selected_vendor:
                 raise WorkError("implementer lineage changed after launch planning; reread and retry")
-            if resume_source is not None:
-                current_source = _resume_source(
+            if decision.continuity == "resume":
+                planned_source = launch_plan.get("predecessor") or launch_plan.get("session") or {}
+                current_source = (_resume_source(
                     f"{state.repo}#{state.issue_number}", decision.stage,
                     state.record_root or records.default_record_root().expanduser().resolve())
-                if current_source != resume_source:
+                    if resume_source is not None else None)
+                if (planned_source.get("id") != session
+                        or (resume_source is not None and (
+                            current_source != resume_source
+                            or planned_source.get("source") != resume_source.path))):
                     raise WorkError("resume source changed after launch planning; reread and retry")
             settings = LaunchSettings(planned["model"], planned["effort"],
                                       planned["sources"]["model"], planned["sources"]["effort"])

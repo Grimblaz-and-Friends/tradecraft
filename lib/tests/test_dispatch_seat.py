@@ -1241,6 +1241,28 @@ def test_setting_sources_name_classification_and_default_model(job):
     assert sources["required_capability"] == "issuecomment-5655702442"
 
 
+@pytest.mark.parametrize("contents", [b"{malformed", json.dumps({
+    "schema_version": 1, "entries": [{
+        "id": "inherited-ruling", "role": "ordinary_seat", "vendor": "claude",
+        "replaces": {"model": seat.DEFAULT_MODELS["claude"], "effort": "high"},
+        "model": "inherited-model", "effort": "max", "source": "fixture-ruling",
+    }],
+}).encode()])
+def test_suite_ignores_inherited_machine_ruling(tmp_path, contents):
+    home = tmp_path / "inherited-home"
+    folder = home / ".tradecraft"
+    folder.mkdir(parents=True)
+    (folder / "model-rulings.json").write_bytes(contents)
+    environment = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(Path(__file__)),
+         "-k", "test_setting_sources_name_classification_and_default_model", "-q"],
+        cwd=LIB.parent, env=environment, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    assert result.returncode == 0, result.stdout.decode(errors="replace") + result.stderr.decode(errors="replace")
+
+
 def test_fallback_records_its_own_explicit_value_sources(job):
     args, _ = job
     args.claude_model = "claude-owner"
