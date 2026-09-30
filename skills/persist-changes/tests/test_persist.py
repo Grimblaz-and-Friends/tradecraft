@@ -602,9 +602,13 @@ def test_rejecting_hook_remains_in_force(tmp_path):
     work = make_repo(tmp_path)
     start, _ = checked_change(work)
     witness = witness_push(work)
-    hook(work, "pre-commit", "Path('hook-ran').write_bytes(b'yes')\nsys.exit(1)\n")
+    hook(work, "pre-commit", "Path('hook-ran').write_bytes(b'yes')\n"
+         "sys.stderr.write('repository hook rejected this commit\\n')\nsys.exit(1)\n")
     result = persist(work, "-m", "repository hook rejection must stay effective", "README.md")
-    assert result.returncode == 1 and "failed" in result.stdout
+    assert result.returncode == 1
+    assert result.stdout.startswith("not-persisted: git commit failed: ")
+    assert "repository hook rejected this commit" in result.stdout
+    assert len(result.stdout.splitlines()) == 1
     assert (work / "hook-ran").read_bytes() == b"yes"
     assert value(work, "rev-parse", "HEAD") == start
     assert not witness.exists()

@@ -344,8 +344,10 @@ def main() -> None:
 
     checked = git("write-tree")
     action = f"persist-{uuid.uuid4().hex}"
-    git("-c", "core.logAllRefUpdates=true", "commit", "-m", args.message,
-        env=dict(os.environ, GIT_REFLOG_ACTION=action))
+    commit_run = run_git("-c", "core.logAllRefUpdates=true", "commit", "-m", args.message,
+                         env=dict(os.environ, GIT_REFLOG_ACTION=action))
+    if commit_run.returncode != 0:
+        fail(f"git commit failed: {detail(commit_run)}")
     sha, identity_error = identify_commit(ref, start, action)
     if sha is None:
         fail(f"{identity_error}; no undo or push; checked tree {checked}; "
