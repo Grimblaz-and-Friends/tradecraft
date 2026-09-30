@@ -1,0 +1,41 @@
+# D-801 — Launch plans and a machine-local ruling bridge
+
+**Purpose:** preserve the choices that make launch settings visible and let an owner's model ruling reach defaulted launches before its standing-default release. **Audience:** a future session revising launch resolution, resume reporting or the bridge. **Success:** that session can change the mechanism without silently losing historical session facts, ruling provenance or a caller's distinct baseline.
+
+Recorded in [PR #801](https://github.com/Grimblaz-and-Friends/tradecraft/pull/801), implementing [#792](https://github.com/Grimblaz-and-Friends/tradecraft/issues/792).
+
+## Context
+
+The [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/792#issuecomment-5910622511) names product builds that used a model the owner had ruled out, and holders who learned a recipient's settings only after launch. It buys both a visible launch plan and a machine-local bridge; it chooses no new default or vendor policy. [D-795](D-795-2026-09-29-seat-defaults-follow-owner-rulings.md) supplies the seat baselines this build preserves.
+
+The [holder reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/792#issuecomment-5911218490) settles the role spellings, the build base carrying those defaults, and the older-version limitation. Its R1 uses the override marker's spellings because a second spelling could leave a ruling outside its intended role and even outside that role's lapse display.
+
+## Decision
+
+The read-only entrance reports a launch plan for its recommended recipient stage, with the vendor, model, effort and an independent source for each value. Judging plans include fallback settings and their eligibility. A named `run` plans that named stage, and `run` and both launchers print and flush their resolved settings before launching, so a holder can inspect the request before it spends on a recipient.
+
+A resume reports the selected session's recorded vendor, requested model and effort, original sources and native observations separately from the next turn's request. Marker-only recovery leaves unrecorded model and effort unknown. Handover keeps predecessor and replacement facts distinct; preview allocates no replacement identity or reservation. This reports history without introducing a new model-pinning policy.
+
+The file is `~/.tradecraft/model-rulings.json`. Its schema-version-1 object has exactly `schema_version` and `entries`; each entry has exactly `id`, `role`, `vendor`, `replaces`, `model`, `effort` and `source`. `replaces` carries the model/effort pair, while `model` and `effort` carry the ruled pair. IDs and role/vendor pairs are unique, strings are nonempty, and model/effort values contain no whitespace or colon. Duplicate JSON keys and malformed or unreadable present files refuse resolution; an absent file preserves defaults. The source is retained, not fetched as authority.
+
+Roles are `artifact_author`, `implementer`, `ordinary_seat`, `cold_seat`, `terminal_seat` and `use_consumer`, as R1 records; vendors are `codex` and `claude`. Direct seat `--role` uses these spellings and must agree with classification. The bridge selects model and effort within a vendor, never the vendor itself.
+
+Each field resolves an explicit choice first, an applicable bridge second, and its shipped default last. The issue override remains a whole choice; an omitted role or clearing line returns to default resolution. Direct callers can supply one field and default the other, and a supplied value remains explicit even when textually equal to the default.
+
+An entry applies only while its complete replaced pair exactly matches that caller's running baseline. Changing either field lapses it visibly without deleting it. There is no timer or version guess: matching the actual baseline prevents an interim ruling from outliving the default it replaced. Callers retain their distinct baselines, including the entrance's Claude use effort of `max` against the direct cold classification's `xhigh`; this change does not normalize those profiles.
+
+A bridge-supplied field keeps the resolved file path, entry ID, role/vendor, replaced and ruled pairs and ruling locator in the existing requested-source fields and seat attempt sources. No new provenance schema is needed. The printed plan and command use the same snapshot, including across a seat's availability fallback, so an edited or removed machine file cannot erase or silently change that launch's choice.
+
+The mechanism first ships as `0.162.0`; older versions ignore the file. In this lab, the Steward writes a bridge entry when the owner rules, in place of an interim override line for holders to copy, as the affirmed brief's row 2 Steward cell records. The ruling still enters a release as the standing default. This lab arrangement belongs here rather than in shipped guidance.
+
+## Evidence
+
+The implementation and tests below are pinned to build commit `fde02ccfaecdbfa1f29fee6e22982f2f6766d4c2`. The source carriers remain those in `lib/dispatch_record.py` at `fde02ccfaecdbfa1f29fee6e22982f2f6766d4c2`; the release identifier is in `.claude-plugin/plugin.json` at `fde02ccfaecdbfa1f29fee6e22982f2f6766d4c2`.
+
+- `lib/tests/test_work.py` at `fde02ccfaecdbfa1f29fee6e22982f2f6766d4c2`: `test_report_launch_plan_is_read_only`, `test_named_stage_report_uses_named_role_not_recommendation` and `test_named_run_plan_is_snapshot_and_agrees_with_command` demonstrate the report's settings, sources, named-stage scope and command agreement. `test_resume_report_keeps_historical_request_and_all_observations`, `test_marker_only_resume_reports_unknown_historical_model` and `test_report_handover_preview_keeps_reservation_and_predecessor` demonstrate historical separation and non-mutating handover inspection.
+- `lib/tests/test_launch_settings.py` at `fde02ccfaecdbfa1f29fee6e22982f2f6766d4c2`: `test_invalid_wire_shape_names_path`, `test_invalid_entry_is_refused`, `test_duplicate_identity_or_scope_refused` and `test_unreadable_file_is_not_absence` demonstrate the schema and validation. `test_ruling_is_scoped_and_provenance_survives_file_removal` demonstrates role/vendor scope and retained entry provenance; `test_absent_empty_and_next_read` demonstrates absence and fresh reads. `test_exact_pair_lapse_is_visible_and_leaves_file_intact` and `test_explicit_field_equal_to_default_keeps_its_source` demonstrate exact-pair lapse and per-field precedence.
+- The same pinned `lib/tests/test_work.py`: `test_report_bridge_issue_precedence_and_whole_choice_clearing` demonstrates issue precedence and clearing; `test_use_bridge_compares_entrance_baseline_without_changing_direct_default` demonstrates the `max`/`xhigh` baseline distinction. The older-version limitation is the holder reading's R3 and the file contract in `skills/work/references/launch-settings.md` at `fde02ccfaecdbfa1f29fee6e22982f2f6766d4c2`; the entry makes no claim that old code reads a new schema.
+- `lib/tests/test_dispatch_implementer.py` at `fde02ccfaecdbfa1f29fee6e22982f2f6766d4c2`: `test_direct_ruling_launch_prints_before_process_and_retains_source`, `test_partial_direct_choice_does_not_bridge_explicit_default` and `test_unavailable_bridged_request_retains_provenance_without_observation` demonstrate direct launches, separate sources and the request/observation boundary.
+- `lib/tests/test_dispatch_seat.py` at `fde02ccfaecdbfa1f29fee6e22982f2f6766d4c2`: `test_direct_seat_role_bridge_and_partial_explicit_field` and `test_direct_role_inference_and_conflict` demonstrate marker-spelled direct roles; `test_fallback_keeps_printed_bridge_snapshot_and_distinct_sources` demonstrates pre-process output, fallback snapshot retention and per-attempt provenance after file removal. `test_print_flushes_before_return` in the pinned resolver test file demonstrates flushing itself.
+
+Validate the implementation with `python tools/dev.py test lib/tests/test_launch_settings.py lib/tests/test_work.py lib/tests/test_dispatch_implementer.py lib/tests/test_dispatch_seat.py lib/tests/test_dispatch_record.py -q` and `python tools/dev.py check`. Validate this entry and index with `python tools/dev.py lint`; the entry records commands rather than a frozen suite count.
