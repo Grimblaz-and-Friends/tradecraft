@@ -12,6 +12,7 @@ import vendor_cli
 
 @pytest.fixture
 def job(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     root = tmp_path / "root with spaces"
     root.mkdir()
     dispatch = tmp_path / "dispatch.md"
@@ -67,7 +68,7 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     assert "--last" not in flags
     assert "resume" not in flags
     assert flags[-1] == "-"
-    assert flags[flags.index("--model") + 1] == "gpt-5.6-sol"
+    assert flags[flags.index("--model") + 1] == "gpt-6.1-sol"
     assert 'model_reasoning_effort="xhigh"' in flags
     logged = record(args)
     attempt = logged["attempts"][0]
@@ -89,6 +90,61 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     assert request["settings_source"] == "issuecomment-5655702442"
     assert args.output.read_bytes() == b"built\n"
     assert Path(logged["result"]["source_output"]).read_bytes() == b"built\n"
+
+
+def test_direct_fresh_launch_reads_machine_vendor_and_records_its_source(job, tmp_path, monkeypatch):
+    args, scenario = job
+    home = tmp_path / "home"
+    setting = home / ".tradecraft" / "implementer-vendor"
+    setting.parent.mkdir(parents=True)
+    setting.write_bytes(b"claude\n")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(
+        implementer, "resolve_command",
+        lambda vendor, _path: [sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)],
+    )
+    session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": session, "result": "built on Claude",
+    })}}).encode())
+
+    assert implementer.run_implementer(args) == 0
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert request["requested"]["vendor"] == "claude"
+    assert request["requested"]["sources"]["vendor"] == f"machine file {setting}: claude"
+    assert request["requested"]["model"] == "claude-opus-5-5"
+    assert record(args)["actual_vendor"] == "claude"
+    assert args.output.read_bytes() == b"built on Claude"
+
+
+def test_direct_explicit_vendor_wins_but_invalid_machine_file_refuses(job, tmp_path, monkeypatch):
+    args, _scenario = job
+    home = tmp_path / "home"
+    setting = home / ".tradecraft" / "implementer-vendor"
+    setting.parent.mkdir(parents=True)
+    setting.write_bytes(b"claude\n")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    args.vendor = "codex"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    assert implementer.run_implementer(args) == 0
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert request["requested"]["vendor"] == "codex"
+    assert request["requested"]["sources"]["vendor"] == "explicit --vendor codex"
+
+    args.output = tmp_path / "records" / "invalid.md"
+    setting.write_bytes(b"CLAUDE\n")
+    with pytest.raises(implementer.ImplementerError, match="implementer vendor setting"):
+        implementer.run_implementer(args)
+    assert not list(args.output.parent.glob("invalid.md*"))
+
+
+def test_direct_resume_requires_the_recorded_vendor_before_reserving_output(job):
+    args, _ = job
+    args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    with pytest.raises(implementer.ImplementerError, match="direct resume requires --vendor"):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
 
 
 def test_reconnect_uses_stream_message_and_keeps_success_reason_empty(job):
@@ -177,6 +233,7 @@ def test_resume_names_exact_session_and_keeps_usage_scope_unknown(job):
     args, _ = job
     session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
     args.resume = session
+    args.vendor = "codex"
     args.model = "gpt-6-astra"
     configure(job, {"stdout": success_events(session), "message": "fixed\n"})
     assert implementer.run_implementer(args) == 0
@@ -192,6 +249,7 @@ def test_resume_names_exact_session_and_keeps_usage_scope_unknown(job):
 def test_resume_mismatch_is_error_and_never_publishes(job):
     args, _ = job
     args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    args.vendor = "codex"
     configure(job, {
         "stdout": success_events("0299a213-81c0-7800-8aa1-bbab2a035a53"),
         "message": "wrong thread\n",
@@ -204,6 +262,7 @@ def test_resume_mismatch_is_error_and_never_publishes(job):
 def test_holder_session_cannot_be_resumed_as_builder(job):
     args, _ = job
     args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    args.vendor = "codex"
     args.holder_session_id = args.resume
     with pytest.raises(implementer.ImplementerError, match="cannot also identify"):
         implementer.run_implementer(args)
@@ -342,3 +401,170 @@ def test_publication_failure_is_recorded_without_a_false_published_path(job, mon
     assert logged["result"]["published_output"] is None
     assert "hard link failed" in logged["result"]["published_output_unavailable_reason"]
     assert not args.output.exists()
+
+
+def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.stage = "artifact"
+    args.vendor_source = "machine file: claude"
+    context = args.dispatch.with_name("context.md")
+    context.write_bytes(b"Read the root instructions before authoring.\n")
+    args.context = context
+    session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    scenario.write_bytes(json.dumps({"claude": {
+        "stdout": json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "session_id": session, "result": "artifact written",
+            "modelUsage": {"claude-opus-5-5": {"inputTokens": 5}},
+            "permission_denials": [], "total_cost_usd": 0.12,
+        }),
+    }}).encode())
+    assert implementer.run_implementer(args) == 0
+    flags = json.loads((args.root / "seen-claude.json").read_bytes())["argv"]
+    assert flags[:2] == ["-p", "--model"]
+    assert flags[flags.index("--model") + 1] == "claude-opus-5-5"
+    assert flags[flags.index("--effort") + 1] == "high"
+    assert flags[flags.index("--permission-mode") + 1] == "auto"
+    assert flags[flags.index("--setting-sources") + 1] == "user"
+    assert "--no-session-persistence" not in flags
+    assert "--safe-mode" not in flags
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert request["requested"]["vendor"] == "claude"
+    assert request["requested"]["sources"]["vendor"] == "machine file: claude"
+    assert request["implementer_role"] == "artifact_author"
+    assert implementer.records.sidecar(args.output, ".dispatch.bin").read_bytes() == args.dispatch.read_bytes()
+    assert implementer.records.sidecar(args.output, ".context.bin").read_bytes() == context.read_bytes()
+    assert record(args)["attempts"][0]["observed"]["session_id"] == session
+
+
+def test_claude_resume_keeps_identity_and_unknown_usage_scope(job, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.resume = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    scenario.write_bytes(json.dumps({"claude": {
+        "stdout": json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "session_id": args.resume, "result": "fixed",
+            "modelUsage": {"claude-opus-5-5": {"inputTokens": 7}},
+        }),
+    }}).encode())
+    assert implementer.run_implementer(args) == 0
+    flags = json.loads((args.root / "seen-claude.json").read_bytes())["argv"]
+    assert flags[-2:] == ["--resume", args.resume]
+    observed = record(args)["attempts"][0]["observed"]
+    assert observed["normalized"] is None
+    assert "scope is not established" in observed["normalized_unavailable_reason"]
+
+
+@pytest.mark.parametrize("payload", [
+    "not json",
+    json.dumps({"type": "result", "is_error": True, "subtype": "error_during_execution",
+                "result": "permission denied"}),
+    json.dumps({"type": "result", "is_error": False, "subtype": "success",
+                "session_id": "f0cb89b1-e040-4e6e-919b-4b4e58c717d2", "result": None}),
+])
+def test_claude_bad_completion_never_publishes(job, payload, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    scenario.write_bytes(json.dumps({"claude": {"stdout": payload}}).encode())
+    assert implementer.run_implementer(args) == 1
+    assert record(args)["outcome"] == "error"
+    assert not args.output.exists()
+
+
+def test_claude_permission_denial_is_an_error_even_with_success_result(job, monkeypatch):
+    args, scenario = job
+    args.vendor = "claude"
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": "f0cb89b1-e040-4e6e-919b-4b4e58c717d2",
+        "result": "I could not edit that file.",
+        "permission_denials": [{"tool_name": "Write", "reason": "denied"}],
+    })}}).encode())
+
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert logged["attempts"][0]["permission_denials"] == [
+        {"tool_name": "Write", "reason": "denied"},
+    ]
+    assert "permission denial" in logged["attempts"][0]["reason"]
+    assert not args.output.exists()
+
+
+def test_unavailable_claude_handover_attempt_keeps_predecessor_without_reservation(
+        job, monkeypatch, capsys):
+    args, _ = job
+    args.vendor = "claude"
+    args.claude_unavailable_reason = "Claude CLI not installed"
+    args.handover_from = "predecessor-bundle"
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: pytest.fail("unavailable runtime must not be resolved"))
+
+    assert implementer.run_implementer(args) == 1
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    logged = record(args)
+    assert request["handover"] == logged["handover"] == {
+        "from_bundle": "predecessor-bundle", "to_vendor": "claude",
+        "replacement_session": None, "phase": "unavailable",
+    }
+    assert logged["outcome"] == "unavailable"
+    assert not args.output.exists()
+    assert "claude (source explicit --vendor claude) unavailable" in capsys.readouterr().err
+
+
+def test_fresh_claude_handover_moves_reservation_to_completed_only_after_publication(
+        job, monkeypatch):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.session_id = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    args.handover_state = args.dispatch.with_name("handover.json")
+    args.handover_from = "predecessor-bundle"
+    args.handover_state.write_bytes(json.dumps({
+        "replacement_session": args.session_id, "phase": "reserved",
+    }).encode())
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": args.session_id, "result": "continued",
+    })}}).encode())
+    assert implementer.run_implementer(args) == 0
+    assert json.loads(args.handover_state.read_bytes())["phase"] == "completed"
+    assert record(args)["handover"]["from_bundle"] == "predecessor-bundle"
+    assert args.output.read_bytes() == b"continued"
+
+
+@pytest.mark.parametrize(("result_text", "expected_phase", "expected_code"), [
+    ("continued", "completed", 0),
+    (None, "unresolved", 1),
+])
+def test_resumed_claude_handover_updates_the_same_reservation(
+        job, monkeypatch, result_text, expected_phase, expected_code):
+    args, scenario = job
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    args.resume = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    args.handover_state = args.dispatch.with_name("handover.json")
+    args.handover_from = "predecessor-bundle"
+    args.handover_state.write_bytes(json.dumps({
+        "replacement_session": args.resume, "phase": "unresolved",
+    }).encode())
+    scenario.write_bytes(json.dumps({"claude": {"stdout": json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": args.resume, "result": result_text,
+    })}}).encode())
+
+    assert implementer.run_implementer(args) == expected_code
+    assert json.loads(args.handover_state.read_bytes())["phase"] == expected_phase
+    assert record(args)["handover"]["phase"] == "resume"

@@ -468,6 +468,8 @@ def run_dispatch(args, *, now=None) -> int:
             setting_sources=setting_sources(args, args.vendor, codex_sandbox),
         )
         request["requested"]["required_capability"] = args.requires
+        request["comparison_vendor"] = args.own_vendor
+        request["comparison_vendor_source"] = args.own_vendor_source or "caller-selected"
         request["revision_before"] = records.git_revision(root)
         request["input"] = str(input_path)
         streams[request_path].write(records.json_bytes(request))
@@ -479,6 +481,7 @@ def run_dispatch(args, *, now=None) -> int:
         record = {"schema_version": records.SCHEMA_VERSION,
                   "dispatch_id": request["dispatch_id"], "request": str(request_path),
                   "requested_vendor": args.vendor, "own_vendor": args.own_vendor,
+                  "own_vendor_source": args.own_vendor_source or "caller-selected",
                   "actual_vendor": None, "fallback_reason": None, "attempts": [],
                   "staffing_status": "unfilled", "staffing_reason": None,
                   "staffing_qualification": {
@@ -633,12 +636,15 @@ def run_dispatch(args, *, now=None) -> int:
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 record["revision_after"] = records.git_revision(root)
                 if verdict is not None:
-                    degraded = record["actual_vendor"] != record["requested_vendor"]
+                    degraded = record["actual_vendor"] == args.own_vendor
                     record["staffing_status"] = "degraded" if degraded else "qualified"
-                    record["staffing_reason"] = record["fallback_reason"] if degraded else None
+                    record["staffing_reason"] = (
+                        args.same_vendor_reason or record["fallback_reason"] if degraded else None
+                    )
                     record["staffing_qualification"] = {
                         "cross_vendor_satisfied": not degraded or bool(args.same_vendor_reason),
                         "same_vendor_reason": args.same_vendor_reason if degraded else None,
+                        "comparison_vendor": args.own_vendor,
                     }
                     record["outcome"] = "success"
                     streams[source_path].write(verdict)
@@ -724,6 +730,7 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--root", type=Path, required=True)
     cli.add_argument("--vendor", choices=VENDORS, required=True)
     cli.add_argument("--own-vendor", choices=VENDORS, required=True)
+    cli.add_argument("--own-vendor-source", help="bundle or record proving the implementer vendor")
     cli.add_argument("--work", required=True, help="issue or other work identifier")
     cli.add_argument("--stage", required=True, help="dispatch stage")
     cli.add_argument("--settings-source", required=True, help="issue comment or named default")
