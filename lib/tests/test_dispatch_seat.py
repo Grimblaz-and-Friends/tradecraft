@@ -148,6 +148,24 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
             assert "apps=disabled-by-config" not in boundary
 
 
+def test_requested_same_vendor_is_degraded_with_source_and_reason(job):
+    args, _ = job
+    args.own_vendor = "claude"
+    args.own_vendor_source = "artifact bundle"
+    args.same_vendor_reason = "owner-selected-claude-implementer"
+    assert seat.run_dispatch(args) == 0
+    logged = record(args)
+    assert logged["requested_vendor"] == logged["actual_vendor"] == "claude"
+    assert logged["staffing_status"] == "degraded"
+    assert logged["staffing_qualification"] == {
+        "cross_vendor_satisfied": True,
+        "same_vendor_reason": "owner-selected-claude-implementer",
+        "comparison_vendor": "claude",
+    }
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    assert request["comparison_vendor_source"] == "artifact bundle"
+
+
 def test_codex_reconnect_returns_stream_verdict_without_fallback(job):
     args, _ = job
     args.vendor = "codex"
@@ -465,6 +483,7 @@ def test_unavailable_falls_back_once_and_records_reason(job, monkeypatch, vendor
     assert log["staffing_reason"] == log["fallback_reason"]
     assert log["staffing_qualification"] == {
         "cross_vendor_satisfied": False, "same_vendor_reason": None,
+        "comparison_vendor": args.own_vendor,
     }
     assert base64.b64decode(seen(args, args.own_vendor)["stdin"]) == args.dispatch.read_bytes()
     fallback = log["attempts"][1]
@@ -491,6 +510,7 @@ def test_degraded_fallback_qualifies_only_with_stage_local_same_vendor_reason(jo
     assert logged["staffing_qualification"] == {
         "cross_vendor_satisfied": True,
         "same_vendor_reason": "primary vendor was unavailable for this cold stage",
+        "comparison_vendor": "codex",
     }
 
 
