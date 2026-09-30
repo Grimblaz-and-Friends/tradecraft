@@ -34,8 +34,7 @@ from seat_process import run_process
 from winio import utf8_stdio
 
 VENDORS = ("codex", "claude")
-# Interim from #731: the combined Codex outcomes and Claude judging arm were
-# inconclusive, so the owner's chosen values hold pending further runs [D-733].
+# Seat defaults follow the owner's 2026-09-29 rulings [D-795].
 DEFAULT_MODELS = {
     "codex": "gpt-6.1-sol",
     "claude": "claude-opus-5-5",
