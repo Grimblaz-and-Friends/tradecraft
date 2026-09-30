@@ -79,6 +79,7 @@ def job(tmp_path, monkeypatch, primary_template):
         return [sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)]
     monkeypatch.setattr(seat, "resolve_command", resolver)
     monkeypatch.setattr(seat.records, "runtime_version", lambda *_: "fixture-cli 1.0")
+    monkeypatch.setattr(seat, "is_windows", lambda: False)
     yield args, scenario
     git(primary, "worktree", "remove", "--force", str(root))
 
@@ -204,7 +205,7 @@ def test_codex_completed_without_message_does_not_fallback_or_publish(job):
     assert not args.output.exists()
 
 
-def test_codex_launch_ignores_config_with_an_explicit_app_enable(job, monkeypatch):
+def test_non_windows_codex_launch_ignores_config_with_an_explicit_app_enable(job, monkeypatch):
     args, _ = job
     codex_home = args.root.parent / "codex-home"
     codex_home.mkdir()
@@ -219,6 +220,271 @@ def test_codex_launch_ignores_config_with_an_explicit_app_enable(job, monkeypatc
     flags = seen(args, "codex")["argv"]
     assert flags.count("--ignore-user-config") == 1
     assert "apps._default.enabled=false" in flags
+
+
+@pytest.mark.parametrize("mode", ["elevated", "unelevated"])
+def test_windows_codex_carries_only_the_owner_sandbox_mode(job, monkeypatch, mode):
+    args, _ = job
+    codex_home = args.root.parent / "codex-home"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_bytes(
+        (
+            f'model = "must-not-cross"\n'
+            f'[windows]\nsandbox = "{mode}"\n'
+            f'[apps.github]\nenabled = true\n'
+            f'[mcp_servers.sentinel]\ncommand = "must-not-cross"\n'
+        ).encode()
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(seat, "is_windows", lambda: True)
+    args.vendor = args.own_vendor = "codex"
+    configure(job, {"codex": {"message": "isolated"}})
+
+    assert seat.run_dispatch(args) == 0
+
+    flags = seen(args, "codex")["argv"]
+    source = f"{config.resolve()} key [windows].sandbox"
+    assert flags.count("--strict-config") == 1
+    assert flags.count("--ignore-user-config") == 1
+    assert flags.count("apps._default.enabled=false") == 1
+    assert flags.count(f'windows.sandbox="{mode}"') == 1
+    assert "must-not-cross" not in json.dumps(flags)
+
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    attempt = record(args)["attempts"][0]
+    for boundary in (
+        request["requested"]["permission_boundary"],
+        attempt["permission_boundary"],
+    ):
+        assert f"windows_sandbox={mode}" in boundary
+        assert f"windows_sandbox_source={source}" in boundary
+        assert "sandbox=read-only" in boundary
+        assert "user_config=ignored" in boundary
+        assert "apps=disabled-by-config" in boundary
+    assert request["requested"]["sources"]["windows_sandbox"] == source
+    assert attempt["setting_sources"]["windows_sandbox"] == source
+    assert "must-not-cross" not in json.dumps(request)
+    assert "must-not-cross" not in json.dumps(attempt)
+
+
+def test_windows_sandbox_value_is_encoded_as_one_config_literal(job):
+    args, _ = job
+    mode = 'owner"value\\path'
+    selection = seat.WindowsSandboxSelection(mode, "fixture config key", None)
+
+    command = seat.build_command(
+        "codex", ["codex"], args.root, args.output, "model", "xhigh", "read",
+        selection,
+    )
+
+    override = f"windows.sandbox={json.dumps(mode, ensure_ascii=False)}"
+    assert command.count(override) == 1
+    assert command[command.index(override) - 1] == "-c"
+    assert mode not in command
+
+
+def test_windows_codex_missing_sandbox_falls_back_without_resolution_or_launch(job, monkeypatch):
+    args, _ = job
+    codex_home = args.root.parent / "codex-home"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_bytes(b"[apps.github]\nenabled = true\n")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(seat, "is_windows", lambda: True)
+    args.vendor = "codex"
+    args.own_vendor = "claude"
+    calls = []
+    resolver = seat.resolve_command
+
+    def tracked(vendor, explicit):
+        calls.append(vendor)
+        return resolver(vendor, explicit)
+
+    monkeypatch.setattr(seat, "resolve_command", tracked)
+
+    assert seat.run_dispatch(args) == 0
+
+    logged = record(args)
+    codex, claude = logged["attempts"]
+    assert calls == ["claude"]
+    assert codex["launched"] is False
+    assert codex["outcome"] == "unavailable"
+    assert codex["permission_boundary"] is None
+    assert "windows.sandbox" in codex["reason"]
+    assert str(config.resolve()) in codex["reason"]
+    assert logged["fallback_reason"] == codex["reason"]
+    assert logged["actual_vendor"] == "claude"
+    assert args.output.read_text(encoding="utf-8").startswith(
+        f"Fallback: codex -> claude; reason: {codex['reason']}.\n\n"
+    )
+    assert claude["launched"] is True
+    assert not (args.root / "seen-codex.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("config_bytes", "reason_fragment"),
+    [
+        (None, "config file was not found"),
+        (b"[windows\n", "could not be parsed"),
+        (b'[windows]\nsandbox = 7\n', "must be a nonempty string"),
+        (b'[windows]\nsandbox = ""\n', "must be a nonempty string"),
+    ],
+)
+def test_windows_codex_unusable_sandbox_is_retained_without_a_verdict(
+    job, monkeypatch, config_bytes, reason_fragment
+):
+    args, _ = job
+    codex_home = args.root.parent / "codex-home"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    if config_bytes is not None:
+        config.write_bytes(config_bytes)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(seat, "is_windows", lambda: True)
+    args.vendor = args.own_vendor = "codex"
+    calls = []
+    monkeypatch.setattr(seat, "resolve_command", lambda *values: calls.append(values))
+
+    assert seat.run_dispatch(args) == 1
+
+    attempt = record(args)["attempts"][0]
+    assert calls == []
+    assert attempt["launched"] is False
+    assert attempt["outcome"] == "unavailable"
+    assert attempt["permission_boundary"] is None
+    assert "windows.sandbox" in attempt["reason"]
+    assert reason_fragment in attempt["reason"]
+    assert not args.output.exists()
+
+
+def test_windows_codex_unreadable_sandbox_source_is_unavailable(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_bytes(b'[windows]\nsandbox = "elevated"\n')
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    original = Path.read_bytes
+
+    def denied(path):
+        if path == config:
+            raise PermissionError("fixture denied the read")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+
+    selection = seat.windows_codex_sandbox()
+
+    assert selection.mode is None
+    assert selection.source == f"{config.resolve()} key [windows].sandbox"
+    assert "windows.sandbox" in selection.unavailable_reason
+    assert "could not be read" in selection.unavailable_reason
+
+
+@pytest.mark.parametrize("codex_home", [None, ""])
+def test_windows_codex_uses_normal_user_config_when_codex_home_is_unset_or_empty(
+    job, monkeypatch, codex_home
+):
+    args, _ = job
+    home = args.root.parent / "user-home"
+    config = home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_bytes(b'[windows]\nsandbox = "elevated"\n')
+    if codex_home is None:
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+    else:
+        monkeypatch.setenv("CODEX_HOME", codex_home)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(seat, "is_windows", lambda: True)
+    args.vendor = args.own_vendor = "codex"
+    configure(job, {"codex": {"message": "isolated"}})
+
+    assert seat.run_dispatch(args) == 0
+
+    source = f"{config.resolve()} key [windows].sandbox"
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    attempt = record(args)["attempts"][0]
+    assert request["requested"]["sources"]["windows_sandbox"] == source
+    assert attempt["setting_sources"]["windows_sandbox"] == source
+    assert "windows_sandbox=elevated" in attempt["permission_boundary"]
+    assert attempt["outcome"] == "success"
+
+
+def test_windows_codex_relative_home_is_unavailable_before_launch(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setenv("CODEX_HOME", "relative-codex-home")
+    monkeypatch.setattr(seat, "is_windows", lambda: True)
+    args.vendor = "codex"
+    args.own_vendor = "claude"
+    configure(job, {"claude": {"message": "fallback"}})
+    calls = []
+    resolver = seat.resolve_command
+
+    def tracked(vendor, explicit):
+        calls.append(vendor)
+        return resolver(vendor, explicit)
+
+    monkeypatch.setattr(seat, "resolve_command", tracked)
+
+    assert seat.run_dispatch(args) == 0
+
+    logged = record(args)
+    codex, claude = logged["attempts"]
+    assert calls == ["claude"]
+    assert codex["launched"] is False
+    assert codex["outcome"] == "unavailable"
+    assert "CODEX_HOME must be an absolute path" in codex["reason"]
+    assert "relative-codex-home" in codex["reason"]
+    assert logged["fallback_reason"] == codex["reason"]
+    assert claude["outcome"] == "success"
+
+
+def test_windows_codex_missing_sandbox_survives_unavailable_fallback(job, monkeypatch):
+    args, _ = job
+    codex_home = args.root.parent / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(seat, "is_windows", lambda: True)
+    args.vendor = "codex"
+    args.own_vendor = "claude"
+    args.claude_unavailable_reason = "claude discovery failed"
+    calls = []
+    monkeypatch.setattr(seat, "resolve_command", lambda *values: calls.append(values))
+
+    assert seat.run_dispatch(args) == 1
+
+    codex, claude = record(args)["attempts"]
+    assert calls == []
+    assert codex["outcome"] == "unavailable"
+    assert "windows.sandbox" in codex["reason"]
+    assert claude["outcome"] == "unavailable"
+    assert claude["reason"] == "claude discovery failed"
+    assert not args.output.exists()
+
+
+def test_windows_fallback_codex_records_sandbox_mode_and_source(job, monkeypatch):
+    args, _ = job
+    codex_home = args.root.parent / "codex-home"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_bytes(b'[windows]\nsandbox = "elevated"\n')
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(seat, "is_windows", lambda: True)
+    configure(job, {"claude": {"message": "Not logged in"}})
+
+    assert seat.run_dispatch(args) == 0
+
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    claude, codex = record(args)["attempts"]
+    source = f"{config.resolve()} key [windows].sandbox"
+    assert claude["outcome"] == "unavailable"
+    assert codex["outcome"] == "success"
+    assert f"windows_sandbox=elevated" in codex["permission_boundary"]
+    assert f"windows_sandbox_source={source}" in codex["permission_boundary"]
+    assert f"windows_sandbox=elevated" in request["requested"]["permission_boundary"]
+    assert f"windows_sandbox_source={source}" in request["requested"]["permission_boundary"]
+    assert request["requested"]["sources"]["windows_sandbox"] == source
+    assert codex["setting_sources"]["windows_sandbox"] == source
 
 
 @pytest.mark.parametrize(

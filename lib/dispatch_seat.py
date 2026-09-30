@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import uuid
 
 import dispatch_record as records
@@ -48,6 +49,58 @@ GIT_ENVIRONMENT_KEYS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
 
 class DispatchError(RuntimeError):
     """A dispatch failed without evidence permitting vendor fallback."""
+
+
+class WindowsSandboxSelection:
+    """The one owner setting a Windows Codex read seat may inherit."""
+
+    def __init__(self, mode, source, unavailable_reason):
+        self.mode = mode
+        self.source = source
+        self.unavailable_reason = unavailable_reason
+
+
+def is_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def windows_codex_sandbox() -> WindowsSandboxSelection:
+    codex_home = os.environ.get("CODEX_HOME")
+    if not codex_home:
+        config = (Path.home() / ".codex" / "config.toml").resolve()
+    else:
+        configured_home = Path(codex_home)
+        if not configured_home.is_absolute():
+            source = f"CODEX_HOME={codex_home!r}"
+            reason = (
+                "windows.sandbox is unavailable: CODEX_HOME must be an absolute path "
+                f"so discovery and launch use the same directory; got {codex_home!r}"
+            )
+            return WindowsSandboxSelection(None, source, reason)
+        config = (configured_home / "config.toml").resolve()
+    source = f"{config} key [windows].sandbox"
+    try:
+        raw = config.read_bytes()
+    except FileNotFoundError:
+        reason = f"windows.sandbox is unavailable: config file was not found at {config}"
+        return WindowsSandboxSelection(None, source, reason)
+    except OSError as exc:
+        reason = f"windows.sandbox is unavailable: {config} could not be read: {exc}"
+        return WindowsSandboxSelection(None, source, reason)
+    try:
+        configured = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeError, tomllib.TOMLDecodeError) as exc:
+        reason = f"windows.sandbox is unavailable: {config} could not be parsed: {exc}"
+        return WindowsSandboxSelection(None, source, reason)
+    windows = configured.get("windows")
+    if not isinstance(windows, dict) or "sandbox" not in windows:
+        reason = f"windows.sandbox is missing from {source}"
+        return WindowsSandboxSelection(None, source, reason)
+    mode = windows["sandbox"]
+    if not isinstance(mode, str) or not mode.strip():
+        reason = f"windows.sandbox at {source} must be a nonempty string"
+        return WindowsSandboxSelection(None, source, reason)
+    return WindowsSandboxSelection(mode, source, None)
 
 
 def default_hold_file() -> Path:
@@ -77,14 +130,24 @@ def read_holds(path: Path) -> dict[str, datetime]:
     return holds
 
 
-def build_command(vendor, executable, root, last_message, model, effort, required_capability):
+def build_command(
+    vendor, executable, root, last_message, model, effort, required_capability,
+    windows_sandbox=None,
+):
     if vendor == "codex":
-        return [*executable, "exec", "--strict-config", "--ignore-user-config",
-                "--ephemeral", "--sandbox", "read-only",
-                "--json", "--color", "never", "--model", model,
-                "-c", "apps._default.enabled=false",
-                "-c", f'model_reasoning_effort="{effort}"', "-C", str(root),
-                "--skip-git-repo-check", "--output-last-message", str(last_message), "-"]
+        command = [*executable, "exec", "--strict-config", "--ignore-user-config",
+                   "--ephemeral", "--sandbox", "read-only",
+                   "--json", "--color", "never", "--model", model,
+                   "-c", "apps._default.enabled=false"]
+        if windows_sandbox is not None:
+            if windows_sandbox.mode is None:
+                raise DispatchError(windows_sandbox.unavailable_reason)
+            literal = json.dumps(windows_sandbox.mode, ensure_ascii=False)
+            command.extend(("-c", f"windows.sandbox={literal}"))
+        command.extend(("-c", f'model_reasoning_effort="{effort}"', "-C", str(root),
+                        "--skip-git-repo-check", "--output-last-message",
+                        str(last_message), "-"))
+        return command
     if required_capability == "read":
         tools = CLAUDE_READ_TOOLS
     elif required_capability == "execute":
@@ -109,7 +172,7 @@ def capability_refusal(vendor, required_capability):
     return f"{vendor} cannot supply required capability {required_capability}; no process was launched"
 
 
-def permission_boundary(vendor, required_capability, root):
+def permission_boundary(vendor, required_capability, root, windows_sandbox=None):
     if vendor == "claude":
         if required_capability == "read":
             tools = CLAUDE_READ_TOOLS
@@ -121,9 +184,19 @@ def permission_boundary(vendor, required_capability, root):
             f"Claude tools={tools}; safe_mode=true; permission_mode=dontAsk; "
             f"strict_mcp_config=true; os_sandbox=none; detached_root_verified={root}"
         )
+    if windows_sandbox is not None:
+        if windows_sandbox.mode is None:
+            return f"Codex permission boundary unavailable before launch: {windows_sandbox.unavailable_reason}"
+        selected = (
+            f"windows_sandbox={windows_sandbox.mode}; "
+            f"windows_sandbox_source={windows_sandbox.source}; "
+        )
+    else:
+        selected = ""
     return (
-        "Codex sandbox=read-only; user_config=ignored; apps=disabled-by-config; "
-        f"detached_root_verified={root}"
+        "Codex sandbox=read-only; " + selected
+        + "user_config=ignored; apps=disabled-by-config; "
+        + f"detached_root_verified={root}"
     )
 
 
@@ -289,8 +362,8 @@ def selected_model(args, vendor):
     return DEFAULT_MODELS[vendor] if value is None else value
 
 
-def setting_sources(args, vendor):
-    return {
+def setting_sources(args, vendor, windows_sandbox=None):
+    sources = {
         "vendor": args.settings_source,
         "model": (
             getattr(args, vendor + "_model_source") or args.settings_source
@@ -308,6 +381,20 @@ def setting_sources(args, vendor):
         "permission_boundary": args.settings_source,
         "required_capability": args.settings_source,
     }
+    if windows_sandbox is not None and windows_sandbox.mode is not None:
+        sources["windows_sandbox"] = windows_sandbox.source
+    return sources
+
+
+def request_permission_boundary(args, root, windows_sandbox):
+    boundary = permission_boundary(
+        args.vendor, args.requires, root,
+        windows_sandbox if args.vendor == "codex" else None,
+    )
+    if windows_sandbox is not None and args.vendor != "codex":
+        fallback = permission_boundary("codex", args.requires, root, windows_sandbox)
+        boundary += f"; fallback_codex_if_primary_unavailable=({fallback})"
+    return boundary
 
 
 def run_dispatch(args, *, now=None) -> int:
@@ -332,6 +419,14 @@ def run_dispatch(args, *, now=None) -> int:
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         raise DispatchError("--timeout-seconds must be finite and positive")
     read_holds(hold_file)
+    vendors = [args.vendor]
+    if args.own_vendor != args.vendor:
+        vendors.append(args.own_vendor)
+    codex_sandbox = (
+        windows_codex_sandbox()
+        if is_windows() and args.requires == "read" and "codex" in vendors
+        else None
+    )
     for vendor in VENDORS:
         effort = selected_effort(args, vendor)
         if not selected_model(args, vendor).strip() or not effort.strip():
@@ -339,7 +434,11 @@ def run_dispatch(args, *, now=None) -> int:
         explicit = getattr(args, vendor)
         if explicit and getattr(args, vendor + "_unavailable_reason"):
             raise DispatchError(f"{vendor} cannot be both explicit and unavailable")
-        if explicit and can_supply(vendor, args.requires):
+        codex_preflight_unavailable = (
+            vendor == "codex" and codex_sandbox is not None
+            and codex_sandbox.unavailable_reason is not None
+        )
+        if explicit and can_supply(vendor, args.requires) and not codex_preflight_unavailable:
             resolve_command(vendor, explicit)  # invalid overrides fail before spending
     record_path = sidecar(output, ".run.json")
     request_path = sidecar(output, ".request.json")
@@ -363,9 +462,9 @@ def run_dispatch(args, *, now=None) -> int:
             vendor=args.vendor,
             model=selected_model(args, args.vendor), effort=selected_effort(args, args.vendor),
             continuity="fresh",
-            permission_boundary=permission_boundary(args.vendor, args.requires, root),
+            permission_boundary=request_permission_boundary(args, root, codex_sandbox),
             root=root, classification=args.classification, retry_of=args.retry_of,
-            setting_sources=setting_sources(args, args.vendor),
+            setting_sources=setting_sources(args, args.vendor, codex_sandbox),
         )
         request["requested"]["required_capability"] = args.requires
         request["comparison_vendor"] = args.own_vendor
@@ -403,9 +502,6 @@ def run_dispatch(args, *, now=None) -> int:
                 streams[path].flush()
 
         try:
-            vendors = [args.vendor]
-            if args.own_vendor != args.vendor:
-                vendors.append(args.own_vendor)
             for vendor in vendors:
                 model = selected_model(args, vendor)
                 effort = selected_effort(args, vendor)
@@ -414,7 +510,9 @@ def run_dispatch(args, *, now=None) -> int:
                            "exit_code": None, "outcome": "error", "reason": "",
                            "permission_boundary": None,
                            "permission_boundary_unavailable_reason": "attempt was not launched",
-                           "setting_sources": setting_sources(args, vendor)}
+                           "setting_sources": setting_sources(
+                               args, vendor, codex_sandbox if vendor == "codex" else None
+                           )}
                 attempt["runtime_version"] = None
                 attempt["runtime_version_unavailable_reason"] = "attempt was not launched"
                 record["attempts"].append(attempt)
@@ -423,6 +521,11 @@ def run_dispatch(args, *, now=None) -> int:
                 message = ""
                 if not can_supply(vendor, args.requires):
                     outcome, reason = "unavailable", capability_refusal(vendor, args.requires)
+                elif (
+                    vendor == "codex" and codex_sandbox is not None
+                    and codex_sandbox.unavailable_reason is not None
+                ):
+                    outcome, reason = "unavailable", codex_sandbox.unavailable_reason
                 elif getattr(args, vendor + "_unavailable_reason"):
                     outcome, reason = "unavailable", getattr(args, vendor + "_unavailable_reason")
                 elif reset and reset > current:
@@ -436,9 +539,13 @@ def run_dispatch(args, *, now=None) -> int:
                         with tempfile.TemporaryDirectory(prefix="tradecraft-seat-") as temp:
                             last_message = Path(temp) / "last.txt"
                             command = build_command(
-                                vendor, executable, root, last_message, model, effort, args.requires
+                                vendor, executable, root, last_message, model, effort, args.requires,
+                                codex_sandbox if vendor == "codex" else None,
                             )
-                            boundary = permission_boundary(vendor, args.requires, root)
+                            boundary = permission_boundary(
+                                vendor, args.requires, root,
+                                codex_sandbox if vendor == "codex" else None,
+                            )
                             attempt["command"] = command
                             attempt["runtime_version"] = records.runtime_version(executable)
                             attempt["runtime_version_unavailable_reason"] = (
