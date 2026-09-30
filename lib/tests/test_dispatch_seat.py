@@ -119,7 +119,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
         last = flags[flags.index("--output-last-message") + 1]
         assert flags == ["exec", "--strict-config", "--ignore-user-config",
                          "--ephemeral", "--sandbox", "read-only",
-                         "--json", "--color", "never", "--model", "gpt-5.6-sol",
+                         "--json", "--color", "never", "--model", "gpt-6.1-sol",
                          "-c", "apps._default.enabled=false",
                          "-c", 'model_reasoning_effort="xhigh"', "-C", str(args.root),
                          "--skip-git-repo-check", "--output-last-message", last, "-"]
@@ -423,7 +423,7 @@ def test_root_guard_surfaces_a_git_probe_failure(job, monkeypatch):
 
 
 @pytest.mark.parametrize("classification,expected", [
-    ("ordinary", "high"), ("cold", "max"), ("terminal", "max"),
+    ("ordinary", "high"), ("cold", "xhigh"), ("terminal", "xhigh"),
 ])
 def test_claude_effort_defaults_from_judgment_classification(job, classification, expected):
     args, _ = job

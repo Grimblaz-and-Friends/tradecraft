@@ -1535,21 +1535,26 @@ def test_launch_settings_read_program_b_defaults_with_accurate_sources():
     ordinary = work._launch_settings(fixture, "ordinary-seat", "claude", "ordinary")
     cold = work._launch_settings(fixture, "cold-seat", "claude", "cold")
     terminal = work._launch_settings(fixture, "terminal-seat", "claude", "terminal")
+    consumer = work._launch_settings(fixture, "use-consumer", "claude", "cold")
 
     assert implementer == work.LaunchSettings(
         "gpt-6.1-sol", "xhigh", "dispatch_implementer default",
         "dispatch_implementer default",
     )
     assert codex_seat == work.LaunchSettings(
-        "gpt-5.6-sol", "xhigh", "dispatch_seat default", "dispatch_seat default",
+        "gpt-6.1-sol", "xhigh", "dispatch_seat default", "dispatch_seat default",
     )
     assert ordinary == work.LaunchSettings(
         "claude-opus-5-5", "high", "dispatch_seat default", "classification mapping",
     )
     assert cold == work.LaunchSettings(
-        "claude-opus-5-5", "max", "dispatch_seat default", "classification mapping",
+        "claude-opus-5-5", "xhigh", "dispatch_seat default", "classification mapping",
     )
     assert terminal == cold
+    assert consumer == work.LaunchSettings(
+        "claude-opus-5-5", "max", "dispatch_seat default",
+        "work entrance use-consumer default",
+    )
 
 
 def test_implementer_vendor_file_and_role_overrides_are_independent(tmp_path):
@@ -4220,8 +4225,13 @@ def test_use_handoff_migrates_legacy_registration_and_names_the_proof_gap(
     assert recorded["branch"] == branch
 
 
+@pytest.mark.parametrize("override,model,effort,source", [
+    ("", "claude-opus-5-5", "max", "work entrance use-consumer default"),
+    ("<!-- tradecraft:model-override:v1 use_consumer=claude:use-owner:high -->",
+     "use-owner", "high", "issue-comment:unknown"),
+])
 def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, override, model, effort, source):
     producer_calls = []
 
     def producer_vendor(*_args, **kwargs):
@@ -4264,10 +4274,6 @@ def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
     monkeypatch.setattr(
         work, "_runtime_argument", lambda vendor: [f"--{vendor}", f"/{vendor}-fixture"]
     )
-    override = (
-        "<!-- tradecraft:model-override:v1 "
-        "use_consumer=claude:use-owner:max -->"
-    )
     assert work.execute_stage(
         state(AFFIRMED, override),
         work.Decision("use", True, "fresh", "holder-named-stage"),
@@ -4281,9 +4287,11 @@ def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
     command = launches[0]
     assert Path(command[command.index("--dispatch") + 1]) == dispatch.resolve()
     assert Path(command[command.index("--root") + 1]) == output.resolve()
-    assert command[command.index("--claude-model") + 1] == "use-owner"
-    assert command[command.index("--claude-effort") + 1] == "max"
-    assert command[command.index("--claude-effort-source") + 1] == "issue-comment:unknown"
+    assert command[command.index("--classification") + 1] == "cold"
+    assert command[command.index("--requires") + 1] == "execute"
+    assert command[command.index("--claude-model") + 1] == model
+    assert command[command.index("--claude-effort") + 1] == effort
+    assert command[command.index("--claude-effort-source") + 1] == source
     assert command[command.index("--codex-model") + 1] == work.dispatch_seat.DEFAULT_MODELS["codex"]
     assert command[command.index("--codex-model-source") + 1] == "dispatch_seat default"
     assert command[command.index("--claude") + 1] == "/claude-fixture"

@@ -37,11 +37,11 @@ VENDORS = ("codex", "claude")
 # Interim from #731: the combined Codex outcomes and Claude judging arm were
 # inconclusive, so the owner's chosen values hold pending further runs [D-733].
 DEFAULT_MODELS = {
-    "codex": "gpt-5.6-sol",
+    "codex": "gpt-6.1-sol",
     "claude": "claude-opus-5-5",
 }
 DEFAULT_CODEX_EFFORT = "xhigh"
-CLAUDE_EFFORTS = {"ordinary": "high", "cold": "max", "terminal": "max"}
+CLAUDE_EFFORTS = {"ordinary": "high", "cold": "xhigh", "terminal": "xhigh"}
 CLAUDE_READ_TOOLS = "Read,Glob,Grep"
 CLAUDE_EXECUTE_TOOLS = "Read,Glob,Grep,Bash"
 GIT_ENVIRONMENT_KEYS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")

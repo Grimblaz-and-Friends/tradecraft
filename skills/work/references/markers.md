@@ -97,10 +97,10 @@ A holder reading counts only after the latest effective settlement. A newer draf
 - **Whole-line precedence:** the latest lawful line is the entire current override choice and replaces every earlier line rather than merging with it. A missing implementer role uses the machine vendor and that role's profile; a missing judging role uses its launcher default. A lawful line with no role attributes clears all earlier entries.
 - **Producer, surface, moment:** a configured marker producer, in an issue comment on the work, after the owner gives the choice and before a launch it is to govern. Absence of a role on the latest lawful line means the named launcher's standing default, not an inferred choice from prose.
 
-The motivating choice, with ordinary seats at `high` and cold, terminal, and use seats at `max`, is one line:
+An example choice, ordinary seats at `high`, cold and terminal seats at `xhigh` and use consumers at `max`, is one line:
 
 ```text
-<!-- tradecraft:model-override:v1 ordinary_seat=claude:claude-opus-5-5:high cold_seat=claude:claude-opus-5-5:max terminal_seat=claude:claude-opus-5-5:max use_consumer=claude:claude-opus-5-5:max -->
+<!-- tradecraft:model-override:v1 ordinary_seat=claude:claude-opus-5-5:high cold_seat=claude:claude-opus-5-5:xhigh terminal_seat=claude:claude-opus-5-5:xhigh use_consumer=claude:claude-opus-5-5:max -->
 ```
 
 A later bare line returns every role to its standing default:
