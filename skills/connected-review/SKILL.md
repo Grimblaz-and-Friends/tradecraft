@@ -5,7 +5,7 @@ description: Run or configure the automatic connected reviewer whose single find
 
 # Connected review
 
-**Purpose:** give a pull request one head-scoped review from the configured single finder pass. **Audience:** the automatic reviewer runtime and adopters configuring it. **Success:** an eligible event creates one completed review at the captured head, or one visible skip notice that cannot count as review.
+**Purpose:** give a pull request one head-scoped review from the lab's chosen single finder pass. **Audience:** the automatic reviewer runtime and adopters configuring it. **Success:** an eligible event creates one completed review at the captured head, or one visible skip notice that cannot count as review.
 
 ## Where this cell's depth lives
 
@@ -16,7 +16,7 @@ The canonical copy-whole workflow is `templates/connected-review.yml`. An enabli
 
 ## Contract
 
-Run only for an open, ready pull request authored by the account named in `REVIEW_OWNER_LOGIN` in the same repository, after this reviewer's login is present in `connected_reviewers` of the base branch's `.tradecraft/work.json`. The named account is the one owner whose pull requests are reviewed and whose Claude token the secret holds; the distributed default is `Grimblaz`, so an adopter using another account sets `REVIEW_OWNER_LOGIN` to that account. A pull request by any other author is refused without a notice. Ready events and events adding the label named by `reviewer_label` in that file may admit work; the repository must have that label, whose default is `reviewers`. Pushes and synchronize events do not. A completed review suppresses only another event at the same head, so a later explicitly requested look at a new head remains possible.
+Run only for an open, ready pull request authored by the account named in `REVIEW_OWNER_LOGIN` in the same repository, after this reviewer's login is present in `connected_reviewers` of the base branch's `.tradecraft/work.json`. The named account is the one owner whose pull requests are reviewed and whose Claude token the secret holds; this copy already names the lab owner, `Grimblaz`, and refuses any other author's pull request without a notice. Ready events and events adding the label named by `reviewer_label` in that file may admit work; the repository must have that label, whose default is `reviewers`. Pushes and synchronize events do not. A completed review suppresses only another event at the same head, so a later explicitly requested look at a new head remains possible.
 
 One fresh read-only finder process runs at `high`. It applies both coverage lenses to every changed hunk and names an input, execution path, root cause, wrong result and exact proof targets for each candidate. Trusted code validates the structured output and anchor shape, collapses candidates with the same root cause, and alone holds publication authority; the model process receives no GitHub credential and cannot publish.
 
