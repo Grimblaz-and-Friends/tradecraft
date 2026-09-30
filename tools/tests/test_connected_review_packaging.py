@@ -309,7 +309,7 @@ def test_finder_prompt_stays_frozen_and_historical_checker_remains_replayable():
     assert "Keep at most one candidate for one root cause" in checker
 
 
-def test_workflow_template_and_documented_block_are_identical_until_enablement():
+def test_workflow_template_matches_documentation_and_enabled_copy_pins_ref():
     template = (ROOT / "skills/connected-review/templates/connected-review.yml").read_text(
         encoding="utf-8"
     )
@@ -321,7 +321,23 @@ def test_workflow_template_and_documented_block_are_identical_until_enablement()
     )[1]
     documented = section.split("```yaml\n", 1)[1].split("\n```", 1)[0] + "\n"
     assert documented == template
-    assert not (ROOT / ".github/workflows/connected-review.yml").exists()
+    installed = (ROOT / ".github/workflows/connected-review.yml").read_text(
+        encoding="utf-8"
+    )
+    template_lines = template.splitlines(keepends=True)
+    installed_lines = installed.splitlines(keepends=True)
+    assert len(installed_lines) == len(template_lines)
+    differences = [
+        (expected, actual)
+        for expected, actual in zip(template_lines, installed_lines)
+        if expected != actual
+    ]
+    assert len(differences) == 1
+    expected, actual = differences[0]
+    assert expected == (
+        "  TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT\n"
+    )
+    assert re.fullmatch(r"  TRADECRAFT_REVIEWER_REF: [0-9a-f]{40}\n", actual)
 
 
 def test_setup_names_login_only_enablement_and_private_prerequisites():

@@ -7,7 +7,8 @@
   ],
   "connected_reviewers": [
     "coderabbitai[bot]",
-    "chatgpt-codex-connector[bot]"
+    "chatgpt-codex-connector[bot]",
+    "github-actions[bot]"
   ],
   "marker_producers": [
     "Grimblaz"
