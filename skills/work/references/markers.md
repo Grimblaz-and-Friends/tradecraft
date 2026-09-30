@@ -82,8 +82,8 @@ A holder reading counts only after the latest effective settlement. A newer draf
 
 ## `builder-session`
 
-- **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION -->`.
-- **Attributes and lawful values:** `session` is the UUID-shaped session identity printed by the implementer launcher.
+- **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION [vendor=VENDOR] -->`.
+- **Attributes and lawful values:** `session` is the UUID-shaped session identity printed by the implementer launcher; optional `vendor` is `codex` or `claude`. A matching dispatch bundle proves the vendor and must agree with a present attribute. Without a bundle, a vendor-qualified marker is the recovery route after the holder verifies the original runtime record; a UUID alone proves no vendor.
 - **Producer, surface, moment:** the holder, in a comment on the issue, when the build return and launcher output arrive.
 
 ```text
@@ -93,8 +93,8 @@ A holder reading counts only after the latest effective settlement. A newer draf
 ## `model-override`
 
 - **Exact form:** `<!-- tradecraft:model-override:v1 [ROLE=VENDOR:MODEL:EFFORT ...] -->`, where each bracketed role attribute is optional and may appear at most once.
-- **Attributes and lawful values:** the lawful role attributes are `implementer`, `ordinary_seat`, `cold_seat`, `terminal_seat`, and `use_consumer`, corresponding to the roles `implementer`, `ordinary-seat`, `cold-seat`, `terminal-seat`, and `use-consumer`. Each present value is one complete `VENDOR:MODEL:EFFORT` triple; `VENDOR` is `codex` or `claude`, and `MODEL` and `EFFORT` are nonempty values containing no whitespace or colon. Unknown or duplicate attributes and malformed triples are invalid.
-- **Whole-line precedence:** the latest lawful line is the entire current override choice and replaces every earlier line rather than merging with it. A role absent from that line uses the selected launcher's standing default. A lawful line with no role attributes restores every role to its standing default.
+- **Attributes and lawful values:** the lawful role attributes are `artifact_author`, `implementer`, `ordinary_seat`, `cold_seat`, `terminal_seat`, and `use_consumer`, corresponding to the artifact author, builder, and judging roles. Each present value is one complete `VENDOR:MODEL:EFFORT` triple; `VENDOR` is `codex` or `claude`, and `MODEL` and `EFFORT` are nonempty values containing no whitespace or colon. Unknown or duplicate attributes and malformed triples are invalid.
+- **Whole-line precedence:** the latest lawful line is the entire current override choice and replaces every earlier line rather than merging with it. A missing implementer role uses the machine vendor and that role's profile; a missing judging role uses its launcher default. A lawful line with no role attributes clears all earlier entries.
 - **Producer, surface, moment:** a configured marker producer, in an issue comment on the work, after the owner gives the choice and before a launch it is to govern. Absence of a role on the latest lawful line means the named launcher's standing default, not an inferred choice from prose.
 
 The motivating choice, with ordinary seats at `high` and cold, terminal, and use seats at `max`, is one line:
