@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from copy import deepcopy
 import hashlib
 from itertools import product
 import json
@@ -1959,7 +1960,347 @@ class FakeTransport:
 
     def get(self, endpoint, *, paginate=False):
         self.calls.append(("GET", endpoint, paginate))
-        return self.values[endpoint]
+        value = self.values[endpoint]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+ACTIONS_CONFIG = work.WorkConfig(
+    connected_reviewers=frozenset({work.ACTIONS_REVIEWER}),
+    marker_producers=frozenset({PRODUCER}),
+)
+REVIEW_SHA = "b" * 40  # A receipt need not be on the current PR head.
+REVIEW_RUN = 36672170816
+
+
+def actions_review(**patch):
+    return {
+        "id": 41, "user": {"login": work.ACTIONS_REVIEWER},
+        "body": f"Review completed.\n<!-- connected-review-attempt:{REVIEW_RUN} -->",
+        "state": "COMMENTED", "submitted_at": "2026-09-30T12:07:00Z",
+        "commit_id": REVIEW_SHA,
+        "html_url": "https://github.com/example/product/pull/7#pullrequestreview-41",
+        **patch,
+    }
+
+
+def actions_run(**patch):
+    return {
+        "id": REVIEW_RUN, "repository": {"full_name": "example/product"},
+        "path": "/".join((".github", "workflows", "connected-review.yml")),
+        "event": "pull_request_target", "head_sha": REVIEW_SHA,
+        "status": "completed", "conclusion": "success", **patch,
+    }
+
+
+def actions_job(**patch):
+    return {
+        "id": 91, "run_id": REVIEW_RUN, "run_attempt": 1, "name": "review",
+        "status": "completed", "conclusion": "success", **patch,
+    }
+
+
+def actions_transport(*, reviews=None, run=None, job_pages=None, config=ACTIONS_CONFIG):
+    template = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                     pr=True, draft=False, config=config)
+    base = "repos/example/product"
+    values = {
+        f"{base}/issues/12": template.issue,
+        f"{base}/issues/12/comments": template.issue_comments,
+        f"{base}/pulls?state=all&per_page=100": [{
+            "number": 7, "state": "open", "body": "Closes #12",
+        }],
+        f"{base}/pulls/7": {**template.pr, "changed_files": 1},
+        f"{base}/rules/branches/main": [],
+        f"{base}/issues/7/comments": [],
+        f"{base}/pulls/7/reviews": reviews if reviews is not None else [actions_review()],
+        f"{base}/pulls/7/comments": [],
+        f"{base}/pulls/7/files": [{"filename": "lib/runtime.py"}],
+        f"{base}/commits/{SHA}/check-runs?per_page=100": {"check_runs": []},
+        f"{base}/actions/runs/{REVIEW_RUN}": run if run is not None else actions_run(),
+        f"{base}/actions/runs/{REVIEW_RUN}/jobs?filter=all&per_page=100": (
+            job_pages if job_pages is not None else [{"total_count": 1, "jobs": [actions_job()]}]
+        ),
+    }
+    return FakeTransport(values)
+
+
+def collect_actions(transport, config=ACTIONS_CONFIG):
+    return work.read_state(transport, "example/product", 12, config)
+
+
+def actions_proof(fixture, tmp_path):
+    fixture.record_root = tmp_path / "missing-dispatches"
+    fixture.policy_sources = {
+        key: {"repository": fixture.repo, "path": path, "revision": SHA, "sha256": "1" * 64}
+        for key, path in (("work_configuration", ".tradecraft/work.json"),
+                          ("use_rules", "lib/use-rules.json"))
+    }
+    return work.compose_proof(fixture, RULES)
+
+
+@pytest.mark.parametrize("patch", [
+    {"body": "Review completed; run 36672170816"},
+    {"body": "<!-- connected-review-attempt:0 -->"},
+    {"body": "<!-- connected-review-attempt:-1 -->"},
+    {"body": "<!-- connected-review-attempt:036672170816 -->"},
+    {"body": "<!-- connected-review-attempt: 36672170816 -->"},
+    {"body": "<!-- connected-review-attempt:36672170816"},
+    {"body": "<!-- connected-review-attempt:36672170816 -->\n"
+             "<!-- connected-review-attempt:81 -->"},
+    {"body": "<!-- connected-review-attempt:36672170816 -->\n"
+             "<!-- connected-review-attempt:bad -->"},
+    {"state": "PENDING"}, {"state": "DISMISSED"}, {"state": None}, {"state": []},
+    {"submitted_at": None}, {"submitted_at": ""},
+    {"commit_id": "851159f"}, {"commit_id": None},
+])
+def test_actions_ineligible_review_waits_without_reading_runs(patch, tmp_path):
+    transport = actions_transport(reviews=[actions_review(**patch)])
+    fixture = collect_actions(transport)
+    assert not work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).reason == "required-connected-reviewer-has-not-run"
+    assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == "missing"
+    assert not any("/actions/runs/" in endpoint for _, endpoint, _ in transport.calls)
+    assert any(item["code"] == "connected-review-receipt-unproven"
+               for item in fixture.collection_diagnostics)
+
+
+@pytest.mark.parametrize("patch", [
+    {"id": REVIEW_RUN + 1}, {"id": True},
+    {"repository": {"full_name": "example/other"}}, {"repository": None},
+    {"path": "/".join((".github", "workflows", "mutation.yml"))},
+    {"path": "/".join((".github", "workflows", "renamed.yml")) + "@refs/heads/main"},
+    {"path": None}, {"event": "push"}, {"event": "workflow_dispatch"}, {"event": []},
+    {"head_sha": SHA}, {"head_sha": None},
+])
+def test_actions_wrong_run_facts_grant_no_credit(patch, tmp_path):
+    fixture = collect_actions(actions_transport(run=actions_run(**patch)))
+    assert work._reviewer_receipts(fixture)[0]["result"] == "missing"
+    assert work.decide(fixture, RULES).stage == "waiting"
+    composed = actions_proof(fixture, tmp_path)
+    assert composed["reviewers"][0]["source"] is None
+    assert any(item["code"] == "connected-review-receipt-unproven"
+               for item in composed["diagnostics"])
+
+
+@pytest.mark.parametrize("patch", [
+    {"name": "report"}, {"name": "prepare"}, {"name": "review (matrix)"},
+    {"status": "queued"}, {"status": "in_progress"},
+    {"conclusion": "failure"}, {"conclusion": "cancelled"}, {"conclusion": "skipped"},
+    {"conclusion": None}, {"run_id": REVIEW_RUN + 1}, {"run_id": None},
+])
+def test_actions_requires_its_successful_completed_review_job(patch, tmp_path):
+    fixture = collect_actions(actions_transport(job_pages=[{
+        "total_count": 1, "jobs": [actions_job(**patch)],
+    }]))
+    assert not work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).stage == "waiting"
+    assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == "missing"
+
+
+@pytest.mark.parametrize("event", ["pull_request", "pull_request_target"])
+@pytest.mark.parametrize("status", sorted(work.COMPLETED_REVIEWS))
+@pytest.mark.parametrize("suffix", ["", "@refs/heads/main"])
+def test_actions_real_review_survives_failed_later_attempt_and_report(
+        event, status, suffix, tmp_path):
+    run = actions_run(event=event, conclusion="failure", run_attempt=2)
+    run["path"] += suffix
+    transport = actions_transport(
+        reviews=[actions_review(state=status)], run=run, job_pages=[
+            {"total_count": 3, "jobs": [
+                actions_job(id=92, run_attempt=2, conclusion="failure"),
+                actions_job(id=93, name="report", conclusion="failure"),
+            ]},
+            {"total_count": 3, "jobs": [actions_job()]},
+        ],
+    )
+    fixture = collect_actions(transport)
+    assert work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).stage == "proof"
+    composed = actions_proof(fixture, tmp_path)
+    receipt = composed["reviewers"][0]
+    assert receipt["result"] == "present"
+    assert receipt["source"]["kind"] == "review"
+    assert receipt["source"]["id"] == 41
+    assert receipt["source"]["revision"] == REVIEW_SHA != SHA
+    assert {method for method, _, _ in transport.calls} == {"GET"}
+    assert ("GET", f"repos/example/product/actions/runs/{REVIEW_RUN}"
+            "/jobs?filter=all&per_page=100", True) in transport.calls
+
+
+@pytest.mark.parametrize("endpoint, response", [
+    ("run", work.WorkError("403 Actions read denied")), ("run", []),
+    ("run", subprocess.TimeoutExpired("gh", 120)),
+    ("jobs", work.WorkError("second pagination request failed")), ("jobs", "bad"),
+    ("jobs", []), ("jobs", [{}]), ("jobs", [{"total_count": 1, "jobs": "bad"}]),
+    ("jobs", [{"total_count": 2, "jobs": [actions_job()]}]),
+    ("jobs", [{"total_count": 1, "jobs": [actions_job()]}, "bad later page"]),
+    ("jobs", [{"total_count": True, "jobs": [actions_job()]}]),
+])
+def test_actions_unreadable_evidence_has_diagnostics_and_recovers(
+        endpoint, response, tmp_path):
+    transport = actions_transport()
+    path = f"repos/example/product/actions/runs/{REVIEW_RUN}"
+    if endpoint == "jobs":
+        path += "/jobs?filter=all&per_page=100"
+    valid = transport.values[path]
+    transport.values[path] = response
+    fixture = collect_actions(transport)
+    assert not work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).stage == "waiting"
+    assert any(item["code"] == "connected-review-receipt-unproven"
+               for item in actions_proof(fixture, tmp_path)["diagnostics"])
+    transport.values[path] = valid
+    recovered = collect_actions(transport)
+    assert work._reviewer_ran(recovered)
+    assert actions_proof(recovered, tmp_path)["reviewers"][0]["result"] == "present"
+
+
+@pytest.mark.parametrize("surface", ["comments", "inline"])
+def test_actions_ordinary_and_inline_comments_cannot_be_receipts(surface):
+    transport = actions_transport(reviews=[])
+    path = ("repos/example/product/issues/7/comments" if surface == "comments"
+            else "repos/example/product/pulls/7/comments")
+    transport.values[path] = [actions_review()]
+    fixture = collect_actions(transport)
+    assert work._reviewer_receipts(fixture)[0]["result"] == "missing"
+    assert work.decide(fixture, RULES).stage == "waiting"
+    if surface == "inline":
+        assert work._undisposed_threads(fixture)[0] == [41]
+    assert not any("/actions/runs/" in endpoint for _, endpoint, _ in transport.calls)
+
+
+def test_actions_invalid_candidate_does_not_hide_valid_review_and_reuses_run():
+    transport = actions_transport(reviews=[
+        actions_review(id=40, body="ordinary workflow review"),
+        actions_review(id=42, commit_id=SHA),
+        actions_review(), actions_review(id=43),
+    ])
+    fixture = collect_actions(transport)
+    assert work._reviewer_receipts(fixture)[0]["source"]["id"] == 41
+    assert work.decide(fixture, RULES).stage == "proof"
+    assert sum(endpoint.endswith(f"/actions/runs/{REVIEW_RUN}")
+               for _, endpoint, _ in transport.calls) == 1
+    assert sum("/jobs?" in endpoint for _, endpoint, _ in transport.calls) == 1
+
+
+def test_actions_unreadable_other_run_does_not_hide_valid_receipt():
+    transport = actions_transport(reviews=[
+        actions_review(id=40, body="<!-- connected-review-attempt:81 -->"),
+        actions_review(),
+    ])
+    fixture = collect_actions(transport)
+    assert work._reviewer_receipts(fixture)[0]["source"]["id"] == 41
+    assert fixture.connected_review_runs[81].error is not None
+
+
+def test_actions_failed_run_never_falls_back_to_bot_comments(tmp_path):
+    transport = actions_transport(job_pages=[{"total_count": 0, "jobs": []}])
+    transport.values["repos/example/product/issues/7/comments"] = [actions_review(id=42)]
+    transport.values["repos/example/product/pulls/7/comments"] = [actions_review(id=43)]
+    fixture = collect_actions(transport)
+    assert work.decide(fixture, RULES).stage == "waiting"
+    assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == "missing"
+    assert work._undisposed_threads(fixture)[0] == [43]
+
+
+def test_actions_review_run_read_is_reused_for_check_collection():
+    transport = actions_transport()
+    transport.values[f"repos/example/product/commits/{SHA}/check-runs?per_page=100"] = {
+        "check_runs": [{"id": 91, "details_url": (
+            f"https://github.com/example/product/actions/runs/{REVIEW_RUN}/job/91"
+        )}],
+    }
+    fixture = collect_actions(transport)
+    assert work._reviewer_ran(fixture)
+    assert fixture.checks[0]["workflow_run"]["id"] == REVIEW_RUN
+    assert sum(endpoint.endswith(f"/actions/runs/{REVIEW_RUN}")
+               for _, endpoint, _ in transport.calls) == 1
+
+
+def test_actions_without_collected_provenance_cannot_receive_manual_credit():
+    fixture = state(pr=True, config=ACTIONS_CONFIG)
+    fixture.reviews = [actions_review()]
+    assert not work._reviewer_ran(fixture)
+
+
+@pytest.mark.parametrize("surface", ["reviews", "comments"])
+def test_actions_notices_keep_notice_only_handling_without_run_reads(surface):
+    transport = actions_transport(reviews=[])
+    path = ("repos/example/product/pulls/7/reviews" if surface == "reviews"
+            else "repos/example/product/issues/7/comments")
+    transport.values[path] = [actions_review(body="Review skipped: finder failed")]
+    fixture = collect_actions(transport)
+    receipt = work._reviewer_receipts(fixture)[0]
+    assert receipt["result"] == "notice-only"
+    assert receipt["notices"] == ["review skipped"]
+    assert not any("/actions/runs/" in endpoint for _, endpoint, _ in transport.calls)
+
+
+def test_actions_unconfigured_and_other_reviewers_need_no_run_reads():
+    transport = actions_transport(config=CONFIG, reviews=[
+        actions_review(), actions_review(user={"login": REVIEWER}, body="Review summary"),
+    ])
+    fixture = collect_actions(transport, CONFIG)
+    assert work._reviewer_ran(fixture)
+    assert not any("/actions/runs/" in endpoint for _, endpoint, _ in transport.calls)
+
+
+def test_actions_collector_handles_real_rest_object_pages(monkeypatch):
+    pages = [
+        {"total_count": 2, "jobs": [actions_job(id=92, conclusion="failure", run_attempt=2)]},
+        {"total_count": 2, "jobs": [actions_job()]},
+    ]
+    commands = []
+
+    def gh(command, **kwargs):
+        commands.append(command)
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["stdout"] == kwargs["stderr"] == subprocess.PIPE
+        return subprocess.CompletedProcess(command, 0, json.dumps(pages).encode("utf-8"), b"")
+
+    class RESTJobsTransport(FakeTransport):
+        def get(self, endpoint, *, paginate=False):
+            if "/jobs?" in endpoint:
+                return work.GitHubREST().get(endpoint, paginate=paginate)
+            return super().get(endpoint, paginate=paginate)
+
+    monkeypatch.setattr(work.subprocess, "run", gh)
+    fixture = collect_actions(RESTJobsTransport(actions_transport().values))
+    assert work._reviewer_ran(fixture)
+    assert commands == [[
+        "gh", "api", "--method", "GET",
+        f"repos/example/product/actions/runs/{REVIEW_RUN}/jobs?filter=all&per_page=100",
+        "--paginate", "--slurp",
+    ]]
+
+
+ACTIONS_FIXTURES = LIB.parent / "skills" / "work" / "references" / "proof-fixtures"
+ACTIONS_CASE_PATH = ACTIONS_FIXTURES / "v1-actions-receipts.json"
+ACTIONS_CASES = json.loads(ACTIONS_CASE_PATH.read_bytes()) if ACTIONS_CASE_PATH.exists() else None
+
+
+@pytest.mark.parametrize("case", ACTIONS_CASES["cases"] if ACTIONS_CASES else [],
+                         ids=lambda case: case["name"])
+def test_actions_interoperability_cases_use_collected_facts(case, tmp_path):
+    live = deepcopy(ACTIONS_CASES["live"])
+    for key, value in case["live_patch"].items():
+        if isinstance(value, dict):
+            live[key].update(deepcopy(value))
+        else:
+            live[key] = deepcopy(value)
+    run = live["run"]
+    run["path"] = "/".join(live["workflow_path"]["segments"])
+    if live["workflow_path"]["ref"] is not None:
+        run["path"] += "@" + live["workflow_path"]["ref"]
+    transport = actions_transport(reviews=[live["review"]], run=run, job_pages=live["job_pages"])
+    fixture = collect_actions(transport)
+    assert work._reviewer_ran(fixture) is (case["result"] == "present")
+    assert work.decide(fixture, RULES).stage == (
+        "proof" if case["result"] == "present" else "waiting"
+    )
+    assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == case["result"]
 
 
 class GateReadTransport(FakeTransport):

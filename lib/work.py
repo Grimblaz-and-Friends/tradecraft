@@ -112,6 +112,10 @@ REVIEW_NOTICE_PATTERNS = (
 )
 HEAD_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
+ACTIONS_REVIEWER = "github-actions[bot]"
+CONNECTED_REVIEW_PATH = "/".join((".github", "workflows", "connected-review.yml"))
+CONNECTED_REVIEW_RUN = re.compile(r"<!--\s*connected-review-attempt:([1-9][0-9]*)\s*-->")
+COMPLETED_REVIEWS = frozenset({"COMMENTED", "APPROVED", "CHANGES_REQUESTED"})
 NEW_MECHANISM_VERSION = "0.152.0"
 PROOF_MECHANISM_VERSION = "0.153.0"
 TRUTHFUL_ENTRANCE_VERSION = "0.154.0"
@@ -263,6 +267,13 @@ class WorkConfig:
 
 
 @dataclass
+class ReviewRunEvidence:
+    run: dict[str, object] | None = None
+    jobs: list[dict[str, object]] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass
 class WorkState:
     repo: str
     issue_number: int
@@ -284,6 +295,7 @@ class WorkState:
     quotation_claims: list[dict[str, object]] = field(default_factory=list)
     artifact_phase: ArtifactPhase | None = None
     collection_diagnostics: list[dict[str, object]] = field(default_factory=list)
+    connected_review_runs: dict[int, ReviewRunEvidence] = field(default_factory=dict)
     required_gate: dict[str, object] | None = None
     policy_sources: dict[str, dict[str, str]] = field(default_factory=dict)
     applicable_use: Marker | None = None
@@ -899,6 +911,7 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
         })
     state.pr_comments = _get_list(transport, f"{base}/issues/{number}/comments")
     state.reviews = _get_list(transport, f"{pr_endpoint}/reviews")
+    _collect_connected_review_runs(transport, state)
     state.review_comments = _get_list(transport, f"{pr_endpoint}/comments")
     files = _get_list(transport, f"{pr_endpoint}/files")
     state.files = files
@@ -941,7 +954,13 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
             if run_id not in workflow_runs:
                 run_endpoint = f"{base}/actions/runs/{run_id}"
                 try:
-                    workflow_runs[run_id] = _dict(transport.get(run_endpoint), run_endpoint)
+                    evidence = state.connected_review_runs.get(run_id)
+                    if evidence is not None:
+                        if evidence.run is None:
+                            raise WorkError(evidence.error or "review run is unavailable")
+                        workflow_runs[run_id] = evidence.run
+                    else:
+                        workflow_runs[run_id] = _dict(transport.get(run_endpoint), run_endpoint)
                 except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
                     state.collection_diagnostics.append({
                         "code": "workflow-run-unavailable",
@@ -2251,6 +2270,120 @@ def _review_notice(body: str) -> str | None:
     return None
 
 
+def _connected_review_run_id(review: dict[str, object]) -> int:
+    status = review.get("state")
+    if (not isinstance(status, str) or status not in COMPLETED_REVIEWS
+            or not isinstance(review.get("submitted_at"), str)
+            or not review["submitted_at"]):
+        raise WorkError("not a submitted completed pull-request review")
+    commit = review.get("commit_id")
+    if not isinstance(commit, str) or HEAD_SHA.fullmatch(commit) is None:
+        raise WorkError("review has no full commit identity")
+    body = str(review.get("body") or "")
+    matches = CONNECTED_REVIEW_RUN.findall(body)
+    if (not matches or len(set(matches)) != 1
+            or body.count("connected-review-attempt:") != len(matches)):
+        raise WorkError("review has a missing, malformed or conflicting run marker")
+    try:
+        return int(matches[0])
+    except ValueError as exc:
+        raise WorkError("review run id is invalid") from exc
+
+
+def _connected_review_run_error(repo: str, run_id: int, run: object) -> str | None:
+    if (not isinstance(run, dict) or type(run.get("id")) is not int
+            or run["id"] != run_id):
+        return "workflow run id does not match the review marker"
+    repository = run.get("repository")
+    name = repository.get("full_name") if isinstance(repository, dict) else None
+    if not isinstance(name, str) or name.lower() != repo.lower():
+        return "workflow run belongs to another or unidentified repository"
+    path = run.get("path")
+    if not isinstance(path, str) or path.split("@", 1)[0] != CONNECTED_REVIEW_PATH:
+        return "workflow run is not the fixed connected-review workflow file"
+    event = run.get("event")
+    if not isinstance(event, str) or event not in {"pull_request", "pull_request_target"}:
+        return "workflow run was not triggered by a pull request"
+    return None
+
+
+def _connected_review_jobs(transport: GitHubREST, endpoint: str) -> list[dict[str, object]]:
+    pages = transport.get(endpoint, paginate=True)
+    if isinstance(pages, dict):
+        pages = [pages]
+    if not isinstance(pages, list) or not pages:
+        raise WorkError(f"GitHub jobs GET returned no object pages for {endpoint}")
+    jobs: list[dict[str, object]] = []
+    totals: set[int] = set()
+    for value in pages:
+        page = _dict(value, endpoint)
+        count = page.get("total_count")
+        if type(count) is not int or count < 0:
+            raise WorkError(f"GitHub jobs GET returned an invalid total_count for {endpoint}")
+        totals.add(count)
+        jobs.extend(_list(page.get("jobs"), endpoint))
+    if totals != {len(jobs)}:
+        raise WorkError(f"GitHub jobs GET returned incomplete or inconsistent pages for {endpoint}")
+    return jobs
+
+
+def _connected_review_receipt_error(state: WorkState, review: dict[str, object]) -> str | None:
+    try:
+        run_id = _connected_review_run_id(review)
+    except WorkError as exc:
+        return str(exc)
+    evidence = state.connected_review_runs.get(run_id)
+    if evidence is None:
+        return "workflow run evidence was not collected"
+    if evidence.error is not None:
+        return evidence.error
+    problem = _connected_review_run_error(state.repo, run_id, evidence.run)
+    if problem is not None:
+        return problem
+    if evidence.run.get("head_sha") != review["commit_id"]:
+        return "workflow run head does not match the review commit"
+    if not any(type(job.get("run_id")) is int and job["run_id"] == run_id
+               and job.get("name") == "review" and job.get("status") == "completed"
+               and job.get("conclusion") == "success" for job in evidence.jobs):
+        return "workflow run has no completed successful review job in any attempt"
+    return None
+
+
+def _collect_connected_review_runs(transport: GitHubREST, state: WorkState) -> None:
+    if ACTIONS_REVIEWER not in {login.lower() for login in state.config.connected_reviewers}:
+        return
+    for review in state.reviews:
+        if (_author(review) != ACTIONS_REVIEWER
+                or _review_notice(str(review.get("body") or "")) is not None):
+            continue
+        try:
+            run_id = _connected_review_run_id(review)
+        except WorkError as exc:
+            problem = str(exc)
+        else:
+            if run_id not in state.connected_review_runs:
+                evidence = ReviewRunEvidence()
+                state.connected_review_runs[run_id] = evidence
+                endpoint = f"repos/{state.repo}/actions/runs/{run_id}"
+                try:
+                    evidence.run = _dict(transport.get(endpoint), endpoint)
+                    evidence.error = _connected_review_run_error(state.repo, run_id, evidence.run)
+                    if evidence.error is None:
+                        evidence.jobs = _connected_review_jobs(
+                            transport, f"{endpoint}/jobs?filter=all&per_page=100"
+                        )
+                except (KeyError, OSError, UnicodeError, ValueError, WorkError,
+                        subprocess.SubprocessError) as exc:
+                    evidence.error = f"cannot read review workflow evidence: {exc}"
+            problem = _connected_review_receipt_error(state, review)
+        if problem is not None:
+            state.collection_diagnostics.append({
+                "code": "connected-review-receipt-unproven",
+                "message": f"{ACTIONS_REVIEWER} review {review.get('id')}: {problem}",
+                "source": _public_source(state, review, "review"),
+            })
+
+
 def _reviewer_receipts(state: WorkState) -> list[dict[str, object]]:
     receipts: list[dict[str, object]] = []
     for reviewer in sorted(state.config.connected_reviewers):
@@ -2259,7 +2392,7 @@ def _reviewer_receipts(state: WorkState) -> list[dict[str, object]]:
         for kind, items in (
                 ("review", state.reviews), ("review-comment", state.review_comments)):
             for item in items:
-                if _author(item) != reviewer:
+                if _author(item) != reviewer.lower():
                     continue
                 notice = (
                     _review_notice(str(item.get("body") or ""))
@@ -2269,16 +2402,21 @@ def _reviewer_receipts(state: WorkState) -> list[dict[str, object]]:
                     if notice not in notices:
                         notices.append(notice)
                     continue
+                if reviewer.lower() == ACTIONS_REVIEWER and (
+                        kind != "review" or _connected_review_receipt_error(state, item) is not None):
+                    continue
                 receipt = _public_source(state, item, kind)
                 break
             if receipt is not None:
                 break
         if receipt is None:
             for item in state.pr_comments:
-                if _author(item) != reviewer:
+                if _author(item) != reviewer.lower():
                     continue
                 notice = _review_notice(str(item.get("body") or ""))
                 if notice is None:
+                    if reviewer.lower() == ACTIONS_REVIEWER:
+                        continue
                     receipt = _public_source(state, item, "pull-request-comment")
                     break
                 if notice not in notices:

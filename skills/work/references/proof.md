@@ -30,6 +30,12 @@ The object has nine top-level fields: `schema_version`, `identity`, `policy`, `f
 
 The producer never writes a `verified` field or line. The readable rendering labels public material `evidence:`, local record material `declared:`, and limitations `diagnostic:`. The gate alone emits `verified:` after independently reading the public records; accessible local execution remains a declaration even when internally consistent.
 
+## The shared Actions review identity
+
+`github-actions[bot]` is shared by ordinary workflows, so its receipt must be a submitted, completed pull-request review carrying the existing `<!-- connected-review-attempt:RUN_ID -->` marker. GitHub's independently read run must have that id in the same repository, identify `<adopter-root>/.github/workflows/connected-review.yml`, have event `pull_request` or `pull_request_target`, and have the same full head revision as the review's `commit_id`. The workflow file portion before GitHub's optional `@ref` suffix must match exactly. A completed, successful job named exactly `review` in any attempt of that run establishes completion; read all jobs pages with `filter=all`, because an overall failure or a failed later attempt does not undo a posted review.
+
+Missing, malformed or conflicting run markers, rejected run facts and unreadable evidence grant no credit; collection and proof diagnostics retain the reason, and another qualifying review or a later read can establish the receipt. Ordinary and inline comments from this shared login cannot be receipts. Notices keep their existing handling, inline findings still need dispositions, and other configured reviewers keep their source rules. Run and job facts stay internal: proof still names the actual review as its source, with no new proof or configuration fields.
+
 ## Applicable use evidence
 
 A current-head use remains the ordinary case. An older use applies only when its evidence head is an ancestor of the pull-request head, the complete intervening commit list is available, and each commit changes no path the trusted use policy buys. The classification reads each commit rather than the final net diff and includes both `filename` and `previous_filename` for a rename. The relaxation applies only to use: floor and generated no-use evidence stay current-head.

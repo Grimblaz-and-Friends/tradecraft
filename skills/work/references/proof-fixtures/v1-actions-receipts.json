@@ -1,0 +1,113 @@
+{
+  "document_patch": {
+    "reviewers": [
+      {
+        "login": "github-actions[bot]",
+        "notices": [],
+        "result": "present",
+        "source": {
+          "author": "github-actions[bot]",
+          "id": 41,
+          "kind": "review",
+          "repository": "example/product",
+          "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "timestamp": "2026-09-30T12:07:00Z",
+          "url": "https://github.com/example/product/pull/7#pullrequestreview-41"
+        }
+      }
+    ]
+  },
+  "live": {
+    "repository": "example/product",
+    "connected_reviewers": ["github-actions[bot]"],
+    "review": {
+      "id": 41,
+      "user": {"login": "github-actions[bot]"},
+      "body": "Review completed.\n<!-- connected-review-attempt:36672170816 -->",
+      "state": "COMMENTED",
+      "submitted_at": "2026-09-30T12:07:00Z",
+      "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "html_url": "https://github.com/example/product/pull/7#pullrequestreview-41"
+    },
+    "run": {
+      "id": 36672170816,
+      "repository": {"full_name": "example/product"},
+      "event": "pull_request_target",
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    "workflow_path": {
+      "segments": [".github", "workflows", "connected-review.yml"],
+      "ref": null
+    },
+    "job_pages": [
+      {
+        "total_count": 1,
+        "jobs": [
+          {
+            "id": 91,
+            "run_id": 36672170816,
+            "run_attempt": 1,
+            "name": "review",
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ]
+      }
+    ]
+  },
+  "cases": [
+    {"name": "canonical-existing-review", "result": "present", "live_patch": {}},
+    {
+      "name": "canonical-file-with-ref",
+      "result": "present",
+      "live_patch": {"workflow_path": {"ref": "refs/heads/main"}}
+    },
+    {
+      "name": "pull-request-event",
+      "result": "present",
+      "live_patch": {"run": {"event": "pull_request"}}
+    },
+    {
+      "name": "earlier-success-on-later-page",
+      "result": "present",
+      "live_patch": {
+        "run": {"run_attempt": 2, "conclusion": "failure"},
+        "job_pages": [
+          {
+            "total_count": 3,
+            "jobs": [
+              {"id": 92, "run_id": 36672170816, "run_attempt": 2, "name": "review", "status": "completed", "conclusion": "failure"},
+              {"id": 93, "run_id": 36672170816, "run_attempt": 2, "name": "report", "status": "completed", "conclusion": "failure"}
+            ]
+          },
+          {
+            "total_count": 3,
+            "jobs": [
+              {"id": 91, "run_id": 36672170816, "run_attempt": 1, "name": "review", "status": "completed", "conclusion": "success"}
+            ]
+          }
+        ]
+      }
+    },
+    {"name": "pending-review", "result": "missing", "live_patch": {"review": {"state": "PENDING"}}},
+    {"name": "unsubmitted-review", "result": "missing", "live_patch": {"review": {"submitted_at": null}}},
+    {"name": "missing-run-marker", "result": "missing", "live_patch": {"review": {"body": "Review completed."}}},
+    {"name": "malformed-run-marker", "result": "missing", "live_patch": {"review": {"body": "<!-- connected-review-attempt:bad -->"}}},
+    {"name": "conflicting-run-markers", "result": "missing", "live_patch": {"review": {"body": "<!-- connected-review-attempt:36672170816 -->\n<!-- connected-review-attempt:81 -->"}}},
+    {"name": "wrong-run-id", "result": "missing", "live_patch": {"run": {"id": 81}}},
+    {"name": "wrong-run-repository", "result": "missing", "live_patch": {"run": {"repository": {"full_name": "example/other"}}}},
+    {"name": "other-workflow", "result": "missing", "live_patch": {"workflow_path": {"segments": [".github", "workflows", "mutation.yml"]}}},
+    {"name": "renamed-workflow-with-ref", "result": "missing", "live_patch": {"workflow_path": {"segments": [".github", "workflows", "renamed.yml"], "ref": "refs/heads/main"}}},
+    {"name": "push-event", "result": "missing", "live_patch": {"run": {"event": "push"}}},
+    {"name": "dispatch-event", "result": "missing", "live_patch": {"run": {"event": "workflow_dispatch"}}},
+    {"name": "wrong-review-commit", "result": "missing", "live_patch": {"run": {"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}},
+    {"name": "no-review-job", "result": "missing", "live_patch": {"job_pages": [{"total_count": 0, "jobs": []}]}},
+    {"name": "only-report-success", "result": "missing", "live_patch": {"job_pages": [{"total_count": 1, "jobs": [{"id": 91, "run_id": 36672170816, "name": "report", "status": "completed", "conclusion": "success"}]}]}},
+    {"name": "review-job-failed", "result": "missing", "live_patch": {"job_pages": [{"total_count": 1, "jobs": [{"id": 91, "run_id": 36672170816, "name": "review", "status": "completed", "conclusion": "failure"}]}]}},
+    {"name": "review-job-pending", "result": "missing", "live_patch": {"job_pages": [{"total_count": 1, "jobs": [{"id": 91, "run_id": 36672170816, "name": "review", "status": "in_progress", "conclusion": null}]}]}},
+    {"name": "review-job-wrong-run", "result": "missing", "live_patch": {"job_pages": [{"total_count": 1, "jobs": [{"id": 91, "run_id": 81, "name": "review", "status": "completed", "conclusion": "success"}]}]}},
+    {"name": "missing-jobs-page", "result": "missing", "live_patch": {"job_pages": [{"total_count": 2, "jobs": [{"id": 91, "run_id": 36672170816, "name": "review", "status": "completed", "conclusion": "success"}]}]}}
+  ]
+}
