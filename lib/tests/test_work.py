@@ -974,6 +974,119 @@ def test_builder_return_without_pull_request_is_a_holder_owned_handoff():
     )
 
 
+def body_review_state(*, proof=False, declaration=None):
+    cr_login = "coderabbitai[bot]"
+    config = work.WorkConfig(connected_reviewers=frozenset({cr_login}),
+                             marker_producers=frozenset({PRODUCER}))
+    texts = [AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE]
+    fixture = state(*texts, pr=True, draft=False, config=config)
+    fixture.reviews = [{
+        "id": 100, "state": "COMMENTED", "commit_id": "b" * 40,
+        "user": {"login": cr_login},
+        "body": declaration or "<!-- cr-comment:v1:alpha -->",
+        "html_url": "https://github.com/example/product/pull/7#pullrequestreview-100",
+    }, {
+        "id": 101, "state": "COMMENTED", "commit_id": SHA,
+        "user": {"login": cr_login}, "body": "No findings.",
+    }]
+    fixture.checks = [gate_check()]
+    if proof:
+        fixture.pr_comments.append({"id": 71, "user": {"login": PRODUCER},
+                                   "body": f"<!-- tradecraft:proof:v1 head={SHA} -->"})
+        fixture.proof_current = True
+    fixture.policy_sources = {
+        key: {"repository": fixture.repo, "path": path, "revision": SHA, "sha256": "1" * 64}
+        for key, path in (("work_configuration", ".tradecraft/work.json"),
+                          ("use_rules", "lib/use-rules.json"))
+    }
+    return fixture
+
+
+@pytest.mark.parametrize("proof", [False, True])
+def test_prior_head_body_obligation_precedes_proof_and_legacy_green_gate(proof):
+    fixture = body_review_state(proof=proof)
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.dispatch, decision.continuity) == (
+        "review-disposition", True, "resume",
+    )
+    assert "cr-comment:v1:alpha" in decision.detail
+    assert fixture.reviews[0]["html_url"] in decision.detail
+    fixture.pr_comments.append({"user": {"login": PRODUCER}, "body":
+        "declined - this input is already checked; [cr-comment:v1:alpha]"
+        "(https://github.com/example/product/pull/7#pullrequestreview-100)"})
+    assert work.decide(fixture, RULES).stage == ("release-report" if proof else "proof")
+
+
+def test_unidentified_review_is_named_and_authorized_whole_answer_resolves_it():
+    fixture = body_review_state(declaration="**Actionable comments posted: 1**")
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "review-disposition"
+    assert "unidentified" in decision.detail and fixture.reviews[0]["html_url"] in decision.detail
+    fixture.pr_comments.append({"user": {"login": "outsider"}, "body":
+        "fixed - repaired; [unidentified review]"
+        "(https://github.com/example/product/pull/7#pullrequestreview-100)"})
+    assert "ignored-disposition-from=outsider" in work.decide(fixture, RULES).reason
+    fixture.pr_comments[-1]["user"]["login"] = PRODUCER
+    assert work.decide(fixture, RULES).stage == "proof"
+    assert work._body_findings(fixture).unidentified_reviews[0].answered
+
+
+def test_body_diagnostics_use_unchanged_proof_contract_before_and_after_answer(tmp_path):
+    fixture = body_review_state(declaration=
+        "<details><summary>Other comments (2)</summary>\n"
+        "<!-- cr-comment:v1:alpha -->\n</details>")
+    fixture.record_root = tmp_path / "missing-dispatches"
+    first = work.compose_proof(fixture, RULES)
+    assert set(first) == {
+        "schema_version", "identity", "policy", "floor", "use", "reviewers",
+        "dispositions", "declarations", "diagnostics",
+    }
+    assert first["dispositions"] == []
+    assert {item["code"] for item in first["diagnostics"]} >= {
+        "body-disposition-missing", "unidentified-review-disposition-missing",
+    }
+    for label in ("cr-comment:v1:alpha", "unidentified review"):
+        fixture.pr_comments.append({"id": 200, "user": {"login": PRODUCER}, "body":
+            f"fixed - repaired; [{label}]"
+            "(https://github.com/example/product/pull/7#pullrequestreview-100)"})
+    after = work.compose_proof(fixture, RULES)
+    assert not ({"body-disposition-missing", "unidentified-review-disposition-missing"}
+                & {item["code"] for item in after["diagnostics"]})
+    assert after["dispositions"] == first["dispositions"]
+    assert set(after) == set(first)
+    import proof as proof_document
+    proof_document.validate(first)
+    proof_document.validate(after)
+
+
+def test_body_identity_does_not_credit_an_unproved_actions_review():
+    fixture = body_review_state()
+    fixture.config = ACTIONS_CONFIG
+    fixture.reviews = [{"id": 100, "state": "COMMENTED", "commit_id": SHA,
+        "user": {"login": work.ACTIONS_REVIEWER}, "body":
+        "1 validated finding(s).\n<!-- tradecraft-review-finding:v1:91:1 -->"}]
+    assert not work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).stage == "waiting"
+    assert work._body_findings(fixture).missing_findings
+
+
+def test_body_answers_create_no_ready_time_circular_prerequisite():
+    fixture = body_review_state()
+    fixture.pr["draft"] = True
+    assert work.decide(fixture, RULES).stage == "ready-reviewers"
+
+
+def test_explicit_release_handoff_names_unanswered_bodies_despite_green_gate(tmp_path, capsys):
+    fixture = body_review_state(proof=True)
+    assert work.execute_stage(fixture, work.Decision(
+        "release-report", False, None, "holder-named-stage"), tmp_path, None) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["required_gate"]["verdict"] == "green"
+    assert not report["review_dispositions"]["complete"]
+    assert "cr-comment:v1:alpha" in report["detail"]
+    assert "does not establish release readiness" in report["detail"]
+
+
 def test_undisposed_reviewer_thread_routes_only_the_disposition_stage():
     fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
                     pr=True, draft=False)
@@ -2092,6 +2205,10 @@ def test_actions_generated_review_quotes_are_credited_by_trailing_marker(
     fixture = collect_actions(transport)
     assert set(fixture.connected_review_runs) == {REVIEW_RUN}
     assert work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).stage == "review-disposition"
+    fixture.pr_comments.append({"user": {"login": PRODUCER}, "body":
+        f"fixed - repaired; [tradecraft-review-finding:v1:{REVIEW_RUN}:1]"
+        "(https://github.com/example/product/pull/7#pullrequestreview-41)"})
     assert work.decide(fixture, RULES).stage == "proof"
     receipt = actions_proof(fixture, tmp_path)["reviewers"][0]
     assert receipt["result"] == "present"

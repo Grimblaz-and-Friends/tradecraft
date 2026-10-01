@@ -22,6 +22,6 @@ The ruled batch goes to the resumed implementer, and every account the holder th
 
 ## Connected reviewers and a commissioned pass
 
-Every connected-reviewer comment is handled under `connected-reviewers.md`: fix it or give it a one-line disposition in its own thread, and bundle, receipt and record nothing elsewhere. A later push triggers no new review; the holder may buy a second look for a non-mechanical fix by re-triggering the shared label.
+Every connected-reviewer finding is answered individually under `connected-reviewers.md`, including body findings and unidentified reviews. A later push triggers no new review; the holder may buy a second look for a non-mechanical fix by re-triggering the shared label.
 
 **A review tool the session invokes itself is a commissioned pass, not a connected reviewer.** On the unattended stretch, the holder commissions it. It is not a seat, since invoking a tool supplies neither the cold boundary, nor the shared block, nor a lens brief. Its findings **are a member of the terminal stage's docket** (`../references/arbitration.md`), whose enumeration is set by rule and reaches this one, and the report records what was run, what it returned, and each disposition. It runs before that stage, as evidence the terminal ruling informs.

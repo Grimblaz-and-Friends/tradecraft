@@ -94,6 +94,8 @@ Adopter mode requires one or more `--loading-surface` values. Repository-session
 
 The entrance consumes the affirmed brief and recorded evidence; it never decides what work is for, the brief's terms, a vendor or model default, whether to merge, or an owner ask. An ambiguous pull request returns to the holder, who records the lawful `implementing-pr` marker or opens the pull request that should exist; holder reading, waiting, panel coordination and terminal states likewise return to the holder.
 
+Before recommending proof or release, the entrance checks individual inline replies, identified body answers and whole-review answers for unidentified declared findings. The connected-reviewer answer contract owns those forms; proof diagnostics may expose incomplete answers without adding proof fields.
+
 ## Registration commands
 
 `release` and `adopt` retain their direct forms and sweep active registrations before their state change. Release makes the selected row inactive without deleting its worktree or branch:
