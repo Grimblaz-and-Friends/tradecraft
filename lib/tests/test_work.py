@@ -1563,7 +1563,7 @@ def test_implementer_vendor_file_and_role_overrides_are_independent(tmp_path):
     fixture = state(AFFIRMED)
     work.validate_marker_claims(fixture)
     assert work._implementer_vendor(fixture, "artifact_author", setting_path=setting)[0] == "codex"
-    assert work._launch_settings(fixture, "artifact_author", "codex").model == "gpt-6-astra"
+    assert work._launch_settings(fixture, "artifact_author", "codex").model == "gpt-6.1-sol"
     setting.write_bytes(b"claude\n")
     assert work._implementer_vendor(fixture, "artifact_author", setting_path=setting)[0] == "claude"
     assert work._launch_settings(fixture, "artifact_author", "claude") == work.LaunchSettings(
@@ -5699,7 +5699,7 @@ def ruling_file(tmp_path, monkeypatch, role="implementer", vendor="codex", repla
 
 
 @pytest.mark.parametrize(("stage", "role", "vendor", "model", "effort"), [
-    ("artifact", "artifact_author", "codex", "gpt-6-astra", "xhigh"),
+    ("artifact", "artifact_author", "codex", "gpt-6.1-sol", "xhigh"),
     ("build", "implementer", "codex", "gpt-6.1-sol", "xhigh"),
     ("cold-seat", "cold_seat", "claude", "claude-opus-5-5", "xhigh"),
     ("use", "use_consumer", "claude", "claude-opus-5-5", "max"),

@@ -30,12 +30,13 @@ from seat_process import run_process
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
 
-# Ruled for #758; the owner moved builds to Sol 6.1 on 2026-09-29
-# (issue comment 5899421625). Astra 6 still authors artifacts at xhigh.
+# Builds use Sol 6.1 at xhigh under the owner's 2026-09-29 ruling
+# (#758, issue comment 5899421625). Artifacts follow the 2026-09-30 ruling
+# (#737, issue comment 5920638420): Sol 6.1 at xhigh.
 # Claude Opus 5.5 at high is the switch profile; authoring remains interim.
 PROFILES = {
     "artifact_author": {
-        "codex": ("gpt-6-astra", "xhigh"),
+        "codex": ("gpt-6.1-sol", "xhigh"),
         "claude": ("claude-opus-5-5", "high"),
     },
     "implementer": {
