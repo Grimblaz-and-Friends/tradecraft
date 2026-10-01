@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -47,6 +48,257 @@ def rate(model="gpt-fixture"):
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes((json.dumps(value) + "\n").encode())
+
+
+@pytest.fixture
+def report_inputs(tmp_path):
+    rates_path = tmp_path / "rates.json"
+    write_json(rates_path, {"schema_version": 1, "rates": [rate()]})
+    return {
+        "repo": "acme/widget", "issue": 12,
+        "dispatch_root": tmp_path / "dispatches", "rates_path": rates_path,
+        "terms_path": tmp_path / "terms.json", "gauges_path": tmp_path / "gauges.jsonl",
+        "holder_path": tmp_path / "holder.jsonl",
+    }
+
+
+def report_arguments(inputs):
+    return [
+        "report", "--repo", inputs["repo"], "--issue", str(inputs["issue"]),
+        "--dispatch-root", str(inputs["dispatch_root"]), "--rates", str(inputs["rates_path"]),
+        "--plan-terms", str(inputs["terms_path"]), "--gauges", str(inputs["gauges_path"]),
+        "--holder-usage", str(inputs["holder_path"]),
+    ]
+
+
+def report_cli(inputs):
+    return subprocess.run(
+        [sys.executable, str(LIB / "change_cost.py"), *report_arguments(inputs)],
+        stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", timeout=60,
+    )
+
+
+def write_bundle(inputs, name, work="acme/widget#12", rows=None, completion=None):
+    # Suffix pairing must work for caller-selected output names.
+    output = inputs["dispatch_root"] / name / "answer.v2.txt"
+    request = records.request_record(
+        dispatch_id=name, work=work, stage="use", settings_source="fixture",
+        settings_scope="use", vendor="claude", model="requested-only", effort="xhigh",
+        continuity="fresh", permission_boundary="fixture", root=None,
+        now=datetime.fromisoformat(WHEN),
+    )
+    request_path = records.sidecar(output, ".request.json")
+    run_path = records.sidecar(output, ".run.json")
+    write_json(request_path, request)
+    if completion is None:
+        write_json(run_path, {"schema_version": 2, "attempts": [
+            {"usage": row} for row in (rows if rows is not None else [usage()])
+        ]})
+    else:
+        run_path.write_bytes(completion)
+    return request_path, run_path, request
+
+
+@pytest.mark.parametrize("work", ["acme/widget#13", "other/widget#12", "12", "issue-12"])
+@pytest.mark.parametrize("completion", [b"", b"{", b'{"schema_version": 2, "attempts": []}'])
+def test_foreign_and_unqualified_requests_never_open_completions(
+        report_inputs, monkeypatch, work, completion):
+    target_request, target_path, _ = write_bundle(report_inputs, "target")
+    request_path, foreign_path, _ = write_bundle(
+        report_inputs, "acme-widget-12-suggestive", work=work, completion=completion,
+    )
+    baseline = cost.report(**report_inputs)
+    reads = []
+    original = Path.read_bytes
+
+    def checked_read(path):
+        reads.append(path)
+        assert path != foreign_path, "an unrelated completion was opened"
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", checked_read)
+    result = cost.report(**report_inputs)
+    assert request_path in reads and target_path in reads
+    assert reads.index(target_request) < reads.index(target_path)
+    assert result == baseline
+    assert result["raw_usage"] == [usage()]
+    assert result["skipped_records"] == []
+
+
+@pytest.mark.parametrize("failure", ["empty", "malformed", "read-error"])
+def test_target_gap_is_one_unknown_attempt_in_successful_cli_report(
+        report_inputs, monkeypatch, capsys, failure):
+    write_bundle(report_inputs, "a-readable")
+    _, path, request = write_bundle(
+        report_inputs, "b-gap", completion=b"{" if failure == "malformed" else b"",
+    )
+    if failure == "read-error":
+        original = Path.read_bytes
+
+        def unavailable(candidate):
+            if candidate == path:
+                raise PermissionError("injected completion read failure")
+            return original(candidate)
+
+        monkeypatch.setattr(Path, "read_bytes", unavailable)
+    assert cost.main(report_arguments(report_inputs)) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    result = json.loads(captured.out)
+    assert result["raw_usage"][0] == usage()
+    assert len(result["raw_usage"]) == 2
+    row = result["raw_usage"][1]
+    assert row["change"] == usage()["change"]
+    assert row["dispatch"]["id"] == request["dispatch_id"]
+    assert row["dispatch"]["stage"] == request["stage"]
+    assert row["dispatch"]["requested_vendor"] == "claude"
+    assert row["dispatch"]["actual_vendor"] is None
+    assert row["dispatch"]["launched_at"] == WHEN
+    assert row["dispatch"]["completed_at"] is None
+    assert row["model"]["requested"] == "requested-only"
+    assert row["model"]["reported"] == []
+    assert row["model"]["reported_unknown_reason"]
+    assert row["raw_source"] == str(path)
+    assert row["scope"] == "unknown" and row["tokens"] is None
+    assert "may still be running or have been interrupted" in row["tokens_unknown_reason"]
+    assert str(path) in row["tokens_unknown_reason"]
+    if failure == "read-error":
+        assert "injected completion read failure" in row["tokens_unknown_reason"]
+    assert result["grouped_by_stage_and_vendor"] == [
+        {"stage": "build", "vendor": "codex", "attempts": 1},
+        {"stage": "use", "vendor": "unknown", "attempts": 1},
+    ]
+    assert result["dated_rate_card_equivalent"][0]["value"]["amount"] == "0.14"
+    gap_price = result["dated_rate_card_equivalent"][1]
+    assert gap_price["dispatch_id"] == request["dispatch_id"]
+    assert gap_price["value"]["status"] == "unknown"
+    assert gap_price["value"]["reason"] and "amount" not in gap_price["value"]
+    assert [row["vendor"] for row in result["bill_plan_status"]] == ["codex"]
+    assert result["skipped_records"] == []
+
+
+@pytest.mark.parametrize("request_bytes", [None, b"", b"{", b"[]", b"null"])
+def test_unattributable_completions_are_sorted_skipped_gaps_without_usage(
+        report_inputs, request_bytes):
+    write_bundle(report_inputs, "target")
+    baseline = cost.report(**report_inputs)
+    paths = []
+    for name in ("z-gap", "a-gap"):
+        request_path, run_path, _ = write_bundle(report_inputs, name, completion=b"")
+        if request_bytes is None:
+            request_path.unlink()
+        else:
+            request_path.write_bytes(request_bytes)
+        paths.append(str(run_path))
+    (report_inputs["dispatch_root"] / "empty-folder").mkdir()
+    result = cost.report(**report_inputs)
+    skipped = result.pop("skipped_records")
+    assert result == {key: value for key, value in baseline.items() if key != "skipped_records"}
+    assert [row["path"] for row in skipped] == sorted(paths)
+    assert all("Completion usage and request attribution are unavailable" in row["reason"]
+               for row in skipped)
+    assert all("dispatch completion" in row["reason"] and "dispatch request" in row["reason"]
+               for row in skipped)
+
+
+@pytest.mark.parametrize("request_kind", ["readable", "missing", "malformed", "read-error"])
+def test_readable_evidence_preserves_attempts_eligibility_order_prices_and_holder(
+        report_inputs, monkeypatch, request_kind):
+    first = usage(dispatch_id="actual-1")
+    unavailable = usage(dispatch_id="actual-1", scope="unknown")
+    unavailable["tokens"] = None
+    unavailable["tokens_unknown_reason"] = "runtime did not report usage"
+    foreign = usage(dispatch_id="foreign")
+    foreign["change"]["repository"] = "other/widget"
+    request_path, path, _ = write_bundle(report_inputs, "a-multiple", rows=[first, unavailable, foreign])
+    value = json.loads(path.read_bytes())
+    value["attempts"].extend([None, {"usage": None}, {"usage": {"change": None}}])
+    write_json(path, value)
+    if request_kind == "missing":
+        request_path.unlink()
+    elif request_kind == "malformed":
+        request_path.write_bytes(b"{")
+    elif request_kind == "read-error":
+        original = Path.read_bytes
+
+        def unavailable_request(candidate):
+            if candidate == request_path:
+                raise PermissionError("injected request read failure")
+            return original(candidate)
+
+        monkeypatch.setattr(Path, "read_bytes", unavailable_request)
+    second = usage(dispatch_id="actual-2", stage="floor")
+    write_bundle(report_inputs, "b-second", rows=[second])
+    _, old_path, _ = write_bundle(report_inputs, "c-old-schema")
+    write_json(old_path, {"schema_version": 1, "attempts": [{"usage": usage()}]})
+    holder = cost.holder_close(
+        "acme/widget", 12, "codex", None, None, "holder usage unavailable",
+        report_inputs["holder_path"], now=datetime.fromisoformat(WHEN),
+    )
+    result = cost.report(**report_inputs)
+    assert result["raw_usage"] == [first, unavailable, second, holder]
+    assert result["dated_rate_card_equivalent"] == [
+        {"dispatch_id": row["dispatch"]["id"], "value": cost.rate_card_equivalent(row, [rate()])}
+        for row in [first, unavailable, second, holder]
+    ]
+    assert result["dated_rate_card_equivalent"][0]["value"]["amount"] == "0.14"
+    assert result["grouped_by_stage_and_vendor"] == [
+        {"stage": "build", "vendor": "codex", "attempts": 2},
+        {"stage": "floor", "vendor": "codex", "attempts": 1},
+        {"stage": "holder-close", "vendor": "codex", "attempts": 1},
+    ]
+    assert result["bill_plan_status"] == cost.bill_plan_status(
+        [first, unavailable, second, holder], report_inputs["terms_path"], report_inputs["gauges_path"],
+    )
+    assert result["skipped_records"] == []
+
+
+def test_subprocess_cli_renders_mixed_store_and_leaves_bundle_bytes_unchanged(report_inputs):
+    write_bundle(report_inputs, "a-target")
+    write_bundle(report_inputs, "b-target-gap", completion=b"")
+    request_path, skipped_path, _ = write_bundle(report_inputs, "c-unattributable", completion=b"{")
+    request_path.unlink()
+    write_bundle(report_inputs, "d-foreign", work="other/widget#12", completion=b"")
+    write_bundle(report_inputs, "e-bare", work="12", completion=b"")
+    store = report_inputs["dispatch_root"]
+    before = {path.relative_to(store): path.read_bytes() for path in store.rglob("*") if path.is_file()}
+    completed = report_cli(report_inputs)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    result = json.loads(completed.stdout)
+    assert result == cost.report(**report_inputs)
+    assert len(result["raw_usage"]) == 2
+    assert [row["path"] for row in result["skipped_records"]] == [str(skipped_path)]
+    assert {path.relative_to(store): path.read_bytes() for path in store.rglob("*") if path.is_file()} == before
+
+
+def test_unknown_dispatch_alone_does_not_create_bill_plan_vendor(report_inputs):
+    write_bundle(report_inputs, "gap", completion=b"")
+    result = cost.report(**report_inputs)
+    assert len(result["raw_usage"]) == 1
+    assert result["bill_plan_status"] == []
+    assert result["dated_rate_card_equivalent"][0]["value"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("input_key,diagnostic", [
+    ("rates_path", "cannot read rate card"), ("terms_path", "cannot read plan terms"),
+    ("holder_path", "cannot read JSON lines"), ("gauges_path", "cannot read JSON lines"),
+])
+def test_invalid_non_dispatch_inputs_still_fail_cli(report_inputs, input_key, diagnostic):
+    write_bundle(report_inputs, "target")
+    write_bundle(report_inputs, "gap", completion=b"")
+    report_inputs[input_key].write_bytes(b"{")
+    completed = report_cli(report_inputs)
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert f"change-cost: {diagnostic}: {report_inputs[input_key]}" in completed.stderr
+
+
+def test_missing_rate_card_remains_a_cli_failure(report_inputs):
+    report_inputs["rates_path"].unlink()
+    completed = report_cli(report_inputs)
+    assert completed.returncode == 1 and completed.stdout == ""
+    assert "change-cost:" in completed.stderr
 
 
 def test_shipped_rate_card_prices_recorded_claude_classes_and_leaves_unknown_model():
