@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "dispatch_id": "92aa0a262e6e4876b783d8f86be4e3c2",
+  "completed_at": "2026-09-28T05:56:29.529130+00:00",
+  "attempts": [
+    {
+      "vendor": "codex",
+      "observed": {
+        "source": "turn.completed.usage",
+        "raw": [
+          {
+            "input_tokens": 28316157,
+            "cached_input_tokens": 27702784,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 97184,
+            "reasoning_output_tokens": 30727
+          }
+        ],
+        "normalized": {
+          "scope": "invocation",
+          "input_tokens": 28316157,
+          "cached_input_tokens": 27702784,
+          "output_tokens": 97184,
+          "reasoning_output_tokens": 30727
+        },
+        "normalized_unavailable_reason": null,
+        "additional_native_classes": {
+          "cache_write_input_tokens": 0
+        },
+        "reported_models": [],
+        "reported_models_unavailable_reason": "runtime returned no model identifier",
+        "reported_effort": null,
+        "reported_effort_unavailable_reason": "runtime returned no effort field",
+        "thread_ids": [
+          "01a0e660-efbf-7a90-9324-45508d3f4625"
+        ],
+        "turn_ids": [],
+        "stream_valid": true,
+        "turn_completed": true,
+        "turn_failed_count": 0,
+        "recovered_error_count": 0,
+        "session_id": "01a0e660-efbf-7a90-9324-45508d3f4625",
+        "session_id_source": "codex JSONL thread.started.thread_id"
+      },
+      "usage": {
+        "change": {
+          "repository": "Grimblaz-and-Friends/Organizations-of-Verra",
+          "issue": 440,
+          "unknown_reason": null
+        },
+        "dispatch": {
+          "id": "92aa0a262e6e4876b783d8f86be4e3c2",
+          "requested_vendor": "codex",
+          "actual_vendor": "codex",
+          "stage": "build",
+          "continuity": "fresh",
+          "launched_at": "2026-09-28T04:58:27.294543+00:00",
+          "completed_at": "2026-09-28T05:56:29.529130+00:00",
+          "staffing_status": "qualified"
+        },
+        "model": {
+          "requested": "gpt-5.6-sol",
+          "reported": [],
+          "reported_unknown_reason": "runtime returned no model identifier"
+        },
+        "tokens": {
+          "input": 28316157,
+          "cached_input": 27702784,
+          "output": 97184,
+          "reasoning_output": 30727
+        },
+        "tokens_unknown_reason": null,
+        "additional_native_classes": {
+          "cache_write_input_tokens": 0
+        },
+        "scope": "invocation",
+        "source_field": "turn.completed.usage",
+        "raw_source": "fixture.stdout.log",
+        "runtime_version": "codex-cli 0.155.0-alpha.16",
+        "runtime_version_unknown_reason": null
+      }
+    }
+  ]
+}

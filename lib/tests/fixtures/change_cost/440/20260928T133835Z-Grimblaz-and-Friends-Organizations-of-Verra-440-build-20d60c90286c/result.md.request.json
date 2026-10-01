@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "dispatch_id": "8c1ce0c713ab49abb277b46f5fd4732a",
+  "work": "Grimblaz-and-Friends/Organizations-of-Verra#440",
+  "stage": "build",
+  "launched_at": "2026-09-28T13:38:35.991727+00:00",
+  "runtime_version": "codex-cli 0.155.0-alpha.16",
+  "requested": {
+    "vendor": "codex",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "continuity": "resume",
+    "session_id": "01a0e660-efbf-7a90-9324-45508d3f4625"
+  }
+}

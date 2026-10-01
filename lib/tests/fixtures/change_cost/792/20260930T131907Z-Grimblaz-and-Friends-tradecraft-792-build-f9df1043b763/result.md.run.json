@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "dispatch_id": "2aa575ad54624d5dae7645f77a580924",
+  "completed_at": "2026-09-30T13:24:51.440693+00:00",
+  "attempts": [
+    {
+      "vendor": "codex",
+      "observed": {
+        "source": "turn.completed.usage",
+        "raw": [
+          {
+            "input_tokens": 8948225,
+            "cached_input_tokens": 8718720,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 56857,
+            "reasoning_output_tokens": 21279
+          }
+        ],
+        "normalized": null,
+        "normalized_unavailable_reason": "resume usage scope is not established for this runtime version",
+        "additional_native_classes": {
+          "cache_write_input_tokens": 0
+        },
+        "reported_models": [],
+        "reported_models_unavailable_reason": "runtime returned no model identifier",
+        "reported_effort": null,
+        "reported_effort_unavailable_reason": "runtime returned no effort field",
+        "thread_ids": [
+          "01a0f245-3460-7773-a82e-547664f11d75"
+        ],
+        "turn_ids": [],
+        "stream_valid": true,
+        "turn_completed": true,
+        "turn_failed_count": 0,
+        "recovered_error_count": 0,
+        "session_id": "01a0f245-3460-7773-a82e-547664f11d75",
+        "session_id_source": "codex JSONL thread.started.thread_id"
+      },
+      "usage": {
+        "change": {
+          "repository": "Grimblaz-and-Friends/tradecraft",
+          "issue": 792,
+          "unknown_reason": null
+        },
+        "dispatch": {
+          "id": "2aa575ad54624d5dae7645f77a580924",
+          "requested_vendor": "codex",
+          "actual_vendor": "codex",
+          "stage": "build",
+          "continuity": "resume",
+          "launched_at": "2026-09-30T13:19:07.654477+00:00",
+          "completed_at": "2026-09-30T13:24:51.440693+00:00",
+          "staffing_status": "qualified"
+        },
+        "model": {
+          "requested": "gpt-6.1-sol",
+          "reported": [],
+          "reported_unknown_reason": "runtime returned no model identifier"
+        },
+        "tokens": null,
+        "tokens_unknown_reason": "resume usage scope is not established for this runtime version",
+        "additional_native_classes": {
+          "cache_write_input_tokens": 0
+        },
+        "scope": "unknown",
+        "source_field": "turn.completed.usage",
+        "raw_source": "fixture.stdout.log",
+        "runtime_version": "codex-cli 0.159.2",
+        "runtime_version_unknown_reason": null
+      }
+    }
+  ]
+}

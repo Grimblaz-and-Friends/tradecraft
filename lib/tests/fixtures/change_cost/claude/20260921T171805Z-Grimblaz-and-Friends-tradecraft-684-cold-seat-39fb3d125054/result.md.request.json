@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "dispatch_id": "4b12826f7c38498d8a036d6dc2fe27de",
+  "work": "Grimblaz-and-Friends/tradecraft#684",
+  "stage": "cold-seat",
+  "launched_at": "2026-09-21T17:18:05.703114+00:00",
+  "requested": {
+    "vendor": "claude",
+    "model": "opus",
+    "effort": "max",
+    "continuity": "fresh",
+    "session_id": null
+  }
+}

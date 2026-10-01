@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "dispatch_id": "d7da67aeb35648e3ad273ccad7508e38",
+  "work": "Grimblaz-and-Friends/tradecraft#792",
+  "stage": "build",
+  "launched_at": "2026-09-30T13:12:56.301615+00:00",
+  "runtime_version": "codex-cli 0.159.2",
+  "requested": {
+    "vendor": "codex",
+    "model": "gpt-6.1-sol",
+    "effort": "xhigh",
+    "continuity": "resume",
+    "session_id": "01a0f245-3460-7773-a82e-547664f11d75"
+  }
+}
