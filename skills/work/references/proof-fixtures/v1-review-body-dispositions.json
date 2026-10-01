@@ -3729,6 +3729,43 @@
         "unidentified_reviews": [],
         "ignored_authors": []
       }
+    },
+    {
+      "name": "section-without-count-missing-entry-other-reviewer",
+      "repository": "example/product",
+      "pull_request": 7,
+      "connected_reviewers": [
+        "coderabbitai[bot]",
+        "github-actions[bot]",
+        "review-bot"
+      ],
+      "marker_producers": [
+        "holder"
+      ],
+      "reviews": [
+        {
+          "id": 100,
+          "user": {
+            "login": "review-bot"
+          },
+          "state": "COMMENTED",
+          "body": "## Findings\n- First\n- Second",
+          "html_url": "https://github.com/example/product/pull/7#pullrequestreview-100",
+          "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "inline_comments": [],
+      "conversation_comments": [],
+      "expected": {
+        "missing_findings": [],
+        "missing_reviews": [
+          100
+        ],
+        "unidentified_reviews": [
+          100
+        ],
+        "ignored_authors": []
+      }
     }
   ]
 }
