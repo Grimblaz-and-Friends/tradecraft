@@ -30,8 +30,8 @@ def git(root, *arguments):
 def primary_template(tmp_path_factory):
     """The primary repository below, built once and copied per test.
 
-    Three `git` launches make it, and on Windows each costs an order of
-    magnitude more than the copy that reproduces it. Nothing is shared between
+    The `git` launches that build and check it cost an order of magnitude more
+    on Windows than the copy that reproduces it. Nothing is shared between
     tests as a result: each still gets its own primary, byte-identical and
     observable by nothing else. A repository with one ordinary commit records
     no absolute path, so the copy is valid wherever it lands.
@@ -45,6 +45,7 @@ def primary_template(tmp_path_factory):
     git(template, "init")
     (template / "fixture.txt").write_bytes(b"fixture\n")
     git(template, "add", "fixture.txt")
+    assert git(template, "config", "--bool", "maintenance.auto").stdout.strip() == b"false"
     git(template, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
         "commit", "-m", "fixture")
     return template
@@ -94,6 +95,16 @@ def record(args):
 
 def seen(args, vendor):
     return json.loads((args.root / f"seen-{vendor}.json").read_bytes())
+
+
+def test_git_with_rebuilt_launcher_environment_has_maintenance_disabled(job):
+    args, _ = job
+    result = subprocess.run(
+        ["git", "-C", str(args.root), "config", "--bool", "--show-origin", "maintenance.auto"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=seat.git_environment(), check=True,
+    )
+    assert result.stdout.strip() == b"command line:\tfalse"
 
 
 @pytest.mark.parametrize(("vendor", "required_capability"), [
@@ -964,8 +975,12 @@ def test_relocated_library_has_no_repository_dependency(tmp_path):
     assert help_run.returncode == 0
     assert b"--own-vendor" in help_run.stdout
     assert b"--requires {read,execute}" in help_run.stdout
+    env = os.environ.copy()
+    # The installed suite must supply its own maintenance setting rather than
+    # borrow this session's override or the repository's root conftest.
+    env["GIT_CONFIG_COUNT"] = "0"
     suite = subprocess.run([sys.executable, "-m", "pytest", str(copied / "tests"), "-q", "-k", "not relocated"],
-                           cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True)
+                           cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, env=env)
     assert suite.returncode == 0, suite.stdout.decode(errors="replace") + suite.stderr.decode(errors="replace")
 
 
@@ -1063,17 +1078,18 @@ def test_fallback_cannot_read_discarded_transcript_but_caller_can(job, monkeypat
 def test_timeout_stops_a_started_descendant(job, monkeypatch):
     args, _ = job
     child = args.root / "child.py"
-    child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(2)\nPath('finished').write_bytes(b'yes')\n")
-    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(5)"
+    child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(6)\nPath('finished').write_bytes(b'yes')\n")
+    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(10)"
     monkeypatch.setattr(seat, "resolve_command", lambda *a: [sys.executable, "-c", wrapper, str(child)])
-    args.timeout_seconds = 1
+    args.timeout_seconds = 5
     started = time.monotonic()
     assert seat.run_dispatch(args) == 1
     elapsed = time.monotonic() - started
     assert (args.root / "started").exists(), "The descendant must actually start before cancellation."
-    time.sleep(max(0, 2.3 - elapsed))
+    survival_check_at = (args.root / "started").stat().st_mtime + 6.3
+    time.sleep(max(0, survival_check_at - time.time()))
     assert not (args.root / "finished").exists(), "The descendant continued after the deadline."
-    assert elapsed < 2, "Pipe-owning descendants delayed timeout cleanup."
+    assert elapsed < args.timeout_seconds + 1, "Pipe-owning descendants delayed timeout cleanup."
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
 
