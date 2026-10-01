@@ -94,8 +94,8 @@ A holder reading counts only after the latest effective settlement. A newer draf
 
 - **Exact form:** `<!-- tradecraft:model-override:v1 [ROLE=VENDOR:MODEL:EFFORT ...] -->`, where each bracketed role attribute is optional and may appear at most once.
 - **Attributes and lawful values:** the lawful role attributes are `artifact_author`, `implementer`, `ordinary_seat`, `cold_seat`, `terminal_seat`, and `use_consumer`, corresponding to the artifact author, builder, and judging roles. Each present value is one complete `VENDOR:MODEL:EFFORT` triple; `VENDOR` is `codex` or `claude`, and `MODEL` and `EFFORT` are nonempty values containing no whitespace or colon. Unknown or duplicate attributes and malformed triples are invalid.
-- **Whole-line precedence:** the latest lawful line is the entire current override choice and replaces every earlier line rather than merging with it. A missing implementer role uses the machine vendor and that role's profile; a missing judging role uses its launcher default. A lawful line with no role attributes clears all earlier entries.
-- **Producer, surface, moment:** a configured marker producer, in an issue comment on the work, after the owner gives the choice and before a launch it is to govern. Absence of a role on the latest lawful line means the named launcher's standing default, not an inferred choice from prose.
+- **Whole-line precedence:** the latest lawful line is the entire current override choice and replaces every earlier line rather than merging with it. A missing implementer role uses the machine vendor and that role's profile; a missing judging role uses default resolution, including an applicable machine-local ruling bridge. A lawful line with no role attributes clears all earlier entries.
+- **Producer, surface, moment:** a configured marker producer, in an issue comment on the work, after the owner gives the choice and before a launch it is to govern. Absence of a role on the latest lawful line means default resolution under `launch-settings.md`, not an inferred choice from prose.
 
 An example choice, ordinary seats at `high`, cold and terminal seats at `xhigh` and use consumers at `max`, is one line:
 
@@ -103,7 +103,7 @@ An example choice, ordinary seats at `high`, cold and terminal seats at `xhigh` 
 <!-- tradecraft:model-override:v1 ordinary_seat=claude:claude-opus-5-5:high cold_seat=claude:claude-opus-5-5:xhigh terminal_seat=claude:claude-opus-5-5:xhigh use_consumer=claude:claude-opus-5-5:max -->
 ```
 
-A later bare line returns every role to its standing default:
+A later bare line returns every role to default resolution:
 
 ```text
 <!-- tradecraft:model-override:v1 -->
