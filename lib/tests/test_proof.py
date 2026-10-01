@@ -155,3 +155,23 @@ def test_shipped_positive_fixture_is_canonical_and_negative_cases_name_rejection
                 proof.validate(candidate)
         else:
             assert proof.validate(candidate) == candidate
+
+
+def test_shared_actions_receipt_facts_need_no_new_proof_fields():
+    references = LIB.parent / "skills" / "work" / "references" / "proof-fixtures"
+    if not references.exists():
+        pytest.skip("proof fixtures are outside a relocated lib-only installation")
+    valid = json.loads((references / "v1-valid.json").read_bytes())
+    cases = json.loads((references / "v1-actions-receipts.json").read_bytes())
+    candidate = deepcopy(valid)
+    candidate.update(cases["document_patch"])
+    assert proof.validate(candidate) == candidate
+    assert candidate["reviewers"][0]["source"]["kind"] == "review"
+    assert set(candidate) == set(valid)
+    assert {case["result"] for case in cases["cases"]} == {"present", "missing"}
+    assert {case["name"] for case in cases["cases"]} >= {
+        "canonical-existing-review", "earlier-success-on-later-page",
+        "pull-request-event-refused",
+        "wrong-run-repository", "other-workflow", "wrong-review-commit",
+        "only-report-success", "missing-jobs-page",
+    }
