@@ -23,7 +23,7 @@ The [issue's case against the switch](https://github.com/Grimblaz-and-Friends/tr
 
 The owner's [2026-09-30 ruling, recorded by the Steward](https://github.com/Grimblaz-and-Friends/tradecraft/issues/737#issuecomment-5920638420), and the [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/804#issuecomment-5922007389) select `gpt-6.1-sol` at `xhigh` as the standing Codex artifact author. The default carries the ruled choice so holders need no author override to obtain it. The ruling also closes the author comparison series and requires no further comparison instance on #798.
 
-This supersedes D-786's artifact-author line. D-786 stays as written as the historical record. Its builder profile, the Claude author profile, judging-seat settings, model-override grammar and machine-local ruling bridge retain their existing choices. The release identifier for this change is `0.164.0` in `.claude-plugin/plugin.json`.
+This supersedes D-786's artifact-author line. D-786 stays as written as the historical record. Its builder profile, the Claude author profile, judging-seat settings, model-override grammar and machine-local ruling bridge retain their existing choices. The release identifier for this change is `0.165.0` in `.claude-plugin/plugin.json`.
 
 ## Evidence
 
