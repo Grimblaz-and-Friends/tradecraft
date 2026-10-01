@@ -27,7 +27,7 @@ def persist(cwd, *args):
     return run([sys.executable, str(SCRIPT), *args], cwd=cwd)
 
 
-# A bare origin plus a seeded clone costs eight `git` launches and comes out
+# A bare origin plus a checked seeded clone costs nine `git` launches and comes out
 # identical every time, so it is built once per module and copied per test. On
 # Windows a launch costs an order of magnitude more than the copy. The one thing
 # a copy cannot carry is the clone's `remote.origin.url`, which holds the
@@ -56,6 +56,7 @@ def _seed_repository(tmp_path_factory):
     (work / "README.md").write_text("seed\n", encoding="utf-8")
     (work / "unrelated.txt").write_bytes(b"seed unrelated\n")
     run(["git", "add", "README.md", "unrelated.txt"], cwd=work)
+    assert value(work, "config", "--bool", "maintenance.auto") == "false"
     run(["git", "commit", "-m", "seed commit"], cwd=work)
     run(["git", "push", "-u", "origin", "main"], cwd=work)
     _SEED = seed

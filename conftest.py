@@ -1,2 +1,2 @@
-"""Use the shipped tests' machine isolation for every repository suite."""
-from lib.tests.conftest import isolated_machine_home
+"""Use the shipped tests' isolation for every repository suite."""
+from lib.tests.conftest import disabled_git_maintenance, isolated_machine_home
