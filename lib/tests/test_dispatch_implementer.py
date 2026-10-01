@@ -58,6 +58,8 @@ def artifact_text(kind="exact"):
     text = brief + ARTIFACT_BODY
     if kind == "leading-whitespace":
         text = " \n\t\n  " + text
+    if kind == "long-preamble":
+        text = "Introductory prose.\n" * 80 + text
     return text.replace("\n", "\r\n") if kind in {"crlf", "combined"} else text
 
 
@@ -684,9 +686,8 @@ def test_direct_ruling_launch_prints_before_process_and_retains_source(job, monk
     "<!-- tradecraft:affirmed-brief:v1 --> " + "Fetch the document from /tmp/artifact.md. " * 50,
     "<!-- tradecraft:affirmed-brief:v1 -->",
     "# Implementation brief - the author returns the design inline",
-    "Introductory prose.\n" * 80 + artifact_text(),
 ], ids=["windows-path", "unix-path", "pointer", "file-link", "long-pointer",
-        "marker-only", "title-only", "later-brief"])
+        "marker-only", "title-only"])
 def test_artifact_pointer_return_fails_with_retained_native_evidence(job, monkeypatch, capsys, vendor, text):
     args, scenario = job
     args.stage, args.vendor = "artifact", vendor
@@ -734,11 +735,12 @@ def test_artifact_review_tolerates_preface_short_drift_and_omitted_comment(brief
     assert implementer.artifact_opening_carries_brief(brief, returned)
 
 
-def test_artifact_review_search_has_a_fixed_leading_bound():
+@pytest.mark.parametrize("repetitions", [80, 800])
+def test_artifact_review_searches_the_whole_return(repetitions):
+    preamble = "Introductory prose.\n" * repetitions
+    assert len(" ".join(preamble.split())) > 1024
     assert implementer.artifact_opening_carries_brief(
-        ARTIFACT_BRIEF, "x " * 512 + artifact_text())
-    assert not implementer.artifact_opening_carries_brief(
-        ARTIFACT_BRIEF, "x " * 513 + artifact_text())
+        ARTIFACT_BRIEF, preamble + artifact_text("combined"))
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
@@ -784,7 +786,7 @@ def test_artifact_review_custom_dispatch_stays_exact_and_explains_missing_brief(
     assert implementer.run_implementer(args) == 1
     assert implementer.records.sidecar(args.output, ".dispatch.bin").read_bytes() == custom
     diagnostic = capsys.readouterr().err
-    assert "expected the affirmed brief" in diagnostic and "1024" in diagnostic
+    assert "expected the affirmed brief" in diagnostic and "anywhere in the return" in diagnostic
     assert "artifact body" in diagnostic
 
 
@@ -797,7 +799,7 @@ def test_artifact_review_body_requires_eight_prose_words():
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
-@pytest.mark.parametrize("kind", ["exact", "blockquote", "crlf", "corrupted", "combined", "leading-whitespace"])
+@pytest.mark.parametrize("kind", ["exact", "blockquote", "crlf", "corrupted", "combined", "leading-whitespace", "long-preamble"])
 def test_artifact_inline_return_passes_and_retains_exact_sources(job, monkeypatch, vendor, kind):
     args, scenario = job
     args.stage, args.vendor = "artifact", vendor

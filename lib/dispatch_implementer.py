@@ -148,11 +148,9 @@ def _thread_id(events: list[dict[str, object]], stderr: bytes) -> tuple[str | No
     return (match.group(1), "codex stderr session id header") if match else (None, "")
 
 
-ARTIFACT_LEADING_CHARS = 1024
 ARTIFACT_BODY_WORDS = 8
 ARTIFACT_RETURN_REQUIREMENT = (
-    f"expected the affirmed brief starting within the first {ARTIFACT_LEADING_CHARS} "
-    "normalized characters and an artifact body after it with at least "
+    "expected the affirmed brief anywhere in the return and an artifact body after it with at least "
     f"{ARTIFACT_BODY_WORDS} non-location words"
 )
 
@@ -181,7 +179,7 @@ def _artifact_body_present(tail: str) -> bool:
 
 
 def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
-    """Recognize a leading brief and body, leaving fidelity and quality to the holder."""
+    """Recognize a brief and following body anywhere, leaving fidelity and quality to the holder."""
     def normalize(text: str) -> str:
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         unquoted = "\n".join(re.sub(r"^\s*(?:>\s*)+", "", line) for line in lines)
@@ -203,11 +201,7 @@ def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
     brief = " ".join(words)
     anchor_size = min(8, len(words))
     anchor = " ".join(words[:anchor_size])
-    offset = 0
     for start in range(len(tokens) - len(words) + 1):
-        if offset > ARTIFACT_LEADING_CHARS:
-            break
-        offset += len(tokens[start].group()) + 1
         candidate = [token.group() for token in tokens[start:start + len(words)]]
         if close(anchor, " ".join(candidate[:anchor_size])) and close(brief, " ".join(candidate)):
             tail = text[tokens[start + len(words) - 1].end():]
