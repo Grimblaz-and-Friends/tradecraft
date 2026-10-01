@@ -30,6 +30,7 @@ import launch_settings as setting_resolution
 from launch_settings import LaunchSettings
 import proof as proof_document
 import recipient_tree
+import review_findings
 import vendor_cli
 from winio import utf8_stdio
 
@@ -2560,7 +2561,35 @@ def _ignored_marker_suffix(state: WorkState) -> str:
 
 def _ignored_disposition_suffix(state: WorkState) -> str:
     _missing, authors = _undisposed_threads(state)
+    authors = sorted(set(authors) | set(_body_findings(state).ignored_authors))
     return f";ignored-disposition-from={','.join(authors)}" if authors else ""
+
+
+def _body_findings(state: WorkState) -> review_findings.Classification:
+    number = state.pr.get("number") if state.pr else None
+    return review_findings.classify(
+        state.repo, number if isinstance(number, int) else 0,
+        [review for review in state.reviews if not _review_notice(str(review.get("body") or ""))],
+        state.review_comments, state.pr_comments,
+        state.config.connected_reviewers, state.config.marker_producers, _disposition,
+    )
+
+
+def _body_disposition_detail(state: WorkState, bodies: review_findings.Classification) -> str:
+    assert state.pr is not None
+    details = [
+        f"{finding.reviewer} {finding.identity}: "
+        + ", ".join(review_findings.review_url(state.repo, state.pr["number"], source)
+                    for source in finding.sources)
+        for finding in bodies.missing_findings
+    ]
+    details.extend(
+        "unidentified: "
+        + review_findings.review_url(state.repo, state.pr["number"], item.review)
+        + " (" + "; ".join(item.reasons) + ")"
+        for item in bodies.missing_reviews
+    )
+    return "; ".join(details)
 
 
 def _ignored_product_incident_suffix(state: WorkState) -> str:
@@ -2704,6 +2733,12 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
         return result(
             "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
             ",".join(str(identity) for identity in threads),
+        )
+    bodies = _body_findings(state)
+    if bodies.missing_findings or bodies.missing_reviews:
+        return result(
+            "review-disposition", True, "resume", "reviewer-body-lacks-disposition",
+            _body_disposition_detail(state, bodies),
         )
     panel_stage = _panel_next(state, lane)
     if panel_stage:
@@ -3876,6 +3911,20 @@ def _proof_diagnostics(state: WorkState, floor: Marker | None,
                 "message": f"review thread {disposition['thread_id']} has no authorized disposition",
                 "source": disposition["source"],
             })
+    bodies = _body_findings(state)
+    for finding in bodies.missing_findings:
+        diagnostics.append({
+            "code": "body-disposition-missing",
+            "message": f"body finding {finding.identity} has no authorized disposition",
+            "source": _public_source(state, finding.sources[0], "review"),
+        })
+    for item in bodies.missing_reviews:
+        diagnostics.append({
+            "code": "unidentified-review-disposition-missing",
+            "message": f"unidentified review {item.review['id']} has no authorized disposition: "
+            + "; ".join(item.reasons),
+            "source": _public_source(state, item.review, "review"),
+        })
     return diagnostics
 
 
@@ -4986,6 +5035,30 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 ),
             }
         payload = report.as_dict()
+        threads, ignored = _undisposed_threads(state)
+        bodies = _body_findings(state)
+        payload["review_dispositions"] = {
+            "complete": not (threads or bodies.missing_findings or bodies.missing_reviews),
+            "unanswered_threads": threads,
+            "unanswered_body_findings": [
+                {"reviewer": item.reviewer, "identity": item.identity,
+                 "sources": [review_findings.review_url(state.repo, state.pr["number"], source)
+                             for source in item.sources]}
+                for item in bodies.missing_findings
+            ],
+            "unanswered_unidentified_reviews": [
+                review_findings.review_url(state.repo, state.pr["number"], item.review)
+                for item in bodies.missing_reviews
+            ],
+            "ignored_authors": sorted(set(ignored) | set(bodies.ignored_authors)),
+        }
+        if not payload["review_dispositions"]["complete"]:
+            payload["detail"] = (
+                "Connected-reviewer answers are incomplete; the gate verdict does not "
+                "establish release readiness. Report the unanswered obligations: "
+                + (",".join(str(identity) for identity in threads) + "; " if threads else "")
+                + _body_disposition_detail(state, bodies)
+            )
         payload.update({
             "required_gate": required_gate,
             "path_departures": path_departures,

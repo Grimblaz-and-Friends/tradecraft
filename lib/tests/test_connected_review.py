@@ -1097,6 +1097,31 @@ def test_live_default_runs_one_high_finder_and_publishes_validated_deduplicated_
     assert "checker=" not in posts[0]["body"]
 
 
+@pytest.mark.parametrize("inline_flags", [[], [True], [False], [True, False, False]])
+def test_payload_body_identities_preserve_location_and_accounting(inline_flags):
+    import review_findings
+    import work
+    survivors = [candidate(id=f"candidate-{index}", path="real.py", line=99 + index,
+                            inline=inline) for index, inline in enumerate(inline_flags)]
+    payload = cr.review_payload(survivors, HEAD, "91", {"input_tokens": 1})
+    review = {"id": 100, "state": "COMMENTED", "body": payload["body"],
+              "user": {"login": "github-actions[bot]"}}
+    roots = [{**row, "id": index + 10, "pull_request_review_id": 100,
+              "user": review["user"]} for index, row in enumerate(payload["comments"])]
+    result = review_findings.classify("example/product", 7, [review], roots, [],
+        ["github-actions[bot]"], ["holder"], work._disposition)
+    body_survivors = [row for row in survivors if not row["inline"]]
+    expected = [f"tradecraft-review-finding:v1:91:{index}"
+                for index in range(1, len(body_survivors) + 1)]
+    assert [row.identity for row in result.findings] == expected
+    assert not result.unidentified_reviews
+    for row, identity in zip(body_survivors, expected):
+        assert f"`{row['path']}:{row['line']}`" in payload["body"]
+        assert payload["body"].count(f"<!-- {identity} -->") == 1
+    assert payload["body"].splitlines()[-1] == "<!-- connected-review-attempt:91 -->"
+    assert len(payload["comments"]) == sum(inline_flags)
+
+
 def test_review_payload_is_one_completed_review_for_clean_or_survivor():
     clean = cr.review_payload([], HEAD, "91", {})
     assert clean["event"] == "COMMENT"

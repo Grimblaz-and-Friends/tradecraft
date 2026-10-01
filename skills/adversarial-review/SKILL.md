@@ -11,7 +11,7 @@ description: Adversarial review of an artifact against its stated purpose — a 
 
 **No panel, defense or judge runs unless the owner asks for one on the pull request.** The ask buys the panel; nothing else has to be settled. Once bought, it runs exactly as the rest of this cell states, and no row is appended to an index.
 
-Every connected reviewer fires once per pull request, when it is marked ready. Every comment is disposed in its thread by a fix or a one-line reply; nothing is recorded elsewhere. The trigger, the disposition words and the copy-whole configuration blocks are in `references/connected-reviewers.md`.
+Every connected reviewer fires once per pull request, when it is marked ready. Every finding receives its own disposition: inline findings in their threads, body findings and unidentified reviews in individual conversation comments. The trigger, answer contract and copy-whole configuration blocks are in `references/connected-reviewers.md`.
 
 **Pause discipline: typed-halt.** From first dispatch to final ruling the pipeline is atomic — no owner questions mid-run, no interim fixes, no edits to the artifact under review. A finding that needs an owner decision is surfaced in the final report as exactly that, argued.
 
