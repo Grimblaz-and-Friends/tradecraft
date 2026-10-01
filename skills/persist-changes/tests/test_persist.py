@@ -27,8 +27,8 @@ def persist(cwd, *args):
     return run([sys.executable, str(SCRIPT), *args], cwd=cwd)
 
 
-# A bare origin plus a checked seeded clone costs nine `git` launches and comes out
-# identical every time, so it is built once per module and copied per test. On
+# Building and checking a bare origin plus a seeded clone produces identical
+# content every time, so it is built once per module and copied per test. On
 # Windows a launch costs an order of magnitude more than the copy. The one thing
 # a copy cannot carry is the clone's `remote.origin.url`, which holds the
 # template's absolute path: left alone, every test would push into the template's

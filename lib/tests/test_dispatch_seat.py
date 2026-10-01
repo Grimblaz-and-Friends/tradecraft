@@ -30,8 +30,8 @@ def git(root, *arguments):
 def primary_template(tmp_path_factory):
     """The primary repository below, built once and copied per test.
 
-    Four `git` launches build and check it, and on Windows each costs an order of
-    magnitude more than the copy that reproduces it. Nothing is shared between
+    The `git` launches that build and check it cost an order of magnitude more
+    on Windows than the copy that reproduces it. Nothing is shared between
     tests as a result: each still gets its own primary, byte-identical and
     observable by nothing else. A repository with one ordinary commit records
     no absolute path, so the copy is valid wherever it lands.
