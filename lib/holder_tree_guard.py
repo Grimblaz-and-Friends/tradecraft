@@ -2,6 +2,7 @@
 """Refuse holder writes under a registered implementation worktree."""
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -104,8 +105,8 @@ NESTED_SHELL_FLAGS = {
 POSIX_NESTED_SHELLS = {"bash", "sh", "zsh"}
 POSIX_NESTED_OPTION_CHARS = frozenset("celx")
 NESTED_BODY_DENIAL = (
-    "holder shell write denied: nested command body cannot be identified "
-    "or cannot be split"
+    "holder shell command denied for registered implementation trees: cannot prove "
+    "command read-only because nested command body cannot be identified or cannot be split"
 )
 DIRECTORY_COMMANDS = {"cd", "chdir", "pushd", "set-location"}
 SHELL_EFFECT = re.compile(r"(?:^|\s)(?:>|>>|<|2>|&>|tee\b|set-content\b|add-content\b|out-file\b)", re.I)
@@ -391,17 +392,42 @@ def _read_only_command(executable: str, words: list[str]) -> bool:
     )
 
 
-def _read_only_shell(command: str) -> bool:
+def _simple_command_words(command: str) -> list[str] | None:
     stripped = command.strip()
     if not stripped or SHELL_EFFECT.search(stripped) or NESTED_OR_CHAINED.search(stripped):
-        return False
-    words = _command_words(stripped)
+        return None
+    return _command_words(stripped)
+
+
+def _read_only_shell(command: str) -> bool:
+    words = _simple_command_words(command)
     if not words:
         return False
     executable = _executable_name(words[0])
     if executable == "git":
         return _read_only_git(words)
     return _read_only_command(executable, words)
+
+
+def _read_only_git_missing_guards(command: str) -> tuple[str, ...]:
+    words = _simple_command_words(command)
+    if not words or _executable_name(words[0]) != "git":
+        return ()
+    missing = _missing_git_helper_guards(words)
+    located = _git_subcommand(words)
+    if not missing or located is None:
+        return ()
+    index, _subcommand = located
+    guarded = words[:index + 1] + list(missing) + words[index + 1:]
+    return missing if _read_only_git(guarded) else ()
+
+
+def _unproved_shell_reason(command: str, boundary: str, *, helper_hints: bool = True) -> str:
+    reason = f"holder shell command denied for {boundary}: cannot prove command read-only"
+    missing = _read_only_git_missing_guards(command) if helper_hints else ()
+    if missing:
+        reason += "; add " + " and ".join(missing)
+    return reason
 
 
 def _nested_shell_body(words: list[str]) -> tuple[bool, str | None]:
@@ -458,15 +484,19 @@ def _matches_root(paths: list[Path], roots: list[Path]) -> bool:
     return any(contains(root, path) for root in roots for path in paths)
 
 
-def _shell_decision(command: str, cwd: Path, roots: list[Path], depth: int = 0) -> str | None:
+def _shell_decision(command: str, cwd: Path, roots: list[Path], depth: int = 0,
+                    *, helper_hints: bool = True) -> str | None:
     if depth > 12:
-        return "holder shell write denied: nested command depth cannot be proved safe"
+        return (
+            "holder shell command denied for registered implementation trees: cannot prove "
+            "command read-only because nested command depth exceeds the guard limit"
+        )
     words = _command_words(command)
     if words is None:
         if NESTED_SHELL_TEXT.search(command):
             return NESTED_BODY_DENIAL
         if _matches_root(_command_paths(command, cwd), roots):
-            return "holder shell write denied under registered implementation root"
+            return _unproved_shell_reason(command, "registered implementation trees")
         return None
 
     is_nested, nested_body = _nested_shell_body(words)
@@ -475,7 +505,7 @@ def _shell_decision(command: str, cwd: Path, roots: list[Path], depth: int = 0) 
             return NESTED_BODY_DENIAL
         if _command_words(nested_body) is None or _split_commands(nested_body) is None:
             return NESTED_BODY_DENIAL
-        reason = _shell_decision(nested_body, cwd, roots, depth + 1)
+        reason = _shell_decision(nested_body, cwd, roots, depth + 1, helper_hints=False)
         if reason:
             return reason
         return None
@@ -484,23 +514,32 @@ def _shell_decision(command: str, cwd: Path, roots: list[Path], depth: int = 0) 
     if interpreter_text is not None:
         paths = _command_paths(interpreter_text, cwd) + _quoted_paths(interpreter_text, cwd)
         if _matches_root(paths, roots):
-            return "holder shell write denied: inline interpreter names an implementation root"
+            return (
+                "holder shell command denied for registered implementation trees: cannot prove "
+                "command read-only because inline interpreter names an implementation root"
+            )
 
     segments = _split_commands(command)
     if segments is None:
-        return "holder shell write denied: command sequence cannot be split"
+        return (
+            "holder shell command denied for registered implementation trees: cannot prove "
+            "command read-only because command sequence cannot be split"
+        )
     first_words = _command_words(segments[0]) or []
     if len(segments) > 1 or _directory_target(first_words, cwd) is not None:
         active_cwd = cwd
         for segment in segments:
             segment_words = _command_words(segment)
             if not segment_words:
-                return "holder shell write denied: command sequence cannot be split"
+                return (
+                    "holder shell command denied for registered implementation trees: cannot prove "
+                    "command read-only because command sequence cannot be split"
+                )
             target = _directory_target(segment_words, active_cwd)
             if target is not None:
                 active_cwd = target
                 continue
-            reason = _shell_decision(segment, active_cwd, roots, depth + 1)
+            reason = _shell_decision(segment, active_cwd, roots, depth + 1, helper_hints=False)
             if reason:
                 return reason
         return None
@@ -510,21 +549,127 @@ def _shell_decision(command: str, cwd: Path, roots: list[Path], depth: int = 0) 
     if not matched:
         matched = _matches_root(_command_paths(command, cwd), roots)
     if matched and not read_only:
-        missing = _missing_git_helper_guards(words)
-        if missing:
-            return "holder git read denied: add " + " and ".join(missing)
-        return "holder shell write denied under registered implementation root"
+        return _unproved_shell_reason(command, "registered implementation trees", helper_hints=helper_hints)
     return None
 
 
-def _registry_boundary() -> tuple[Path, Path]:
+def _machine_boundaries() -> tuple[Path, Path, Path]:
     registry = canonical(registry_path())
-    return registry, registry.parent
+    directory = registry.parent
+    return registry, canonical(directory / "implementer-vendor"), canonical(directory / "dispatches")
 
 
-def _shell_resolves_registry(command: str, cwd: Path) -> bool:
-    _registry, directory = _registry_boundary()
-    return any(contains(directory, path) for path in _command_paths(command, cwd))
+def _protected_files() -> tuple[tuple[Path, str], ...]:
+    registry, vendor, _dispatches = _machine_boundaries()
+    return (
+        (registry, "implementation worktree registry"),
+        (vendor, "machine vendor choice (implementer-vendor)"),
+    )
+
+
+def _protected_file_subject(target: Path) -> str | None:
+    for path, subject in _protected_files():
+        if path_key(target) == path_key(path):
+            return subject
+    return None
+
+
+def _shell_component_matches(pattern: str, name: str, powershell: bool) -> bool:
+    pieces = []
+    index = 0
+    while index < len(pattern):
+        character = pattern[index]
+        if character == "[":
+            end = index + 1
+            if end < len(pattern) and pattern[end] in {"!", "^"}:
+                end += 1
+            if end < len(pattern) and pattern[end] == "]":
+                end += 1
+            end = pattern.find("]", end)
+            if end != -1:
+                token = pattern[index:end + 1]
+                if powershell and token.startswith("[!"):
+                    token = "[" + token[2:-1] + "!]"
+                elif not powershell and token.startswith("[^"):
+                    token = "[!" + token[2:]
+                pieces.append(token)
+                index = end + 1
+                continue
+        # PowerShell's filesystem '?' can match zero or one character.
+        # NUL cannot be a pathname character; mark only unbracketed '?'.
+        pieces.append("\0" if powershell and character == "?" else character)
+        index += 1
+    expression = fnmatch.translate("".join(pieces)).replace("\0", ".?")
+    return re.fullmatch(expression, name) is not None
+
+
+def _shell_path_subject(target: Path, powershell: bool) -> str | None:
+    target_parts = Path(path_key(target)).parts
+    for path, subject in _protected_files():
+        if contains(target, path):
+            return subject
+        if not any(character in str(target) for character in "*?["):
+            continue
+        file_parts = Path(path_key(path)).parts
+        if len(target_parts) <= len(file_parts) and all(
+            _shell_component_matches(pattern, name, powershell)
+            for pattern, name in zip(target_parts, file_parts)
+        ):
+            return subject
+    return None
+
+
+def _machine_command_paths(command: str, cwd: Path) -> list[Path]:
+    found = _command_paths(command, cwd)
+    for token in (_command_words(command) or [])[1:]:
+        value = re.sub(r"^(?:\d*|&)>{1,2}", "", token.strip("(),"))
+        if value != token.strip("(),") and value:
+            try:
+                found.append(canonical(Path(value), cwd))
+            except OSError:
+                continue
+    return found
+
+
+def _machine_command_subject(command: str, cwd: Path, powershell: bool) -> str | None:
+    for path in _machine_command_paths(command, cwd):
+        subject = _shell_path_subject(path, powershell)
+        if subject:
+            return subject
+    return None
+
+
+def _shell_protected_file(command: str, cwd: Path, *, powershell: bool = False,
+                          depth: int = 0) -> str | None:
+    words = _command_words(command)
+    if words and depth <= 12:
+        is_nested, body = _nested_shell_body(words)
+        if is_nested and body:
+            executable = _executable_name(words[0])
+            nested_powershell = powershell
+            if executable in POSIX_NESTED_SHELLS or executable == "cmd":
+                nested_powershell = False
+            elif executable in {"pwsh", "powershell"}:
+                nested_powershell = True
+            return _shell_protected_file(body, cwd, powershell=nested_powershell, depth=depth + 1)
+        segments = _split_commands(command)
+        if segments is not None:
+            active_cwd = cwd
+            for segment in segments:
+                segment_words = _command_words(segment) or []
+                target = _directory_target(segment_words, active_cwd)
+                if target is not None:
+                    active_cwd = target
+                    continue
+                if len(segments) > 1:
+                    subject = _shell_protected_file(
+                        segment, active_cwd, powershell=powershell, depth=depth + 1)
+                else:
+                    subject = _machine_command_subject(segment, active_cwd, powershell)
+                if subject:
+                    return subject
+            return None
+    return _machine_command_subject(command, cwd, powershell)
 
 
 def decision(payload: dict[str, object], roots: list[Path]) -> str | None:
@@ -538,9 +683,12 @@ def decision(payload: dict[str, object], roots: list[Path]) -> str | None:
         if not isinstance(value, str) or not value:
             raise GuardError(f"{tool} input has no absolute target path")
         target = canonical(Path(value), cwd)
-        _registry, registry_directory = _registry_boundary()
-        if contains(registry_directory, target):
-            return "holder write denied: implementation worktree registry is not the holder's to edit"
+        subject = _protected_file_subject(target)
+        if subject:
+            return f"holder write denied: {subject} is not the holder's to edit"
+        _registry, _vendor, dispatches = _machine_boundaries()
+        if contains(dispatches, target):
+            return "holder write denied: dispatch store is not the holder's to edit"
         if any(contains(root, target) for root in roots):
             return f"holder write denied under registered implementation root: {target}"
         return None
@@ -549,11 +697,9 @@ def decision(payload: dict[str, object], roots: list[Path]) -> str | None:
         if not isinstance(command, str):
             raise GuardError(f"{tool} input has no command")
         read_only = _read_only_shell(command)
-        _registry, registry_directory = _registry_boundary()
-        if (not read_only and (
-                _shell_resolves_registry(command, cwd)
-                or contains(registry_directory, cwd))):
-            return "holder write denied: implementation worktree registry is not the holder's to edit"
+        subject = _shell_protected_file(command, cwd, powershell=tool == "PowerShell")
+        if not read_only and subject:
+            return _unproved_shell_reason(command, subject)
         if not roots:
             return None
         return _shell_decision(command, cwd, roots)
@@ -578,7 +724,7 @@ def main() -> int:
             raise GuardError("hook input must be a JSON object")
         reason = decision(payload, active_roots())
     except (OSError, UnicodeError, ValueError, GuardError) as exc:
-        reason = f"holder guard could not prove this write safe: {exc}"
+        reason = f"holder guard could not evaluate this tool call: {exc}"
     if reason:
         print(json.dumps(denial(reason), ensure_ascii=True, separators=(",", ":")))
     return 0
