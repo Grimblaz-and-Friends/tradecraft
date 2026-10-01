@@ -27,8 +27,8 @@ def persist(cwd, *args):
     return run([sys.executable, str(SCRIPT), *args], cwd=cwd)
 
 
-# A bare origin plus a seeded clone costs eight `git` launches and comes out
-# identical every time, so it is built once per module and copied per test. On
+# Building and checking a bare origin plus a seeded clone produces identical
+# content every time, so it is built once per module and copied per test. On
 # Windows a launch costs an order of magnitude more than the copy. The one thing
 # a copy cannot carry is the clone's `remote.origin.url`, which holds the
 # template's absolute path: left alone, every test would push into the template's
@@ -48,14 +48,17 @@ def _seed_repository(tmp_path_factory):
     seed = tmp_path_factory.mktemp("persist-seed")
     origin = seed / "origin.git"
     run(["git", "init", "--bare", "-b", "main", str(origin)], cwd=seed)
+    value(origin, "config", "--local", "maintenance.auto", "false")
     work = seed / "work"
     run(["git", "clone", str(origin), str(work)], cwd=seed)
+    value(work, "config", "--local", "maintenance.auto", "false")
     run(["git", "config", "user.email", "t@example.com"], cwd=work)
     run(["git", "config", "user.name", "tester"], cwd=work)
     run(["git", "checkout", "-b", "main"], cwd=work)
     (work / "README.md").write_text("seed\n", encoding="utf-8")
     (work / "unrelated.txt").write_bytes(b"seed unrelated\n")
     run(["git", "add", "README.md", "unrelated.txt"], cwd=work)
+    assert value(work, "config", "--bool", "maintenance.auto") == "false"
     run(["git", "commit", "-m", "seed commit"], cwd=work)
     run(["git", "push", "-u", "origin", "main"], cwd=work)
     _SEED = seed

@@ -18,6 +18,9 @@ FIXTURES = Path(__file__).with_name("fixtures")
 sys.path.insert(0, str(LIB))
 import connected_review as cr  # noqa: E402
 import work  # noqa: E402
+from test_work import (  # noqa: E402
+    actions_job, actions_review, actions_run, actions_transport, collect_actions,
+)
 
 
 HEAD = "a" * 40
@@ -1368,25 +1371,20 @@ def test_private_main_install_failure_exports_skip_cause_without_review(
 
 
 def test_generated_reviews_and_all_skip_causes_have_correct_entrance_credit():
-    config = work.WorkConfig(connected_reviewers=frozenset({cr.BOT_LOGIN}))
-
-    def receipt(*, review_body=None, comment_body=None):
-        state = work.WorkState("owner/repo", 746, {}, config=config)
-        if review_body is not None:
-            state.reviews = [{
-                "id": 1, "body": review_body, "user": {"login": cr.BOT_LOGIN},
-            }]
-        if comment_body is not None:
-            state.pr_comments = [{
-                "id": 2, "body": comment_body, "user": {"login": cr.BOT_LOGIN},
-            }]
-        return work._reviewer_receipts(state)[0]["result"]
-
     clean = cr.review_payload([], HEAD, "700", {})["body"]
     survivor = candidate(inline=True)
     findings = cr.review_payload([survivor], HEAD, "701", {})["body"]
-    assert receipt(review_body=clean) == "present"
-    assert receipt(review_body=findings) == "present"
+    for body, run_id in ((clean, 700), (findings, 701)):
+        transport = actions_transport(
+            reviews=[actions_review(body=body, commit_id=HEAD)], run_id=run_id,
+            run=actions_run(id=run_id, head_sha=HEAD),
+            job_pages=[{"total_count": 1, "jobs": [actions_job(run_id=run_id)]}],
+        )
+        state = collect_actions(transport)
+        assert set(state.connected_review_runs) == {run_id}
+        assert work._reviewer_receipts(state)[0]["result"] == "present"
+        state.connected_review_runs.clear()
+        assert work._reviewer_receipts(state)[0]["result"] == "missing"
     for cause in (
         "usage limit", "authentication runtime failure", "malformed output",
         "command timed out", "pull request head changed during review",
@@ -1395,7 +1393,13 @@ def test_generated_reviews_and_all_skip_causes_have_correct_entrance_credit():
     ):
         body = f"Review skipped: {cause}\n\nUsage unavailable.\n\n<!-- connected-review-attempt:9 -->"
         assert work._review_notice(body) == "review skipped"
-        assert receipt(comment_body=body) == "notice-only"
+        transport = actions_transport(reviews=[])
+        transport.values["repos/example/product/issues/7/comments"] = [{
+            "id": 2, "body": body, "user": {"login": cr.BOT_LOGIN},
+        }]
+        state = collect_actions(transport)
+        assert state.connected_review_runs == {}
+        assert work._reviewer_receipts(state)[0]["result"] == "notice-only"
 
 
 def test_queued_private_worker_cancellation_uses_neutral_recorded_cause(monkeypatch):
