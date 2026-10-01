@@ -116,7 +116,7 @@ HEAD_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
 ACTIONS_REVIEWER = "github-actions[bot]"
 CONNECTED_REVIEW_PATH = "/".join((".github", "workflows", "connected-review.yml"))
-CONNECTED_REVIEW_RUN = re.compile(r"<!--\s*connected-review-attempt:([1-9][0-9]*)\s*-->")
+CONNECTED_REVIEW_RUN = re.compile(r"<!-- connected-review-attempt:([1-9][0-9]*) -->")
 COMPLETED_REVIEWS = frozenset({"COMMENTED", "APPROVED", "CHANGES_REQUESTED"})
 NEW_MECHANISM_VERSION = "0.152.0"
 PROOF_MECHANISM_VERSION = "0.153.0"
@@ -2305,12 +2305,12 @@ def _connected_review_run_id(review: dict[str, object]) -> int:
     if not isinstance(commit, str) or HEAD_SHA.fullmatch(commit) is None:
         raise WorkError("review has no full commit identity")
     body = str(review.get("body") or "")
-    matches = CONNECTED_REVIEW_RUN.findall(body)
-    if (not matches or len(set(matches)) != 1
-            or body.count("connected-review-attempt:") != len(matches)):
-        raise WorkError("review has a missing, malformed or conflicting run marker")
+    trailing = next((line for line in reversed(body.splitlines()) if line.strip()), "")
+    match = CONNECTED_REVIEW_RUN.fullmatch(trailing)
+    if match is None:
+        raise WorkError("review has a missing or malformed trailing run marker")
     try:
-        return int(matches[0])
+        return int(match.group(1))
     except ValueError as exc:
         raise WorkError("review run id is invalid") from exc
 

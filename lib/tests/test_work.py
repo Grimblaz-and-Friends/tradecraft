@@ -13,6 +13,7 @@ LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import work
 import launch_settings
+import connected_review
 
 
 RULES = work.load_use_rules(LIB / "use-rules.json")
@@ -2052,9 +2053,11 @@ def actions_proof(fixture, tmp_path):
     {"body": "<!-- connected-review-attempt: 36672170816 -->"},
     {"body": "<!-- connected-review-attempt:36672170816"},
     {"body": "<!-- connected-review-attempt:36672170816 -->\n"
-             "<!-- connected-review-attempt:81 -->"},
-    {"body": "<!-- connected-review-attempt:36672170816 -->\n"
              "<!-- connected-review-attempt:bad -->"},
+    {"body": "<!-- connected-review-attempt:36672170816 --> extra text"},
+    {"body": " <!-- connected-review-attempt:36672170816 -->"},
+    {"body": "> <!-- connected-review-attempt:36672170816 -->"},
+    {"body": "<!--connected-review-attempt:36672170816-->"},
     {"state": "PENDING"}, {"state": "DISMISSED"}, {"state": None}, {"state": []},
     {"submitted_at": None}, {"submitted_at": ""},
     {"commit_id": "851159f"}, {"commit_id": None},
@@ -2068,6 +2071,54 @@ def test_actions_ineligible_review_waits_without_reading_runs(patch, tmp_path):
     assert not any("/actions/runs/" in endpoint for _, endpoint, _ in transport.calls)
     assert any(item["code"] == "connected-review-receipt-unproven"
                for item in fixture.collection_diagnostics)
+
+
+@pytest.mark.parametrize("quote", [
+    "`connected-review-attempt:`",
+    "`<!-- connected-review-attempt:81 -->`",
+    "<!-- connected-review-attempt:81 -->",
+    "<!-- connected-review-attempt:bad -->",
+])
+@pytest.mark.parametrize("blank_lines", ["", "\n \t\n"])
+def test_actions_generated_review_quotes_are_credited_by_trailing_marker(
+        quote, blank_lines, tmp_path):
+    payload = connected_review.review_payload([{
+        "severity": "P1", "wrong_result": "a genuine review is refused",
+        "path": "lib/work.py", "line": 1,
+        "input": "a finding quotes marker text", "execution_path": "receipt parsing",
+        "evidence": f"The finding quotes {quote}.", "inline": False,
+    }], REVIEW_SHA, str(REVIEW_RUN), {})
+    transport = actions_transport(reviews=[actions_review(body=payload["body"] + blank_lines)])
+    fixture = collect_actions(transport)
+    assert set(fixture.connected_review_runs) == {REVIEW_RUN}
+    assert work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).stage == "proof"
+    receipt = actions_proof(fixture, tmp_path)["reviewers"][0]
+    assert receipt["result"] == "present"
+    assert receipt["source"]["id"] == 41
+    assert receipt["source"]["revision"] == REVIEW_SHA
+
+
+@pytest.mark.parametrize("blank_lines", ["", "\n \t\n"])
+def test_actions_review_with_only_a_non_trailing_marker_gets_no_credit(blank_lines, tmp_path):
+    body = f"<!-- connected-review-attempt:{REVIEW_RUN} -->\nReview completed.{blank_lines}"
+    transport = actions_transport(reviews=[actions_review(body=body)])
+    fixture = collect_actions(transport)
+    assert not work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).stage == "waiting"
+    assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == "missing"
+    assert not any("/actions/runs/" in endpoint for _, endpoint, _ in transport.calls)
+
+
+def test_actions_trailing_marker_cannot_fall_back_to_an_earlier_run(tmp_path):
+    body = (f"<!-- connected-review-attempt:{REVIEW_RUN} -->\n"
+            "<!-- connected-review-attempt:81 -->")
+    transport = actions_transport(reviews=[actions_review(body=body)])
+    fixture = collect_actions(transport)
+    assert set(fixture.connected_review_runs) == {81}
+    assert not work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).stage == "waiting"
+    assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == "missing"
 
 
 @pytest.mark.parametrize("patch", [
