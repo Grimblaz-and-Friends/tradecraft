@@ -696,6 +696,9 @@ def render(
     for row in rows:
         change = row.change
         label = f"[{change.repository}#{change.number}]({change.html_url})"
+        skipped_records = row.cost.get("skipped_records")
+        if isinstance(skipped_records, list) and skipped_records:
+            label += f" (cost incomplete; skipped records: {len(skipped_records)})"
         lines.append(
             "| "
             + " | ".join(

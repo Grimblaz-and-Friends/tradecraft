@@ -16,6 +16,7 @@ import uuid
 
 from winio import utf8_stdio
 from vendor_cli import CliError, resolve_command
+from dispatch_record import _change
 
 
 class CostError(RuntimeError):
@@ -82,12 +83,71 @@ def _append_jsonl(path: Path, value: dict[str, object]) -> None:
         stream.flush()
 
 
+def _dispatch_json(path: Path, description: str) -> tuple[object, str | None]:
+    try:
+        return _read_json(path, description), None
+    except (OSError, CostError) as exc:
+        return None, f"cannot read {description}: {path}: {exc.__cause__ or exc}"
+
+
+def _unknown_dispatch(request: dict[str, object], path: Path,
+                      failure: str) -> dict[str, object]:
+    reason = (
+        "Dispatch completion is empty or unreadable; the dispatch may still be running "
+        f"or have been interrupted: {path}. {failure}"
+    )
+    requested = request.get("requested")
+    if not isinstance(requested, dict):
+        requested = {}
+    runtime_version = request.get("runtime_version")
+    return {
+        "change": _change(str(request.get("work") or "")),
+        "dispatch": {
+            "id": request.get("dispatch_id"), "stage": request.get("stage"),
+            "requested_vendor": requested.get("vendor"), "actual_vendor": None,
+            "continuity": requested.get("continuity"),
+            "launched_at": request.get("launched_at"), "completed_at": None,
+            "staffing_status": "unknown",
+        },
+        "model": {
+            "requested": requested.get("model"), "reported": [],
+            "reported_unknown_reason": reason,
+        },
+        "tokens": None, "tokens_unknown_reason": reason,
+        "additional_native_classes": {}, "scope": "unknown",
+        "source_field": None, "raw_source": str(path),
+        "runtime_version": runtime_version if isinstance(runtime_version, str) else None,
+        "runtime_version_unknown_reason": None if isinstance(runtime_version, str) else reason,
+    }
+
+
 def usage_rows(dispatch_root: Path, repo: str, issue: int,
-               holder_path: Path | None = None) -> list[dict[str, object]]:
+               holder_path: Path | None = None, *,
+               skipped_records: list[dict[str, str]] | None = None) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     if dispatch_root.is_dir():
         for path in sorted(dispatch_root.rglob("*.run.json")):
-            value = _read_json(path, "dispatch completion")
+            request_path = path.with_name(path.name[:-len(".run.json")] + ".request.json")
+            request, request_failure = _dispatch_json(request_path, "dispatch request")
+            if request_failure is None and not isinstance(request, dict):
+                request_failure = f"dispatch request is not a JSON object: {request_path}"
+            if request_failure is None:
+                change = _change(str(request.get("work") or ""))
+                if change["repository"] != repo or change["issue"] != issue:
+                    continue
+            value, completion_failure = _dispatch_json(path, "dispatch completion")
+            if completion_failure is not None:
+                if request_failure is None:
+                    rows.append(_unknown_dispatch(request, path, completion_failure))
+                elif skipped_records is not None:
+                    skipped_records.append({
+                        "path": str(path),
+                        "reason": (
+                            "Completion usage and request attribution are unavailable: "
+                            f"{completion_failure}; {request_failure}"
+                        ),
+                    })
+                continue
             if not isinstance(value, dict) or value.get("schema_version") != 2:
                 continue
             attempts = value.get("attempts")
@@ -274,7 +334,8 @@ def bill_plan_status(rows: list[dict[str, object]], terms_path: Path,
 
 def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
            terms_path: Path, gauges_path: Path, holder_path: Path) -> dict[str, object]:
-    rows = usage_rows(dispatch_root, repo, issue, holder_path)
+    skipped_records: list[dict[str, str]] = []
+    rows = usage_rows(dispatch_root, repo, issue, holder_path, skipped_records=skipped_records)
     rates = load_rates(rates_path)
     prices = [{
         "dispatch_id": row.get("dispatch", {}).get("id") if isinstance(row.get("dispatch"), dict) else None,
@@ -294,6 +355,7 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
             for (stage, vendor), count in sorted(groups.items())
         ],
         "raw_usage": rows,
+        "skipped_records": skipped_records,
         "dated_rate_card_equivalent": prices,
         "bill_plan_status": bill_plan_status(rows, terms_path, gauges_path),
     }
