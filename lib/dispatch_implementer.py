@@ -3,7 +3,10 @@
 
 Usage: python <plugin-root>/lib/dispatch_implementer.py --dispatch FILE --root DIR
        --work ISSUE --stage NAME --settings-source SOURCE --settings-scope SCOPE
-       [--resume SESSION_ID]
+       [--resume SESSION_ID --vendor VENDOR] [--artifact-brief FILE]
+
+Artifact launches and resumes require --artifact-brief FILE containing the
+affirmed brief comment's text, independently of the dispatch instructions.
 
 Every invocation is a separate record. ``--resume`` is explicit; ``--last`` and
 ``--ephemeral`` are deliberately absent because either can defeat continuity.
@@ -12,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 import hashlib
 import json
 import math
@@ -144,6 +148,68 @@ def _thread_id(events: list[dict[str, object]], stderr: bytes) -> tuple[str | No
     return (match.group(1), "codex stderr session id header") if match else (None, "")
 
 
+ARTIFACT_BODY_WORDS = 8
+ARTIFACT_RETURN_REQUIREMENT = (
+    "expected the affirmed brief anywhere in the return and an artifact body after it with at least "
+    f"{ARTIFACT_BODY_WORDS} non-location words"
+)
+
+
+def _artifact_body_present(tail: str) -> bool:
+    """Count prose outside headings, location lines and retrieval instructions."""
+    prose = []
+    for line in tail.splitlines():
+        if re.match(r"^\s*#", line):
+            continue
+        if re.search(
+            r"https?://|file://|[A-Za-z]:[\\/]|(?:^|\s)[/~]\S|"
+            r"(?:[\w.-]+[\\/])+[\w.-]+|[\w.-]+\.(?:md|txt|docx|pdf)\b|"
+            r"\[[^\]]*\]\([^)]*\)", line, re.IGNORECASE,
+        ):
+            continue
+        if re.search(
+            r"\b(?:fetch|retrieve|open|read|see|download|find)\b.*"
+            r"\b(?:file|document|artifact|path|link|there|here)\b|"
+            r"\b(?:artifact|document|draft|file)\s+(?:is|was|has been)\s+"
+            r"(?:in|at|saved|written|located|available|attached)\b", line, re.IGNORECASE,
+        ):
+            continue
+        prose.append(line)
+    return len(re.findall(r"[^\W\d_]{2,}", "\n".join(prose))) >= ARTIFACT_BODY_WORDS
+
+
+def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
+    """Recognize a brief and following body anywhere, leaving fidelity and quality to the holder."""
+    def normalize(text: str) -> str:
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        unquoted = "\n".join(re.sub(r"^\s*(?:>\s*)+", "", line) for line in lines)
+        return re.sub(r"<!--.*?-->", "", unquoted, flags=re.DOTALL)
+
+    def close(left: str, right: str) -> bool:
+        comparison = SequenceMatcher(None, left, right, autojunk=False)
+        if comparison.ratio() >= 0.98:
+            return True
+        edits = sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2
+                    in comparison.get_opcodes() if tag != "equal")
+        return edits <= 4
+
+    words = normalize(expected).split()
+    if not words:
+        return False
+    text = normalize(returned)
+    tokens = list(re.finditer(r"\S+", text))
+    brief = " ".join(words)
+    anchor_size = min(8, len(words))
+    anchor = " ".join(words[:anchor_size])
+    for start in range(len(tokens) - len(words) + 1):
+        candidate = [token.group() for token in tokens[start:start + len(words)]]
+        if close(anchor, " ".join(candidate[:anchor_size])) and close(brief, " ".join(candidate)):
+            tail = text[tokens[start + len(words) - 1].end():]
+            if _artifact_body_present(tail):
+                return True
+    return False
+
+
 def run_implementer(args: argparse.Namespace) -> int:
     role = "artifact_author" if args.stage == "artifact" else "implementer"
     machine_vendor, machine_source = read_machine_vendor()
@@ -188,6 +254,17 @@ def run_implementer(args: argparse.Namespace) -> int:
     prompt = dispatch.read_bytes()
     if not prompt.decode("utf-8").strip():
         raise ImplementerError(f"dispatch is empty: {dispatch}")
+    artifact_brief = b""
+    if args.stage == "artifact":
+        if args.artifact_brief is None:
+            raise ImplementerError(
+                "artifact stage requires --artifact-brief FILE containing the affirmed brief comment's text"
+            )
+        artifact_brief = args.artifact_brief.read_bytes()
+        if not artifact_brief.decode("utf-8").strip():
+            raise ImplementerError("artifact brief must be nonempty UTF-8 text")
+    elif args.artifact_brief is not None:
+        raise ImplementerError("--artifact-brief is only valid for the artifact stage")
     context = (args.context.read_bytes() if args.context else b"")
     if context:
         context.decode("utf-8")
@@ -218,14 +295,20 @@ def run_implementer(args: argparse.Namespace) -> int:
     stdout_path = records.sidecar(output, f".{args.vendor}.stdout.log")
     stderr_path = records.sidecar(output, f".{args.vendor}.stderr.log")
     context_path = records.sidecar(output, ".context.bin") if context else None
+    brief_path = records.sidecar(output, ".artifact-brief.bin") if artifact_brief else None
     destinations = [
         output, request_path, record_path, input_path, source_path, stdout_path, stderr_path
     ]
     if context_path:
         destinations.append(context_path)
+    if brief_path:
+        destinations.append(brief_path)
+    inputs = {dispatch}
+    if brief_path:
+        inputs.add(args.artifact_brief.resolve())
     for path in destinations:
-        if path.resolve() == dispatch:
-            raise ImplementerError(f"output destination is also the dispatch input: {path}")
+        if path.resolve() in inputs:
+            raise ImplementerError(f"output destination is also an input: {path}")
         if path.exists() or path.is_symlink():
             raise ImplementerError(f"refusing existing output: {path}")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -272,6 +355,12 @@ def run_implementer(args: argparse.Namespace) -> int:
                 if context_path else None
             )
             request["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
+            if brief_path:
+                request["artifact_brief"] = {
+                    "path": str(brief_path),
+                    "source": args.artifact_brief_source or str(args.artifact_brief.resolve()),
+                    "sha256": hashlib.sha256(artifact_brief).hexdigest(),
+                }
             if args.handover_state:
                 request["handover"] = {
                     "state": str(args.handover_state), "from_bundle": args.handover_from,
@@ -299,6 +388,9 @@ def run_implementer(args: argparse.Namespace) -> int:
             if context_path:
                 streams[context_path].write(context)
                 streams[context_path].flush()
+            if brief_path:
+                streams[brief_path].write(artifact_brief)
+                streams[brief_path].flush()
             streams.mark_ready()
             print(f"implementer: dispatch {request['dispatch_id']} -> {output}")
             attempt: dict[str, object] = {
@@ -444,6 +536,20 @@ def run_implementer(args: argparse.Namespace) -> int:
                         reason=reason or failure_reason,
                     )
                     record["outcome"] = "error"
+                if artifact_brief and complete and not reason:
+                    valid = artifact_opening_carries_brief(
+                        artifact_brief.decode("utf-8"), message.decode("utf-8", errors="replace")
+                    )
+                    validation_reason = ("" if valid else
+                        ARTIFACT_RETURN_REQUIREMENT if message.strip()
+                        else "artifact turn completed without final text; " + ARTIFACT_RETURN_REQUIREMENT)
+                    record["result"]["return_validation"] = {
+                        "status": "pass" if valid else "fail", "reason": validation_reason,
+                    }
+                    if not valid and message.strip():
+                        record["outcome"] = "invalid_artifact_return"
+                        record["reason"] = validation_reason
+                        return_code = 1
                 if verdict is not None:
                     streams[source_path].write(verdict)
                     streams[source_path].flush()
@@ -463,6 +569,7 @@ def run_implementer(args: argparse.Namespace) -> int:
                     staffing_status=(
                         "qualified" if record["outcome"] in {
                             "success", "success_uncontinuable", "completed_no_output",
+                            "invalid_artifact_return",
                         }
                         else "unfilled"
                     ),
@@ -494,11 +601,24 @@ def run_implementer(args: argparse.Namespace) -> int:
                 if args.handover_state:
                     _handover_phase(
                         args.handover_state, args.session_id or args.resume,
-                        "completed" if return_code == 0 and published else "unresolved",
+                        "completed" if (
+                            return_code == 0 and published
+                            or (attempt["observed"].get("session_id") == (args.session_id or args.resume)
+                                and record["outcome"] in {"invalid_artifact_return", "completed_no_output"})
+                        ) else "unresolved",
                     )
             if publication_error is not None:
                 raise publication_error
-            if source_ready:
+            validation = record["result"].get("return_validation")
+            if isinstance(validation, dict) and validation["status"] == "fail":
+                session_note = attempt["observed"].get("session_id") or "unavailable"
+                print(
+                    f"implementer: failed artifact return: {validation['reason']}; "
+                    f"bundle {record_path}; author session {session_note}; "
+                    "holder: repeat run artifact to resume the recorded author",
+                    file=sys.stderr,
+                )
+            elif source_ready:
                 session_note = attempt["observed"].get("session_id") or "unavailable"
                 print(f"implementer: {args.vendor} ({args.model}, {args.effort}; source {request['requested']['sources']['vendor']}) session {session_note} -> {output}")
             else:
@@ -517,6 +637,8 @@ def parser() -> argparse.ArgumentParser:
             "to the machine-local .tradecraft dispatch store and must be new. A successful turn "
             "without a returned session id publishes its result but exits nonzero because it "
             "cannot be continued."
+            " Artifact launches and resumes require --artifact-brief FILE containing the "
+            "affirmed brief comment's text."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -535,6 +657,9 @@ def parser() -> argparse.ArgumentParser:
                      help="explicit vendor; a fresh direct launch otherwise reads the machine file")
     cli.add_argument("--vendor-source", help="source of the selected implementer vendor")
     cli.add_argument("--context", type=Path, help="separate launcher context, retained beside dispatch bytes")
+    cli.add_argument("--artifact-brief", type=Path,
+                     help="required for artifact launches and resumes: affirmed brief comment text as a file, retained verbatim")
+    cli.add_argument("--artifact-brief-source", help="source locator of the authorized affirmed brief")
     cli.add_argument("--handover-state", type=Path)
     cli.add_argument("--handover-from", help="predecessor bundle for a recorded handover")
     cli.add_argument("--lineage-branch", help="registered branch carrying this lineage")

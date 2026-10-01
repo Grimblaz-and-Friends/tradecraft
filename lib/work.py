@@ -211,7 +211,9 @@ RESUME_SOURCE_STAGES = {
     "review-disposition": frozenset({"build", "floor", "review-disposition"}),
 }
 SUCCESSFUL_BUNDLE_OUTCOMES = frozenset({"success", "success_uncontinuable"})
-RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {"completed_no_output"}
+RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {
+    "completed_no_output", "invalid_artifact_return",
+}
 WORKFLOW_RUN_FILES_QUERY = """query($ids:[ID!]!){
   nodes(ids:$ids){
     ... on CheckSuite {
@@ -1314,6 +1316,25 @@ def _marker_value_error(marker: Marker) -> str | None:
 def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
     if state.record_root is None:
         return None
+    if marker.name == "artifact" and marker.attributes.get("status") == "draft":
+        terms = [term for term in state.issue_markers if term.name == "affirmed-brief"
+                 and _public_marker_valid(state, term) and _source_order(term) < _source_order(marker)]
+        term = max(terms, key=_source_order) if terms else None
+        try:
+            authors = _matching_bundles(
+                f"{state.repo}#{state.issue_number}", {"artifact"}, state.record_root,
+                completed_no_later_than=marker.timestamp, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+                completed_after=term.timestamp if term else None, schema_policy="skip",
+            )
+        except WorkError:
+            return None
+        if authors:
+            _completed, path, _request, run = authors[-1]
+            result = run.get("result")
+            validation = result.get("return_validation") if isinstance(result, dict) else None
+            if (run.get("outcome") == "invalid_artifact_return"
+                    or isinstance(validation, dict) and validation.get("status") == "fail"):
+                return f"latest artifact dispatch has a failed return: {path}"
     stages = {
         "builder-session": {"build"},
         "floor": {"floor"},
@@ -3359,7 +3380,14 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     instruction = (
         "Perform exactly the stage named in this dispatch and return to the holder. "
         "Do not start or dispatch a later stage."
+        " Your final message is your return to the holder. A path to a file you wrote, "
+        "or a pointer telling the holder to retrieve that file, is not a return."
     )
+    if decision.stage == "artifact":
+        instruction += (
+            " Return the whole artifact text in your final message, opening with the affirmed "
+            "implementation brief below quoted verbatim as a Markdown blockquote."
+        )
     if decision.stage == "build":
         instruction += (
             " Tell the holder to post <!-- tradecraft:builder-session:v1 session=SESSION --> "
@@ -3550,12 +3578,15 @@ def _time(value: str | None) -> datetime | None:
 def _matching_bundles(
     work_value: str, stages: set[str] | frozenset[str], record_root: Path, *,
     completed_no_later_than: str | None = None,
-    outcomes: frozenset[str] = SUCCESSFUL_BUNDLE_OUTCOMES,
+    completed_after: str | None = None,
+    outcomes: frozenset[str] | None = SUCCESSFUL_BUNDLE_OUTCOMES,
+    schema_policy: str = "strict",
 ) -> list[tuple[str, str, dict[str, object], dict[str, object]]]:
     candidates: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
     if not record_root.is_dir():
         return candidates
     boundary = _time(completed_no_later_than)
+    term_start = _time(completed_after)
     try:
         for run_path in record_root.rglob("*.run.json"):
             run = _json_object(run_path)
@@ -3566,18 +3597,27 @@ def _matching_bundles(
             if (str(request.get("work") or "").lower() != work_value.lower()
                     or request.get("stage") not in stages):
                 continue
-            if request.get("schema_version") != records.SCHEMA_VERSION:
+            completed = str(run.get("completed_at") or "")
+            completed_time = _time(completed)
+            if term_start is not None and (completed_time is None or completed_time <= term_start):
+                continue
+            unsupported_request = request.get("schema_version") != records.SCHEMA_VERSION
+            unsupported_run = run.get("schema_version") != records.SCHEMA_VERSION
+            # Draft credit ignores historical schemas; discovery defers proof to resume selection.
+            if schema_policy == "skip" and (unsupported_request or unsupported_run):
+                continue
+            if schema_policy != "defer" and unsupported_request:
                 raise WorkError(
                     f"matching dispatch bundle has unsupported request schema: {run_path}"
                 )
-            if run.get("schema_version") != records.SCHEMA_VERSION:
+            if schema_policy != "defer" and unsupported_run:
                 raise WorkError(
                     f"matching dispatch bundle has unsupported run schema: {run_path}"
                 )
-            if run.get("outcome") not in outcomes:
+            if outcomes is not None and run.get("outcome") not in outcomes:
                 continue
-            completed = str(run.get("completed_at") or "")
-            completed_time = _time(completed)
+            if run.get("outcome") == "invalid_artifact_return" and request.get("stage") != "artifact":
+                continue
             if boundary is not None and (completed_time is None or completed_time > boundary):
                 continue
             candidates.append((completed, str(run_path), request, run))
@@ -4017,13 +4057,15 @@ def set_proof_freshness(state: WorkState, expected: dict[str, object]) -> None:
     )
 
 
-def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSource | None:
+def _resume_source(work_value: str, stage: str, record_root: Path, *,
+                   completed_after: str | None = None) -> ResumeSource | None:
     allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
     matched = _matching_bundles(
         work_value, allowed_stages, record_root, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+        completed_after=completed_after,
     )
     candidates: list[ResumeSource] = []
-    for completed, run_path, request, run in matched:
+    for completed, run_path, request, run in (matched[-1:] if stage == "artifact" else matched):
         requested = request.get("requested")
         vendor = requested.get("vendor") if isinstance(requested, dict) else None
         actual = run.get("actual_vendor")
@@ -4899,7 +4941,9 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         record_root = state.record_root or records.default_record_root().expanduser().resolve()
         try:
             resume_source = _resume_source(
-                f"{state.repo}#{state.issue_number}", decision.stage, record_root
+                f"{state.repo}#{state.issue_number}", decision.stage, record_root,
+                completed_after=(_affirmed_review(state)[0].timestamp
+                                 if decision.stage == "artifact" and _affirmed_review(state)[0] else None),
             )
         except WorkError as exc:
             refused = _reported_decision(state, Decision(
@@ -5172,8 +5216,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             return 0
     prepared_prompt: bytes | None = None
     prepared_dispatch: Path | None = None
+    artifact_brief: Marker | None = None
     if uses_implementer:
         try:
+            if decision.stage == "artifact":
+                artifact_brief, _ = _affirmed_review(state)
+                if artifact_brief is None:
+                    raise WorkError("artifact dispatch requires an authorized affirmed brief")
             if dispatch_path is None:
                 prepared_prompt = _stage_prompt(
                     state, decision, branch=BRANCH_PLACEHOLDER
@@ -5358,6 +5407,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "--settings-scope", implementer_role,
                 "--timeout-seconds", timeout_argument,
             ]
+            if artifact_brief is not None:
+                brief_file = Path(temporary) / "artifact-brief.txt"
+                brief_file.write_bytes(artifact_brief.body.encode("utf-8"))
+                common.extend((
+                    "--artifact-brief", str(brief_file), "--artifact-brief-source",
+                    artifact_brief.url or artifact_brief.source_id or artifact_brief.surface,
+                ))
             if branch:
                 common.extend(("--lineage-branch", branch))
             if state.pr and isinstance(state.pr.get("number"), int):
@@ -5493,20 +5549,28 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _named_continuity(state: WorkState, stage: str, recommendation: Decision) -> str:
-    if recommendation.stage == stage and recommendation.continuity is not None:
-        return recommendation.continuity
-    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report"}:
-        return "fresh"
     if stage == "artifact":
+        continuity = (recommendation.continuity if recommendation.stage == stage
+                      and recommendation.continuity is not None else "fresh")
+        term, _ = _affirmed_review(state)
+        if term is None or _time(term.timestamp) is None:
+            return continuity
         try:
             bundles = _matching_bundles(
                 f"{state.repo}#{state.issue_number}", frozenset({"artifact"}),
                 state.record_root or records.default_record_root().expanduser().resolve(),
-                outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+                outcomes=None, completed_after=term.timestamp, schema_policy="defer",
             )
         except WorkError:
+            return continuity
+        if bundles and bundles[-1][3].get("outcome") in {"invalid_artifact_return", "completed_no_output"}:
+            # The resume route refuses an unproved session rather than replacing the failed author.
             return "resume"
-        return "resume" if bundles else "fresh"
+        return continuity
+    if recommendation.stage == stage and recommendation.continuity is not None:
+        return recommendation.continuity
+    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report"}:
+        return "fresh"
     if stage == "build":
         return "resume" if state.pr is not None else "fresh"
     return "resume"

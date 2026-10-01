@@ -3135,15 +3135,22 @@ def test_ordinary_entrance_is_repeatable_and_never_sweeps_or_executes(
     assert report["producer_version"] == work.records.producer_version()
 
 
-def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch():
-    fixture = state(AFFIRMED)
-    prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
-    assert prompt.count(b'"stage": "artifact"') == 1
+@pytest.mark.parametrize("stage", ["artifact", "build", "floor", "review-disposition"])
+@pytest.mark.parametrize("brief", [AFFIRMED, MECHANICAL])
+def test_builder_prompt_names_one_stage_and_forbids_pipeline_dispatch(stage, brief):
+    fixture = state(brief)
+    prompt = work._stage_prompt(fixture, work.Decision(stage, True, "fresh", "fixture"))
+    assert prompt.count(f'"stage": "{stage}"'.encode()) == 1
     assert b"Do not start or dispatch a later stage" in prompt
+    assert b"Your final message is your return to the holder." in prompt
+    assert b"A path to a file you wrote, or a pointer telling the holder to retrieve that file, is not a return." in prompt
+    if stage == "artifact":
+        assert b"Return the whole artifact text in your final message" in prompt
+        assert b"brief below quoted verbatim as a Markdown blockquote" in prompt
     evidence = json.loads(prompt.split(b"\n\n")[1])
     assert evidence["work"] == "example/product#12"
-    assert evidence["lane_reason"] is None
-    assert AFFIRMED.encode("ascii") in prompt
+    assert (evidence["lane_reason"] is None) == (brief == AFFIRMED)
+    assert brief.encode("ascii") in prompt
     assert b"gh api --method GET repos/example/product/issues/12" in prompt
 
 
@@ -4267,6 +4274,242 @@ def test_artifact_revision_recovers_its_artifact_session(tmp_path):
     store = tmp_path / "dispatches"
     dispatch_bundle(store, stage="artifact")
     assert work.resume_session(state(), "artifact", store) == SESSION
+
+
+@pytest.mark.parametrize("outcome", ["invalid_artifact_return", "completed_no_output"])
+def test_artifact_review_amendment_starts_a_fresh_author(tmp_path, outcome):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome=outcome)
+    fixture = state(AFFIRMED, AFFIRMED + "Amended whole brief.\n")
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.issue_comments[1]["created_at"] = "2026-09-21T00:00:00Z"
+    fixture.record_root = store
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.continuity == "fresh"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+
+
+@pytest.mark.parametrize("outcome", ["success", "success_uncontinuable", "error"])
+@pytest.mark.parametrize("session", [SESSION, None])
+def test_artifact_review_current_nonfailure_keeps_the_recommendation(tmp_path, outcome, session):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome=outcome, session=session)
+    fixture = state(AFFIRMED)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.record_root = store
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.continuity == "fresh"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+    resumed = work.Decision("artifact", True, "resume", "artifact-repair")
+    assert work._named_continuity(fixture, "artifact", resumed) == "resume"
+
+
+@pytest.mark.parametrize("kind", ["old-request", "old-run", "unreadable"])
+@pytest.mark.parametrize("current_failure", [False, True])
+def test_artifact_review_legacy_bundle_does_not_invalidate_a_draft(tmp_path, kind, current_failure):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", name="legacy.md",
+                    request_schema=1 if kind == "old-request" else 2,
+                    run_schema=1 if kind == "old-run" else 2)
+    if kind == "unreadable":
+        (store / "artifact" / "legacy.md.run.json").write_bytes(b"not JSON")
+    if current_failure:
+        dispatch_bundle(store, stage="artifact", name="failed.md", outcome="invalid_artifact_return",
+                        completed_at="2026-09-21T00:00:00Z")
+    fixture = state(AFFIRMED, ARTIFACT)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.issue_comments[1]["created_at"] = "2026-09-22T00:00:00Z"
+    fixture.record_root = store
+    before = {path: path.read_bytes() for path in store.rglob("*.json")}
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert any(marker.name == "artifact" for marker in lawful) == (not current_failure)
+    if current_failure:
+        assert "failed.md.run.json" in next(claim["reason"] for claim in invalid if claim["name"] == "artifact")
+    else:
+        assert not invalid
+    assert before == {path: path.read_bytes() for path in before}
+
+
+def test_artifact_review_previous_term_failure_cannot_withhold_current_draft(tmp_path):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome="invalid_artifact_return")
+    fixture = state(AFFIRMED, ARTIFACT)
+    fixture.issue_comments[0]["created_at"] = "2026-09-21T00:00:00Z"
+    fixture.issue_comments[1]["created_at"] = "2026-09-22T00:00:00Z"
+    fixture.record_root = store
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert any(marker.name == "artifact" for marker in lawful)
+    assert not invalid
+
+
+@pytest.mark.parametrize("outcome", ["success", "success_uncontinuable", "completed_no_output"])
+def test_historical_artifact_records_are_not_revalidated(tmp_path, outcome):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome=outcome)
+    fixture = state(AFFIRMED, ARTIFACT)
+    fixture.record_root = store
+    before = {path: path.read_bytes() for path in store.rglob("*.json")}
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert any(marker.name == "artifact" for marker in lawful)
+    assert not invalid
+    assert work.resume_session(fixture, "artifact", store) == SESSION
+    assert before == {path: path.read_bytes() for path in before}
+
+
+@pytest.mark.parametrize("outcome", ["invalid_artifact_return", "completed_no_output"])
+def test_successful_artifact_recovery_supplies_marker_credit(tmp_path, outcome):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", name="failed.md", outcome=outcome)
+    failed_path = store / "artifact" / "failed.md.run.json"
+    failed = json.loads(failed_path.read_bytes())
+    failed["result"] = {"return_validation": {"status": "fail"}}
+    failed_path.write_bytes(json.dumps(failed).encode())
+    dispatch_bundle(store, stage="artifact", name="recovered.md", session=OTHER_SESSION,
+                    completed_at="2026-09-21T10:00:00+00:00")
+    fixture = state(AFFIRMED, ARTIFACT)
+    fixture.record_root = store
+    before = failed_path.read_bytes()
+    successful = work._matching_bundles("example/product#12", {"artifact"}, store)
+    assert len(successful) == 1
+    assert successful[0][1].endswith("recovered.md.run.json")
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert any(marker.name == "artifact" for marker in lawful)
+    assert not invalid
+    assert work.resume_session(fixture, "artifact", store) == OTHER_SESSION
+    assert failed_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("outcome", ["invalid_artifact_return", "completed_no_output"])
+def test_failed_artifact_is_continuity_evidence_without_marker_credit(tmp_path, outcome):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome=outcome)
+    failed_path = store / "artifact" / "result.md.run.json"
+    failed = json.loads(failed_path.read_bytes())
+    failed["result"] = {"return_validation": {"status": "fail"}}
+    failed_path.write_bytes(json.dumps(failed).encode())
+    fixture = state(AFFIRMED, ARTIFACT)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.record_root = store
+    before = {path: path.read_bytes() for path in store.rglob("*.json")}
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert not any(marker.name == "artifact" for marker in lawful)
+    claim = next(claim for claim in invalid if claim["name"] == "artifact")
+    assert claim["reason"] == f"latest artifact dispatch has a failed return: {failed_path}"
+    assert work.resume_session(fixture, "artifact", store) == SESSION
+    assert before == {path: path.read_bytes() for path in before}
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.continuity == "fresh"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+
+
+@pytest.mark.parametrize("outcome", ["invalid_artifact_return", "completed_no_output"])
+def test_latest_failed_artifact_without_identity_refuses_older_author(tmp_path, monkeypatch, capsys, outcome):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", name="older.md", session=OTHER_SESSION)
+    dispatch_bundle(store, stage="artifact", name="failed.md", session=None, outcome=outcome,
+                    completed_at="2026-09-21T10:00:00+00:00")
+    fixture = state(AFFIRMED)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.record_root = store
+    decision = work.Decision("artifact", True, work._named_continuity(
+        fixture, "artifact", work.decide(fixture, RULES)), "holder-named-stage")
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("replaced author"))
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "refused"
+    assert report["reason"] == "resume-bundle-invalid-for-artifact"
+    assert "no valid session" in report["detail"]
+
+
+def test_invalid_artifact_outcome_cannot_supply_other_stage_continuity(tmp_path):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="build", outcome="invalid_artifact_return")
+    assert work._resume_source("example/product#12", "build", store) is None
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("first_return", ["/tmp/private/artifact.md", ""])
+@pytest.mark.parametrize("custom_dispatch", [False, True])
+def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
+        tmp_path, monkeypatch, capsys, vendor, first_return, custom_dispatch):
+    import dispatch_implementer as implementer
+    from test_dispatch_implementer import ARTIFACT_BRIEF, artifact_text, native_artifact_result
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    root = policy_repository(tmp_path, "holder")
+    monkeypatch.setattr(work, "load_work_config", lambda *_a: CONFIG)
+    recipient = repository(tmp_path, "author")
+    store = tmp_path / "dispatches"
+    scenario = tmp_path / "scenario.json"
+    setting = Path.home() / ".tradecraft" / "implementer-vendor"
+    setting.parent.mkdir(parents=True)
+    setting.write_bytes(vendor.encode())
+    monkeypatch.setattr(work.records, "default_record_root", lambda: store)
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (recipient, None, False))
+    monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a: [])
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_a: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
+    monkeypatch.setattr(implementer.records, "runtime_version", lambda *_a: "fixture runtime")
+    class ArtifactTransport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint.endswith("/comments"):
+                return [{"id": 751, "body": ARTIFACT_BRIEF,
+                         "created_at": "2026-09-19T00:00:00Z",
+                         "html_url": "https://github.example/issue#issuecomment-751",
+                         "user": {"login": PRODUCER}}]
+            if "/pulls?" in endpoint:
+                return []
+            return {"number": 12, "state": "open", "body": "", "labels": [],
+                    "user": {"login": PRODUCER}}
+    dispatch = tmp_path / "holder-job.md"
+    dispatch_bytes = b"Holder instructions stay exact.\r\nNo embedded brief.\r\n"
+    dispatch.write_bytes(dispatch_bytes)
+    args = work.parser().parse_args([
+        "run", "artifact", "--repo", "example/product", "--issue", "12", "--root", str(root),
+        "--holder-session-id", "holder", *(["--dispatch", str(dispatch)] if custom_dispatch else []),
+    ])
+    commands = []
+    original_run = subprocess.run
+    def launch(command, *positional, **keywords):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            commands.append(command)
+            selected_dispatch = Path(command[command.index("--dispatch") + 1]).read_bytes()
+            if custom_dispatch:
+                assert selected_dispatch == dispatch_bytes
+            else:
+                assert b"Return the whole artifact text in your final message" in selected_dispatch
+            brief = Path(command[command.index("--artifact-brief") + 1])
+            assert brief.read_bytes() == ARTIFACT_BRIEF.encode("utf-8")
+            status = implementer.run_implementer(implementer.parser().parse_args(command[2:]))
+            return subprocess.CompletedProcess(command, status)
+        return original_run(command, *positional, **keywords)
+    monkeypatch.setattr(work.subprocess, "run", launch)
+    session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, first_return, session)}).encode())
+    assert work.run(args, transport=ArtifactTransport()) == 1
+    failed_path = next(store.rglob("*.run.json"))
+    failed_bytes = failed_path.read_bytes()
+    failed = json.loads(failed_bytes)
+    assert failed["outcome"] == ("invalid_artifact_return" if first_return else "completed_no_output")
+    diagnostic = capsys.readouterr().err
+    assert str(failed_path) in diagnostic and session in diagnostic
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, artifact_text("combined"), session)}).encode())
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    assert len(commands) == 2
+    assert "--resume" not in commands[0]
+    assert commands[1][commands[1].index("--resume") + 1] == session
+    assert failed_path.read_bytes() == failed_bytes
+    runs = list(store.rglob("*.run.json"))
+    assert len(runs) == 2
+    passed = json.loads(next(path for path in runs if path != failed_path).read_bytes())
+    assert passed["outcome"] == "success"
+    assert passed["attempts"][0]["observed"]["session_id"] == session
+    request = json.loads(Path(passed["request"]).read_bytes())
+    assert request["requested"]["continuity"] == "resume"
+    assert request["artifact_brief"]["source"] == "https://github.example/issue#issuecomment-751"
+    assert Path(request["artifact_brief"]["path"]).read_bytes() == ARTIFACT_BRIEF.encode("utf-8")
+    assert Path(passed["result"]["source_output"]).read_bytes() == artifact_text("combined").replace("\r\n", "\n").encode("utf-8")
 
 
 def test_completed_no_output_bundle_with_a_session_remains_resumable(tmp_path):
