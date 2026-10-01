@@ -58,7 +58,9 @@ with that reason. Raw usage, dated rate-card price, and bill or plan status are
 separate table columns. An absent quantity is `unknown`, never zero. The other
 three measures are counts and may lawfully be zero. If the read-time cost
 report itself cannot be completed, each cost column remains unknown rather
-than erasing the product-change rows.
+than erasing the product-change rows. A nonempty `skipped_records` marks that
+change's cost as incomplete in its table row and names the number of skipped
+records while preserving the reported figures.
 
 No Codex rate row exists because its list-price source was unavailable and
 these runs are billed by plan; rate-card price stays explicitly unknown while

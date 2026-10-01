@@ -425,6 +425,46 @@ def test_i5_c5_unreadable_cost_report_is_unknown_in_all_three_columns(monkeypatc
         assert report[field] is None
 
 
+@pytest.mark.parametrize("skipped_count", [1, 2])
+def test_skipped_records_mark_cost_incomplete_without_changing_figures(
+    capsys, monkeypatch, skipped_count
+):
+    """The default reader's gaps stay visible beside its preserved known quantities."""
+    _transport, baseline = fixture_run(capsys)
+    reported = cost_report(spb.PRODUCT_REPOSITORIES[0], 91)
+    reported["skipped_records"] = [
+        {"path": f"dispatch-{number}.run.json", "reason": "request and completion unreadable"}
+        for number in range(skipped_count)
+    ]
+    monkeypatch.setattr(spb.change_cost, "report", lambda *_args, **_kwargs: reported)
+    assert spb.run(
+        args("final", OPENED + timedelta(days=28)),
+        transport=spb.FixtureTransport.from_path(FIXTURE),
+        cost_reader=spb.default_cost_reader,
+    ) == 0
+    output = capsys.readouterr().out
+    original_row = next(line for line in baseline.splitlines() if "Organizations-of-Verra#11" in line)
+    expected_row = original_row.replace(
+        ") |", f") (cost incomplete; skipped records: {skipped_count}) |", 1
+    )
+    assert output == baseline.replace(original_row, expected_row)
+    assert '"amount":"0.12"' in output
+
+
+def test_empty_skipped_records_leave_close_table_exactly_unchanged(capsys, monkeypatch):
+    """An explicit empty gap list renders identically to reports predating the field."""
+    _transport, baseline = fixture_run(capsys)
+    reported = cost_report(spb.PRODUCT_REPOSITORIES[0], 91)
+    reported["skipped_records"] = []
+    monkeypatch.setattr(spb.change_cost, "report", lambda *_args, **_kwargs: reported)
+    assert spb.run(
+        args("final", OPENED + timedelta(days=28)),
+        transport=spb.FixtureTransport.from_path(FIXTURE),
+        cost_reader=spb.default_cost_reader,
+    ) == 0
+    assert capsys.readouterr().out == baseline
+
+
 def test_output_has_no_comparative_word_and_keeps_merge_order(capsys):
     """I5-C1 guard: measures do not add a comparison or change chronological ordering."""
     _transport, output = fixture_run(capsys)
