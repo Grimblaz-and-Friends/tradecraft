@@ -568,3 +568,89 @@ def test_resumed_claude_handover_updates_the_same_reservation(
     assert implementer.run_implementer(args) == expected_code
     assert json.loads(args.handover_state.read_bytes())["phase"] == expected_phase
     assert record(args)["handover"]["phase"] == "resume"
+
+
+@pytest.mark.parametrize("stage", ["artifact", "build"])
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_direct_ruling_launch_prints_before_process_and_retains_source(job, monkeypatch, capsys, stage, vendor):
+    args, _ = job
+    args.stage, args.vendor = stage, vendor
+    role = "artifact_author" if stage == "artifact" else "implementer"
+    model, effort = implementer.PROFILES[role][vendor]
+    path = Path.home() / ".tradecraft" / "model-rulings.json"
+    path.parent.mkdir(parents=True)
+    entry = {"id": "direct-ruling", "role": role, "vendor": vendor,
+             "replaces": {"model": model, "effort": effort},
+             "model": "direct-ruled", "effort": "direct-effort", "source": "ruling-record"}
+    path.write_bytes(json.dumps({"schema_version": 1, "entries": [entry]}).encode())
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    original = implementer.run_process
+    def launch(command, **kwargs):
+        output = capsys.readouterr().out
+        plan = json.loads(next(line.split("launch_settings ", 1)[1] for line in output.splitlines()
+                               if line.startswith("implementer: launch_settings ")))
+        primary = plan["primary"]
+        assert primary["model"] == command[command.index("--model") + 1] == "direct-ruled"
+        assert primary["effort"] == "direct-effort"
+        assert json.loads(primary["sources"]["model"].removeprefix("model ruling ")) == {
+            "path": str(path.resolve()), **entry}
+        return original(command, **kwargs)
+    monkeypatch.setattr(implementer, "run_process", launch)
+    # Fixture runtime returns Codex-shaped output for either command; the request is the boundary tested.
+    implementer.run_implementer(args)
+    path.unlink()
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert request["requested"]["model"] == "direct-ruled"
+    assert "direct-ruling" in request["requested"]["sources"]["model"]
+    assert "ruling-record" in request["requested"]["sources"]["effort"]
+
+
+def test_partial_direct_choice_does_not_bridge_explicit_default(job):
+    args, _ = job
+    args.model = implementer.PROFILES["implementer"]["codex"][0]
+    args.model_source = "explicit --model"
+    path = Path.home() / ".tradecraft" / "model-rulings.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(json.dumps({"schema_version": 1, "entries": [{
+        "id": "partial", "role": "implementer", "vendor": "codex",
+        "replaces": {"model": args.model, "effort": "xhigh"},
+        "model": "ruled", "effort": "ruled-effort", "source": "source-record",
+    }]}).encode())
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    assert implementer.run_implementer(args) == 0
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())["requested"]
+    assert request["model"] == implementer.DEFAULT_MODEL
+    assert request["sources"]["model"] == "explicit --model"
+    assert request["effort"] == "ruled-effort" and "partial" in request["sources"]["effort"]
+
+
+def test_malformed_bridge_implementer_refuses_before_bundle(job):
+    args, _ = job
+    path = Path.home() / ".tradecraft" / "model-rulings.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"{")
+    with pytest.raises(implementer.launch_settings.SettingsError):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+
+
+
+def test_unavailable_bridged_request_retains_provenance_without_observation(job):
+    args, _ = job
+    path = Path.home() / ".tradecraft" / "model-rulings.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(json.dumps({"schema_version": 1, "entries": [{
+        "id": "unavailable-ruling", "role": "implementer", "vendor": "codex",
+        "replaces": {"model": implementer.DEFAULT_MODEL, "effort": "xhigh"},
+        "model": "requested-only", "effort": "requested-effort", "source": "ruling-source",
+    }]}).encode())
+    args.codex_unavailable_reason = "fixture executable unavailable"
+    assert implementer.run_implementer(args) == 1
+    path.unlink()
+    requested = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())["requested"]
+    assert requested["model"] == "requested-only"
+    assert "unavailable-ruling" in requested["sources"]["model"]
+    attempt = record(args)["attempts"][0]
+    assert attempt["launched"] is False
+    assert attempt["observed"]["reported_models"] == []
+    assert attempt["observed"]["reported_effort"] is None

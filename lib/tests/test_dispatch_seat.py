@@ -1241,6 +1241,28 @@ def test_setting_sources_name_classification_and_default_model(job):
     assert sources["required_capability"] == "issuecomment-5655702442"
 
 
+@pytest.mark.parametrize("contents", [b"{malformed", json.dumps({
+    "schema_version": 1, "entries": [{
+        "id": "inherited-ruling", "role": "ordinary_seat", "vendor": "claude",
+        "replaces": {"model": seat.DEFAULT_MODELS["claude"], "effort": "high"},
+        "model": "inherited-model", "effort": "max", "source": "fixture-ruling",
+    }],
+}).encode()])
+def test_suite_ignores_inherited_machine_ruling(tmp_path, contents):
+    home = tmp_path / "inherited-home"
+    folder = home / ".tradecraft"
+    folder.mkdir(parents=True)
+    (folder / "model-rulings.json").write_bytes(contents)
+    environment = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(Path(__file__)),
+         "-k", "test_setting_sources_name_classification_and_default_model", "-q"],
+        cwd=LIB.parent, env=environment, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    assert result.returncode == 0, result.stdout.decode(errors="replace") + result.stderr.decode(errors="replace")
+
+
 def test_fallback_records_its_own_explicit_value_sources(job):
     args, _ = job
     args.claude_model = "claude-owner"
@@ -1303,3 +1325,99 @@ def test_publication_failure_is_recorded_without_a_false_published_path(job, mon
     assert logged["result"]["published_output"] is None
     assert "hard link failed" in logged["result"]["published_output_unavailable_reason"]
     assert not args.output.exists()
+
+
+@pytest.mark.parametrize(("role", "classification"), [
+    ("ordinary_seat", "ordinary"), ("cold_seat", "cold"),
+    ("terminal_seat", "terminal"), ("use_consumer", "cold"),
+])
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_direct_seat_role_bridge_and_partial_explicit_field(job, monkeypatch, role, classification, vendor):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: args.output.parent / "home")
+    args.role, args.classification, args.vendor, args.own_vendor = role, classification, vendor, vendor
+    model = seat.DEFAULT_MODELS[vendor]
+    effort = seat.CLAUDE_EFFORTS[classification] if vendor == "claude" else seat.DEFAULT_CODEX_EFFORT
+    path = Path.home() / ".tradecraft" / "model-rulings.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(json.dumps({"schema_version": 1, "entries": [{
+        "id": "seat-ruling", "role": role, "vendor": vendor,
+        "replaces": {"model": model, "effort": effort},
+        "model": "seat-ruled", "effort": "seat-effort", "source": "seat-ruling-record",
+    }]}).encode())
+    setattr(args, vendor + "_model", model)
+    setattr(args, vendor + "_model_source", "explicit matching default")
+    configure(job, {vendor: {"message": "verdict\n"}})
+    assert seat.run_dispatch(args, now=NOW) == 0
+    path.unlink()
+    attempt = record(args)["attempts"][0]
+    assert attempt["model"] == model
+    assert attempt["effort"] == "seat-effort"
+    assert attempt["setting_sources"]["model"] == "explicit matching default"
+    assert "seat-ruling-record" in attempt["setting_sources"]["effort"]
+    assert "seat-ruling" in attempt["setting_sources"]["effort"]
+
+
+def test_fallback_keeps_printed_bridge_snapshot_and_distinct_sources(job, monkeypatch, capsys):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: args.output.parent / "home")
+    path = Path.home() / ".tradecraft" / "model-rulings.json"
+    path.parent.mkdir(parents=True)
+    entries = [{"id": f"ruling-{vendor}", "role": "ordinary_seat", "vendor": vendor,
+        "replaces": {"model": seat.DEFAULT_MODELS[vendor], "effort": (
+            seat.CLAUDE_EFFORTS["ordinary"] if vendor == "claude" else seat.DEFAULT_CODEX_EFFORT)},
+        "model": f"ruled-{vendor}", "effort": f"effort-{vendor}", "source": f"record-{vendor}"}
+        for vendor in seat.VENDORS]
+    path.write_bytes(json.dumps({"schema_version": 1, "entries": entries}).encode())
+    configure(job, {"claude": {"stdout": "API Error: 429", "exit": 1},
+                    "codex": {"message": "fallback verdict\n"}})
+    original = seat.run_process
+    calls = []
+    def launch(command, **kwargs):
+        vendor = "claude" if "--output-format" in command else "codex"
+        printed = capsys.readouterr().out
+        assert '"attempt_vendor": "' + vendor + '"' in printed
+        assert '"model": "ruled-' + vendor + '"' in printed
+        assert command[command.index("--model") + 1] == "ruled-" + vendor
+        if not calls:
+            assert '"fallback"' in printed and '"vendor": "codex"' in printed
+            path.write_bytes(b"malformed after primary resolution")
+        calls.append(vendor)
+        return original(command, **kwargs)
+    monkeypatch.setattr(seat, "run_process", launch)
+    assert seat.run_dispatch(args, now=NOW) == 0
+    assert calls == ["claude", "codex"]
+    path.unlink()
+    attempts = record(args)["attempts"]
+    for attempt in attempts:
+        vendor = attempt["vendor"]
+        assert attempt["model"] == "ruled-" + vendor
+        provenance = json.loads(attempt["setting_sources"]["model"].removeprefix("model ruling "))
+        assert provenance["id"] == "ruling-" + vendor
+        assert provenance["source"] == "record-" + vendor
+        assert provenance["path"] == str(path.resolve())
+
+
+def test_invalid_bridge_seat_refuses_before_bundle_or_process(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setattr(Path, "home", lambda: args.output.parent / "home")
+    path = Path.home() / ".tradecraft" / "model-rulings.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"{")
+    monkeypatch.setattr(seat, "run_process", lambda *_a, **_k: pytest.fail("spent on a seat"))
+    with pytest.raises(seat.launch_settings.SettingsError):
+        seat.run_dispatch(args, now=NOW)
+    assert not seat.sidecar(args.output, ".request.json").exists()
+
+
+@pytest.mark.parametrize(("stage", "classification", "expected"), [
+    ("use", "cold", "use_consumer"), ("cold-seat", "cold", "cold_seat"),
+    ("custom", "terminal", "terminal_seat"), ("custom", "ordinary", "ordinary_seat"),
+])
+def test_direct_role_inference_and_conflict(job, stage, classification, expected):
+    args, _ = job
+    args.stage, args.classification = stage, classification
+    assert seat.selected_role(args) == expected
+    args.role = "ordinary_seat" if classification != "ordinary" else "artifact_author"
+    with pytest.raises(seat.DispatchError, match="classification"):
+        seat.selected_role(args)

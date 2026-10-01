@@ -12,6 +12,7 @@ import pytest
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import work
+import launch_settings
 
 
 RULES = work.load_use_rules(LIB / "use-rules.json")
@@ -4903,6 +4904,10 @@ def test_resume_marker_equal_to_holder_identity_is_rejected(
 
 def test_execute_stage_passes_the_recovered_session_to_the_implementer(
         tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED, pr=True)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
     commands = []
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
     monkeypatch.setattr(
@@ -4919,7 +4924,7 @@ def test_execute_stage_passes_the_recovered_session_to_the_implementer(
     monkeypatch.setattr(work.subprocess, "run", run)
     decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
     assert work.execute_stage(
-        state(AFFIRMED, pr=True), decision, tmp_path, None, "holder-session"
+        fixture, decision, tmp_path, None, "holder-session"
     ) == 0
     assert commands[0][-4:] == [
         "--holder-session-id", "holder-session", "--resume", SESSION,
@@ -5329,6 +5334,9 @@ def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
     monkeypatch.setattr(work.subprocess, "run", run)
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
     fixture = state(AFFIRMED, ARTIFACT, pr=True)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, stage="build")
+    dispatch_bundle(fixture.record_root, stage="artifact")
     for stage, continuity in (
         ("artifact", "resume"), ("build", "resume"), ("floor", "resume"),
         ("review-disposition", "resume"), ("release-report", "fresh"),
@@ -5484,10 +5492,13 @@ def test_legacy_registration_migrates_before_dispatch_and_names_the_proof_gap(
 
     monkeypatch.setattr(work.subprocess, "run", run)
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
+    fixture = state(AFFIRMED, pr=True)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
     decision = work.Decision("floor", True, "resume", "fixture", "existing detail")
 
     assert work.execute_stage(
-        state(AFFIRMED, pr=True), decision, holder, None, "holder-session"
+        fixture, decision, holder, None, "holder-session"
     ) == 0
 
     notice = (
@@ -6015,3 +6026,378 @@ def test_help_distinguishes_direct_commands_from_a_dispatching_stage():
     assert "--holder-session-id HOLDER_SESSION_ID" in help_text
     assert "--tree-metadata TREE_METADATA" in help_text
     assert "required by adopt" in help_text
+
+
+# Launch planning reads the same defaults and bridge as the command route.
+def ruling_file(tmp_path, monkeypatch, role="implementer", vendor="codex", replaces=None):
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    path = home / ".tradecraft" / "model-rulings.json"
+    path.write_bytes(json.dumps({"schema_version": 1, "entries": [{
+        "id": "test-ruling", "role": role, "vendor": vendor,
+        "replaces": replaces or {"model": "gpt-6.1-sol", "effort": "xhigh"},
+        "model": "ruled-model", "effort": "ruled-effort", "source": "issuecomment-ruling",
+    }]}).encode())
+    return path
+
+
+@pytest.mark.parametrize(("stage", "role", "vendor", "model", "effort"), [
+    ("artifact", "artifact_author", "codex", "gpt-6-astra", "xhigh"),
+    ("build", "implementer", "codex", "gpt-6.1-sol", "xhigh"),
+    ("cold-seat", "cold_seat", "claude", "claude-opus-5-5", "xhigh"),
+    ("use", "use_consumer", "claude", "claude-opus-5-5", "max"),
+])
+def test_report_launch_plan_is_read_only(tmp_path, monkeypatch, stage, role, vendor, model, effort):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("report created a root"))
+    monkeypatch.setattr(work, "write_registry", lambda *_a: pytest.fail("report wrote registry"))
+    monkeypatch.setattr(work, "sweep_registry", lambda *_a: pytest.fail("report swept registry"))
+    monkeypatch.setattr(work, "_reserve_handover", lambda *_a, **_k: pytest.fail("report reserved handover"))
+    monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_k: pytest.fail("report ran a process"))
+    before = sorted(tmp_path.rglob("*"))
+    decision = work.Decision(stage, stage != "use", "fresh", "fixture")
+    plan = work._reported_decision(fixture, decision).as_dict()["launch_settings"]
+    assert plan["status"] == "resolved"
+    assert plan["role"] == role
+    primary = plan["primary"]
+    assert (primary["vendor"], primary["model"], primary["effort"]) == (vendor, model, effort)
+    assert set(primary["sources"]) == {"vendor", "model", "effort"}
+    assert primary["baseline"] == {"model": model, "effort": effort}
+    if stage in {"use", "cold-seat"}:
+        assert plan["fallback"]["vendor"] == "codex"
+        assert plan["fallback"]["condition"] == "primary availability failure only"
+    assert sorted(tmp_path.rglob("*")) == before
+
+
+def test_report_bridge_issue_precedence_and_whole_choice_clearing(tmp_path, monkeypatch):
+    path = ruling_file(tmp_path, monkeypatch)
+    fixture = state(AFFIRMED,
+        "<!-- tradecraft:model-override:v1 implementer=codex:chosen:chosen-effort -->")
+    decision = work.Decision("build", True, "fresh", "fixture")
+    plan = work._launch_plan(fixture, decision)
+    assert plan["primary"]["model"] == "chosen"
+    assert "issue-comment" in plan["primary"]["sources"]["model"]
+    fixture.issue_comments.append({"body": "<!-- tradecraft:model-override:v1 -->",
+                                   "user": {"login": PRODUCER}})
+    restored = work._launch_plan(fixture, decision)
+    assert restored["primary"]["model"] == "ruled-model"
+    source = restored["primary"]["sources"]["model"]
+    assert json.loads(source.removeprefix("model ruling "))["path"] == str(path.resolve())
+    assert "test-ruling" in source and "issuecomment-ruling" in source
+    entry = json.loads(path.read_bytes())
+    entry["entries"][0]["replaces"]["effort"] = "superseded"
+    path.write_bytes(json.dumps(entry).encode())
+    lapsed = work._launch_plan(fixture, decision)["primary"]
+    assert lapsed["model"] == "gpt-6.1-sol"
+    assert lapsed["bridge"]["disposition"] == "lapsed"
+    assert lapsed["bridge"]["running"] == lapsed["baseline"]
+
+
+def test_resume_report_keeps_historical_request_and_all_observations(tmp_path, monkeypatch):
+    ruling_file(tmp_path, monkeypatch)
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    request_path = fixture.record_root / "build" / "result.md.request.json"
+    run_path = fixture.record_root / "build" / "result.md.run.json"
+    requested = json.loads(request_path.read_bytes())
+    requested["requested"].update(model="historical-request", effort="historical-effort",
+                                   sources={"model": "old-ruling", "effort": "old-effort-source"})
+    request_path.write_bytes(json.dumps(requested).encode())
+    run = json.loads(run_path.read_bytes())
+    run["attempts"][0]["observed"].update(reported_models=["native-one", "native-two"],
+                                       reported_effort=None, reported_effort_unavailable_reason="absent")
+    run_path.write_bytes(json.dumps(run).encode())
+    plan = work._launch_plan(fixture, work.Decision("floor", True, "resume", "fixture"))
+    assert plan["primary"]["model"] == "ruled-model"
+    assert plan["session"]["id"] == SESSION
+    assert plan["session"]["vendor"] == "codex"
+    assert plan["session"]["requested"]["model"] == "historical-request"
+    assert plan["session"]["requested"]["sources"]["model"] == "old-ruling"
+    assert plan["session"]["observations"][0]["reported_models"] == ["native-one", "native-two"]
+    assert plan["session"]["observations"][0]["reported_effort"] is None
+
+
+def test_marker_only_resume_reports_unknown_historical_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=claude -->")
+    fixture.record_root = tmp_path / "dispatches"
+    plan = work._launch_plan(fixture, work.Decision("floor", True, "resume", "fixture"))
+    assert plan["primary"]["vendor"] == "claude"
+    assert plan["session"]["vendor"] == "claude"
+    assert plan["session"]["requested"]["model"] is None
+    assert "marker" in plan["session"]["requested"]["unavailable_reason"]
+
+
+def test_bad_bridge_report_retains_recommendation_and_run_refuses_before_root(tmp_path, monkeypatch):
+    path = ruling_file(tmp_path, monkeypatch)
+    path.write_bytes(b"{")
+    fixture = state(AFFIRMED)
+    decision = work.Decision("build", True, "fresh", "fixture")
+    report = work._reported_decision(fixture, decision).as_dict()
+    assert report["stage"] == "build" and report["dispatch"] is True
+    assert report["launch_settings"]["status"] == "unresolved"
+    assert str(path.resolve()) in report["launch_settings"]["reason"]
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("created a root"))
+    with pytest.raises(launch_settings.SettingsError):
+        work.execute_stage(fixture, decision, tmp_path, None, "holder")
+    # Holder endpoints have no bridge dependency.
+    for stage in ("proof", "ready-reviewers", "release-report", "terminal"):
+        assert work._reported_decision(fixture, work.Decision(stage, False, None, "fixture")).launch_settings is None
+
+
+def test_named_run_plan_is_snapshot_and_agrees_with_command(tmp_path, monkeypatch, capsys):
+    path = ruling_file(tmp_path, monkeypatch)
+    fixture = state(AFFIRMED)
+    root = tmp_path / "implementation"
+    root.mkdir()
+    def selected_root(*_a, **_k):
+        # A concurrent ruling edit after planning cannot alter this command.
+        path.write_bytes(b"malformed later file")
+        return root, None, False
+    monkeypatch.setattr(work, "_dispatch_root", selected_root)
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    def launch(command):
+        printed = capsys.readouterr().out
+        plans = [json.loads(line.split("launch_settings ", 1)[1]) for line in printed.splitlines()
+                 if line.startswith("work: launch_settings ")]
+        assert len(plans) == 1 and plans[0]["stage"] == "build"
+        primary = plans[0]["primary"]
+        assert command[command.index("--model") + 1] == primary["model"] == "ruled-model"
+        assert command[command.index("--effort") + 1] == primary["effort"] == "ruled-effort"
+        assert command[command.index("--model-source") + 1] == primary["sources"]["model"]
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(work.subprocess, "run", launch)
+    assert work.execute_stage(fixture, work.Decision("build", True, "fresh", "holder-named-stage"),
+                              tmp_path, None, "holder") == 0
+
+
+@pytest.mark.parametrize("root_fields", [{}, {"root": None}, {"root": ""},
+                                        {"root": False}, {"root": []}, {"root": {}}])
+def test_report_invalid_registration_root_is_unresolved_and_read_only(tmp_path, monkeypatch, root_fields):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    row = {"repository": fixture.repo, "issue": fixture.issue_number, "active": True}
+    row.update(root_fields)
+    write_registry_rows([row])
+    before = work.registry_path().read_bytes()
+    monkeypatch.setattr(work, "write_registry", lambda *_a: pytest.fail("report wrote registry"))
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("report proved a root"))
+    monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_k: pytest.fail("report ran a process"))
+    report = work._reported_decision(fixture, work.Decision("floor", True, "resume", "fixture")).as_dict()
+    assert report["stage"] == "floor" and report["dispatch"] is True
+    assert report["launch_settings"]["status"] == "unresolved"
+    assert "invalid root evidence" in report["launch_settings"]["reason"]
+    assert work.registry_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+@pytest.mark.parametrize("case", ["multiple", "missing-legacy"])
+def test_run_planning_root_failure_retains_structured_refusal(tmp_path, monkeypatch, capsys, stage, case):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    holder = repository(tmp_path, "holder")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    row = {"root": str(tmp_path / "missing"), "repository": fixture.repo,
+           "issue": fixture.issue_number, "active": True}
+    write_registry_rows([row, dict(row)] if case == "multiple" else [row])
+    before = work.registry_path().read_bytes()
+    monkeypatch.setattr(work, "create_implementation_root", lambda *_a: pytest.fail("created a root"))
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    assert work.execute_stage(fixture, work.Decision(stage, True, "resume", "fixture"),
+                              holder, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == stage and report["dispatch"] is False
+    assert report["status"] == "refused"
+    assert report["reason"] == f"implementation-root-unproved-for-{stage}"
+    assert report["detail"]
+    assert work.registry_path().read_bytes() == before
+
+
+def test_resume_plan_source_change_then_reversion_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    run_path = fixture.record_root / "build" / "result.md.run.json"
+    original = run_path.read_bytes()
+    root = tmp_path / "implementation"
+    root.mkdir()
+    original_plan = work._launch_plan
+    def changed_plan(*a, **kw):
+        run = json.loads(original)
+        run["attempts"][0]["observed"]["session_id"] = OTHER_SESSION
+        run_path.write_bytes(json.dumps(run).encode())
+        return original_plan(*a, **kw)
+    def reverted_source(*_a, **_kw):
+        run_path.write_bytes(original)
+        return root, None, False
+    monkeypatch.setattr(work, "_launch_plan", changed_plan)
+    monkeypatch.setattr(work, "_dispatch_root", reverted_source)
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_kw: pytest.fail("launched a session different from the plan"))
+    with pytest.raises(work.WorkError, match="resume source changed after launch planning"):
+        work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"),
+                           tmp_path, None, "holder")
+
+
+def test_use_report_defers_comparison_until_consumer_tree_is_validated(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, name="codex.md")
+    dispatch_bundle(fixture.record_root, name="claude.md", completed_at="2026-09-21T10:00:00+00:00")
+    for name, vendor, revision in (("codex", "codex", SHA), ("claude", "claude", BASE_SHA)):
+        request_path = fixture.record_root / "build" / f"{name}.md.request.json"
+        run_path = fixture.record_root / "build" / f"{name}.md.run.json"
+        request = json.loads(request_path.read_bytes())
+        request["requested"]["vendor"] = vendor
+        request_path.write_bytes(json.dumps(request).encode())
+        run = json.loads(run_path.read_bytes())
+        run.update(actual_vendor=vendor, revision_after=revision)
+        run_path.write_bytes(json.dumps(run).encode())
+    assert work._producer_vendor(fixture, work.RESUME_SOURCE_STAGES["build"])[0] == "claude"
+    assert work._producer_vendor(fixture, work.RESUME_SOURCE_STAGES["build"], revision=SHA)[0] == "codex"
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_kw: pytest.fail("report guessed the tree's producer"))
+    before = sorted(tmp_path.rglob("*"))
+    plan = work._reported_decision(fixture, work.Decision("use", False, None, "holder job pending")).launch_settings
+    assert plan["fallback"]["comparison_vendor"] is None
+    assert plan["fallback"]["comparison_vendor_source"] is None
+    assert "validated recipient tree" in plan["fallback"]["comparison_vendor_unavailable_reason"]
+    assert sorted(tmp_path.rglob("*")) == before
+
+
+def test_report_handover_preview_keeps_reservation_and_predecessor(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    (home / ".tradecraft" / "implementer-vendor").write_bytes(b"claude")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    fixture.holder_root = tmp_path / "implementation"
+    dispatch_bundle(fixture.record_root)
+    decision = work.Decision("floor", True, "resume", "fixture")
+    source = work._resume_source("example/product#12", "floor", fixture.record_root)
+    path = work._handover_path(fixture, "implementer", fixture.holder_root, None)
+    first = work._launch_plan(fixture, decision)
+    assert first["continuity"] == "handover"
+    assert first["predecessor"]["vendor"] == "codex"
+    assert first["handover"]["replacement_session"] is None
+    assert not path.exists()
+    reservation = {"schema_version": 1, "from_vendor": "codex", "to_vendor": "claude",
+                   "from_session": SESSION, "from_bundle": source.path,
+                   "replacement_session": OTHER_SESSION, "phase": "unresolved"}
+    path.parent.mkdir(parents=True)
+    path.write_bytes(json.dumps(reservation).encode())
+    original = path.read_bytes()
+    second = work._reported_decision(fixture, decision).launch_settings
+    assert second["status"] == "unresolved"
+    assert second["primary"]["vendor"] == "claude"
+    assert second["predecessor"]["id"] == SESSION
+    assert second["handover"]["replacement_session"] == OTHER_SESSION
+    assert path.read_bytes() == original
+
+
+
+def test_named_stage_report_uses_named_role_not_recommendation(tmp_path, monkeypatch):
+    ruling_file(tmp_path, monkeypatch)
+    args = work.parser().parse_args([
+        "run", "build", "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
+        "--use-rules", str(LIB / "use-rules.json"),
+    ])
+    captured = []
+    class Transport:
+        def get(self, endpoint, *, paginate=False):
+            if endpoint.endswith("/comments") or "/pulls?" in endpoint:
+                return []
+            return {"number": 3, "state": "open", "body": "", "labels": []}
+    work.run(args, transport=Transport(), executor=lambda state, decision, *_a: captured.append(decision) or 0)
+    assert captured[0].stage == "build"
+    assert "current recommendation: convergence" in captured[0].detail
+    assert captured[0].launch_settings["role"] == "implementer"
+    assert captured[0].launch_settings["primary"]["model"] == "ruled-model"
+
+
+def test_resume_plan_refuses_malformed_matching_bundle(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, session=None)
+    plan = work._reported_decision(fixture, work.Decision("floor", True, "resume", "fixture")).launch_settings
+    assert plan["status"] == "unresolved"
+    assert "no valid session" in plan["reason"]
+
+
+def test_use_bridge_compares_entrance_baseline_without_changing_direct_default(tmp_path, monkeypatch):
+    ruling_file(tmp_path, monkeypatch, "use_consumer", "claude",
+                {"model": "claude-opus-5-5", "effort": "max"})
+    fixture = state(AFFIRMED)
+    plan = work._launch_plan(fixture, work.Decision("use", False, None, "holder job pending"))
+    assert plan["primary"]["effort"] == "ruled-effort"
+    assert plan["primary"]["baseline"]["effort"] == "max"
+    assert plan["fallback"]["eligible"] is False
+    assert "capability execute" in plan["fallback"]["unavailable_reason"]
+    direct = launch_settings.resolve("use_consumer", "claude", "claude-opus-5-5", "xhigh",
+                                     "model default", "effort default", bridge=launch_settings.read_bridge())
+    assert direct.effort == "xhigh"
+    assert direct.bridge["disposition"] == "lapsed"
+
+
+def test_resume_source_change_is_refused_before_recipient(tmp_path, monkeypatch):
+    ruling_file(tmp_path, monkeypatch)
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    root = tmp_path / "implementation"
+    root.mkdir()
+    def change_source(*_a, **_k):
+        path = fixture.record_root / "build" / "result.md.run.json"
+        row = json.loads(path.read_bytes())
+        row["attempts"][0]["observed"]["session_id"] = OTHER_SESSION
+        path.write_bytes(json.dumps(row).encode())
+        return root, None, False
+    monkeypatch.setattr(work, "_dispatch_root", change_source)
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_k: pytest.fail("launched changed session"))
+    with pytest.raises(work.WorkError, match="resume source changed"):
+        work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"),
+                           tmp_path, None, "holder")
+
+
+
+def test_changed_handover_identity_refuses_before_recipient(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".tradecraft").mkdir(parents=True)
+    (home / ".tradecraft" / "implementer-vendor").write_bytes(b"claude")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    root = repository(tmp_path, "implementation")
+    fixture = state(AFFIRMED)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root)
+    source = work._resume_source("example/product#12", "floor", fixture.record_root)
+    path = work._handover_path(fixture, "implementer", root, None)
+    path.parent.mkdir(parents=True)
+    row = {"schema_version": 1, "from_vendor": "codex", "to_vendor": "claude",
+           "from_session": SESSION, "from_bundle": source.path,
+           "replacement_session": OTHER_SESSION, "phase": "reserved"}
+    path.write_bytes(json.dumps(row).encode())
+    def change_reservation(*_a, **_k):
+        row["replacement_session"] = "11111111-2222-3333-4444-555555555555"
+        path.write_bytes(json.dumps(row).encode())
+        return root, None, False
+    monkeypatch.setattr(work, "_dispatch_root", change_reservation)
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    original = subprocess.run
+    def launch(command, *a, **kw):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            pytest.fail("launched changed handover identity")
+        return original(command, *a, **kw)
+    monkeypatch.setattr(work.subprocess, "run", launch)
+    with pytest.raises(work.WorkError, match="handover identity changed"):
+        work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"), root, None, "holder")

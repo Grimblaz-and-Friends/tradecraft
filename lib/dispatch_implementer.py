@@ -25,6 +25,7 @@ import time
 import uuid
 
 import dispatch_record as records
+import launch_settings
 from seat_process import run_process
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
@@ -155,8 +156,6 @@ def run_implementer(args: argparse.Namespace) -> int:
         args.vendor_source = f"explicit --vendor {args.vendor}"
     if args.vendor not in ("codex", "claude"):
         raise ImplementerError(f"unknown implementer vendor: {args.vendor}")
-    model_defaulted = args.model is None
-    effort_defaulted = args.effort is None
     if args.model is not None and not args.model.strip():
         raise ImplementerError("--model must be nonempty when supplied")
     if args.effort is not None and not args.effort.strip():
@@ -167,8 +166,20 @@ def run_implementer(args: argparse.Namespace) -> int:
         raise ImplementerError(f"{args.vendor} cannot be both explicit and unavailable")
     explicit_executable = resolve_command(args.vendor, selected_path) if selected_path else None
     profile_model, profile_effort = PROFILES[role][args.vendor]
-    args.model = profile_model if model_defaulted else args.model
-    args.effort = profile_effort if effort_defaulted else args.effort
+    bridge = (launch_settings.read_bridge() if args.model is None or args.effort is None
+              else launch_settings.Bridge(launch_settings.default_path().resolve()))
+    settings = launch_settings.resolve(
+        role, args.vendor, profile_model, profile_effort,
+        "dispatch_implementer default", "dispatch_implementer default", bridge=bridge,
+        explicit_model=args.model, explicit_effort=args.effort,
+        explicit_model_source=args.model_source or args.settings_source,
+        explicit_effort_source=args.effort_source or args.settings_source,
+    )
+    args.model, args.effort = settings.model, settings.effort
+    launch_settings.print_plan({
+        "stage": args.stage, "role": role, "continuity": "resume" if args.resume else "fresh",
+        "primary": settings.as_dict(args.vendor, args.vendor_source),
+    }, label="implementer")
     root = args.root.expanduser().resolve()
     dispatch = args.dispatch.expanduser().resolve()
     if not root.is_dir():
@@ -246,12 +257,8 @@ def run_implementer(args: argparse.Namespace) -> int:
                 holder_session_id=args.holder_session_id,
                 setting_sources={
                     "vendor": args.vendor_source,
-                    "model": (args.model_source or (
-                        "dispatch_implementer default" if model_defaulted else args.settings_source
-                    )),
-                    "effort": (args.effort_source or (
-                        "dispatch_implementer default" if effort_defaulted else args.settings_source
-                    )),
+                    "model": settings.model_source,
+                    "effort": settings.effort_source,
                     "continuity": f"launcher route ({continuity})",
                     "permission_boundary": "dispatch_implementer route",
                 },
