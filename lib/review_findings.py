@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from collections.abc import Collection
 import re
 from typing import Callable
+import unicodedata
 
 
 SUBMITTED = frozenset({"COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
@@ -27,7 +28,7 @@ MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((https://github\.com/[^\s)]+)\)")
 
 
 def author(record: dict) -> str:
-    return str((record.get("user") or {}).get("login") or "")
+    return str((record.get("user") or {}).get("login") or "").lower()
 
 
 def review_url(repo: str, number: int, review: dict) -> str:
@@ -52,8 +53,9 @@ def live_markup(body: str) -> str:
             lines.append(re.sub(r"[^\r\n]", " ", line)
                          if re.match(r"^(?: {4}|\t)", line) else line)
     text = "".join(lines)
-    for pattern in (r"<pre\b[^>]*>.*?</pre>", r"<code\b[^>]*>.*?</code>",
-                    r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)"):
+    paragraph_break = r"\r?\n[ \t]*(?:>[ \t]*)*\r?\n"
+    inline_code = rf"(?<!`)(`+)(?!`)(?:(?!{paragraph_break}).)*?(?<!`)\1(?!`)"
+    for pattern in (r"<pre\b[^>]*>.*?</pre>", r"<code\b[^>]*>.*?</code>", inline_code):
         text = re.sub(pattern, lambda m: re.sub(r"[^\r\n]", " ", m[0]), text,
                       flags=re.S | re.I)
     return text
@@ -122,13 +124,22 @@ def _number(text: str) -> int | None:
         return None
 
 
-def _section(label: str, start: int, end: int, content_start: int) -> Section | None:
-    label = re.sub(r"<[^>]*>", "", label).strip(" *#>\r\n")
-    if re.match(r"P[0-3]\b", label, re.I) or " - " in label or chr(0x2014) in label:
-        return None
-    if re.search(r"\bprompt\b|\bfix review comments\b", label, re.I):
-        return None
-    if not re.search(r"\b(?:comments|findings)(?:\s*\([^)]*\))?\s*$", label, re.I):
+def _section(label: str, start: int, end: int, content_start: int,
+             login: str) -> Section | None:
+    label = re.sub(r"<[^>]*>", "", label)
+    label = re.sub(r"(?m)^[ \t]*(?:>[ \t]*)*", "", label)
+    label = re.sub(r"\s+", " ", label).strip()
+    if login == "coderabbitai[bot]":
+        offset = 0
+        while offset < len(label) and (
+                unicodedata.category(label[offset])[0] in {"S", "M"}
+                or label[offset] == chr(0x200D) or label[offset].isspace()):
+            offset += 1
+        label = label[offset:]
+        if ("findings" in label.lower()
+                or not re.fullmatch(r".+ comments \([0-9]+\)", label, re.I)):
+            return None
+    elif login == "github-actions[bot]" or not label.lower().startswith("findings"):
         return None
     count = re.search(r"\(([0-9]+)\)\s*$", label)
     value = _number(count[1]) if count else None
@@ -136,8 +147,8 @@ def _section(label: str, start: int, end: int, content_start: int) -> Section | 
                    "(" in label and (count is None or value is None))
 
 
-def _sections(text: str) -> list[Section]:
-    """Structural declarations only: details summaries and Markdown headings."""
+def _sections(text: str, login: str) -> list[Section]:
+    """Apply each producer's title shapes, then bound all declarations together."""
     sections = []
     stack = []
     for tag in re.finditer(r"<details\b[^>]*>|</details>|<summary\b[^>]*>.*?</summary>",
@@ -153,33 +164,31 @@ def _sections(text: str) -> list[Section]:
                     sections.append(section)
         elif stack:
             label = re.sub(r"^<summary\b[^>]*>|</summary>$", "", tag[0], flags=re.I)
-            section = _section(label, tag.start(), len(text), tag.end())
+            section = _section(label, stack[-1][0], len(text), tag.end(), login)
             if section:
                 stack[-1][1].append(section)
     for _start, pending in stack:
         for section in pending:
             section.malformed = True
             sections.append(section)
-    headers = list(re.finditer(
-        r"(?m)^\s*(?:>\s*)*(?:#{1,6}\s+([^\n]+)|\*\*([^\n]+)\*\*\s*)$", text
-    ))
-    declared_headers = []
-    for header in headers:
-        section = _section(header[1] or header[2], header.start(), len(text), header.end())
-        if section is None or "actionable comments posted" in section.label.lower():
-            continue
-        if (header[2] and section.count is None and not section.malformed
-                and section.label.lower() not in {"findings", "comments"}):
-            continue
-        declared_headers.append((header, section))
-    for index, (header, section) in enumerate(declared_headers):
-        # A quoted outside-diff header owns the following details block.
-        later = (declared_headers[index + 1][0].start()
-                 if index + 1 < len(declared_headers) else len(text))
-        divider = re.search(r"(?m)^\s*(?:>\s*)*---\s*$", text[header.end():later])
-        section.end = header.end() + divider.start() if divider else later
-        sections.append(section)
-    return sorted(sections, key=lambda item: item.start)
+    header_pattern = (
+        r"(?m)^[ \t]*(?:>[ \t]*)*\*\*((?:(?!\*\*)[\s\S])+?)\*\*[ \t]*\r?$"
+        if login == "coderabbitai[bot]" else
+        r"(?m)^[ \t]*(?:>[ \t]*)*#{1,6}[ \t]+([^\r\n]+)\r?$"
+    )
+    for header in re.finditer(header_pattern, text):
+        section = _section(header[1], header.start(), len(text), header.end(), login)
+        if section:
+            sections.append(section)
+    sections.sort(key=lambda item: item.start)
+    dividers = [match.start() for match in re.finditer(
+        r"(?m)^[ \t]*(?:>[ \t]*)*---[ \t]*\r?$", text,
+    )]
+    for section in sections:
+        boundaries = [other.start for other in sections if other.start > section.start]
+        boundaries.extend(pos for pos in dividers if pos >= section.content_start)
+        section.end = min([section.end, *boundaries])
+    return sections
 
 
 def _section_complete(section: Section, text: str, markers: list[tuple[str, int]],
@@ -187,15 +196,16 @@ def _section_complete(section: Section, text: str, markers: list[tuple[str, int]
     members = {identity for identity, pos in markers if section.start <= pos < section.end}
     if section.malformed:
         return False
-    if section.count is not None and inline is None:
-        return len(members) == section.count
-    if section.count is not None and len(members | inline) != section.count:
-        return False
     content = text[section.content_start:section.end]
     plain = re.sub(r"<[^>]*>|(?m:^\s*>\s*)", "", content).strip().lower().rstrip(".")
-    if plain in {"none", "no findings", "no findings were found"}:
+    empty = not plain or plain in {"none", "no findings", "no findings were found"}
+    if empty:
+        if section.count is not None:
+            return len(members | (inline or set())) == section.count
         return not members and not inline
-    # With no count, each structurally declared entry needs an identity.
+    if section.count is not None and len(members) != section.count:
+        return False
+    # Non-empty body content must identify its own entries; inline roots cannot pay for it.
     entries = []
     depth = 0
     for entry in re.finditer(
@@ -211,16 +221,20 @@ def _section_complete(section: Section, text: str, markers: list[tuple[str, int]
         elif depth == 0:
             entries.append(entry)
     if not entries:
-        if section.count is not None:
-            return True  # A declared total can be entirely inline.
-        return not re.sub(r"<[^>]*>|\s", "", content) and not members
+        return inline is None and len(members) == 1
+    credited = set()
     for index, entry in enumerate(entries):
         start = section.content_start + entry.start()
         end = (section.content_start + entries[index + 1].start()
                if index + 1 < len(entries) else section.end)
-        if len({identity for identity, pos in markers if start <= pos < end}) != 1:
+        entry_members = {identity for identity, pos in markers if start <= pos < end}
+        # CodeRabbit may group several identified entries beneath one file details block.
+        file_group = inline is None and entry[0].lower().startswith("<details")
+        if (not entry_members or (not file_group and len(entry_members) != 1)
+                or credited & entry_members):
             return False
-    return len(members) == len(entries)
+        credited.update(entry_members)
+    return credited == members
 
 
 def _accounting(text: str, login: str, roots: list[dict],
@@ -251,7 +265,7 @@ def _accounting(text: str, login: str, roots: list[dict],
         if (len(declarations) > 1
                 or (declarations and _number(declarations[0]) != len(inline))):
             reasons.append("actionable declaration does not account for inline findings")
-        elif "actionable comments posted" in text.lower() and not declarations:
+        elif re.search(r"(?im)^[ \t]*(?:\*\*)?Actionable comments posted:", text) and not declarations:
             reasons.append("malformed actionable declaration")
     else:
         declarations = re.findall(
@@ -264,12 +278,20 @@ def _accounting(text: str, login: str, roots: list[dict],
             reasons.append("declared total does not account for inline and body findings")
         elif re.search(r"(?im)^\s*(?:\*\*)?Findings:", text) and not declarations:
             reasons.append("malformed findings declaration")
-    sections = _sections(text)
+    sections = _sections(text, login)
+    scoped_markers = {id(section): [] for section in sections}
+    for marker in markers:
+        containing = [section for section in sections
+                      if section.content_start <= marker[1] < section.end]
+        if containing:
+            innermost = max(containing, key=lambda section: (section.start, -section.end))
+            scoped_markers[id(innermost)].append(marker)
     seen = set()
     for section in sections:
         label = re.sub(r"\s*\([^)]*\)\s*$", "", section.label).lower()
         total_inline = inline if login != "coderabbitai[bot]" else None
-        if label in seen or not _section_complete(section, text, markers, total_inline):
+        if label in seen or not _section_complete(
+                section, text, scoped_markers[id(section)], total_inline):
             reasons.append(f"unaccounted findings section: {section.label}")
         seen.add(label)
     return sorted(set(reasons))

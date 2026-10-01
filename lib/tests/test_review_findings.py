@@ -16,6 +16,8 @@ LAB = 'github-actions[bot]'
 ID = 'cr-comment:v1:alpha'
 URL = 'https://github.com/example/product/pull/7#pullrequestreview-100'
 MARKER = f'<!-- {ID} -->'
+WARNING_SYMBOL = chr(0x26A0) + chr(0xFE0F)
+MAJOR_SYMBOL = chr(0x1F7E0)
 FIXTURE = (LIB.parent / 'skills' / 'work' / 'references' / 'proof-fixtures'
            / 'v1-review-body-dispositions.json')
 
@@ -140,7 +142,6 @@ def test_marker_examples_have_no_accounting_credit(code):
 @pytest.mark.parametrize('declaration', [
     '**Actionable comments posted: 2**', '**Actionable comments posted: unknown**',
     '**Actionable comments posted: 0**\n**Actionable comments posted: 0**',
-    '<details><summary>Nitpick comments (unknown)</summary>\n</details>',
     '<details><summary>Nitpick comments (1)</summary>\n</details>',
 ])
 def test_bad_declarations_are_never_complete(declaration):
@@ -249,8 +250,7 @@ def test_explicitly_empty_findings_section_needs_no_whole_review_answer(statemen
     assert not classify([review('## Findings\n' + statement, login='review-bot')]).unidentified_reviews
 
 
-def test_declared_empty_section_cannot_hide_a_real_identity_or_inline_finding():
-    assert classify([review('## Findings\nNo findings.\n' + MARKER)]).missing_reviews
+def test_declared_empty_section_cannot_hide_an_inline_finding():
     root = {'id': 10, 'pull_request_review_id': 100, 'user': {'login': 'review-bot'}, 'body': 'finding'}
     assert classify([review('## Findings\nNo findings.', login='review-bot')], [root]).missing_reviews
 
@@ -262,3 +262,159 @@ def test_declared_empty_section_cannot_hide_a_real_identity_or_inline_finding():
 ])
 def test_required_continuation_may_link_its_supporting_evidence(opening):
     assert not classify(answers=[comment(f'{opening}; [{ID}]({URL})')]).missing_findings
+
+
+@pytest.mark.parametrize('route', ['body', 'whole-review', 'inline-exemption'])
+def test_mixed_case_logins_preserve_authorized_answers_and_exemptions(route):
+    body = MARKER if route != 'whole-review' else '**Actionable comments posted: 1**'
+    reviews = [review(body, login='CodeRabbitAI[bot]')]
+    inline, answers = [], []
+    if route == 'inline-exemption':
+        inline = [
+            {'id': 10, 'pull_request_review_id': 100,
+             'user': {'login': 'CodeRabbitAI[bot]'}, 'body': MARKER},
+            {'id': 11, 'in_reply_to_id': 10,
+             'user': {'login': 'Grimblaz'}, 'body': '**fixed** - repaired'},
+        ]
+    else:
+        label = ID if route == 'body' else 'unidentified review'
+        answers = [comment(f'fixed - repaired; [{label}]({URL})', login='Grimblaz')]
+    result = rf.classify('example/product', 7, reviews, inline, answers,
+                         [CR], ['grimblaz'], work._disposition)
+    assert not result.missing_findings and not result.missing_reviews
+    assert not result.ignored_authors
+    if route == 'whole-review':
+        assert result.unidentified_reviews[0].answered
+    else:
+        assert result.findings[0].reviewer == CR and result.findings[0].answered
+
+
+def test_next_summary_ends_bold_section_before_its_identity_can_mask_a_deficit():
+    body = ('> **Outside diff range comments (1)**\n'
+            '> <details><summary><em>Major</em> real.py:40</summary>\n'
+            '> Fix the off-diff bug.\n> </details>\n'
+            '<details><summary>Nitpick comments (1)</summary>\n'
+            '<!-- cr-comment:v1:beta -->\n</details>')
+    result = classify([review(body)])
+    assert [item.identity for item in result.findings] == ['cr-comment:v1:beta']
+    assert result.unidentified_reviews[0].reasons == [
+        'unaccounted findings section: Outside diff range comments (1)',
+    ]
+
+
+def test_counted_prose_section_cannot_spend_an_inline_root_as_its_body_identity():
+    root = {'id': 10, 'pull_request_review_id': 100,
+            'user': {'login': 'review-bot'}, 'body': 'inline finding'}
+    body = '## Findings (1)\nThe loader drops the last row; fix the bounds check.'
+    result = classify([review(body, login='review-bot')], [root])
+    assert not result.findings
+    assert result.unidentified_reviews[0].reasons == [
+        'unaccounted findings section: Findings (1)',
+    ]
+
+
+def test_inline_code_paragraph_boundary_preserves_live_declarations_and_identities():
+    body = ('**Actionable comments posted: 0**\n\nA lone ` backtick in prose.\n\n'
+            '<details><summary>Outside diff range comments (1)</summary>\n'
+            '`app.py` line 3: fix\n' + MARKER + '\n`done`\n</details>')
+    result = classify([review(body)])
+    assert [item.identity for item in result.missing_findings] == [ID]
+    assert not result.unidentified_reviews
+
+
+@pytest.mark.parametrize('title', [
+    'Security Findings', 'Security Findings and Attack Paths',
+    'Security Findings comments (1)', 'Other comments (unknown)',
+    'Prefix **Other comments (1)**',
+])
+def test_coderabbit_requires_a_whole_structural_counted_comments_title(title):
+    for body in (f'<details><summary>{title}</summary>\n- something risky\n</details>',
+                 f'**{title}**\n- something risky', f'## {title}\n- something risky'):
+        assert not classify([review(body)]).unidentified_reviews
+
+
+@pytest.mark.parametrize('title', [
+    'Other comments (1)', WARNING_SYMBOL + ' Other comments (1)',
+    WARNING_SYMBOL + ' Other\ncomments (1)',
+])
+def test_coderabbit_summary_and_bold_titles_support_symbols_and_line_wrapping(title):
+    for body in (f'<details><summary>{title}</summary>\n{MARKER}\n</details>',
+                 '> **' + title.replace('\n', '\n> ') + '**\n' + MARKER):
+        result = classify([review(body)])
+        assert len(result.missing_findings) == 1 and not result.unidentified_reviews
+        assert classify([review(body.replace(MARKER, 'No identity supplied.'))]).missing_reviews
+
+
+def test_inner_finding_details_and_nondeclaration_summaries_do_not_end_a_section():
+    body = (f'> **{WARNING_SYMBOL} Outside diff range comments (1)**\n'
+            f'> <details><summary><em>{MAJOR_SYMBOL} Major</em> real.py:40</summary>\n'
+            '> <details><summary>Proposed fix</summary>\n> example\n> </details>\n'
+            '> ' + MARKER + '\n> </details>')
+    result = classify([review(body)])
+    assert len(result.missing_findings) == 1 and not result.unidentified_reviews
+
+
+def test_declared_child_section_cannot_credit_its_identity_to_the_parent():
+    body = ('<details><summary>Other comments (1)</summary>\n'
+            '<details><summary>Nitpick comments (1)</summary>\n' + MARKER
+            + '\n</details>\n</details>')
+    result = classify([review(body)])
+    assert result.unidentified_reviews[0].reasons == [
+        'unaccounted findings section: Other comments (1)',
+    ]
+
+
+@pytest.mark.parametrize('content', ['', 'None.', 'No findings.', 'No findings were found.'])
+def test_empty_counted_findings_section_can_account_for_its_inline_root(content):
+    root = {'id': 10, 'pull_request_review_id': 100,
+            'user': {'login': 'review-bot'}, 'body': 'inline finding'}
+    body = '## Findings (1)\n' + content
+    assert not classify([review(body, login='review-bot')], [root]).unidentified_reviews
+
+
+@pytest.mark.parametrize('title', ['Outside diff findings (1)', 'Other comments (1)'])
+def test_other_reviewers_declare_only_titles_starting_with_findings(title):
+    assert not classify([review(f'## {title}\n- prose', login='review-bot')]).unidentified_reviews
+
+
+@pytest.mark.parametrize('blank', ['\n\n', '\n \t\n', '\n> \n', '\r\n\r\n'])
+def test_inline_code_cannot_cross_a_blank_line(blank):
+    text = 'An unmatched ` backtick.' + blank + MARKER + '\n`paired`'
+    assert MARKER in rf.live_markup(text)
+
+
+def test_unmatched_backticks_blank_nothing_but_valid_multiline_spans_still_do():
+    assert MARKER in rf.live_markup('A lone `\n' + MARKER)
+    assert MARKER not in rf.live_markup('`an example\n' + MARKER + '`')
+
+
+def test_actionable_declaration_words_in_prose_do_not_declare_a_count():
+    assert not classify([review('The label Actionable comments posted: N describes the UI.')]).unidentified_reviews
+
+
+def test_counted_comments_section_cannot_hide_an_entry_without_an_identity():
+    body = '<details><summary>Other comments (1)</summary>\n- First\n' + MARKER + '\n- Second\n</details>'
+    assert classify([review(body)]).unidentified_reviews
+
+
+def test_counted_comments_section_with_zero_identities_cannot_hide_prose():
+    assert classify([review('<details><summary>Other comments (0)</summary>\n'
+                            'An unaccounted body entry.\n</details>')]).unidentified_reviews
+
+
+def test_correct_bold_and_summary_sections_need_no_divider():
+    body = ('> **Outside diff range comments (1)**\n'
+            '> <details><summary><em>Major</em> real.py:40</summary>\n> ' + MARKER
+            + '\n> </details>\n'
+            '<details><summary>Nitpick comments (1)</summary>\n'
+            '<!-- cr-comment:v1:beta -->\n</details>')
+    result = classify([review(body)])
+    assert len(result.findings) == 2 and not result.unidentified_reviews
+
+
+def test_coderabbit_file_group_can_hold_distinct_identified_entries():
+    body = ('<details><summary>Nitpick comments (2)</summary>\n'
+            '<details><summary>app.py (2)</summary>\n' + MARKER
+            + '\n<!-- cr-comment:v1:beta -->\n</details>\n</details>')
+    result = classify([review(body)])
+    assert len(result.findings) == 2 and not result.unidentified_reviews

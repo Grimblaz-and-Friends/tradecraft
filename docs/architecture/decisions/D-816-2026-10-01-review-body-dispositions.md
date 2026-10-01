@@ -16,6 +16,12 @@ The entrance checks missing body answers before proof or release, while reviewer
 
 Lower cells describe the answer obligations and point to the named connected-reviewer contract in prose; they do not add a reverse dependency into adversarial review, whose existing dependency on engagement and work would create a pointer cycle. The owning reference carries the examples and reasons.
 
+## Shared-rule repair
+
+The holder's repair dispatch records the Steward's ruling with [change-proof #38](https://github.com/Grimblaz-and-Friends/change-proof/issues/38): CodeRabbit declarations use the whole counted-comments title shapes, with a leading symbol run stripped, while other non-lab reviewers' section titles start with `Findings`. This narrows the earlier declaration reading so a walkthrough's security heading creates no obligation. `test_coderabbit_requires_a_whole_structural_counted_comments_title` and the `757-walkthrough-*` shared cases demonstrate the boundary. The existing CodeRabbit `section-without-count-missing-entry` case now retains its explicit identity obligation without treating its `Findings` heading as a declaration.
+
+The same ruling gives section extent and identity ownership one rule across title shapes, limits inline accounting to empty or explicitly zero counted-section content, and keeps inline code spans within paragraphs. The regressions `test_next_summary_ends_bold_section_before_its_identity_can_mask_a_deficit`, `test_counted_prose_section_cannot_spend_an_inline_root_as_its_body_identity` and `test_inline_code_paragraph_boundary_preserves_live_declarations_and_identities` show the repaired surfaces. `test_mixed_case_logins_preserve_authorized_answers_and_exemptions` supplies the login-case regression against the already normalized work configuration. Reviewer identity emission, proof fields, plugin version and pins retain their earlier choices; catch-up and the executable floor remain the holder's later stages.
+
 ## Split and adoption
 
 The entrance half ships first. The sibling change-proof gate reads the same GitHub surfaces and the shared cases independently, with no additional proof fields or entrance import. Its implementation and the reviewer pin bumps remain the Steward's follow-ons. No workflow pin, reviewer trigger, vendor configuration, charter sentence or merged-pull-request obligation changes here. The standing page's merge order assigns this change plugin 0.170.0; the holder supplies its #751 catch-up before release.
