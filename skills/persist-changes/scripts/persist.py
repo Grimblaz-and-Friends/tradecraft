@@ -25,7 +25,7 @@ Mechanical contract:
     disabled gains a branch reflog (no persistent configuration change)
   - accepts an in-progress merge's staged tree and exact ordered parents;
     retains a checked-merge receipt before push in Git's common directory;
-    publication is reachability from any current branch on the selected remote;
+    publication is reachability from a current branch on any configured remote;
     every unpublished merge in the starting ancestry needs that receipt and
     matching Git evidence; an unchecked ancestor refuses before staging;
     a checked unpublished merge at HEAD redirects to publication recovery
@@ -57,6 +57,7 @@ MIN_MESSAGE_CHARS = 10
 GLOB_CHARS = set("*?[")
 MAX_MISMATCH_PATHS = 10
 RECEIPT_SCHEMA = 1
+FETCH_BATCH_REFS = 16
 
 
 def emit(line: str) -> None:
@@ -73,9 +74,16 @@ def fail(reason: str) -> None:
     sys.exit(1)
 
 
-def run_git(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], stdin=subprocess.DEVNULL,
-                          capture_output=True, env=env)
+def run_git(*args: str, env: dict[str, str] | None = None,
+            input_data: bytes | None = None) -> subprocess.CompletedProcess:
+    try:
+        if input_data is not None:
+            return subprocess.run(["git", *args], input=input_data,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        return subprocess.run(["git", *args], stdin=subprocess.DEVNULL,
+                              capture_output=True, env=env)
+    except OSError as exc:
+        fail(f"cannot launch git {args[0]}: {exc}; inspect current local/remote state before retrying")
 
 
 def decoded(data: bytes) -> str:
@@ -270,25 +278,74 @@ def remote_branch_heads(remote: str) -> dict[str, str]:
     return heads
 
 
-def classify_starting_merge(start: str, remote: str, remote_heads: dict[str, str]) -> None:
-    """Exclude actual remote branch ancestry, then prove every remaining merge.
-
-    Fetch missing advertised objects by branch; still exclude the recorded
-    object IDs, never a later tracking-ref value. An observation or traversal
-    failure grants neither publication nor back-out advice.
-    """
-    fetch_details = []
-    for ref, tip in remote_heads.items():
-        if run_git("cat-file", "-e", f"{tip}^{{commit}}").returncode:
-            fetched = run_git("fetch", "--no-tags", remote, ref)
-            fetch_details.append(detail(fetched))
-    unpublished = run_git("rev-list", "--reverse", "--topo-order", "--min-parents=2", "--parents",
-                          start, "--not", *sorted(set(remote_heads.values())))
-    if unpublished.returncode:
-        fail(f"cannot establish merge publication: {detail(unpublished)}; {'; '.join(fetch_details)}; "
+def fetch_missing_remote_heads(remote: str, heads: dict[str, str]) -> None:
+    """Inspect objects in one process and fetch missing refs in bounded calls."""
+    tips = sorted(set(heads.values()))
+    if not tips:
+        return
+    objects = run_git("cat-file", "--batch-check=%(objecttype)",
+                      input_data="".join(f"{tip}^{{commit}}\n" for tip in tips).encode("utf-8"))
+    records = objects.stdout.splitlines()
+    if objects.returncode or len(records) != len(tips):
+        fail(f"cannot establish merge publication: object inspection failed: {detail(objects)}; "
              "inspect current remote/local history before retrying")
+    missing = set()
+    for tip, record in zip(tips, records):
+        if record == (tip + "^{commit} missing").encode("utf-8"):
+            missing.add(tip)
+        elif record != b"commit":
+            fail("cannot establish merge publication: unexpected object inspection output; "
+                 "inspect current remote/local history before retrying")
+    refs = [ref for ref, tip in heads.items() if tip in missing]
+    if not refs:
+        return
+    # Probe the installed capability rather than inventing a minimum Git version.
+    help_text = run_git("fetch", "-h")
+    if re.search(br"--(?:\[no-\])?stdin\b", help_text.stdout + help_text.stderr):
+        fetched = run_git("fetch", "--no-tags", "--stdin", remote,
+                          input_data=("\n".join(refs) + "\n").encode("utf-8"))
+        if fetched.returncode:
+            fail(f"cannot establish merge publication: {detail(fetched)}; "
+                 "inspect current remote/local history before retrying")
+    else:
+        for offset in range(0, len(refs), FETCH_BATCH_REFS):
+            fetched = run_git("fetch", "--no-tags", remote, *refs[offset:offset + FETCH_BATCH_REFS])
+            if fetched.returncode:
+                fail(f"cannot establish merge publication: {detail(fetched)}; "
+                     "inspect current remote/local history before retrying")
+
+
+def unpublished_merges(start: str, tips: set[str]) -> list[str]:
+    revisions = start + "\n" + "".join(f"^{tip}\n" for tip in sorted(tips))
+    unpublished = run_git("rev-list", "--reverse", "--topo-order", "--min-parents=2", "--parents",
+                          "--stdin", input_data=revisions.encode("utf-8"))
+    if unpublished.returncode:
+        fail(f"cannot establish merge publication: {detail(unpublished)}; "
+             "inspect current remote/local history before retrying")
+    return decoded(unpublished.stdout).splitlines()
+
+
+def classify_starting_merge(start: str, remote: str, remote_heads: dict[str, str]) -> None:
+    """Prove merges outside current branches on every configured remote.
+
+    Fetch missing advertised objects in batches; exclude the recorded IDs,
+    never later tracking-ref values. Other remotes are needed only when the
+    selected remote leaves merge ancestry unpublished. Uncertain evidence
+    grants neither publication nor back-out advice.
+    """
+    fetch_missing_remote_heads(remote, remote_heads)
+    tips = set(remote_heads.values())
+    remaining = unpublished_merges(start, tips)
+    if remaining:
+        others = [name for name in git("remote").splitlines() if name != remote]
+        for name in others:
+            heads = remote_branch_heads(name)
+            fetch_missing_remote_heads(name, heads)
+            tips.update(heads.values())
+        if others:
+            remaining = unpublished_merges(start, tips)
     checked_start = False
-    for line in decoded(unpublished.stdout).splitlines():
+    for line in remaining:
         commit, *parents = line.split()
         owned, reason = prior_checked_merge(commit, parents)
         if not owned:
@@ -306,7 +363,8 @@ def classify_starting_merge(start: str, remote: str, remote_heads: dict[str, str
                  "rebuilding later merges through the script and landing ordinary work with named paths")
         checked_start = checked_start or commit == start
     if checked_start:
-        fail(f"previous checked merge {start} remains outside the branches on {remote}; "
+        fail(f"previous checked merge {start} remains unpublished across configured remotes "
+             f"(selected push remote {remote}); "
              "inspect the earlier push error and current publication state; use the existing checked "
              "commit through the persist-changes push-failure route; no new staging, commit or push")
 

@@ -1366,9 +1366,12 @@ def test_copied_receipt_does_not_claim_a_same_shaped_external_merge(tmp_path):
 def invoke_args(module, work, monkeypatch, capsys, *args):
     monkeypatch.chdir(work)
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "-m", "exercise a deterministic injected boundary", *args])
-    with pytest.raises(SystemExit) as stopped:
+    code = 0
+    try:
         module.main()
-    return subprocess.CompletedProcess([], stopped.value.code, capsys.readouterr().out, "")
+    except SystemExit as stopped:
+        code = stopped.code
+    return subprocess.CompletedProcess([], code, capsys.readouterr().out, "")
 
 
 def test_receipt_write_failure_stops_before_push_without_undo(tmp_path, implementation, monkeypatch, capsys):
@@ -1889,18 +1892,13 @@ def test_buried_unchecked_merge_refuses_and_recovery_preserves_later_work(tmp_pa
     assert (work / "unrelated.txt").read_bytes() == b"unrelated edit to retain\n"
 
 
-@pytest.mark.parametrize("source", ["other-remote", "tag", "stale-tracking"])
-def test_publication_requires_a_current_branch_on_the_selected_remote(tmp_path, source):
+@pytest.mark.parametrize("source", ["tag", "stale-tracking"])
+def test_publication_requires_a_current_branch_on_a_configured_remote(tmp_path, source):
     work = make_repo(tmp_path)
     merge_fixture(work)
     value(work, "commit", "-m", "external merge outside the selected remote's branches")
     merge = value(work, "rev-parse", "HEAD")
-    if source == "other-remote":
-        fork = tmp_path / "fork.git"
-        value(tmp_path, "init", "--bare", "-b", "main", str(fork))
-        value(work, "remote", "add", "fork", str(fork))
-        value(work, "push", "fork", "main")
-    elif source == "tag":
+    if source == "tag":
         value(work, "tag", "published-tag", merge)
         value(work, "push", "origin", "published-tag")
     else:
@@ -1908,7 +1906,7 @@ def test_publication_requires_a_current_branch_on_the_selected_remote(tmp_path, 
     (work / "pending.txt").write_bytes(b"pending work\n")
     before = refused_state(work)
     witness = witness_push(work)
-    result = persist(work, "-m", "other remotes, tags and stale local refs grant no branch publication", "pending.txt")
+    result = persist(work, "-m", "tags and stale local refs grant no branch publication", "pending.txt")
     assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
     assert before == refused_state(work) and not witness.exists()
 
@@ -1999,7 +1997,7 @@ def test_checked_merge_cannot_hide_an_unchecked_merge_ancestor(tmp_path, impleme
         assert run(["git", "merge-base", "--is-ancestor", unchecked, "HEAD"], cwd=work).returncode == 1
 
 
-@pytest.mark.parametrize("failure", ["listing", "malformed", "ambiguous", "fetch", "snapshot-moved", "walk"])
+@pytest.mark.parametrize("failure", ["listing", "malformed", "ambiguous", "invalid-id", "fetch", "snapshot-moved", "walk"])
 def test_remote_publication_uncertainty_refuses_without_back_out_advice(tmp_path, implementation, monkeypatch, capsys, failure):
     work = make_repo(tmp_path)
     merge_fixture(work)
@@ -2017,6 +2015,9 @@ def test_remote_publication_uncertainty_refuses_without_back_out_advice(tmp_path
             if failure == "ambiguous":
                 result = original(*args, **kwargs)
                 return subprocess.CompletedProcess([], 0, result.stdout * 2, b"")
+            if failure == "invalid-id":
+                listing = ("invalid-id-" + chr(233) + "\trefs/heads/main\n").encode("utf-8")
+                return subprocess.CompletedProcess([], 0, listing, b"")
             if failure in {"fetch", "snapshot-moved"}:
                 return subprocess.CompletedProcess([], 0, (unknown + "\trefs/heads/main\n").encode("ascii"), b"")
         if args[0] == "fetch" and failure == "fetch":
@@ -2032,4 +2033,240 @@ def test_remote_publication_uncertainty_refuses_without_back_out_advice(tmp_path
     result = invoke_args(implementation, work, monkeypatch, capsys, "pending.txt")
     assert result.returncode == 1 and "cannot establish merge publication" in result.stdout
     assert "back the merge out" not in result.stdout and "push it deliberately first" not in result.stdout
+    assert before == refused_state(work) and not witness.exists()
+
+
+def add_remote_branch_tips(work, remote, count, parent=None):
+    """One import creates distinct advertised tips without per-branch launches."""
+    repository = Path(value(work, "remote", "get-url", remote))
+    parent = parent or value(work, "rev-parse", "HEAD")
+    records = []
+    for number in range(count):
+        message = f"remote branch tip {number}\n".encode("ascii")
+        records.append(f"commit refs/heads/batch-{number:04d}\n"
+                       "committer tester <t@example.com> 1700000000 +0000\n"
+                       f"data {len(message)}\n".encode("ascii") + message
+                       + f"from {parent}\n\n".encode("ascii"))
+    imported = subprocess.run(["git", "fast-import", "--quiet"], cwd=repository,
+                              input=b"".join(records), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_many_remote_tips_keep_launches_below_windows_limit(tmp_path, implementation, monkeypatch, capsys):
+    work = make_repo(tmp_path)
+    start = value(work, "rev-parse", "HEAD")
+    add_remote_branch_tips(work, "origin", 1000)
+    # Make availability true before replacing the legacy per-tip lookup with a
+    # cheap witness. The new batched lookup and ancestry walk still use Git.
+    value(work, "fetch", "origin")
+    tips = value(work, "ls-remote", "--heads", "origin").splitlines()
+    legacy = ["git", "rev-list", start, "--not", *[line.split()[0] for line in tips]]
+    assert len(subprocess.list2cmdline(legacy)) > 32767
+    original = subprocess.run
+    launches = []
+
+    def bounded(command, **kwargs):
+        launches.append((command, kwargs))
+        if len(subprocess.list2cmdline(command)) > 32767:
+            raise OSError("Windows command line exceeds 32767 characters")
+        if command[:3] == ["git", "cat-file", "-e"]:
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", bounded)
+    (work / "pending.txt").write_bytes(b"work on a remote with many branches\n")
+    result = invoke_args(implementation, work, monkeypatch, capsys, "pending.txt")
+    assert_landed(work, result, [start])
+    walks = [(command, kwargs) for command, kwargs in launches if command[1:3] == ["rev-list", "--reverse"]]
+    assert walks and all("--stdin" in command for command, _ in walks)
+    assert all("input" in kwargs and "stdout" in kwargs and "stderr" in kwargs for _, kwargs in walks)
+    availability = [command for command, _ in launches if command[1] == "cat-file"]
+    assert len(availability) == 1
+
+
+@pytest.mark.parametrize("stdin_supported", [True, False])
+def test_missing_remote_tips_are_fetched_in_bounded_batches(tmp_path, implementation, monkeypatch, capsys, stdin_supported):
+    work = make_repo(tmp_path)
+    start = value(work, "rev-parse", "HEAD")
+    add_remote_branch_tips(work, "origin", 40)
+    original = subprocess.run
+    fetches = []
+
+    def observed(command, **kwargs):
+        if command[:3] == ["git", "fetch", "-h"] and not stdin_supported:
+            return subprocess.CompletedProcess(command, 129, b"", b"old fetch help without stdin support\n")
+        if command[:2] == ["git", "fetch"] and "-h" not in command:
+            fetches.append((command, kwargs))
+            if not stdin_supported and "--stdin" in command:
+                return subprocess.CompletedProcess(command, 129, b"", b"unknown option stdin\n")
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", observed)
+    (work / "pending.txt").write_bytes(b"work after one batched object refresh\n")
+    result = invoke_args(implementation, work, monkeypatch, capsys, "pending.txt")
+    assert_landed(work, result, [start])
+    if stdin_supported:
+        assert len(fetches) == 1
+        command, streams = fetches[0]
+        assert "--stdin" in command and len(streams["input"].splitlines()) == 40
+        assert "stdout" in streams and "stderr" in streams
+    else:
+        assert len(fetches) == 3
+        assert all(len(command) <= 20 for command, _ in fetches)
+        assert all("stdin" in streams and "capture_output" in streams for _, streams in fetches)
+
+
+@pytest.mark.parametrize("route", ["external", "checked", "absent-selected", "unknown-other-tip"])
+def test_merge_published_on_another_remote_takes_ordinary_landing(tmp_path, route):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    fork = tmp_path / "fork.git"
+    shutil.copytree(Path(value(work, "remote", "get-url", "origin")), fork)
+    value(work, "remote", "add", "fork", str(fork))
+    if route == "checked":
+        protect_main(work)
+        first = persist(work, "-m", "a checked merge later published to another configured remote")
+        assert first.returncode == 1 and "push failed" in first.stdout
+        Path(value(work, "remote", "get-url", "origin")).joinpath("hooks/pre-receive").unlink()
+    else:
+        value(work, "commit", "-m", "merge published on another configured remote")
+    merge = value(work, "rev-parse", "HEAD")
+    value(work, "push", "fork", "main")
+    if route == "absent-selected":
+        value(Path(value(work, "remote", "get-url", "origin")), "update-ref", "-d", "refs/heads/main")
+    elif route == "unknown-other-tip":
+        add_remote_branch_tips(work, "fork", 1, merge)
+    other_before = value(work, "ls-remote", "--heads", "fork")
+    witness = witness_push(work)
+    (work / "pending.txt").write_bytes(b"ordinary work after cross-remote publication\n")
+    if route == "absent-selected":
+        before = refused_state(work)
+        refusal = persist(work, "-m", "a published merge gets the deliberate branch publication route", "pending.txt")
+        assert refusal.returncode == 1 and "push it deliberately first" in refusal.stdout
+        assert "back the merge out" not in refusal.stdout and "previous checked merge" not in refusal.stdout
+        assert before == refused_state(work) and not witness.exists()
+        value(work, "push", "-u", "origin", "main")
+    result = persist(work, "-m", "land on a merge already published on a configured remote", "pending.txt")
+    assert_landed(work, result, [merge])
+    assert "back the merge out" not in result.stdout and "previous checked merge" not in result.stdout
+    assert value(work, "ls-remote", "--heads", "fork") == other_before
+
+
+@pytest.mark.parametrize("source", ["deleted", "tag", "stale-tracking"])
+def test_other_remote_requires_current_branch_and_unpublished_remedy_lands(tmp_path, source):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    value(work, "commit", "-m", "unpublished merge with misleading other-remote evidence")
+    merge = value(work, "rev-parse", "HEAD")
+    fork = tmp_path / "fork.git"
+    shutil.copytree(Path(value(work, "remote", "get-url", "origin")), fork)
+    value(work, "remote", "add", "fork", str(fork))
+    if source == "deleted":
+        value(work, "push", "fork", "main")
+        value(fork, "update-ref", "-d", "refs/heads/main")
+    elif source == "tag":
+        value(work, "push", "fork", f"{merge}:refs/tags/only-tag")
+    else:
+        value(work, "update-ref", "refs/remotes/fork/stale", merge)
+    (work / "pending.txt").write_bytes(b"pending working content to preserve\n")
+    before = refused_state(work)
+    witness = witness_push(work)
+    result = persist(work, "-m", "only actual other-remote branches can establish publication", "pending.txt")
+    assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+    assert before == refused_state(work) and not witness.exists()
+    recovery = "refs/persist-changes/recovery/" + merge
+    assert f"git update-ref {recovery} {merge}" in result.stdout
+    value(work, "update-ref", recovery, merge)
+    value(work, "reset", "--mixed", start)
+    value(work, "restore", f"--source={start}", "--worktree", "--", "README.md")
+    (work / "target.txt").unlink()
+    value(work, "merge", "--no-commit", "--no-ff", target)
+    assert_landed(work, persist(work, "-m", "rebuild the genuinely unpublished merge through the checked route"), [start, target])
+    assert value(work, "rev-parse", recovery) == merge
+    assert (work / "pending.txt").read_bytes() == b"pending working content to preserve\n"
+
+
+@pytest.mark.parametrize("failure", ["listing", "fetch", "partial-fetch", "partial-fallback"])
+def test_other_remote_uncertainty_refuses_without_back_out_then_lands(tmp_path, implementation, monkeypatch, capsys, failure):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    value(work, "commit", "-m", "merge published elsewhere but its state cannot be established")
+    merge = value(work, "rev-parse", "HEAD")
+    fork = tmp_path / "fork.git"
+    shutil.copytree(Path(value(work, "remote", "get-url", "origin")), fork)
+    value(work, "remote", "add", "fork", str(fork))
+    value(work, "push", "fork", "main")
+    if failure != "listing":
+        add_remote_branch_tips(work, "fork", 1, merge)
+    original = implementation.run_git
+
+    def uncertain(*args, **kwargs):
+        if failure == "listing" and args == ("ls-remote", "--heads", "fork"):
+            return subprocess.CompletedProcess([], 1, b"", b"other remote is unreadable")
+        if failure == "partial-fallback" and args == ("fetch", "-h"):
+            return subprocess.CompletedProcess([], 129, b"", b"fetch help without stdin support")
+        if failure != "listing" and args[0] == "fetch" and "fork" in args:
+            if failure.startswith("partial"):
+                # Object transfer alone cannot turn a failed fetch into a
+                # claimed successful remote observation in this invocation.
+                assert original(*args, **kwargs).returncode == 0
+            return subprocess.CompletedProcess([], 1, b"", b"other remote fetch failed")
+        return original(*args, **kwargs)
+
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    before = refused_state(work)
+    witness = witness_push(work)
+    monkeypatch.setattr(implementation, "run_git", uncertain)
+    result = invoke_args(implementation, work, monkeypatch, capsys, "pending.txt")
+    assert result.returncode == 1 and "cannot establish merge publication" in result.stdout
+    assert "back the merge out" not in result.stdout and "push it deliberately first" not in result.stdout
+    assert before == refused_state(work) and not witness.exists()
+    # Inspect the actual state, then retry after the fixture's transport recovers.
+    assert value(work, "ls-remote", "fork", "refs/heads/main").startswith(merge)
+    monkeypatch.setattr(implementation, "run_git", original)
+    assert_landed(work, invoke_args(implementation, work, monkeypatch, capsys, "pending.txt"), [merge])
+
+
+@pytest.mark.parametrize("step", ["listing", "input", "fetch"])
+def test_git_launch_failure_is_typed_and_preserves_preflight_state(tmp_path, implementation, monkeypatch, capsys, step):
+    work = make_repo(tmp_path)
+    if step == "fetch":
+        add_remote_branch_tips(work, "origin", 1)
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    before = refused_state(work)
+    witness = witness_push(work)
+    original = subprocess.run
+
+    def unavailable(command, **kwargs):
+        if ((step == "listing" and command[1:3] == ["ls-remote", "--heads"])
+                or (step == "input" and command[1] == "cat-file")
+                or (step == "fetch" and command[1] == "fetch" and "-h" not in command)):
+            raise OSError("injected launch failure")
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    result = invoke_args(implementation, work, monkeypatch, capsys, "pending.txt")
+    assert result.returncode == 1 and result.stdout.startswith("not-persisted: cannot launch git")
+    assert len(result.stdout.splitlines()) == 1 and "back the merge out" not in result.stdout
+    assert before == refused_state(work) and not witness.exists()
+
+
+@pytest.mark.parametrize("fault", ["status", "incomplete", "unexpected"])
+def test_batch_object_inspection_uncertainty_refuses_before_staging(tmp_path, implementation, monkeypatch, capsys, fault):
+    work = make_repo(tmp_path)
+    original = implementation.run_git
+
+    def uncertain(*args, **kwargs):
+        if args[:2] == ("cat-file", "--batch-check=%(objecttype)"):
+            if fault == "status":
+                return subprocess.CompletedProcess([], 1, b"commit\n", b"object inspection failed")
+            return subprocess.CompletedProcess([], 0, b"" if fault == "incomplete" else b"unexpected\n", b"")
+        return original(*args, **kwargs)
+
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    before = refused_state(work)
+    witness = witness_push(work)
+    monkeypatch.setattr(implementation, "run_git", uncertain)
+    result = invoke_args(implementation, work, monkeypatch, capsys, "pending.txt")
+    assert result.returncode == 1 and "cannot establish merge publication" in result.stdout
     assert before == refused_state(work) and not witness.exists()
