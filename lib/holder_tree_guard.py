@@ -2,6 +2,7 @@
 """Refuse holder writes under a registered implementation worktree."""
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -558,23 +559,117 @@ def _machine_boundaries() -> tuple[Path, Path, Path]:
     return registry, canonical(directory / "implementer-vendor"), canonical(directory / "dispatches")
 
 
-def _protected_file_subject(target: Path) -> str | None:
+def _protected_files() -> tuple[tuple[Path, str], ...]:
     registry, vendor, _dispatches = _machine_boundaries()
-    for path, subject in (
+    return (
         (registry, "implementation worktree registry"),
         (vendor, "machine vendor choice (implementer-vendor)"),
-    ):
+    )
+
+
+def _protected_file_subject(target: Path) -> str | None:
+    for path, subject in _protected_files():
         if path_key(target) == path_key(path):
             return subject
     return None
 
 
-def _shell_protected_file(command: str, cwd: Path) -> str | None:
-    for path in _command_paths(command, cwd):
-        subject = _protected_file_subject(path)
+def _shell_component_matches(pattern: str, name: str, powershell: bool) -> bool:
+    pieces = []
+    index = 0
+    while index < len(pattern):
+        character = pattern[index]
+        if character == "[":
+            end = index + 1
+            if end < len(pattern) and pattern[end] in {"!", "^"}:
+                end += 1
+            if end < len(pattern) and pattern[end] == "]":
+                end += 1
+            end = pattern.find("]", end)
+            if end != -1:
+                token = pattern[index:end + 1]
+                if powershell and token.startswith("[!"):
+                    token = "[" + token[2:-1] + "!]"
+                elif not powershell and token.startswith("[^"):
+                    token = "[!" + token[2:]
+                pieces.append(token)
+                index = end + 1
+                continue
+        # PowerShell's filesystem '?' can match zero or one character.
+        # NUL cannot be a pathname character; mark only unbracketed '?'.
+        pieces.append("\0" if powershell and character == "?" else character)
+        index += 1
+    expression = fnmatch.translate("".join(pieces)).replace("\0", ".?")
+    return re.fullmatch(expression, name) is not None
+
+
+def _shell_path_subject(target: Path, powershell: bool) -> str | None:
+    target_parts = Path(path_key(target)).parts
+    for path, subject in _protected_files():
+        if contains(target, path):
+            return subject
+        if not any(character in str(target) for character in "*?["):
+            continue
+        file_parts = Path(path_key(path)).parts
+        if len(target_parts) <= len(file_parts) and all(
+            _shell_component_matches(pattern, name, powershell)
+            for pattern, name in zip(target_parts, file_parts)
+        ):
+            return subject
+    return None
+
+
+def _machine_command_paths(command: str, cwd: Path) -> list[Path]:
+    found = _command_paths(command, cwd)
+    for token in (_command_words(command) or [])[1:]:
+        value = re.sub(r"^(?:\d*|&)>{1,2}", "", token.strip("(),"))
+        if value != token.strip("(),") and value:
+            try:
+                found.append(canonical(Path(value), cwd))
+            except OSError:
+                continue
+    return found
+
+
+def _machine_command_subject(command: str, cwd: Path, powershell: bool) -> str | None:
+    for path in _machine_command_paths(command, cwd):
+        subject = _shell_path_subject(path, powershell)
         if subject:
             return subject
     return None
+
+
+def _shell_protected_file(command: str, cwd: Path, *, powershell: bool = False,
+                          depth: int = 0) -> str | None:
+    words = _command_words(command)
+    if words and depth <= 12:
+        is_nested, body = _nested_shell_body(words)
+        if is_nested and body:
+            executable = _executable_name(words[0])
+            nested_powershell = powershell
+            if executable in POSIX_NESTED_SHELLS or executable == "cmd":
+                nested_powershell = False
+            elif executable in {"pwsh", "powershell"}:
+                nested_powershell = True
+            return _shell_protected_file(body, cwd, powershell=nested_powershell, depth=depth + 1)
+        segments = _split_commands(command)
+        if segments is not None:
+            active_cwd = cwd
+            for segment in segments:
+                segment_words = _command_words(segment) or []
+                target = _directory_target(segment_words, active_cwd)
+                if target is not None:
+                    active_cwd = target
+                    continue
+                if len(segments) > 1:
+                    subject = _shell_protected_file(
+                        segment, active_cwd, powershell=powershell, depth=depth + 1)
+                else:
+                    subject = _machine_command_subject(segment, active_cwd, powershell)
+                if subject:
+                    return subject
+            return None
+    return _machine_command_subject(command, cwd, powershell)
 
 
 def decision(payload: dict[str, object], roots: list[Path]) -> str | None:
@@ -602,7 +697,7 @@ def decision(payload: dict[str, object], roots: list[Path]) -> str | None:
         if not isinstance(command, str):
             raise GuardError(f"{tool} input has no command")
         read_only = _read_only_shell(command)
-        subject = _shell_protected_file(command, cwd)
+        subject = _shell_protected_file(command, cwd, powershell=tool == "PowerShell")
         if not read_only and subject:
             return _unproved_shell_reason(command, subject)
         if not roots:

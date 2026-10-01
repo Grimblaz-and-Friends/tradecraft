@@ -327,7 +327,7 @@ def test_dispatch_shell_handling_is_open(machine_state, roots, tool, registered,
 @pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
 @pytest.mark.parametrize("registered", [False, True])
 @pytest.mark.parametrize("name", [
-    ".", "dispatches", "model-rulings.json", "result.md", "dispatches-other/return.md",
+    "dispatches", "model-rulings.json", "result.md", "dispatches-other/return.md",
     "implementation-worktrees.json.bak", "implementer-vendor.old",
 ])
 def test_machine_siblings_do_not_invoke_shell_protection(machine_state, roots, tool, registered, name):
@@ -336,6 +336,182 @@ def test_machine_siblings_do_not_invoke_shell_protection(machine_state, roots, t
             "tool_name": tool, "cwd": str(machine_state),
             "tool_input": {"command": f"Set-Content '{target}' changed"},
         }, roots[2] if registered else []) is None
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize("command", [
+    "rm -rf '{target}'", "Remove-Item -Recurse -Force '{target}'", "mv '{target}' tc-old",
+    "Set-Content '{target}' changed",
+])
+def test_shell_containing_directory_cannot_remove_protected_files(machine_state, roots, tool, registered, command):
+    _protected, outside, active = roots
+    for directory in (machine_state, *machine_state.parents):
+        reason = guard.decision({
+            "tool_name": tool, "cwd": str(outside),
+            "tool_input": {"command": command.format(target=directory.as_posix())},
+        }, active if registered else [])
+        assert "implementation worktree registry" in reason
+        assert "cannot prove command read-only" in reason
+    for target in (".", "~/.tradecraft", "~"):
+        reason = guard.decision({
+            "tool_name": tool, "cwd": str(machine_state),
+            "tool_input": {"command": command.format(target=target)},
+        }, active if registered else [])
+        assert "implementation worktree registry" in reason
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize(("command", "subject"), [
+    ("rm ~/.tradecraft/implementation-*", "implementation worktree registry"),
+    ("Set-Content ~/.tradecraft/implementer-vendo? codex", "machine vendor choice"),
+    ("Remove-Item ~/.tradecraft/implementation-[w]orktrees.json", "implementation worktree registry"),
+    ("rm ~/.tradecraft/implementer-[v]endor", "machine vendor choice"),
+    ("rm -rf ~/.tradecraft*", "implementation worktree registry"),
+    ("rm -rf ~/.tradecraf?", "implementation worktree registry"),
+    ("Remove-Item ~/.tradecraft/implementer-[u-z]endor", "machine vendor choice"),
+])
+def test_shell_patterns_cannot_change_protected_files(machine_state, roots, tool, registered, command, subject):
+    reason = guard.decision({
+        "tool_name": tool, "cwd": str(roots[1]), "tool_input": {"command": command},
+    }, roots[2] if registered else [])
+    assert subject in reason
+    assert "cannot prove command read-only" in reason
+    assert "to edit" not in reason
+
+
+@pytest.mark.parametrize(("tool", "pattern", "denied"), [
+    ("Bash", "implementer-vendor?", False),
+    ("PowerShell", "implementer-vendor?", True),
+    ("Bash", "implementer-[!x]endor", True),
+    ("PowerShell", "implementer-[!x]endor", False),
+    ("Bash", "implementer-[!v]endor", False),
+    ("PowerShell", "implementer-[!v]endor", True),
+    ("Bash", "implementer-[^x]endor", True),
+    ("PowerShell", "implementer-[^x]endor", False),
+    ("Bash", "implementer-vendor[?]", False),
+    ("PowerShell", "implementer-vendor[?]", False),
+])
+def test_shell_pattern_characters_follow_shell_rules(machine_state, roots, tool, pattern, denied):
+    reason = guard.decision({
+        "tool_name": tool, "cwd": str(machine_state),
+        "tool_input": {"command": f"rm {pattern}"},
+    }, roots[2])
+    assert (reason is not None) == denied
+    if denied:
+        assert "machine vendor choice" in reason
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+def test_shell_pattern_path_case_and_separators_follow_platform(machine_state, roots, tool):
+    target = str(machine_state / "implementer-vendo?")
+    if os.name == "nt":
+        target = target.upper().replace("\\", "/")
+    reason = guard.decision({
+        "tool_name": tool, "cwd": str(roots[1]),
+        "tool_input": {"command": f"Set-Content '{target}' codex"},
+    }, roots[2])
+    assert "machine vendor choice" in reason
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize("change", ["cd", "pushd", "chdir", "Set-Location", "Set-Location -LiteralPath"])
+@pytest.mark.parametrize("separator", [" && ", " || ", "; ", "\n"])
+@pytest.mark.parametrize(("write", "subject"), [
+    ("echo codex > implementer-vendor", "machine vendor choice"),
+    ("Set-Content implementer-vendor codex", "machine vendor choice"),
+    ("rm implementation-worktrees.json", "implementation worktree registry"),
+])
+def test_shell_changed_directory_resolves_protected_files(
+        machine_state, roots, tool, registered, change, separator, write, subject):
+    reason = guard.decision({
+        "tool_name": tool, "cwd": str(roots[1]),
+        "tool_input": {"command": f"{change} ~/.tradecraft{separator}{write}"},
+    }, roots[2] if registered else [])
+    assert subject in reason
+    assert "cannot prove command read-only" in reason
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize("operator", [">", ">>", "2>", "&>"])
+@pytest.mark.parametrize("name", ["implementation-worktrees.json", "implementer-vendor"])
+def test_shell_attached_redirection_resolves_protected_file(machine_state, roots, tool, registered, operator, name):
+    reason = guard.decision({
+        "tool_name": tool, "cwd": str(machine_state),
+        "tool_input": {"command": f"echo changed {operator}{name}"},
+    }, roots[2] if registered else [])
+    assert ("registry" if name == "implementation-worktrees.json" else "vendor choice") in reason
+    assert "cannot prove command read-only" in reason
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize("command", [
+    "cd ~/.tradecraft/dispatches/build && sha256sum result.md",
+    "Set-Location ~/.tradecraft/dispatches/build; Get-FileHash result.md",
+    "Set-Content ~/.tradecraft/model-rulings.json changed",
+    "echo changed >~/.tradecraft/model-rulings.json",
+    "cd ~/.tradecraft; Set-Content model-rulings.json changed",
+    "cp ~/.tradecraft/dispatches/build/return.md result.md",
+    "rm ~/.tradecraft/dispatches/*/result.md",
+    "rm ~/.tradecraft/implementation-*.bak",
+    "Set-Content ~/.tradecraft/implementer-vendo[x] changed",
+    "rm ~/.tradecraft/*/implementation-worktrees.json",
+    "Get-ChildItem ~/.tradecraft",
+    "Test-Path ~/.tradecraft/implementer-vendo?",
+    "cd ~/.tradecraft", "pushd ~", "chdir ~/.tradecraft", "Set-Location ~/.tradecraft",
+    "cd ~/.tradecraft; cd ../..; echo changed >implementer-vendor",
+])
+def test_shell_machine_path_negative_controls_remain_open(machine_state, roots, tool, registered, command):
+    assert guard.decision({
+        "tool_name": tool, "cwd": str(roots[1]), "tool_input": {"command": command},
+    }, roots[2] if registered else []) is None
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize("command", [
+    "cd ~/.tradecraft; cd dispatches/build; cd ../..; echo codex >implementer-vendor",
+    "cd ~/.tradecraft; rm implementation-[w]orktrees.json",
+    "bash -c 'cd ~/.tradecraft && echo codex >implementer-vendor'",
+    "pwsh -Command 'Set-Location ~/.tradecraft; Set-Content implementer-vendor codex'",
+])
+def test_shell_nested_and_multiple_directory_changes_protect_files(machine_state, roots, tool, command):
+    reason = guard.decision({
+        "tool_name": tool, "cwd": str(roots[1]), "tool_input": {"command": command},
+    }, roots[2])
+    assert "cannot prove command read-only" in reason
+    assert "registered implementation trees" not in reason
+
+
+@pytest.mark.parametrize(("tool", "field"), list(guard.FILE_TOOLS.items()))
+def test_file_tool_containing_directory_matching_is_unchanged(machine_state, roots, tool, field):
+    for directory in (machine_state, machine_state.parent):
+        assert guard.decision({
+            "tool_name": tool, "tool_input": {field: str(directory)},
+        }, roots[2]) is None
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+def test_refused_registry_deletion_keeps_active_roots(machine_state, roots, tool):
+    protected, outside, _registered = roots
+    registry = machine_state / "implementation-worktrees.json"
+    before = (json.dumps({"schema_version": 1, "worktrees": [
+        {"root": str(protected), "active": True},
+    ]}) + "\n").encode("utf-8")
+    registry.write_bytes(before)
+    command = "rm -rf ~/.tradecraft" if tool == "Bash" else "Remove-Item -Recurse -Force ~/.tradecraft"
+    reason = guard.decision({
+        "tool_name": tool, "cwd": str(outside), "tool_input": {"command": command},
+    }, guard.active_roots())
+    assert reason is not None
+    assert registry.read_bytes() == before
+    assert guard.active_roots() == [protected]
+    assert guard.decision({
+        "tool_name": "Write", "tool_input": {"file_path": str(protected / "file.txt")},
+    }, guard.active_roots()) is not None
 
 
 @pytest.mark.parametrize("name", ["implementation-worktrees.json", "implementer-vendor", "dispatches/x"])
