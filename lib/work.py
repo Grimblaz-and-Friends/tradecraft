@@ -30,6 +30,7 @@ import launch_settings as setting_resolution
 from launch_settings import LaunchSettings
 import proof as proof_document
 import recipient_tree
+import review_findings
 import vendor_cli
 from winio import utf8_stdio
 
@@ -210,7 +211,9 @@ RESUME_SOURCE_STAGES = {
     "review-disposition": frozenset({"build", "floor", "review-disposition"}),
 }
 SUCCESSFUL_BUNDLE_OUTCOMES = frozenset({"success", "success_uncontinuable"})
-RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {"completed_no_output"}
+RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {
+    "completed_no_output", "invalid_artifact_return",
+}
 WORKFLOW_RUN_FILES_QUERY = """query($ids:[ID!]!){
   nodes(ids:$ids){
     ... on CheckSuite {
@@ -1313,6 +1316,25 @@ def _marker_value_error(marker: Marker) -> str | None:
 def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
     if state.record_root is None:
         return None
+    if marker.name == "artifact" and marker.attributes.get("status") == "draft":
+        terms = [term for term in state.issue_markers if term.name == "affirmed-brief"
+                 and _public_marker_valid(state, term) and _source_order(term) < _source_order(marker)]
+        term = max(terms, key=_source_order) if terms else None
+        try:
+            authors = _matching_bundles(
+                f"{state.repo}#{state.issue_number}", {"artifact"}, state.record_root,
+                completed_no_later_than=marker.timestamp, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+                completed_after=term.timestamp if term else None, schema_policy="skip",
+            )
+        except WorkError:
+            return None
+        if authors:
+            _completed, path, _request, run = authors[-1]
+            result = run.get("result")
+            validation = result.get("return_validation") if isinstance(result, dict) else None
+            if (run.get("outcome") == "invalid_artifact_return"
+                    or isinstance(validation, dict) and validation.get("status") == "fail"):
+                return f"latest artifact dispatch has a failed return: {path}"
     stages = {
         "builder-session": {"build"},
         "floor": {"floor"},
@@ -2560,7 +2582,35 @@ def _ignored_marker_suffix(state: WorkState) -> str:
 
 def _ignored_disposition_suffix(state: WorkState) -> str:
     _missing, authors = _undisposed_threads(state)
+    authors = sorted(set(authors) | set(_body_findings(state).ignored_authors))
     return f";ignored-disposition-from={','.join(authors)}" if authors else ""
+
+
+def _body_findings(state: WorkState) -> review_findings.Classification:
+    number = state.pr.get("number") if state.pr else None
+    return review_findings.classify(
+        state.repo, number if isinstance(number, int) else 0,
+        [review for review in state.reviews if not _review_notice(str(review.get("body") or ""))],
+        state.review_comments, state.pr_comments,
+        state.config.connected_reviewers, state.config.marker_producers, _disposition,
+    )
+
+
+def _body_disposition_detail(state: WorkState, bodies: review_findings.Classification) -> str:
+    assert state.pr is not None
+    details = [
+        f"{finding.reviewer} {finding.identity}: "
+        + ", ".join(review_findings.review_url(state.repo, state.pr["number"], source)
+                    for source in finding.sources)
+        for finding in bodies.missing_findings
+    ]
+    details.extend(
+        "unidentified: "
+        + review_findings.review_url(state.repo, state.pr["number"], item.review)
+        + " (" + "; ".join(item.reasons) + ")"
+        for item in bodies.missing_reviews
+    )
+    return "; ".join(details)
 
 
 def _ignored_product_incident_suffix(state: WorkState) -> str:
@@ -2704,6 +2754,12 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
         return result(
             "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
             ",".join(str(identity) for identity in threads),
+        )
+    bodies = _body_findings(state)
+    if bodies.missing_findings or bodies.missing_reviews:
+        return result(
+            "review-disposition", True, "resume", "reviewer-body-lacks-disposition",
+            _body_disposition_detail(state, bodies),
         )
     panel_stage = _panel_next(state, lane)
     if panel_stage:
@@ -3324,7 +3380,14 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     instruction = (
         "Perform exactly the stage named in this dispatch and return to the holder. "
         "Do not start or dispatch a later stage."
+        " Your final message is your return to the holder. A path to a file you wrote, "
+        "or a pointer telling the holder to retrieve that file, is not a return."
     )
+    if decision.stage == "artifact":
+        instruction += (
+            " Return the whole artifact text in your final message, opening with the affirmed "
+            "implementation brief below quoted verbatim as a Markdown blockquote."
+        )
     if decision.stage == "build":
         instruction += (
             " Tell the holder to post <!-- tradecraft:builder-session:v1 session=SESSION --> "
@@ -3515,12 +3578,15 @@ def _time(value: str | None) -> datetime | None:
 def _matching_bundles(
     work_value: str, stages: set[str] | frozenset[str], record_root: Path, *,
     completed_no_later_than: str | None = None,
-    outcomes: frozenset[str] = SUCCESSFUL_BUNDLE_OUTCOMES,
+    completed_after: str | None = None,
+    outcomes: frozenset[str] | None = SUCCESSFUL_BUNDLE_OUTCOMES,
+    schema_policy: str = "strict",
 ) -> list[tuple[str, str, dict[str, object], dict[str, object]]]:
     candidates: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
     if not record_root.is_dir():
         return candidates
     boundary = _time(completed_no_later_than)
+    term_start = _time(completed_after)
     try:
         for run_path in record_root.rglob("*.run.json"):
             run = _json_object(run_path)
@@ -3531,18 +3597,27 @@ def _matching_bundles(
             if (str(request.get("work") or "").lower() != work_value.lower()
                     or request.get("stage") not in stages):
                 continue
-            if request.get("schema_version") != records.SCHEMA_VERSION:
+            completed = str(run.get("completed_at") or "")
+            completed_time = _time(completed)
+            if term_start is not None and (completed_time is None or completed_time <= term_start):
+                continue
+            unsupported_request = request.get("schema_version") != records.SCHEMA_VERSION
+            unsupported_run = run.get("schema_version") != records.SCHEMA_VERSION
+            # Draft credit ignores historical schemas; discovery defers proof to resume selection.
+            if schema_policy == "skip" and (unsupported_request or unsupported_run):
+                continue
+            if schema_policy != "defer" and unsupported_request:
                 raise WorkError(
                     f"matching dispatch bundle has unsupported request schema: {run_path}"
                 )
-            if run.get("schema_version") != records.SCHEMA_VERSION:
+            if schema_policy != "defer" and unsupported_run:
                 raise WorkError(
                     f"matching dispatch bundle has unsupported run schema: {run_path}"
                 )
-            if run.get("outcome") not in outcomes:
+            if outcomes is not None and run.get("outcome") not in outcomes:
                 continue
-            completed = str(run.get("completed_at") or "")
-            completed_time = _time(completed)
+            if run.get("outcome") == "invalid_artifact_return" and request.get("stage") != "artifact":
+                continue
             if boundary is not None and (completed_time is None or completed_time > boundary):
                 continue
             candidates.append((completed, str(run_path), request, run))
@@ -3876,6 +3951,20 @@ def _proof_diagnostics(state: WorkState, floor: Marker | None,
                 "message": f"review thread {disposition['thread_id']} has no authorized disposition",
                 "source": disposition["source"],
             })
+    bodies = _body_findings(state)
+    for finding in bodies.missing_findings:
+        diagnostics.append({
+            "code": "body-disposition-missing",
+            "message": f"body finding {finding.identity} has no authorized disposition",
+            "source": _public_source(state, finding.sources[0], "review"),
+        })
+    for item in bodies.missing_reviews:
+        diagnostics.append({
+            "code": "unidentified-review-disposition-missing",
+            "message": f"unidentified review {item.review['id']} has no authorized disposition: "
+            + "; ".join(item.reasons),
+            "source": _public_source(state, item.review, "review"),
+        })
     return diagnostics
 
 
@@ -3968,13 +4057,15 @@ def set_proof_freshness(state: WorkState, expected: dict[str, object]) -> None:
     )
 
 
-def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSource | None:
+def _resume_source(work_value: str, stage: str, record_root: Path, *,
+                   completed_after: str | None = None) -> ResumeSource | None:
     allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
     matched = _matching_bundles(
         work_value, allowed_stages, record_root, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+        completed_after=completed_after,
     )
     candidates: list[ResumeSource] = []
-    for completed, run_path, request, run in matched:
+    for completed, run_path, request, run in (matched[-1:] if stage == "artifact" else matched):
         requested = request.get("requested")
         vendor = requested.get("vendor") if isinstance(requested, dict) else None
         actual = run.get("actual_vendor")
@@ -4850,7 +4941,9 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         record_root = state.record_root or records.default_record_root().expanduser().resolve()
         try:
             resume_source = _resume_source(
-                f"{state.repo}#{state.issue_number}", decision.stage, record_root
+                f"{state.repo}#{state.issue_number}", decision.stage, record_root,
+                completed_after=(_affirmed_review(state)[0].timestamp
+                                 if decision.stage == "artifact" and _affirmed_review(state)[0] else None),
             )
         except WorkError as exc:
             refused = _reported_decision(state, Decision(
@@ -4986,6 +5079,30 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 ),
             }
         payload = report.as_dict()
+        threads, ignored = _undisposed_threads(state)
+        bodies = _body_findings(state)
+        payload["review_dispositions"] = {
+            "complete": not (threads or bodies.missing_findings or bodies.missing_reviews),
+            "unanswered_threads": threads,
+            "unanswered_body_findings": [
+                {"reviewer": item.reviewer, "identity": item.identity,
+                 "sources": [review_findings.review_url(state.repo, state.pr["number"], source)
+                             for source in item.sources]}
+                for item in bodies.missing_findings
+            ],
+            "unanswered_unidentified_reviews": [
+                review_findings.review_url(state.repo, state.pr["number"], item.review)
+                for item in bodies.missing_reviews
+            ],
+            "ignored_authors": sorted(set(ignored) | set(bodies.ignored_authors)),
+        }
+        if not payload["review_dispositions"]["complete"]:
+            payload["detail"] = (
+                "Connected-reviewer answers are incomplete; the gate verdict does not "
+                "establish release readiness. Report the unanswered obligations: "
+                + (",".join(str(identity) for identity in threads) + "; " if threads else "")
+                + _body_disposition_detail(state, bodies)
+            )
         payload.update({
             "required_gate": required_gate,
             "path_departures": path_departures,
@@ -5099,8 +5216,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             return 0
     prepared_prompt: bytes | None = None
     prepared_dispatch: Path | None = None
+    artifact_brief: Marker | None = None
     if uses_implementer:
         try:
+            if decision.stage == "artifact":
+                artifact_brief, _ = _affirmed_review(state)
+                if artifact_brief is None:
+                    raise WorkError("artifact dispatch requires an authorized affirmed brief")
             if dispatch_path is None:
                 prepared_prompt = _stage_prompt(
                     state, decision, branch=BRANCH_PLACEHOLDER
@@ -5285,6 +5407,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "--settings-scope", implementer_role,
                 "--timeout-seconds", timeout_argument,
             ]
+            if artifact_brief is not None:
+                brief_file = Path(temporary) / "artifact-brief.txt"
+                brief_file.write_bytes(artifact_brief.body.encode("utf-8"))
+                common.extend((
+                    "--artifact-brief", str(brief_file), "--artifact-brief-source",
+                    artifact_brief.url or artifact_brief.source_id or artifact_brief.surface,
+                ))
             if branch:
                 common.extend(("--lineage-branch", branch))
             if state.pr and isinstance(state.pr.get("number"), int):
@@ -5420,20 +5549,28 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _named_continuity(state: WorkState, stage: str, recommendation: Decision) -> str:
-    if recommendation.stage == stage and recommendation.continuity is not None:
-        return recommendation.continuity
-    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report"}:
-        return "fresh"
     if stage == "artifact":
+        continuity = (recommendation.continuity if recommendation.stage == stage
+                      and recommendation.continuity is not None else "fresh")
+        term, _ = _affirmed_review(state)
+        if term is None or _time(term.timestamp) is None:
+            return continuity
         try:
             bundles = _matching_bundles(
                 f"{state.repo}#{state.issue_number}", frozenset({"artifact"}),
                 state.record_root or records.default_record_root().expanduser().resolve(),
-                outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+                outcomes=None, completed_after=term.timestamp, schema_policy="defer",
             )
         except WorkError:
+            return continuity
+        if bundles and bundles[-1][3].get("outcome") in {"invalid_artifact_return", "completed_no_output"}:
+            # The resume route refuses an unproved session rather than replacing the failed author.
             return "resume"
-        return "resume" if bundles else "fresh"
+        return continuity
+    if recommendation.stage == stage and recommendation.continuity is not None:
+        return recommendation.continuity
+    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report"}:
+        return "fresh"
     if stage == "build":
         return "resume" if state.pr is not None else "fresh"
     return "resume"

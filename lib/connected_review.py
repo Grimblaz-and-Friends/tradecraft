@@ -1257,12 +1257,13 @@ def review_payload(
         summary = "No findings were found."
     body_only = [row for row in survivors if not row.get("inline", True)]
     body_parts = [summary]
-    for row in body_only:
+    for ordinal, row in enumerate(body_only, 1):
         evidence = row.get("checker_evidence", row.get("evidence", ""))
         explanation = row.get("checker_explanation")
         body_parts.append(
             f"**{row['severity']} - {row['wrong_result']}** "
             f"(`{row['path']}:{row['line']}`)\n\n"
+            f"<!-- tradecraft-review-finding:v1:{attempt}:{ordinal} -->\n\n"
             f"Trigger: {row['input']}\n\n"
             f"Path: {row['execution_path']}\n\n"
             f"Proof: {evidence}"

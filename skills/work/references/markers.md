@@ -163,6 +163,8 @@ The object and publication contract are `proof.md`. For one compatibility releas
 
 The connected-reviewer reference maintains the lawful disposition words as a closed vocabulary. For matching, the entrance removes permitted inline formatting around the reply's opening word and then applies the same word-and-delimiter test as an unformatted disposition. Formatting never makes a word outside that vocabulary lawful. A gate that reads dispositions must apply the same rule, or the entrance and gate disagree about whether the reply is complete.
 
+Body-finding and unidentified-review answers instead open with the bare disposition word in an individual pull-request conversation comment. Their exact identity and source-link contract belongs to the connected-reviewer reference. Finding identities are reviewer data, not stage markers; conversation answers gain no stage-marker authority from this rule.
+
 ## `panel-stage`
 
 - **Exact form:** `<!-- tradecraft:panel-stage:v1 stage=STAGE status=STATUS -->`.
