@@ -70,14 +70,15 @@ def test_posix_timeout_bounds_drain_and_keeps_captured_bytes(tmp_path, monkeypat
 @pytest.mark.skipif(os.name != "posix", reason="POSIX setsid escape")
 def test_detached_descendant_cannot_hold_timeout_drain_open(tmp_path):
     child = tmp_path / "detached.py"
-    child.write_bytes(b"import os,time\nfrom pathlib import Path\nos.setsid()\nPath('child-pid').write_text(str(os.getpid()))\nprint('detached output',flush=True)\ntime.sleep(10)\nPath('finished').write_bytes(b'yes')\n")
-    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(20)"
+    child.write_bytes(b"import os,time\nfrom pathlib import Path\nos.setsid()\nPath('child-pid').write_text(str(os.getpid()))\nprint('detached output',flush=True)\ntime.sleep(20)\nPath('finished').write_bytes(b'yes')\n")
+    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(30)"
+    timeout = 5
     started = time.monotonic()
     try:
         with pytest.raises(subprocess.TimeoutExpired) as caught:
-            process.run_process([sys.executable, "-c", wrapper, str(child)], input=b"", cwd=tmp_path, timeout=1)
+            process.run_process([sys.executable, "-c", wrapper, str(child)], input=b"", cwd=tmp_path, timeout=timeout)
         assert (tmp_path / "child-pid").exists(), "The detached child must actually start."
-        assert time.monotonic() - started < 2
+        assert time.monotonic() - started < timeout + 1
         assert b"detached output" in caught.value.output
     finally:
         pid = tmp_path / "child-pid"
