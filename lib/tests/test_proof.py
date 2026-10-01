@@ -171,6 +171,7 @@ def test_shared_actions_receipt_facts_need_no_new_proof_fields():
     assert {case["result"] for case in cases["cases"]} == {"present", "missing"}
     assert {case["name"] for case in cases["cases"]} >= {
         "canonical-existing-review", "earlier-success-on-later-page",
+        "pull-request-event-refused",
         "wrong-run-repository", "other-workflow", "wrong-review-commit",
         "only-report-success", "missing-jobs-page",
     }

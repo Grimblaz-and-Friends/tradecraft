@@ -65,8 +65,8 @@
       "live_patch": {"workflow_path": {"ref": "refs/heads/main"}}
     },
     {
-      "name": "pull-request-event",
-      "result": "present",
+      "name": "pull-request-event-refused",
+      "result": "missing",
       "live_patch": {"run": {"event": "pull_request"}}
     },
     {

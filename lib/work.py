@@ -2327,8 +2327,8 @@ def _connected_review_run_error(repo: str, run_id: int, run: object) -> str | No
     if not isinstance(path, str) or path.split("@", 1)[0] != CONNECTED_REVIEW_PATH:
         return "workflow run is not the fixed connected-review workflow file"
     event = run.get("event")
-    if not isinstance(event, str) or event not in {"pull_request", "pull_request_target"}:
-        return "workflow run was not triggered by a pull request"
+    if event != "pull_request_target":
+        return "workflow run was not triggered by pull_request_target"
     return None
 
 

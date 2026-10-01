@@ -2103,12 +2103,26 @@ def test_actions_requires_its_successful_completed_review_job(patch, tmp_path):
     assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == "missing"
 
 
-@pytest.mark.parametrize("event", ["pull_request", "pull_request_target"])
+def test_actions_pull_request_event_gets_no_credit_at_fixed_workflow_path(tmp_path):
+    run = actions_run(event="pull_request")
+    transport = actions_transport(run=run)
+    fixture = collect_actions(transport)
+    assert not work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).reason == "required-connected-reviewer-has-not-run"
+    assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == "missing"
+
+    run["event"] = "pull_request_target"
+    accepted = collect_actions(transport)
+    assert work._reviewer_ran(accepted)
+    assert work.decide(accepted, RULES).stage == "proof"
+    assert actions_proof(accepted, tmp_path)["reviewers"][0]["result"] == "present"
+
+
 @pytest.mark.parametrize("status", sorted(work.COMPLETED_REVIEWS))
 @pytest.mark.parametrize("suffix", ["", "@refs/heads/main"])
 def test_actions_real_review_survives_failed_later_attempt_and_report(
-        event, status, suffix, tmp_path):
-    run = actions_run(event=event, conclusion="failure", run_attempt=2)
+        status, suffix, tmp_path):
+    run = actions_run(conclusion="failure", run_attempt=2)
     run["path"] += suffix
     transport = actions_transport(
         reviews=[actions_review(state=status)], run=run, job_pages=[
