@@ -115,6 +115,8 @@ class Section:
     end: int
     content_start: int
     malformed: bool = False
+    depth: int = 0
+    details_section: bool = False
 
 
 def _number(text: str) -> int | None:
@@ -148,9 +150,10 @@ def _section(label: str, start: int, end: int, content_start: int,
 
 
 def _sections(text: str, login: str) -> list[Section]:
-    """Apply each producer's title shapes, then bound all declarations together."""
+    """Apply producer title shapes and boundaries at their details nesting depth."""
     sections = []
     stack = []
+    details_ranges = []
     for tag in re.finditer(r"<details\b[^>]*>|</details>|<summary\b[^>]*>.*?</summary>",
                            text, re.S | re.I):
         lowered = tag[0].lower()
@@ -158,7 +161,8 @@ def _sections(text: str, login: str) -> list[Section]:
             stack.append((tag.start(), []))
         elif lowered.startswith("</details"):
             if stack:
-                _start, pending = stack.pop()
+                start, pending = stack.pop()
+                details_ranges.append((start, tag.start()))
                 for section in pending:
                     section.end = tag.start()
                     sections.append(section)
@@ -166,11 +170,18 @@ def _sections(text: str, login: str) -> list[Section]:
             label = re.sub(r"^<summary\b[^>]*>|</summary>$", "", tag[0], flags=re.I)
             section = _section(label, stack[-1][0], len(text), tag.end(), login)
             if section:
+                section.depth = len(stack) - 1
+                section.details_section = True
                 stack[-1][1].append(section)
-    for _start, pending in stack:
+    for start, pending in stack:
+        details_ranges.append((start, len(text)))
         for section in pending:
             section.malformed = True
             sections.append(section)
+
+    def depth_at(position: int) -> int:
+        return sum(start < position < end for start, end in details_ranges)
+
     header_pattern = (
         r"(?m)^[ \t]*(?:>[ \t]*)*\*\*((?:(?!\*\*)[\s\S])+?)\*\*[ \t]*\r?$"
         if login == "coderabbitai[bot]" else
@@ -179,16 +190,26 @@ def _sections(text: str, login: str) -> list[Section]:
     for header in re.finditer(header_pattern, text):
         section = _section(header[1], header.start(), len(text), header.end(), login)
         if section:
+            section.depth = depth_at(header.start())
             sections.append(section)
     sections.sort(key=lambda item: item.start)
-    dividers = [match.start() for match in re.finditer(
+    dividers = [(match.start(), depth_at(match.start())) for match in re.finditer(
         r"(?m)^[ \t]*(?:>[ \t]*)*---[ \t]*\r?$", text,
     )]
+    declared = []
     for section in sections:
-        boundaries = [other.start for other in sections if other.start > section.start]
-        boundaries.extend(pos for pos in dividers if pos >= section.content_start)
+        content_depth = section.depth + int(section.details_section)
+        boundaries = [pos for pos, depth in dividers
+                      if pos >= section.content_start and depth == content_depth]
         section.end = min([section.end, *boundaries])
-    return sections
+        if any(parent.content_start <= section.start < parent.end
+               and section.depth > parent.depth for parent in declared):
+            continue  # Nested candidate titles belong to the enclosing finding content.
+        for parent in declared:
+            if section.start > parent.start:
+                parent.end = min(parent.end, section.start)
+        declared.append(section)
+    return declared
 
 
 def _section_complete(section: Section, text: str, markers: list[tuple[str, int]],

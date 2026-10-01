@@ -378,7 +378,7 @@ def test_inline_code_paragraph_boundary_preserves_live_declarations_and_identiti
 
 @pytest.mark.parametrize('title', [
     'Security Findings', 'Security Findings and Attack Paths',
-    'Security Findings comments (1)', 'Other comments (unknown)',
+    'Security Findings comments (1)', 'Other comments (unknown)', 'Other comments (two places)',
     'Prefix **Other comments (1)**',
 ])
 def test_coderabbit_requires_a_whole_structural_counted_comments_title(title):
@@ -408,14 +408,13 @@ def test_inner_finding_details_and_nondeclaration_summaries_do_not_end_a_section
     assert len(result.missing_findings) == 1 and not result.unidentified_reviews
 
 
-def test_declared_child_section_cannot_credit_its_identity_to_the_parent():
+def test_nested_summary_candidate_is_content_of_the_declared_parent():
     body = ('<details><summary>Other comments (1)</summary>\n'
             '<details><summary>Nitpick comments (1)</summary>\n' + MARKER
             + '\n</details>\n</details>')
     result = classify([review(body)])
-    assert result.unidentified_reviews[0].reasons == [
-        'unaccounted findings section: Other comments (1)',
-    ]
+    assert not result.unidentified_reviews
+    assert [finding.identity for finding in result.missing_findings] == [ID]
 
 
 @pytest.mark.parametrize('content', ['', 'None.', 'No findings.', 'No findings were found.'])
@@ -472,3 +471,49 @@ def test_coderabbit_file_group_can_hold_distinct_identified_entries():
             + '\n<!-- cr-comment:v1:beta -->\n</details>\n</details>')
     result = classify([review(body)])
     assert len(result.findings) == 2 and not result.unidentified_reviews
+
+
+@pytest.mark.parametrize('content', [
+    '- First supporting point\n- Second supporting point',
+    f'<details><summary>{chr(0x1F9E9)} Analysis chain</summary>\n'
+    '- Supporting analysis\n---\nMore analysis.\n</details>',
+    '**Update stale code comments (two places)**',
+    '**Remove two stale comments (2)**',
+    '<details><summary>Other comments (2)</summary>\nSupporting text.\n</details>',
+], ids=['prose-bullets', 'analysis-divider', 'bold-two-places', 'bold-digit-count', 'nested-summary'])
+def test_finding_content_uses_only_the_declared_sections_depth(content):
+    body = ('<details><summary>Nitpick comments (1)</summary>\n'
+            '<details><summary>app.py (1)</summary>\n' + content + '\n' + MARKER
+            + '\n</details>\n</details>')
+    result = classify([review(body)], answers=[comment(f'fixed - repaired; [{ID}]({URL})')])
+    assert len(result.findings) == 1 and result.findings[0].answered
+    assert not result.unidentified_reviews
+
+
+@pytest.mark.parametrize('summary', [False, True])
+def test_divider_at_the_declared_sections_own_depth_still_ends_it(summary):
+    body = ('<details><summary>Nitpick comments (1)</summary>\n' if summary
+            else '> **Outside diff range comments (1)**\n')
+    body += '<details><summary>app.py (1)</summary>\nNo identity here.\n</details>\n---\n' + MARKER
+    if summary:
+        body += '\n</details>'
+    result = classify([review(body)])
+    assert len(result.unidentified_reviews) == 1
+    assert [finding.identity for finding in result.missing_findings] == [ID]
+
+
+def test_divider_ends_bold_section_before_a_later_nested_declaration():
+    body = ('**Other comments (0)**\nNone.\n---\n'
+            '<details><summary>Wrapper</summary>\n'
+            '<details><summary>Nitpick comments (1)</summary>\n' + MARKER
+            + '\n</details>\n</details>')
+    assert not classify([review(body)]).unidentified_reviews
+
+
+@pytest.mark.parametrize('whole_review', [False, True])
+def test_answer_repository_names_compare_case_insensitively(whole_review):
+    source = review('1 validated finding(s).', login=LAB) if whole_review else review()
+    label = 'unidentified review' if whole_review else ID
+    url = URL.replace('example/product', 'Example/Product')
+    result = classify([source], answers=[comment(f'fixed - repaired; [{label}]({url})')])
+    assert not result.missing_findings and not result.missing_reviews
