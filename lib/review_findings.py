@@ -362,36 +362,31 @@ def classify(repo: str, number: int, reviews: list[dict], inline_comments: list[
             if review not in finding.sources:
                 finding.sources.append(review)
             finding.answered = key in answered_identities
+    # Source membership stays fixed while answers discharge obligations.
+    source_ids = {source["id"] for finding in findings.values() for source in finding.sources}
+    source_ids.update(item.review["id"] for item in unidentified)
     ignored = set()
     for comment in conversation_comments:
         body = str(comment.get("body") or "")
         if not _bare_disposition(body, inline_disposition):
             continue
         text = live_markup(body)
-        links = list(REVIEW_LINK.finditer(text))
-        named = set(re.findall(
-            r"(?:cr-comment:v1:[A-Za-z0-9_-]+|tradecraft-review-finding:v1:[0-9]+:[0-9]+)",
-            text,
-        ))
-        # One source review and at most one full identity; extra targets cannot bundle.
-        if len(links) != 1 or len(named) > 1:
+        links = [link for link in REVIEW_LINK.finditer(text)
+                 if link[1].lower() == repo.lower() and int(link[2]) == number
+                 and int(link[3]) in source_ids]
+        # Only obligation-source links are targets; other links and prose are evidence.
+        if len(links) != 1:
             continue
         link = links[0]
-        if link[1].lower() != repo.lower() or int(link[2]) != number:
-            continue
         review_id = int(link[3])
+        label = next((label for label, url in MARKDOWN_LINK.findall(text) if url == link[0]), None)
         targets = []
-        if named:
-            identity = min(named)
-            canonical = any(label == identity and url == link[0]
-                            for label, url in MARKDOWN_LINK.findall(text))
-            if canonical:
-                targets = [finding for finding in findings.values()
-                           if finding.identity == identity
-                           and any(source["id"] == review_id for source in finding.sources)]
-        else:
-            if any(url == link[0] for _label, url in MARKDOWN_LINK.findall(text)):
-                targets = [item for item in unidentified if item.review["id"] == review_id]
+        if label is not None and IDENTITY.fullmatch(label):
+            targets = [finding for finding in findings.values()
+                       if finding.identity == label
+                       and any(source["id"] == review_id for source in finding.sources)]
+        elif label is not None:
+            targets = [item for item in unidentified if item.review["id"] == review_id]
         if not targets:
             continue
         if author(comment) not in marker_producers:

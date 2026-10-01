@@ -33,7 +33,7 @@ Answer an unidentified review as a whole in a separate authorized conversation c
 fixed — addressed the review's unaccounted findings; [unidentified review](https://github.com/OWNER/REPO/pull/N#pullrequestreview-REVIEW_ID)
 ```
 
-That answer discharges the whole-review obligation while the classification stays unidentified. Any identified body findings and inline threads still need their own answers. A comment naming several findings or reviews answers none: one answer per obligation keeps the record checkable. A missing identity, missing source link, wrong repository or pull request, or unconfigured answer author answers nothing. The entrance checks these live records before proof or release; an explicit proof command may publish missing-answer diagnostics without changing the proof's fields. The sibling gate reads the same records independently.
+That answer discharges the whole-review obligation while the classification stays unidentified. Any identified body findings and inline threads still need their own answers. A target is a link to a submitted review carrying an owed identity or an unidentified review; every other link, and identity text outside the canonical pair, is evidence. Two or more obligation-source links answer none, so one answer per obligation keeps the record checkable. A missing identity, missing source link, wrong repository or pull request, or unconfigured answer author answers nothing. The entrance checks these live records before proof or release; an explicit proof command may publish missing-answer diagnostics without changing the proof's fields. The sibling gate reads the same records independently.
 
 Append the `work` cell's completion marker to the final disposition reply for that reviewer, replacing `NAME`:
 

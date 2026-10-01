@@ -88,9 +88,7 @@ def test_every_existing_disposition_answers_one_finding(disposition):
     f'fixed - [{ID}]({URL.replace("example/product", "example/other")})',
     f'fixed - [{ID}]({URL}.extra)',
     f'fixed - [{ID}]({URL}?x=1)',
-    f'fixed - [{ID}]({URL}) and [review]({URL.replace("-100", "-101")})',
     f'fixed - [{ID}]({URL}) and [cr-comment:v1:beta]({URL})',
-    f'fixed - [{ID}]({URL}) and cr-comment:v1:beta',
     f'fixed - repaired\n```\n[{ID}]({URL})\n```',
 ])
 def test_wrong_opening_identity_or_target_answers_nothing(body):
@@ -103,15 +101,71 @@ def test_supporting_commit_and_issue_links_do_not_bundle_targets():
     assert not classify(answers=[comment(body)]).missing_findings
 
 
+def test_non_obligation_review_link_is_supporting_evidence():
+    codex = 'chatgpt-codex-connector[bot]'
+    body = (f"fixed - as noted in [Codex's review]({URL.replace('-100', '-200')}); "
+            f'[{ID}]({URL})')
+    result = rf.classify('example/product', 7,
+                         [review(), review('Opening note.', identity=200, login=codex)],
+                         [], [comment(body)], [CR, codex], ['holder'], work._disposition)
+    assert not result.missing_findings and not result.missing_reviews
+
+
+def test_identity_in_evidence_link_label_does_not_bundle_or_answer_that_identity():
+    beta = 'cr-comment:v1:beta'
+    body = (f'yours - in the release report; see [my earlier note on {beta}]('
+            'https://github.com/example/product/pull/7#issuecomment-556); '
+            f'[{ID}]({URL})')
+    result = classify([review(), review(f'<!-- {beta} -->', identity=300)],
+                      answers=[comment(body)])
+    assert [finding.identity for finding in result.missing_findings] == [beta]
+    assert not result.missing_reviews
+
+
+@pytest.mark.parametrize('evidence', [
+    '',
+    '[release report](https://github.com/example/product/pull/7#issuecomment-555); ',
+    '[#9](https://github.com/example/product/issues/9); ',
+    '[abc](https://github.com/example/product/commit/abc1234); ',
+    'cr-comment:v1:beta; ',
+    f'[review]({URL.replace("-100", "-101")}); ',
+    '[cr-comment:v1:beta](https://github.com/example/product/pull/8#pullrequestreview-300); ',
+])
+def test_each_evidence_link_form_preserves_the_canonical_answer(evidence):
+    assert not classify(answers=[comment(f'fixed - repaired; {evidence}[{ID}]({URL})')]).missing_findings
+
+
+@pytest.mark.parametrize('whole_review', [False, True])
+def test_two_obligation_source_links_cannot_bundle_answers(whole_review):
+    beta = 'cr-comment:v1:beta'
+    first = review('1 validated finding(s).', login=LAB) if whole_review else review()
+    label = 'unidentified review' if whole_review else ID
+    body = f'fixed - repaired; [{label}]({URL}); [{beta}]({URL.replace("-100", "-300")})'
+    result = classify([first, review(f'<!-- {beta} -->', identity=300)], answers=[comment(body)])
+    assert len(result.missing_findings) == (1 if whole_review else 2)
+    assert len(result.missing_reviews) == (1 if whole_review else 0)
+
+
 @pytest.mark.parametrize('body', [
     'fixed - everything is done',
     f'fixed - [unidentified review]({URL.replace("-100", "-101")})',
     f'fixed - [unidentified review]({URL}.extra)',
-    f'fixed - [unidentified review]({URL}) and [another]({URL.replace("-100", "-101")})',
 ])
 def test_fallback_requires_one_exact_link(body):
     result = classify([review('1 validated finding(s).', login=LAB)], answers=[comment(body)])
     assert len(result.missing_reviews) == 1
+
+
+@pytest.mark.parametrize('evidence', [
+    f'[another]({URL.replace("-100", "-101")})',
+    'cr-comment:v1:beta',
+    '[cr-comment:v1:beta](https://github.com/example/product/pull/7#issuecomment-556)',
+])
+def test_whole_review_answer_ignores_evidence_links_and_identity_text(evidence):
+    result = classify([review('1 validated finding(s).', login=LAB)],
+                      answers=[comment(f'fixed - addressed; {evidence}; [unidentified review]({URL})')])
+    assert not result.missing_reviews
+    assert result.unidentified_reviews[0].answered
 
 
 def test_whole_review_answer_stays_classified_and_cannot_replace_inline_reply():
