@@ -210,7 +210,9 @@ RESUME_SOURCE_STAGES = {
     "review-disposition": frozenset({"build", "floor", "review-disposition"}),
 }
 SUCCESSFUL_BUNDLE_OUTCOMES = frozenset({"success", "success_uncontinuable"})
-RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {"completed_no_output"}
+RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {
+    "completed_no_output", "invalid_artifact_return",
+}
 WORKFLOW_RUN_FILES_QUERY = """query($ids:[ID!]!){
   nodes(ids:$ids){
     ... on CheckSuite {
@@ -1313,6 +1315,21 @@ def _marker_value_error(marker: Marker) -> str | None:
 def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
     if state.record_root is None:
         return None
+    if marker.name == "artifact" and marker.attributes.get("status") == "draft":
+        try:
+            authors = _matching_bundles(
+                f"{state.repo}#{state.issue_number}", {"artifact"}, state.record_root,
+                completed_no_later_than=marker.timestamp, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+            )
+        except WorkError as exc:
+            return str(exc)
+        if authors:
+            _completed, path, _request, run = authors[-1]
+            result = run.get("result")
+            validation = result.get("return_validation") if isinstance(result, dict) else None
+            if (run.get("outcome") == "invalid_artifact_return"
+                    or isinstance(validation, dict) and validation.get("status") == "fail"):
+                return f"latest artifact dispatch has a failed return: {path}"
     stages = {
         "builder-session": {"build"},
         "floor": {"floor"},
@@ -3324,7 +3341,14 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     instruction = (
         "Perform exactly the stage named in this dispatch and return to the holder. "
         "Do not start or dispatch a later stage."
+        " Your final message is your return to the holder. A path to a file you wrote, "
+        "or a pointer telling the holder to retrieve that file, is not a return."
     )
+    if decision.stage == "artifact":
+        instruction += (
+            " Return the whole artifact text in your final message, opening with the affirmed "
+            "implementation brief below quoted verbatim as a Markdown blockquote."
+        )
     if decision.stage == "build":
         instruction += (
             " Tell the holder to post <!-- tradecraft:builder-session:v1 session=SESSION --> "
@@ -3540,6 +3564,8 @@ def _matching_bundles(
                     f"matching dispatch bundle has unsupported run schema: {run_path}"
                 )
             if run.get("outcome") not in outcomes:
+                continue
+            if run.get("outcome") == "invalid_artifact_return" and request.get("stage") != "artifact":
                 continue
             completed = str(run.get("completed_at") or "")
             completed_time = _time(completed)
@@ -3974,7 +4000,7 @@ def _resume_source(work_value: str, stage: str, record_root: Path) -> ResumeSour
         work_value, allowed_stages, record_root, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
     )
     candidates: list[ResumeSource] = []
-    for completed, run_path, request, run in matched:
+    for completed, run_path, request, run in (matched[-1:] if stage == "artifact" else matched):
         requested = request.get("requested")
         vendor = requested.get("vendor") if isinstance(requested, dict) else None
         actual = run.get("actual_vendor")
@@ -5099,8 +5125,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             return 0
     prepared_prompt: bytes | None = None
     prepared_dispatch: Path | None = None
+    artifact_brief: Marker | None = None
     if uses_implementer:
         try:
+            if decision.stage == "artifact":
+                artifact_brief, _ = _affirmed_review(state)
+                if artifact_brief is None:
+                    raise WorkError("artifact dispatch requires an authorized affirmed brief")
             if dispatch_path is None:
                 prepared_prompt = _stage_prompt(
                     state, decision, branch=BRANCH_PLACEHOLDER
@@ -5285,6 +5316,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "--settings-scope", implementer_role,
                 "--timeout-seconds", timeout_argument,
             ]
+            if artifact_brief is not None:
+                brief_file = Path(temporary) / "artifact-brief.txt"
+                brief_file.write_bytes(artifact_brief.body.encode("utf-8"))
+                common.extend((
+                    "--artifact-brief", str(brief_file), "--artifact-brief-source",
+                    artifact_brief.url or artifact_brief.source_id or artifact_brief.surface,
+                ))
             if branch:
                 common.extend(("--lineage-branch", branch))
             if state.pr and isinstance(state.pr.get("number"), int):
@@ -5420,10 +5458,6 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _named_continuity(state: WorkState, stage: str, recommendation: Decision) -> str:
-    if recommendation.stage == stage and recommendation.continuity is not None:
-        return recommendation.continuity
-    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report"}:
-        return "fresh"
     if stage == "artifact":
         try:
             bundles = _matching_bundles(
@@ -5433,7 +5467,14 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
             )
         except WorkError:
             return "resume"
-        return "resume" if bundles else "fresh"
+        if bundles:
+            return "resume"
+        return (recommendation.continuity if recommendation.stage == stage
+                and recommendation.continuity is not None else "fresh")
+    if recommendation.stage == stage and recommendation.continuity is not None:
+        return recommendation.continuity
+    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report"}:
+        return "fresh"
     if stage == "build":
         return "resume" if state.pr is not None else "fresh"
     return "resume"

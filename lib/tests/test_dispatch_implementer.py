@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 import sys
 
@@ -8,6 +9,61 @@ LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import dispatch_implementer as implementer
 import vendor_cli
+
+
+ARTIFACT_BRIEF = """<!-- tradecraft:affirmed-brief:v1 -->
+# Implementation brief - the author returns the design inline
+
+**Shape:** the recipient returns the whole design to its holder in the final message.
+The holder needs the text to post it whole and preserve its source through judgment.
+
+> **In plain terms:** the author writes a design, then sends the design itself.
+> A location in another account's temporary directory cannot carry that document.
+
+**R1. Require the final-message carrier.** The dispatch names the recipient's return.
+- *Why:* later readers consume the recorded text without fetching private files.
+- *Holder:* posts the whole source and checks fidelity before posting.
+- *Builder:* opens the design with the affirmed brief quoted verbatim.
+- *Judging seat:* reads that source in the existing inline carrier.
+
+**R2. Preserve the author on failure.** A pointer does not close the artifact stage.
+- *Why:* a repeated entrance command must resume the same recorded author.
+- *Holder:* finds the failed bundle, session and native usage in the diagnostic.
+- *Builder:* a fresh turn never replaces the author merely because text is absent.
+- *Judging seat:* never receives a pointer instead of the design.
+
+**Not this:** exact quotation checking or automatic stage retries.
+Review risk: ordinary
+Review lane: connected
+""".replace("the design inline", "the design inline" + chr(0x2014) + "whole")
+
+
+def artifact_text(kind="exact"):
+    brief = ARTIFACT_BRIEF
+    if kind in {"corrupted", "combined"}:
+        brief = brief.replace(chr(0x2014), "".join(map(chr, (0xE2, 0x20AC, 0x201D))), 1)
+    if kind in {"blockquote", "combined"}:
+        brief = "\n".join("> " + line for line in brief.splitlines()) + "\n"
+    text = brief + "\n**Purpose:** implement the inline design return.\nBody and falsifiers.\n"
+    if kind == "leading-whitespace":
+        text = " \n\t\n  " + text
+    return text.replace("\n", "\r\n") if kind in {"crlf", "combined"} else text
+
+
+def native_artifact_result(vendor, text, session="0199a213-81c0-7800-8aa1-bbab2a035a53"):
+    if vendor == "codex":
+        return {"stdout": success_events(session), "message": text}
+    return {"stdout": json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": session, "result": text,
+        "modelUsage": {"claude-opus-5-5": {"inputTokens": 120, "outputTokens": 12}},
+    })}
+
+
+def supply_artifact_brief(args):
+    args.artifact_brief = args.dispatch.with_name("brief.md")
+    args.artifact_brief.write_bytes(ARTIFACT_BRIEF.encode("utf-8"))
+    args.artifact_brief_source = "issue-comment:affirmed"
 
 
 @pytest.fixture
@@ -409,6 +465,7 @@ def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeyp
                         lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
     args.vendor = "claude"
     args.stage = "artifact"
+    supply_artifact_brief(args)
     args.vendor_source = "machine file: claude"
     context = args.dispatch.with_name("context.md")
     context.write_bytes(b"Read the root instructions before authoring.\n")
@@ -417,7 +474,7 @@ def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeyp
     scenario.write_bytes(json.dumps({"claude": {
         "stdout": json.dumps({
             "type": "result", "subtype": "success", "is_error": False,
-            "session_id": session, "result": "artifact written",
+            "session_id": session, "result": artifact_text(),
             "modelUsage": {"claude-opus-5-5": {"inputTokens": 5}},
             "permission_denials": [], "total_cost_usd": 0.12,
         }),
@@ -575,6 +632,8 @@ def test_resumed_claude_handover_updates_the_same_reservation(
 def test_direct_ruling_launch_prints_before_process_and_retains_source(job, monkeypatch, capsys, stage, vendor):
     args, _ = job
     args.stage, args.vendor = stage, vendor
+    if stage == "artifact":
+        supply_artifact_brief(args)
     role = "artifact_author" if stage == "artifact" else "implementer"
     model, effort = implementer.PROFILES[role][vendor]
     path = Path.home() / ".tradecraft" / "model-rulings.json"
@@ -603,6 +662,164 @@ def test_direct_ruling_launch_prints_before_process_and_retains_source(job, monk
     assert request["requested"]["model"] == "direct-ruled"
     assert "direct-ruling" in request["requested"]["sources"]["model"]
     assert "ruling-record" in request["requested"]["sources"]["effort"]
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("text", [
+    r"C:\Users\author\Temp\artifact.md", "/tmp/author/artifact.md",
+    "The artifact is in /tmp/author/artifact.md; retrieve it there.",
+    "[Artifact](C:/Users/author/Temp/artifact.md)",
+    "I wrote the Implementation brief - the author returns the design inline. "
+    "<!-- tradecraft:affirmed-brief:v1 --> " + "Fetch the document from /tmp/artifact.md. " * 50,
+    "<!-- tradecraft:affirmed-brief:v1 -->",
+    "# Implementation brief - the author returns the design inline",
+    "Introductory prose.\n" * 20 + artifact_text(),
+], ids=["windows-path", "unix-path", "pointer", "file-link", "long-pointer",
+        "marker-only", "title-only", "later-brief"])
+def test_artifact_pointer_return_fails_with_retained_native_evidence(job, monkeypatch, capsys, vendor, text):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", vendor
+    supply_artifact_brief(args)
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text)}).encode())
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    attempt = logged["attempts"][0]
+    assert logged["outcome"] == "invalid_artifact_return"
+    assert attempt["outcome"] == "success"
+    assert attempt["observed"]["session_id"] == "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    tokens = attempt["usage"]["tokens"]
+    assert (tokens if vendor == "codex" else tokens["models"]["claude-opus-5-5"])["input"] == 120
+    assert len(logged["attempts"]) == 1
+    assert logged["result"]["return_validation"]["status"] == "fail"
+    assert Path(logged["result"]["source_output"]).read_bytes() == text.encode("utf-8")
+    assert args.output.read_bytes() == text.encode("utf-8")
+    diagnostic = capsys.readouterr()
+    assert "session 0199" not in diagnostic.out
+    assert str(implementer.records.sidecar(args.output, ".run.json")) in diagnostic.err
+    assert attempt["observed"]["session_id"] in diagnostic.err
+    assert "repeat run artifact" in diagnostic.err
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("kind", ["exact", "blockquote", "crlf", "corrupted", "combined", "leading-whitespace"])
+def test_artifact_inline_return_passes_and_retains_exact_sources(job, monkeypatch, vendor, kind):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", vendor
+    supply_artifact_brief(args)
+    text = artifact_text(kind)
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text)}).encode())
+    assert implementer.run_implementer(args) == 0
+    assert record(args)["outcome"] == "success"
+    assert record(args)["result"]["return_validation"] == {"status": "pass", "reason": ""}
+    assert args.output.read_bytes() == text.replace("\r\n", "\n").encode("utf-8")
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    retained = request["artifact_brief"]
+    assert retained["source"] == "issue-comment:affirmed"
+    args.artifact_brief.unlink()
+    assert Path(retained["path"]).read_bytes() == ARTIFACT_BRIEF.encode("utf-8")
+    assert retained["sha256"] == hashlib.sha256(ARTIFACT_BRIEF.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("text", ["", " \r\n\t "])
+def test_artifact_empty_return_preserves_identity_and_reports_failed_bundle(job, monkeypatch, capsys, vendor, text):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", vendor
+    supply_artifact_brief(args)
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text)}).encode())
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "completed_no_output"
+    assert logged["result"]["return_validation"]["status"] == "fail"
+    assert logged["result"]["source_output"] is None
+    assert not args.output.exists()
+    assert len(logged["attempts"]) == 1
+    attempt = logged["attempts"][0]
+    tokens = attempt["usage"]["tokens"]
+    assert (tokens if vendor == "codex" else tokens["models"]["claude-opus-5-5"])["input"] == 120
+    diagnostic = capsys.readouterr().err
+    assert str(implementer.records.sidecar(args.output, ".run.json")) in diagnostic
+    assert attempt["observed"]["session_id"] in diagnostic
+    assert "repeat run artifact" in diagnostic
+
+
+@pytest.mark.parametrize("content", [None, b"", b" \r\n", b"\xff"])
+def test_artifact_brief_input_is_validated_before_launch(job, monkeypatch, content):
+    args, _ = job
+    args.stage = "artifact"
+    if content is not None:
+        supply_artifact_brief(args)
+        args.artifact_brief.write_bytes(content)
+    monkeypatch.setattr(implementer, "run_process", lambda *_a, **_k: pytest.fail("launched invalid input"))
+    with pytest.raises((implementer.ImplementerError, UnicodeError)):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("text", ["/tmp/private/artifact.md", ""])
+def test_failed_artifact_without_native_identity_reports_unavailable(job, monkeypatch, capsys, vendor, text):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", vendor
+    supply_artifact_brief(args)
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text, None)}).encode())
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == ("invalid_artifact_return" if text else "completed_no_output")
+    assert logged["attempts"][0]["observed"]["session_id"] is None
+    assert "author session unavailable" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("text", ["/tmp/private/artifact.md", ""])
+def test_failed_artifact_handover_keeps_the_proved_native_identity(job, monkeypatch, text):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", "claude"
+    supply_artifact_brief(args)
+    args.session_id = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    args.handover_state = args.dispatch.with_name("handover.json")
+    args.handover_from = "predecessor-bundle"
+    args.handover_state.write_bytes(json.dumps({
+        "replacement_session": args.session_id, "phase": "reserved",
+    }).encode())
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    scenario.write_bytes(json.dumps({"claude": native_artifact_result("claude", text, args.session_id)}).encode())
+    assert implementer.run_implementer(args) == 1
+    assert record(args)["attempts"][0]["observed"]["session_id"] == args.session_id
+    assert json.loads(args.handover_state.read_bytes())["phase"] == "completed"
+
+
+@pytest.mark.parametrize("failure", ["identity", "runtime", "publication"])
+def test_artifact_validation_preserves_stronger_failures(job, monkeypatch, failure):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", "codex"
+    supply_artifact_brief(args)
+    native = native_artifact_result("codex", "/tmp/private/artifact.md")
+    if failure == "identity":
+        args.resume = "01234567-89ab-cdef-0123-456789abcdef"
+    elif failure == "runtime":
+        native["stdout"] = json.dumps({"type": "turn.failed"})
+    else:
+        def refuse(*_args):
+            raise OSError("publication refused")
+        monkeypatch.setattr(implementer.records, "publish_output", refuse)
+    scenario.write_bytes(json.dumps({"codex": native}).encode())
+    if failure == "publication":
+        with pytest.raises(OSError, match="publication refused"):
+            implementer.run_implementer(args)
+    else:
+        assert implementer.run_implementer(args) == 1
+        assert "return_validation" not in record(args)["result"]
+    assert record(args)["outcome"] == "error"
+    assert not args.output.exists()
 
 
 def test_partial_direct_choice_does_not_bridge_explicit_default(job):
