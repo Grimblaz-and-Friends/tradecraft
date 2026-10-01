@@ -1735,7 +1735,7 @@ def test_uncertain_publication_does_not_advise_back_out_of_published_merge(tmp_p
     original = implementation.run_git
 
     def unavailable(*args, **kwargs):
-        if args[:2] == ("merge-base", "--is-ancestor"):
+        if args[:2] == ("rev-list", "--reverse"):
             return subprocess.CompletedProcess([], 2, b"", b"injected publication observation failure")
         return original(*args, **kwargs)
 
@@ -1761,3 +1761,275 @@ def test_reftable_expired_evidence_cannot_authorize_checked_merge(tmp_path):
     result = persist(work, "-m", "receipt alone cannot replace missing reftable evidence")
     assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
     assert before == refused_state(work)
+
+
+@pytest.mark.parametrize("route", ["new", "ff", "deleted-checked", "unknown-other-tip"])
+def test_remote_wide_publication_keeps_published_merge_usable(tmp_path, route):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    if route == "deleted-checked":
+        value(work, "merge", "--abort")
+        value(work, "checkout", "-b", "feature", start)
+        value(work, "push", "-u", "origin", "feature")
+        value(work, "merge", "--no-commit", "--no-ff", target)
+        assert_landed(work, persist(work, "-m", "publish checked merge before its branch is deleted"),
+                      [start, target], branch="feature")
+        merge = value(work, "rev-parse", "HEAD")
+        assert checked_receipt(work, merge).exists()
+        value(work, "push", "origin", f"{merge}:refs/heads/main")
+        value(work, "push", "origin", "--delete", "feature")
+    else:
+        value(work, "commit", "-m", "external merge published on main")
+        merge = value(work, "rev-parse", "HEAD")
+        value(work, "push", "origin", "main")
+        value(work, "checkout", "-b", "feature", merge if route == "new" else start)
+        if route != "new":
+            value(work, "push", "-u", "origin", "feature")
+            value(work, "merge", "--ff-only", merge)
+    unknown = None
+    if route == "unknown-other-tip":
+        other = tmp_path / "other"
+        value(tmp_path, "clone", str(tmp_path / "origin.git"), str(other))
+        value(other, "config", "user.email", "other@example.com")
+        value(other, "config", "user.name", "other")
+        (other / "remote-only.txt").write_bytes(b"remote moved\n")
+        value(other, "add", "remote-only.txt")
+        value(other, "commit", "-m", "advance the other remote branch beyond the published merge")
+        unknown = value(other, "rev-parse", "HEAD")
+        value(other, "push", "origin", "main")
+        assert run(["git", "cat-file", "-e", unknown], cwd=work).returncode != 0
+    remote_main = value(work, "ls-remote", "origin", "refs/heads/main")
+    witness = witness_push(work)
+    (work / "pending.txt").write_bytes(b"new work after a published merge\n")
+    if route in {"new", "deleted-checked"}:
+        before = refused_state(work)
+        result = persist(work, "-m", "published merge gets the ordinary deliberate publication remedy", "pending.txt")
+        assert result.returncode == 1 and "push it deliberately first" in result.stdout
+        assert "back the merge out" not in result.stdout and "previous checked merge" not in result.stdout
+        assert before == refused_state(work) and not witness.exists()
+        value(work, "push", "-u", "origin", "feature")
+    result = persist(work, "-m", "land ordinary work after a merge published elsewhere on this remote", "pending.txt")
+    assert_landed(work, result, [merge], branch="feature")
+    assert value(work, "ls-remote", "origin", "refs/heads/main") == remote_main
+    if unknown is not None:
+        assert value(work, "cat-file", "-t", unknown) == "commit"
+
+
+@pytest.mark.parametrize("kind", ["external", "mismatch-descendant"])
+def test_buried_unchecked_merge_refuses_and_recovery_preserves_later_work(tmp_path, kind):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    witness = witness_push(work)
+    if kind == "mismatch-descendant":
+        checked = value(work, "write-tree")
+        hook(work, "pre-commit", "Path('target.txt').write_bytes(b'accepted hook rewrite\\n')\ngit('add', 'target.txt')\n")
+        descendant_hook(work)
+        result = persist(work, "-m", "a rewritten merge left beneath a concurrent descendant must not ride later")
+        rejected = mismatch_ids(result, checked, merge=True)
+        assert "undo skipped" in result.stdout and not witness.exists()
+        git_file(work, "hooks/post-commit").unlink()
+    else:
+        value(work, "commit", "-m", "external unchecked merge")
+        rejected = value(work, "rev-parse", "HEAD")
+        for name in ("later-one.txt", "later-two.txt"):
+            (work / name).write_bytes((name + "\n").encode("ascii"))
+            value(work, "add", name)
+            value(work, "commit", "-m", "later ordinary work " + name)
+    saved_head = value(work, "rev-parse", "HEAD")
+    assert saved_head != rejected and not checked_receipt(work, rejected).exists()
+    later_paths = value(work, "diff", "--name-only", rejected, saved_head).splitlines()
+    later_patch = run(["git", "diff", "--binary", rejected, saved_head], cwd=work).stdout.encode("utf-8")
+    (work / "pending.txt").write_bytes(b"older staged pending\n")
+    value(work, "add", "pending.txt")
+    (work / "pending.txt").write_bytes(b"newer working pending\n")
+    (work / "unrelated.txt").write_bytes(b"unrelated edit to retain\n")
+    before = refused_state(work)
+    result = persist(work, "-m", "inspect every unpushed merge before staging named pending work", "pending.txt")
+    assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+    assert rejected in result.stdout and saved_head in result.stdout
+    assert "every later commit" in result.stdout and "recovery ref" in result.stdout
+    assert before == refused_state(work) and not witness.exists()
+    assert (work / "pending.txt").read_bytes() == b"newer working pending\n"
+    # Follow the refusal: preserve both history and pending index/working bytes,
+    # then rebuild checked ancestry and reapply later work from the saved head.
+    recovery = "refs/persist-changes/recovery/" + saved_head
+    assert f"git update-ref {recovery} {saved_head}" in result.stdout
+    value(work, "update-ref", recovery, saved_head)
+    pending_bytes = tmp_path / "pending-working.bin"
+    unrelated_bytes = tmp_path / "unrelated-working.bin"
+    pending_bytes.write_bytes((work / "pending.txt").read_bytes())
+    unrelated_bytes.write_bytes((work / "unrelated.txt").read_bytes())
+    value(work, "stash", "push", "--include-untracked", "-m", "save pending content before merge recovery")
+    value(work, "reset", "--mixed", start)
+    value(work, "restore", f"--source={start}", "--worktree", "--", "README.md")
+    for name in ["target.txt", *later_paths]:
+        (work / name).unlink(missing_ok=True)
+    value(work, "merge", "--no-commit", "--no-ff", target)
+    value(work, "restore", f"--source={rejected}", "--worktree", "--", "README.md", "target.txt")
+    value(work, "add", "README.md", "target.txt")
+    intended_merge = value(work, "write-tree")
+    assert_landed(work, persist(work, "-m", "land revalidated chosen merge content through the script"),
+                  [start, target], intended_merge)
+    repaired_merge = value(work, "rev-parse", "HEAD")
+    applied = subprocess.run(["git", "apply", "--binary"], cwd=work, input=later_patch,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert applied.returncode == 0, applied.stderr
+    assert_landed(work, persist(work, "-m", "reapply saved later work without the rejected merge ancestry", *later_paths),
+                  [repaired_merge])
+    assert value(work, "rev-parse", "HEAD^{tree}") == value(work, "rev-parse", f"{saved_head}^{{tree}}")
+    assert run(["git", "merge-base", "--is-ancestor", rejected, "HEAD"], cwd=work).returncode == 1
+    assert value(work, "rev-parse", recovery) == saved_head
+    value(work, "stash", "apply", "--index")
+    # Git checkout/stash conversion can translate line endings. The separately
+    # saved working bytes supply exact restoration alongside the saved index.
+    (work / "pending.txt").write_bytes(pending_bytes.read_bytes())
+    (work / "unrelated.txt").write_bytes(unrelated_bytes.read_bytes())
+    assert value(work, "show", ":pending.txt") == "older staged pending"
+    assert (work / "pending.txt").read_bytes() == b"newer working pending\n"
+    assert (work / "unrelated.txt").read_bytes() == b"unrelated edit to retain\n"
+
+
+@pytest.mark.parametrize("source", ["other-remote", "tag", "stale-tracking"])
+def test_publication_requires_a_current_branch_on_the_selected_remote(tmp_path, source):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    value(work, "commit", "-m", "external merge outside the selected remote's branches")
+    merge = value(work, "rev-parse", "HEAD")
+    if source == "other-remote":
+        fork = tmp_path / "fork.git"
+        value(tmp_path, "init", "--bare", "-b", "main", str(fork))
+        value(work, "remote", "add", "fork", str(fork))
+        value(work, "push", "fork", "main")
+    elif source == "tag":
+        value(work, "tag", "published-tag", merge)
+        value(work, "push", "origin", "published-tag")
+    else:
+        value(work, "update-ref", "refs/remotes/origin/stale", merge)
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    before = refused_state(work)
+    witness = witness_push(work)
+    result = persist(work, "-m", "other remotes, tags and stale local refs grant no branch publication", "pending.txt")
+    assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+    assert before == refused_state(work) and not witness.exists()
+
+
+@pytest.mark.parametrize("damage", ["valid", "missing", "reflog"])
+def test_buried_checked_merge_requires_receipt_and_reflog_before_ordinary_landing(tmp_path, damage):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    protect_main(work)
+    result = persist(work, "-m", "retain a checked unpublished merge beneath later ordinary work")
+    assert result.returncode == 1 and "push failed" in result.stdout
+    merge = value(work, "rev-parse", "HEAD")
+    Path(value(work, "remote", "get-url", "origin")).joinpath("hooks/pre-receive").unlink()
+    (work / "later.txt").write_bytes(b"later ordinary work\n")
+    value(work, "add", "later.txt")
+    value(work, "commit", "-m", "an ordinary descendant of a checked merge")
+    head = value(work, "rev-parse", "HEAD")
+    if damage == "missing":
+        checked_receipt(work, merge).unlink()
+    elif damage == "reflog":
+        value(work, "reflog", "expire", "--expire=all", "main")
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    before = refused_state(work)
+    witness = witness_push(work)
+    result = persist(work, "-m", "all buried unpublished merges need actual checked evidence", "pending.txt")
+    if damage == "valid":
+        assert_landed(work, result, [head])
+        assert value(work, "show", "HEAD:later.txt") == "later ordinary work"
+    else:
+        assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+        assert merge in result.stdout and before == refused_state(work) and not witness.exists()
+
+
+@pytest.mark.parametrize("position", ["first-parent", "side-parent"])
+def test_checked_merge_cannot_hide_an_unchecked_merge_ancestor(tmp_path, implementation, monkeypatch, position):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    value(work, "commit", "-m", "earlier external unchecked merge")
+    unchecked = value(work, "rev-parse", "HEAD")
+    if position == "side-parent":
+        value(work, "reset", "--hard", start)
+        later_target = unchecked
+    else:
+        later_target = value(work, "commit-tree", f"{start}^{{tree}}", "-p", start,
+                             "-m", "another target for the later checked merge")
+    later_start = value(work, "rev-parse", "HEAD")
+    value(work, "merge", "--no-commit", "--no-ff", later_target)
+    tree = value(work, "write-tree")
+    action = "persist-" + "1" * 32
+    committed = subprocess.run(["git", "-c", "core.logAllRefUpdates=true", "commit", "-m", "historical checked merge"],
+                               cwd=work, env=dict(os.environ, GIT_REFLOG_ACTION=action),
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert committed.returncode == 0, committed.stderr
+    checked = value(work, "rev-parse", "HEAD")
+    parents = [later_start, later_target]
+    assert value(work, "rev-parse", "HEAD^{tree}") == tree
+    # Retain genuine post-comparison evidence for the historical shape that the
+    # pre-repair script could create; a checked newer merge proves no older one.
+    with monkeypatch.context() as context:
+        context.chdir(work)
+        implementation.retain_checked_merge("refs/heads/main", later_start, checked, tree, parents, action)
+        assert implementation.prior_checked_merge(checked, parents) == (True, "")
+    if position == "side-parent":
+        (work / "later.txt").write_bytes(b"later ordinary work\n")
+        value(work, "add", "later.txt")
+        value(work, "commit", "-m", "one-parent head retaining the unchecked side ancestry")
+    head = value(work, "rev-parse", "HEAD")
+    before = refused_state(work)
+    witness = witness_push(work)
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    result = persist(work, "-m", "a checked newer merge never grants ownership to older ancestry", "pending.txt")
+    assert result.returncode == 1 and unchecked in result.stdout
+    assert "cannot establish that it made and checked" in result.stdout
+    assert "previous checked merge" not in result.stdout and before == refused_state(work) and not witness.exists()
+    if position == "first-parent":
+        recovery = "refs/persist-changes/recovery/" + head
+        value(work, "update-ref", recovery, head)
+        value(work, "reset", "--mixed", start)
+        (work / "target.txt").unlink()
+        value(work, "merge", "--no-commit", "--no-ff", target)
+        assert_landed(work, persist(work, "-m", "rebuild the refused earlier merge through persistence"), [start, target])
+        repaired = value(work, "rev-parse", "HEAD")
+        value(work, "merge", "--no-commit", "--no-ff", later_target)
+        assert_landed(work, persist(work, "-m", "rebuild the later merge rather than flattening its ancestry"),
+                      [repaired, later_target], tree)
+        assert value(work, "rev-parse", recovery) == head
+        assert (work / "pending.txt").read_bytes() == b"pending work\n"
+        assert run(["git", "merge-base", "--is-ancestor", unchecked, "HEAD"], cwd=work).returncode == 1
+
+
+@pytest.mark.parametrize("failure", ["listing", "malformed", "ambiguous", "fetch", "snapshot-moved", "walk"])
+def test_remote_publication_uncertainty_refuses_without_back_out_advice(tmp_path, implementation, monkeypatch, capsys, failure):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    value(work, "commit", "-m", "merge already published before observation uncertainty")
+    value(work, "push", "origin", "main")
+    original = implementation.run_git
+    unknown = "f" * 40
+
+    def uncertain(*args, **kwargs):
+        if args[:2] == ("ls-remote", "--heads"):
+            if failure == "listing":
+                return subprocess.CompletedProcess([], 1, b"", b"injected listing failure")
+            if failure == "malformed":
+                return subprocess.CompletedProcess([], 0, b"incomplete-listing\n", b"")
+            if failure == "ambiguous":
+                result = original(*args, **kwargs)
+                return subprocess.CompletedProcess([], 0, result.stdout * 2, b"")
+            if failure in {"fetch", "snapshot-moved"}:
+                return subprocess.CompletedProcess([], 0, (unknown + "\trefs/heads/main\n").encode("ascii"), b"")
+        if args[0] == "fetch" and failure == "fetch":
+            return subprocess.CompletedProcess([], 1, b"", b"injected fetch failure")
+        if args[:2] == ("rev-list", "--reverse") and failure == "walk":
+            return subprocess.CompletedProcess([], 128, b"", b"injected ancestry traversal failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(implementation, "run_git", uncertain)
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    before = refused_state(work)
+    witness = witness_push(work)
+    result = invoke_args(implementation, work, monkeypatch, capsys, "pending.txt")
+    assert result.returncode == 1 and "cannot establish merge publication" in result.stdout
+    assert "back the merge out" not in result.stdout and "push it deliberately first" not in result.stdout
+    assert before == refused_state(work) and not witness.exists()

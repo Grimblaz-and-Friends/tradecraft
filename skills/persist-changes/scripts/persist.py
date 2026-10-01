@@ -25,8 +25,10 @@ Mechanical contract:
     disabled gains a branch reflog (no persistent configuration change)
   - accepts an in-progress merge's staged tree and exact ordered parents;
     retains a checked-merge receipt before push in Git's common directory;
-    a later unpushed merge redirects to existing-commit publication recovery
-    only with that receipt and matching Git evidence, otherwise to back-out/redo
+    publication is reachability from any current branch on the selected remote;
+    every unpublished merge in the starting ancestry needs that receipt and
+    matching Git evidence; an unchecked ancestor refuses before staging;
+    a checked unpublished merge at HEAD redirects to publication recovery
   - verifies the pushed commit is the remote branch head before claiming success
 
 Output contract: exactly one line — 'persisted: ...' (exit 0) or
@@ -252,31 +254,61 @@ def prior_checked_merge(commit: str, parents: list[str]) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def classify_starting_merge(start: str, remote: str, remote_branch: str,
-                            remote_tip: str | None) -> None:
-    parents = git("rev-list", "--parents", "-n", "1", start).split()[1:]
-    if len(parents) < 2:
-        return
-    if remote_tip is not None:
-        if run_git("cat-file", "-e", f"{remote_tip}^{{commit}}").returncode:
-            git("fetch", "--no-tags", remote, f"refs/heads/{remote_branch}")
-        publication = run_git("merge-base", "--is-ancestor", start, remote_tip)
-        if publication.returncode == 0:
-            return
-        if publication.returncode != 1:
-            fail(f"cannot establish merge publication: {detail(publication)}; "
+def remote_branch_heads(remote: str) -> dict[str, str]:
+    listing = run_git("ls-remote", "--heads", remote)
+    if listing.returncode:
+        fail(f"cannot establish merge publication: {detail(listing)}; "
+             "inspect current remote/local history before retrying")
+    heads = {}
+    for line in decoded(listing.stdout).splitlines():
+        fields = line.split()
+        if len(fields) != 2 or fields[1] in heads:
+            fail("cannot establish merge publication: malformed or ambiguous remote branch listing; "
                  "inspect current remote/local history before retrying")
-    owned, reason = prior_checked_merge(start, parents)
-    if owned:
-        fail(f"previous checked merge {start} remains outside {remote}/{remote_branch}; "
+        tip, ref = fields
+        heads[ref] = tip
+    return heads
+
+
+def classify_starting_merge(start: str, remote: str, remote_heads: dict[str, str]) -> None:
+    """Exclude actual remote branch ancestry, then prove every remaining merge.
+
+    Fetch missing advertised objects by branch; still exclude the recorded
+    object IDs, never a later tracking-ref value. An observation or traversal
+    failure grants neither publication nor back-out advice.
+    """
+    fetch_details = []
+    for ref, tip in remote_heads.items():
+        if run_git("cat-file", "-e", f"{tip}^{{commit}}").returncode:
+            fetched = run_git("fetch", "--no-tags", remote, ref)
+            fetch_details.append(detail(fetched))
+    unpublished = run_git("rev-list", "--reverse", "--topo-order", "--min-parents=2", "--parents",
+                          start, "--not", *sorted(set(remote_heads.values())))
+    if unpublished.returncode:
+        fail(f"cannot establish merge publication: {detail(unpublished)}; {'; '.join(fetch_details)}; "
+             "inspect current remote/local history before retrying")
+    checked_start = False
+    for line in decoded(unpublished.stdout).splitlines():
+        commit, *parents = line.split()
+        owned, reason = prior_checked_merge(commit, parents)
+        if not owned:
+            targets = " ".join(parents[1:])
+            recovery = f"refs/persist-changes/recovery/{start}"
+            fail(f"unpushed merge {commit}: the script cannot establish that it made and checked this commit "
+                 f"({reason}); no staging, undo or push; preserve starting head {start} on a recovery ref "
+                 f"with git update-ref {recovery} {start}, and separately save pending staged/working content; "
+                 f"back the merge out to its first parent {parents[0]} with git reset --mixed {parents[0]}; "
+                 "this removes the merge and every later commit from this branch, retaining their objects "
+                 "under the recovery ref; preserve needed content, prepare affected working paths and "
+                 "inspect/remove obstructing additions while retaining unrelated edits, then redo with "
+                 f"git merge --no-commit --no-ff {targets}, validate chosen content and run the script; "
+                 "then reapply and validate needed later work from the saved head without rejected ancestry, "
+                 "rebuilding later merges through the script and landing ordinary work with named paths")
+        checked_start = checked_start or commit == start
+    if checked_start:
+        fail(f"previous checked merge {start} remains outside the branches on {remote}; "
              "inspect the earlier push error and current publication state; use the existing checked "
              "commit through the persist-changes push-failure route; no new staging, commit or push")
-    targets = " ".join(parents[1:])
-    fail(f"unpushed merge {start}: the script cannot establish that it made and checked this commit "
-         f"({reason}); no staging, undo or push; preserve needed content, back the merge out to its "
-         f"first parent {parents[0]}, prepare affected working paths and inspect/remove obstructing "
-         f"additions while retaining unrelated edits, then redo with git merge --no-commit --no-ff {targets} "
-         "and run the script")
 
 
 def index_entries(env: dict[str, str] | None = None) -> dict:
@@ -503,9 +535,9 @@ def main() -> None:
     targets = merge_heads()
     refuse_unresolved()
     remote, remote_branch = pick_remote(branch)
-    remote_head = git("ls-remote", remote, f"refs/heads/{remote_branch}")
-    remote_tip = remote_head.split()[0] if remote_head else None
-    classify_starting_merge(start, remote, remote_branch, remote_tip)
+    remote_heads = remote_branch_heads(remote)
+    remote_tip = remote_heads.get(f"refs/heads/{remote_branch}")
+    classify_starting_merge(start, remote, remote_heads)
     if not remote_tip:
         fail(f"remote branch {remote}/{remote_branch} does not exist -- "
              "publishing a new branch is outside this skill; push it deliberately first")
