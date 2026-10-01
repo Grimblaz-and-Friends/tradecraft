@@ -4159,6 +4159,72 @@ def test_artifact_revision_recovers_its_artifact_session(tmp_path):
     assert work.resume_session(state(), "artifact", store) == SESSION
 
 
+@pytest.mark.parametrize("outcome", ["invalid_artifact_return", "completed_no_output"])
+def test_artifact_review_amendment_starts_a_fresh_author(tmp_path, outcome):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome=outcome)
+    fixture = state(AFFIRMED, AFFIRMED + "Amended whole brief.\n")
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.issue_comments[1]["created_at"] = "2026-09-21T00:00:00Z"
+    fixture.record_root = store
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.continuity == "fresh"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+
+
+@pytest.mark.parametrize("outcome", ["success", "success_uncontinuable", "error"])
+@pytest.mark.parametrize("session", [SESSION, None])
+def test_artifact_review_current_nonfailure_keeps_the_recommendation(tmp_path, outcome, session):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome=outcome, session=session)
+    fixture = state(AFFIRMED)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.record_root = store
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.continuity == "fresh"
+    assert work._named_continuity(fixture, "artifact", recommendation) == "fresh"
+    resumed = work.Decision("artifact", True, "resume", "artifact-repair")
+    assert work._named_continuity(fixture, "artifact", resumed) == "resume"
+
+
+@pytest.mark.parametrize("kind", ["old-request", "old-run", "unreadable"])
+@pytest.mark.parametrize("current_failure", [False, True])
+def test_artifact_review_legacy_bundle_does_not_invalidate_a_draft(tmp_path, kind, current_failure):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", name="legacy.md",
+                    request_schema=1 if kind == "old-request" else 2,
+                    run_schema=1 if kind == "old-run" else 2)
+    if kind == "unreadable":
+        (store / "artifact" / "legacy.md.run.json").write_bytes(b"not JSON")
+    if current_failure:
+        dispatch_bundle(store, stage="artifact", name="failed.md", outcome="invalid_artifact_return",
+                        completed_at="2026-09-21T00:00:00Z")
+    fixture = state(AFFIRMED, ARTIFACT)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.issue_comments[1]["created_at"] = "2026-09-22T00:00:00Z"
+    fixture.record_root = store
+    before = {path: path.read_bytes() for path in store.rglob("*.json")}
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert any(marker.name == "artifact" for marker in lawful) == (not current_failure)
+    if current_failure:
+        assert "failed.md.run.json" in next(claim["reason"] for claim in invalid if claim["name"] == "artifact")
+    else:
+        assert not invalid
+    assert before == {path: path.read_bytes() for path in before}
+
+
+def test_artifact_review_previous_term_failure_cannot_withhold_current_draft(tmp_path):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome="invalid_artifact_return")
+    fixture = state(AFFIRMED, ARTIFACT)
+    fixture.issue_comments[0]["created_at"] = "2026-09-21T00:00:00Z"
+    fixture.issue_comments[1]["created_at"] = "2026-09-22T00:00:00Z"
+    fixture.record_root = store
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert any(marker.name == "artifact" for marker in lawful)
+    assert not invalid
+
+
 @pytest.mark.parametrize("outcome", ["success", "success_uncontinuable", "completed_no_output"])
 def test_historical_artifact_records_are_not_revalidated(tmp_path, outcome):
     store = tmp_path / "dispatches"
@@ -4205,6 +4271,7 @@ def test_failed_artifact_is_continuity_evidence_without_marker_credit(tmp_path, 
     failed["result"] = {"return_validation": {"status": "fail"}}
     failed_path.write_bytes(json.dumps(failed).encode())
     fixture = state(AFFIRMED, ARTIFACT)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
     fixture.record_root = store
     before = {path: path.read_bytes() for path in store.rglob("*.json")}
     lawful, invalid = work.validate_marker_claims(fixture)
@@ -4226,6 +4293,7 @@ def test_latest_failed_artifact_without_identity_refuses_older_author(tmp_path, 
     dispatch_bundle(store, stage="artifact", name="failed.md", session=None, outcome=outcome,
                     completed_at="2026-09-21T10:00:00+00:00")
     fixture = state(AFFIRMED)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
     fixture.record_root = store
     decision = work.Decision("artifact", True, work._named_continuity(
         fixture, "artifact", work.decide(fixture, RULES)), "holder-named-stage")
@@ -4270,6 +4338,7 @@ def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
         def get(self, endpoint, *, paginate=False):
             if endpoint.endswith("/comments"):
                 return [{"id": 751, "body": ARTIFACT_BRIEF,
+                         "created_at": "2026-09-19T00:00:00Z",
                          "html_url": "https://github.example/issue#issuecomment-751",
                          "user": {"login": PRODUCER}}]
             if "/pulls?" in endpoint:

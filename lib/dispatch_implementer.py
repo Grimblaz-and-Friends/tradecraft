@@ -3,7 +3,10 @@
 
 Usage: python <plugin-root>/lib/dispatch_implementer.py --dispatch FILE --root DIR
        --work ISSUE --stage NAME --settings-source SOURCE --settings-scope SCOPE
-       [--resume SESSION_ID]
+       [--resume SESSION_ID --vendor VENDOR] [--artifact-brief FILE]
+
+Artifact launches and resumes require --artifact-brief FILE containing the
+affirmed brief comment's text, independently of the dispatch instructions.
 
 Every invocation is a separate record. ``--resume`` is explicit; ``--last`` and
 ``--ephemeral`` are deliberately absent because either can defeat continuity.
@@ -145,16 +148,72 @@ def _thread_id(events: list[dict[str, object]], stderr: bytes) -> tuple[str | No
     return (match.group(1), "codex stderr session id header") if match else (None, "")
 
 
+ARTIFACT_LEADING_CHARS = 1024
+ARTIFACT_BODY_WORDS = 8
+ARTIFACT_RETURN_REQUIREMENT = (
+    f"expected the affirmed brief starting within the first {ARTIFACT_LEADING_CHARS} "
+    "normalized characters and an artifact body after it with at least "
+    f"{ARTIFACT_BODY_WORDS} non-location words"
+)
+
+
+def _artifact_body_present(tail: str) -> bool:
+    """Count prose outside headings, location lines and retrieval instructions."""
+    prose = []
+    for line in tail.splitlines():
+        if re.match(r"^\s*#", line):
+            continue
+        if re.search(
+            r"https?://|file://|[A-Za-z]:[\\/]|(?:^|\s)[/~]\S|"
+            r"(?:[\w.-]+[\\/])+[\w.-]+|[\w.-]+\.(?:md|txt|docx|pdf)\b|"
+            r"\[[^\]]*\]\([^)]*\)", line, re.IGNORECASE,
+        ):
+            continue
+        if re.search(
+            r"\b(?:fetch|retrieve|open|read|see|download|find)\b.*"
+            r"\b(?:file|document|artifact|path|link|there|here)\b|"
+            r"\b(?:artifact|document|draft|file)\s+(?:is|was|has been)\s+"
+            r"(?:in|at|saved|written|located|available|attached)\b", line, re.IGNORECASE,
+        ):
+            continue
+        prose.append(line)
+    return len(re.findall(r"[^\W\d_]{2,}", "\n".join(prose))) >= ARTIFACT_BODY_WORDS
+
+
 def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
-    """Recognize brief presence, leaving quotation fidelity to the holder."""
+    """Recognize a leading brief and body, leaving fidelity and quality to the holder."""
     def normalize(text: str) -> str:
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        return " ".join(" ".join(re.sub(r"^\s*(?:>\s*)+", "", line)
-                                 for line in lines).split())
+        unquoted = "\n".join(re.sub(r"^\s*(?:>\s*)+", "", line) for line in lines)
+        return re.sub(r"<!--.*?-->", "", unquoted, flags=re.DOTALL)
 
-    brief = normalize(expected)
-    opening = normalize(returned)[:len(brief)]
-    return bool(brief) and SequenceMatcher(None, brief, opening, autojunk=False).ratio() >= 0.98
+    def close(left: str, right: str) -> bool:
+        comparison = SequenceMatcher(None, left, right, autojunk=False)
+        if comparison.ratio() >= 0.98:
+            return True
+        edits = sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2
+                    in comparison.get_opcodes() if tag != "equal")
+        return edits <= 4
+
+    words = normalize(expected).split()
+    if not words:
+        return False
+    text = normalize(returned)
+    tokens = list(re.finditer(r"\S+", text))
+    brief = " ".join(words)
+    anchor_size = min(8, len(words))
+    anchor = " ".join(words[:anchor_size])
+    offset = 0
+    for start in range(len(tokens) - len(words) + 1):
+        if offset > ARTIFACT_LEADING_CHARS:
+            break
+        offset += len(tokens[start].group()) + 1
+        candidate = [token.group() for token in tokens[start:start + len(words)]]
+        if close(anchor, " ".join(candidate[:anchor_size])) and close(brief, " ".join(candidate)):
+            tail = text[tokens[start + len(words) - 1].end():]
+            if _artifact_body_present(tail):
+                return True
+    return False
 
 
 def run_implementer(args: argparse.Namespace) -> int:
@@ -204,7 +263,9 @@ def run_implementer(args: argparse.Namespace) -> int:
     artifact_brief = b""
     if args.stage == "artifact":
         if args.artifact_brief is None:
-            raise ImplementerError("artifact stage requires --artifact-brief")
+            raise ImplementerError(
+                "artifact stage requires --artifact-brief FILE containing the affirmed brief comment's text"
+            )
         artifact_brief = args.artifact_brief.read_bytes()
         if not artifact_brief.decode("utf-8").strip():
             raise ImplementerError("artifact brief must be nonempty UTF-8 text")
@@ -486,8 +547,8 @@ def run_implementer(args: argparse.Namespace) -> int:
                         artifact_brief.decode("utf-8"), message.decode("utf-8", errors="replace")
                     )
                     validation_reason = ("" if valid else
-                        "artifact return opening does not carry the affirmed brief" if message.strip()
-                        else "artifact turn completed without final text")
+                        ARTIFACT_RETURN_REQUIREMENT if message.strip()
+                        else "artifact turn completed without final text; " + ARTIFACT_RETURN_REQUIREMENT)
                     record["result"]["return_validation"] = {
                         "status": "pass" if valid else "fail", "reason": validation_reason,
                     }
@@ -582,6 +643,8 @@ def parser() -> argparse.ArgumentParser:
             "to the machine-local .tradecraft dispatch store and must be new. A successful turn "
             "without a returned session id publishes its result but exits nonzero because it "
             "cannot be continued."
+            " Artifact launches and resumes require --artifact-brief FILE containing the "
+            "affirmed brief comment's text."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -600,7 +663,8 @@ def parser() -> argparse.ArgumentParser:
                      help="explicit vendor; a fresh direct launch otherwise reads the machine file")
     cli.add_argument("--vendor-source", help="source of the selected implementer vendor")
     cli.add_argument("--context", type=Path, help="separate launcher context, retained beside dispatch bytes")
-    cli.add_argument("--artifact-brief", type=Path, help="artifact-only governing brief, retained verbatim")
+    cli.add_argument("--artifact-brief", type=Path,
+                     help="required for artifact launches and resumes: affirmed brief comment text as a file, retained verbatim")
     cli.add_argument("--artifact-brief-source", help="source locator of the authorized affirmed brief")
     cli.add_argument("--handover-state", type=Path)
     cli.add_argument("--handover-from", help="predecessor bundle for a recorded handover")

@@ -37,6 +37,17 @@ Review risk: ordinary
 Review lane: connected
 """.replace("the design inline", "the design inline" + chr(0x2014) + "whole")
 
+MECHANICAL_BRIEF = """<!-- tradecraft:affirmed-brief:v1 -->
+Review risk: ordinary
+Review lane: mechanical
+"""
+TINY_BRIEF = """<!-- tradecraft:affirmed-brief:v1 -->
+# Mechanical brief
+Return all text!!
+"""
+
+ARTIFACT_BODY = "\n**Purpose:** implement the inline design return.\nBody and falsifiers.\n"
+
 
 def artifact_text(kind="exact"):
     brief = ARTIFACT_BRIEF
@@ -44,7 +55,7 @@ def artifact_text(kind="exact"):
         brief = brief.replace(chr(0x2014), "".join(map(chr, (0xE2, 0x20AC, 0x201D))), 1)
     if kind in {"blockquote", "combined"}:
         brief = "\n".join("> " + line for line in brief.splitlines()) + "\n"
-    text = brief + "\n**Purpose:** implement the inline design return.\nBody and falsifiers.\n"
+    text = brief + ARTIFACT_BODY
     if kind == "leading-whitespace":
         text = " \n\t\n  " + text
     return text.replace("\n", "\r\n") if kind in {"crlf", "combined"} else text
@@ -673,7 +684,7 @@ def test_direct_ruling_launch_prints_before_process_and_retains_source(job, monk
     "<!-- tradecraft:affirmed-brief:v1 --> " + "Fetch the document from /tmp/artifact.md. " * 50,
     "<!-- tradecraft:affirmed-brief:v1 -->",
     "# Implementation brief - the author returns the design inline",
-    "Introductory prose.\n" * 20 + artifact_text(),
+    "Introductory prose.\n" * 80 + artifact_text(),
 ], ids=["windows-path", "unix-path", "pointer", "file-link", "long-pointer",
         "marker-only", "title-only", "later-brief"])
 def test_artifact_pointer_return_fails_with_retained_native_evidence(job, monkeypatch, capsys, vendor, text):
@@ -700,6 +711,89 @@ def test_artifact_pointer_return_fails_with_retained_native_evidence(job, monkey
     assert str(implementer.records.sidecar(args.output, ".run.json")) in diagnostic.err
     assert attempt["observed"]["session_id"] in diagnostic.err
     assert "repeat run artifact" in diagnostic.err
+
+
+@pytest.mark.parametrize("brief", [TINY_BRIEF, MECHANICAL_BRIEF, ARTIFACT_BRIEF], ids=["75-character", "mechanical", "sub-2000"])
+@pytest.mark.parametrize("prefix", [
+    "I'm the artifact author. Below is the complete design for the holder.\n",
+    "<!-- tradecraft:artifact:v1 status=draft -->\n",
+    "# Artifact design\n", " \n\t\n",
+], ids=["preamble", "artifact-marker", "heading", "whitespace"])
+@pytest.mark.parametrize("omit_marker", [False, True])
+def test_artifact_review_tolerates_preface_short_drift_and_omitted_comment(brief, prefix, omit_marker):
+    assert len(TINY_BRIEF) == 75
+    assert len(MECHANICAL_BRIEF) == 84
+    assert len(ARTIFACT_BRIEF) < 2000
+    corruption = "".join(map(chr, (0xE2, 0x20AC, 0x201D)))
+    corrupted = (brief.replace("ordinary", corruption + "rdinary", 1) if "ordinary" in brief
+                 else brief.replace("Return", corruption + "eturn", 1))
+    if omit_marker:
+        corrupted = corrupted.split("\n", 1)[1]
+    quoted = "\n".join("> " + line for line in corrupted.splitlines())
+    returned = (prefix + quoted + ARTIFACT_BODY).replace("\n", "\r\n")
+    assert implementer.artifact_opening_carries_brief(brief, returned)
+
+
+def test_artifact_review_search_has_a_fixed_leading_bound():
+    assert implementer.artifact_opening_carries_brief(
+        ARTIFACT_BRIEF, "x " * 512 + artifact_text())
+    assert not implementer.artifact_opening_carries_brief(
+        ARTIFACT_BRIEF, "x " * 513 + artifact_text())
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("tail", [
+    "", "/tmp/artifact.md", r"C:\Users\author\Temp\artifact.md",
+    "[Artifact](artifact.md)", "Fetch the entire document from /tmp/artifact.md.",
+    "The artifact is in the file I wrote. Please retrieve it there.",
+    "# The entire artifact design is available for the holder to read\n/tmp/artifact.md",
+], ids=["brief-only", "unix-path", "windows-path", "file-link", "pointer", "pointer-without-path", "heading-and-path"])
+def test_artifact_review_rejects_a_brief_without_a_non_location_body(job, monkeypatch, capsys, vendor, tail):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", vendor
+    supply_artifact_brief(args)
+    text = ARTIFACT_BRIEF + "\n" + tail
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text)}).encode())
+    assert implementer.run_implementer(args) == 1
+    assert record(args)["outcome"] == "invalid_artifact_return"
+    assert args.output.read_bytes() == text.encode("utf-8")
+    diagnostic = capsys.readouterr().err
+    assert "expected the affirmed brief" in diagnostic
+    assert "artifact body" in diagnostic
+
+
+def test_artifact_review_missing_brief_input_names_the_required_file(job):
+    args, _ = job
+    args.stage = "artifact"
+    with pytest.raises(implementer.ImplementerError, match="--artifact-brief FILE.*affirmed brief comment"):
+        implementer.run_implementer(args)
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_artifact_review_custom_dispatch_stays_exact_and_explains_missing_brief(job, monkeypatch, capsys, vendor):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", vendor
+    supply_artifact_brief(args)
+    custom = b"Write the design in your final message.\r\n"
+    args.dispatch.write_bytes(custom)
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, ARTIFACT_BODY)}).encode())
+    assert implementer.run_implementer(args) == 1
+    assert implementer.records.sidecar(args.output, ".dispatch.bin").read_bytes() == custom
+    diagnostic = capsys.readouterr().err
+    assert "expected the affirmed brief" in diagnostic and "1024" in diagnostic
+    assert "artifact body" in diagnostic
+
+
+def test_artifact_review_body_requires_eight_prose_words():
+    seven = "Alpha bravo charlie delta echo foxtrot golf"
+    assert not implementer.artifact_opening_carries_brief(ARTIFACT_BRIEF, ARTIFACT_BRIEF + seven)
+    assert implementer.artifact_opening_carries_brief(ARTIFACT_BRIEF, ARTIFACT_BRIEF + seven + " hotel")
+    assert implementer.artifact_opening_carries_brief(
+        ARTIFACT_BRIEF, ARTIFACT_BRIEF + "[Design](artifact.md)\n" + seven + " hotel")
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
