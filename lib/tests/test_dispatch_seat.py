@@ -1086,7 +1086,8 @@ def test_timeout_stops_a_started_descendant(job, monkeypatch):
     assert seat.run_dispatch(args) == 1
     elapsed = time.monotonic() - started
     assert (args.root / "started").exists(), "The descendant must actually start before cancellation."
-    time.sleep(max(0, 6.3 - elapsed))
+    survival_check_at = (args.root / "started").stat().st_mtime + 6.3
+    time.sleep(max(0, survival_check_at - time.time()))
     assert not (args.root / "finished").exists(), "The descendant continued after the deadline."
     assert elapsed < args.timeout_seconds + 1, "Pipe-owning descendants delayed timeout cleanup."
     assert not args.output.exists()
