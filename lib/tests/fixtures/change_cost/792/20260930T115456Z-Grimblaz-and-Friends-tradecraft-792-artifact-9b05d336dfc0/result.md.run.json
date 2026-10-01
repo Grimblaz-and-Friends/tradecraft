@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "dispatch_id": "231c3f58745c4ff688469cd0d86be3a4",
+  "completed_at": "2026-09-30T12:01:24.222299+00:00",
+  "attempts": [
+    {
+      "vendor": "codex",
+      "observed": {
+        "source": "turn.completed.usage",
+        "raw": [
+          {
+            "input_tokens": 1079340,
+            "cached_input_tokens": 975104,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 11107,
+            "reasoning_output_tokens": 3377
+          }
+        ],
+        "normalized": {
+          "scope": "invocation",
+          "input_tokens": 1079340,
+          "cached_input_tokens": 975104,
+          "output_tokens": 11107,
+          "reasoning_output_tokens": 3377
+        },
+        "normalized_unavailable_reason": null,
+        "additional_native_classes": {
+          "cache_write_input_tokens": 0
+        },
+        "reported_models": [],
+        "reported_models_unavailable_reason": "runtime returned no model identifier",
+        "reported_effort": null,
+        "reported_effort_unavailable_reason": "runtime returned no effort field",
+        "thread_ids": [
+          "01a0f22a-f617-7371-835a-5cd1ad55e53f"
+        ],
+        "turn_ids": [],
+        "stream_valid": true,
+        "turn_completed": true,
+        "turn_failed_count": 0,
+        "recovered_error_count": 0,
+        "session_id": "01a0f22a-f617-7371-835a-5cd1ad55e53f",
+        "session_id_source": "codex JSONL thread.started.thread_id"
+      },
+      "usage": {
+        "change": {
+          "repository": "Grimblaz-and-Friends/tradecraft",
+          "issue": 792,
+          "unknown_reason": null
+        },
+        "dispatch": {
+          "id": "231c3f58745c4ff688469cd0d86be3a4",
+          "requested_vendor": "codex",
+          "actual_vendor": "codex",
+          "stage": "artifact",
+          "continuity": "fresh",
+          "launched_at": "2026-09-30T11:54:56.620245+00:00",
+          "completed_at": "2026-09-30T12:01:24.222299+00:00",
+          "staffing_status": "qualified"
+        },
+        "model": {
+          "requested": "gpt-6-astra",
+          "reported": [],
+          "reported_unknown_reason": "runtime returned no model identifier"
+        },
+        "tokens": {
+          "input": 1079340,
+          "cached_input": 975104,
+          "output": 11107,
+          "reasoning_output": 3377
+        },
+        "tokens_unknown_reason": null,
+        "additional_native_classes": {
+          "cache_write_input_tokens": 0
+        },
+        "scope": "invocation",
+        "source_field": "turn.completed.usage",
+        "raw_source": "fixture.stdout.log",
+        "runtime_version": "codex-cli 0.159.2",
+        "runtime_version_unknown_reason": null
+      }
+    }
+  ]
+}

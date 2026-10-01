@@ -1,0 +1,105 @@
+{
+  "schema_version": 2,
+  "dispatch_id": "702b03109d96417094577082eef34d26",
+  "completed_at": "2026-10-01T06:52:16.759678+00:00",
+  "attempts": [
+    {
+      "vendor": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "max",
+      "observed": {
+        "source": "modelUsage",
+        "raw": {
+          "claude-opus-5-5": {
+            "inputTokens": 64,
+            "outputTokens": 78969,
+            "cacheReadInputTokens": 2334001,
+            "cacheCreationInputTokens": 146322,
+            "webSearchRequests": 0,
+            "costUSD": 3.2170122000000005,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 128000,
+            "thinkingTokens": 50209,
+            "canonicalModel": "claude-opus-5-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          }
+        },
+        "normalized": {
+          "scope": "invocation",
+          "models": {
+            "claude-opus-5-5": {
+              "inputTokens": 64,
+              "cacheReadInputTokens": 2334001,
+              "cacheCreationInputTokens": 146322,
+              "outputTokens": 78969
+            }
+          }
+        },
+        "normalized_unavailable_reason": null,
+        "additional_native_classes": {
+          "claude-opus-5-5": {
+            "maxOutputTokens": 128000,
+            "thinkingTokens": 50209
+          }
+        },
+        "reported_models": [
+          "claude-opus-5-5"
+        ],
+        "reported_models_unavailable_reason": null,
+        "reported_effort": null,
+        "reported_effort_unavailable_reason": "runtime returned no effort field",
+        "thread_ids": [
+          "3c40caac-d7ef-47d5-8bb7-3621c940b5c5"
+        ],
+        "turn_ids": []
+      },
+      "usage": {
+        "change": {
+          "repository": "Grimblaz-and-Friends/tradecraft",
+          "issue": 694,
+          "unknown_reason": null
+        },
+        "dispatch": {
+          "id": "702b03109d96417094577082eef34d26",
+          "requested_vendor": "claude",
+          "actual_vendor": "claude",
+          "stage": "use",
+          "continuity": "fresh",
+          "launched_at": "2026-10-01T06:39:18.020791+00:00",
+          "completed_at": "2026-10-01T06:52:16.759678+00:00",
+          "staffing_status": "qualified"
+        },
+        "model": {
+          "requested": "claude-opus-5-5",
+          "reported": [
+            "claude-opus-5-5"
+          ],
+          "reported_unknown_reason": null
+        },
+        "tokens": {
+          "models": {
+            "claude-opus-5-5": {
+              "input": 64,
+              "cache_read": 2334001,
+              "cache_creation": 146322,
+              "output": 78969
+            }
+          }
+        },
+        "tokens_unknown_reason": null,
+        "additional_native_classes": {
+          "claude-opus-5-5": {
+            "maxOutputTokens": 128000,
+            "thinkingTokens": 50209
+          }
+        },
+        "scope": "invocation",
+        "source_field": "modelUsage",
+        "raw_source": "fixture.stdout.log",
+        "runtime_version": "2.1.280 (Claude Code)",
+        "runtime_version_unknown_reason": null
+      }
+    }
+  ]
+}

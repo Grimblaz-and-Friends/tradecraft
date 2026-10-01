@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
@@ -25,6 +26,29 @@ class CostError(RuntimeError):
 
 def unknown(reason: str) -> dict[str, str]:
     return {"status": "unknown", "reason": reason}
+
+
+def _unknown_price(reasons: list[str]) -> dict[str, object]:
+    reasons = list(dict.fromkeys(reasons))
+    return {"status": "unknown", "reason": "; ".join(reasons), "reasons": reasons}
+
+
+def _mapping(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+@dataclass
+class _Attempt:
+    usage: dict
+    request: dict = field(default_factory=dict)
+    evidence: dict = field(default_factory=dict)
+    problems: list[str] = field(default_factory=list)
+    baseline_problems: list[str] = field(default_factory=list)
+    position: int = 0
+    bundle_id: str | None = None
+    predecessor: str | None = None
+    snapshot: dict | None = None
+    share: dict | None = None
 
 
 def default_dispatch_root() -> Path:
@@ -121,45 +145,143 @@ def _unknown_dispatch(request: dict[str, object], path: Path,
     }
 
 
+def _belongs(usage: object, repo: str, issue: int) -> bool:
+    change = usage.get("change") if isinstance(usage, dict) else None
+    return isinstance(change, dict) and change.get("repository") == repo and change.get("issue") == issue
+
+
+def _signature(attempts: list[_Attempt]) -> object:
+    # Transport paths differ in copies; only pricing evidence decides equality.
+    return [{"usage": {key: value for key, value in item.usage.items() if key != "raw_source"},
+             "observed": item.evidence.get("observed"),
+             "native_cost": item.evidence.get("native_cost"),
+             "model": item.evidence.get("model")}
+            for item in attempts]
+
+
+def _request_signature(request: dict) -> dict:
+    selected = request.get("requested") or {}
+    if not isinstance(selected, dict):
+        selected = {}
+    return {"work": request.get("work"), "launched_at": request.get("launched_at"),
+            "requested": {key: selected.get(key) for key in
+                          ("vendor", "model", "continuity", "session_id")}}
+
+
+def _contexts(dispatch_root: Path, repo: str, issue: int, holder_path: Path,
+              skipped: list[dict[str, str]]) -> list[_Attempt]:
+    bundles: dict[str, tuple[list[_Attempt], bool, dict]] = {}
+    paths = set(dispatch_root.rglob("*.run.json")) if dispatch_root.is_dir() else set()
+    if dispatch_root.is_dir():
+        paths.update(path.with_name(path.name[:-len(".request.json")] + ".run.json")
+                     for path in dispatch_root.rglob("*.request.json"))
+    for path in sorted(paths):
+        request_path = path.with_name(path.name[:-len(".run.json")] + ".request.json")
+        request, request_failure = _dispatch_json(request_path, "dispatch request")
+        if request_failure is None and not isinstance(request, dict):
+            request_failure = f"dispatch request is not a JSON object: {request_path}"
+        if request_failure is None:
+            change = _change(str(request.get("work") or ""))
+            if change["repository"] != repo or change["issue"] != issue:
+                continue
+        else:
+            request = {}
+        value, failure = _dispatch_json(path, "dispatch completion")
+        malformed = None
+        if failure is None:
+            if not isinstance(value, dict) or value.get("schema_version") != 2:
+                malformed = "unsupported dispatch completion schema"
+            elif not isinstance(value.get("attempts"), list) or not value["attempts"]:
+                malformed = "dispatch completion has no readable attempts"
+        if malformed:
+            skipped.append({"path": str(path), "reason": malformed})
+            failure = malformed
+        items = []
+        complete = failure is None
+        if failure:
+            if request_failure is None:
+                items = [_Attempt(_unknown_dispatch(request, path, failure), request)]
+            elif not malformed:
+                skipped.append({"path": str(path), "reason": (
+                    "Completion usage and request attribution are unavailable: "
+                    f"{failure}; {request_failure}"
+                )})
+        else:
+            for position, attempt in enumerate(value["attempts"]):
+                usage = attempt.get("usage") if isinstance(attempt, dict) else None
+                if _belongs(usage, repo, issue):
+                    if not isinstance(usage.get("dispatch"), dict) or not isinstance(usage.get("model"), dict):
+                        usage = None
+                    else:
+                        items.append(_Attempt(usage, request, attempt, position=position))
+                        continue
+                # A valid foreign usage row cannot establish target attribution.
+                if isinstance(usage, dict) and isinstance(usage.get("change"), dict):
+                    continue
+                reason = f"attempt {position} has no readable normalized usage"
+                skipped.append({"path": str(path), "reason": reason})
+                complete = False
+                if request_failure is None:
+                    items.append(_Attempt(_unknown_dispatch(request, path, reason), request,
+                                          position=position))
+            if not items and request_failure is None:
+                reason = "dispatch completion has no attributable usage"
+                skipped.append({"path": str(path), "reason": reason})
+                items = [_Attempt(_unknown_dispatch(request, path, reason), request)]
+                complete = False
+        if not items:
+            continue
+        identity = request.get("dispatch_id") or (value.get("dispatch_id") if isinstance(value, dict) else None)
+        identity = identity or items[0].usage.get("dispatch", {}).get("id")
+        if not identity:
+            skipped.append({"path": str(path), "reason": "dispatch id is unavailable; copies cannot be identified"})
+            continue
+        key = str(identity)
+        for item in items:
+            item.bundle_id = key
+        if key not in bundles:
+            bundles[key] = (items, complete, request)
+            continue
+        previous, was_complete, previous_request = bundles[key]
+        requests_conflict = bool(request and previous_request and
+                                _request_signature(request) != _request_signature(previous_request))
+        conflict = requests_conflict or (any(item.evidence for item in items)
+                                        and any(item.evidence for item in previous)
+                                        and _signature(items) != _signature(previous))
+        if complete and not was_complete:
+            carried = [problem for item in previous for problem in item.problems]
+            for item in items:
+                item.problems.extend(carried)
+            bundles[key] = (items, complete, request)
+            previous = items
+        if conflict:
+            reason = f"conflicting bundle evidence for dispatch {key}"
+            for item in previous:
+                item.problems.append(reason)
+            skipped.append({"path": str(path), "reason": reason})
+    result = [item for items, _, _ in bundles.values() for item in items]
+    holders: dict[str, _Attempt] = {}
+    for number, usage in enumerate(_read_jsonl(holder_path)):
+        if not _belongs(usage, repo, issue):
+            continue
+        identity = _mapping(usage.get("dispatch")).get("id")
+        key = str(identity) if identity else f"unidentified-holder:{number}"
+        item = _Attempt(usage, bundle_id=key)
+        if key in holders:
+            if _signature([item]) != _signature([holders[key]]):
+                holders[key].problems.append(f"conflicting holder usage for dispatch {key}")
+        else:
+            holders[key] = item
+    result.extend(holders.values())
+    return result
+
+
 def usage_rows(dispatch_root: Path, repo: str, issue: int,
                holder_path: Path | None = None, *,
                skipped_records: list[dict[str, str]] | None = None) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    if dispatch_root.is_dir():
-        for path in sorted(dispatch_root.rglob("*.run.json")):
-            request_path = path.with_name(path.name[:-len(".run.json")] + ".request.json")
-            request, request_failure = _dispatch_json(request_path, "dispatch request")
-            if request_failure is None and not isinstance(request, dict):
-                request_failure = f"dispatch request is not a JSON object: {request_path}"
-            if request_failure is None:
-                change = _change(str(request.get("work") or ""))
-                if change["repository"] != repo or change["issue"] != issue:
-                    continue
-            value, completion_failure = _dispatch_json(path, "dispatch completion")
-            if completion_failure is not None:
-                if request_failure is None:
-                    rows.append(_unknown_dispatch(request, path, completion_failure))
-                elif skipped_records is not None:
-                    skipped_records.append({
-                        "path": str(path),
-                        "reason": (
-                            "Completion usage and request attribution are unavailable: "
-                            f"{completion_failure}; {request_failure}"
-                        ),
-                    })
-                continue
-            if not isinstance(value, dict) or value.get("schema_version") != 2:
-                continue
-            attempts = value.get("attempts")
-            if not isinstance(attempts, list):
-                continue
-            for attempt in attempts:
-                usage = attempt.get("usage") if isinstance(attempt, dict) else None
-                change = usage.get("change") if isinstance(usage, dict) else None
-                if isinstance(change, dict) and change.get("repository") == repo and change.get("issue") == issue:
-                    rows.append(usage)
-    rows.extend(_read_jsonl(holder_path or default_holder_usage(repo, issue)))
-    return rows
+    skipped = skipped_records if skipped_records is not None else []
+    return [item.usage for item in _contexts(
+        dispatch_root, repo, issue, holder_path or default_holder_usage(repo, issue), skipped)]
 
 
 def load_rates(path: Path) -> list[dict[str, object]]:
@@ -196,76 +318,333 @@ def _rate_for(rates: list[dict[str, object]], vendor: str, model: str,
     return max(matches, key=lambda item: item[0])[1] if matches else None
 
 
-def _class_price(tokens: dict[str, object], rate: dict[str, object], model: str) -> tuple[Decimal | None, str | None]:
-    classes = rate.get("classes")
-    per_tokens = rate.get("per_tokens")
-    if not isinstance(classes, dict) or not isinstance(per_tokens, int) or per_tokens <= 0:
-        return None, f"rate row for {model} has invalid classes or per_tokens"
+def _number(value: object) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
+        return None
+    try:
+        number = Decimal(str(value))
+        return number if number.is_finite() and number >= 0 else None
+    except InvalidOperation:
+        return None
+
+
+_CODEX_NAMES = {"input_tokens": "input", "cached_input_tokens": "cached_input",
+                "cache_write_input_tokens": "cache_write_input", "output_tokens": "output",
+                "reasoning_output_tokens": "reasoning_output"}
+_CLAUDE_NAMES = {"inputTokens": "input", "input_tokens": "input",
+                 "cacheReadInputTokens": "cache_read", "cache_read_input_tokens": "cache_read",
+                 "cacheCreationInputTokens": "cache_creation", "cache_creation_input_tokens": "cache_creation",
+                 "outputTokens": "output", "output_tokens": "output",
+                 "thinkingTokens": "thinking", "thinking_tokens": "thinking"}
+_LIMITS = {"maxOutputTokens", "max_output_tokens", "maxInputTokens", "max_input_tokens"}
+
+
+def _counts(classes: dict, aliases: dict, required: tuple[str, ...],
+            reasons: list[str], model: str) -> dict[str, Decimal]:
+    result = {}
+    for name, value in classes.items():
+        if name in _LIMITS:
+            continue
+        name = aliases.get(name, name)
+        number = _number(value)
+        if number is None:
+            reasons.append(f"token class {name} for {model} is not finite and nonnegative")
+        elif name in result and result[name] != number:
+            reasons.append(f"token class {name} for {model} has conflicting counts")
+        else:
+            result[name] = number
+    for name in required:
+        if name not in result:
+            reasons.append(f"token class {name} for {model} is unavailable")
+    return result
+
+
+def _codex_counts(item: _Attempt, reasons: list[str]) -> dict | None:
+    observed = item.evidence.get("observed") or {}
+    if not isinstance(observed, dict):
+        observed = {}
+    native = observed.get("raw")
+    if isinstance(native, list) and native and isinstance(native[-1], dict):
+        classes = dict(native[-1])
+        required = ("input", "cached_input", "cache_write_input", "output")
+    else:
+        classes = item.usage.get("tokens")
+        required = ("input", "cached_input", "output")
+        if not isinstance(classes, dict):
+            reasons.append(str(item.usage.get("tokens_unknown_reason") or "token classes are unavailable"))
+            return None
+        classes = dict(classes)
+        extras = item.usage.get("additional_native_classes") or {}
+        if isinstance(extras, dict):
+            classes.update(extras)
+        else:
+            reasons.append("additional native token classes are malformed")
+    model = str(item.usage.get("model", {}).get("requested") or "unknown model")
+    counts = _counts(classes, _CODEX_NAMES, required, reasons, model)
+    counts.setdefault("cache_write_input", Decimal(0))
+    counts.setdefault("reasoning_output", Decimal(0))
+    if counts.get("cached_input", 0) + counts["cache_write_input"] > counts.get("input", 0):
+        reasons.append(f"cached input and cache writes exceed total input for {model}")
+    if counts["reasoning_output"] > counts.get("output", 0):
+        reasons.append(f"reasoning exceeds output for {model}")
+    if "total_tokens" in counts:
+        if counts["total_tokens"] != counts.get("input", 0) + counts.get("output", 0):
+            reasons.append(f"total tokens disagree with input plus output for {model}")
+        counts.pop("total_tokens")
+    return counts
+
+
+def _session_ids(item: _Attempt) -> set[str]:
+    requested = item.request.get("requested") or {}
+    observed = item.evidence.get("observed") or {}
+    if not isinstance(requested, dict):
+        requested = {}
+    if not isinstance(observed, dict):
+        observed = {}
+    threads = observed.get("thread_ids")
+    values = [requested.get("session_id"), observed.get("session_id"),
+              *(threads if isinstance(threads, list) else [])]
+    return {value for value in values if isinstance(value, str) and value}
+
+
+def _session_shares(items: list[_Attempt]) -> None:
+    histories: dict[str, list[_Attempt]] = {}
+    for item in items:
+        dispatch = item.usage.get("dispatch") or {}
+        vendor = dispatch.get("actual_vendor") or dispatch.get("requested_vendor")
+        if vendor != "codex" or dispatch.get("stage") == "holder-close":
+            continue
+        problems = []
+        item.snapshot = _codex_counts(item, problems)
+        item.problems.extend(problems)
+        item.baseline_problems = list(item.problems)
+        identities = _session_ids(item)
+        if len(identities) > 1:
+            item.problems.append("requested and observed session identities disagree")
+            item.baseline_problems.append("requested and observed session identities disagree")
+        if not identities and dispatch.get("continuity") == "resume":
+            item.problems.append("resumed Codex dispatch has no session identity")
+        for identity in identities:
+            histories.setdefault(identity, []).append(item)
+    for history in histories.values():
+        bad_time = any(_timestamp(item.usage["dispatch"].get("launched_at")) is None for item in history)
+        ordered = sorted(history, key=lambda item: (
+            _timestamp(item.usage["dispatch"].get("launched_at")) or datetime.min.replace(tzinfo=timezone.utc),
+            item.position))
+        previous = None
+        for item in ordered:
+            dispatch = item.usage["dispatch"]
+            if dispatch.get("continuity") == "resume":
+                if bad_time:
+                    item.problems.append("session chronology is ambiguous because a launch timestamp is unavailable")
+                elif previous is None:
+                    item.problems.append("preceding Codex session snapshot is missing or excluded")
+                else:
+                    item.predecessor = previous.bundle_id
+                    start = _timestamp(dispatch.get("launched_at"))
+                    prior_start = _timestamp(previous.usage["dispatch"].get("launched_at"))
+                    prior_end = _timestamp(previous.usage["dispatch"].get("completed_at"))
+                    if prior_start >= start or prior_end is None or prior_end > start:
+                        item.problems.append("preceding session chronology overlaps or is ambiguous")
+                    if prior_start >= start or (prior_end is not None and prior_end > start):
+                        item.baseline_problems.append("preceding session chronology overlaps or is ambiguous")
+                    if previous.baseline_problems or previous.snapshot is None:
+                        item.problems.append(f"preceding dispatch {previous.bundle_id} has an unreadable or inconsistent baseline")
+                    elif item.snapshot is not None:
+                        if set(item.snapshot) != set(previous.snapshot):
+                            item.problems.append("preceding session snapshot has missing or incomparable counters")
+                        else:
+                            share = {key: value - previous.snapshot[key] for key, value in item.snapshot.items()}
+                            if any(value < 0 for value in share.values()):
+                                item.problems.append("session counters decreased from the preceding snapshot")
+                                item.baseline_problems.append("session counters decreased from the preceding snapshot")
+                            else:
+                                item.share = share
+            previous = item
+
+
+def _class_price(classes: dict, rate: dict, model: str,
+                 reasons: list[str]) -> Decimal:
+    prices = rate.get("classes")
+    denominator = _number(rate.get("per_tokens"))
+    if not isinstance(prices, dict) or denominator is None or denominator <= 0:
+        reasons.append(f"rate row for {model} has invalid classes or token denominator")
+        return Decimal(0)
     total = Decimal(0)
-    for name, count in tokens.items():
-        if isinstance(count, bool) or not isinstance(count, (int, float)) or count < 0:
-            return None, f"token class {name} for {model} is invalid"
-        value = classes.get(name)
+    for name, count in classes.items():
+        if count == 0:
+            continue
+        value = _number(prices.get(name))
         if value is None:
-            return None, f"token class {name} for {model} has no dated rate"
-        try:
-            total += Decimal(str(count)) * Decimal(str(value)) / Decimal(per_tokens)
-        except (InvalidOperation, TypeError):
-            return None, f"token class {name} for {model} has an invalid dated rate"
-    return total, None
+            reasons.append(f"token class {name} for {model} has no valid dated rate")
+        else:
+            total += count * value / denominator
+    return total
 
 
-def rate_card_equivalent(usage: dict[str, object], rates: list[dict[str, object]]) -> dict[str, object]:
-    dispatch = usage.get("dispatch")
-    model = usage.get("model")
-    if not isinstance(dispatch, dict) or not isinstance(model, dict):
-        return unknown("usage row has no dispatch or model object")
+def _runtime_prices(item: _Attempt, models: dict) -> dict[str, Decimal]:
+    observed = item.evidence.get("observed") or {}
+    if not isinstance(observed, dict):
+        return {}
+    raw = observed.get("raw")
+    if observed.get("source") != "modelUsage" or not isinstance(raw, dict):
+        return {}
+    prices = {}
+    for model in models:
+        values = raw.get(model)
+        if isinstance(values, dict) and values.get("costBasis") == "list":
+            amount = _number(values.get("costUSD"))
+            if amount is not None:
+                prices[model] = amount
+    return prices
+
+
+def _price(item: _Attempt, rates: list[dict]) -> dict:
+    usage = item.usage
+    dispatch = _mapping(usage.get("dispatch"))
+    model = _mapping(usage.get("model"))
+    reasons = list(item.problems)
+    if not dispatch or not model:
+        reasons.append("usage row has no dispatch or model object")
     when = _timestamp(dispatch.get("launched_at"))
     if when is None:
-        return unknown("dispatch timestamp is unavailable")
+        reasons.append("dispatch timestamp is unavailable")
     vendor = dispatch.get("actual_vendor")
     if not isinstance(vendor, str):
-        return unknown("actual vendor is unavailable")
-    if usage.get("scope") not in {"invocation", "cumulative"}:
-        return unknown("usage scope is unknown")
-    tokens = usage.get("tokens")
-    if not isinstance(tokens, dict):
-        return unknown(str(usage.get("tokens_unknown_reason") or "token classes are unavailable"))
-    additional = usage.get("additional_native_classes")
-    if isinstance(additional, dict) and additional:
-        return unknown("additional native token classes have no normalized rate mapping")
-    if vendor == "claude":
-        models = tokens.get("models")
+        reasons.append("actual vendor is unavailable")
+        vendor = dispatch.get("requested_vendor")
+    resume = dispatch.get("continuity") == "resume"
+    if resume and vendor == "claude":
+        reasons.append("resumed Claude usage scope is not established")
+    elif resume and vendor == "codex" and item.share is None:
+        reasons.append("resumed Codex share has no usable preceding snapshot")
+    elif usage.get("scope") not in {"invocation", "cumulative"} and item.share is None:
+        reasons.append("usage scope is unknown")
+    populations = {}
+    if vendor == "codex":
+        exact_model = (item.evidence.get("model") or _mapping(item.request.get("requested")).get("model")
+                       or model.get("requested"))
+        if not isinstance(exact_model, str) or not exact_model:
+            reasons.append("requested Codex model is unavailable")
+        counts = item.share if item.share is not None else _codex_counts(item, reasons)
+        classes = dict(counts or {})
+        if classes.get("reasoning_output", 0) > classes.get("output", 0):
+            reasons.append("reasoning exceeds output in the dispatch share")
+        classes.pop("reasoning_output", None)
+        if "input" in classes:
+            classes["input"] -= classes.get("cached_input", 0) + classes.get("cache_write_input", 0)
+            if classes["input"] < 0:
+                reasons.append("cached input and cache writes exceed total input in the dispatch share")
+        populations[exact_model] = classes
+    elif vendor == "claude":
+        tokens = usage.get("tokens")
+        models = tokens.get("models") if isinstance(tokens, dict) else None
+        extras = usage.get("additional_native_classes") or {}
+        if not isinstance(extras, dict):
+            reasons.append("additional native token classes are malformed")
+            extras = {}
+        observed = item.evidence.get("observed")
+        native = observed.get("raw") if isinstance(observed, dict) and observed.get("source") == "modelUsage" else None
         if not isinstance(models, dict) or not models:
-            return unknown("Claude per-model token classes are unavailable")
-        populations = models
+            reasons.append(str(usage.get("tokens_unknown_reason") or "Claude per-model token classes are unavailable"))
+            models = {name: {} for name in model.get("reported", [])}
+        for exact_model, raw_classes in models.items():
+            if not isinstance(raw_classes, dict):
+                reasons.append(f"model token population is invalid for {exact_model}")
+                raw_classes = {}
+            classes = dict(raw_classes)
+            extra_classes = extras.get(exact_model) or {}
+            if isinstance(extra_classes, dict):
+                classes.update(extra_classes)
+            else:
+                reasons.append(f"additional native classes for {exact_model} are malformed")
+            if isinstance(native, dict) and isinstance(native.get(exact_model), dict):
+                # Read original counts too: normalization deliberately omits invalid values.
+                for name, count in native[exact_model].items():
+                    if name in _CLAUDE_NAMES or name.endswith("Tokens") or name.endswith("_tokens"):
+                        classes[name] = count
+            counts = _counts(classes, _CLAUDE_NAMES,
+                             ("input", "cache_read", "cache_creation", "output"), reasons, str(exact_model))
+            thinking = counts.pop("thinking", Decimal(0))
+            if thinking > counts.get("output", 0):
+                reasons.append(f"thinking exceeds output for {exact_model}")
+            populations[exact_model] = counts
     else:
-        reported = model.get("reported")
-        if not isinstance(reported, list) or len(reported) != 1:
-            return unknown(str(model.get("reported_unknown_reason") or "exact runtime model is ambiguous"))
-        populations = {reported[0]: tokens}
+        reasons.append(f"no token interpretation for vendor {vendor}")
     total = Decimal(0)
     currency = None
     sources = []
+    card_models = {}
     for exact_model, classes in populations.items():
-        if not isinstance(exact_model, str) or not isinstance(classes, dict):
-            return unknown("model token population is invalid")
-        rate = _rate_for(rates, vendor, exact_model, when)
+        if not isinstance(exact_model, str) or not exact_model:
+            continue
+        candidates = [row for row in rates if row.get("vendor") == vendor and row.get("model") == exact_model]
+        rate = _rate_for(rates, vendor, exact_model, when) if when else None
         if rate is None:
-            return unknown(f"no dated rate matches {vendor} {exact_model}")
+            reasons.append(f"no dated rate matches {vendor} {exact_model}")
+            if candidates and when and any(
+                    (end := _timestamp(row.get("effective_to"))) is not None and when >= end
+                    for row in candidates):
+                reasons.append(f"price interval for {exact_model} has ended; re-read the posted page: {candidates[-1]['source_url']}")
+            known_classes = {"input", "cached_input", "cache_write_input", "output"} if vendor == "codex" else {
+                "input", "cache_read", "cache_creation", "output"}
+            for name, count in classes.items():
+                if name not in known_classes and count > 0:
+                    reasons.append(f"billable token class {name} for {exact_model} has no rate mapping")
+            continue
         if currency is not None and rate.get("currency") != currency:
-            return unknown("matched rate rows use different currencies")
+            reasons.append("matched rate rows use different currencies")
         currency = rate.get("currency")
-        amount, reason = _class_price(classes, rate, exact_model)
-        if reason:
-            return unknown(reason)
-        total += amount
+        card_models[exact_model] = _class_price(classes, rate, exact_model, reasons)
+        total += card_models[exact_model]
         sources.append({"model": exact_model, "source_url": rate.get("source_url"),
                         "retrieved_at": rate.get("retrieved_at")})
-    return {
-        "status": "known", "currency": currency,
-        "amount": format(total, "f"), "rate_sources": sources,
-    }
+    if reasons:
+        value = _unknown_price(reasons)
+    else:
+        value = {"status": "known", "currency": currency, "amount": format(total, "f"),
+                 "rate_sources": sources, "basis": "API list-price equivalence",
+                 "source": "rate-card", "floor": vendor == "codex", "floor_reasons": [],
+                 "reasons": []}
+        if vendor == "codex":
+            value["model_basis"] = "requested model"
+            value["floor_reasons"] = ["Codex short-context rates are a floor; requests are not separated"]
+        else:
+            runtime = _runtime_prices(item, populations)
+            flags = []
+            comparisons = []
+            selected = Decimal(0)
+            whole_mismatch = len(runtime) == len(card_models) and abs(
+                sum(runtime.values(), Decimal(0)) - total) > Decimal("0.01")
+            for exact_model, card in card_models.items():
+                native = runtime.get(exact_model)
+                mismatch = native is not None and (whole_mismatch or abs(native - card) > Decimal("0.01"))
+                if mismatch:
+                    flags.append(f"runtime/card list-price mismatch above one cent; model population {exact_model}")
+                selected += native if native is not None and not mismatch else card
+                comparisons.append({"model": exact_model, "card_amount": format(card, "f"),
+                                    "runtime_amount": format(native, "f") if native is not None else None,
+                                    "source": "runtime-list-price" if native is not None and not mismatch else "rate-card"})
+            value["amount"] = format(selected, "f")
+            value["model_prices"] = comparisons
+            value["flags"] = flags
+            value["source"] = ("runtime-list-price" if comparisons and all(
+                row["source"] == "runtime-list-price" for row in comparisons) else "rate-card"
+                if all(row["source"] == "rate-card" for row in comparisons) else "runtime-and-rate-card")
+            value["card_amount"] = format(total, "f")
+            if len(runtime) == len(card_models):
+                value["runtime_amount"] = format(sum(runtime.values(), Decimal(0)), "f")
+    if item.predecessor is not None:
+        value["predecessor_dispatch_id"] = item.predecessor
+    if item.share is not None:
+        value["dispatch_token_share"] = {key: format(count, "f") for key, count in item.share.items()}
+    if dispatch.get("stage") == "holder-close":
+        value["timestamp_basis"] = "close capture time"
+    return value
+
+
+def rate_card_equivalent(usage: dict[str, object], rates: list[dict[str, object]]) -> dict[str, object]:
+    return _price(_Attempt(usage), rates)
 
 
 def _plan_terms(path: Path) -> tuple[list[dict[str, object]], str | None]:
@@ -335,12 +714,42 @@ def bill_plan_status(rows: list[dict[str, object]], terms_path: Path,
 def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
            terms_path: Path, gauges_path: Path, holder_path: Path) -> dict[str, object]:
     skipped_records: list[dict[str, str]] = []
-    rows = usage_rows(dispatch_root, repo, issue, holder_path, skipped_records=skipped_records)
+    items = _contexts(dispatch_root, repo, issue, holder_path, skipped_records)
+    rows = [item.usage for item in items]
     rates = load_rates(rates_path)
+    _session_shares(items)
     prices = [{
-        "dispatch_id": row.get("dispatch", {}).get("id") if isinstance(row.get("dispatch"), dict) else None,
-        "value": rate_card_equivalent(row, rates),
-    } for row in rows]
+        "dispatch_id": item.usage.get("dispatch", {}).get("id"),
+        "attempt_index": item.position,
+        "value": _price(item, rates),
+    } for item in items]
+    summaries = {}
+    floor_reasons = []
+    for item, price in zip(items, prices):
+        identity = item.bundle_id
+        summary = summaries.setdefault(identity, {
+            "dispatch_id": identity, "known_amount": Decimal(0), "attempts": 0,
+            "unknown_attempts": 0, "reasons": [],
+        })
+        summary["attempts"] += 1
+        value = price["value"]
+        if value["status"] == "known" and value.get("currency") == "USD":
+            summary["known_amount"] += Decimal(value["amount"])
+            floor_reasons.extend(value.get("floor_reasons") or [])
+        else:
+            summary["unknown_attempts"] += 1
+            summary["reasons"].extend(value.get("reasons") or ["contribution currency is not USD"])
+    unknown_count = sum(summary["unknown_attempts"] > 0 for summary in summaries.values())
+    known_total = sum((summary["known_amount"] for summary in summaries.values()), Decimal(0))
+    if unknown_count:
+        floor_reasons.append("dispatches with unknown contributions are excluded from the known amount")
+    if skipped_records:
+        floor_reasons.append("skipped evidence may contain additional contributions")
+    for summary in summaries.values():
+        summary["status"] = "unknown" if summary["unknown_attempts"] else "known"
+        summary["currency"] = "USD"
+        summary["known_amount"] = format(summary["known_amount"], "f")
+        summary["reasons"] = list(dict.fromkeys(summary["reasons"]))
     groups: dict[tuple[str, str], int] = {}
     for row in rows:
         dispatch = row.get("dispatch")
@@ -357,6 +766,16 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
         "raw_usage": rows,
         "skipped_records": skipped_records,
         "dated_rate_card_equivalent": prices,
+        "dispatch_totals": list(summaries.values()),
+        "total": {
+            "basis": "API list-price equivalence; not plan or subscription billing",
+            "currency": "USD", "known_amount": format(known_total, "f"),
+            "display_amount": format(known_total, ".2f"),
+            "priced_dispatches": len(summaries) - unknown_count,
+            "unknown_dispatches": unknown_count,
+            "floor": bool(floor_reasons), "floor_reasons": list(dict.fromkeys(floor_reasons)),
+            "skipped_record_count": len(skipped_records),
+        },
         "bill_plan_status": bill_plan_status(rows, terms_path, gauges_path),
     }
 
