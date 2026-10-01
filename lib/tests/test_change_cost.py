@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from copy import deepcopy
 from decimal import Decimal
 import json
@@ -983,3 +983,153 @@ def test_close_commands_default_holder_inclusion_override_and_exact_repo(tmp_pat
                       "--holder-usage", str(unknown_path)]) == 0
     alternative = json.loads(capsys.readouterr().out)
     assert alternative["raw_usage"] == [unknown_holder] and alternative["total"]["unknown_dispatches"] == 1
+
+
+def test_native_codex_omitted_cache_writes_price_fresh_and_resumed_shares(tmp_path):
+    inputs = fixture_inputs(tmp_path)
+    expected, _ = fixture_prices(inputs)
+    for path in inputs["dispatch_root"].rglob("*.run.json"):
+        completion = json.loads(path.read_bytes())
+        for attempt in completion["attempts"]:
+            for snapshot in attempt["observed"]["raw"]:
+                snapshot.pop("cache_write_input_tokens", None)
+            attempt["usage"]["additional_native_classes"].pop("cache_write_input_tokens", None)
+        write_json(path, completion)
+    result, prices = fixture_prices(inputs)
+    assert all(value["status"] == "known" for value in prices.values())
+    assert result["total"] == expected["total"]
+    assert prices["8c1ce0c713ab49abb277b46f5fd4732a"]["dispatch_token_share"]["cache_write_input"] == "0"
+
+
+@pytest.mark.parametrize("counter", ["input_tokens", "cached_input_tokens", "output_tokens"])
+def test_native_codex_required_counters_remain_required(tmp_path, counter):
+    inputs = fixture_inputs(tmp_path)
+    _, path = fixture_paths(inputs, "440-artifact-dfd2848aaf6d")
+    completion = json.loads(path.read_bytes())
+    del completion["attempts"][0]["observed"]["raw"][-1][counter]
+    write_json(path, completion)
+    value = fixture_prices(inputs)[1]["d8847832be3344cca8de67bcd07d90cd"]
+    assert value["status"] == "unknown" and "unavailable" in value["reason"]
+
+
+@pytest.mark.parametrize("foreign_work", ["issue-677", "other/repo#677"])
+@pytest.mark.parametrize("continuity", ["fresh", "resume"])
+@pytest.mark.parametrize("placement", ["between", "after", "other-session", "same-time"])
+def test_foreign_request_never_bridges_an_older_same_change_snapshot(
+        tmp_path, monkeypatch, foreign_work, continuity, placement):
+    inputs = fixture_inputs(tmp_path)
+    inputs.update(repo="Grimblaz-and-Friends/tradecraft", issue=677)
+    for path in inputs["dispatch_root"].rglob("*.request.json"):
+        request = json.loads(path.read_bytes())
+        request["work"] = "Grimblaz-and-Friends/tradecraft#677"
+        write_json(path, request)
+    for path in inputs["dispatch_root"].rglob("*.run.json"):
+        completion = json.loads(path.read_bytes())
+        for attempt in completion["attempts"]:
+            attempt["usage"]["change"].update(repository=inputs["repo"], issue=677)
+        write_json(path, completion)
+    request_path, foreign_run = fixture_paths(inputs, "440-floor-32e0b689ce84")
+    current_request, _ = fixture_paths(inputs, "440-build-20d60c90286c")
+    request = json.loads(request_path.read_bytes())
+    request["work"] = foreign_work
+    request["requested"]["continuity"] = continuity
+    if placement in {"after", "same-time"}:
+        current = json.loads(current_request.read_bytes())
+        request["launched_at"] = (datetime.fromisoformat(current["launched_at"]) +
+                                  timedelta(days=1 if placement == "after" else 0)).isoformat()
+    elif placement == "other-session":
+        request["requested"]["session_id"] = "unrelated-session"
+    write_json(request_path, request)
+    read_bytes = Path.read_bytes
+
+    def isolated(path):
+        assert path != foreign_run, "foreign completion was opened"
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", isolated)
+    result, prices = fixture_prices(inputs)
+    value = prices["8c1ce0c713ab49abb277b46f5fd4732a"]
+    assert prices["92aa0a262e6e4876b783d8f86be4e3c2"]["status"] == "known"
+    assert request["dispatch_id"] not in prices
+    if placement in {"between", "same-time"}:
+        assert value["status"] == "unknown"
+        assert "foreign dispatch" in value["reason"] and request["dispatch_id"] in value["reason"]
+        assert result["total"]["unknown_dispatches"] == 1
+    else:
+        assert value["status"] == "known"
+
+
+@pytest.mark.parametrize("charge", ["webSearchRequests", "otherBillableRequests"])
+@pytest.mark.parametrize("count", [0, 1, 2])
+def test_positive_non_token_claude_charges_need_card_coverage(tmp_path, charge, count):
+    inputs = fixture_inputs(tmp_path, "claude", 694)
+    _, path = fixture_paths(inputs, "694-use-5add0519e1f6")
+    completion = json.loads(path.read_bytes())
+    native = completion["attempts"][0]["observed"]["raw"]["claude-opus-5-5"]
+    native[charge] = count
+    native["costUSD"] = str(Decimal("3.2170122") + Decimal("0.01") * count)
+    write_json(path, completion)
+    result, prices = fixture_prices(inputs)
+    value = next(iter(prices.values()))
+    if count:
+        assert value["status"] == "unknown" and charge in value["reason"]
+        assert result["total"]["unknown_dispatches"] == 1 and result["total"]["known_amount"] == "0"
+    else:
+        assert value["status"] == "known" and value["source"] == "runtime-list-price"
+        assert result["total"]["unknown_dispatches"] == 0
+
+
+@pytest.mark.parametrize("launched", [None, "elapsed-zero", "elapsed-positive", "observation"])
+def test_unlaunched_attempt_is_listed_without_poisoning_successful_fallback(report_inputs, launched):
+    model = "claude-fixture"
+    fallback = usage(vendor="claude", model=model, dispatch_id="fallback", tokens={"models": {
+        model: {"input": 100, "cache_read": 20, "cache_creation": 0, "output": 10}}})
+    fallback_rate = rate(model)
+    fallback_rate.update(vendor="claude", classes={"input": 1, "cache_read": .5,
+                                                  "cache_creation": 2, "output": 2})
+    write_json(report_inputs["rates_path"], {"schema_version": 1, "rates": [fallback_rate]})
+    _, path, request = write_bundle(report_inputs, "fallback", rows=[usage(), fallback])
+    attempt = {"vendor": "codex", "model": "unavailable-model"}
+    records.add_unobserved(attempt, "executable unavailable before launch")
+    attempt["usage"] = records.usage_record(attempt, request, completed_at=WHEN, staffing_status="degraded")
+    if launched == "elapsed-zero":
+        attempt["elapsed_seconds"] = 0
+    elif launched == "elapsed-positive":
+        attempt["elapsed_seconds"] = 1
+    elif launched == "observation":
+        attempt["observed"]["source"] = "runtime-return"
+    completion = json.loads(path.read_bytes())
+    completion["attempts"][0] = attempt
+    write_json(path, completion)
+    result = cost.report(**report_inputs)
+    value = result["dated_rate_card_equivalent"][0]["value"]
+    assert len(result["raw_usage"]) == 2 and len(result["dated_rate_card_equivalent"]) == 2
+    assert result["total"]["known_amount"] == "0.13"
+    if launched is None:
+        assert value["status"] == "not-launched"
+        assert result["total"]["unknown_dispatches"] == 0 and result["total"]["priced_dispatches"] == 1
+        assert not result["total"]["floor"] and result["total"]["floor_reasons"] == []
+        assert result["dispatch_totals"][0]["unknown_attempts"] == 0
+        completion["attempts"] = [attempt]
+        write_json(path, completion)
+        unlaunched = cost.report(**report_inputs)
+        assert unlaunched["total"]["priced_dispatches"] == unlaunched["total"]["unknown_dispatches"] == 0
+        assert not unlaunched["total"]["floor"]
+        assert unlaunched["dispatch_totals"][0]["status"] == "not-launched"
+    else:
+        assert value["status"] == "unknown" and result["total"]["unknown_dispatches"] == 1
+        assert result["total"]["floor"]
+
+
+@pytest.mark.parametrize("dispatch", [None, [], [1], "", "malformed", 1, True])
+def test_malformed_holder_dispatch_is_an_unknown_cli_contribution(report_inputs, dispatch):
+    row = usage(stage="holder-close")
+    row["dispatch"] = dispatch
+    report_inputs["holder_path"].write_bytes((json.dumps(row) + "\n").encode())
+    completed = report_cli(report_inputs)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["raw_usage"] == [row]
+    value = result["dated_rate_card_equivalent"][0]["value"]
+    assert value["status"] == "unknown" and "no dispatch" in value["reason"]
+    assert result["total"]["unknown_dispatches"] == 1 and result["total"]["floor"]
