@@ -6,6 +6,7 @@ structurally could not reach those shapes (ledger findings M7/M8/M10/M38)."""
 
 import os
 import importlib.util
+import json
 import re
 import shlex
 import shutil
@@ -175,7 +176,7 @@ def test_refuses_preloaded_index(tmp_path):
     (work / "feature.txt").write_text("new\n", encoding="utf-8")
     result = persist(work, "-m", "should refuse: index is preloaded", "feature.txt")
     assert result.returncode == 1
-    assert "already has staged changes" in result.stdout
+    assert 'unnamed staged paths: "sneaky.txt"' in result.stdout
 
 
 def test_refuses_when_nothing_to_commit(tmp_path):
@@ -259,6 +260,7 @@ def hook(work, name, body):
 def witness_push(work):
     origin = Path(value(work, "remote", "get-url", "origin"))
     hook(origin, "pre-receive", "Path('receive-attempted').write_bytes(b'push')\n")
+    (origin / "receive-attempted").unlink(missing_ok=True)
     return origin / "receive-attempted"
 
 
@@ -271,7 +273,7 @@ def checked_change(work):
     return start, checked
 
 
-def mismatch_ids(result, checked):
+def mismatch_ids(result, checked, merge=False):
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stdout.startswith("not-persisted: committed content differs")
     assert len(result.stdout.splitlines()) == 1
@@ -280,9 +282,14 @@ def mismatch_ids(result, checked):
     commit = re.search(r"run commit ([0-9a-f]{40,64});", result.stdout).group(1)
     assert tree == checked
     assert "restore promptly" in result.stdout and "git gc may prune" in result.stdout
-    assert "running again lands the working files exactly as the hook left them" in result.stdout
-    assert "run again only after checking and accepting that rewrite" in result.stdout
-    assert "for a byte-exact file, take the restore route" in result.stdout
+    if merge:
+        assert "merge state is gone" in result.stdout and "a plain retry loses ancestry" in result.stdout
+        assert "restart with git merge --no-commit --no-ff" in result.stdout
+    else:
+        assert "running again lands the working files exactly as the hook left them" in result.stdout
+        assert "run again only after checking and accepting that rewrite" in result.stdout
+        assert "for a byte-exact file, take the restore route" in result.stdout
+    assert "product holder reconcile that path's hook configuration" in result.stdout
     assert f"git restore --source={tree} --worktree -- <paths>" in result.stdout
     return commit
 
@@ -407,7 +414,7 @@ def test_post_commit_staging_survives_undo_and_blocks_directory_retry(tmp_path):
     assert entry.stdout.encode().replace(b"\r\n", b"\n") == (work / ".post-index-entry").read_bytes()
     assert "M  unrelated.txt" in value(work, "status", "--porcelain")
     second = persist(work, "-m", "do not inherit another actor's staged change", "src")
-    assert second.returncode == 1 and "index already has staged changes" in second.stdout
+    assert second.returncode == 1 and "unnamed staged paths" in second.stdout
     assert value(work, "diff", "--cached", "--name-only") == "unrelated.txt"
     assert value(work, "ls-remote", "origin", "refs/heads/main").startswith(start)
     assert not witness.exists()
@@ -498,6 +505,10 @@ def test_revalidated_hook_output_can_land_without_rejected_commit(tmp_path):
 
 def test_saved_tree_restore_is_path_scoped_and_accounts_for_additions(tmp_path):
     work = make_repo(tmp_path)
+    (work / "secondary.txt").write_bytes(b"formatted secondary\n")
+    value(work, "add", "secondary.txt")
+    value(work, "commit", "-m", "seed a second path kept under active hook policy")
+    value(work, "push", "origin", "main")
     _, checked = checked_change(work)
     # A tracked unrelated edit must survive the undo and the advised restore.
     (work / "unrelated.txt").write_bytes(b"unrelated edit\n")
@@ -510,6 +521,23 @@ def test_saved_tree_restore_is_path_scoped_and_accounts_for_additions(tmp_path):
     assert (work / "README.md").read_bytes().replace(b"\r\n", b"\n") == b"checked\n"
     assert (work / "unrelated.txt").read_bytes() == b"unrelated edit\n"
     assert value(work, "diff", "--cached", "--name-only") == ""
+    # The unchanged conflicting policy reproduces the stop, not a landing.
+    again = persist(work, "-m", "restoring against the conflicting hook still refuses", "README.md")
+    mismatch_ids(again, checked)
+    # The fixture holder reconciles only this path. The hook remains active
+    # and checks another named path on the successful byte-exact retry.
+    hook(work, "pre-commit", "Path('hook-active').write_bytes(b'yes')\n"
+         "Path('secondary.txt').write_bytes(b'formatted secondary\\n')\ngit('add', 'secondary.txt')\n")
+    value(work, "restore", f"--source={checked}", "--worktree", "--", "README.md")
+    (work / "added.txt").unlink()
+    (work / "secondary.txt").write_bytes(b"formatted secondary\n")
+    value(work, "add", "README.md", "secondary.txt")
+    intended = value(work, "write-tree")
+    assert intended == checked
+    assert_landed(work, persist(work, "-m", "land restored bytes with reconciled active hook policy", "README.md", "secondary.txt"), tree=intended)
+    assert (work / "hook-active").exists()
+    assert value(work, "show", "HEAD:README.md") == "checked"
+    assert (work / "unrelated.txt").read_bytes() == b"unrelated edit\n"
 
 
 def descendant_hook(work, inherited=True):
@@ -784,7 +812,7 @@ def test_inconsistent_reflog_parent_never_authorizes_undo(tmp_path):
          f"    log.write_bytes(b'{start}' + b' ' + last[1] + b'\\n')\n").encode("ascii"))
     result = persist(work, "-m", "do not trust a token whose parent disagrees", "README.md")
     assert result.returncode == 1
-    assert "does not have the recorded start as its sole parent" in result.stdout
+    assert "does not have the exact recorded parents" in result.stdout
     assert "no undo or push" in result.stdout
     assert value(work, "log", "-1", "--format=%s") == "concurrent descendant commit"
     assert value(work, "diff", "--cached", "--name-only") == ""
@@ -944,3 +972,789 @@ def test_final_recovery_verification_detects_later_index_or_symbolic_movement(tm
         assert value(work, "diff", "--cached", "--name-only") == "unrelated.txt"
     else:
         assert value(work, "ls-files", "-v", "--", "unrelated.txt") == "S unrelated.txt"
+
+
+def assert_landed(work, result, parents=None, tree=None, remote="origin", branch="main"):
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.startswith("persisted:")
+    commit = value(work, "rev-parse", "HEAD")
+    if parents is not None:
+        assert value(work, "rev-list", "--parents", "-n", "1", commit).split() == [commit, *parents]
+    if tree is not None:
+        assert value(work, "rev-parse", f"{commit}^{{tree}}") == tree
+    assert value(work, "ls-remote", remote, f"refs/heads/{branch}").split()[0] == commit
+    return commit
+
+
+def merge_fixture(work, shape="clean"):
+    """Return recorded start/target with an in-progress merge, or a conflict."""
+    base = value(work, "rev-parse", "HEAD")
+    value(work, "checkout", "-b", "target")
+    if shape == "conflict":
+        (work / "README.md").write_bytes(b"target content\n")
+    elif shape != "equal":
+        (work / "target.txt").write_bytes(b"target content\n")
+    value(work, "add", "README.md" if shape == "conflict" else ".")
+    value(work, "commit", "--allow-empty", "-m", "target for catch-up")
+    target = value(work, "rev-parse", "HEAD")
+    value(work, "checkout", "main")
+    if shape not in {"ff", "equal"}:
+        (work / "README.md").write_bytes(b"branch content\n")
+        value(work, "add", "README.md")
+        value(work, "commit", "-m", "diverge the landing branch")
+    elif shape == "equal":
+        value(work, "commit", "--allow-empty", "-m", "diverge with the same tree")
+    start = value(work, "rev-parse", "HEAD")
+    value(work, "push", "origin", "main")
+    merging = run(["git", "merge", "--no-commit", "--no-ff", target], cwd=work)
+    assert merging.returncode == (1 if shape == "conflict" else 0), merging.stdout + merging.stderr
+    assert value(work, "rev-parse", "HEAD") == start
+    assert git_file(work, "MERGE_HEAD").read_text().strip() == target
+    assert base != target
+    return start, target
+
+
+def refused_state(work):
+    return (value(work, "rev-parse", "HEAD"), git_file(work, "index").read_bytes(),
+            value(work, "ls-remote", "origin", "refs/heads/main"),
+            git_file(work, "MERGE_HEAD").read_bytes() if git_file(work, "MERGE_HEAD").exists() else None)
+
+
+@pytest.mark.parametrize("paths", [("owned.txt",), ("owned",)])
+def test_named_staging_lands_current_working_bytes(tmp_path, paths):
+    work = make_repo(tmp_path)
+    name = "owned/file.txt" if paths == ("owned",) else "owned.txt"
+    (work / name).parent.mkdir(exist_ok=True)
+    (work / name).write_bytes(b"old staged bytes\n")
+    value(work, "add", name)
+    (work / name).write_bytes(b"current checked bytes\n")
+    (work / "unrelated.txt").write_bytes(b"unrelated working edit\n")
+    result = persist(work, "-m", "land current named content, including inherited staging", *paths)
+    assert_landed(work, result)
+    assert value(work, "show", f"HEAD:{name}") == "current checked bytes"
+    assert value(work, "show", "HEAD:unrelated.txt") == "seed unrelated"
+
+
+def test_named_staged_deletion_lands(tmp_path):
+    work = make_repo(tmp_path)
+    value(work, "rm", "README.md")
+    assert_landed(work, persist(work, "-m", "land the deletion the session explicitly names", "README.md"))
+    assert value(work, "ls-tree", "HEAD", "README.md") == ""
+
+
+@pytest.mark.parametrize("remedy", ["name", "unstage"])
+def test_unnamed_staging_lists_paths_and_both_remedies_land(tmp_path, remedy):
+    work = make_repo(tmp_path)
+    (work / "owned").mkdir()
+    for name in ("owned/file.txt", "owned-sibling.txt", "omitted.txt"):
+        (work / name).write_bytes(b"intended working content\n")
+        value(work, "add", name)
+    before = refused_state(work)
+    witness = witness_push(work)
+    first = persist(work, "-m", "do not claim a directory's similarly named sibling", "owned")
+    assert first.returncode == 1
+    assert '"omitted.txt"' in first.stdout and '"owned-sibling.txt"' in first.stdout
+    assert '"owned/file.txt"' not in first.stdout
+    assert before == refused_state(work) and not witness.exists()
+    if remedy == "name":
+        args = ["owned", "owned-sibling.txt", "omitted.txt"]
+    else:
+        value(work, "reset", "HEAD", "--", "owned-sibling.txt", "omitted.txt")
+        args = ["owned"]
+    assert_landed(work, persist(work, "-m", "apply the refusal's staged ownership remedy", *args))
+    for name in ("owned-sibling.txt", "omitted.txt"):
+        assert bool(value(work, "ls-tree", "HEAD", name)) == (remedy == "name")
+        assert (work / name).read_bytes() == b"intended working content\n"
+
+
+@pytest.mark.parametrize("shape", ["clean", "conflict", "ff", "equal"])
+@pytest.mark.parametrize("additional", [False, True])
+def test_merge_lands_complete_tree_and_ordered_parents(tmp_path, shape, additional):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work, shape)
+    if shape == "conflict":
+        (work / "README.md").write_bytes(b"resolved content\n")
+        value(work, "add", "README.md")
+    args = []
+    if additional:
+        (work / "extra.txt").write_bytes(b"further named work\n")
+        args = ["extra.txt"]
+        value(work, "add", "extra.txt")
+    checked = value(work, "write-tree")
+    if additional:
+        value(work, "reset", "HEAD", "--", "extra.txt")
+    (work / "unrelated.txt").write_bytes(b"unrelated edit\n")
+    result = persist(work, "-m", "land catch-up through the checked persistence route", *args)
+    assert_landed(work, result, [start, target], checked)
+    assert not git_file(work, "MERGE_HEAD").exists()
+    assert value(work, "show", "HEAD:unrelated.txt") == "seed unrelated"
+    assert (work / "unrelated.txt").read_bytes() == b"unrelated edit\n"
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_unresolved_merge_refuses_before_staging_then_resolution_lands(tmp_path, named):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work, "conflict")
+    before = refused_state(work)
+    witness = witness_push(work)
+    args = ["README.md"] if named else []
+    first = persist(work, "-m", "conflict markers must never become checked content", *args)
+    assert first.returncode == 1 and "unresolved conflicts" in first.stdout
+    assert before == refused_state(work) and not witness.exists()
+    (work / "README.md").write_bytes(b"resolved and checked\n")
+    value(work, "add", "README.md")
+    checked = value(work, "write-tree")
+    assert_landed(work, persist(work, "-m", "land after resolving and staging the conflict"), [start, target], checked)
+
+
+def checked_receipt(work, commit):
+    return (work / value(work, "rev-parse", "--git-common-dir")).resolve() / "persist-changes" / "checked-merges" / (commit + ".json")
+
+
+def protect_main(work):
+    origin = Path(value(work, "remote", "get-url", "origin"))
+    hook(origin, "pre-receive", "Path('receive-attempted').write_bytes(b'push')\n"
+         "if b'refs/heads/main' in sys.stdin.buffer.read():\n"
+         "    sys.stderr.write('protected branch requires a pull request\\n')\n"
+         "    sys.exit(1)\n")
+    return origin / "receive-attempted"
+
+
+def publish_checked_elsewhere(work, commit, start):
+    """Follow the skill's protected-branch route, retaining pending work."""
+    value(work, "checkout", "-b", "publication", commit)
+    value(work, "update-ref", "refs/heads/main", start, commit)
+    value(work, "push", "-u", "origin", "publication")
+    assert value(work, "rev-parse", "main") == start
+    assert value(work, "ls-remote", "origin", "refs/heads/publication").split()[0] == commit
+    assert value(work, "rev-parse", "HEAD") == commit
+
+
+@pytest.mark.parametrize("ref_format", ["files", "reftable"])
+def test_checked_merge_receipt_survives_rejected_push_and_routes_existing_commit(tmp_path, ref_format):
+    work = make_repo(tmp_path, ref_format=ref_format)
+    start, target = merge_fixture(work)
+    checked = value(work, "write-tree")
+    witness = protect_main(work)
+    first = persist(work, "-m", "retain checked merge through protected push rejection")
+    assert first.returncode == 1 and "push failed" in first.stdout
+    assert "protected branch requires a pull request" in first.stdout
+    commit = value(work, "rev-parse", "HEAD")
+    assert value(work, "rev-list", "--parents", "-n", "1", commit).split() == [commit, start, target]
+    assert value(work, "rev-parse", f"{commit}^{{tree}}") == checked
+    assert witness.exists() and not git_file(work, "MERGE_HEAD").exists()
+    receipt = json.loads(checked_receipt(work, commit).read_bytes())
+    assert receipt["commit"] == commit and receipt["checked_tree"] == checked
+    assert receipt["parents"] == [start, target] and receipt["start"] == start
+    witness.unlink()
+    (work / "pending.txt").write_bytes(b"older pending staging\n")
+    value(work, "add", "pending.txt")
+    (work / "pending.txt").write_bytes(b"pending named work\n")
+    for args in ([], ["pending.txt"]):
+        before = refused_state(work)
+        result = persist(work, "-m", "route the prior checked commit without new staging", *args)
+        assert result.returncode == 1 and "previous checked merge" in result.stdout
+        assert commit in result.stdout and "push-failure route" in result.stdout
+        assert "restart" not in result.stdout and "back out" not in result.stdout
+        assert before == refused_state(work) and not witness.exists()
+        assert (work / "pending.txt").read_bytes() == b"pending named work\n"
+    publish_checked_elsewhere(work, commit, start)
+    assert value(work, "rev-list", "--parents", "-n", "1", "HEAD").split() == [commit, start, target]
+    assert (work / "pending.txt").read_bytes() == b"pending named work\n"
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_external_merge_refusal_and_back_out_redo_remedy(tmp_path, named):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    checked = value(work, "write-tree")
+    value(work, "commit", "-m", "a merge made outside persistence")
+    (work / "pending.txt").write_bytes(b"pending work to retain\n")
+    before = refused_state(work)
+    witness = witness_push(work)
+    first = persist(work, "-m", "refuse an external merge before staging anything", *(["pending.txt"] if named else []))
+    assert first.returncode == 1 and "cannot establish that it made and checked" in first.stdout
+    assert "--no-commit --no-ff" in first.stdout and "back" in first.stdout
+    assert before == refused_state(work) and not witness.exists()
+    saved = (work / "target.txt").read_bytes()
+    value(work, "reset", "--mixed", start)
+    (work / "target.txt").unlink()
+    value(work, "merge", "--no-commit", "--no-ff", target)
+    (work / "target.txt").write_bytes(saved)
+    value(work, "add", "target.txt")
+    assert_landed(work, persist(work, "-m", "land the preserved merge through the instructed route"), [start, target], checked)
+    assert (work / "pending.txt").read_bytes() == b"pending work to retain\n"
+
+
+@pytest.mark.parametrize("ref_format", ["files", "reftable"])
+def test_linked_worktree_checked_merge_uses_common_receipt_and_original_reflog(tmp_path, ref_format):
+    work = make_repo(tmp_path, ref_format=ref_format)
+    start, target = merge_fixture(work)
+    protect_main(work)
+    result = persist(work, "-m", "keep the checked merge for linked worktree routing")
+    assert result.returncode == 1 and "push failed" in result.stdout
+    commit = value(work, "rev-parse", "HEAD")
+    linked = tmp_path / "linked"
+    value(work, "worktree", "add", "-b", "linked", str(linked), commit)
+    value(linked, "branch", "--set-upstream-to=origin/main")
+    assert checked_receipt(linked, commit) == checked_receipt(work, commit)
+    result = persist(linked, "-m", "route the original checked merge from a different ref")
+    assert result.returncode == 1 and "previous checked merge" in result.stdout
+    assert value(linked, "rev-list", "--parents", "-n", "1", "HEAD").split() == [commit, start, target]
+
+
+def prepare_merge_restart(work, start, target):
+    # The refusal promises no working-file restoration. Save chosen content
+    # before preparing only affected paths, never reset unrelated working files.
+    value(work, "restore", f"--source={start}", "--worktree", "--", "README.md")
+    for name in ("target.txt", "hook-added.txt"):
+        (work / name).unlink(missing_ok=True)
+    value(work, "merge", "--no-commit", "--no-ff", target)
+
+
+@pytest.mark.parametrize("remedy", ["accept", "restore"])
+def test_merge_mismatch_both_complete_remedies_land_with_active_hook(tmp_path, remedy):
+    work = make_repo(tmp_path)
+    (work / "secondary.txt").write_bytes(b"formatted secondary\n")
+    value(work, "add", "secondary.txt")
+    value(work, "commit", "-m", "seed another actively formatted path")
+    start, target = merge_fixture(work)
+    checked = value(work, "write-tree")
+    value(work, "update-index", "--skip-worktree", "unrelated.txt")
+    (work / "unrelated.txt").write_bytes(b"unrelated hidden working edit\n")
+    flags = value(work, "ls-files", "--stage", "--debug", "--", "unrelated.txt")
+    witness = witness_push(work)
+    hook(work, "pre-commit",
+         "Path('hook-active').write_bytes(b'yes')\n"
+         "Path('secondary.txt').write_bytes(b'formatted secondary\\n')\n"
+         "git('add', 'secondary.txt')\n"
+         "if not Path('.byte-exact-policy').exists():\n"
+         "    Path('target.txt').write_bytes(b'accepted formatter bytes\\n')\n"
+         "    Path('hook-added.txt').write_bytes(b'formatter addition\\n')\n"
+         "    Path('README.md').unlink(missing_ok=True)\n"
+         "    git('add', 'target.txt', 'hook-added.txt')\n"
+         "    git('update-index', '--remove', 'README.md')\n")
+    first = persist(work, "-m", "refuse hook changed merge while preserving recovery content")
+    rejected = mismatch_ids(first, checked, merge=True)
+    assert "undo completed" in first.stdout and not witness.exists()
+    assert value(work, "rev-parse", "HEAD") == start
+    assert value(work, "write-tree") == value(work, "rev-parse", f"{start}^{{tree}}")
+    assert not git_file(work, "MERGE_HEAD").exists()
+    assert value(work, "ls-files", "--stage", "--debug", "--", "unrelated.txt") == flags
+    if remedy == "accept":
+        intended = value(work, "rev-parse", f"{rejected}^{{tree}}")
+        saved = {name: (work / name).read_bytes() if (work / name).exists() else None
+                 for name in ("target.txt", "README.md", "hook-added.txt")}
+        prepare_merge_restart(work, start, target)
+        for name, content in saved.items():
+            if content is None:
+                (work / name).unlink(missing_ok=True)
+            else:
+                (work / name).write_bytes(content)
+        value(work, "add", "-A", "--", *saved)
+    else:
+        # A restore with policy unchanged must fail again without publication.
+        prepare_merge_restart(work, start, target)
+        value(work, "restore", f"--source={checked}", "--worktree", "--", "README.md", "target.txt")
+        value(work, "add", "README.md", "target.txt")
+        negative = persist(work, "-m", "unchanged conflicting hook policy repeats the merge mismatch")
+        mismatch_ids(negative, checked, merge=True)
+        assert "undo completed" in negative.stdout and not witness.exists()
+        # The fixture holder excludes only byte-exact paths; the same hook
+        # still runs and formats secondary.txt on the final landing.
+        (work / ".byte-exact-policy").write_bytes(b"exclude exact paths\n")
+        prepare_merge_restart(work, start, target)
+        value(work, "restore", f"--source={checked}", "--worktree", "--", "README.md", "target.txt")
+        value(work, "add", "README.md", "target.txt")
+        intended = checked
+    (work / "hook-active").unlink()
+    result = persist(work, "-m", "land the revalidated merge with both parents and hooks active")
+    landed = assert_landed(work, result, [start, target], intended)
+    assert (work / "hook-active").exists() and witness.exists()
+    assert run(["git", "merge-base", "--is-ancestor", rejected, landed], cwd=work).returncode == 1
+    assert (work / "unrelated.txt").read_bytes() == b"unrelated hidden working edit\n"
+    assert value(work, "ls-files", "--stage", "--debug", "--", "unrelated.txt") == flags
+
+
+@pytest.mark.parametrize("damage", ["missing", "malformed", "schema", "bool-schema", "tree", "commit", "start",
+                                    "parents", "ref", "action", "duplicate", "missing-log", "ambiguous-log", "preceding-log"])
+def test_unidentifiable_checked_merge_preserves_state_and_gives_truthful_route(tmp_path, damage):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    protect_main(work)
+    first = persist(work, "-m", "produce real checked evidence before damaging one element")
+    assert first.returncode == 1 and "push failed" in first.stdout
+    commit = value(work, "rev-parse", "HEAD")
+    path = checked_receipt(work, commit)
+    record = json.loads(path.read_bytes())
+    if damage == "missing":
+        path.unlink()
+    elif damage == "malformed":
+        path.write_bytes(b"{malformed")
+    elif damage == "duplicate":
+        path.write_bytes((json.dumps(record)[:-1] + ', "commit": "' + commit + '"}').encode("utf-8"))
+    elif damage.endswith("-log"):
+        log = git_file(work, "logs/refs/heads/main")
+        if damage == "missing-log":
+            value(work, "reflog", "expire", "--expire=all", "main")
+        elif damage == "ambiguous-log":
+            log.write_bytes(log.read_bytes() + log.read_bytes().splitlines()[-1] + b"\n")
+        else:
+            lines = log.read_bytes().splitlines()
+            fields, message = lines[-2].split(b"\t", 1)
+            parts = fields.split(b" ")
+            parts[1] = target.encode("ascii")
+            lines[-2] = b" ".join(parts) + b"\t" + message
+            log.write_bytes(b"\n".join(lines) + b"\n")
+    else:
+        key, replacement = {
+            "schema": ("schema_version", 99), "bool-schema": ("schema_version", True),
+            "tree": ("checked_tree", value(work, "rev-parse", f"{start}^{{tree}}")),
+            "commit": ("commit", target), "start": ("start", target),
+            "parents": ("parents", [target, start]), "ref": ("branch_ref", "HEAD"),
+            "action": ("reflog_action", "persist-" + "0" * 32),
+        }[damage]
+        record[key] = replacement
+        path.write_bytes(json.dumps(record).encode("utf-8"))
+    (work / "pending.txt").write_bytes(b"do not stage pending work\n")
+    before = refused_state(work)
+    witness = protect_main(work)
+    witness.unlink(missing_ok=True)
+    result = persist(work, "-m", "uncertain evidence never authorizes publication", "pending.txt")
+    assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+    assert "bypassed" not in result.stdout
+    assert "--no-commit --no-ff" in result.stdout
+    assert before == refused_state(work) and not witness.exists()
+    assert (work / "pending.txt").read_bytes() == b"do not stage pending work\n"
+    if damage == "missing":
+        # Apply the uncertain-evidence route all the way to a new checked merge.
+        value(work, "reset", "--mixed", start)
+        (work / "target.txt").unlink()
+        value(work, "merge", "--no-commit", "--no-ff", target)
+        redo = persist(work, "-m", "redo an unidentifiable merge through the checked route")
+        assert redo.returncode == 1 and "protected branch requires a pull request" in redo.stdout
+        rechecked = value(work, "rev-parse", "HEAD")
+        assert value(work, "rev-list", "--parents", "-n", "1", rechecked).split() == [rechecked, start, target]
+        assert value(work, "rev-parse", "HEAD^{tree}") == record["checked_tree"]
+        assert checked_receipt(work, rechecked).exists()
+        publish_checked_elsewhere(work, rechecked, start)
+
+
+def test_copied_receipt_does_not_claim_a_same_shaped_external_merge(tmp_path):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    protect_main(work)
+    first = persist(work, "-m", "make a checked merge for the copied evidence control")
+    assert first.returncode == 1 and "push failed" in first.stdout
+    checked = value(work, "rev-parse", "HEAD")
+    record = json.loads(checked_receipt(work, checked).read_bytes())
+    value(work, "reset", "--hard", start)
+    value(work, "merge", "--no-ff", target, "-m", "external merge with identical parents and tree")
+    external = value(work, "rev-parse", "HEAD")
+    assert external != checked
+    record["commit"] = external
+    checked_receipt(work, external).write_bytes(json.dumps(record).encode("utf-8"))
+    before = refused_state(work)
+    result = persist(work, "-m", "copied evidence cannot establish the external commit's ownership")
+    assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+    assert before == refused_state(work)
+
+
+def invoke_args(module, work, monkeypatch, capsys, *args):
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "-m", "exercise a deterministic injected boundary", *args])
+    with pytest.raises(SystemExit) as stopped:
+        module.main()
+    return subprocess.CompletedProcess([], stopped.value.code, capsys.readouterr().out, "")
+
+
+def test_receipt_write_failure_stops_before_push_without_undo(tmp_path, implementation, monkeypatch, capsys):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    checked = value(work, "write-tree")
+    witness = witness_push(work)
+    real_replace = os.replace
+
+    def deny_receipt(source, destination):
+        if Path(destination).suffix == ".json":
+            raise OSError("injected receipt retention failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(implementation.os, "replace", deny_receipt)
+    result = invoke_args(implementation, work, monkeypatch, capsys)
+    assert result.returncode == 1 and "receipt could not be retained" in result.stdout
+    commit = value(work, "rev-parse", "HEAD")
+    assert commit in result.stdout and "no push or undo" in result.stdout
+    assert value(work, "rev-list", "--parents", "-n", "1", commit).split() == [commit, start, target]
+    assert value(work, "rev-parse", f"{commit}^{{tree}}") == checked
+    assert not witness.exists() and not checked_receipt(work, commit).exists()
+    assert not list(checked_receipt(work, commit).parent.glob(".receipt-*"))
+    result = persist(work, "-m", "missing retained evidence requires the unidentifiable route")
+    assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+
+
+def test_receipt_read_failure_grants_no_ownership(tmp_path, implementation, monkeypatch, capsys):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    protect_main(work)
+    assert "push failed" in persist(work, "-m", "retain evidence for a read failure control").stdout
+    receipt = checked_receipt(work, value(work, "rev-parse", "HEAD"))
+    original = Path.read_bytes
+
+    def denied(path):
+        if path == receipt:
+            raise OSError("injected evidence read error")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    before = refused_state(work)
+    result = invoke_args(implementation, work, monkeypatch, capsys)
+    assert "cannot establish that it made and checked" in result.stdout and "evidence read error" in result.stdout
+    assert before == refused_state(work)
+
+
+@pytest.mark.parametrize("bad", [".", "*", ":/"])
+def test_broad_staging_remedies_land_only_literal_intended_content(tmp_path, bad):
+    work = make_repo(tmp_path)
+    (work / "intended.txt").write_bytes(b"intended\n")
+    (work / "excluded.txt").write_bytes(b"excluded\n")
+    before = refused_state(work)
+    first = persist(work, "-m", "obtain the broad staging refusal before its remedy", bad)
+    assert first.returncode == 1 and "refused" in first.stdout
+    assert before == refused_state(work)
+    assert_landed(work, persist(work, "-m", "follow refusal by naming only the intended path", "intended.txt"))
+    assert value(work, "ls-tree", "HEAD", "excluded.txt") == ""
+
+
+def test_detached_head_remedy_uses_existing_published_branch(tmp_path):
+    work = make_repo(tmp_path)
+    value(work, "checkout", "--detach")
+    (work / "intended.txt").write_bytes(b"intended\n")
+    first = persist(work, "-m", "obtain detached head refusal before checking out", "intended.txt")
+    assert first.returncode == 1 and "check out a branch first" in first.stdout
+    value(work, "checkout", "main")
+    assert_landed(work, persist(work, "-m", "land after checking out the existing published branch", "intended.txt"))
+
+
+def test_missing_remote_branch_remedy_deliberately_publishes_then_lands(tmp_path):
+    work = make_repo(tmp_path)
+    value(work, "checkout", "-b", "published-later")
+    (work / "intended.txt").write_bytes(b"intended\n")
+    first = persist(work, "-m", "obtain missing remote refusal before deliberate publication", "intended.txt")
+    assert first.returncode == 1 and "push it deliberately first" in first.stdout
+    assert value(work, "ls-remote", "origin", "refs/heads/published-later") == ""
+    value(work, "push", "-u", "origin", "published-later")
+    assert_landed(work, persist(work, "-m", "land after deliberately publishing the existing branch", "intended.txt"), branch="published-later")
+
+
+def test_multiple_remote_remedy_sets_upstream_and_moves_only_selected_remote(tmp_path):
+    work = make_repo(tmp_path)
+    fork = tmp_path / "fork.git"
+    value(tmp_path, "init", "--bare", "-b", "main", str(fork))
+    value(work, "remote", "add", "fork", str(fork))
+    value(work, "push", "fork", "main")
+    value(work, "branch", "--unset-upstream")
+    origin_before = value(work, "ls-remote", "origin", "refs/heads/main")
+    (work / "intended.txt").write_bytes(b"intended\n")
+    first = persist(work, "-m", "obtain the refusal that asks for an explicit upstream", "intended.txt")
+    assert first.returncode == 1 and "set an upstream" in first.stdout
+    value(work, "branch", "--set-upstream-to=fork/main")
+    assert_landed(work, persist(work, "-m", "land after selecting fork as the explicit upstream", "intended.txt"), remote="fork")
+    assert value(work, "ls-remote", "origin", "refs/heads/main") == origin_before
+
+
+def test_no_path_ordinary_remedy_names_paths_and_lands(tmp_path):
+    work = make_repo(tmp_path)
+    (work / "intended.txt").write_bytes(b"intended\n")
+    value(work, "add", "intended.txt")
+    before = refused_state(work)
+    first = persist(work, "-m", "ordinary invocations must name their intended content")
+    assert first.returncode == 1 and "requires named paths" in first.stdout
+    assert before == refused_state(work)
+    assert_landed(work, persist(work, "-m", "name the intended path after the ordinary refusal", "intended.txt"))
+
+
+def test_protected_ordinary_push_remedy_publishes_same_checked_commit(tmp_path):
+    work = make_repo(tmp_path)
+    start, checked = checked_change(work)
+    protect_main(work)
+    result = persist(work, "-m", "route ordinary checked commit after protected rejection", "README.md")
+    assert result.returncode == 1 and "protected branch requires a pull request" in result.stdout
+    commit = value(work, "rev-parse", "HEAD")
+    assert commit in result.stdout and value(work, "rev-parse", "HEAD^{tree}") == checked
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    publish_checked_elsewhere(work, commit, start)
+    assert value(work, "rev-list", "--parents", "-n", "1", commit).split() == [commit, start]
+    assert (work / "pending.txt").read_bytes() == b"pending work\n"
+
+
+def test_published_external_merge_is_usable_despite_stale_tracking(tmp_path):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    value(work, "commit", "-m", "published external merge")
+    merge = value(work, "rev-parse", "HEAD")
+    value(work, "push", "origin", "main")
+    value(work, "update-ref", "refs/remotes/origin/main", start)
+    (work / "pending.txt").write_bytes(b"new work after published merge\n")
+    assert_landed(work, persist(work, "-m", "allow work after a merge already published on the actual remote", "pending.txt"), [merge])
+    assert value(work, "rev-list", "--parents", "-n", "1", merge).split() == [merge, start, target]
+
+
+def test_publication_fetches_unknown_actual_tip_and_recognizes_merge_ancestor(tmp_path):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    value(work, "commit", "-m", "external merge published before the remote advances")
+    merge = value(work, "rev-parse", "HEAD")
+    value(work, "push", "origin", "main")
+    other = tmp_path / "other"
+    value(tmp_path, "clone", str(tmp_path / "origin.git"), str(other))
+    value(other, "config", "user.email", "other@example.com")
+    value(other, "config", "user.name", "other")
+    (other / "remote-only.txt").write_bytes(b"remote moved\n")
+    value(other, "add", "remote-only.txt")
+    value(other, "commit", "-m", "new tip not present in the caller's object store")
+    tip = value(other, "rev-parse", "HEAD")
+    value(other, "push", "origin", "main")
+    assert run(["git", "cat-file", "-e", tip], cwd=work).returncode != 0
+    (work / "pending.txt").write_bytes(b"local new work\n")
+    result = persist(work, "-m", "published ancestor stays usable with an unknown actual remote tip", "pending.txt")
+    assert result.returncode == 1 and "push failed" in result.stdout
+    assert "cannot establish that it made and checked" not in result.stdout
+    assert value(work, "rev-parse", "HEAD^") == merge
+    assert value(work, "show", "HEAD:pending.txt") == "local new work"
+    assert value(work, "cat-file", "-t", tip) == "commit"
+
+
+def test_unpushed_one_parent_head_keeps_existing_behavior(tmp_path):
+    work = make_repo(tmp_path)
+    (work / "earlier.txt").write_bytes(b"earlier external one-parent work\n")
+    value(work, "add", "earlier.txt")
+    value(work, "commit", "-m", "external one-parent commit remains in scope unchanged")
+    earlier = value(work, "rev-parse", "HEAD")
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    assert_landed(work, persist(work, "-m", "retain the original behavior for an unpushed one-parent head", "pending.txt"), [earlier])
+
+
+def test_absent_remote_never_advises_publishing_unchecked_external_merge(tmp_path):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    value(work, "commit", "-m", "external merge has not been checked")
+    value(tmp_path / "origin.git", "update-ref", "-d", "refs/heads/main")
+    result = persist(work, "-m", "classify unchecked merges before absent branch publication advice")
+    assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+    assert "push it deliberately first" not in result.stdout
+
+
+def test_staged_escaped_names_remain_readable_on_one_line(tmp_path):
+    work = make_repo(tmp_path)
+    blob = value(work, "hash-object", "README.md")
+    odd = "odd\nname-" + chr(233) + ".txt"
+    value(work, "-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", "100644," + blob + "," + odd)
+    (work / "intended.txt").write_bytes(b"intended\n")
+    result = persist(work, "-m", "show omitted paths safely without changing their staging", "intended.txt")
+    assert result.returncode == 1 and '"odd\\nname-\\u00e9.txt"' in result.stdout
+    assert len(result.stdout.splitlines()) == 1 and result.stdout.isascii()
+    value(work, "-c", "core.protectNTFS=false", "update-index", "--force-remove", odd)
+    assert_landed(work, persist(work, "-m", "land after removing only the escaped omitted entry", "intended.txt"))
+
+
+@pytest.mark.parametrize("interference", ["descendant", "lock", "ref-race", "linked", "staging"])
+def test_merge_undo_retains_concurrent_work_and_uses_worktree_index(tmp_path, implementation, monkeypatch, capsys, interference):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    main_index = None
+    if interference == "linked":
+        value(work, "merge", "--abort")
+        main_index = git_file(work, "index").read_bytes()
+        linked = tmp_path / "linked"
+        value(work, "worktree", "add", "-b", "linked", str(linked), start)
+        value(linked, "push", "-u", "origin", "linked")
+        value(linked, "merge", "--no-commit", "--no-ff", target)
+        main = work
+        work = linked
+    checked = value(work, "write-tree")
+    witness = witness_push(work)
+    hook(work, "pre-commit", "Path('target.txt').write_bytes(b'hook rewrite\\n')\ngit('add', 'target.txt')\n")
+    observed = {}
+    if interference == "descendant":
+        descendant_hook(work)
+    elif interference == "lock":
+        hook(work, "post-commit", "Path(git('rev-parse', '--git-path', 'index.lock').stdout.decode().strip()).write_bytes(b'held by another actor')\n")
+    elif interference == "staging":
+        hook(work, "post-commit", "Path('pending.txt').write_bytes(b'another actors staging\\n')\n"
+             "git('add', 'pending.txt')\ngit('update-index', '--skip-worktree', 'unrelated.txt')\n"
+             "Path('.index-entry').write_bytes(git('ls-files', '--stage', '--debug', '--', 'pending.txt').stdout)\n")
+    elif interference == "ref-race":
+        original = implementation.run_git
+
+        def race(*args, **kwargs):
+            if args[0] == "update-ref":
+                commit = value(work, "rev-parse", "HEAD")
+                observed["index"] = git_file(work, "index").read_bytes()
+                observed["head"] = value(work, "commit-tree", f"{start}^{{tree}}", "-p", commit,
+                                         "-m", "concurrent merge ref-only writer")
+                value(work, "update-ref", "refs/heads/main", observed["head"], commit)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(implementation, "run_git", race)
+    result = invoke_args(implementation, work, monkeypatch, capsys)
+    rejected = mismatch_ids(result, checked, merge=True)
+    assert not witness.exists() and not checked_receipt(work, rejected).exists()
+    assert not git_file(work, "MERGE_HEAD").exists()
+    if interference == "descendant":
+        assert "undo skipped" in result.stdout
+        assert value(work, "rev-parse", "HEAD^") == rejected
+        assert value(work, "show", "HEAD:concurrent.txt") == "concurrent work"
+    elif interference == "lock":
+        assert "undo skipped" in result.stdout and value(work, "rev-parse", "HEAD") == rejected
+        assert git_file(work, "index.lock").read_bytes() == b"held by another actor"
+    elif interference == "ref-race":
+        assert "undo skipped" in result.stdout
+        assert value(work, "rev-parse", "HEAD") == observed["head"]
+        assert git_file(work, "index").read_bytes() == observed["index"]
+    else:
+        assert "undo completed" in result.stdout and value(work, "rev-parse", "HEAD") == start
+        if interference == "linked":
+            assert git_file(main, "index").read_bytes() == main_index
+        else:
+            assert value(work, "show", ":pending.txt") == "another actors staging"
+            current = run(["git", "ls-files", "--stage", "--debug", "--", "pending.txt"], cwd=work)
+            assert current.stdout.encode().replace(b"\r\n", b"\n") == (work / ".index-entry").read_bytes()
+            assert value(work, "ls-files", "-v", "--", "unrelated.txt") == "S unrelated.txt"
+
+
+def test_merge_identity_rejects_a_replaced_second_parent(tmp_path):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    other = value(work, "commit-tree", f"{target}^{{tree}}", "-p", target, "-m", "replacement second parent")
+    witness = witness_push(work)
+    hook(work, "pre-commit", f"Path(git('rev-parse', '--git-path', 'MERGE_HEAD').stdout.decode().strip()).write_bytes(b'{other}\\n')\n")
+    result = persist(work, "-m", "do not publish a merge whose second parent changed during the hook")
+    assert result.returncode == 1 and "exact recorded parents" in result.stdout
+    commit = value(work, "rev-parse", "HEAD")
+    assert value(work, "rev-list", "--parents", "-n", "1", commit).split() == [commit, start, other]
+    assert not witness.exists() and not checked_receipt(work, commit).exists()
+    assert "no undo or push" in result.stdout
+
+
+def test_conflict_reintroduced_after_staging_gets_resolve_remedy_before_tree_write(tmp_path, implementation, monkeypatch, capsys):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work, "conflict")
+    base = value(work, "merge-base", start, target)
+    (work / "README.md").write_bytes(b"resolved\n")
+    value(work, "add", "README.md")
+    original = implementation.run_git
+    attempted = []
+
+    def introduce_conflict(*args, **kwargs):
+        if "write-tree" in args:
+            attempted.append("write-tree")
+        result = original(*args, **kwargs)
+        if args[:2] == ("--literal-pathspecs", "add"):
+            value(work, "read-tree", "--reset", start)
+            value(work, "read-tree", "-m", "-i", base, start, target)
+        return result
+
+    monkeypatch.setattr(implementation, "run_git", introduce_conflict)
+    result = invoke_args(implementation, work, monkeypatch, capsys, "README.md")
+    assert result.returncode == 1 and "unresolved conflicts" in result.stdout
+    assert "resolve and stage them first" in result.stdout
+    assert attempted == [] and value(work, "rev-parse", "HEAD") == start
+    assert value(work, "ls-files", "--unmerged")
+
+
+@pytest.mark.parametrize("damage", ["empty", "malformed", "noncommit", "symbolic", "unreadable", "verification-error"])
+def test_invalid_merge_state_refuses_without_staging_named_work(tmp_path, implementation, monkeypatch, capsys, damage):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    path = git_file(work, "MERGE_HEAD")
+    if damage == "empty":
+        path.write_bytes(b"")
+    elif damage == "malformed":
+        path.write_bytes(b"invalid-object-id\n")
+    elif damage == "noncommit":
+        path.write_bytes((value(work, "hash-object", "README.md") + "\n").encode("ascii"))
+    elif damage == "symbolic":
+        path.write_bytes(b"target\n")
+    elif damage == "verification-error":
+        original = implementation.run_git
+        head = path.read_bytes().strip()
+
+        def failed_verification(*args, **kwargs):
+            if args[:2] == ("rev-parse", "--verify"):
+                return subprocess.CompletedProcess([], 1, head + b"\n", b"injected verification I/O failure")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(implementation, "run_git", failed_verification)
+    else:
+        original = Path.read_bytes
+
+        def denied(candidate):
+            if candidate == path:
+                raise OSError("injected merge state read failure")
+            return original(candidate)
+
+        monkeypatch.setattr(Path, "read_bytes", denied)
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    index = git_file(work, "index").read_bytes()
+    result = invoke_args(implementation, work, monkeypatch, capsys, "target.txt", "pending.txt")
+    assert result.returncode == 1 and "merge" in result.stdout
+    assert git_file(work, "index").read_bytes() == index
+    assert value(work, "ls-files", "pending.txt") == ""
+
+
+def test_external_merge_with_non_script_reflog_action_cannot_gain_ownership(tmp_path):
+    work = make_repo(tmp_path)
+    start, target = merge_fixture(work)
+    tree = value(work, "write-tree")
+    env = dict(os.environ, GIT_REFLOG_ACTION="external-action")
+    result = subprocess.run(["git", "commit", "-m", "external merge with a genuine different reflog action"],
+                            cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    commit = value(work, "rev-parse", "HEAD")
+    record = {"schema_version": 1, "commit": commit, "checked_tree": tree,
+              "start": start, "parents": [start, target], "branch_ref": "refs/heads/main",
+              "reflog_action": "external-action"}
+    path = checked_receipt(work, commit)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(json.dumps(record).encode("utf-8"))
+    before = refused_state(work)
+    result = persist(work, "-m", "a matching external action is not this script's commit evidence")
+    assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+    assert before == refused_state(work)
+
+
+def test_uncertain_publication_does_not_advise_back_out_of_published_merge(tmp_path, implementation, monkeypatch, capsys):
+    work = make_repo(tmp_path)
+    merge_fixture(work)
+    value(work, "commit", "-m", "publish the merge before an observation failure")
+    value(work, "push", "origin", "main")
+    original = implementation.run_git
+
+    def unavailable(*args, **kwargs):
+        if args[:2] == ("merge-base", "--is-ancestor"):
+            return subprocess.CompletedProcess([], 2, b"", b"injected publication observation failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(implementation, "run_git", unavailable)
+    (work / "pending.txt").write_bytes(b"pending work\n")
+    before = refused_state(work)
+    result = invoke_args(implementation, work, monkeypatch, capsys, "pending.txt")
+    assert result.returncode == 1 and "cannot establish merge publication" in result.stdout
+    assert "inspect current remote/local history" in result.stdout and "back the merge out" not in result.stdout
+    assert before == refused_state(work)
+
+
+def test_reftable_expired_evidence_cannot_authorize_checked_merge(tmp_path):
+    work = make_repo(tmp_path, ref_format="reftable")
+    merge_fixture(work)
+    protect_main(work)
+    first = persist(work, "-m", "retain checked receipt before expiring reftable evidence")
+    assert first.returncode == 1 and "push failed" in first.stdout
+    commit = value(work, "rev-parse", "HEAD")
+    assert checked_receipt(work, commit).exists()
+    value(work, "reflog", "expire", "--expire=all", "main")
+    before = refused_state(work)
+    result = persist(work, "-m", "receipt alone cannot replace missing reftable evidence")
+    assert result.returncode == 1 and "cannot establish that it made and checked" in result.stdout
+    assert before == refused_state(work)
