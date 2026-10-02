@@ -1560,7 +1560,8 @@ def test_missing_affirmation_routes_to_the_form_and_presence_check():
         "<plugin-root>/skills/engagement/references/design-sitting.md",
         "with the owner in turns",
         "one decision per turn",
-        "starting from the problem's cause",
+        "starting from the problem's cause where the work is a problem rather "
+        "than a want.",
         "only when the next turn would add execution detail",
         "<plugin-root>/skills/engagement/references/the-brief.md",
         "Shape",

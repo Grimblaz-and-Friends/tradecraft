@@ -57,7 +57,8 @@ PATH_NO_USE_REASON = (
 BRIEF_GUIDANCE = (
     "Design the implementation brief with the owner in turns per "
     "<plugin-root>/skills/engagement/references/design-sitting.md, one decision per "
-    "turn and starting from the problem's cause. Bring the whole item only when "
+    "turn, starting from the problem's cause where the work is a problem rather "
+    "than a want. Bring the whole item only when "
     "the next turn would add execution detail, in "
     "<plugin-root>/skills/engagement/references/the-brief.md's form: Shape, Readers, "
     "a decision block, Not this, and exactly one lawful Review risk / Review lane pair. "
