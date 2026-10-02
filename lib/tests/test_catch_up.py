@@ -53,8 +53,16 @@ class PublicGit:
             revisions = git(self.root, "rev-list", "--reverse", f"{left}..{right}").splitlines()
             behind = git(self.root, "rev-list", "--count", f"{right}..{left}")
             status = "identical" if left == right else "ahead" if common == left else "behind" if common == right else "diverged"
+            files = []
+            for line in git(self.root, "diff", "--name-status", "-M", common, right).splitlines():
+                fields = line.split("\t")
+                item = {"filename": fields[-1], "status": "renamed" if fields[0].startswith("R") else {"A": "added", "D": "removed"}.get(fields[0], "modified")}
+                if fields[0].startswith("R"):
+                    item["previous_filename"] = fields[1]
+                files.append(item)
             return {"status": status, "ahead_by": len(revisions), "behind_by": int(behind),
-                    "merge_base_commit": {"sha": common}, "commits": [{"sha": sha} for sha in revisions]}
+                    "merge_base_commit": {"sha": common}, "commits": [{"sha": sha} for sha in revisions],
+                    "files": files}
         if suffix.startswith("commits/"):
             revision = suffix.split("/", 1)[1].split("?")[0]
             parents = git(self.root, "show", "-s", "--format=%P", revision).split()
@@ -139,6 +147,8 @@ def test_disjoint_import_carries_and_reports_the_observed_graph(graph):
     assert result["current_head"] == git(graph[1], "rev-parse", "HEAD")
     assert result["incoming_commits"][0] == {"sha": result["observed_base"], "paths": ["src/other"], "overlap": [], "origin": "base"}
     assert "src/own" in result["changed_paths"]
+    assert result["merge_commits"] == [{"sha": result["current_head"],
+                                        "brought_paths": ["src/other"], "own_paths": []}]
 
 
 def test_same_file_overlap_rebuys_even_on_separate_lines(graph):
@@ -156,10 +166,12 @@ def test_same_file_overlap_rebuys_even_on_separate_lines(graph):
 
 def test_authored_resolution_edit_cannot_hide_in_import(graph):
     result = application(graph, extra="src/own")
-    assert not result["applicable"] and "overlaps" in result["reason"]
+    assert not result["applicable"] and "authored merge edit" in result["reason"]
+    assert result["merge_commits"][-1]["brought_paths"] == ["src/other"]
+    assert result["merge_commits"][-1]["own_paths"] == ["src/own"]
 
 
-def test_merge_restoring_file_to_base_has_no_current_overlap(graph):
+def test_merge_restoring_file_to_base_rebuys_without_current_overlap(graph):
     result = application(graph, extra="src/own")
     # Rebuild the merge to use base's unchanged content instead of an extra blob.
     root, implementation, _, ancestor = graph
@@ -171,7 +183,63 @@ def test_merge_restoring_file_to_base_has_no_current_overlap(graph):
     git(implementation, "commit", "-m", "hidden authored restore")
     result = apply(PublicGit(root), "example/product", ancestor,
                                     git(implementation, "rev-parse", "HEAD"), base, RULES, work.use_required)
+    assert not result["applicable"] and "src/own" not in result["changed_paths"]
+    assert result["merge_commits"][-1]["own_paths"] == ["src/own"]
+    assert "authored merge edit" in result["reason"]
+
+
+def test_merge_other_parent_not_base_reachable_gets_no_split(graph):
+    root, implementation, _, ancestor = graph
+    base = git(root, "rev-parse", "HEAD")
+    git(root, "switch", "-c", "unrelated-side")
+    side = commit(root, "src/own", "outside base\n")
+    git(implementation, "merge", "--no-commit", "--no-ff", side, check=False)
+    (implementation / "src/own").write_bytes(b"old\n")
+    git(implementation, "add", "src/own")
+    git(implementation, "commit", "-m", "resolve unrelated side to base content")
+    result = apply(PublicGit(root), "example/product", ancestor,
+                   git(implementation, "rev-parse", "HEAD"), base, RULES, work.use_required)
+    assert not result["applicable"]
+    assert result["incoming_commits"] == []
+    assert result["merge_commits"][-1] == {"sha": result["current_head"],
+                                          "brought_paths": [], "own_paths": ["src/own"]}
+
+
+def test_merge_both_sides_changed_and_resolved_to_base_keeps_known_residual(graph):
+    root, implementation, _, ancestor = graph
+    base = commit(root, "src/own", "incoming\n")
+    git(implementation, "merge", "--no-commit", "--no-ff", base, check=False)
+    (implementation / "src/own").write_bytes(b"incoming\n")
+    git(implementation, "add", "src/own")
+    git(implementation, "commit", "-m", "resolve both sides to base")
+    result = apply(PublicGit(root), "example/product", ancestor,
+                   git(implementation, "rev-parse", "HEAD"), base, RULES, work.use_required)
     assert result["applicable"] and "src/own" not in result["changed_paths"]
+    assert result["merge_commits"][-1]["brought_paths"] == ["src/own"]
+    assert result["merge_commits"][-1]["own_paths"] == []
+
+
+@pytest.mark.parametrize("missing", ["files", "merge-base", "truncated"])
+def test_unavailable_merge_side_history_grants_no_carry(graph, missing):
+    root, implementation, _, ancestor = graph
+    result = application(graph)
+    transport = PublicGit(root)
+    original = transport.get
+    common = git(root, "merge-base", ancestor, result["observed_base"])
+    def unavailable(endpoint, paginate=False):
+        value = original(endpoint, paginate)
+        if missing == "merge-base" and endpoint.endswith(f"compare/{ancestor}...{result['observed_base']}"):
+            value.pop("merge_base_commit")
+        if endpoint.endswith(f"compare/{common}...{result['observed_base']}"):
+            if missing == "files":
+                value.pop("files")
+            elif missing == "truncated":
+                value["files"] *= 300
+        return value
+    transport.get = unavailable
+    with pytest.raises(ValueError, match="merge-side file list"):
+        apply(transport, "example/product", ancestor, result["current_head"],
+              result["observed_base"], RULES, work.use_required)
 
 
 def test_touched_then_reverted_authored_work_rebuys(graph):
@@ -218,6 +286,8 @@ def test_only_declared_version_member_leaves_overlap(graph, extra):
     result = apply(PublicGit(root), "example/product", ancestor,
                                     git(implementation, "rev-parse", "HEAD"), base, RULES, work.use_required)
     assert result["applicable"] is (not extra)
+    assert result["merge_commits"][-1]["brought_paths"] == ["version.json"]
+    assert result["merge_commits"][-1]["own_paths"] == []
 
 
 def test_ordinary_authored_version_bump_still_buys_use(graph):
@@ -494,3 +564,4 @@ def test_shared_public_fixtures_have_the_same_entrance_interpretation():
         result = use_history.application(Transport(), case["repository"], case["evidence_head"],
                                         case["head"], case["base"], case["policy"], work.use_required, case["changed_paths"])
         assert result["applicable"] is case["applicable"], case["name"]
+        assert result["merge_commits"] == case["merge_commits"], case["name"]

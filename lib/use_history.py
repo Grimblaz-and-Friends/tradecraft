@@ -51,6 +51,23 @@ class History:
         except (KeyError, TypeError, OSError, UnicodeError, ValueError, RuntimeError):
             return False
 
+    def merge_brought_paths(self, parents, base):
+        brought = set()
+        for parent in parents[1:]:
+            if not self.base_reachable(parent, base):
+                continue
+            comparison = self.get(f"repos/{self.repo}/compare/{parents[0]}...{parent}")
+            common = comparison.get("merge_base_commit", {}).get("sha")
+            if not isinstance(common, str) or SHA.fullmatch(common) is None:
+                raise ValueError("complete merge-side file list is unavailable")
+            side = self.get(f"repos/{self.repo}/compare/{common}...{parent}")
+            files = side.get("files")
+            if not isinstance(files, list) or len(files) >= 300:
+                raise ValueError("complete merge-side file list is unavailable")
+            brought.update(item[key] for item in files for key in ("filename", "previous_filename")
+                           if isinstance(item.get(key), str))
+        return brought
+
     def version_only(self, revision, files, parents):
         if self.spec is None or not parents:
             return False
@@ -77,7 +94,8 @@ def application(transport, repo, ancestor, head, base, rules, buys, changed_path
     graph = History(transport, repo, rules)
     interval = graph.get(f"repos/{repo}/compare/{ancestor}...{head}")
     report = {"applicable": False, "evidence_head": ancestor, "current_head": head,
-              "observed_base": base, "intervening_commits": [], "incoming_commits": []}
+              "observed_base": base, "intervening_commits": [], "incoming_commits": [],
+              "merge_commits": []}
     if (interval.get("status") not in {"ahead", "identical"}
             or interval.get("merge_base_commit", {}).get("sha") != ancestor):
         return {**report, "reason": "use evidence head is not an ancestor"}
@@ -98,17 +116,26 @@ def application(transport, repo, ancestor, head, base, rules, buys, changed_path
         if not bought:
             continue
         merge = parents is not None and len(parents) > 1
-        overlap_rule = merge or graph.base_reachable(revision, base)
-        if overlap_rule:
-            overlap = {path for path in bought if path.replace("\\", "/") in changed}
+        if merge:
+            brought = set(paths) & graph.merge_brought_paths(parents, base)
+            own = bought - brought
+            incoming = bought & brought
+            report["merge_commits"].append({"sha": revision, "brought_paths": sorted(brought),
+                                             "own_paths": sorted(set(paths) - brought)})
+        elif graph.base_reachable(revision, base):
+            incoming, own = bought, set()
+        else:
+            incoming, own = set(), bought
+        if incoming:
+            overlap = {path for path in incoming if path.replace("\\", "/") in changed}
             if (graph.spec and graph.spec["path"] in {path.replace("\\", "/") for path in overlap}
                     and graph.version_only(revision, files, parents)):
                 overlap = {path for path in overlap if path.replace("\\", "/") != graph.spec["path"]}
-            report["incoming_commits"].append({"sha": revision, "paths": sorted(bought),
+            report["incoming_commits"].append({"sha": revision, "paths": sorted(incoming),
                                                "overlap": sorted(overlap), "origin": "merge" if merge else "base"})
             if overlap:
                 invalid.append(f"commit {revision} overlaps use-bought paths: {', '.join(sorted(overlap))}")
-        elif bought:
-            invalid.append(f"authored commit {revision} changes use-bought paths: {', '.join(sorted(bought))}")
+        if own:
+            invalid.append(f"authored {'merge edit' if merge else 'commit'} {revision} changes use-bought paths: {', '.join(sorted(own))}")
     return {**report, "applicable": not invalid, "carried": not invalid,
-            "reason": "; ".join(invalid) if invalid else "authored work buys no new use; base commits and merges have no use-bought overlap"}
+            "reason": "; ".join(invalid) if invalid else "authored work buys no new use; base commits and brought merge paths have no use-bought overlap"}
