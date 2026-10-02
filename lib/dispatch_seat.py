@@ -139,6 +139,7 @@ def build_command(
         command = [*executable, "exec", "--strict-config", "--ignore-user-config",
                    "--ephemeral", "--sandbox", "read-only",
                    "--json", "--color", "never", "--model", model,
+                   "--disable", "apps",
                    "-c", "apps._default.enabled=false"]
         if windows_sandbox is not None:
             if windows_sandbox.mode is None:
@@ -196,7 +197,7 @@ def permission_boundary(vendor, required_capability, root, windows_sandbox=None)
         selected = ""
     return (
         "Codex sandbox=read-only; " + selected
-        + "user_config=ignored; apps=disabled-by-config; "
+        + "user_config=ignored; apps=disabled-by-feature; "
         + f"detached_root_verified={root}"
     )
 
