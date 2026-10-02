@@ -26,6 +26,10 @@ from the repository root. It creates this worktree's `.venv` and installs
 `requirements-dev.txt`; CI uses the same Python and dependency declarations.
 Run `python tools/dev.py check` for lint, the version check and the test suite,
 or `python tools/dev.py test tools/tests/test_dev.py -q` for selected tests.
+The full check and `python tools/dev.py test` with no arguments use CI's
+`-n auto --dist loadfile` flags. Explicit test arguments pass through unchanged;
+run `python tools/dev.py test tools/tests skills lib/tests -q` for the full suite
+serially.
 The commands use the worktree's interpreter without activation and give each
 test run separate temporary storage outside every Git checkout.
 Codex's local environment runs setup when a worktree is created and exposes

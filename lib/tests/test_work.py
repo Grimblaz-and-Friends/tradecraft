@@ -5258,8 +5258,9 @@ def test_tree_revision_refuses_an_unlanded_commit_before_creating_output(
     assert not work.recipient_tree.metadata_path(output).exists()
 
 
-def test_build_launch_forwards_holder_identity_and_default_timeout_to_the_launcher(
-        tmp_path, monkeypatch):
+@pytest.mark.parametrize("timeout, expected", [(None, "10800"), (42.5, "42.5")])
+def test_build_launch_forwards_holder_identity_and_timeout_to_the_launcher(
+        tmp_path, monkeypatch, timeout, expected):
     commands = []
     branch = "tradecraft/12-fixture"
     monkeypatch.setattr(work, "_dispatch_root", lambda *_args: (tmp_path, branch, False))
@@ -5276,10 +5277,11 @@ def test_build_launch_forwards_holder_identity_and_default_timeout_to_the_launch
     )
     assert work.execute_stage(
         fixture, decision, tmp_path, "2", "stable-holder-token", codex_path=runtime,
+        timeout_seconds=timeout,
     ) == 0
     assert commands[0][-2:] == ["--holder-session-id", "stable-holder-token"]
     assert commands[0][commands[0].index("--root") + 1] == str(tmp_path)
-    assert commands[0][commands[0].index("--timeout-seconds") + 1] == "7200"
+    assert commands[0][commands[0].index("--timeout-seconds") + 1] == expected
     assert commands[0][commands[0].index("--model") + 1] == "gpt-owner"
     assert commands[0][commands[0].index("--effort") + 1] == "high"
     assert commands[0][commands[0].index("--model-source") + 1] == "issue-comment:unknown"
@@ -5327,8 +5329,9 @@ def test_resume_marker_equal_to_holder_identity_is_rejected(
     assert returned["reason"] == "resume-session-identifies-holder-for-floor"
 
 
+@pytest.mark.parametrize("timeout, expected", [(None, "3600"), (42.5, "42.5")])
 def test_execute_stage_passes_the_recovered_session_to_the_implementer(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, timeout, expected):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     fixture = state(AFFIRMED, pr=True)
     fixture.record_root = tmp_path / "dispatches"
@@ -5349,11 +5352,12 @@ def test_execute_stage_passes_the_recovered_session_to_the_implementer(
     monkeypatch.setattr(work.subprocess, "run", run)
     decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
     assert work.execute_stage(
-        fixture, decision, tmp_path, None, "holder-session"
+        fixture, decision, tmp_path, None, "holder-session", timeout_seconds=timeout,
     ) == 0
     assert commands[0][-4:] == [
         "--holder-session-id", "holder-session", "--resume", SESSION,
     ]
+    assert commands[0][commands[0].index("--timeout-seconds") + 1] == expected
 
 
 def test_judging_root_is_empty_detached_and_removes_it_afterward(tmp_path):
