@@ -17,5 +17,10 @@
         "**/*_test.py"
       ]
     }
-  ]
+  ],
+  "version": {
+    "path": ".claude-plugin/plugin.json",
+    "field": "version",
+    "increment": "minor"
+  }
 }

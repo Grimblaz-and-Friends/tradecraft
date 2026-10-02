@@ -1,0 +1,574 @@
+{
+  "cases": [
+    {
+      "applicable": true,
+      "base": "c4f5efd2db4f868d45cd19c18691a3d3984bece6",
+      "changed_paths": [
+        "src/own"
+      ],
+      "evidence_head": "4edf0fa8e640f19774372f75ebe10fc7abfffe8a",
+      "head": "c94af487482ddf5a418ef8219bf95a7e5e8d9fbb",
+      "name": "disjoint",
+      "policy": {
+        "rules": [
+          {
+            "exclude": [],
+            "include": [
+              "src/**",
+              "version.json"
+            ]
+          }
+        ],
+        "schema_version": 1,
+        "version": {
+          "field": "version",
+          "increment": "minor",
+          "path": "version.json"
+        }
+      },
+      "records": {
+        "repos/example/product/commits/c4f5efd2db4f868d45cd19c18691a3d3984bece6?per_page=100": {
+          "files": [
+            {
+              "filename": "src/other",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "0f53dab6e0cfdcaf90ec638e5949f69d8e6b846e"
+            }
+          ]
+        },
+        "repos/example/product/commits/c94af487482ddf5a418ef8219bf95a7e5e8d9fbb?per_page=100": {
+          "files": [
+            {
+              "filename": "src/other",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "4edf0fa8e640f19774372f75ebe10fc7abfffe8a"
+            },
+            {
+              "sha": "c4f5efd2db4f868d45cd19c18691a3d3984bece6"
+            }
+          ]
+        },
+        "repos/example/product/compare/4edf0fa8e640f19774372f75ebe10fc7abfffe8a...c94af487482ddf5a418ef8219bf95a7e5e8d9fbb": {
+          "ahead_by": 2,
+          "behind_by": 0,
+          "commits": [
+            {
+              "sha": "c4f5efd2db4f868d45cd19c18691a3d3984bece6"
+            },
+            {
+              "sha": "c94af487482ddf5a418ef8219bf95a7e5e8d9fbb"
+            }
+          ],
+          "merge_base_commit": {
+            "sha": "4edf0fa8e640f19774372f75ebe10fc7abfffe8a"
+          },
+          "status": "ahead"
+        }
+      },
+      "repository": "example/product"
+    },
+    {
+      "applicable": false,
+      "base": "18b0c846a5a8a1b955bd1450097c616f38cd53be",
+      "changed_paths": [
+        "src/own"
+      ],
+      "evidence_head": "36eaa57ced04fe3eb7387a1dfc696234c264c3ee",
+      "head": "2a0495c1f921308d7fcf5a0c52a0174a1ef9931b",
+      "name": "merge-resolution",
+      "policy": {
+        "rules": [
+          {
+            "exclude": [],
+            "include": [
+              "src/**",
+              "version.json"
+            ]
+          }
+        ],
+        "schema_version": 1,
+        "version": {
+          "field": "version",
+          "increment": "minor",
+          "path": "version.json"
+        }
+      },
+      "records": {
+        "repos/example/product/commits/18b0c846a5a8a1b955bd1450097c616f38cd53be?per_page=100": {
+          "files": [
+            {
+              "filename": "src/other",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "788e65becf232b37b33d1e859d61618d41616b4e"
+            }
+          ]
+        },
+        "repos/example/product/commits/2a0495c1f921308d7fcf5a0c52a0174a1ef9931b?per_page=100": {
+          "files": [
+            {
+              "filename": "src/other",
+              "status": "modified"
+            },
+            {
+              "filename": "src/own",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "36eaa57ced04fe3eb7387a1dfc696234c264c3ee"
+            },
+            {
+              "sha": "18b0c846a5a8a1b955bd1450097c616f38cd53be"
+            }
+          ]
+        },
+        "repos/example/product/compare/36eaa57ced04fe3eb7387a1dfc696234c264c3ee...2a0495c1f921308d7fcf5a0c52a0174a1ef9931b": {
+          "ahead_by": 2,
+          "behind_by": 0,
+          "commits": [
+            {
+              "sha": "18b0c846a5a8a1b955bd1450097c616f38cd53be"
+            },
+            {
+              "sha": "2a0495c1f921308d7fcf5a0c52a0174a1ef9931b"
+            }
+          ],
+          "merge_base_commit": {
+            "sha": "36eaa57ced04fe3eb7387a1dfc696234c264c3ee"
+          },
+          "status": "ahead"
+        }
+      },
+      "repository": "example/product"
+    },
+    {
+      "applicable": true,
+      "base": "772988f48557118db0dae752f1bb1ca9af158551",
+      "changed_paths": [
+        "src/own",
+        "version.json"
+      ],
+      "evidence_head": "b43493a38206f3d95d9c51f88ef562d020921d6f",
+      "head": "f6e4749777d8ee6bf0a3842b65c2d4a9b646078e",
+      "name": "declared-version-only",
+      "policy": {
+        "rules": [
+          {
+            "exclude": [],
+            "include": [
+              "src/**",
+              "version.json"
+            ]
+          }
+        ],
+        "schema_version": 1,
+        "version": {
+          "field": "version",
+          "increment": "minor",
+          "path": "version.json"
+        }
+      },
+      "records": {
+        "repos/example/product/commits/772988f48557118db0dae752f1bb1ca9af158551?per_page=100": {
+          "files": [
+            {
+              "filename": "version.json",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "5bd796892b0947825b77ab05d6e28385ce63e206"
+            }
+          ]
+        },
+        "repos/example/product/commits/f6e4749777d8ee6bf0a3842b65c2d4a9b646078e?per_page=100": {
+          "files": [
+            {
+              "filename": "version.json",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "b43493a38206f3d95d9c51f88ef562d020921d6f"
+            },
+            {
+              "sha": "772988f48557118db0dae752f1bb1ca9af158551"
+            }
+          ]
+        },
+        "repos/example/product/compare/b43493a38206f3d95d9c51f88ef562d020921d6f...f6e4749777d8ee6bf0a3842b65c2d4a9b646078e": {
+          "ahead_by": 2,
+          "behind_by": 0,
+          "commits": [
+            {
+              "sha": "772988f48557118db0dae752f1bb1ca9af158551"
+            },
+            {
+              "sha": "f6e4749777d8ee6bf0a3842b65c2d4a9b646078e"
+            }
+          ],
+          "merge_base_commit": {
+            "sha": "b43493a38206f3d95d9c51f88ef562d020921d6f"
+          },
+          "status": "ahead"
+        },
+        "repos/example/product/contents/version.json?ref=5bd796892b0947825b77ab05d6e28385ce63e206": {
+          "content": "eyJ2ZXJzaW9uIjoiMS4yLjMiLCJuYW1lIjoiZml4dHVyZSJ9Cg==",
+          "encoding": "base64"
+        },
+        "repos/example/product/contents/version.json?ref=772988f48557118db0dae752f1bb1ca9af158551": {
+          "content": "eyJ2ZXJzaW9uIjoiMS40LjAiLCJuYW1lIjoiZml4dHVyZSJ9Cg==",
+          "encoding": "base64"
+        },
+        "repos/example/product/contents/version.json?ref=b43493a38206f3d95d9c51f88ef562d020921d6f": {
+          "content": "eyJ2ZXJzaW9uIjoiMS4zLjAiLCJuYW1lIjoiZml4dHVyZSJ9Cg==",
+          "encoding": "base64"
+        },
+        "repos/example/product/contents/version.json?ref=f6e4749777d8ee6bf0a3842b65c2d4a9b646078e": {
+          "content": "eyJ2ZXJzaW9uIjoiMS41LjAiLCJuYW1lIjoiZml4dHVyZSJ9Cg==",
+          "encoding": "base64"
+        }
+      },
+      "repository": "example/product"
+    },
+    {
+      "applicable": false,
+      "base": "a5e15b7b72e312dee80d1523666336d7942674c2",
+      "changed_paths": [
+        "src/own",
+        "version.json"
+      ],
+      "evidence_head": "9cca08254b6f8a212047b8f3cb48cd7e39f479b2",
+      "head": "a7a226f1371e2c9c19537167b9bd546747a12641",
+      "name": "other-member-overlap",
+      "policy": {
+        "rules": [
+          {
+            "exclude": [],
+            "include": [
+              "src/**",
+              "version.json"
+            ]
+          }
+        ],
+        "schema_version": 1,
+        "version": {
+          "field": "version",
+          "increment": "minor",
+          "path": "version.json"
+        }
+      },
+      "records": {
+        "repos/example/product/commits/a5e15b7b72e312dee80d1523666336d7942674c2?per_page=100": {
+          "files": [
+            {
+              "filename": "version.json",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "0a29969014f36baad5eec21c79e65f51464757ff"
+            }
+          ]
+        },
+        "repos/example/product/commits/a7a226f1371e2c9c19537167b9bd546747a12641?per_page=100": {
+          "files": [
+            {
+              "filename": "version.json",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "9cca08254b6f8a212047b8f3cb48cd7e39f479b2"
+            },
+            {
+              "sha": "a5e15b7b72e312dee80d1523666336d7942674c2"
+            }
+          ]
+        },
+        "repos/example/product/compare/9cca08254b6f8a212047b8f3cb48cd7e39f479b2...a7a226f1371e2c9c19537167b9bd546747a12641": {
+          "ahead_by": 2,
+          "behind_by": 0,
+          "commits": [
+            {
+              "sha": "a5e15b7b72e312dee80d1523666336d7942674c2"
+            },
+            {
+              "sha": "a7a226f1371e2c9c19537167b9bd546747a12641"
+            }
+          ],
+          "merge_base_commit": {
+            "sha": "9cca08254b6f8a212047b8f3cb48cd7e39f479b2"
+          },
+          "status": "ahead"
+        },
+        "repos/example/product/contents/version.json?ref=0a29969014f36baad5eec21c79e65f51464757ff": {
+          "content": "eyJ2ZXJzaW9uIjoiMS4yLjMiLCJuYW1lIjoiZml4dHVyZSJ9Cg==",
+          "encoding": "base64"
+        },
+        "repos/example/product/contents/version.json?ref=9cca08254b6f8a212047b8f3cb48cd7e39f479b2": {
+          "content": "eyJ2ZXJzaW9uIjoiMS4zLjAiLCJuYW1lIjoib3duIn0K",
+          "encoding": "base64"
+        },
+        "repos/example/product/contents/version.json?ref=a5e15b7b72e312dee80d1523666336d7942674c2": {
+          "content": "eyJ2ZXJzaW9uIjoiMS40LjAiLCJuYW1lIjoiY2hhbmdlZCJ9Cg==",
+          "encoding": "base64"
+        },
+        "repos/example/product/contents/version.json?ref=a7a226f1371e2c9c19537167b9bd546747a12641": {
+          "content": "eyJ2ZXJzaW9uIjoiMS41LjAiLCJuYW1lIjoiY2hhbmdlZCJ9Cg==",
+          "encoding": "base64"
+        }
+      },
+      "repository": "example/product"
+    },
+    {
+      "applicable": false,
+      "base": "46ffc7b942aea5c7ce1628f539345302b757ae5a",
+      "changed_paths": [
+        "src/own",
+        "version.json"
+      ],
+      "evidence_head": "1749287bb9412a8ab2cc1aaae90263518095ff46",
+      "head": "7f79a3f877344fa4162ed44426fe18592009a572",
+      "name": "authored-version-bump",
+      "policy": {
+        "rules": [
+          {
+            "exclude": [],
+            "include": [
+              "src/**",
+              "version.json"
+            ]
+          }
+        ],
+        "schema_version": 1,
+        "version": {
+          "field": "version",
+          "increment": "minor",
+          "path": "version.json"
+        }
+      },
+      "records": {
+        "repos/example/product/commits/7f79a3f877344fa4162ed44426fe18592009a572?per_page=100": {
+          "files": [
+            {
+              "filename": "version.json",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "1749287bb9412a8ab2cc1aaae90263518095ff46"
+            }
+          ]
+        },
+        "repos/example/product/compare/1749287bb9412a8ab2cc1aaae90263518095ff46...7f79a3f877344fa4162ed44426fe18592009a572": {
+          "ahead_by": 1,
+          "behind_by": 0,
+          "commits": [
+            {
+              "sha": "7f79a3f877344fa4162ed44426fe18592009a572"
+            }
+          ],
+          "merge_base_commit": {
+            "sha": "1749287bb9412a8ab2cc1aaae90263518095ff46"
+          },
+          "status": "ahead"
+        },
+        "repos/example/product/compare/7f79a3f877344fa4162ed44426fe18592009a572...46ffc7b942aea5c7ce1628f539345302b757ae5a": {
+          "ahead_by": 0,
+          "behind_by": 2,
+          "commits": [],
+          "merge_base_commit": {
+            "sha": "46ffc7b942aea5c7ce1628f539345302b757ae5a"
+          },
+          "status": "behind"
+        }
+      },
+      "repository": "example/product"
+    },
+    {
+      "applicable": false,
+      "base": "f84b8d2392dfc08a0a8d10a24b19b15f10750ae1",
+      "changed_paths": [
+        "src/own"
+      ],
+      "evidence_head": "e32e205252604a25e0c7097e0e26ced88faaa9d4",
+      "head": "54e604d649687364c15164f119874304a80f0f9c",
+      "name": "authored-edit-reverted",
+      "policy": {
+        "rules": [
+          {
+            "exclude": [],
+            "include": [
+              "src/**",
+              "version.json"
+            ]
+          }
+        ],
+        "schema_version": 1,
+        "version": {
+          "field": "version",
+          "increment": "minor",
+          "path": "version.json"
+        }
+      },
+      "records": {
+        "repos/example/product/commits/54e604d649687364c15164f119874304a80f0f9c?per_page=100": {
+          "files": [
+            {
+              "filename": "src/own",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "5983eec0ecb17ca14b9b3a6bbec98eb3507e30f8"
+            }
+          ]
+        },
+        "repos/example/product/commits/5983eec0ecb17ca14b9b3a6bbec98eb3507e30f8?per_page=100": {
+          "files": [
+            {
+              "filename": "src/own",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "e32e205252604a25e0c7097e0e26ced88faaa9d4"
+            }
+          ]
+        },
+        "repos/example/product/compare/54e604d649687364c15164f119874304a80f0f9c...f84b8d2392dfc08a0a8d10a24b19b15f10750ae1": {
+          "ahead_by": 0,
+          "behind_by": 3,
+          "commits": [],
+          "merge_base_commit": {
+            "sha": "f84b8d2392dfc08a0a8d10a24b19b15f10750ae1"
+          },
+          "status": "behind"
+        },
+        "repos/example/product/compare/5983eec0ecb17ca14b9b3a6bbec98eb3507e30f8...f84b8d2392dfc08a0a8d10a24b19b15f10750ae1": {
+          "ahead_by": 0,
+          "behind_by": 2,
+          "commits": [],
+          "merge_base_commit": {
+            "sha": "f84b8d2392dfc08a0a8d10a24b19b15f10750ae1"
+          },
+          "status": "behind"
+        },
+        "repos/example/product/compare/e32e205252604a25e0c7097e0e26ced88faaa9d4...54e604d649687364c15164f119874304a80f0f9c": {
+          "ahead_by": 2,
+          "behind_by": 0,
+          "commits": [
+            {
+              "sha": "5983eec0ecb17ca14b9b3a6bbec98eb3507e30f8"
+            },
+            {
+              "sha": "54e604d649687364c15164f119874304a80f0f9c"
+            }
+          ],
+          "merge_base_commit": {
+            "sha": "e32e205252604a25e0c7097e0e26ced88faaa9d4"
+          },
+          "status": "ahead"
+        }
+      },
+      "repository": "example/product"
+    },
+    {
+      "applicable": true,
+      "base": "b882355fb5596908d56b1b4ec38a046cea8386ed",
+      "changed_paths": [
+        "src/own"
+      ],
+      "evidence_head": "2892ddda591a7b669416eaa9045cbba9de92e128",
+      "head": "fa73cead4c49c912b1bf00a8becbb63c26452891",
+      "name": "reverted-own-path-does-not-overlap",
+      "policy": {
+        "rules": [
+          {
+            "exclude": [],
+            "include": [
+              "src/**",
+              "version.json"
+            ]
+          }
+        ],
+        "schema_version": 1,
+        "version": {
+          "field": "version",
+          "increment": "minor",
+          "path": "version.json"
+        }
+      },
+      "records": {
+        "repos/example/product/commits/b882355fb5596908d56b1b4ec38a046cea8386ed?per_page=100": {
+          "files": [
+            {
+              "filename": "src/other",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "4370f47d13478e5114773b7b116754e0c074bce7"
+            }
+          ]
+        },
+        "repos/example/product/commits/fa73cead4c49c912b1bf00a8becbb63c26452891?per_page=100": {
+          "files": [
+            {
+              "filename": "src/other",
+              "status": "modified"
+            }
+          ],
+          "parents": [
+            {
+              "sha": "2892ddda591a7b669416eaa9045cbba9de92e128"
+            },
+            {
+              "sha": "b882355fb5596908d56b1b4ec38a046cea8386ed"
+            }
+          ]
+        },
+        "repos/example/product/compare/2892ddda591a7b669416eaa9045cbba9de92e128...fa73cead4c49c912b1bf00a8becbb63c26452891": {
+          "ahead_by": 2,
+          "behind_by": 0,
+          "commits": [
+            {
+              "sha": "b882355fb5596908d56b1b4ec38a046cea8386ed"
+            },
+            {
+              "sha": "fa73cead4c49c912b1bf00a8becbb63c26452891"
+            }
+          ],
+          "merge_base_commit": {
+            "sha": "2892ddda591a7b669416eaa9045cbba9de92e128"
+          },
+          "status": "ahead"
+        }
+      },
+      "repository": "example/product"
+    }
+  ],
+  "schema_version": 1
+}
