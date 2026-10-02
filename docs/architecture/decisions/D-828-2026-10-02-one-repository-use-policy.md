@@ -1,6 +1,6 @@
-# D-672: One repository policy for entrance use rules
+# D-828: One repository policy for entrance use rules
 
-**Status:** Accepted by the owner 2026-10-02; number 672 is provisional until the implementing pull request exists.
+**Status:** Accepted by the owner 2026-10-02.
 
 ## Context
 
@@ -26,4 +26,4 @@ Keep landed decision entries as history. The exact retired references in D-679, 
 
 `lib/tests/test_work.py` carries `test_adopter_default_uses_its_product_policy_without_lib`, `test_missing_default_names_repository_policy_without_fallback`, `test_default_proof_names_and_hashes_committed_repository_policy`, `test_explicit_setup_override_replaces_absent_default`, `test_invalid_override_does_not_fall_back_to_valid_default` and `test_override_uses_holder_root_from_conflicting_working_directory`. The existing policy snapshot, dirty-policy and publication-race tests retain the committed-byte and cleanliness falsifiers. The build return on #672 carries results for the focused tests and repository floor; later consumer use remains holder-owned.
 
-`.claude-plugin/plugin.json` takes the holder-assigned `0.175.0` slot. The decision number is provisional under the holder reading and will be renamed to the implementing pull request's number on the builder's first resumed turn.
+`.claude-plugin/plugin.json` takes the holder-assigned `0.175.0` slot.
