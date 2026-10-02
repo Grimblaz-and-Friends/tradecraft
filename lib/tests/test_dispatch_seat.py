@@ -132,6 +132,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
         assert flags == ["exec", "--strict-config", "--ignore-user-config",
                          "--ephemeral", "--sandbox", "read-only",
                          "--json", "--color", "never", "--model", "gpt-6.1-sol",
+                         "--disable", "apps",
                          "-c", "apps._default.enabled=false",
                          "-c", 'model_reasoning_effort="xhigh"', "-C", str(args.root),
                          "--skip-git-repo-check", "--output-last-message", last, "-"]
@@ -153,11 +154,11 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
         if vendor == "codex":
             assert "sandbox=read-only" in boundary
             assert "user_config=ignored" in boundary
-            assert "apps=disabled-by-config" in boundary
+            assert "apps=disabled-by-feature" in boundary
             assert "connector_surface=not_constrained_by_dispatch_seat" not in boundary
         else:
             assert "user_config=ignored" not in boundary
-            assert "apps=disabled-by-config" not in boundary
+            assert "apps=disabled-by-feature" not in boundary
 
 
 def test_requested_same_vendor_is_degraded_with_source_and_reason(job):
@@ -230,6 +231,7 @@ def test_non_windows_codex_launch_ignores_config_with_an_explicit_app_enable(job
     assert seat.run_dispatch(args) == 0
     flags = seen(args, "codex")["argv"]
     assert flags.count("--ignore-user-config") == 1
+    assert flags[flags.index("--disable") + 1] == "apps"
     assert "apps._default.enabled=false" in flags
 
 
@@ -258,6 +260,8 @@ def test_windows_codex_carries_only_the_owner_sandbox_mode(job, monkeypatch, mod
     source = f"{config.resolve()} key [windows].sandbox"
     assert flags.count("--strict-config") == 1
     assert flags.count("--ignore-user-config") == 1
+    assert flags.count("--disable") == 1
+    assert flags[flags.index("--disable") + 1] == "apps"
     assert flags.count("apps._default.enabled=false") == 1
     assert flags.count(f'windows.sandbox="{mode}"') == 1
     assert "must-not-cross" not in json.dumps(flags)
@@ -272,7 +276,7 @@ def test_windows_codex_carries_only_the_owner_sandbox_mode(job, monkeypatch, mod
         assert f"windows_sandbox_source={source}" in boundary
         assert "sandbox=read-only" in boundary
         assert "user_config=ignored" in boundary
-        assert "apps=disabled-by-config" in boundary
+        assert "apps=disabled-by-feature" in boundary
     assert request["requested"]["sources"]["windows_sandbox"] == source
     assert attempt["setting_sources"]["windows_sandbox"] == source
     assert "must-not-cross" not in json.dumps(request)
@@ -496,6 +500,11 @@ def test_windows_fallback_codex_records_sandbox_mode_and_source(job, monkeypatch
     assert f"windows_sandbox_source={source}" in request["requested"]["permission_boundary"]
     assert request["requested"]["sources"]["windows_sandbox"] == source
     assert codex["setting_sources"]["windows_sandbox"] == source
+    flags = seen(args, "codex")["argv"]
+    assert flags[flags.index("--disable") + 1] == "apps"
+    assert "apps._default.enabled=false" in flags
+    assert "apps=disabled-by-feature" in codex["permission_boundary"]
+    assert "apps=disabled-by-feature" in request["requested"]["permission_boundary"]
 
 
 @pytest.mark.parametrize(
@@ -503,7 +512,7 @@ def test_windows_fallback_codex_records_sandbox_mode_and_source(job, monkeypatch
     [
         ("claude", "read", "Claude tools=Read,Glob,Grep; safe_mode=true; permission_mode=dontAsk; strict_mcp_config=true; os_sandbox=none"),
         ("claude", "execute", "Claude tools=Read,Glob,Grep,Bash; safe_mode=true; permission_mode=dontAsk; strict_mcp_config=true; os_sandbox=none"),
-        ("codex", "read", "Codex sandbox=read-only; user_config=ignored; apps=disabled-by-config"),
+        ("codex", "read", "Codex sandbox=read-only; user_config=ignored; apps=disabled-by-feature"),
     ],
 )
 def test_permission_boundary_states_the_selected_vendor_mode_and_root(job, vendor, required_capability, expected):
@@ -809,6 +818,30 @@ def test_other_failures_never_fallback_or_publish(job, vendor, scenario):
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
     assert not (args.root / f"seen-{args.own_vendor}.json").exists()
+
+
+def test_codex_rejecting_apps_feature_never_retries_or_publishes(job):
+    args, _ = job
+    args.vendor = "codex"
+    args.own_vendor = "claude"
+    configure(job, {"codex": {
+        "exit": 2, "stderr": "Unknown feature flag: apps", "stdout": "",
+        "message": None,
+    }})
+
+    assert seat.run_dispatch(args) == 1
+
+    logged = record(args)
+    assert logged["outcome"] == "error"
+    assert len(logged["attempts"]) == 1
+    assert logged["attempts"][0]["exit_code"] == 2
+    assert logged["fallback_reason"] is None
+    flags = seen(args, "codex")["argv"]
+    assert flags[flags.index("--disable") + 1] == "apps"
+    assert "apps._default.enabled=false" in flags
+    assert not args.output.exists()
+    assert not (args.root / "seen-claude.json").exists()
+    assert seat.sidecar(args.output, ".codex.stderr.log").read_bytes() == b"Unknown feature flag: apps"
 
 
 @pytest.mark.parametrize("vendor", seat.VENDORS)
