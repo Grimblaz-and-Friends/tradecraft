@@ -2158,7 +2158,9 @@ def prepare_use_evidence(state: WorkState, transport: GitHubREST,
         and marker.attributes.get("changed") == "false"
     ]
     indexed = list(enumerate(candidates))
-    indexed.sort(key=lambda item: _marker_recency(item[1], item[0]), reverse=True)
+    indexed.sort(key=lambda item: (
+        item[1].attributes.get("head") == head, _marker_recency(item[1], item[0])
+    ), reverse=True)
     for _position, marker in indexed:
         evidence_head = marker.attributes.get("head")
         if evidence_head == head:

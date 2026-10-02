@@ -2060,6 +2060,51 @@ def test_clean_ancestor_use_applies_but_each_intervening_commit_is_classified():
     ]
 
 
+@pytest.mark.parametrize("ancestor_reposted", [False, True])
+def test_hand_bought_current_head_use_supersedes_carried_use_in_routing_and_proof(ancestor_reposted):
+    ancestor = "b" * 40
+    original = (
+        f"<!-- tradecraft:use:v1 head={ancestor} status=pass changed=false "
+        "staffing_status=qualified -->\nOriginal use before the disjoint base work."
+    )
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, original,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.policy_sources = {
+        "work_configuration": {
+            "repository": fixture.repo, "path": ".tradecraft/work.json",
+            "revision": SHA, "sha256": "1" * 64,
+        },
+        "use_rules": {
+            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "revision": SHA, "sha256": "2" * 64,
+        },
+    }
+    fixture.issue_comments[-1].update({"id": 101, "created_at": "2026-10-02T12:00:00Z"})
+    transport = AncestryTransport(ancestor, SHA, {BASE_SHA: [{"filename": "lib/disjoint.py"}]})
+    work.prepare_use_evidence(fixture, transport, RULES)
+    assert fixture.use_application["carried"] is True
+    assert fixture.use_application["evidence_head"] == ancestor
+    assert work.compose_proof(fixture, RULES)["use"]["applicability"] == "ancestor"
+
+    current = USE + "\nHand-bought use: the base changed a dependency outside the overlapping files."
+    fixture.issue_comments.append({
+        "id": 102, "created_at": "2026-10-02T13:00:00Z",
+        "body": current, "user": {"login": PRODUCER},
+    })
+    if ancestor_reposted:
+        fixture.issue_comments[-2]["created_at"] = "2026-10-02T14:00:00Z"
+    work.prepare_use_evidence(fixture, transport, RULES)
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "proof"
+    assert decision.use_application["applicability"] == "current-head"
+    assert decision.use_application["evidence_head"] == SHA
+    composed = work.compose_proof(fixture, RULES)
+    assert composed["use"]["applicability"] == "current-head"
+    assert composed["use"]["evidence_head"] == SHA
+    assert composed["use"]["source"]["id"] == 102
+    assert composed["use"]["intervening_commits"] == []
+
+
 def test_intervening_bought_path_invalidates_ancestor_even_when_a_rename_hides_it():
     ancestor = "b" * 40
     marker = (
