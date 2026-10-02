@@ -108,7 +108,9 @@ def run_checks(root: Path, python: Path, action: str, extra: list[str]) -> int:
         env = os.environ.copy()
         env["PYTEST_DEBUG_TEMPROOT"] = base
         return subprocess.run(
-            [str(python), "-m", "pytest", *(extra or ["tools/tests", "skills", "lib/tests", "-q"])],
+            [str(python), "-m", "pytest", *(extra or [
+                "tools/tests", "skills", "lib/tests", "-q", "-n", "auto", "--dist", "loadfile",
+            ])],
             cwd=root, env=env,
         ).returncode
 

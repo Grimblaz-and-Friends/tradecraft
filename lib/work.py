@@ -125,7 +125,7 @@ TRUTHFUL_ENTRANCE_VERSION = "0.154.0"
 VENDOR_IMPLEMENTER_VERSION = "0.159.0"
 REGISTERED_ROOT_VERSION = "0.149.0"
 DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
-DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
+DEFAULT_BUILD_TIMEOUT_SECONDS = 10800.0
 STAGE_SAFETY = {
     "artifact": (
         (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
@@ -5526,7 +5526,7 @@ def parser() -> argparse.ArgumentParser:
                      help="adjacent metadata from tree; required by run use")
     cli.add_argument(
         "--timeout-seconds", type=float,
-        help="launcher timeout; defaults to 7200 for build and 3600 for every other stage",
+        help="launcher timeout; defaults to 10800 for build and 3600 for every other stage",
     )
     cli.add_argument("--claude", type=Path,
                      help="explicit Claude executable for run instead of discovery")

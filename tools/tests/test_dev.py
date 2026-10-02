@@ -193,7 +193,12 @@ def test_external_scratch_keeps_real_fixtures_outside_git(tmp_path, monkeypatch)
     assert result == 0, f"nested fixture: {fixture}"
 
 
-def test_nested_test_runs_have_separate_scratch_and_forward_arguments(tmp_path, monkeypatch):
+@pytest.mark.parametrize("extra", [
+    ["chosen_test.py", "-q"],
+    ["tools/tests", "skills", "lib/tests", "-q"],
+    ["chosen_test.py", "-n", "2", "--dist", "load"],
+])
+def test_nested_test_runs_have_separate_scratch_and_forward_arguments(tmp_path, monkeypatch, extra):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(scratch))
@@ -208,17 +213,49 @@ def test_nested_test_runs_have_separate_scratch_and_forward_arguments(tmp_path, 
         assert current.parent == scratch
         assert not current.is_relative_to(root)
         assert cwd == root
-        assert command == [str(python), "-m", "pytest", "chosen_test.py", "-q"]
+        assert command == [str(python), "-m", "pytest", *extra]
         seen.append(current)
         if len(seen) == 1:
-            assert dev.run_checks(root, python, "test", ["chosen_test.py", "-q"]) == 7
+            assert dev.run_checks(root, python, "test", extra) == 7
             assert current.is_dir()
         return subprocess.CompletedProcess(command, 7)
 
     monkeypatch.setattr(dev.subprocess, "run", launch)
-    assert dev.run_checks(root, python, "test", ["chosen_test.py", "-q"]) == 7
+    assert dev.run_checks(root, python, "test", extra) == 7
     assert seen[0] != seen[1]
     assert all(not path.exists() for path in seen)
+
+
+@pytest.mark.parametrize("action", ["test", "check"])
+def test_full_suite_uses_ci_parallel_flags(tmp_path, monkeypatch, action):
+    calls = []
+    root = tmp_path / "checkout"
+    root.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(scratch))
+    python = Path(sys.executable)
+
+    def launch(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(dev.subprocess, "run", launch)
+    assert dev.run_checks(root, python, action, []) == 0
+    assert calls[-1] == [str(python), "-m", "pytest", "tools/tests", "skills",
+                         "lib/tests", "-q", "-n", "auto", "--dist", "loadfile"]
+    if action == "check":
+        assert calls[0] == [str(python), str(root / "tools/lint.py")]
+        assert len(calls) == 2
+    else:
+        assert len(calls) == 1
+
+
+def test_check_refuses_extra_arguments_before_environment_selection(monkeypatch):
+    monkeypatch.setattr(dev, "verify_environment", lambda *_args: pytest.fail("must not run"))
+    with pytest.raises(SystemExit) as exc:
+        dev.main(["check", "-n", "2"])
+    assert exc.value.code == 2
 
 
 def test_failed_lint_prevents_later_checks(tmp_path, monkeypatch):
