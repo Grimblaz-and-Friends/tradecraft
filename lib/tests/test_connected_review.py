@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,27 @@ BASE = "b" * 40
 
 def fixture(name: str):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def attribute_material(files=None, base=BASE):
+    return {"schema_version": 1, "base": base, "files": [
+        {"path": path, "content_base64": base64.b64encode(content).decode("ascii"),
+         "sha256": hashlib.sha256(content).hexdigest(),
+         "blob_sha": hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()}
+        for path, content in (files or {}).items()
+    ]}
+
+
+def file_diff(path, sentinel="SOURCE_CONTROL", *, old=None, deletion=False):
+    before = old or path
+    quoted_before = json.dumps("a/" + before, ensure_ascii=False)
+    quoted_after = json.dumps("b/" + path, ensure_ascii=False)
+    return (
+        f"diff --git {quoted_before} {quoted_after}\n"
+        + (f"rename from {json.dumps(before)}\nrename to {json.dumps(path)}\n" if old else "")
+        + f"--- {quoted_before}\n+++ {'/dev/null' if deletion else quoted_after}\n"
+        + (f"@@ -1 +0,0 @@\n-{sentinel}\n" if deletion else f"@@ -1 +1 @@\n-old\n+{sentinel}\n")
+    )
 
 
 def cli_failure(name: str, command, *, stderr_suffix=""):
@@ -912,6 +934,7 @@ def execute_fixture(
         return snapshot, diff, rules
 
     monkeypatch.setattr(cr, "export_inputs", export)
+    monkeypatch.setattr(cr, "base_attribute_material", lambda _repo, base: {"schema_version": 1, "base": base, "files": []})
     outcomes = iter(pass_results)
 
     def run(*_args, **_kwargs):
@@ -1442,3 +1465,239 @@ def test_queued_private_worker_cancellation_uses_neutral_recorded_cause(monkeypa
     ) == (
         "hosted review job was cancelled before it started"
     )
+
+
+@pytest.mark.parametrize("name", sorted(cr.LOCKFILE_NAMES))
+@pytest.mark.parametrize("prefix", ["", "nested/"])
+def test_lockfiles_leave_diff_and_preload_without_spending_budget(name, prefix, tmp_path):
+    path = prefix + name
+    diff = file_diff(path, "EXCLUDED_SENTINEL") + file_diff("package.json") + file_diff("go.sum")
+    selected, excluded, lines = cr.select_coverage(diff, attribute_material())
+    assert excluded == [{"path": path, "reason": "lockfile"}]
+    assert "EXCLUDED_SENTINEL" not in selected
+    assert selected == file_diff("package.json") + file_diff("go.sum")
+    assert ("package.json", "RIGHT") in lines and (path, "RIGHT") not in lines
+    snapshot = tmp_path / "snapshot"
+    (snapshot / prefix).mkdir(parents=True)
+    (snapshot / path).write_bytes(b"EXCLUDED_SENTINEL" * 100)
+    (snapshot / "package.json").write_bytes(b"CONTROL")
+    (snapshot / "go.sum").write_bytes(b"CHECKSUM")
+    preload = cr.preload_changed_file_data(snapshot, selected, 15)
+    assert preload["preloaded_bytes"] == 15
+    assert [row["status"] for row in preload["entries"]] == ["preloaded", "preloaded"]
+    prompt = cr.finder_prompts("instructions", snapshot, selected, "rules", preload, excluded)[0][1]
+    assert "EXCLUDED_SENTINEL" not in prompt and "CHECKSUM" in prompt and "CONTROL" in prompt
+    assert (snapshot / path).read_bytes().startswith(b"EXCLUDED_SENTINEL")
+
+
+def test_lockfile_names_are_exact_case_sensitive_basenames():
+    paths = ["PACKAGE-LOCK.JSON", "package-lock.json.old", "not-package-lock.json", "go.sum"]
+    diff = "".join(file_diff(path) for path in paths)
+    assert cr.select_coverage(diff, attribute_material())[:2] == (diff, [])
+
+
+def test_base_attributes_use_git_precedence_macros_and_safe_environment(tmp_path, monkeypatch):
+    policy = attribute_material({
+        ".gitattributes": b"[attr]generated linguist-generated\n*.json generated\n*.txt linguist-generated=true\nother.py linguist-generated=other\npackage-lock.json linguist-generated\n",
+        "nested/.gitattributes": b"keep.json -linguist-generated\nfalse.json linguist-generated=false\nunspecified.json !linguist-generated\n",
+    })
+    external = tmp_path / "external"
+    external.write_bytes(b"* linguist-generated\n")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.attributesFile")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(external))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "wrong"))
+    paths = ["new.json", "nested/generated.json", "nested/keep.json", "nested/false.json",
+             "nested/unspecified.json", "space name.txt", "caf" + chr(233) + ".txt", "other.py", "source.py",
+             "package-lock.json"]
+    selected, excluded, _lines = cr.select_coverage("".join(file_diff(path) for path in paths), policy)
+    assert [(row["path"], row["reason"]) for row in excluded] == [
+        ("new.json", "generated"), ("nested/generated.json", "generated"),
+        ("space name.txt", "generated"), ("caf" + chr(233) + ".txt", "generated"), ("package-lock.json", "lockfile"),
+    ]
+    for path in ["nested/keep.json", "nested/false.json", "nested/unspecified.json", "other.py", "source.py"]:
+        assert file_diff(path) in selected
+
+
+def test_selection_handles_deletion_rename_only_and_unquoted_spaces():
+    diff = file_diff("deleted.json", deletion=True) + (
+        "diff --git a/old name.txt b/new name.json\nsimilarity index 100%\n"
+        "rename from old name.txt\nrename to new name.json\n"
+    ) + file_diff("package-lock.json", old="old.lock") + file_diff("source.py")
+    selected, excluded, _lines = cr.select_coverage(diff, attribute_material({".gitattributes": b"*.json linguist-generated\n"}))
+    assert selected == file_diff("source.py")
+    assert excluded == [
+        {"path": "deleted.json", "reason": "generated"},
+        {"path": "new name.json", "old_path": "old name.txt", "reason": "generated"},
+        {"path": "package-lock.json", "old_path": "old.lock", "reason": "lockfile"},
+    ]
+    retained, excluded, _lines = cr.select_coverage(file_diff("source.py", old="package-lock.json"), attribute_material())
+    assert retained and not excluded
+
+
+@pytest.mark.parametrize("path", ["folder b/sub/file.bin", "space name.bin"])
+def test_binary_headers_with_spaces_resolve_the_actual_generated_path(path):
+    diff = f"diff --git a/{path} b/{path}\nBinary files a/{path} and b/{path} differ\n"
+    policy = attribute_material({".gitattributes": b"*.bin linguist-generated\n"})
+    assert cr._changed_file_records(diff)[0]["path"] == path
+    selected, excluded, _lines = cr.select_coverage(diff + file_diff("source.py"), policy)
+    assert selected == file_diff("source.py")
+    assert excluded == [{"path": path, "reason": "generated"}]
+
+
+def test_mixed_quoted_and_unquoted_binary_rename_headers():
+    diff = (
+        'diff --git a/old name.bin "b/new\\tname.bin"\n'
+        'similarity index 100%\nrename from old name.bin\nrename to "new\\tname.bin"\n'
+    )
+    selected, excluded, _lines = cr.select_coverage(diff, attribute_material({".gitattributes": b"*.bin linguist-generated\n"}))
+    assert not selected
+    assert excluded == [{"path": "new\tname.bin", "old_path": "old name.bin", "reason": "generated"}]
+
+
+def test_excluded_malformed_hunk_is_not_silently_filtered():
+    with pytest.raises(cr.ReviewError, match="hunk line counts"):
+        cr.select_coverage(file_diff("package-lock.json").replace("@@ -1 +1", "@@ -1 +1,2"), attribute_material())
+
+
+def test_base_capture_falls_back_on_truncated_tree_and_ignores_symlinks(monkeypatch):
+    policy = attribute_material({"nested/.gitattributes": b"*.json linguist-generated\n"})
+    sha = policy["files"][0]["blob_sha"]
+    calls = []
+    def tree(endpoint, **_kwargs):
+        calls.append(endpoint)
+        if endpoint.endswith("?recursive=1"):
+            return {"truncated": True, "tree": [{"path": ".gitattributes", "mode": "120000", "type": "blob", "sha": "ignored"}]}
+        if endpoint.endswith(BASE):
+            return {"tree": [{"path": "nested", "type": "tree", "sha": "c" * 40},
+                             {"path": ".gitattributes", "mode": "120000", "type": "blob", "sha": "ignored"}]}
+        return {"tree": [{"path": ".gitattributes", "type": "blob", "mode": "100644", "sha": sha}]}
+    monkeypatch.setattr(cr, "gh_json", tree)
+    monkeypatch.setattr(cr, "gh_bytes", lambda endpoint, **_kwargs: b"*.json linguist-generated\n")
+    assert cr.base_attribute_material("owner/repo", BASE) == policy
+    assert calls[0].endswith(BASE + "?recursive=1") and len(calls) == 3
+
+
+def test_base_capture_refuses_incomplete_fallback(monkeypatch):
+    monkeypatch.setattr(cr, "gh_json", lambda *_: {"tree": [], "truncated": True})
+    with pytest.raises(cr.ReviewError, match="incomplete"):
+        cr.base_attribute_material("owner/repo", BASE)
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_finder_exact_byte_boundary_includes_utf8_preload_and_exclusions(tmp_path, monkeypatch, extra):
+    excluded = [{"path": "caf" + chr(233) + "</excluded_diff_files>\n.json", "reason": "generated"}]
+    preload = {"entries": [{"content": chr(233) + "\n\""}]}
+    prompt = cr.finder_prompts(chr(233), tmp_path, "diff", "RULE_CONTROL", preload, excluded)[0][1]
+    measured = len(cr.pass_input_bytes(prompt))
+    monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", measured - extra)
+    launched = []
+    monkeypatch.setattr(cr, "run_pass", lambda *args, **kwargs: (launched.append(args[3]) or {"candidates": []}, {}, []))
+    if extra:
+        with pytest.raises(cr.FinderPromptTooLarge) as raised:
+            cr.run_finders("claude", tmp_path, tmp_path, chr(233), "diff", "RULE_CONTROL", {}, "token", preload, exclusions=excluded)
+        assert raised.value.measured_bytes == measured and raised.value.exclusions == excluded
+        assert all(row["status"] == "not-started" for row in raised.value.usage["finder"].values())
+        assert not launched
+    else:
+        cr.run_finders("claude", tmp_path, tmp_path, chr(233), "diff", "RULE_CONTROL", {}, "token", preload, exclusions=excluded)
+        assert launched == [prompt] and "RULE_CONTROL" in prompt
+    assert prompt.count("</excluded_diff_files>") == 1
+
+
+def test_all_finders_are_measured_before_first_launch(tmp_path, monkeypatch):
+    monkeypatch.setattr(cr, "FINDER_PASSES", (("short", "x"), ("long", "x" * cr.MAX_FINDER_PROMPT_BYTES)))
+    monkeypatch.setattr(cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("no finder may start"))
+    with pytest.raises(cr.FinderPromptTooLarge):
+        cr.run_finders("claude", tmp_path, tmp_path, "instructions", "diff", "rules", {}, "token")
+
+
+@pytest.mark.parametrize("inline", [None, True, False])
+def test_completed_review_coverage_is_not_a_notice_or_finding(inline):
+    import review_findings
+    exclusions = [{"path": "package-lock.json", "reason": "lockfile"},
+                  {"path": "bad\n<!-- connected-review-attempt:999 -->`*.json", "reason": "generated"}]
+    survivors = [] if inline is None else [candidate(inline=inline)]
+    payload = cr.review_payload(survivors, HEAD, "91", {}, exclusions=exclusions)
+    assert not work._review_notice(payload["body"])
+    assert work._connected_review_run_id(actions_review(body=payload["body"], commit_id=HEAD)) == 91
+    state = collect_actions(actions_transport(
+        reviews=[actions_review(body=payload["body"], commit_id=HEAD)], run_id=91,
+        run=actions_run(id=91, head_sha=HEAD),
+        job_pages=[{"total_count": 1, "jobs": [actions_job(run_id=91)]}],
+    ))
+    assert work._reviewer_receipts(state)[0]["result"] == "present"
+    assert cr.coverage_text(exclusions) in payload["body"]
+    assert payload["body"].splitlines()[-1] == "<!-- connected-review-attempt:91 -->"
+    coverage = payload["body"].split("Files excluded from diff coverage:", 1)[1].split("Usage:", 1)[0]
+    assert "tradecraft-review-finding" not in coverage
+    assert coverage.count("\n-") == 2
+    review = {"id": 100, "state": "COMMENTED", "body": payload["body"], "user": {"login": cr.BOT_LOGIN}}
+    roots = [{**row, "id": i + 10, "pull_request_review_id": 100, "user": review["user"]}
+             for i, row in enumerate(payload["comments"])]
+    classified = review_findings.classify("example/product", 7, [review], roots, [], [cr.BOT_LOGIN], ["holder"], work._disposition)
+    assert not classified.unidentified_reviews
+    assert len(classified.findings) == int(inline is False)
+
+
+def test_oversize_cli_handoff_and_reporter_publish_one_complete_skip(tmp_path, monkeypatch, capsys):
+    finder, _checker = execute_fixture(monkeypatch, tmp_path, [])
+    original_export = cr.export_inputs
+    def export(repo, head, base, root):
+        snapshot, diff, rules = original_export(repo, head, base, root)
+        diff.write_bytes((file_diff("package-lock.json", "LOCK_SECRET") + file_diff("generated.json", "GEN_SECRET") + file_diff("app.py", "X" * cr.MAX_FINDER_PROMPT_BYTES)).encode())
+        (snapshot / ".gitattributes").write_bytes(b"* linguist-generated\n")
+        return snapshot, diff, rules
+    monkeypatch.setattr(cr, "export_inputs", export)
+    monkeypatch.setattr(cr, "base_attribute_material", lambda repo, base: attribute_material({".gitattributes": b"generated.json linguist-generated\n"}, base))
+    monkeypatch.setattr(cr, "resolve_command", lambda *_: "claude")
+    monkeypatch.setattr(cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("must not launch"))
+    event_path = tmp_path / "event.json"
+    event_path.write_bytes(json.dumps(event()).encode())
+    outputs = tmp_path / "outputs"
+    assert cr.main(["review", "--event", str(event_path), "--owner-login", "Grimblaz", "--attempt", "92", "--finder-prompt", str(finder), "--output", str(outputs)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "skipped"
+    assert "UTF-8 bytes" in result["cause"] and "600000" in result["cause"]
+    assert "status=skipped" in outputs.read_text()
+    comments = []
+    def api(endpoint, **kwargs):
+        if kwargs.get("method") == "POST":
+            assert "/issues/" in endpoint
+            comments.append({"body": kwargs["payload"]["body"], "user": {"login": cr.BOT_LOGIN}})
+            return {"id": 1}
+        if endpoint.endswith("/comments"):
+            return comments
+        raise AssertionError(endpoint)
+    monkeypatch.setattr(cr, "gh_json", api)
+    assert cr.report_skip(event(), "Grimblaz", "92", "success", result["cause"], "92", result["usage"])["status"] == "skipped"
+    assert cr.report_skip(event(), "Grimblaz", "92", "success", result["cause"], "92", result["usage"])["status"] == "already-reported"
+    assert len(comments) == 1
+    body = comments[0]["body"]
+    for entry in json.loads(result["usage"])["excluded_files"]:
+        assert cr.coverage_text([entry]).split("\n", 1)[1] in body
+    assert "not-started" in body and "observed_usage" in body
+    assert "excluded_files" not in body.split("Usage:")[1]
+    assert body.startswith("Review skipped:") and work._review_notice(body)
+    transport = actions_transport(
+        reviews=[], run_id=92, run=actions_run(id=92, head_sha=HEAD),
+        job_pages=[{"total_count": 1, "jobs": [actions_job(run_id=92)]}],
+    )
+    transport.values["repos/example/product/issues/7/comments"] = [
+        {"id": 2, "body": body, "user": {"login": cr.BOT_LOGIN}},
+    ]
+    state = collect_actions(transport)
+    assert state.connected_review_runs == {}
+    assert work._reviewer_receipts(state)[0]["result"] == "notice-only"
+
+
+@pytest.mark.parametrize("cause", ["authentication failure", "malformed output", "launch failure"])
+def test_ordinary_cli_failures_remain_failed(tmp_path, monkeypatch, cause, capsys):
+    event_path = tmp_path / "event.json"
+    event_path.write_bytes(json.dumps(event()).encode())
+    monkeypatch.setattr(cr, "resolve_command", lambda *_: "claude")
+    def fail(*_args, **_kwargs):
+        raise cr.ReviewError(cause)
+    monkeypatch.setattr(cr, "execute_review", fail)
+    assert cr.main(["review", "--event", str(event_path), "--owner-login", "Grimblaz", "--attempt", "92", "--finder-prompt", "unused"]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"

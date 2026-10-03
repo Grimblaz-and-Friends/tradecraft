@@ -72,7 +72,7 @@ def _permission_for_api_call(method, endpoint):
         # https://github.com/Grimblaz-and-Friends/reviewer-sandbox-private/actions/runs/36466795215
         # proved that its workflow token needs pull-requests: write to POST here.
         return "pull-requests", access
-    if any(part in endpoint for part in ("/contents/", "/tarball/", "/compare/")):
+    if any(part in endpoint for part in ("/contents/", "/tarball/", "/compare/", "/git/trees/", "/git/blobs/")):
         assert access == "read"
         return "contents", "read"
     if "/pulls/" in endpoint:
@@ -111,6 +111,7 @@ def test_measured_two_pass_replay_defaults_and_prompt_hashes_remain_reproducible
     checker = ROOT / "skills/connected-review/references/checker.md"
     settings = cr.reviewer_settings()
     assert settings == {
+        **cr.coverage_settings(),
         "checker_candidates_per_batch": 25,
         "checker_effort": "xhigh",
         "claude_cli_version": "2.1.280",
@@ -140,7 +141,7 @@ def test_measured_two_pass_replay_defaults_and_prompt_hashes_remain_reproducible
         "c7c352d97e6b971ffff6343d113cbc299dd2a3c6c72363b6debee28e665a3f83"
     )
     assert hashlib.sha256(cr._json_bytes(settings)).hexdigest() == (
-        "b7d4b103c9ed31d42258e6f774161bad1f060a42d00c666ac484f800cdbd92a6"
+        "36f7b019e5225cad500d188b70c353d5f9fbb58a492fd65aed8e8ca295d42126"
     )
 
 
@@ -148,6 +149,7 @@ def test_live_reviewer_standard_is_one_high_finder_with_frozen_prompt():
     finder = ROOT / "skills/connected-review/references/finder.md"
     skill = (ROOT / "skills/connected-review/SKILL.md").read_text(encoding="utf-8")
     assert cr.live_reviewer_settings() == {
+        **cr.coverage_settings(),
         "checker_effort": None,
         "claude_cli_version": "2.1.280",
         "finder_candidates_per_pass": 50,
@@ -174,7 +176,8 @@ def test_live_reviewer_standard_is_one_high_finder_with_frozen_prompt():
     assert "One fresh read-only finder process runs at `high`" in skill
     assert "historical checker contract retained for replay reproducibility" in skill
     assert "the live workflow never loads it" in skill
-    assert "preload" not in skill.casefold()
+    assert "replay preload" in skill
+    assert "MAX_FINDER_PROMPT_BYTES" in skill
 
 
 def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
@@ -241,6 +244,9 @@ def test_workflow_permissions_exactly_cover_each_job_api_call_graph():
             ("GET", "repos/{}/pulls/{}"),
             ("GET", "repos/{}/pulls/{}/reviews"),
             ("GET", "repos/{}/tarball/{}"),
+            ("GET", "repos/{}/git/trees/{}?recursive=1"),
+            ("GET", "repos/{}/git/trees/{}"),
+            ("GET", "repos/{}/git/blobs/{}"),
             ("POST", "repos/{}/pulls/{}/reviews"),
         },
         "report": {
@@ -389,6 +395,8 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
     assert "label trigger fires only when that label is added" in prose
     assert "gh run rerun <run-id> --failed" in prose
     assert "review job deliberately remains failed" in prose
+    assert "successful over-budget preflight skip" in prose
+    assert "`connected-review` cell's input-policy contract" in prose
     assert "A separate workflow dispatch is not offered" in prose
     assert "default branch and cannot repair" in prose
     assert "one finder at `high`" in prose
