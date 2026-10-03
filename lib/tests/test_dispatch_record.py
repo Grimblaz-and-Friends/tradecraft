@@ -32,6 +32,62 @@ def request_values(**changes):
     return values
 
 
+def native_begin_args(tmp_path, *, stage="use", reason=None):
+    input_file = tmp_path / "dispatch.md"
+    input_file.write_bytes(b"Judge the built result.\n")
+    arguments = [
+        "begin", "--work", "example/product#12", "--stage", stage,
+        "--settings-source", "fixture", "--settings-scope", "this seat",
+        "--vendor", "claude", "--vendor-source", "native route",
+        "--model", "opus", "--model-source", "fixture",
+        "--effort", "max", "--effort-source", "fixture",
+        "--classification", "cold", "--classification-source", "fixture",
+        "--continuity-source", "native route",
+        "--permission-boundary", "native tool", "--permission-boundary-source", "fixture",
+        "--input-file", str(input_file), "--output", str(tmp_path / "result.md"),
+    ]
+    if reason is not None:
+        arguments.append(f"--same-vendor-reason={reason}")
+    return records.parser().parse_args(arguments)
+
+
+@pytest.mark.parametrize("stage", ["use", "cold-seat", "artifact", "build"])
+@pytest.mark.parametrize("outcome", ["success", "error", "unavailable"])
+def test_native_records_facts_without_certifying_staffing(tmp_path, stage, outcome):
+    output = records.begin_native(native_begin_args(tmp_path, stage=stage, reason="owner-selected"))
+    request_path = records.sidecar(output, ".request.json")
+    request_bytes = request_path.read_bytes()
+    request = json.loads(request_bytes)
+    assert request["same_vendor_reason"] == "owner-selected"
+    assert "producer_vendor" not in request
+    returned = tmp_path / "return.json"
+    returned.write_bytes(b'{"type":"turn.completed"}\n')
+    run_path = records.finish_native(records.parser().parse_args([
+        "finish", "--output", str(output), "--vendor", "codex",
+        "--return-file", str(returned), "--outcome", outcome,
+    ]))
+    run = json.loads(run_path.read_bytes())
+    assert request_path.read_bytes() == request_bytes
+    assert "staffing_status" not in run and "staffing_qualification" not in run
+    assert run["attempts"][0]["usage"]["dispatch"]["staffing_status"] == "unknown"
+    if stage in {"use", "cold-seat"} and outcome != "unavailable":
+        assert run["actual_vendor"] == "codex"
+    else:
+        assert "actual_vendor" not in run
+
+
+@pytest.mark.parametrize("reason", ["", "two words", " leading", "bad_reason", "-bad", "bad--slug"])
+def test_native_begin_refuses_a_reason_that_cannot_travel_in_the_marker(tmp_path, reason):
+    with pytest.raises(records.RecordError, match="nonempty hyphenated slug"):
+        records.begin_native(native_begin_args(tmp_path, reason=reason))
+    assert not records.sidecar(tmp_path / "result.md", ".request.json").exists()
+
+
+def test_native_begin_omits_an_unsupplied_same_vendor_reason(tmp_path):
+    output = records.begin_native(native_begin_args(tmp_path))
+    assert "same_vendor_reason" not in json.loads(records.sidecar(output, ".request.json").read_bytes())
+
+
 def test_holder_identity_cannot_also_identify_dispatch_or_resumed_builder():
     with pytest.raises(records.RecordError, match="dispatch id cannot also identify"):
         records.request_record(**request_values(holder_session_id="builder-dispatch"))
