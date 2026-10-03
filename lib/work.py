@@ -32,11 +32,13 @@ import proof as proof_document
 import recipient_tree
 import review_findings
 import vendor_cli
+import use_history
+import version_policy
 from winio import utf8_stdio
 
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
-    "review-disposition", "proof", "ready-reviewers", "release-report",
+    "review-disposition", "proof", "ready-reviewers", "release-report", "catch-up",
 )
 DIRECT_COMMANDS = ("release", "adopt", "run", "tree")
 CLI_COMMANDS = DIRECT_COMMANDS
@@ -162,6 +164,7 @@ STAGE_SAFETY = {
     "proof": ((PROOF_MECHANISM_VERSION, "composed proof publication"),),
     "ready-reviewers": ((PROOF_MECHANISM_VERSION, "configured reviewer readiness"),),
     "release-report": ((NEW_MECHANISM_VERSION, "holder-owned release report"),),
+    "catch-up": (("0.173.0", "holder-owned checked catch-up"),),
 }
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
     "affirmed-brief": {"required": set(), "optional": set(),
@@ -317,6 +320,7 @@ class WorkState:
     proof_current: bool | None = None
     holder_root: Path | None = None
     instalment: str | None = None
+    synchronization: dict[str, object] | None = None
 
     @property
     def issue_sources(self) -> list[tuple[str, str]]:
@@ -370,6 +374,8 @@ class Decision:
     quotations: tuple[dict[str, object], ...] = ()
     latest_checks: tuple[dict[str, object], ...] = ()
     launch_settings: dict[str, object] | None = None
+    synchronization: dict[str, object] | None = None
+    use_application: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -387,6 +393,8 @@ class Decision:
             "quotations": list(self.quotations),
             "latest_checks": list(self.latest_checks),
             "launch_settings": self.launch_settings,
+            "synchronization": self.synchronization,
+            "use_application": self.use_application,
         }
 
 
@@ -798,6 +806,102 @@ def _collect_required_gate(transport: GitHubREST,
     }
 
 
+def _collect_synchronization(transport: GitHubREST, pr: dict[str, object]) -> dict[str, object]:
+    base, problem = _gate_base(pr)
+    result: dict[str, object] = {
+        "base": base, "head": (pr.get("head") or {}).get("sha"),
+        "behind": None, "strict": None, "conflict": (
+            pr.get("mergeable") is False
+            or str(pr.get("mergeable_state") or "").lower() in {"dirty", "conflicting"}
+        ), "mergeability_known": isinstance(pr.get("mergeable"), bool),
+        "uncertainties": [],
+    }
+    if base is None:
+        result["uncertainties"] = [problem]
+        return result
+    encoded = urllib.parse.quote(str(base["ref"]), safe="")
+    prefix = f"repos/{base['repository']}"
+    try:
+        tip = _dict(transport.get(f"{prefix}/git/ref/heads/{encoded}"), "base ref")
+        revision = _dict(tip.get("object"), "base ref object").get("sha")
+        if not isinstance(revision, str) or HEAD_SHA.fullmatch(revision) is None:
+            raise WorkError("base ref has no full revision")
+        result["base"] = {**base, "sha": revision}
+        comparison = _dict(transport.get(
+            f"{prefix}/compare/{revision}...{result['head']}"
+        ), "base comparison")
+        behind = comparison.get("behind_by")
+        if type(behind) is not int or behind < 0:
+            raise WorkError("base comparison has no behind count")
+        result["behind"] = behind > 0
+    except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+        result["uncertainties"].append(f"base reachability unavailable: {exc}")
+    strict_values = []
+    try:
+        rules = _list(transport.get(f"{prefix}/rules/branches/{encoded}?per_page=100",
+                                    paginate=True), "base rules")
+        for rule in rules:
+            if rule.get("type") == "required_status_checks":
+                strict = (rule.get("parameters") or {}).get("strict_required_status_checks_policy")
+                if type(strict) is not bool:
+                    raise WorkError("status-check rule has no strictness value")
+                strict_values.append(strict)
+        strict_values.append(False)
+    except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+        result["uncertainties"].append(f"ruleset strictness unavailable: {exc}")
+    if not any(strict_values):
+        # A readable strict ruleset already proves the requirement. Classic
+        # protection can add it, but its endpoint may require administration.
+        try:
+            protection = _dict(transport.get(f"{prefix}/branches/{encoded}/protection"), "branch protection")
+            checks = protection.get("required_status_checks")
+            strict = checks.get("strict") if isinstance(checks, dict) else False
+            if type(strict) is not bool:
+                raise WorkError("branch protection has no strictness value")
+            strict_values.append(strict)
+        except WorkError as exc:
+            # A generic Not Found may hide permissions; only the specific absence counts.
+            if "404" in str(exc) and "branch not protected" in str(exc).lower():
+                strict_values.append(False)
+            else:
+                result["uncertainties"].append(f"branch-protection strictness unavailable: {exc}")
+        except (KeyError, OSError, UnicodeError, ValueError) as exc:
+            result["uncertainties"].append(f"branch-protection strictness unavailable: {exc}")
+    if any(strict_values):
+        result["strict"] = True
+    elif len(strict_values) >= 2 and not result["uncertainties"]:
+        result["strict"] = False
+    try:
+        confirmed = _dict(transport.get(f"{prefix}/git/ref/heads/{encoded}"), "confirmed base ref")
+        if (confirmed.get("object") or {}).get("sha") != (result.get("base") or {}).get("sha"):
+            result["uncertainties"].append("base tip moved during synchronization collection; reread")
+    except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+        result["uncertainties"].append(f"base confirmation unavailable: {exc}")
+    return result
+
+
+def _synchronization_decision(state: WorkState) -> Decision | None:
+    if state.pr is None:
+        return None
+    facts = state.synchronization or {}
+    conflict = (facts.get("conflict") is True or state.pr.get("mergeable") is False
+                or str(state.pr.get("mergeable_state") or "").lower() in {"dirty", "conflicting"})
+    if conflict or (facts.get("behind") is True and facts.get("strict") is True):
+        return Decision("catch-up", False, None,
+                        "pull-request-conflicting" if conflict else "strict-base-behind",
+                        "Run the holder-owned catch-up; other conflicts return to the builder.")
+    uncertainties = [message for message in facts.get("uncertainties", [])
+                     if facts.get("behind") is not False or not str(message).startswith(
+                         ("ruleset strictness unavailable:", "branch-protection strictness unavailable:"))]
+    if (not facts or facts.get("behind") is None
+            or (facts.get("behind") is not False and facts.get("strict") is None)
+            or facts.get("mergeability_known") is not True
+            or not isinstance(state.pr.get("mergeable"), bool) or uncertainties):
+        return Decision("waiting", False, None, "base-synchronization-unavailable",
+                        "; ".join(facts.get("uncertainties") or ["base synchronization or mergeability is unknown"]))
+    return None
+
+
 def _provenance_error(check: dict[str, object], message: str) -> None:
     check["workflow_source_error"] = message
 
@@ -991,6 +1095,14 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
                 "message": problem,
                 "source": None,
             })
+    live_pr = _dict(transport.get(pr_endpoint), pr_endpoint)
+    state.synchronization = _collect_synchronization(transport, live_pr)
+    try:
+        if _pull_coordinates(live_pr) != _pull_coordinates(state.pr):
+            state.synchronization["uncertainties"].append("pull-request identity moved during collection; reread")
+    except WorkError as exc:
+        state.synchronization["uncertainties"].append(str(exc))
+    state.pr = live_pr
     return state
 
 
@@ -1963,6 +2075,10 @@ def _use_rules(value: object, source: str) -> dict[str, object]:
     for rule in rules:
         if not isinstance(rule, dict) or not isinstance(rule.get("include"), list) or not isinstance(rule.get("exclude"), list):
             raise WorkError("each use rule must carry include and exclude lists")
+    try:
+        version_policy.declaration(value)
+    except ValueError as exc:
+        raise WorkError(f"invalid use-policy version declaration: {exc}") from exc
     return value
 
 
@@ -2027,57 +2143,19 @@ def _public_marker_valid(state: WorkState, marker: Marker) -> bool:
     )
 
 
-def _commit_files(transport: GitHubREST, repo: str, revision: str) -> list[str]:
-    endpoint = f"repos/{repo}/commits/{revision}?per_page=100"
-    value = transport.get(endpoint, paginate=True)
-    pages = value if isinstance(value, list) else [value]
-    paths: list[str] = []
-    for page in pages:
-        commit = _dict(page, endpoint)
-        if "files" not in commit:
-            raise WorkError(f"GitHub commit GET omitted files for {revision}")
-        files = _list(commit["files"], endpoint)
-        for item in files:
-            for field_name in ("filename", "previous_filename"):
-                path = item.get(field_name)
-                if isinstance(path, str) and path not in paths:
-                    paths.append(path)
-    return paths
-
-
 def _ancestor_application(transport: GitHubREST, state: WorkState, ancestor: str,
                           head: str, rules: dict[str, object]) -> dict[str, object]:
-    base = urllib.parse.quote(ancestor, safe="")
-    current = urllib.parse.quote(head, safe="")
-    endpoint = f"repos/{state.repo}/compare/{base}...{current}"
-    comparison = _dict(transport.get(endpoint), endpoint)
-    merge_base = comparison.get("merge_base_commit")
-    merge_base_sha = merge_base.get("sha") if isinstance(merge_base, dict) else None
-    commits = _list(comparison.get("commits", []), endpoint)
-    ahead_by = comparison.get("ahead_by")
-    if (comparison.get("status") not in {"ahead", "identical"}
-            or merge_base_sha != ancestor):
-        return {"applicable": False, "reason": "use evidence head is not an ancestor"}
-    if not isinstance(ahead_by, int) or isinstance(ahead_by, bool) or ahead_by != len(commits):
-        return {"applicable": False, "reason": "complete intervening history is unavailable"}
-    intervening: list[dict[str, object]] = []
-    for commit in commits:
-        revision = commit.get("sha")
-        if not isinstance(revision, str) or HEAD_SHA.fullmatch(revision) is None:
-            return {"applicable": False, "reason": "intervening commit has no full revision"}
-        paths = _commit_files(transport, state.repo, revision)
-        intervening.append({"sha": revision, "paths": sorted(paths)})
-        if use_required(paths, rules):
-            return {
-                "applicable": False,
-                "reason": f"intervening commit {revision} changes a use-bought path",
-                "intervening_commits": intervening,
-            }
-    return {
-        "applicable": True,
-        "reason": "every intervening commit changes only paths outside the use-bought policy",
-        "intervening_commits": intervening,
-    }
+    inventory_problems = [item["message"] for item in state.collection_diagnostics
+                          if item.get("code") in {"changed-file-count-unavailable", "changed-files-incomplete"}]
+    if inventory_problems:
+        raise WorkError("current pull-request changed paths are unavailable: " + "; ".join(inventory_problems))
+    facts = state.synchronization or {}
+    base = facts.get("base") or (state.pr or {}).get("base") or {}
+    revision = base.get("sha")
+    if not isinstance(revision, str) or HEAD_SHA.fullmatch(revision) is None:
+        return {"applicable": False, "reason": "observed base tip is unavailable"}
+    return use_history.application(transport, state.repo, ancestor, head, revision,
+                                   rules, use_required, state.changed_paths)
 
 
 def prepare_use_evidence(state: WorkState, transport: GitHubREST,
@@ -2096,7 +2174,9 @@ def prepare_use_evidence(state: WorkState, transport: GitHubREST,
         and marker.attributes.get("changed") == "false"
     ]
     indexed = list(enumerate(candidates))
-    indexed.sort(key=lambda item: _marker_recency(item[1], item[0]), reverse=True)
+    indexed.sort(key=lambda item: (
+        item[1].attributes.get("head") == head, _marker_recency(item[1], item[0])
+    ), reverse=True)
     for _position, marker in indexed:
         evidence_head = marker.attributes.get("head")
         if evidence_head == head:
@@ -2111,7 +2191,7 @@ def prepare_use_evidence(state: WorkState, transport: GitHubREST,
             application = _ancestor_application(
                 transport, state, str(evidence_head), head, rules
             )
-        except (OSError, UnicodeError, ValueError, WorkError) as exc:
+        except (KeyError, TypeError, OSError, UnicodeError, ValueError, WorkError) as exc:
             state.collection_diagnostics.append({
                 "code": "use-history-unavailable",
                 "message": f"cannot establish use ancestry from {evidence_head}: {exc}",
@@ -2122,10 +2202,10 @@ def prepare_use_evidence(state: WorkState, transport: GitHubREST,
             state.applicable_use = marker
             state.use_application = {
                 "applicability": "ancestor", "evidence_head": evidence_head,
-                "intervening_commits": application.get("intervening_commits", []),
-                "reason": application.get("reason"), "lawful": marker in state.markers,
+                **application, "lawful": marker in state.markers,
             }
             return
+        state.use_application = {**application, "applicability": "missing", "lawful": False}
         state.collection_diagnostics.append({
             "code": "use-evidence-stale",
             "message": str(application.get("reason") or "use evidence is not applicable"),
@@ -2252,7 +2332,7 @@ def _decision_status(decision: Decision) -> str:
         return "runnable"
     if decision.stage in {"artifact-cap", "artifact-settlement", "open-pull-request",
                           "merged-pull-request", "holder-read",
-                          "ready-reviewers", "proof", "use", "release-report",
+                          "ready-reviewers", "proof", "use", "release-report", "catch-up",
                           "ambiguous-pr", "panel"}:
         return "holder-owned"
     if decision.stage == "terminal":
@@ -2276,7 +2356,8 @@ def _reported_decision(state: WorkState, decision: Decision) -> Decision:
         invalid_markers=tuple(state.invalid_marker_claims),
         quotations=tuple(state.quotation_claims),
         latest_checks=tuple(latest_checks(state)),
-        launch_settings=plan,
+        launch_settings=plan, synchronization=state.synchronization,
+        use_application=state.use_application,
     )
 
 
@@ -2716,6 +2797,9 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
                 "Open the implementing pull request from the registered implementation branch.",
             )
         return result("build", True, "fresh", "pull-request-absent")
+    sync = _synchronization_decision(state)
+    if sync is not None:
+        return result(sync.stage, sync.dispatch, sync.continuity, sync.reason, sync.detail)
     sha = _head_sha(state)
     if sha is None:
         return result("floor", True, "resume", "pull-request-head-sha-absent")
@@ -2727,6 +2811,26 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     latest_use = next((marker for marker in reversed(state.markers) if marker.name == "use"), None)
     if latest_use and latest_use.attributes.get("head") == sha and latest_use.attributes.get("changed") == "true":
         return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
+    if bool(state.pr.get("draft")):
+        return result("ready-reviewers", False, None, "floor-complete-pr-draft")
+    reviewers = state.config.connected_reviewers
+    if reviewers and not _reviewer_ran(state):
+        return result("waiting", False, None, "required-connected-reviewer-has-not-run")
+    threads, _ignored_dispositions = _undisposed_threads(state)
+    if threads:
+        return result(
+            "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
+            ",".join(str(identity) for identity in threads),
+        )
+    bodies = _body_findings(state)
+    if bodies.missing_findings or bodies.missing_reviews:
+        return result(
+            "review-disposition", True, "resume", "reviewer-body-lacks-disposition",
+            _body_disposition_detail(state, bodies),
+        )
+    panel_stage = _panel_next(state, lane)
+    if panel_stage:
+        return result("panel", False, None, "bought-panel-incomplete", panel_stage)
     bought = policy.use_required
     current_use = _current_marker(state, "use", head=sha, status="pass")
     applicable_use = state.applicable_use or current_use
@@ -2749,26 +2853,6 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
                 "proof", False, "fresh", reason,
                 "Run proof to compose the current-head document and its legacy no-use carrier.",
             )
-    if bool(state.pr.get("draft")):
-        return result("ready-reviewers", False, None, "floor-and-use-complete-pr-draft")
-    reviewers = state.config.connected_reviewers
-    if reviewers and not _reviewer_ran(state):
-        return result("waiting", False, None, "required-connected-reviewer-has-not-run")
-    threads, _ignored_dispositions = _undisposed_threads(state)
-    if threads:
-        return result(
-            "review-disposition", True, "resume", "reviewer-thread-lacks-disposition",
-            ",".join(str(identity) for identity in threads),
-        )
-    bodies = _body_findings(state)
-    if bodies.missing_findings or bodies.missing_reviews:
-        return result(
-            "review-disposition", True, "resume", "reviewer-body-lacks-disposition",
-            _body_disposition_detail(state, bodies),
-        )
-    panel_stage = _panel_next(state, lane)
-    if panel_stage:
-        return result("panel", False, None, "bought-panel-incomplete", panel_stage)
     current_proof = _current_marker(state, "proof", head=sha)
     if current_proof is None or state.proof_current is False:
         return result("proof", False, "fresh", "current-head-proof-absent-or-outdated")
@@ -2782,12 +2866,6 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
             return result(
                 "waiting", False, None, "latest-gate-evaluation-pending", detail
             )
-        mergeable = state.pr.get("mergeable")
-        mergeable_state = str(state.pr.get("mergeable_state") or "").lower()
-        if mergeable is False or mergeable_state in {"dirty", "conflicting"}:
-            detail += " The pull request has a confirmed merge conflict, so no gate run may exist."
-        elif mergeable is None or mergeable_state in {"", "unknown"}:
-            detail += " Mergeability is unknown; this is not reported as a conflict."
         return result("waiting", False, None, "current-head-gate-evaluation-absent", detail)
     if verdict == "unidentified":
         return result(
@@ -4761,6 +4839,183 @@ def _rerun_gate_evaluations(transport: GitHubREST, state: WorkState,
     return results
 
 
+def _catch_up_version_conflict(root: Path, spec: dict, base_version: str) -> None:
+    path = spec["path"]
+    entries = _git_text(["ls-files", "-u", "--", f":(literal){path}"], root,
+                        "read version conflict stages").splitlines()
+    modes = {line.split()[0] for line in entries}
+    if len(entries) != 3 or len(modes) != 1 or not modes <= {"100644", "100755"}:
+        raise WorkError("version conflict includes a replacement or mode change")
+    contents = []
+    for stage in (1, 2, 3):
+        result = _git(["show", f":{stage}:{path}"], root)
+        if result.returncode:
+            raise WorkError("version conflict has incomplete stages")
+        contents.append(version_policy.replace_field(result.stdout, spec, "0.0.0"))
+    with tempfile.TemporaryDirectory(prefix="tradecraft-version-") as directory:
+        paths = [Path(directory) / name for name in ("base", "ours", "theirs")]
+        for target, content in zip(paths, contents):
+            target.write_bytes(content)
+        merged = _git(["merge-file", "--stdout", str(paths[1]), str(paths[0]), str(paths[2])], root)
+    if merged.returncode:
+        raise WorkError("version file conflicts outside the declared field")
+    target = root / path
+    if target.is_symlink() or not _path_inside(target, root):
+        raise WorkError("version file resolves outside the implementation root")
+    target.write_bytes(version_policy.replace_field(merged.stdout, spec, base_version))
+    _git_text(["add", "--", f":(literal){path}"], root, "stage resolved version field")
+
+
+def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
+                      instalment: str | None, holder_session_id: str | None,
+                      rules: dict[str, object]) -> int:
+    if not holder_session_id or not holder_session_id.strip():
+        raise WorkError("catch-up requires --holder-session-id")
+    resolved = resolve_implementation_root(holder, state.repo, state.issue_number, instalment)
+    if resolved is None:
+        raise WorkError("catch-up requires an active implementation registration")
+    root, branch, _migrated = resolved
+    registry = read_registry()
+    row = next(row for row in registry["worktrees"] if row.get("active") is True
+               and _same_path(Path(str(row["root"])), root))
+    if row.get("holder_session_id") != holder_session_id.strip():
+        raise WorkError("catch-up holder identity differs from the registration")
+    if state.pr is None or not isinstance(state.pr.get("number"), int):
+        raise WorkError("catch-up requires one implementing pull request")
+    endpoint = f"repos/{state.repo}/pulls/{state.pr['number']}"
+    current = _dict(transport.get(endpoint), endpoint)
+    expected = _pull_coordinates(current)
+    head_data = current.get("head") or {}
+    if head_data.get("ref") != branch or (head_data.get("repo") or {}).get("full_name") != state.repo:
+        raise WorkError("catch-up pull request does not name the registered repository and branch")
+    start = _git_text(["rev-parse", "HEAD"], root, "read catch-up starting head")
+    revision, status = _git_snapshot(root)
+    merge_path = Path(_git_text(["rev-parse", "--git-path", "MERGE_HEAD"], root, "locate merge state"))
+    if not merge_path.is_absolute():
+        merge_path = root / merge_path
+    if revision != start or status != "" or merge_path.exists():
+        raise WorkError("catch-up refuses dirty content or an unexplained merge state")
+    remote = _selected_remote(root, "select catch-up remote")
+    tracking = _git_text(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], root,
+                         "prove catch-up upstream")
+    if tracking != f"{remote}/{branch}":
+        raise WorkError("catch-up upstream differs from the registered branch")
+    remote_head = _git_text(["ls-remote", "--heads", remote, f"refs/heads/{branch}"], root,
+                            "read remote catch-up head").split()
+    attempt_path = _git_common_directory(root) / "tradecraft-catch-up" / (hashlib.sha256(branch.encode()).hexdigest() + ".json")
+    attempt = _json_object(attempt_path) or {}
+    if start != expected["head"] or not remote_head or remote_head[0] != start:
+        if attempt.get("result") == start and attempt.get("start") == expected["head"]:
+            print(json.dumps({"stage": "catch-up", "status": "refused", "dispatch": False,
+                              "reason": "checked-commit-publication-recovery-required",
+                              "head": start, "detail": "Use the existing persist push-failure route; no second merge or bump."},
+                             ensure_ascii=True, sort_keys=True))
+            return 0
+        raise WorkError("catch-up local, remote and pull-request heads differ")
+    base = expected["base"]
+    encoded = urllib.parse.quote(str(base["ref"]), safe="")
+    base_endpoint = f"repos/{base['repository']}/git/ref/heads/{encoded}"
+    base_record = _dict(transport.get(base_endpoint), base_endpoint)
+    pinned = _dict(base_record.get("object"), base_endpoint).get("sha")
+    if not isinstance(pinned, str) or HEAD_SHA.fullmatch(pinned) is None:
+        raise WorkError("catch-up base has no full revision")
+    # Keep the selected remote's transport and verify its base object against the API pin.
+    fetched = _git(["fetch", "--no-tags", remote,
+                    f"refs/heads/{base['ref']}"], root)
+    if fetched.returncode:
+        raise WorkError(f"cannot fetch catch-up base: {_git_failure(fetched)}")
+    if _git_text(["rev-parse", "FETCH_HEAD"], root, "verify fetched base") != pinned:
+        raise WorkError("catch-up base moved during fetch; reread and retry")
+    reachable = _git(["merge-base", "--is-ancestor", pinned, start], root)
+    if reachable.returncode == 0:
+        print(json.dumps({"stage": "catch-up", "dispatch": False, "status": "holder-owned",
+                          "reason": "already-up-to-date", "starting_head": start, "pinned_base": pinned,
+                          "head": start}, ensure_ascii=True, sort_keys=True))
+        return 0
+    if reachable.returncode != 1:
+        raise WorkError("catch-up cannot prove base reachability")
+    spec = version_policy.declaration(rules)
+    new_version = None
+    if spec:
+        common = _git_text(["merge-base", start, pinned], root, "read catch-up merge base")
+        version_changed = _git_text(
+            ["diff", "--no-renames", "--name-only", "-z", common, pinned,
+             "--", f":(literal){spec['path']}"], root, "read base-side version changes")
+        if version_changed:
+            base_content = _policy_blob(root, pinned, spec["path"])
+            if base_content is None:
+                raise WorkError("declared base version file is unavailable")
+            new_version = version_policy.increment(base_content, spec)
+    attempt_path.parent.mkdir(parents=True, exist_ok=True)
+    attempt = {"start": start, "base": pinned, "branch": branch, "result": None}
+    attempt_path.write_bytes((json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8"))
+    prepared = _git(["merge", "--no-commit", "--no-ff", pinned], root)
+    if not merge_path.exists():
+        raise WorkError(f"catch-up merge was not prepared: {_git_failure(prepared)}")
+    try:
+        conflicts = _git_text(["diff", "--name-only", "--diff-filter=U", "-z"], root,
+                              "read catch-up conflicts").split("\0")
+        conflicts = [path for path in conflicts if path]
+        if conflicts:
+            if spec is None or conflicts != [spec["path"]]:
+                raise WorkError("builder-required: conflicts outside the declared field: " + ", ".join(conflicts))
+            try:
+                _catch_up_version_conflict(root, spec, str(new_version))
+            except (ValueError, WorkError) as exc:
+                raise WorkError(f"builder-required: {exc}") from exc
+        elif prepared.returncode:
+            raise WorkError(f"catch-up merge failed: {_git_failure(prepared)}")
+        if spec and new_version is not None and not conflicts:
+            target = root / spec["path"]
+            if target.is_symlink() or not _path_inside(target, root):
+                raise WorkError("declared version file is not an in-root regular file")
+            target.write_bytes(version_policy.replace_field(target.read_bytes(), spec, str(new_version)))
+            _git_text(["add", "--", f":(literal){spec['path']}"], root, "stage catch-up version")
+        latest = _dict(transport.get(endpoint), endpoint)
+        latest_base = _dict(transport.get(base_endpoint), base_endpoint)
+        if (_pull_coordinates(latest) != expected or latest_base.get("object", {}).get("sha") != pinned
+                or _attached_branch(root) != branch
+                or _git_text(["rev-parse", "HEAD"], root, "verify catch-up head") != start):
+            raise WorkError("catch-up head or base moved before landing")
+        script = Path(__file__).resolve().parents[1] / "skills" / "persist-changes" / "scripts" / "persist.py"
+        landed = subprocess.run([sys.executable, str(script), "--expect-branch", branch,
+                                 "-m", f"Catch up {branch} with its pinned base"], cwd=root,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        resulting = _git_text(["rev-parse", "HEAD"], root, "read catch-up result")
+        attempt["result"] = resulting
+        attempt_path.write_bytes((json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8"))
+        report = {"schema_version": 1, "stage": "catch-up", "dispatch": False,
+                  "status": "holder-owned" if landed.returncode == 0 else "refused",
+                  "starting_head": start, "pinned_base": pinned, "head": resulting,
+                  "version_adjustment": {**spec, "value": new_version} if new_version is not None else None,
+                  "landing": landed.stdout.decode("utf-8", errors="backslashreplace").strip(),
+                  "landing_error": landed.stderr.decode("utf-8", errors="backslashreplace").strip()}
+        if landed.returncode == 0:
+            row["revision_before"], row["status_before"] = _git_snapshot(root)
+            write_registry(registry)
+            fresh = read_state(transport, state.repo, state.issue_number, state.config)
+            fresh.record_root = state.record_root
+            prepare_use_evidence(fresh, transport, rules)
+            report["use_application"] = fresh.use_application
+            report["next"] = decide(fresh, rules).as_dict()
+        print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        return 0
+    except WorkError as exc:
+        if str(exc).startswith("builder-required:"):
+            print(json.dumps({"stage": "catch-up", "dispatch": False, "status": "holder-owned",
+                              "reason": "builder-required", "detail": str(exc), "conflicts": conflicts,
+                              "starting_head": start, "pinned_base": pinned,
+                              "next": {"stage": "build", "continuity": "resume"}},
+                             ensure_ascii=True, sort_keys=True))
+            return 0
+        raise
+    finally:
+        if merge_path.exists() and _git_text(["rev-parse", "HEAD"], root, "check unfinished catch-up") == start:
+            aborted = _git(["merge", "--abort"], root)
+            if aborted.returncode:
+                raise WorkError(f"catch-up could not remove its merge state: {_git_failure(aborted)}")
+
+
 def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
                    rules: dict[str, object], use_rules_path: Path,
                    dispatch_path: Path | None, tree_metadata: Path | None) -> int:
@@ -4779,6 +5034,10 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     fresh = read_state(transport, state.repo, state.issue_number, effective_config)
     fresh.record_root = state.record_root
     fresh.policy_sources = snapshot.sources
+    sync = _synchronization_decision(fresh)
+    if sync is not None:
+        print(json.dumps(_reported_decision(fresh, sync).as_dict(), ensure_ascii=True, sort_keys=True))
+        return 0
     prepare_use_evidence(fresh, transport, effective_rules)
     composed = compose_proof(fresh, effective_rules)
     head = str(composed["identity"]["head"])
@@ -4792,6 +5051,11 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
         raise WorkError(
             "pull-request head or base changed before proof publication; recompose and retry"
         )
+    before_state = replace(fresh, pr=before, synchronization=_collect_synchronization(transport, before))
+    sync = _synchronization_decision(before_state)
+    if sync is not None:
+        print(json.dumps(_reported_decision(before_state, sync).as_dict(), ensure_ascii=True, sort_keys=True))
+        return 0
     no_use_line = None
     if not bool(composed["use"]["required"]):
         no_use_line = f"Use: not required - {composed['use']['reason']}."
@@ -4807,6 +5071,12 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     _verify_policy_snapshot(
         root, state.repo, use_rules_path, snapshot, posted=True
     )
+    after_state = replace(fresh, pr=after, synchronization=_collect_synchronization(transport, after))
+    sync = _synchronization_decision(after_state)
+    if sync is not None:
+        print(json.dumps({**_reported_decision(after_state, sync).as_dict(), "comment": publication},
+                         ensure_ascii=True, sort_keys=True))
+        return 0
     reruns = _rerun_gate_evaluations(transport, fresh, head)
     print(json.dumps({
         "schema_version": 1, "work": f"{state.repo}#{state.issue_number}",
@@ -4826,14 +5096,6 @@ def _ready_evidence_error(state: WorkState, rules: dict[str, object]) -> str | N
     floor = _current_marker(state, "floor", head=head, status="pass")
     if floor is None or _checks_red(state) or _checks_pending(state):
         return "ready-reviewers requires a current-head floor and no failed or pending floor run"
-    if effective_policy(state, rules).use_required:
-        marker = state.applicable_use or _current_marker(state, "use", head=head, status="pass")
-        if marker is None or marker not in state.markers or not staffing_qualified(marker):
-            return "ready-reviewers requires a lawful current or applicable ancestor use"
-    else:
-        no_use = _current_marker(state, "no-use", head=head)
-        if no_use is None or "Use: not required" not in no_use.body:
-            return "ready-reviewers requires run proof to generate the current-head no-use carrier"
     return None
 
 
@@ -4849,6 +5111,15 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     validated_head = _head_sha(state)
     assert validated_head is not None
     number = int(state.pr["number"])
+    endpoint = f"repos/{state.repo}/pulls/{number}"
+    live_pr = _dict(transport.get(endpoint), endpoint)
+    if _pull_coordinates(live_pr) != _pull_coordinates(state.pr):
+        raise WorkError("pull-request head or base changed before ready evidence validation")
+    live = replace(state, pr=live_pr, synchronization=_collect_synchronization(transport, live_pr))
+    sync = _synchronization_decision(live)
+    if sync is not None:
+        print(json.dumps(_reported_decision(live, sync).as_dict(), ensure_ascii=True, sort_keys=True))
+        return 0
     label = state.config.reviewer_label
     label_applied = False
     issue_endpoint = f"repos/{state.repo}/issues/{number}"
@@ -4923,6 +5194,21 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                   use_rules_path: Path | None = None) -> int:
     if state.validated_markers is None:
         validate_marker_claims(state)
+    if decision.stage == "catch-up":
+        refused = _version_refusal(state, replace(decision, continuity=None), None)
+        if refused is not None:
+            print(json.dumps(_reported_decision(state, refused).as_dict(), ensure_ascii=True, sort_keys=True))
+            return 0
+        if dispatch_path is not None or tree_metadata is not None or claude_path is not None or codex_path is not None:
+            raise WorkError("run catch-up accepts no dispatch, tree or recipient executable")
+        if transport is None or rules is None:
+            raise WorkError("run catch-up requires the entrance GitHub and policy context")
+        return _execute_catch_up(transport, state, root, instalment, holder_session_id, rules)
+    if decision.stage in {"floor", "use", "review-disposition", "proof", "ready-reviewers"}:
+        sync = _synchronization_decision(state)
+        if sync is not None:
+            print(json.dumps(_reported_decision(state, sync).as_dict(), ensure_ascii=True, sort_keys=True))
+            return 0
     effective_timeout = (
         timeout_seconds if timeout_seconds is not None else
         DEFAULT_BUILD_TIMEOUT_SECONDS if decision.stage == "build" else
@@ -5038,6 +5324,14 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                     "reread and retry"
                 )
             current_head = str(live["head"])
+            fresh_sync = replace(state, pr=current_pr,
+                                 synchronization=_collect_synchronization(transport, current_pr))
+            sync = _synchronization_decision(fresh_sync)
+            if sync is not None:
+                print(json.dumps({**_reported_decision(fresh_sync, sync).as_dict(),
+                                  "required_gate": _release_gate_status(state, current_head)},
+                                 ensure_ascii=True, sort_keys=True))
+                return 0
         required_gate = _release_gate_status(state, current_head)
         verdict = required_gate["verdict"]
         head = required_gate["head"] or "unknown-current-head"
@@ -5574,7 +5868,7 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
         return continuity
     if recommendation.stage == stage and recommendation.continuity is not None:
         return recommendation.continuity
-    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report"}:
+    if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report", "catch-up"}:
         return "fresh"
     if stage == "build":
         return "resume" if state.pr is not None else "fresh"
@@ -5668,6 +5962,8 @@ def run(
         raise WorkError("a stage is accepted only after the run command")
     if args.command == "run" and args.stage is None:
         raise WorkError("run requires a stage")
+    if args.command == "run" and args.stage == "catch-up" and args.implementation_root is not None:
+        raise WorkError("run catch-up accepts no caller-supplied implementation root")
     if args.handover_recovery_session is not None and (
             args.command != "run" or args.stage not in {
                 "artifact", "build", "floor", "review-disposition",
@@ -5742,7 +6038,7 @@ def run(
         print(json.dumps(recommendation.as_dict(), ensure_ascii=True, sort_keys=True))
         return 0
     decision = _reported_decision(state, Decision(
-        args.stage, args.stage not in {"proof", "ready-reviewers", "release-report"},
+        args.stage, args.stage not in {"proof", "ready-reviewers", "release-report", "catch-up"},
         _named_continuity(state, args.stage, recommendation),
         "holder-named-stage",
         f"current recommendation: {recommendation.stage} ({recommendation.reason})",
