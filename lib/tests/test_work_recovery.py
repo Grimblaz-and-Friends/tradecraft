@@ -9,7 +9,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import run_lifecycle as lifecycle
 import work
 import work_recovery as recovery
-from test_work import state, repository, registry_row, git, MECHANICAL, AFFIRMED, SESSION
+from test_work import state, repository, registry_row, git, dispatch_bundle, MECHANICAL, AFFIRMED, SESSION
+
+
+@pytest.mark.parametrize("stage", ["artifact", "build", "floor", "use", "cold-seat"])
+def test_unfinished_success_claim_cannot_supply_completed_stage_evidence(tmp_path, stage):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage=stage)
+    path = store / stage / "result.md.run.json"
+    before = path.read_bytes()
+    assert len(work._matching_bundles("example/product#12", {stage}, store)) == 1
+    unfinished = json.loads(before)
+    unfinished.pop("completed_at")
+    unfinished["lifecycle"] = "running"
+    path.write_bytes(json.dumps(unfinished).encode())
+    retained = path.read_bytes()
+    assert work._matching_bundles("example/product#12", {stage}, store) == []
+    assert path.read_bytes() == retained
+    # Historical schema-2 completion needs no newly added lifecycle fields.
+    path.write_bytes(before)
+    assert len(work._matching_bundles("example/product#12", {stage}, store)) == 1
 
 
 @pytest.fixture
@@ -123,6 +142,21 @@ def test_no_progress_handback_still_supplies_named_resume(stopped_build, stage):
     assert not decision.dispatch and decision.status == "holder-owned"
     assert decision.reason == "stopped-run-no-progress"
     assert recovery.stopped_source(fixture, stage).session == SESSION
+
+
+@pytest.mark.parametrize("elapsed", [14400, None])
+def test_progress_does_not_hide_exhausted_or_unknown_build_budget(stopped_build, elapsed):
+    fixture, root, request, run, save = stopped_build
+    (root / "fixture.txt").write_bytes(b"productive edit")
+    run.update(lifecycle="completed", completed_at="2026-10-03T11:00:00Z", outcome="interrupted",
+               interruption_cause="ceiling", attempts=[{"launched": True, "elapsed_seconds": elapsed}])
+    if elapsed is None:
+        request.pop("recipient_allocation_seconds")
+    save()
+    recommendation = recovery.recommend(fixture, work.Decision("build", True, "fresh", "pull-request-absent"))
+    assert not recommendation.dispatch and recommendation.status == "holder-owned"
+    assert recommendation.reason == "stopped-run-build-budget"
+    assert json.loads(recommendation.detail)["progress"] == "changed"
 
 
 def test_artifact_stays_in_affirmed_term(stopped_build):
