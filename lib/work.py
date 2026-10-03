@@ -24,6 +24,8 @@ import uuid
 
 from brief import LANES, review_lane
 import dispatch_record as records
+import run_lifecycle as lifecycle
+import work_recovery
 import dispatch_implementer
 import dispatch_seat
 import launch_settings as setting_resolution
@@ -35,6 +37,16 @@ import vendor_cli
 import use_history
 import version_policy
 from winio import utf8_stdio
+from seat_process import run_process
+
+
+def _run_probe(command, **kwargs):
+    """Contain invocation preflight as well as the recipient's own processes."""
+    if lifecycle.current_deadline() is None:
+        return subprocess.run(command, **kwargs)
+    return run_process(command, input=kwargs.get("input", b""),
+                       cwd=kwargs.get("cwd", Path.cwd()), timeout=kwargs["timeout"],
+                       env=kwargs.get("env"), on_tick=lambda: None)
 
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
@@ -131,8 +143,9 @@ PROOF_MECHANISM_VERSION = "0.153.0"
 TRUTHFUL_ENTRANCE_VERSION = "0.154.0"
 VENDOR_IMPLEMENTER_VERSION = "0.159.0"
 REGISTERED_ROOT_VERSION = "0.149.0"
-DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
-DEFAULT_BUILD_TIMEOUT_SECONDS = 10800.0
+DEFAULT_STAGE_TIMEOUT_SECONDS = lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
+DEFAULT_BUILD_TIMEOUT_SECONDS = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS
+TOTAL_BUILD_BUDGET_SECONDS = lifecycle.TOTAL_BUILD_BUDGET_SECONDS
 STAGE_SAFETY = {
     "artifact": (
         (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
@@ -438,9 +451,9 @@ class GitHubREST:
         command = ["gh", "api", "--method", "GET", endpoint]
         if paginate:
             command.extend(("--paginate", "--slurp"))
-        result = subprocess.run(
+        result = _run_probe(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, timeout=120,
+            stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
         )
         if result.returncode:
             diagnostic = result.stderr.decode("utf-8", errors="backslashreplace").strip()
@@ -461,9 +474,9 @@ class GitHubREST:
         if method not in {"POST", "PATCH"}:
             raise WorkError(f"unsupported GitHub mutation method: {method}")
         command = ["gh", "api", "--method", method, endpoint, "--input", "-"]
-        result = subprocess.run(
+        result = _run_probe(
             command, input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
         )
         if result.returncode:
             diagnostic = result.stderr.decode("utf-8", errors="backslashreplace").strip()
@@ -498,10 +511,10 @@ class GitHubREST:
             "query": WORKFLOW_RUN_FILES_QUERY,
             "variables": {"ids": check_suite_ids},
         }
-        result = subprocess.run(
+        result = _run_probe(
             ["gh", "api", "graphql", "--input", "-"],
             input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
         )
         if result.returncode:
             diagnostic = result.stderr.decode("utf-8", errors="backslashreplace").strip()
@@ -2761,6 +2774,10 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
 
 
 def decide(state: WorkState, rules: dict[str, object]) -> Decision:
+    return work_recovery.recommend(state, _decide(state, rules))
+
+
+def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
     validate_marker_claims(state)
 
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
@@ -2973,9 +2990,9 @@ def write_registry(current: dict[str, object]) -> None:
 def _git_snapshot(path: Path) -> tuple[str | None, str | None]:
     values = []
     for arguments in (("rev-parse", "HEAD"), ("status", "--porcelain")):
-        result = subprocess.run(
+        result = _run_probe(
             ["git", "-C", str(path), *arguments], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(),
         )
         values.append(result.stdout.decode("utf-8", errors="backslashreplace") if result.returncode == 0 else None)
     revision = values[0].strip() if values[0] else None
@@ -3672,9 +3689,9 @@ def _git(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
         key: value for key, value in os.environ.items()
         if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}
     }
-    return subprocess.run(
+    return _run_probe(
         ["git", "-C", str(root), *command], stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, env=environment,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120), env=environment,
     )
 
 
@@ -3732,6 +3749,8 @@ def _matching_bundles(
                 continue
             completed = str(run.get("completed_at") or "")
             completed_time = _time(completed)
+            if completed_time is None:
+                continue
             if term_start is not None and (completed_time is None or completed_time <= term_start):
                 continue
             unsupported_request = request.get("schema_version") != records.SCHEMA_VERSION
@@ -4197,6 +4216,17 @@ def set_proof_freshness(state: WorkState, expected: dict[str, object]) -> None:
 
 def _resume_source(work_value: str, stage: str, record_root: Path, *,
                    completed_after: str | None = None) -> ResumeSource | None:
+    latest = lifecycle.launch_bundles(record_root, work_value,
+        RESUME_SOURCE_STAGES.get(stage, frozenset({stage})), after=completed_after)
+    if latest and lifecycle.stopped(latest[-1][3]):
+        order, path, request, run = latest[-1]
+        try:
+            session = lifecycle.recovery_session(request, run)
+        except ValueError as exc:
+            raise WorkError(f"stopped bundle {path}: {exc}") from exc
+        if not SESSION_ID.fullmatch(session):
+            raise WorkError(f"stopped bundle {path}: invalid session identity")
+        return ResumeSource(order, path, request, run, session)
     allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
     matched = _matching_bundles(
         work_value, allowed_stages, record_root, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
@@ -5239,6 +5269,13 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     return 0
 
 
+def _invoke_recipient(command, deadline):
+    deadline.remaining()
+    if "--invocation-started-monotonic" not in command:
+        command.extend(("--invocation-started-monotonic", str(deadline.started)))
+    return subprocess.run(command).returncode
+
+
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None, *, dispatch_path: Path | None = None,
                   tree_metadata: Path | None = None,
@@ -5247,6 +5284,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                   claude_path: Path | None = None,
                   codex_path: Path | None = None,
                   handover_recovery_session: str | None = None,
+                  budget_override_reason: str | None = None,
                   rules: dict[str, object] | None = None,
                   use_rules_path: Path | None = None) -> int:
     if state.validated_markers is None:
@@ -5273,7 +5311,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     )
     if not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise WorkError("--timeout-seconds must be finite and positive")
+    if budget_override_reason is not None and (decision.stage != "build" or not budget_override_reason.strip()):
+        raise WorkError("budget override requires a build stage and nonempty reason")
     timeout_argument = f"{effective_timeout:g}"
+    deadline = lifecycle.current_deadline() or lifecycle.stage_deadline(decision.stage, effective_timeout)
+    recovery_info = None
+    if decision.stage in RESUME_SOURCE_STAGES and work_recovery.latest_stopped(state, decision.stage) is not None:
+        decision = replace(decision, continuity="resume")
     implementer_role = "artifact_author" if decision.stage == "artifact" else "implementer"
     selected_vendor = "codex"
     vendor_source = ""
@@ -5293,6 +5337,10 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 completed_after=(_affirmed_review(state)[0].timestamp
                                  if decision.stage == "artifact" and _affirmed_review(state)[0] else None),
             )
+            stopped_source = work_recovery.stopped_source(state, decision.stage)
+            if stopped_source is not None:
+                resume_source = stopped_source
+                recovery_info = work_recovery.info(state, stopped_source)
         except WorkError as exc:
             refused = _reported_decision(state, Decision(
                 decision.stage, False, None,
@@ -5538,7 +5586,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             **dispatch_seat.fallback_plan("claude", own_vendor, "execute"),
             "comparison_vendor_source": own_vendor_source}
         setting_resolution.print_plan(launch_plan, label="work")
-        return subprocess.run(command).returncode
+        return _invoke_recipient(command, deadline)
     if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
         decision = _resolved_use_holder_decision(state, decision, root, instalment)
     if not decision.dispatch:
@@ -5612,6 +5660,23 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         return 0
     if launch_plan is not None and launch_plan["status"] == "unresolved":
         raise WorkError(launch_plan["reason"])
+    # Establish budget authority before registration or branch publication.
+    prior_rows = _change_rows(state.repo, state.issue_number, instalment, active_only=True)
+    budget_root = (Path(str(prior_rows[0]["root"])) if len(prior_rows) == 1 else
+                   Path(resume_source.request["root"]) if resume_source and resume_source.request.get("root") else None)
+    budget_branch = (prior_rows[0].get("branch") if len(prior_rows) == 1 else
+                     resume_source.request.get("lineage_branch") if resume_source else None)
+    account = lifecycle.runtime_account(work_recovery.launches(state, "build"),
+                                       root=budget_root, branch=budget_branch) if budget_root else lifecycle.runtime_account([])
+    allocation = deadline.remaining()
+    if decision.stage == "build":
+        try:
+            allocation = lifecycle.allocation(account, allocation, override_reason=budget_override_reason)
+        except ValueError as exc:
+            refused = _reported_decision(state, Decision("build", False, "resume", "build-budget-holder-owned",
+                json.dumps({"reason": str(exc), "account": account}, ensure_ascii=True), status="holder-owned"))
+            print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+            return 0
     selected = _dispatch_root(
         state, decision, root, instalment, holder_identity
     )
@@ -5750,7 +5815,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                     **dispatch_seat.fallback_plan("claude", own_vendor, "read"),
                     "comparison_vendor_source": own_vendor_source}
                 setting_resolution.print_plan(launch_plan, label="work")
-                return subprocess.run(command).returncode
+                return _invoke_recipient(command, deadline)
         else:
             if branch is not None:
                 branch = _attached_branch(dispatch_root)
@@ -5763,6 +5828,26 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "--settings-scope", implementer_role,
                 "--timeout-seconds", timeout_argument,
             ]
+            metadata = {
+                "recipient_allocation_seconds": min(allocation, deadline.remaining()),
+                "budget_account_before": account,
+                "budget_override_reason": budget_override_reason,
+            }
+            if resume_source is not None:
+                metadata["predecessor_bundle"] = resume_source.path
+                if resume_source.request.get("budget_lineage"):
+                    metadata["budget_lineage"] = resume_source.request["budget_lineage"]
+                if selected_vendor == resume_source.request["requested"]["vendor"]:
+                    metadata["retained_session_id"] = resume_source.session
+                    metadata["retained_session_source"] = resume_source.path
+            if recovery_info is not None:
+                metadata["progress_baseline"] = recovery_info["stop_snapshot"]
+                metadata["predecessor_stop_snapshot"] = recovery_info["stop_snapshot"]
+                print(json.dumps({"stopped_run": recovery_info}, ensure_ascii=True, sort_keys=True), flush=True)
+            metadata_path = Path(temporary) / "lifecycle.json"
+            metadata_path.write_bytes(records.json_bytes(metadata))
+            common.extend(("--lifecycle-input", str(metadata_path),
+                           "--invocation-started-monotonic", str(deadline.started)))
             if artifact_brief is not None:
                 brief_file = Path(temporary) / "artifact-brief.txt"
                 brief_file.write_bytes(artifact_brief.body.encode("utf-8"))
@@ -5802,16 +5887,19 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                         "--holder-session-id", holder_identity]
             if handover_retry_of is not None:
                 command.extend(("--retry-of", handover_retry_of))
-            if selected_vendor == "claude":
+            if selected_vendor in {"claude", "codex"}:
                 context = Path(temporary) / "context.txt"
-                preamble = (
+                preamble = ((
                     "You are the implementer for this stage. Read the repository root instructions "
                     "and applicable ancestor and nested instructions before editing. "
                     f"The shipped tradecraft plugin is at {here.parent}. "
                     "Project and local Claude settings are omitted so the holder hook does not "
                     "run in this child; retain user and managed policy.\n"
-                ).encode("utf-8")
-                context.write_bytes(preamble + handover_context)
+                ).encode("utf-8") if selected_vendor == "claude" else b"")
+                window = (work_recovery.instruction(recovery_info, metadata["recipient_allocation_seconds"])
+                          if recovery_info else
+                          f"Available recipient time is at most {metadata['recipient_allocation_seconds']:g} seconds. Leave useful work in the tree if the window ends. Perform only the named stage.\n".encode("utf-8"))
+                context.write_bytes(preamble + handover_context + window)
                 command.extend(("--context", str(context)))
             if handover_record is not None:
                 command.extend(("--handover-state", str(handover_state_path),
@@ -5842,7 +5930,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                     launch_plan["session"] = _handover_session_settings(
                         handover_state_path, resume_source, handover_record)
             setting_resolution.print_plan(launch_plan, label="work")
-            return subprocess.run(command).returncode
+            return _invoke_recipient(command, deadline)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -5882,8 +5970,9 @@ def parser() -> argparse.ArgumentParser:
                      help="adjacent metadata from tree; required by run use")
     cli.add_argument(
         "--timeout-seconds", type=float,
-        help="launcher timeout; defaults to 10800 for build and 3600 for every other stage",
+        help="declared caller limit; defaults to 7200 for build and 3600 for every other stage",
     )
+    cli.add_argument("--budget-override-reason", help="reason for this build invocation beyond its runtime budget")
     cli.add_argument("--claude", type=Path,
                      help="explicit Claude executable for run instead of discovery")
     cli.add_argument("--codex", type=Path,
@@ -5905,6 +5994,8 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _named_continuity(state: WorkState, stage: str, recommendation: Decision) -> str:
+    if stage in RESUME_SOURCE_STAGES and work_recovery.latest_stopped(state, stage) is not None:
+        return "resume"
     if stage == "artifact":
         continuity = (recommendation.continuity if recommendation.stage == stage
                       and recommendation.continuity is not None else "fresh")
@@ -5980,6 +6071,21 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
 
 
 def run(
+    args: argparse.Namespace, *, transport: GitHubREST | None = None,
+    executor: Callable[..., int] = execute_stage,
+) -> int:
+    reason = getattr(args, "budget_override_reason", None)
+    if reason is not None and (args.command != "run" or args.stage != "build" or not reason.strip()):
+        raise WorkError("--budget-override-reason requires a named build and nonempty reason")
+    if args.command == "run":
+        limit = args.timeout_seconds if args.timeout_seconds is not None else (
+            DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else DEFAULT_STAGE_TIMEOUT_SECONDS)
+        with lifecycle.deadline_scope(lifecycle.stage_deadline(args.stage, limit)):
+            return _run(args, transport=transport, executor=executor)
+    return _run(args, transport=transport, executor=executor)
+
+
+def _run(
     args: argparse.Namespace, *, transport: GitHubREST | None = None,
     executor: Callable[..., int] = execute_stage,
 ) -> int:
@@ -6105,6 +6211,7 @@ def run(
             state, decision, root, args.instalment, args.holder_session_id,
             dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
             timeout_seconds=args.timeout_seconds, transport=github,
+            budget_override_reason=args.budget_override_reason,
             claude_path=args.claude, codex_path=args.codex,
             handover_recovery_session=args.handover_recovery_session,
             rules=rules, use_rules_path=use_rules_path,
@@ -6116,7 +6223,7 @@ def main(argv: list[str] | None = None) -> int:
     utf8_stdio()
     try:
         return run(parser().parse_args(argv))
-    except (OSError, UnicodeError, ValueError, WorkError) as exc:
+    except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
         print(f"work: {exc}", file=sys.stderr)
         return 1
 

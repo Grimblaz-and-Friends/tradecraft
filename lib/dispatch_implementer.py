@@ -29,7 +29,9 @@ import time
 import uuid
 
 import dispatch_record as records
+from dispatch_lifecycle import claude_terminal
 import launch_settings
+import run_lifecycle as lifecycle
 from seat_process import run_process
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
@@ -79,7 +81,7 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
     if args.vendor == "claude":
         command = [
             *executable, "-p", "--model", args.model, "--effort", args.effort,
-            "--output-format", "json", "--permission-mode", "auto",
+            "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
             "--setting-sources", "user", "--plugin-dir",
             str(Path(__file__).resolve().parent.parent),
         ]
@@ -101,9 +103,8 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
 
 
 def _claude_result(raw: bytes) -> tuple[bool, bytes, str | None, str]:
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, ValueError):
+    value = claude_terminal(raw)
+    if value is None:
         return False, b"", None, "claude returned invalid JSON"
     if not isinstance(value, dict) or value.get("type") != "result":
         return False, b"", None, "claude returned no final result"
@@ -211,6 +212,15 @@ def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
 
 
 def run_implementer(args: argparse.Namespace) -> int:
+    if args.timeout_seconds is None:
+        args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
+    deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
+                                         started=getattr(args, "invocation_started_monotonic", None))
+    with lifecycle.deadline_scope(deadline):
+        return _run_implementer(args, deadline)
+
+
+def _run_implementer(args: argparse.Namespace, deadline) -> int:
     role = "artifact_author" if args.stage == "artifact" else "implementer"
     machine_vendor, machine_source = read_machine_vendor()
     if args.vendor is None:
@@ -285,6 +295,15 @@ def run_implementer(args: argparse.Namespace) -> int:
         raise ImplementerError("a builder session cannot also identify the holder session")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         raise ImplementerError("--timeout-seconds must be finite and positive")
+    metadata = {}
+    lifecycle_input = getattr(args, "lifecycle_input", None)
+    if lifecycle_input:
+        metadata = json.loads(lifecycle_input.read_bytes())
+        if not isinstance(metadata, dict):
+            raise ImplementerError("lifecycle input must be an object")
+    budget_reason = getattr(args, "budget_override_reason", None) or metadata.get("budget_override_reason")
+    if budget_reason is not None and (args.stage != "build" or not isinstance(budget_reason, str) or not budget_reason.strip()):
+        raise ImplementerError("budget override requires a build stage and a nonempty reason")
     output = records.resolved_output(args.output, args.work, args.stage)
     records.require_output_outside_root(output, root)
     args.output = output
@@ -350,6 +369,27 @@ def run_implementer(args: argparse.Namespace) -> int:
             request["implementer_role"] = role
             request["lineage_branch"] = args.lineage_branch
             request["lineage_pull_request"] = args.lineage_pull_request
+            request.update({key: metadata[key] for key in (
+                "budget_lineage", "budget_account_before", "budget_override_reason",
+                "progress_baseline", "predecessor_bundle", "predecessor_stop_snapshot",
+                "retained_session_id", "retained_session_source",
+            ) if key in metadata})
+            request["caller_limit_seconds"] = args.timeout_seconds
+            request["stage_ceiling_seconds"] = (
+                lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS if args.stage in lifecycle.REPAIR_STAGES else None)
+            allocation = deadline.remaining()
+            supplied = metadata.get("recipient_allocation_seconds")
+            if supplied is not None:
+                if not isinstance(supplied, (int, float)) or not math.isfinite(supplied) or supplied <= 0:
+                    raise ImplementerError("recipient allocation must be finite and positive")
+                allocation = min(allocation, supplied)
+            request["recipient_allocation_seconds"] = allocation
+            request["budget_override_reason"] = budget_reason
+            if args.stage != "artifact":
+                request.setdefault("budget_lineage", hashlib.sha256(
+                    (args.work + str(root) + str(args.lineage_branch)).encode("utf-8")).hexdigest())
+                request["launch_snapshot"] = lifecycle.content_snapshot(root, timeout=deadline.probe())
+                request.setdefault("progress_baseline", request["launch_snapshot"])
             request["context"] = (
                 {"path": str(context_path), "sha256": hashlib.sha256(context).hexdigest()}
                 if context_path else None
@@ -410,6 +450,12 @@ def run_implementer(args: argparse.Namespace) -> int:
             }
             if "handover" in request:
                 record["handover"] = request["handover"]
+            record["launched_at"] = request["launched_at"]
+            growing = records.GrowingRun(record_path, record, streams,
+                expected=args.resume or args.session_id, holder=args.holder_session_id,
+                retained=request.get("retained_session_id"),
+                retained_source=request.get("retained_session_source"))
+            growing.begin_attempt(attempt, args.vendor, stdout_path, stderr_path)
             if unavailable_reason is not None:
                 attempt.update(outcome="unavailable", reason=unavailable_reason)
                 records.add_unobserved(attempt, unavailable_reason)
@@ -420,12 +466,10 @@ def run_implementer(args: argparse.Namespace) -> int:
                     attempt, request, completed_at=record["completed_at"],
                     staffing_status="unfilled",
                 )
-                record_stream = streams.streams.pop(record_path)
-                record_stream.close()
                 for stream in streams.values():
                     stream.close()
                 streams.streams.clear()
-                records.finalize_reserved_json(record_path, record)
+                growing.finish()
                 print(
                     f"implementer: {args.vendor} (source {args.vendor_source}) unavailable: "
                     f"{unavailable_reason}", file=sys.stderr,
@@ -437,16 +481,23 @@ def run_implementer(args: argparse.Namespace) -> int:
             published = False
             return_code = 1
             started = time.monotonic()
+            ceiling = False
             try:
                 try:
                     if args.handover_state:
                         _handover_phase(
                             args.handover_state, args.session_id or args.resume, "running"
                         )
-                    result = run_process(command, input=effective_prompt, cwd=root, timeout=args.timeout_seconds)
+                    allocation = min(allocation, deadline.remaining())
+                    result = run_process(command, input=effective_prompt, cwd=root, timeout=allocation,
+                                         on_output=growing.output, on_tick=growing.tick,
+                                         on_launch=growing.launched)
                 except subprocess.TimeoutExpired as exc:
+                    ceiling = True
+                    record["interruption_cause"] = "ceiling"
                     result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
-                    reason = f"{args.vendor} timed out after {args.timeout_seconds:g}s"
+                    effective_limit = min(args.timeout_seconds, request["stage_ceiling_seconds"] or args.timeout_seconds)
+                    reason = f"{args.vendor} timed out after {effective_limit:g}s"
                     attempt["launched"] = True
                 except OSError as exc:
                     result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
@@ -455,15 +506,12 @@ def run_implementer(args: argparse.Namespace) -> int:
                 else:
                     reason = ""
                     attempt["launched"] = True
+                for name, path in (("stdout", stdout_path), ("stderr", stderr_path)):
+                    if streams[path].tell() == 0 and getattr(result, name):
+                        growing.output(name, getattr(result, name))
+                growing.finish_attempt()
                 elapsed = time.monotonic() - started
                 attempt["exit_code"] = result.returncode
-                for path, raw, name in (
-                    (stdout_path, result.stdout, "stdout"), (stderr_path, result.stderr, "stderr")
-                ):
-                    content, encoding = records.log_bytes(raw)
-                    streams[path].write(content)
-                    streams[path].flush()
-                    attempt[name + "_encoding"] = encoding
                 if args.vendor == "claude":
                     complete, message, session_id, failure_reason = _claude_result(result.stdout)
                     session_source = "claude JSON result.session_id" if session_id else ""
@@ -473,7 +521,7 @@ def run_implementer(args: argparse.Namespace) -> int:
                 else:
                     stream = records.codex_stream_result(result.stdout)
                     events = list(stream.events)
-                    if stream.valid and stream.completed and not stream.failed_events:
+                    if stream.valid and stream.completed and not stream.failed_events and not ceiling:
                         # Completion is owned by the stream; process status remains evidence.
                         reason = ""
                     session_id, session_source = _thread_id(events, result.stderr)
@@ -489,6 +537,10 @@ def run_implementer(args: argparse.Namespace) -> int:
                         failure_reason = "codex stream returned no turn.completed"
                     else:
                         failure_reason = f"codex turn could not be accepted (exit {result.returncode})"
+                retained = record.get("session_identity", {})
+                session_id = session_id or retained.get("session_id")
+                session_source = session_source or retained.get("source") or ""
+                reason = record.get("session_identity_error") or reason
                 if args.holder_session_id and session_id == args.holder_session_id:
                     reason = "runtime returned the holder session as the builder session"
                     session_id = None
@@ -496,10 +548,7 @@ def run_implementer(args: argparse.Namespace) -> int:
                 if attempt["launched"]:
                     records.add_runtime_evidence(attempt, args.vendor, result.stdout, continuity, elapsed)
                     if args.vendor == "claude":
-                        try:
-                            native = json.loads(result.stdout.decode("utf-8"))
-                        except (UnicodeError, ValueError):
-                            native = None
+                        native = claude_terminal(result.stdout)
                         if isinstance(native, dict):
                             attempt["permission_denials"] = native.get("permission_denials")
                             attempt["model_usage"] = native.get("modelUsage")
@@ -532,10 +581,10 @@ def run_implementer(args: argparse.Namespace) -> int:
                     record["outcome"] = "completed_no_output"
                 else:
                     attempt.update(
-                        outcome="error",
+                        outcome="interrupted" if ceiling else "error",
                         reason=reason or failure_reason,
                     )
-                    record["outcome"] = "error"
+                    record["outcome"] = "interrupted" if ceiling else "error"
                 if artifact_brief and complete and not reason:
                     valid = artifact_opening_carries_brief(
                         artifact_brief.decode("utf-8"), message.decode("utf-8", errors="replace")
@@ -563,7 +612,13 @@ def run_implementer(args: argparse.Namespace) -> int:
                 if "observed" not in attempt:
                     records.add_unobserved(attempt, attempt["reason"])
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
-                record["revision_after"] = records.git_revision(root)
+                with lifecycle.cleanup_scope():
+                    record["revision_after"] = records.git_revision(root)
+                    if args.stage != "artifact":
+                        try:
+                            record["stop_snapshot"] = lifecycle.content_snapshot(root, timeout=deadline.probe(cleanup=True))
+                        except TimeoutError as exc:
+                            record["stop_snapshot"] = {"digest": None, "unavailable_reason": str(exc)}
                 records.add_usage_record(
                     attempt, request, completed_at=record["completed_at"],
                     staffing_status=(
@@ -574,8 +629,6 @@ def run_implementer(args: argparse.Namespace) -> int:
                         else "unfilled"
                     ),
                 )
-                record_stream = streams.streams.pop(record_path)
-                record_stream.close()
                 for stream in streams.values():
                     stream.close()
                 streams.streams.clear()
@@ -593,7 +646,7 @@ def run_implementer(args: argparse.Namespace) -> int:
                         record["result"]["published_output"] = str(output)
                         record["result"]["published_output_unavailable_reason"] = None
                 try:
-                    records.finalize_reserved_json(record_path, record)
+                    growing.finish()
                 except Exception:
                     if published:
                         output.unlink(missing_ok=True)
@@ -632,7 +685,7 @@ def parser() -> argparse.ArgumentParser:
         epilog=(
             "A fresh direct launch reads ~/.tradecraft/implementer-vendor unless --vendor is "
             "supplied; a named resume requires --vendor from its recorded session. Codex uses "
-            "--approve-for-me and JSONL; Claude uses auto mode and a JSON result. Neither route "
+            "--approve-for-me and JSONL; Claude uses auto mode and stream-json. Neither route "
             "uses --ephemeral, --last, a read-only sandbox, or vendor fallback. Outputs default "
             "to the machine-local .tradecraft dispatch store and must be new. A successful turn "
             "without a returned session id publishes its result but exits nonzero because it "
@@ -674,7 +727,11 @@ def parser() -> argparse.ArgumentParser:
                      help="refuse without rediscovering a missing Codex executable")
     cli.add_argument("--claude-unavailable-reason",
                      help="refuse without rediscovering a missing Claude executable")
-    cli.add_argument("--timeout-seconds", type=float, default=3600)
+    cli.add_argument("--timeout-seconds", type=float,
+                     help="declared caller limit; build defaults to 7200, other stages to 3600")
+    cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
+    cli.add_argument("--lifecycle-input", type=Path, help=argparse.SUPPRESS)
+    cli.add_argument("--budget-override-reason")
     return cli
 
 

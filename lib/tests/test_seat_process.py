@@ -26,6 +26,33 @@ def test_worker_preserves_binary_streams_exit_status_and_missing_launch(tmp_path
         process.run_process([str(tmp_path / "missing-program")], input=b"", cwd=tmp_path, timeout=10)
 
 
+def test_incremental_capture_checkpoints_while_stdin_blocks(tmp_path):
+    output, ticks, launched = [], [], []
+    child = [sys.executable, "-c", "import sys,time; print('identity',flush=True); sys.stderr.write('diagnostic'); sys.stderr.flush(); time.sleep(30)"]
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        process.run_process(child, input=b'x' * 1000000, cwd=tmp_path, timeout=15,
+                            on_output=lambda *event: output.append(event),
+                            on_tick=lambda: ticks.append(time.monotonic()),
+                            on_launch=launched.append)
+    assert time.monotonic() - started < 16
+    assert launched and len(ticks) > 2
+    assert b'identity' in caught.value.stdout
+    assert b'diagnostic' in caught.value.stderr
+    assert b'identity' in b''.join(data for name, data in output if name == 'stdout')
+
+
+def test_incremental_capture_drains_both_full_pipes(tmp_path):
+    output = []
+    child = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'o'*200000); sys.stderr.buffer.write(b'e'*200000); sys.stdin.buffer.read()"]
+    # This verifies complete capture, not a five-second startup guarantee under
+    # the full parallel suite. Deadline enforcement has its own fixture above.
+    result = process.run_process(child, input=b'x' * 200000, cwd=tmp_path, timeout=20,
+                                 on_output=lambda *event: output.append(event))
+    assert result.stdout == b'o' * 200000 and result.stderr == b'e' * 200000
+    assert result.returncode == 0 and len(output) > 2
+
+
 def test_containment_failure_never_launches_the_vendor(tmp_path, monkeypatch):
     error = tmp_path / "error.json"
     calls = []

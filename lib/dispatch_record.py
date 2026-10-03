@@ -24,6 +24,9 @@ import tempfile
 import uuid
 
 from winio import utf8_stdio
+from dispatch_lifecycle import GrowingRun, claude_terminal
+from seat_process import run_process
+import run_lifecycle as lifecycle
 
 SCHEMA_VERSION = 2
 CONTINUITIES = ("fresh", "resume")
@@ -89,11 +92,9 @@ def require_output_outside_root(output: Path, root: Path | None) -> None:
 
 def runtime_version(executable: list[str]) -> str | None:
     try:
-        result = subprocess.run(
-            [*executable, "--version"], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        result = run_process([*executable, "--version"], input=b"", cwd=Path.cwd(),
+                             timeout=lifecycle.probe_timeout(), on_tick=lambda: None)
+    except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
     if result.returncode:
         return None
@@ -105,12 +106,9 @@ def runtime_version(executable: list[str]) -> str | None:
 
 def git_revision(root: Path) -> str | None:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "HEAD"], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=20,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        result = run_process(["git", "-C", str(root), "rev-parse", "HEAD"], input=b"", cwd=Path.cwd(),
+                             timeout=lifecycle.probe_timeout(), on_tick=lambda: None)
+    except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
     if result.returncode:
         return None
@@ -373,8 +371,8 @@ def _codex_evidence(raw: bytes, continuity: str) -> dict[str, object]:
 
 def _claude_evidence(raw: bytes, continuity: str) -> dict[str, object]:
     try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, ValueError):
+        payload = claude_terminal(raw)
+    except UnicodeError:
         payload = None
     if not isinstance(payload, dict):
         return {
