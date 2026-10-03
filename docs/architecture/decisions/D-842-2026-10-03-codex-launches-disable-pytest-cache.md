@@ -1,8 +1,8 @@
-# D-626 — Disable pytest caching at each Codex launch
+# D-842 — Disable pytest caching at each Codex launch
 
 **Purpose:** preserve why the owner chose a launcher remedy for locked Windows leftovers and deferred the sandbox-mode fix. **Audience:** a future session changing Codex launch environment or pytest settings. **Success:** that session can reconsider the choice from its evidence without repeating the design.
 
-The owner [affirmed #626's brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/626#issuecomment-5969533424) on 2026-10-03. The supplied [holder reading on #626](https://github.com/Grimblaz-and-Friends/tradecraft/issues/626) requires a decision entry. `626` is its provisional key until the implementing pull request exists; the holder resumes the builder to rename this entry and its index row to that number.
+The owner [affirmed #626's brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/626#issuecomment-5969533424) on 2026-10-03. The supplied [holder reading on #626](https://github.com/Grimblaz-and-Friends/tradecraft/issues/626) requires a decision entry. The implementing change is [pull request #842](https://github.com/Grimblaz-and-Friends/tradecraft/pull/842).
 
 ## Decision
 
