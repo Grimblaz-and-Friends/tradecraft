@@ -622,6 +622,10 @@ def attach_file(output: Path, source: Path, kind: str) -> Path:
 
 
 def begin_native(args: argparse.Namespace) -> Path:
+    same_vendor_reason = getattr(args, "same_vendor_reason", None)
+    if same_vendor_reason is not None and re.fullmatch(
+            r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*", same_vendor_reason) is None:
+        raise RecordError("same-vendor reason must be a nonempty hyphenated slug")
     output = resolved_output(args.output, args.work, args.stage)
     require_output_outside_root(output, args.root)
     input_file = getattr(args, "input_file", None)
@@ -653,6 +657,8 @@ def begin_native(args: argparse.Namespace) -> Path:
         setting_sources=setting_sources,
     )
     recorded_at = request["launched_at"]
+    if same_vendor_reason is not None:
+        request["same_vendor_reason"] = same_vendor_reason
     request["recorded_at"] = recorded_at
     launched_at = getattr(args, "launched_at", None)
     launched_at_unavailable_reason = getattr(args, "launched_at_unavailable_reason", None)
@@ -766,9 +772,11 @@ def finish_native(args: argparse.Namespace) -> Path:
             "assessment": "unassessed",
         },
     }
+    if request.get("stage") in {"use", "cold-seat"} and launched:
+        run["actual_vendor"] = args.vendor
     add_usage_record(
         attempt, request, completed_at=run["completed_at"],
-        staffing_status="qualified" if succeeded else "unfilled",
+        staffing_status="unknown",
     )
     if final is not None:
         try:
@@ -833,6 +841,10 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("--session-id")
     begin.add_argument("--retry-of")
     begin.add_argument("--holder-session-id")
+    begin.add_argument(
+        "--same-vendor-reason",
+        help="record the slug reason for accepting a degraded native seat",
+    )
     begin.add_argument("--runtime-version")
     begin.add_argument("--permission-boundary", required=True)
     begin.add_argument(
