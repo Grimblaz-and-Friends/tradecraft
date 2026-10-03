@@ -769,11 +769,23 @@ def runtime_report(repo, issue, dispatch_root):
     groups = {}
     for row in bundles:
         request = row[2]
-        key = (request.get("budget_lineage"), request.get("root"), request.get("lineage_branch"))
+        root = request.get("root")
+        root = Path(root).resolve() if isinstance(root, str) and root else root
+        # The entrance charges this registered tree across stages and handovers.
+        # Older schema-2 requests lack the new budget identifier; that cannot
+        # split their consumption away from the resumed builder's report.
+        key = (root, request.get("lineage_branch"))
         groups.setdefault(key, []).append(row)
-    return [{"lineage": lineage, "root": root, "branch": branch,
-             **lifecycle.runtime_account(rows)}
-            for (lineage, root, branch), rows in groups.items()]
+    reports = []
+    for (root, branch), rows in groups.items():
+        identities = sorted({row[2]["budget_lineage"] for row in rows
+                             if isinstance(row[2].get("budget_lineage"), str)})
+        reports.append({"lineage": identities[0] if len(identities) == 1 else None,
+                        "lineage_identifiers": identities,
+                        "lineage_basis": "registered root and branch",
+                        "root": str(root) if isinstance(root, Path) else root, "branch": branch,
+                        **lifecycle.runtime_account(rows)})
+    return reports
 
 
 def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,

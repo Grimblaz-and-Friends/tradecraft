@@ -374,7 +374,10 @@ def _codex_evidence(raw: bytes, continuity: str) -> dict[str, object]:
 
 
 def _claude_evidence(raw: bytes, continuity: str) -> dict[str, object]:
-    payload = claude_terminal(raw)
+    try:
+        payload = claude_terminal(raw)
+    except UnicodeError:
+        payload = None
     if not isinstance(payload, dict):
         return {
             "source": "claude JSON result",

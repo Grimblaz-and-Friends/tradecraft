@@ -202,6 +202,17 @@ def test_claude_stream_terminal_and_historical_json():
     assert capture.claude_terminal(b'{"type":"system"}\n' + raw + b'\n') == result
 
 
+def test_malformed_usage_and_expired_probes_stay_unknown(monkeypatch, tmp_path):
+    evidence = records.runtime_evidence("claude", b'bad\xff', "fresh")
+    assert evidence["normalized"] is None and evidence["normalized_unavailable_reason"]
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 10)
+    deadline = lifecycle.Deadline(1)
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 12)
+    with lifecycle.deadline_scope(deadline):
+        assert records.runtime_version(["never-launched"]) is None
+        assert records.git_revision(tmp_path) is None
+
+
 def test_mismatch_remains_evidence_without_replacing_canonical_session(tmp_path):
     output = tmp_path / "return"
     run_path = records.sidecar(output, ".run.json")

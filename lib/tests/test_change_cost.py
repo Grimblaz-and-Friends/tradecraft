@@ -134,6 +134,28 @@ def test_runtime_lineage_reports_bounds_repairs_and_override_without_pricing_the
     assert unknown["value"]["status"] == "unknown"
 
 
+def test_runtime_budget_keeps_historical_runs_with_the_resumed_builder(report_inputs):
+    for name, stage, elapsed, identity in [
+        ("historical-build", "build", 7200, None),
+        ("repair", "floor", 3500, "new-budget-identity"),
+        ("resumed-build", "build", 7200, "new-budget-identity"),
+    ]:
+        request_path, run_path, request = write_bundle(report_inputs, name)
+        request.update(stage=stage, root="same-builder", lineage_branch="change")
+        if identity:
+            request["budget_lineage"] = identity
+        run = json.loads(run_path.read_bytes())
+        run["attempts"][0].update(launched=True, elapsed_seconds=elapsed)
+        write_json(request_path, request)
+        write_json(run_path, run)
+    lineages = cost.report(**report_inputs)["runtime_lineages"]
+    assert len(lineages) == 1
+    assert lineages[0]["upper_seconds"] == 14400
+    assert lineages[0]["remaining_seconds"] == 0
+    assert lineages[0]["lineage"] == "new-budget-identity"
+    assert len(lineages[0]["runs"]) == 3
+
+
 @pytest.mark.parametrize("work", ["acme/widget#13", "other/widget#12", "12", "issue-12"])
 @pytest.mark.parametrize("completion", [b"", b"{", b'{"schema_version": 2, "attempts": []}'])
 def test_foreign_and_unqualified_requests_never_open_completions(
