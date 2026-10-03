@@ -1,8 +1,10 @@
 import json
 import hashlib
 import subprocess
+import os
 from pathlib import Path
 import sys
+import tomllib
 
 import pytest
 
@@ -83,6 +85,7 @@ def supply_artifact_brief(args):
 @pytest.fixture
 def job(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     root = tmp_path / "root with spaces"
     root.mkdir()
     dispatch = tmp_path / "dispatch.md"
@@ -125,6 +128,177 @@ def success_events(session_id="0199a213-81c0-7800-8aa1-bbab2a035a53"):
             "output_tokens": 12, "reasoning_output_tokens": 3,
         }}),
     ))
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("inherited", [None, "", '-q -k "passing or policy" --basetemp="C:\\test roots\\run"'])
+def test_codex_launch_and_resume_supply_pytest_policy(job, monkeypatch, resume, inherited):
+    args, _ = job
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    if inherited is not None:
+        monkeypatch.setenv("PYTEST_ADDOPTS", inherited)
+    before = dict(os.environ)
+    args.vendor = "codex"
+    if resume:
+        args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+
+    assert implementer.run_implementer(args) == 0
+
+    flags = seen(args)["argv"]
+    overrides = [flags[index + 1] for index, flag in enumerate(flags) if flag == "-c"]
+    policy = [tomllib.loads(value)["shell_environment_policy"] for value in overrides
+              if value.startswith("shell_environment_policy.")]
+    expected = f"{inherited} -p no:cacheprovider" if inherited else "-p no:cacheprovider"
+    assert policy == [{"set": {"PYTEST_ADDOPTS": expected}}]
+    if resume:
+        assert flags[-3:] == ["resume", args.resume, "-"]
+    else:
+        assert "resume" not in flags
+        assert flags[-1] == "-"
+    # On Windows this empty Python environment entry is absent in the child.
+    child_value = None if os.name == "nt" and inherited == "" else inherited
+    assert seen(args)["pytest_addopts"] == child_value
+    assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize(("config_text", "base", "extra"), [
+    ('[shell_environment_policy.set]\nPYTEST_ADDOPTS = "-x --tb=short"\n',
+     "-x --tb=short", {}),
+    ('[shell_environment_policy]\ninherit = "core"\n', "", {}),
+    ('[shell_environment_policy]\ninherit = "none"\n', "", {}),
+    ('[shell_environment_policy]\nexclude = ["p?test_*"]\n', "", {}),
+    ('[shell_environment_policy.filters]\n"PyTeSt_*" = "exclude"\n', "", {}),
+    ('[shell_environment_policy]\ninclude_only = ["PATH", "HOME"]\n',
+     '-q -k "passing or policy"', {"include_only": ["PATH", "HOME", "PYTEST_ADDOPTS"]}),
+    ('[shell_environment_policy.filters]\n"PATH" = "include"\n',
+     '-q -k "passing or policy"', {"filters": {"PYTEST_ADDOPTS": "include"}}),
+    ('[shell_environment_policy]\ninclude_only = ["p?TEST_*"]\n',
+     '-q -k "passing or policy"', {}),
+    ('[shell_environment_policy.filters]\n"p?TEST_*" = "include"\n',
+     '-q -k "passing or policy"', {}),
+    ('[shell_environment_policy.filters]\n"PATH" = "exclude"\n',
+     '-q -k "passing or policy"', {}),
+    ('[shell_environment_policy]\ninclude_only = []\n',
+     '-q -k "passing or policy"', {}),
+    ('[shell_environment_policy]\ninherit = "none"\n'
+     '[shell_environment_policy.set]\nPYTEST_ADDOPTS = "-x"\n', "-x", {}),
+    ('[shell_environment_policy]\nexclude = ["PYTEST_*"]\n'
+     '[shell_environment_policy.set]\nPYTEST_ADDOPTS = "-x"\n', "-x", {}),
+    ('[shell_environment_policy.set]\nPYTEST_ADDOPTS = ""\n', "", {}),
+    ('[shell_environment_policy.filters]\n"PATH" = "include"\n'
+     '"pytest_addopts" = "exclude"\n', "", {"filters": {"PYTEST_ADDOPTS": "include"}}),
+    ('[shell_environment_policy]\nexclude = ["[PYTEST]*"]\n',
+     '-q -k "passing or policy"', {}),
+    ('[profiles.other.shell_environment_policy.set]\nPYTEST_ADDOPTS = "-x"\n',
+     '-q -k "passing or policy"', {}),
+], ids=["set", "core", "none", "legacy-exclude", "filter-exclude", "legacy-allowlist",
+        "filter-allowlist", "legacy-matches", "filter-matches", "no-includes",
+        "empty-allowlist", "set-after-none", "set-after-exclude", "empty-set",
+        "replace-case-insensitive-filter", "literal-brackets", "ignore-profiles"])
+def test_codex_launch_and_resume_preserve_user_pytest_policy(
+    job, monkeypatch, resume, config_text, base, extra
+):
+    args, _ = job
+    codex_home = args.root.parent / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_bytes(config_text.encode("utf-8"))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PYTEST_ADDOPTS", '-q -k "passing or policy"')
+    before = dict(os.environ)
+    args.vendor = "codex"
+    if resume:
+        args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+
+    assert implementer.run_implementer(args) == 0
+
+    flags = seen(args)["argv"]
+    overrides = [flags[index + 1] for index, flag in enumerate(flags) if flag == "-c"]
+    policy = tomllib.loads("\n".join(overrides))["shell_environment_policy"]
+    expected = f"{base} -p no:cacheprovider" if base else "-p no:cacheprovider"
+    assert policy == {"set": {"PYTEST_ADDOPTS": expected}, **extra}
+    assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("source", ["missing", "invalid-toml", "invalid-utf8", "unreadable"])
+def test_codex_launch_keeps_inherited_pytest_options_when_config_is_unusable(
+    job, monkeypatch, source
+):
+    args, _ = job
+    codex_home = args.root.parent / "codex-home"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    if source != "missing":
+        config.write_bytes(b"[broken" if source == "invalid-toml" else
+                           b"\xff" if source == "invalid-utf8" else
+                           b'[shell_environment_policy]\ninherit = "none"\n')
+    if source == "unreadable":
+        read_bytes = Path.read_bytes
+
+        def denied(path):
+            if path == config:
+                raise PermissionError("fixture denied the read")
+            return read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", denied)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-x")
+    args.vendor = "codex"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+
+    assert implementer.run_implementer(args) == 0
+
+    assert 'shell_environment_policy.set.PYTEST_ADDOPTS="-x -p no:cacheprovider"' in seen(args)["argv"]
+
+
+@pytest.mark.parametrize("codex_home", [None, ""])
+def test_codex_launch_reads_default_user_pytest_policy(job, monkeypatch, codex_home):
+    args, _ = job
+    config = Path.home() / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_bytes(b'[shell_environment_policy.set]\nPYTEST_ADDOPTS = "-x"\n')
+    if codex_home is not None:
+        monkeypatch.setenv("CODEX_HOME", codex_home)
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-q")
+    args.vendor = "codex"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+
+    assert implementer.run_implementer(args) == 0
+
+    assert 'shell_environment_policy.set.PYTEST_ADDOPTS="-x -p no:cacheprovider"' in seen(args)["argv"]
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resume):
+    args, scenario = job
+    inherited = '-q -k "passing or policy"'
+    monkeypatch.setenv("PYTEST_ADDOPTS", inherited)
+    before = dict(os.environ)
+    args.vendor = "claude"
+    session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    if resume:
+        args.resume = session
+    monkeypatch.setattr(
+        implementer, "resolve_command",
+        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)],
+    )
+    scenario.write_bytes(json.dumps({"claude": native_artifact_result("claude", "built", session)}).encode())
+
+    assert implementer.run_implementer(args) == 0
+
+    observed = json.loads((args.root / "seen-claude.json").read_bytes())
+    expected = [
+        "-p", "--model", "claude-opus-5-5", "--effort", "high",
+        "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
+        "--setting-sources", "user", "--plugin-dir", str(LIB.parent),
+    ]
+    if resume:
+        expected.extend(("--resume", session))
+    assert observed["argv"] == expected
+    assert observed["pytest_addopts"] == inherited
+    assert dict(os.environ) == before
 
 
 def test_fresh_launch_is_recorded_and_resumable(job):

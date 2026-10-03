@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 
 import pytest
 
@@ -97,6 +98,58 @@ def seen(args, vendor):
     return json.loads((args.root / f"seen-{vendor}.json").read_bytes())
 
 
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("inherited", [None, "", '-q -k "passing or policy" --basetemp="C:\\test roots\\run"'])
+def test_codex_primary_and_fallback_supply_pytest_policy(job, monkeypatch, fallback, inherited):
+    args, _ = job
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    if inherited is not None:
+        monkeypatch.setenv("PYTEST_ADDOPTS", inherited)
+    before = dict(os.environ)
+    if fallback:
+        configure(job, {"claude": {"message": "Not logged in"}})
+    else:
+        args.vendor, args.own_vendor = "codex", "claude"
+
+    assert seat.run_dispatch(args) == 0
+
+    flags = seen(args, "codex")["argv"]
+    overrides = [flags[index + 1] for index, flag in enumerate(flags) if flag == "-c"]
+    policy = [tomllib.loads(value)["shell_environment_policy"] for value in overrides
+              if value.startswith("shell_environment_policy.")]
+    expected = f"{inherited} -p no:cacheprovider" if inherited else "-p no:cacheprovider"
+    assert policy == [{"set": {"PYTEST_ADDOPTS": expected}}]
+    assert record(args)["actual_vendor"] == "codex"
+    # On Windows this empty Python environment entry is absent in the child.
+    child_value = None if os.name == "nt" and inherited == "" else inherited
+    assert seen(args, "codex")["pytest_addopts"] == child_value
+    assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_claude_primary_and_fallback_keep_pytest_environment(job, monkeypatch, fallback):
+    args, _ = job
+    inherited = '-q -k "passing or policy"'
+    monkeypatch.setenv("PYTEST_ADDOPTS", inherited)
+    before = dict(os.environ)
+    if fallback:
+        args.vendor, args.own_vendor = "codex", "claude"
+        configure(job, {"codex": {
+            "exit": 1, "stdout": json.dumps({"type": "turn.failed", "error": {"message": "Not logged in"}}),
+        }})
+
+    assert seat.run_dispatch(args) == 0
+
+    observed = seen(args, "claude")
+    assert observed["argv"] == [
+        "-p", "--model", "claude-opus-5-5", "--effort", "high", "--output-format", "stream-json", "--verbose",
+        "--no-session-persistence", "--safe-mode", "--tools", "Read,Glob,Grep",
+        "--allowedTools", "Read,Glob,Grep", "--permission-mode", "dontAsk", "--strict-mcp-config",
+    ]
+    assert observed["pytest_addopts"] == inherited
+    assert dict(os.environ) == before
+
+
 def test_git_with_rebuilt_launcher_environment_has_maintenance_disabled(job):
     args, _ = job
     result = subprocess.run(
@@ -110,8 +163,9 @@ def test_git_with_rebuilt_launcher_environment_has_maintenance_disabled(job):
 @pytest.mark.parametrize(("vendor", "required_capability"), [
     ("claude", "read"), ("claude", "execute"), ("codex", "read"),
 ])
-def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, required_capability):
+def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, monkeypatch, vendor, required_capability):
     args, _ = job
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     args.vendor = vendor
     args.own_vendor = "claude" if vendor == "codex" else "codex"
     args.requires = required_capability
@@ -134,7 +188,9 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, vendor, r
                          "--json", "--color", "never", "--model", "gpt-6.1-sol",
                          "--disable", "apps",
                          "-c", "apps._default.enabled=false",
-                         "-c", 'model_reasoning_effort="xhigh"', "-C", str(args.root),
+                         "-c", 'model_reasoning_effort="xhigh"',
+                         "-c", 'shell_environment_policy.set.PYTEST_ADDOPTS="-p no:cacheprovider"',
+                         "-C", str(args.root),
                          "--skip-git-repo-check", "--output-last-message", last, "-"]
         assert not Path(last).exists()
     assert args.output.read_bytes().startswith(b"would not\n")

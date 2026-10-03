@@ -32,6 +32,7 @@ import dispatch_record as records
 from dispatch_lifecycle import claude_terminal
 import launch_settings
 import run_lifecycle as lifecycle
+from codex_pytest import implementer_pytest_overrides
 from seat_process import run_process
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
@@ -93,8 +94,10 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
     command = [
         *executable, "exec", "--approve-for-me", "--json", "--color", "never",
         "--model", args.model, "-c", f'model_reasoning_effort="{args.effort}"',
-        "--cd", str(args.root.resolve()), "--output-last-message", str(last_message),
     ]
+    for override in implementer_pytest_overrides():
+        command.extend(("-c", override))
+    command.extend(("--cd", str(args.root.resolve()), "--output-last-message", str(last_message)))
     if args.resume:
         command.extend(("resume", args.resume, "-"))
     else:
