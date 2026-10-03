@@ -1,7 +1,9 @@
 import json
 import hashlib
+import os
 from pathlib import Path
 import sys
+import tomllib
 
 import pytest
 
@@ -124,6 +126,69 @@ def success_events(session_id="0199a213-81c0-7800-8aa1-bbab2a035a53"):
             "output_tokens": 12, "reasoning_output_tokens": 3,
         }}),
     ))
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("inherited", [None, "", '-q -k "passing or policy" --basetemp="C:\\test roots\\run"'])
+def test_codex_launch_and_resume_supply_pytest_policy(job, monkeypatch, resume, inherited):
+    args, _ = job
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    if inherited is not None:
+        monkeypatch.setenv("PYTEST_ADDOPTS", inherited)
+    before = dict(os.environ)
+    args.vendor = "codex"
+    if resume:
+        args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+
+    assert implementer.run_implementer(args) == 0
+
+    flags = seen(args)["argv"]
+    overrides = [flags[index + 1] for index, flag in enumerate(flags) if flag == "-c"]
+    policy = [tomllib.loads(value)["shell_environment_policy"] for value in overrides
+              if value.startswith("shell_environment_policy.")]
+    expected = f"{inherited} -p no:cacheprovider" if inherited else "-p no:cacheprovider"
+    assert policy == [{"set": {"PYTEST_ADDOPTS": expected}}]
+    if resume:
+        assert flags[-3:] == ["resume", args.resume, "-"]
+    else:
+        assert "resume" not in flags
+        assert flags[-1] == "-"
+    # On Windows this empty Python environment entry is absent in the child.
+    child_value = None if os.name == "nt" and inherited == "" else inherited
+    assert seen(args)["pytest_addopts"] == child_value
+    assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resume):
+    args, scenario = job
+    inherited = '-q -k "passing or policy"'
+    monkeypatch.setenv("PYTEST_ADDOPTS", inherited)
+    before = dict(os.environ)
+    args.vendor = "claude"
+    session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    if resume:
+        args.resume = session
+    monkeypatch.setattr(
+        implementer, "resolve_command",
+        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)],
+    )
+    scenario.write_bytes(json.dumps({"claude": native_artifact_result("claude", "built", session)}).encode())
+
+    assert implementer.run_implementer(args) == 0
+
+    observed = json.loads((args.root / "seen-claude.json").read_bytes())
+    expected = [
+        "-p", "--model", "claude-opus-5-5", "--effort", "high",
+        "--output-format", "json", "--permission-mode", "auto",
+        "--setting-sources", "user", "--plugin-dir", str(LIB.parent),
+    ]
+    if resume:
+        expected.extend(("--resume", session))
+    assert observed["argv"] == expected
+    assert observed["pytest_addopts"] == inherited
+    assert dict(os.environ) == before
 
 
 def test_fresh_launch_is_recorded_and_resumable(job):
