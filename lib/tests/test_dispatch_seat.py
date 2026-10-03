@@ -1110,15 +1110,17 @@ def test_fallback_cannot_read_discarded_transcript_but_caller_can(job, monkeypat
 def test_timeout_stops_a_started_descendant(job, monkeypatch):
     args, _ = job
     child = args.root / "child.py"
-    child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(6)\nPath('finished').write_bytes(b'yes')\n")
-    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(10)"
+    child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(16)\nPath('finished').write_bytes(b'yes')\n")
+    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(20)"
     monkeypatch.setattr(seat, "resolve_command", lambda *a: [sys.executable, "-c", wrapper, str(child)])
-    args.timeout_seconds = 5
+    # Allow startup under the full parallel suite; the assertion below still
+    # bounds the whole invocation and verifies a genuinely started descendant.
+    args.timeout_seconds = 15
     started = time.monotonic()
     assert seat.run_dispatch(args) == 1
     elapsed = time.monotonic() - started
     assert (args.root / "started").exists(), "The descendant must actually start before cancellation."
-    survival_check_at = (args.root / "started").stat().st_mtime + 6.3
+    survival_check_at = (args.root / "started").stat().st_mtime + 16.3
     time.sleep(max(0, survival_check_at - time.time()))
     assert not (args.root / "finished").exists(), "The descendant continued after the deadline."
     assert elapsed < args.timeout_seconds + 1, "Pipe-owning descendants delayed timeout cleanup."

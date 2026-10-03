@@ -67,21 +67,21 @@ def _worker(command):
     return subprocess.run(command, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr).returncode
 
 
-def _buffered_process(command, *, input, cwd, timeout):
+def _buffered_process(command, *, input, cwd, timeout, env=None):
     """Return captured bytes or raise after terminating the owned process tree."""
     if os.name == "nt":
         with tempfile.TemporaryDirectory(prefix="tradecraft-launch-") as temporary:
             failure = Path(temporary) / "launch-error.json"
             worker = [sys.executable, "-I", "-S", str(Path(__file__).resolve()), str(failure), *command]
             result = subprocess.run(worker, input=input, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, cwd=cwd, timeout=timeout)
+                                    stderr=subprocess.PIPE, cwd=cwd, timeout=timeout, env=env)
             if failure.exists():
                 error = json.loads(failure.read_bytes())
                 kind = FileNotFoundError if error["missing"] else OSError
                 raise kind(error["message"])
             return subprocess.CompletedProcess(command, result.returncode, result.stdout, result.stderr)
     with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, cwd=cwd, start_new_session=True) as process:
+                          stderr=subprocess.PIPE, cwd=cwd, env=env, start_new_session=True) as process:
         def stop_tree():
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -107,14 +107,14 @@ def _buffered_process(command, *, input, cwd, timeout):
 
 
 def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
-                on_launch=None):
+                on_launch=None, env=None):
     """Drain both pipes while input is supplied independently of the deadline.
 
     Callbacks run serially on the calling thread. A blocked stdin or silent
     descendant therefore cannot prevent capture or elapsed checkpoints.
     """
     if on_output is None and on_tick is None and on_launch is None:
-        return _buffered_process(command, input=input, cwd=cwd, timeout=timeout)
+        return _buffered_process(command, input=input, cwd=cwd, timeout=timeout, env=env)
     deadline = time.monotonic() + timeout
     with tempfile.TemporaryDirectory(prefix="tradecraft-launch-") as temporary:
         failure = Path(temporary) / "launch-error.json"
@@ -122,7 +122,7 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                    str(failure), *command] if os.name == "nt" else command)
         process = subprocess.Popen(
             worker, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, cwd=cwd, bufsize=0,
+            stderr=subprocess.PIPE, cwd=cwd, env=env, bufsize=0,
             start_new_session=os.name != "nt",
         )
         events = queue.Queue()

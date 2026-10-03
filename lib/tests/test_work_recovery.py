@@ -14,6 +14,10 @@ from test_work import state, repository, registry_row, git, MECHANICAL, AFFIRMED
 
 @pytest.fixture
 def stopped_build(tmp_path, monkeypatch):
+    original_snapshot = lifecycle.content_snapshot
+    def snapshot(root, *, timeout=20):
+        return original_snapshot(root, timeout=timeout if lifecycle.current_deadline() else max(timeout, 120))
+    monkeypatch.setattr(lifecycle, "content_snapshot", snapshot)
     holder = repository(tmp_path, "holder")
     root = tmp_path / "builder"
     git(holder, "worktree", "add", "-b", "change", str(root))
@@ -71,6 +75,7 @@ def test_stopped_builder_keeps_identity_root_and_branch(stopped_build, stage, ha
     ("build", 14400, None, False),
     ("build", None, None, False),
     ("build", 14400, "finish the remaining checks", True),
+    ("build", 14000, None, True),
     ("floor", 20000, None, True),
 ])
 def test_named_budget_guards_before_launch_and_excludes_repairs(stopped_build, monkeypatch,
@@ -102,6 +107,9 @@ def test_named_budget_guards_before_launch_and_excludes_repairs(stopped_build, m
         assert metadata[0]["budget_override_reason"] == reason
         if stage == "floor":
             assert metadata[0]["budget_account_before"]["upper_seconds"] == 0
+        elif elapsed == 14000:
+            assert metadata[0]["budget_account_before"]["remaining_seconds"] == 400
+            assert 0 < metadata[0]["recipient_allocation_seconds"] <= 400
         else:
             assert metadata[0]["budget_account_before"]["remaining_seconds"] == 0
 

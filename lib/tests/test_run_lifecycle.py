@@ -13,6 +13,16 @@ import dispatch_record as records
 import run_lifecycle as lifecycle
 
 
+@pytest.fixture(autouse=True)
+def functional_snapshot_allowance(monkeypatch):
+    original = lifecycle.content_snapshot
+    # Content assertions do not buy a startup deadline. Preserve declared
+    # invocation deadlines; allow read-only fixture Git under parallel load.
+    def snapshot(root, *, timeout=20):
+        return original(root, timeout=timeout if lifecycle.current_deadline() else max(timeout, 120))
+    monkeypatch.setattr(lifecycle, "content_snapshot", snapshot)
+
+
 def git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], check=True,
                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -118,6 +128,26 @@ def test_allocation_bounds_and_holder_override():
         lifecycle.allocation(account, 7140, override_reason=" ")
 
 
+def test_another_completed_copy_cannot_hide_conflicting_requests(tmp_path):
+    request = {"schema_version": 2, "work": "example/product#12", "stage": "build",
+               "dispatch_id": "same", "launched_at": "2026-10-03T10:00:00Z",
+               "recipient_allocation_seconds": 1000}
+    for name, allocation, complete in [("a", 500, False), ("b", 1000, False), ("c", 1000, True)]:
+        copied = {**request, "recipient_allocation_seconds": allocation}
+        run = {"schema_version": 2, "dispatch_id": "same"}
+        if complete:
+            run.update(completed_at="2026-10-03T10:10:00Z", attempts=[{"elapsed_seconds": 20}])
+        (tmp_path / f"{name}.request.json").write_bytes(json.dumps(copied).encode())
+        (tmp_path / f"{name}.run.json").write_bytes(json.dumps(run).encode())
+    rows = lifecycle.launch_bundles(tmp_path, "example/product#12", {"build"})
+    assert len(rows) == 1
+    assert rows[0][3]["recovery_error"] == "conflicting copied requests"
+    assert lifecycle.stopped(rows[0][3])
+    assert lifecycle.runtime_account(rows)["remaining_seconds"] is None
+    with pytest.raises(ValueError, match="conflicting copied"):
+        lifecycle.recovery_session(rows[0][2], rows[0][3])
+
+
 def test_newest_launch_is_visible_without_a_final_write(tmp_path):
     for name, complete, session in [("earlier", True, "identity"), ("latest", False, None)]:
         request = {"schema_version": 2, "work": "example/product#12", "stage": "build",
@@ -211,6 +241,39 @@ def test_malformed_usage_and_expired_probes_stay_unknown(monkeypatch, tmp_path):
     with lifecycle.deadline_scope(deadline):
         assert records.runtime_version(["never-launched"]) is None
         assert records.git_revision(tmp_path) is None
+
+
+@pytest.mark.parametrize("entry", ["runtime-version", "entrance-probe"])
+def test_slow_preflight_probe_stops_its_tree_within_the_caller_limit(tmp_path, entry):
+    import work
+    trace = tmp_path / "probe-processes.json"
+    probe = tmp_path / "slow-version.py"
+    lib = str(Path(__file__).resolve().parents[1])
+    probe.write_text(
+        "import json,os,subprocess,sys,time\nfrom pathlib import Path\n"
+        f"sys.path.insert(0,{lib!r})\nimport run_lifecycle as lifecycle\n"
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(90)'],"
+        "stdin=subprocess.DEVNULL,stdout=sys.stdout,stderr=sys.stderr)\n"
+        f"Path({str(trace)!r}).write_bytes(json.dumps([lifecycle.process_identity(),"
+        "lifecycle.process_identity(child.pid)]).encode())\n"
+        "print('version probe still running',flush=True)\ntime.sleep(90)\n",
+        encoding="utf-8", newline="\n")
+    started = time.monotonic()
+    with lifecycle.deadline_scope(lifecycle.Deadline(15)):
+        if entry == "runtime-version":
+            assert records.runtime_version([sys.executable, str(probe)]) is None
+        else:
+            with pytest.raises(subprocess.TimeoutExpired):
+                work._run_probe([sys.executable, str(probe)], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=lifecycle.probe_timeout(), env=os.environ.copy())
+    assert time.monotonic() - started < 16
+    identities = json.loads(trace.read_bytes())
+    until_dead = time.monotonic() + 2
+    while time.monotonic() < until_dead and any(
+            lifecycle.liveness({"launcher_process": identity}) != "stopped" for identity in identities):
+        time.sleep(0.05)
+    assert all(lifecycle.liveness({"launcher_process": identity}) == "stopped" for identity in identities)
 
 
 def test_mismatch_remains_evidence_without_replacing_canonical_session(tmp_path):

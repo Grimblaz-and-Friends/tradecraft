@@ -37,6 +37,16 @@ import vendor_cli
 import use_history
 import version_policy
 from winio import utf8_stdio
+from seat_process import run_process
+
+
+def _run_probe(command, **kwargs):
+    """Contain invocation preflight as well as the recipient's own processes."""
+    if lifecycle.current_deadline() is None:
+        return subprocess.run(command, **kwargs)
+    return run_process(command, input=kwargs.get("input", b""),
+                       cwd=kwargs.get("cwd", Path.cwd()), timeout=kwargs["timeout"],
+                       env=kwargs.get("env"), on_tick=lambda: None)
 
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",
@@ -441,7 +451,7 @@ class GitHubREST:
         command = ["gh", "api", "--method", "GET", endpoint]
         if paginate:
             command.extend(("--paginate", "--slurp"))
-        result = subprocess.run(
+        result = _run_probe(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
         )
@@ -464,7 +474,7 @@ class GitHubREST:
         if method not in {"POST", "PATCH"}:
             raise WorkError(f"unsupported GitHub mutation method: {method}")
         command = ["gh", "api", "--method", method, endpoint, "--input", "-"]
-        result = subprocess.run(
+        result = _run_probe(
             command, input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
         )
@@ -501,7 +511,7 @@ class GitHubREST:
             "query": WORKFLOW_RUN_FILES_QUERY,
             "variables": {"ids": check_suite_ids},
         }
-        result = subprocess.run(
+        result = _run_probe(
             ["gh", "api", "graphql", "--input", "-"],
             input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
@@ -2965,7 +2975,7 @@ def write_registry(current: dict[str, object]) -> None:
 def _git_snapshot(path: Path) -> tuple[str | None, str | None]:
     values = []
     for arguments in (("rev-parse", "HEAD"), ("status", "--porcelain")):
-        result = subprocess.run(
+        result = _run_probe(
             ["git", "-C", str(path), *arguments], stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(),
         )
@@ -3664,7 +3674,7 @@ def _git(command: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
         key: value for key, value in os.environ.items()
         if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}
     }
-    return subprocess.run(
+    return _run_probe(
         ["git", "-C", str(root), *command], stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120), env=environment,
     )

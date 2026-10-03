@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+from seat_process import run_process
 import time
 
 DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
@@ -151,9 +152,13 @@ def content_snapshot(root, *, timeout=20):
         allowance = end - time.monotonic()
         if allowance <= 0:
             raise TimeoutError("content snapshot deadline")
-        result = subprocess.run(["git", "-C", str(root), *args],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, timeout=allowance)
+        command = ["git", "-C", str(root), *args]
+        if current_deadline() is None:
+            result = subprocess.run(command, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=allowance)
+        else:
+            result = run_process(command, input=b"", cwd=Path.cwd(), timeout=allowance,
+                                 on_tick=lambda: None)
         if result.returncode:
             raise OSError("cannot read Git content snapshot: " + result.stderr.decode("utf-8", "replace"))
         return result.stdout
@@ -288,8 +293,12 @@ def launch_bundles(store, work, stages, *, after=None, exact_work=False):
         candidate = (order, str(run_path), request, run)
         if previous is None:
             bundles[key] = candidate
+        elif str(previous[3].get("recovery_error", "")).startswith("conflicting copied"):
+            # A later good copy cannot discharge an already observed conflict.
+            bundles[key] = (max(order, previous[0]), str(run_path), request,
+                            {**run, "recovery_error": previous[3]["recovery_error"]})
         elif previous[2] != request:
-            bundles[key] = (order, str(run_path), request, {**run, "recovery_error": "conflicting copied requests"})
+            bundles[key] = (max(order, previous[0]), str(run_path), request, {**run, "recovery_error": "conflicting copied requests"})
         elif run.get("completed_at") and not previous[3].get("completed_at"):
             bundles[key] = candidate
         elif run.get("completed_at") and previous[3].get("completed_at") and run != previous[3]:
@@ -298,6 +307,8 @@ def launch_bundles(store, work, stages, *, after=None, exact_work=False):
 
 
 def stopped(run):
+    if str(run.get("recovery_error", "")).startswith("conflicting copied"):
+        return True
     if not run.get("completed_at"):
         return True
     return run.get("lifecycle") == "completed" and run.get("outcome") in {"interrupted", "error"} and any(
