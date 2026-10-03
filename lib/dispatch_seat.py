@@ -31,6 +31,7 @@ import uuid
 
 import dispatch_record as records
 import launch_settings
+from codex_pytest import pytest_addopts_override
 from vendor_cli import CliError, CliNotFound, resolve_command
 from seat_process import run_process
 from winio import utf8_stdio
@@ -146,7 +147,8 @@ def build_command(
                 raise DispatchError(windows_sandbox.unavailable_reason)
             literal = json.dumps(windows_sandbox.mode, ensure_ascii=False)
             command.extend(("-c", f"windows.sandbox={literal}"))
-        command.extend(("-c", f'model_reasoning_effort="{effort}"', "-C", str(root),
+        command.extend(("-c", f'model_reasoning_effort="{effort}"',
+                        "-c", pytest_addopts_override(), "-C", str(root),
                         "--skip-git-repo-check", "--output-last-message",
                         str(last_message), "-"))
         return command

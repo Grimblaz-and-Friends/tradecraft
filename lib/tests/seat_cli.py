@@ -1,6 +1,7 @@
 """A subprocess stand-in that records the real input and emits runtime fixtures."""
 import base64
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -10,6 +11,7 @@ flags = sys.argv[3:]
 scenario = json.loads(Path(scenario_path).read_bytes()).get(vendor, {})
 prompt = sys.stdin.buffer.read()
 capture = {"argv": flags, "cwd": str(Path.cwd()), "stdin": base64.b64encode(prompt).decode()}
+capture["pytest_addopts"] = os.environ.get("PYTEST_ADDOPTS")
 Path(f"seen-{vendor}.json").write_bytes(json.dumps(capture).encode())
 if scenario.get("sleep"):
     time.sleep(scenario["sleep"])
