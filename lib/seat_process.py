@@ -4,10 +4,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import queue
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 
 # The isolated Windows worker does not inherit the script directory on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -64,7 +67,7 @@ def _worker(command):
     return subprocess.run(command, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr).returncode
 
 
-def run_process(command, *, input, cwd, timeout):
+def _buffered_process(command, *, input, cwd, timeout):
     """Return captured bytes or raise after terminating the owned process tree."""
     if os.name == "nt":
         with tempfile.TemporaryDirectory(prefix="tradecraft-launch-") as temporary:
@@ -100,6 +103,119 @@ def run_process(command, *, input, cwd, timeout):
             raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from None
         finally:
             stop_tree()
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
+                on_launch=None):
+    """Drain both pipes while input is supplied independently of the deadline.
+
+    Callbacks run serially on the calling thread. A blocked stdin or silent
+    descendant therefore cannot prevent capture or elapsed checkpoints.
+    """
+    if on_output is None and on_tick is None and on_launch is None:
+        return _buffered_process(command, input=input, cwd=cwd, timeout=timeout)
+    deadline = time.monotonic() + timeout
+    with tempfile.TemporaryDirectory(prefix="tradecraft-launch-") as temporary:
+        failure = Path(temporary) / "launch-error.json"
+        worker = ([sys.executable, "-I", "-S", str(Path(__file__).resolve()),
+                   str(failure), *command] if os.name == "nt" else command)
+        process = subprocess.Popen(
+            worker, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, cwd=cwd, bufsize=0,
+            start_new_session=os.name != "nt",
+        )
+        events = queue.Queue()
+        captured = {"stdout": bytearray(), "stderr": bytearray()}
+
+        def drain(name):
+            try:
+                while chunk := os.read(getattr(process, name).fileno(), 65536):
+                    events.put((name, chunk))
+            except (OSError, ValueError):
+                pass
+            finally:
+                events.put((name, None))
+
+        def supply():
+            try:
+                view = memoryview(input)
+                while view:
+                    written = process.stdin.write(view)
+                    view = view[written:]
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+            finally:
+                process.stdin.close()
+
+        def stop_tree():
+            if os.name == "nt":
+                if process.poll() is None:
+                    process.kill()  # Worker closes its kill-on-close job.
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        threads = [threading.Thread(target=drain, args=(name,), daemon=True)
+                   for name in captured]
+        threads.append(threading.Thread(target=supply, daemon=True))
+        ended = set()
+        stopped = False
+        drain_deadline = None
+        try:
+            if on_launch:
+                on_launch(process.pid)
+            for thread in threads:
+                thread.start()
+            while len(ended) < 2 or process.poll() is None:
+                current = time.monotonic()
+                if current >= deadline and not stopped:
+                    stopped = True
+                    stop_tree()
+                    drain_deadline = current + 0.25
+                # Even a normally exited parent may leave inherited pipes open.
+                if process.poll() is not None and drain_deadline is None:
+                    stop_tree()
+                    drain_deadline = current + 0.25
+                if drain_deadline is not None and current >= drain_deadline:
+                    break
+                if on_tick:
+                    on_tick()
+                try:
+                    name, chunk = events.get(timeout=min(0.05, max(0, deadline - current))
+                                             if not stopped else 0.01)
+                except queue.Empty:
+                    continue
+                if chunk is None:
+                    ended.add(name)
+                else:
+                    captured[name].extend(chunk)
+                    if on_output:
+                        on_output(name, chunk)
+            # Retain queued bytes at the bounded drain's edge too.
+            while not events.empty():
+                name, chunk = events.get_nowait()
+                if chunk is not None:
+                    captured[name].extend(chunk)
+                    if on_output:
+                        on_output(name, chunk)
+        finally:
+            stop_tree()
+            try:
+                process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                pass
+            for stream in (process.stdout, process.stderr):
+                stream.close()
+        stdout, stderr = bytes(captured["stdout"]), bytes(captured["stderr"])
+        if stopped:
+            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+        if failure.exists():
+            error = json.loads(failure.read_bytes())
+            kind = FileNotFoundError if error["missing"] else OSError
+            raise kind(error["message"])
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 

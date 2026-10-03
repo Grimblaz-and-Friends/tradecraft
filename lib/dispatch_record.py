@@ -24,6 +24,8 @@ import tempfile
 import uuid
 
 from winio import utf8_stdio
+from dispatch_lifecycle import GrowingRun, claude_terminal
+import run_lifecycle as lifecycle
 
 SCHEMA_VERSION = 2
 CONTINUITIES = ("fresh", "resume")
@@ -91,9 +93,9 @@ def runtime_version(executable: list[str]) -> str | None:
     try:
         result = subprocess.run(
             [*executable, "--version"], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
     if result.returncode:
         return None
@@ -108,9 +110,9 @@ def git_revision(root: Path) -> str | None:
         result = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"], stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=20,
+            timeout=lifecycle.probe_timeout(),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
     if result.returncode:
         return None
@@ -372,10 +374,7 @@ def _codex_evidence(raw: bytes, continuity: str) -> dict[str, object]:
 
 
 def _claude_evidence(raw: bytes, continuity: str) -> dict[str, object]:
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, ValueError):
-        payload = None
+    payload = claude_terminal(raw)
     if not isinstance(payload, dict):
         return {
             "source": "claude JSON result",

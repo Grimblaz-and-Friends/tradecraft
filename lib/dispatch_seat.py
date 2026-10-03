@@ -30,7 +30,9 @@ import tomllib
 import uuid
 
 import dispatch_record as records
+from dispatch_lifecycle import claude_terminal
 import launch_settings
+import run_lifecycle as lifecycle
 from vendor_cli import CliError, CliNotFound, resolve_command
 from seat_process import run_process
 from winio import utf8_stdio
@@ -157,7 +159,7 @@ def build_command(
     else:
         raise DispatchError(f"unknown required capability: {required_capability}")
     return [*executable, "-p", "--model", model, "--effort", effort,
-            "--output-format", "json", "--no-session-persistence", "--safe-mode",
+            "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--safe-mode",
             "--tools", tools, "--allowedTools", tools,
             "--permission-mode", "dontAsk", "--strict-mcp-config"]
 
@@ -216,12 +218,12 @@ def detached_worktree_root(root):
     try:
         toplevel = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(),
             env=git_environment(),
         )
         head = subprocess.run(
             ["git", "-C", str(root), "symbolic-ref", "-q", "HEAD"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(),
             env=git_environment(),
         )
     except subprocess.TimeoutExpired:
@@ -302,10 +304,7 @@ def interpret(vendor, result, last_message):
     message = ""
     failure = None
     if vendor == "claude":
-        try:
-            payload = json.loads(stdout)
-        except ValueError:
-            payload = None
+        payload = claude_terminal(result.stdout)
         if isinstance(payload, dict) and payload.get("type") == "result":
             message = payload.get("result")
             message = message if isinstance(message, str) else ""
@@ -456,6 +455,16 @@ def resolve_settings(args):
 
 
 def run_dispatch(args, *, now=None) -> int:
+    try:
+        deadline = lifecycle.Deadline(args.timeout_seconds,
+                                      started=getattr(args, "invocation_started_monotonic", None))
+    except ValueError as exc:
+        raise DispatchError(str(exc)) from exc
+    with lifecycle.deadline_scope(deadline):
+        return _run_dispatch(args, deadline, now=now)
+
+
+def _run_dispatch(args, deadline, *, now=None) -> int:
     plan = resolve_settings(args)
     launch_settings.print_plan(plan, label="seat")
     dispatch = args.dispatch.expanduser().resolve()
@@ -515,7 +524,6 @@ def run_dispatch(args, *, now=None) -> int:
             raise DispatchError(f"Refusing existing output: {path}. Choose a new --output path.")
     output.parent.mkdir(parents=True, exist_ok=True)
     with records.reserve_bundle(destinations, output) as streams:
-        record_stream = streams[record_path]
         request = records.request_record(
             dispatch_id=uuid.uuid4().hex, work=args.work, stage=args.stage,
             settings_source=args.settings_source, settings_scope=args.settings_scope,
@@ -529,6 +537,8 @@ def run_dispatch(args, *, now=None) -> int:
         request["requested"]["required_capability"] = args.requires
         request["comparison_vendor"] = args.own_vendor
         request["comparison_vendor_source"] = args.own_vendor_source or "caller-selected"
+        request["caller_limit_seconds"] = args.timeout_seconds
+        request["recipient_allocation_seconds"] = deadline.remaining()
         request["revision_before"] = records.git_revision(root)
         request["input"] = str(input_path)
         streams[request_path].write(records.json_bytes(request))
@@ -552,6 +562,8 @@ def run_dispatch(args, *, now=None) -> int:
                              "published_output_unavailable_reason": "no successful final source return",
                              "assessment": "unassessed"}}
         pending_logs = {}
+        record["launched_at"] = request["launched_at"]
+        growing = records.GrowingRun(record_path, record, streams)
         verdict = None
         publication_error = None
         published = False
@@ -579,6 +591,9 @@ def run_dispatch(args, *, now=None) -> int:
                 attempt["runtime_version"] = None
                 attempt["runtime_version_unavailable_reason"] = "attempt was not launched"
                 record["attempts"].append(attempt)
+                growing.begin_attempt(attempt, vendor,
+                    sidecar(output, f".{vendor}.stdout.log"),
+                    sidecar(output, f".{vendor}.stderr.log"))
                 reset = read_holds(hold_file).get(vendor)
                 current = now if now is not None else datetime.now(timezone.utc)
                 message = ""
@@ -617,8 +632,12 @@ def run_dispatch(args, *, now=None) -> int:
                             returned = False
                             started = time.monotonic()
                             try:
-                                result = run_process(command, input=prompt, cwd=root, timeout=args.timeout_seconds)
+                                record["actual_vendor"] = vendor
+                                result = run_process(command, input=prompt, cwd=root, timeout=deadline.remaining(),
+                                                     on_output=growing.output, on_tick=growing.tick,
+                                                     on_launch=growing.launched)
                             except subprocess.TimeoutExpired as exc:
+                                record["interruption_cause"] = "ceiling"
                                 result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
                                 outcome, reason = "error", f"{vendor} timed out after {args.timeout_seconds:g}s; no fallback"
                                 attempt["launched"] = True
@@ -644,12 +663,15 @@ def run_dispatch(args, *, now=None) -> int:
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
                             elapsed = time.monotonic() - started
+                            growing.finish_attempt()
                             attempt["exit_code"] = result.returncode
                             for stream in ("stdout", "stderr"):
                                 log = sidecar(output, f".{vendor}.{stream}.log")
-                                pending_logs[log], encoding = records.log_bytes(getattr(result, stream))
+                                if streams[log].tell() == 0 and getattr(result, stream):
+                                    growing.output(stream, getattr(result, stream))
+                                    growing.finish_attempt()
                                 attempt[stream] = str(log)
-                                attempt[stream + "_encoding"] = encoding
+                                attempt[stream + "_encoding"] = "raw-bytes"
                             if returned:
                                 try:
                                     outcome, reason, message = interpret(vendor, result, last_message)
@@ -669,6 +691,7 @@ def run_dispatch(args, *, now=None) -> int:
                     attempt["permission_boundary_unavailable_reason"] = reason
                 if "observed" not in attempt:
                     records.add_unobserved(attempt, reason)
+                growing.checkpoint()
                 if outcome == "success":
                     record["actual_vendor"] = vendor
                     if record["fallback_reason"]:
@@ -696,7 +719,8 @@ def run_dispatch(args, *, now=None) -> int:
                 flush_logs()
             finally:
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
-                record["revision_after"] = records.git_revision(root)
+                with lifecycle.cleanup_scope():
+                    record["revision_after"] = records.git_revision(root)
                 if verdict is not None:
                     degraded = record["actual_vendor"] == args.own_vendor
                     record["staffing_status"] = "degraded" if degraded else "qualified"
@@ -722,6 +746,8 @@ def run_dispatch(args, *, now=None) -> int:
                     record["outcome"] = "error"
                 else:
                     record["outcome"] = "unavailable"
+                if record.get("interruption_cause") == "ceiling":
+                    record["outcome"] = "interrupted"
                 for attempt in record["attempts"]:
                     if attempt["vendor"] == record["actual_vendor"]:
                         attempt_staffing = record["staffing_status"]
@@ -731,8 +757,6 @@ def run_dispatch(args, *, now=None) -> int:
                         attempt, request, completed_at=record["completed_at"],
                         staffing_status=attempt_staffing,
                     )
-                streams.streams.pop(record_path)
-                record_stream.close()
                 for stream in streams.values():
                     stream.close()
                 streams.streams.clear()
@@ -749,7 +773,7 @@ def run_dispatch(args, *, now=None) -> int:
                         record["result"]["published_output"] = str(output)
                         record["result"]["published_output_unavailable_reason"] = None
                 try:
-                    records.finalize_reserved_json(record_path, record)
+                    growing.finish()
                 except Exception:
                     if published:
                         output.unlink(missing_ok=True)
@@ -779,10 +803,10 @@ def parser() -> argparse.ArgumentParser:
                 "Outputs must be new: verdict, .request.json, .dispatch.bin, .source.bin, "
                 ".run.json, and per-vendor .stdout.log/.stderr.log. "
                 "Sidecar suffixes append to the full --output filename, including its extension. "
-                "Sidecars are reserved before launch; transcript contents appear after the last attempt. "
+                "Sidecars are reserved before launch; raw transcript bytes and session identities are retained as output arrives. "
                 "The source verdict is flushed before atomic publication, which requires same-filesystem hard links. "
                 "The run record claims publication only after it succeeds and removes the verdict if finalizing the record fails. "
-                "Malformed log bytes use a JSON base64 envelope named by the run record's encoding field. "
+                "Raw logs declare their encoding in the run record; historical base64 envelopes remain readable. "
                 "The run record normalizes runtime model and usage where their scope is known; "
                 "the source-native values remain in the logs. Unknown failures and timeouts "
                 "do not fall back. The launcher does not elevate or buy credits."),
@@ -821,8 +845,9 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--hold-file", type=Path, default=default_hold_file(), help="shared availability holds")
     cli.add_argument(
         "--timeout-seconds", type=float, default=900,
-        help="timeout per launched seat; size execute work beyond the default where its job needs it",
+        help="declared caller limit for the whole invocation, including fallback and recording",
     )
+    cli.add_argument("--invocation-started-monotonic", type=float, help=argparse.SUPPRESS)
     for vendor, model in DEFAULT_MODELS.items():
         cli.add_argument("--" + vendor, help="explicit CLI executable")
         cli.add_argument("--" + vendor + "-unavailable-reason",

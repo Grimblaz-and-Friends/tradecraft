@@ -5590,7 +5590,13 @@ def test_incomplete_handover_keeps_its_replacement_session(
 
     monkeypatch.setattr(work.subprocess, "run", capture)
     decision = work.Decision(stage, True, "resume", "fixture")
-    if case in {"missing_result", "missing_session"}:
+    if case == "missing_result":
+        # A newer unproved launch cannot be replaced, even by a reserved UUID.
+        assert work.execute_stage(fixture, decision, root, None, "holder") == 0
+        assert work.execute_stage(fixture, decision, root, None, "holder",
+                                  handover_recovery_session=OTHER_SESSION) == 0
+        assert launches == []
+    elif case == "missing_session":
         with pytest.raises(work.WorkError) as error:
             work.execute_stage(fixture, decision, root, None, "holder")
         assert str(attempt_request) in str(error.value)
@@ -6054,7 +6060,7 @@ def test_tree_revision_refuses_an_unlanded_commit_before_creating_output(
     assert not work.recipient_tree.metadata_path(output).exists()
 
 
-@pytest.mark.parametrize("timeout, expected", [(None, "10800"), (42.5, "42.5")])
+@pytest.mark.parametrize("timeout, expected", [(None, "7200"), (42.5, "42.5")])
 def test_build_launch_forwards_holder_identity_and_timeout_to_the_launcher(
         tmp_path, monkeypatch, timeout, expected):
     commands = []
@@ -6075,7 +6081,7 @@ def test_build_launch_forwards_holder_identity_and_timeout_to_the_launcher(
         fixture, decision, tmp_path, "2", "stable-holder-token", codex_path=runtime,
         timeout_seconds=timeout,
     ) == 0
-    assert commands[0][-2:] == ["--holder-session-id", "stable-holder-token"]
+    assert commands[0][commands[0].index("--holder-session-id") + 1] == "stable-holder-token"
     assert commands[0][commands[0].index("--root") + 1] == str(tmp_path)
     assert commands[0][commands[0].index("--timeout-seconds") + 1] == expected
     assert commands[0][commands[0].index("--model") + 1] == "gpt-owner"
@@ -6150,9 +6156,8 @@ def test_execute_stage_passes_the_recovered_session_to_the_implementer(
     assert work.execute_stage(
         fixture, decision, tmp_path, None, "holder-session", timeout_seconds=timeout,
     ) == 0
-    assert commands[0][-4:] == [
-        "--holder-session-id", "holder-session", "--resume", SESSION,
-    ]
+    assert commands[0][commands[0].index("--holder-session-id") + 1] == "holder-session"
+    assert commands[0][commands[0].index("--resume") + 1] == SESSION
     assert commands[0][commands[0].index("--timeout-seconds") + 1] == expected
 
 

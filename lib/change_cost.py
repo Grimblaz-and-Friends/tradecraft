@@ -18,6 +18,7 @@ import uuid
 from winio import utf8_stdio
 from vendor_cli import CliError, resolve_command
 from dispatch_record import _change
+import run_lifecycle as lifecycle
 
 
 class CostError(RuntimeError):
@@ -200,6 +201,8 @@ def _contexts(dispatch_root: Path, repo: str, issue: int, holder_path: Path,
                 malformed = "unsupported dispatch completion schema"
             elif not isinstance(value.get("attempts"), list) or not value["attempts"]:
                 malformed = "dispatch completion has no readable attempts"
+            elif not value.get("completed_at"):
+                malformed = "dispatch has no completion write; interrupted usage is unknown"
         if malformed:
             skipped.append({"path": str(path), "reason": malformed})
             failure = malformed
@@ -758,6 +761,21 @@ def bill_plan_status(rows: list[dict[str, object]], terms_path: Path,
     return answer
 
 
+def runtime_report(repo, issue, dispatch_root):
+    bundles = lifecycle.launch_bundles(dispatch_root, f"{repo}#{issue}",
+                                      {"build", "floor", "review-disposition"}, exact_work=True)
+    # Attribution retains the cost report's exact repository spelling.
+    bundles = [row for row in bundles if row[2].get("work") == f"{repo}#{issue}"]
+    groups = {}
+    for row in bundles:
+        request = row[2]
+        key = (request.get("budget_lineage"), request.get("root"), request.get("lineage_branch"))
+        groups.setdefault(key, []).append(row)
+    return [{"lineage": lineage, "root": root, "branch": branch,
+             **lifecycle.runtime_account(rows)}
+            for (lineage, root, branch), rows in groups.items()]
+
+
 def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
            terms_path: Path, gauges_path: Path, holder_path: Path) -> dict[str, object]:
     skipped_records: list[dict[str, str]] = []
@@ -816,6 +834,7 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
             for (stage, vendor), count in sorted(groups.items())
         ],
         "raw_usage": rows,
+        "runtime_lineages": runtime_report(repo, issue, dispatch_root),
         "skipped_records": skipped_records,
         "dated_rate_card_equivalent": prices,
         "dispatch_totals": list(summaries.values()),

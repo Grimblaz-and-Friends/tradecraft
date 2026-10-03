@@ -1,0 +1,17 @@
+# D-840 — Interrupted launches retain the session and continue within caller limits
+
+**Purpose:** retain the reasons and scope behind interrupted-launch recovery. **Audience:** a future session changing capture, continuity or runtime accounting. **Success:** that session can distinguish recovery evidence from successful work and preserve the holder's authority over another run.
+
+Governed by [#833's affirmed brief and settled discharge artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/833), implemented in pull request #840. The holder discharged the cold seat's budget question: repair runs do not count against a budget that replaces the former build-stage ceiling.
+
+The owner chose the cause of lost builds: retain the session while output arrives, because a process-tree kill runs no finalizer. The old completion-only capture could lose all evidence. A run begins with a parseable record, retains raw streams and observed identity incrementally, and becomes immutable only at completion. Completion of the launcher record does not establish completion of the recipient's stage. A stopped seat remains inspectable but is relaunched fresh.
+
+The entrance intercepts stopped implementers before the no-pull-request fresh route. It reuses their session, registration and branch, while unproved identity, conflicting lineage and active or unresolved liveness return to the holder. It leaves work in the tree untouched. Completed builders that return without a pull request keep the existing route under #762.
+
+The owner replaced the single three-hour build ceiling bought in #820 with bounded runs and a shared build budget. The caller declares its actual limit; one deadline includes preflight, fallback and recording. Shared values and their derivation live in `lib/run_lifecycle.py`, beside the stage limits. The reserve lets the launcher stop and complete its record before its caller kills it. Neither a detached supervisor nor a Windows breakaway route is introduced.
+
+Git content, rather than the builder's report or status letters, establishes progress. The first window compares against launch; later windows compare successive stop states. HEAD, index, tracked content and nonignored untracked content count. A check-only window hands continuation back to the holder. An unreadable snapshot does likewise.
+
+Only `build` dispatches consume the budget. Repairs remain bounded per invocation and follow the progress rule without a total budget. Stage changes and vendor handovers preserve the build lineage. Unfinished runtime is a lower checkpoint and an allocation upper bound, because missing completion cannot establish zero consumption. An ordinary next build is bounded by its remaining budget. Exhaustion or unresolved accounting requires that invocation's holder reason, retained beside the account and displayed in the cost report. Runtime does not establish monetary usage and resume pricing is unchanged.
+
+The hard-kill regression runs the actual launcher and vendor fixture with a blocked descendant, then force-terminates the tree. `lib/tests/test_interrupted_launch.py` is the executable capture check; the lifecycle, recovery and launcher suites exercise the remaining guards. Consumer use remains the holder's named later stage rather than a builder-dispatched pipeline stage.

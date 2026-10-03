@@ -96,12 +96,42 @@ def write_bundle(inputs, name, work="acme/widget#12", rows=None, completion=None
     run_path = records.sidecar(output, ".run.json")
     write_json(request_path, request)
     if completion is None:
-        write_json(run_path, {"schema_version": 2, "attempts": [
+        write_json(run_path, {"schema_version": 2, "completed_at": WHEN, "attempts": [
             {"usage": row} for row in (rows if rows is not None else [usage()])
         ]})
     else:
         run_path.write_bytes(completion)
     return request_path, run_path, request
+
+
+def test_runtime_lineage_reports_bounds_repairs_and_override_without_pricing_them(report_inputs):
+    for name, stage, elapsed, complete, reason in [
+        ("first", "build", 7000, True, None),
+        ("repair", "floor", 20000, True, None),
+        ("stopped", "build", 50, False, "finish the remaining checks"),
+    ]:
+        request_path, run_path, request = write_bundle(report_inputs, name)
+        request.update(stage=stage, root="fixture-tree", lineage_branch="change",
+                       budget_lineage="first", recipient_allocation_seconds=1000,
+                       budget_override_reason=reason)
+        run = json.loads(run_path.read_bytes())
+        run.update(dispatch_id=name, elapsed_checkpoint_seconds=elapsed)
+        run["attempts"][0].update(launched=True, elapsed_seconds=elapsed)
+        if not complete:
+            run.pop("completed_at")
+            run["outcome"] = "success"  # An unfinished success claim earns no monetary credit.
+        write_json(request_path, request)
+        write_json(run_path, run)
+    result = cost.report(**report_inputs)
+    runtime = result["runtime_lineages"][0]
+    assert runtime["lower_seconds"] == 7050 and runtime["upper_seconds"] == 8000
+    assert runtime["remaining_seconds"] == 6400
+    assert len(runtime["runs"]) == 3
+    repair = next(row for row in runtime["runs"] if row["stage"] == "floor")
+    assert repair["excluded"] and repair["upper_seconds"] == 20000
+    assert any(row["override_reason"] == "finish the remaining checks" for row in runtime["runs"])
+    unknown = next(row for row in result["dated_rate_card_equivalent"] if row["dispatch_id"] == "stopped")
+    assert unknown["value"]["status"] == "unknown"
 
 
 @pytest.mark.parametrize("work", ["acme/widget#13", "other/widget#12", "12", "issue-12"])
@@ -427,7 +457,7 @@ def test_missing_token_rate_and_unknown_scope_never_render_zero():
 def test_report_labels_three_quantities_groups_rows_and_keeps_unknowns(tmp_path):
     dispatch_root = tmp_path / "dispatches"
     run_path = dispatch_root / "one" / "result.md.run.json"
-    write_json(run_path, {"schema_version": 2, "attempts": [{"usage": usage()}]})
+    write_json(run_path, {"schema_version": 2, "completed_at": WHEN, "attempts": [{"usage": usage()}]})
     holder_path = tmp_path / "holder.jsonl"
     holder = cost.holder_close(
         "acme/widget", 12, "codex", None, None,
