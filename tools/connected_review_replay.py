@@ -119,6 +119,10 @@ def export_replay(source: Path, output: Path) -> dict[str, Any]:
             accept="application/vnd.github.v3.diff",
         ))
         rules_path.write_bytes(cr.repository_review_rules(repository, case["base"]).encode("utf-8"))
+        attributes_path = input_dir / "base-attributes.json"
+        write_object(attributes_path, cr.base_attribute_material(
+            repository, case["base"], cr.coverage_paths(diff_path.read_text(encoding="utf-8", errors="replace")),
+        ))
         exported.append({
             **case,
             "snapshot": f"cases/{case['id']}/snapshot",
@@ -127,9 +131,11 @@ def export_replay(source: Path, output: Path) -> dict[str, Any]:
             "snapshot_sha256": tree_digest(snapshot),
             "diff_sha256": file_digest(diff_path),
             "rules_sha256": file_digest(rules_path),
+            "base_attributes": f"cases/{case['id']}/input/base-attributes.json",
+            "base_attributes_sha256": file_digest(attributes_path),
         })
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "repository": repository,
         "cases": exported,
     }
@@ -137,12 +143,23 @@ def export_replay(source: Path, output: Path) -> dict[str, Any]:
     return manifest
 
 
-def validate_export(root: Path) -> dict[str, Any]:
+def validate_export(root: Path, *, require_policy: bool = False) -> dict[str, Any]:
     manifest = read_object(root / "manifest.json")
     if set(manifest) != {"schema_version", "repository", "cases"}:
         raise ReplayError("export manifest contains an unrecognized field")
-    if manifest.get("schema_version") != 1 or not isinstance(manifest.get("cases"), list):
+    if manifest.get("schema_version") not in {1, 2} or not isinstance(manifest.get("cases"), list):
         raise ReplayError("export manifest is malformed")
+    if require_policy and manifest["schema_version"] == 1:
+        source = {
+            "schema_version": 1, "repository": manifest["repository"],
+            "cases": [{"id": row["id"], "number": int(row["number"]),
+                       "base": row["base"], "head": row["head"]} for row in manifest["cases"]],
+        }
+        raise ReplayError(
+            "older export lacks captured base attributes; re-export into a new directory "
+            "with `python tools/connected_review_replay.py export --manifest SOURCE.json --output NEW_DIRECTORY`; "
+            "write this original source manifest to SOURCE.json: " + json.dumps(source, ensure_ascii=True, sort_keys=True)
+        )
     for case in manifest["cases"]:
         if not isinstance(case, dict):
             raise ReplayError("export case is malformed")
@@ -150,6 +167,8 @@ def validate_export(root: Path) -> dict[str, Any]:
             "id", "number", "head", "base", "snapshot", "diff", "rules",
             "snapshot_sha256", "diff_sha256", "rules_sha256",
         }
+        if manifest["schema_version"] == 2:
+            expected |= {"base_attributes", "base_attributes_sha256"}
         if set(case) != expected:
             raise ReplayError("export case contains an unrecognized field")
         snapshot = root / case["snapshot"]
@@ -161,6 +180,14 @@ def validate_export(root: Path) -> dict[str, Any]:
             or file_digest(rules) != case["rules_sha256"]
         ):
             raise ReplayError(f"export case {case['id']} no longer matches its manifest")
+        if manifest["schema_version"] == 2:
+            attributes = root / case["base_attributes"]
+            if file_digest(attributes) != case["base_attributes_sha256"]:
+                raise ReplayError(f"export case {case['id']} base attributes no longer match its manifest")
+            try:
+                cr.validate_attribute_material(read_object(attributes), case["base"])
+            except cr.ReviewError as exc:
+                raise ReplayError(str(exc)) from exc
     return manifest
 
 
@@ -250,6 +277,9 @@ def _resume_cases(
         raise ReplayError(
             "resume reviewer identity differs: " + ", ".join(sorted(mismatched))
         )
+    expected_sources = {case["id"]: case["base_attributes_sha256"] for case in manifest["cases"]}
+    if previous.get("base_attribute_sources") != expected_sources:
+        raise ReplayError("resume base attribute source hashes differ; re-export original revisions into a new directory and start a new results file")
     old_harness = stored_reviewer.get("harness_sha256")
     if (
         not isinstance(old_harness, str)
@@ -325,48 +355,12 @@ def _run_finders_at_effort(
     token: str,
     effort: str,
     preloaded_changed_files: dict[str, Any] | None,
+    exclusions: list[dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
-    candidates = []
-    usage: dict[str, Any] = cr.finder_usage_template()
-    traces = {}
-    for name, focus in cr.FINDER_PASSES:
-        pass_instructions = (
-            instructions
-            + f"\n\nIndependent finder pass: {name}. "
-            + focus
-            + f" Return at most {cr.MAX_FINDER_CANDIDATES_PER_PASS} candidates."
-        )
-        try:
-            value, pass_usage, trace = cr.run_pass(
-                executable,
-                run_root / f"finder-{name}",
-                snapshot,
-                cr._pass_prompt(
-                    pass_instructions, snapshot, diff, rules,
-                    preloaded_changed_files=preloaded_changed_files,
-                ),
-                cr.FINDER_SCHEMA,
-                token,
-                effort=effort,
-            )
-            usage[name] = pass_usage
-            traces[name] = trace
-            rows = cr.validate_candidates(value, lines)
-        except cr.ReviewError as exc:
-            if exc.usage is not None:
-                usage[name] = exc.usage
-            elif usage[name].get("status") == "not-started":
-                usage[name] = {"status": "unavailable"}
-            raise cr.ReviewError(str(exc), usage=usage) from exc
-        for row in rows:
-            candidate = dict(row)
-            candidate["id"] = f"{name}:{row['id']}"
-            candidates.append(candidate)
-    if len(candidates) > cr.MAX_REVIEW_COMMENTS:
-        raise cr.ReviewError(
-            "finder passes exceeded the merged candidate limit", usage=usage,
-        )
-    return candidates, usage, traces
+    return cr.run_finders(
+        executable, run_root, snapshot, instructions, diff, rules, lines, token, preloaded_changed_files,
+        effort=effort, exclusions=exclusions,
+    )
 
 
 def _run_finders_for_replay(
@@ -380,15 +374,16 @@ def _run_finders_for_replay(
     token: str,
     effort: str | None,
     preloaded_changed_files: dict[str, Any] | None,
+    exclusions: list[dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     if effort is None:
         return cr.run_finders(
             executable, run_root, snapshot, instructions, diff, rules, lines, token,
-            preloaded_changed_files,
+            preloaded_changed_files, exclusions=exclusions,
         )
     return _run_finders_at_effort(
         executable, run_root, snapshot, instructions, diff, rules, lines, token, effort,
-        preloaded_changed_files,
+        preloaded_changed_files, exclusions,
     )
 
 
@@ -404,43 +399,12 @@ def _run_checkers_at_effort(
     token: str,
     effort: str,
     preloaded_changed_files: dict[str, Any] | None,
+    exclusions: list[dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
-    batches = [
-        candidates[start:start + cr.MAX_CHECKER_CANDIDATES_PER_BATCH]
-        for start in range(0, len(candidates), cr.MAX_CHECKER_CANDIDATES_PER_BATCH)
-    ] or [[]]
-    usage: dict[str, Any] = cr.checker_usage_template(len(candidates))
-    traces = {}
-    survivors = []
-    for index, batch in enumerate(batches, start=1):
-        name = f"batch-{index}"
-        batch_instructions = (
-            instructions
-            + f"\n\nThis is checker {name}. Decide all {len(batch)} supplied candidates."
-        )
-        try:
-            value, pass_usage, trace = cr.run_pass(
-                executable,
-                run_root / f"checker-{name}",
-                snapshot,
-                cr._pass_prompt(
-                    batch_instructions, snapshot, diff, rules, batch,
-                    preloaded_changed_files,
-                ),
-                cr.CHECKER_SCHEMA,
-                token,
-                effort=effort,
-            )
-            usage[name] = pass_usage
-            traces[name] = trace
-            survivors.extend(cr.validate_decisions(value, batch, lines))
-        except cr.ReviewError as exc:
-            if exc.usage is not None:
-                usage[name] = exc.usage
-            elif usage[name].get("status") == "not-started":
-                usage[name] = {"status": "unavailable"}
-            raise cr.ReviewError(str(exc), usage=usage) from exc
-    return cr.deduplicate_root_causes(survivors), usage, traces
+    return cr.run_checkers(
+        executable, run_root, snapshot, instructions, diff, rules, candidates, lines, token, preloaded_changed_files,
+        effort=effort, exclusions=exclusions,
+    )
 
 
 def _run_checkers_for_replay(
@@ -455,15 +419,16 @@ def _run_checkers_for_replay(
     token: str,
     effort: str | None,
     preloaded_changed_files: dict[str, Any] | None,
+    exclusions: list[dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     if effort is None:
         return cr.run_checkers(
             executable, run_root, snapshot, instructions, diff, rules,
-            candidates, lines, token, preloaded_changed_files,
+            candidates, lines, token, preloaded_changed_files, exclusions=exclusions,
         )
     return _run_checkers_at_effort(
         executable, run_root, snapshot, instructions, diff, rules,
-        candidates, lines, token, effort, preloaded_changed_files,
+        candidates, lines, token, effort, preloaded_changed_files, exclusions,
     )
 
 
@@ -484,7 +449,7 @@ def run_replay(
     preload_budget_bytes: int = cr.DEFAULT_PRELOAD_BUDGET_BYTES,
 ) -> dict[str, Any]:
     _validate_run_options(checker_prompt, single_pass, finder_effort, checker_effort)
-    manifest = validate_export(export_root)
+    manifest = validate_export(export_root, require_policy=True)
     finder_text = finder_prompt.read_text(encoding="utf-8")
     checker_text = (
         checker_prompt.read_text(encoding="utf-8") if checker_prompt is not None else None
@@ -522,6 +487,7 @@ def run_replay(
             for case in manifest["cases"]
         ],
         "reviewer": current_reviewer,
+        "base_attribute_sources": {case["id"]: case["base_attributes_sha256"] for case in manifest["cases"]},
         "resumed_cases": resumed_cases,
         "case_harness_sha256": case_harnesses,
         "complete": False,
@@ -565,16 +531,24 @@ def run_replay(
                 shutil.copyfile(export_root / case["rules"], rules_path)
                 diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
                 rules_text = rules_path.read_text(encoding="utf-8", errors="replace")
-                lines = cr.changed_lines(diff_text)
+                diff_text, exclusions, lines = cr.select_coverage(
+                    diff_text, read_object(export_root / case["base_attributes"]),
+                )
+                case_result["excluded_files"] = exclusions
                 preloaded = (
                     cr.preload_changed_file_data(
                         snapshot, diff_text, preload_budget_bytes,
                     )
                     if preload_changed_files else None
                 )
+                case_result["finder_input_utf8_bytes"] = {
+                    name: len(cr.pass_input_bytes(prompt)) for name, prompt in cr.finder_prompts(
+                        finder_text, snapshot, diff_text, rules_text, preloaded, exclusions,
+                    )
+                }
                 candidates, finder_usage, finder_trace = _run_finders_for_replay(
                     executable, case_root, snapshot, finder_text, diff_text,
-                    rules_text, lines, token, finder_effort, preloaded,
+                    rules_text, lines, token, finder_effort, preloaded, exclusions,
                 )
                 if single_pass:
                     survivors = cr.deduplicate_root_causes(candidates)
@@ -585,7 +559,7 @@ def run_replay(
                     survivors, checker_usage, checker_trace = _run_checkers_for_replay(
                         executable, case_root, snapshot, checker_text, diff_text,
                         rules_text, candidates, lines, token, checker_effort,
-                        preloaded,
+                        preloaded, exclusions,
                     )
                 finder_leaks = []
                 for name, trace in finder_trace.items():
