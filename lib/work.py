@@ -5673,7 +5673,15 @@ def run(
                 "artifact", "build", "floor", "review-disposition",
             }):
         raise WorkError("--handover-recovery-session requires an implementer run stage")
-    use_rules_path = (args.use_rules or root / "lib" / "use-rules.json").expanduser().resolve()
+    use_rules_path = (
+        args.use_rules.expanduser() if args.use_rules is not None
+        else root / ".github" / "change-proof.json"
+    )
+    if not use_rules_path.is_absolute():
+        use_rules_path = root / use_rules_path
+    use_rules_path = use_rules_path.resolve()
+    if args.use_rules is None and not use_rules_path.exists():
+        raise WorkError(f"repository's change-proof policy is missing: {use_rules_path}")
     proof_preflight: PolicySnapshot | None = None
     if args.command == "run" and args.stage == "proof":
         proof_preflight = _capture_policy_snapshot(

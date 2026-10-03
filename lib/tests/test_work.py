@@ -16,7 +16,15 @@ import launch_settings
 import connected_review
 
 
-RULES = work.load_use_rules(LIB / "use-rules.json")
+# Synthetic entrance policy: these fixtures do not load a repository's rules.
+RULES = {
+    "schema_version": 1,
+    "rules": [{
+        "name": "fixture-runtime",
+        "include": ["lib/**", "skills/**"],
+        "exclude": ["**/tests/**", "**/test_*.py"],
+    }],
+}
 SHA = "a" * 40
 BASE_SHA = "c" * 40
 GATE_PATH = "/".join((".github", "workflows", "self-change-proof.yml"))
@@ -90,6 +98,15 @@ USE_RULES_BYTES = (
     b'{\n  "schema_version": 1,\n  "rules": [\n    {\n      "name": "fixture",\n'
     b'      "include": ["lib/**"],\n      "exclude": []\n    }\n  ]\n}\n'
 )
+POLICY_PATH = "/".join((".github", "change-proof.json"))
+RENAMED_POLICY_PATH = "/".join((".github", "renamed-rules.json"))
+
+
+def write_policy(root, rules=RULES, relative=POLICY_PATH):
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(json.dumps(rules).encode("utf-8"))
+    return path
 
 
 def policy_repository(tmp_path, name="policy-repository", *, autocrlf="false",
@@ -99,15 +116,15 @@ def policy_repository(tmp_path, name="policy-repository", *, autocrlf="false",
     git(root, "init")
     git(root, "config", "core.autocrlf", autocrlf)
     (root / ".tradecraft").mkdir()
-    (root / "lib").mkdir()
+    (root / ".github").mkdir()
     def content(value):
         return value.replace(b"\n", b"\r\n") if crlf else value
     tracked = []
     if work_configuration:
         (root / ".tradecraft" / "work.json").write_bytes(content(WORK_CONFIG_BYTES))
         tracked.append(".tradecraft/work.json")
-    (root / "lib" / "use-rules.json").write_bytes(content(USE_RULES_BYTES))
-    tracked.append("lib/use-rules.json")
+    (root / ".github" / "change-proof.json").write_bytes(content(USE_RULES_BYTES))
+    tracked.append(POLICY_PATH)
     git(root, "add", *tracked)
     git(
         root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
@@ -997,7 +1014,7 @@ def body_review_state(*, proof=False, declaration=None):
     fixture.policy_sources = {
         key: {"repository": fixture.repo, "path": path, "revision": SHA, "sha256": "1" * 64}
         for key, path in (("work_configuration", ".tradecraft/work.json"),
-                          ("use_rules", "lib/use-rules.json"))
+                          ("use_rules", POLICY_PATH))
     }
     return fixture
 
@@ -2164,7 +2181,7 @@ def actions_proof(fixture, tmp_path):
     fixture.policy_sources = {
         key: {"repository": fixture.repo, "path": path, "revision": SHA, "sha256": "1" * 64}
         for key, path in (("work_configuration", ".tradecraft/work.json"),
-                          ("use_rules", "lib/use-rules.json"))
+                          ("use_rules", POLICY_PATH))
     }
     return work.compose_proof(fixture, RULES)
 
@@ -3092,9 +3109,7 @@ def test_review_disposition_marker_is_part_of_the_entrance_evidence():
 def test_run_reads_the_work_configuration_from_root(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     configured_work(tmp_path, ["acme/product-app"])
-    rules_directory = tmp_path / "lib"
-    rules_directory.mkdir()
-    (rules_directory / "use-rules.json").write_bytes((LIB / "use-rules.json").read_bytes())
+    write_policy(tmp_path)
     args = work.parser().parse_args([
         "--repo", "example/tradecraft", "--issue", "3", "--root", str(tmp_path),
     ])
@@ -3119,9 +3134,9 @@ def test_run_reads_the_work_configuration_from_root(tmp_path, monkeypatch, capsy
 
 def test_ordinary_entrance_is_repeatable_and_never_sweeps_or_executes(
         tmp_path, monkeypatch, capsys):
+    write_policy(tmp_path)
     args = work.parser().parse_args([
         "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
-        "--use-rules", str(LIB / "use-rules.json"),
     ])
 
     class MinimalTransport:
@@ -3144,6 +3159,157 @@ def test_ordinary_entrance_is_repeatable_and_never_sweeps_or_executes(
     report = json.loads(first)
     assert report["work"] == "acme/widget#3"
     assert report["producer_version"] == work.records.producer_version()
+
+
+def adopter_transport():
+    base = "repos/acme/widget"
+    return FakeTransport({
+        f"{base}/issues/3": {
+            "number": 3, "state": "open", "body": "", "labels": [],
+            "user": {"login": PRODUCER},
+        },
+        f"{base}/issues/3/comments": [
+            {"body": AFFIRMED, "user": {"login": PRODUCER}},
+        ],
+        f"{base}/pulls?state=all&per_page=100": [
+            {"number": 9, "state": "open", "body": "Closes #3"},
+        ],
+        f"{base}/pulls/9": {
+            "number": 9, "state": "open", "draft": True, "changed_files": 1,
+            "head": {"sha": SHA},
+        },
+        f"{base}/issues/9/comments": [],
+        f"{base}/pulls/9/reviews": [],
+        f"{base}/pulls/9/comments": [],
+        f"{base}/pulls/9/files": [{"filename": "product-app/main.py"}],
+        f"{base}/commits/{SHA}/check-runs?per_page=100": {"check_runs": []},
+    })
+
+
+PRODUCT_RULES = {
+    "schema_version": 1,
+    "rules": [{"name": "product-app", "include": ["product-app/**"], "exclude": []}],
+}
+
+
+def run_adopter_read(root, monkeypatch, capsys, *override):
+    configured_work(root, [])
+    observed = {}
+    original_decide = work.decide
+
+    def capture(fixture, rules):
+        observed["rules"] = rules
+        observed["required"] = work.effective_policy(fixture, rules).use_required
+        return original_decide(fixture, rules)
+
+    monkeypatch.setattr(work, "decide", capture)
+    transport = adopter_transport()
+    args = work.parser().parse_args([
+        "--repo", "acme/widget", "--issue", "3", "--root", str(root), *override,
+    ])
+    assert work.run(args, transport=transport) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["work"] == "acme/widget#3"
+    assert {method for method, _endpoint, _paginate in transport.calls} == {"GET"}
+    return observed
+
+
+def test_adopter_default_uses_its_product_policy_without_lib(tmp_path, monkeypatch, capsys):
+    write_policy(tmp_path, PRODUCT_RULES)
+    assert not (tmp_path / "lib").exists()
+    assert work.use_required(["product-app/main.py"], RULES) is False
+
+    observed = run_adopter_read(tmp_path, monkeypatch, capsys)
+
+    assert observed == {"rules": PRODUCT_RULES, "required": True}
+    assert not (tmp_path / "lib").exists()
+
+
+@pytest.mark.parametrize("legacy_trap", [False, True])
+@pytest.mark.parametrize("command", [[], ["run", "proof"]], ids=["ordinary", "proof"])
+def test_missing_default_names_repository_policy_without_fallback(
+        tmp_path, legacy_trap, command):
+    root = repository(tmp_path)
+    if legacy_trap:
+        write_policy(root, PRODUCT_RULES, "/".join(("lib", "use-rules.json")))
+    args = work.parser().parse_args([
+        *command, "--repo", "acme/widget", "--issue", "3", "--root", str(root),
+    ])
+
+    with pytest.raises(work.WorkError) as raised:
+        work.run(args, transport=object())
+
+    assert str(raised.value) == (
+        f"repository's change-proof policy is missing: {(root / POLICY_PATH).resolve()}"
+    )
+    assert "use-rules.json" not in str(raised.value)
+
+
+def test_explicit_setup_override_replaces_absent_default(tmp_path, monkeypatch, capsys):
+    alternate = write_policy(tmp_path, PRODUCT_RULES, "setup-rules.json")
+    assert not (tmp_path / POLICY_PATH).exists()
+
+    observed = run_adopter_read(
+        tmp_path, monkeypatch, capsys, "--use-rules", str(alternate),
+    )
+
+    assert observed == {"rules": PRODUCT_RULES, "required": True}
+
+
+@pytest.mark.parametrize("invalid", [None, b"not json", b'{"schema_version": 2}'])
+def test_invalid_override_does_not_fall_back_to_valid_default(tmp_path, invalid):
+    write_policy(tmp_path, PRODUCT_RULES)
+    alternate = tmp_path / "override.json"
+    if invalid is not None:
+        alternate.write_bytes(invalid)
+    args = work.parser().parse_args([
+        "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
+        "--use-rules", str(alternate),
+    ])
+
+    with pytest.raises(work.WorkError) as raised:
+        work.run(args, transport=object())
+
+    assert str(alternate) in str(raised.value)
+
+
+@pytest.mark.parametrize("relative", [POLICY_PATH, "config/alternate.json"])
+@pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute"])
+def test_override_uses_holder_root_from_conflicting_working_directory(
+        tmp_path, monkeypatch, capsys, relative, absolute):
+    root = tmp_path / "holder"
+    root.mkdir()
+    shell = tmp_path / "elsewhere"
+    shell.mkdir()
+    selected = write_policy(root, PRODUCT_RULES, relative)
+    write_policy(shell, RULES, relative)
+    if relative != POLICY_PATH:
+        write_policy(root, RULES)
+    monkeypatch.chdir(shell)
+    assert Path.cwd() != root
+
+    observed = run_adopter_read(
+        root, monkeypatch, capsys, "--use-rules", str(selected) if absolute else relative,
+    )
+
+    assert observed == {"rules": PRODUCT_RULES, "required": True}
+
+
+def test_override_expands_home_before_rooting_relative_paths(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "holder"
+    root.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    write_policy(root, RULES, "~/rules.json")
+    write_policy(home, PRODUCT_RULES, "rules.json")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    # expanduser reads the platform environment rather than Path.home().
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+
+    observed = run_adopter_read(root, monkeypatch, capsys, "--use-rules", "~/rules.json")
+
+    assert observed == {"rules": PRODUCT_RULES, "required": True}
 
 
 @pytest.mark.parametrize("stage", ["artifact", "build", "floor", "review-disposition"])
@@ -3474,7 +3640,7 @@ def test_proof_marks_missing_bundle_unverifiable_instead_of_copying_qualified(tm
             "revision": SHA, "sha256": "1" * 64,
         },
         "use_rules": {
-            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "repository": fixture.repo, "path": POLICY_PATH,
             "revision": SHA, "sha256": "2" * 64,
         },
     }
@@ -3502,7 +3668,7 @@ def test_mechanical_proof_is_generated_from_the_affirmed_comment_even_for_use_pa
             "revision": SHA, "sha256": "1" * 64,
         },
         "use_rules": {
-            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "repository": fixture.repo, "path": POLICY_PATH,
             "revision": SHA, "sha256": "2" * 64,
         },
     }
@@ -3541,7 +3707,7 @@ def test_non_mechanical_generated_proof_has_no_affirmed_source(tmp_path):
             "revision": SHA, "sha256": "1" * 64,
         },
         "use_rules": {
-            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "repository": fixture.repo, "path": POLICY_PATH,
             "revision": SHA, "sha256": "2" * 64,
         },
     }
@@ -3608,7 +3774,7 @@ def test_execute_proof_compatibility_line_uses_the_composed_lane_or_path_reason(
     monkeypatch.setattr(work, "_rerun_gate_evaluations", lambda *_args: [])
 
     assert work._execute_proof(
-        CurrentHeadTransport(), fixture, root, RULES, root / "lib" / "use-rules.json",
+        CurrentHeadTransport(), fixture, root, RULES, root / ".github" / "change-proof.json",
         None, None,
     ) == 0
     capsys.readouterr()
@@ -3632,7 +3798,7 @@ def test_proof_does_not_credit_no_output_or_model_override_claims(
             "revision": SHA, "sha256": "1" * 64,
         },
         "use_rules": {
-            "repository": fixture.repo, "path": "lib/use-rules.json",
+            "repository": fixture.repo, "path": POLICY_PATH,
             "revision": SHA, "sha256": "2" * 64,
         },
     }
@@ -3714,7 +3880,7 @@ def test_policy_snapshot_hashes_committed_blobs_across_checkout_line_endings(
     root = policy_repository(tmp_path, f"policy-{autocrlf}", autocrlf=autocrlf)
 
     snapshot = work._capture_policy_snapshot(
-        root, "example/product", root / "lib" / "use-rules.json",
+        root, "example/product", root / ".github" / "change-proof.json",
         enforce_clean=True,
     )
 
@@ -3728,47 +3894,87 @@ def test_policy_snapshot_hashes_committed_blobs_across_checkout_line_endings(
 def test_policy_snapshot_preserves_committed_crlf_bytes(tmp_path):
     root = policy_repository(tmp_path, crlf=True)
     snapshot = work._capture_policy_snapshot(
-        root, "example/product", root / "lib" / "use-rules.json",
+        root, "example/product", root / ".github" / "change-proof.json",
         enforce_clean=True,
     )
-    committed = git(root, "show", "HEAD:lib/use-rules.json").stdout
+    committed = git(root, "show", f"HEAD:{POLICY_PATH}").stdout
     assert b"\r\n" in committed
     assert snapshot.blobs["use_rules"] == committed
     assert snapshot.sources["use_rules"]["sha256"] == hashlib.sha256(committed).hexdigest()
 
 
+@pytest.mark.parametrize("autocrlf", ["true", "false"])
+def test_default_proof_names_and_hashes_committed_repository_policy(
+        tmp_path, monkeypatch, capsys, autocrlf):
+    root = policy_repository(tmp_path, autocrlf=autocrlf)
+    fixture = state(AFFIRMED, pr=True)
+    fixture.record_root = tmp_path / "dispatches"
+    published = []
+
+    class CurrentHeadTransport:
+        def get(self, endpoint, *, paginate=False):
+            assert endpoint == "repos/example/product/pulls/7"
+            assert paginate is False
+            return fixture.pr
+
+    monkeypatch.setattr(work, "read_state", lambda *_args, **_kwargs: fixture)
+    monkeypatch.setattr(
+        work, "_publish_proof_comment",
+        lambda _transport, _state, body, _head: (
+            published.append(body) or {"action": "created", "id": 91, "url": "fixture"}
+        ),
+    )
+    args = work.parser().parse_args([
+        "run", "proof", "--repo", fixture.repo, "--issue", "12", "--root", str(root),
+    ])
+
+    assert work.run(args, transport=CurrentHeadTransport()) == 0
+    assert json.loads(capsys.readouterr().out)["stage"] == "proof"
+    assert len(published) == 1
+    composed = json.loads(published[0].split("```json\n", 1)[1].split("\n```", 1)[0])
+    committed = git(root, "show", f"HEAD:{POLICY_PATH}").stdout
+    revision = git(root, "rev-parse", "HEAD").stdout.decode().strip()
+    assert composed["policy"]["use_rules"] == {
+        "repository": fixture.repo, "path": POLICY_PATH, "revision": revision,
+        "sha256": hashlib.sha256(committed).hexdigest(),
+    }
+    assert composed["use"]["required"] is True
+    if autocrlf == "true":
+        assert (root / POLICY_PATH).read_bytes() != committed
+
+
 def _dirty_policy(root, condition):
-    target = root / "lib" / "use-rules.json"
+    target = root / ".github" / "change-proof.json"
     if condition == "unstaged":
         target.write_bytes(USE_RULES_BYTES + b" ")
-        return "lib/use-rules.json"
+        return POLICY_PATH
     if condition == "staged":
         target.write_bytes(USE_RULES_BYTES + b" ")
-        git(root, "add", "lib/use-rules.json")
-        return "lib/use-rules.json"
+        git(root, "add", POLICY_PATH)
+        return POLICY_PATH
     if condition == "staged-restored":
         target.write_bytes(USE_RULES_BYTES + b" ")
-        git(root, "add", "lib/use-rules.json")
+        git(root, "add", POLICY_PATH)
         target.write_bytes(USE_RULES_BYTES)
-        return "lib/use-rules.json"
+        return POLICY_PATH
     if condition == "deleted":
         target.unlink()
-        return "lib/use-rules.json"
+        return POLICY_PATH
     if condition == "renamed":
-        git(root, "mv", "lib/use-rules.json", "lib/renamed-rules.json")
-        return "lib/use-rules.json"
+        git(root, "mv", POLICY_PATH, RENAMED_POLICY_PATH)
+        return POLICY_PATH
     if condition == "conflicted":
         branch = git(root, "branch", "--show-current").stdout.decode().strip()
         git(root, "checkout", "-b", "policy-side")
         target.write_bytes(b"side\n")
-        git(root, "add", "lib/use-rules.json")
+        git(root, "add", POLICY_PATH)
         git(
             root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
             "commit", "-m", "side",
         )
         git(root, "checkout", branch)
         target.write_bytes(b"base\n")
-        git(root, "add", "lib/use-rules.json")
+        git(root, "add", POLICY_PATH)
         git(
             root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
             "commit", "-m", "base",
@@ -3779,9 +3985,9 @@ def _dirty_policy(root, condition):
         )
         assert merge.returncode != 0
         assert git(
-            root, "ls-files", "-u", "--", "lib/use-rules.json"
+            root, "ls-files", "-u", "--", POLICY_PATH
         ).stdout, (merge.stdout + merge.stderr).decode(errors="replace")
-        return "lib/use-rules.json"
+        return POLICY_PATH
     raise AssertionError(condition)
 
 
@@ -3807,9 +4013,13 @@ def test_dirty_tracked_policy_refuses_proof_before_any_github_request(
         "run", "proof", "--repo", "example/product", "--issue", "3",
         "--root", str(root),
     ])
-    with pytest.raises(work.WorkError, match="commit or revert") as raised:
+    refusal = (
+        "change-proof policy is missing" if condition in {"deleted", "renamed"}
+        else "commit or revert"
+    )
+    with pytest.raises(work.WorkError, match=refusal) as raised:
         work.run(args, transport=transport)
-    assert relative in str(raised.value)
+    assert relative in str(raised.value).replace("\\", "/")
     assert transport.calls == []
 
 
@@ -3822,8 +4032,8 @@ def test_untracked_policy_refuses_proof_before_any_github_request(tmp_path, poli
         target = root / ".tradecraft" / "work.json"
         target.write_bytes(WORK_CONFIG_BYTES)
     else:
-        target = root / "lib" / "use-rules.json"
-        git(root, "rm", "lib/use-rules.json")
+        target = root / ".github" / "change-proof.json"
+        git(root, "rm", POLICY_PATH)
         git(
             root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
             "commit", "-m", "remove use policy",
@@ -3837,7 +4047,7 @@ def test_untracked_policy_refuses_proof_before_any_github_request(tmp_path, poli
 
     with pytest.raises(work.WorkError, match="commit or revert") as raised:
         work._execute_proof(
-            NoGitHub(), state(pr=True), root, RULES, root / "lib" / "use-rules.json",
+            NoGitHub(), state(pr=True), root, RULES, root / ".github" / "change-proof.json",
             None, None,
         )
     assert target.relative_to(root).as_posix() in str(raised.value)
@@ -3860,7 +4070,7 @@ def test_gitignored_policy_refuses_proof_before_any_github_request(tmp_path):
 
     with pytest.raises(work.WorkError, match="commit or revert") as raised:
         work._execute_proof(
-            NoGitHub(), state(pr=True), root, RULES, root / "lib" / "use-rules.json",
+            NoGitHub(), state(pr=True), root, RULES, root / ".github" / "change-proof.json",
             None, None,
         )
     assert ".tradecraft/work.json" in str(raised.value)
@@ -3869,7 +4079,7 @@ def test_gitignored_policy_refuses_proof_before_any_github_request(tmp_path):
 def test_absent_optional_work_configuration_keeps_unavailable_source(tmp_path):
     root = policy_repository(tmp_path, work_configuration=False)
     snapshot = work._capture_policy_snapshot(
-        root, "example/product", root / "lib" / "use-rules.json",
+        root, "example/product", root / ".github" / "change-proof.json",
         enforce_clean=True,
     )
     assert snapshot.blobs["work_configuration"] is None
@@ -3885,7 +4095,7 @@ def test_policy_snapshot_ignores_unrelated_dirty_files_and_refuses_outside_polic
     root = policy_repository(tmp_path)
     (root / "unrelated.txt").write_bytes(b"dirty\n")
     snapshot = work._capture_policy_snapshot(
-        root, "example/product", root / "lib" / "use-rules.json",
+        root, "example/product", root / ".github" / "change-proof.json",
         enforce_clean=True,
     )
     assert snapshot.problems == ()
@@ -3904,7 +4114,7 @@ def test_run_refuses_root_below_the_repository_top_level(tmp_path):
     nested.mkdir()
     args = work.parser().parse_args([
         "--repo", "example/product", "--issue", "3", "--root", str(nested),
-        "--use-rules", str(root / "lib" / "use-rules.json"),
+        "--use-rules", str(root / ".github" / "change-proof.json"),
     ])
 
     with pytest.raises(work.WorkError, match="repository top level"):
@@ -3920,7 +4130,7 @@ def test_ordinary_read_uses_worktree_policy_while_reporting_dirtiness(
             "name": "worktree", "include": ["/".join(("docs", "**"))], "exclude": [],
         }],
     }
-    (root / "lib" / "use-rules.json").write_text(json.dumps(worktree_rules))
+    (root / ".github" / "change-proof.json").write_text(json.dumps(worktree_rules))
     args = work.parser().parse_args([
         "--repo", "example/product", "--issue", "3", "--root", str(root),
     ])
@@ -3996,7 +4206,7 @@ def test_dirty_use_policy_does_not_change_proof_freshness_composition(
     root = policy_repository(tmp_path)
     fixture = state(FLOOR, USE, pr=True)
     snapshot = work._capture_policy_snapshot(
-        root, "example/product", root / "lib" / "use-rules.json",
+        root, "example/product", root / ".github" / "change-proof.json",
         enforce_clean=True,
     )
     fixture.record_root = work.records.default_record_root().expanduser().resolve()
@@ -4016,7 +4226,7 @@ def test_dirty_use_policy_does_not_change_proof_freshness_composition(
             "name": "worktree", "include": ["/".join(("docs", "**"))], "exclude": [],
         }],
     }
-    (root / "lib" / "use-rules.json").write_text(json.dumps(worktree_rules))
+    (root / ".github" / "change-proof.json").write_text(json.dumps(worktree_rules))
 
     monkeypatch.setattr(work, "read_state", lambda *_args, **_kwargs: fixture)
     args = work.parser().parse_args([
@@ -4052,12 +4262,12 @@ def test_policy_change_between_composition_and_publication_refuses_before_write(
     class RacingTransport:
         def get(self, endpoint, *, paginate=False):
             assert endpoint == "repos/example/product/pulls/7"
-            (root / "lib" / "use-rules.json").write_bytes(USE_RULES_BYTES + b" ")
+            (root / ".github" / "change-proof.json").write_bytes(USE_RULES_BYTES + b" ")
             return fixture.pr
 
     with pytest.raises(work.WorkError, match="commit or revert"):
         work._execute_proof(
-            RacingTransport(), fixture, root, RULES, root / "lib" / "use-rules.json",
+            RacingTransport(), fixture, root, RULES, root / ".github" / "change-proof.json",
             None, None,
         )
     assert published == []
@@ -4079,7 +4289,7 @@ def test_policy_change_during_publication_reports_the_posted_earlier_state(
 
     def publish(*_args, **_kwargs):
         published.append(True)
-        (root / "lib" / "use-rules.json").write_bytes(USE_RULES_BYTES + b" ")
+        (root / ".github" / "change-proof.json").write_bytes(USE_RULES_BYTES + b" ")
         return {"action": "created", "id": 1, "url": "https://example.test/proof"}
 
     monkeypatch.setattr(work, "_publish_proof_comment", publish)
@@ -4091,7 +4301,7 @@ def test_policy_change_during_publication_reports_the_posted_earlier_state(
 
     with pytest.raises(work.WorkError, match="posted for the earlier policy state") as raised:
         work._execute_proof(
-            RacingTransport(), fixture, root, RULES, root / "lib" / "use-rules.json",
+            RacingTransport(), fixture, root, RULES, root / ".github" / "change-proof.json",
             None, None,
         )
     assert "completion is not current" in str(raised.value)
@@ -5404,12 +5614,10 @@ def test_power_user_commands_run_one_named_stage(stage, tmp_path, monkeypatch):
     root = (
         policy_repository(tmp_path, "proof-command") if stage == "proof" else tmp_path
     )
-    use_rules = (
-        root / "lib" / "use-rules.json" if stage == "proof" else LIB / "use-rules.json"
-    )
+    if stage != "proof":
+        write_policy(root)
     args = work.parser().parse_args([
         "run", stage, "--repo", "acme/widget", "--issue", "3", "--root", str(root),
-        "--use-rules", str(use_rules),
     ])
     captured = []
 
@@ -5428,9 +5636,9 @@ def test_power_user_commands_run_one_named_stage(stage, tmp_path, monkeypatch):
 
 def test_power_user_use_is_an_explicit_named_stage(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    write_policy(tmp_path)
     args = work.parser().parse_args([
         "run", "use", "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
-        "--use-rules", str(LIB / "use-rules.json"),
     ])
     captured = []
 
@@ -6747,9 +6955,9 @@ def test_report_handover_preview_keeps_reservation_and_predecessor(tmp_path, mon
 
 def test_named_stage_report_uses_named_role_not_recommendation(tmp_path, monkeypatch):
     ruling_file(tmp_path, monkeypatch)
+    write_policy(tmp_path)
     args = work.parser().parse_args([
         "run", "build", "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path),
-        "--use-rules", str(LIB / "use-rules.json"),
     ])
     captured = []
     class Transport:

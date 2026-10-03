@@ -22,7 +22,9 @@ python <plugin-root>/lib/work.py --repo OWNER/REPO --issue N --root HOLDER_PATH
 
 The fifth merge across the practice's repositories since the last cross-change note, or the status read of a running evaluation, calls for engagement's read across landed changes.
 
-In this repository, `<plugin-root>` is the repository checkout root. For an adopter, it is the installed plugin directory containing `lib/work.py`. `--root` is always the holder checkout's repository top level: it supplies `.tradecraft/work.json` and `lib/use-rules.json` and anchors the registered implementation root, but is never itself the implementation root.
+In this repository, `<plugin-root>` is the repository checkout root. For an adopter, it is the installed plugin directory containing `lib/work.py`. `--root` is always the holder checkout's repository top level: it supplies `.tradecraft/work.json` and the repository's change-proof policy at `<root>/.github/change-proof.json`, and anchors the registered implementation root, but is never itself the implementation root.
+
+Without `--use-rules`, the entrance reads that change-proof policy and refuses if it is absent. Use `--use-rules PATH` to select another rules file for that run, including during repository setup. A relative path resolves against `--root`; an absolute path selects that path, subject to the command's existing policy checks.
 
 ## Decide, then run on the holder's word
 
