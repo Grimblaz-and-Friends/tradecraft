@@ -1446,21 +1446,36 @@ def _marker_value_error(marker: Marker) -> str | None:
 def _native_staffing(state: WorkState, marker: Marker,
                      request: dict[str, object], run: dict[str, object]
                      ) -> dict[str, object] | None:
-    """Judge native seats from facts, including the historical request vendor."""
+    """Judge native seats against the producer available when they launched."""
     if marker.name not in {"use", "cold-verdict"} or "reserved_source_output" not in request:
         return None
     requested = request.get("requested")
-    vendor = (run["actual_vendor"] if "actual_vendor" in run else
-              requested.get("vendor") if isinstance(requested, dict) else None)
+    if "actual_vendor" in run:
+        vendor = run["actual_vendor"]
+    else:
+        actual = next((
+            attempt for attempt in reversed(run.get("attempts", []))
+            if isinstance(attempt, dict) and attempt.get("outcome") in (
+                "success", "success_uncontinuable",
+            )
+        ), None)
+        vendor = (actual["vendor"] if actual is not None and "vendor" in actual else
+                  requested.get("vendor") if isinstance(requested, dict) else None)
     if vendor not in ("codex", "claude"):
         raise WorkError("native seat bundle does not prove a supported seat vendor")
+    launched_at = request.get("launched_at")
+    if launched_at is None:
+        launched_at = request.get("recorded_at")
     if marker.name == "use":
         producer, _source = _producer_vendor(
             state, RESUME_SOURCE_STAGES["build"],
             revision=marker.attributes["head"], source_root=state.holder_root,
+            completed_no_later_than=launched_at,
         )
     else:
-        producer, _source = _producer_vendor(state, frozenset({"artifact"}))
+        producer, _source = _producer_vendor(
+            state, frozenset({"artifact"}), completed_no_later_than=launched_at,
+        )
     degraded = vendor == producer
     reason = request.get("same_vendor_reason") if degraded else None
     if degraded and (not isinstance(reason, str) or not reason):
@@ -4244,7 +4259,8 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
 
 def _producer_vendor(state: WorkState, stages: frozenset[str], *,
                      revision: str | None = None,
-                     source_root: Path | None = None) -> tuple[str, str]:
+                     source_root: Path | None = None,
+                     completed_no_later_than: str | None = None) -> tuple[str, str]:
     def ancestor(older: str, newer: str, bundle: str) -> bool:
         result = _git(["merge-base", "--is-ancestor", older, newer], source_root)
         if result.returncode not in {0, 1}:
@@ -4258,6 +4274,7 @@ def _producer_vendor(state: WorkState, stages: frozenset[str], *,
     matches = _matching_bundles(
         f"{state.repo}#{state.issue_number}", stages, store,
         outcomes=RESUMABLE_BUNDLE_OUTCOMES,
+        completed_no_later_than=completed_no_later_than,
     )
     integration = state.pr or state.merged_pr
     for _completed, path, request, run in reversed(matches):
