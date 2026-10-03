@@ -3743,7 +3743,8 @@ def dispatch_bundle(record_root, *, work_value="example/product#12", stage="buil
 
 def native_bundle(record_root, monkeypatch, *, stage="use", vendor="claude",
                   actual_vendor=None, reason=None, historical=False, name="native",
-                  completed_at="2026-09-20T10:00:00+00:00"):
+                  completed_at="2026-09-20T10:00:00+00:00", launched_at=None,
+                  recorded_at=None, launched_at_unavailable_reason=None):
     folder = record_root / name
     folder.mkdir(parents=True)
     output = folder / "result.md"
@@ -3762,21 +3763,27 @@ def native_bundle(record_root, monkeypatch, *, stage="use", vendor="claude",
     ]
     if reason is not None:
         arguments.extend(["--same-vendor-reason", reason])
+    if launched_at is not None:
+        arguments.extend(["--launched-at", launched_at])
+    if launched_at_unavailable_reason is not None:
+        arguments.extend(["--launched-at-unavailable-reason", launched_at_unavailable_reason])
     returned = folder / "return.json"
     returned.write_bytes(b'{"type":"turn.completed"}\n')
-    class FixedTime:
+    moment = datetime.fromisoformat(recorded_at or completed_at)
+    class FixedTime(datetime):
         @staticmethod
         def now(_zone):
-            return datetime.fromisoformat(completed_at)
+            return moment
     with monkeypatch.context() as clock:
         clock.setattr(work.records, "datetime", FixedTime)
         work.records.begin_native(work.records.parser().parse_args(arguments))
+        moment = datetime.fromisoformat(completed_at)
         work.records.finish_native(work.records.parser().parse_args([
             "finish", "--output", str(output), "--vendor", actual_vendor or vendor,
             "--return-file", str(returned), "--outcome", "success",
         ]))
     if historical:
-        # Old native completions had only the request vendor and unchecked usage.
+        # Old native completions recorded the actual vendor in the attempt, not at top level.
         run_path = work.records.sidecar(output, ".run.json")
         run = json.loads(run_path.read_bytes())
         run.pop("actual_vendor", None)
@@ -3830,6 +3837,138 @@ def assert_native_claim(fixture, marker, stage, *, vendor=None, staffing=None, r
         assert declaration["staffing_status"] == staffing
         assert declaration["same_vendor_reason"] == reason
     return declaration
+
+
+@pytest.mark.parametrize("later_completed", ["09:30", "10:30", "11:30"])
+def test_native_cold_staffing_keeps_the_author_at_seat_launch(tmp_path, monkeypatch, later_completed):
+    fixture, marker = native_marker_state(tmp_path, stage="cold-seat")
+    producer_bundle(fixture.record_root, stage="artifact", vendor="codex")
+    native_bundle(fixture.record_root, monkeypatch, stage="cold-seat",
+                  launched_at="2026-09-20T09:00:00Z")
+    later = producer_bundle(fixture.record_root, stage="artifact", vendor="claude", name="draft-2.md",
+                            completed_at=f"2026-09-20T{later_completed}:00Z")
+    # The unbounded launcher rule still sees the latest author; the native read must not.
+    assert work._producer_vendor(fixture, frozenset({"artifact"})) == ("claude", str(later))
+    assert_native_claim(fixture, marker, "cold-seat", vendor="claude", staffing="qualified")
+
+
+@pytest.mark.parametrize("later_stage", ["floor", "review-disposition"])
+@pytest.mark.parametrize("proven", [False, True])
+@pytest.mark.parametrize("later_completed", ["09:30", "10:30", "11:30"])
+def test_native_use_staffing_ignores_producers_after_seat_launch(
+        tmp_path, monkeypatch, later_stage, proven, later_completed):
+    fixture, marker = native_marker_state(tmp_path)
+    producer_bundle(fixture.record_root, vendor="codex")
+    native_bundle(fixture.record_root, monkeypatch, launched_at="2026-09-20T09:00:00Z")
+    completed = f"2026-09-20T{later_completed}:00Z"
+    if proven:
+        later = producer_bundle(fixture.record_root, stage=later_stage, vendor="claude",
+                                completed_at=completed)
+        assert work._producer_vendor(fixture, work.RESUME_SOURCE_STAGES["build"],
+                                     revision=SHA) == ("claude", str(later))
+    else:
+        output = native_bundle(fixture.record_root, monkeypatch, stage=later_stage,
+                               name="later-producer", completed_at=completed)
+        run_path = work.records.sidecar(output, ".run.json")
+        run = json.loads(run_path.read_bytes())
+        assert "actual_vendor" not in run
+        run["revision_after"] = SHA
+        run_path.write_bytes(work.records.json_bytes(run))
+        with pytest.raises(work.WorkError, match="implementation vendor is unproved"):
+            work._producer_vendor(fixture, work.RESUME_SOURCE_STAGES["build"], revision=SHA)
+    assert_native_claim(fixture, marker, "use", vendor="claude", staffing="qualified")
+
+
+@pytest.mark.parametrize("stage", ["use", "cold-seat"])
+def test_native_staffing_uses_recorded_at_when_launch_is_unavailable(tmp_path, monkeypatch, stage):
+    fixture, marker = native_marker_state(tmp_path, stage=stage)
+    producer_stage = "build" if stage == "use" else "artifact"
+    producer_bundle(fixture.record_root, stage=producer_stage)
+    output = native_bundle(fixture.record_root, monkeypatch, stage=stage,
+                           recorded_at="2026-09-20T09:00:00Z",
+                           launched_at_unavailable_reason="native-tool-did-not-retain-launch")
+    request = json.loads(work.records.sidecar(output, ".request.json").read_bytes())
+    assert request["launched_at"] is None
+    assert request["recorded_at"] == "2026-09-20T09:00:00+00:00"
+    producer_bundle(fixture.record_root, stage=producer_stage, vendor="claude", name="later.md",
+                    completed_at="2026-09-20T09:30:00Z")
+    assert_native_claim(fixture, marker, stage, vendor="claude", staffing="qualified")
+
+
+def test_native_cold_would_not_verdicts_keep_the_two_round_cap_after_author_switch(tmp_path, monkeypatch):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD_NOT, ARTIFACT, WOULD_NOT, _settled("cap"), HOLDER)
+    for comment, at in zip(fixture.issue_comments, ("07:00", "08:30", "10:00", "11:00", "12:00", "13:00", "14:00")):
+        comment["created_at"] = f"2026-09-20T{at}:00Z"
+    fixture.record_root = tmp_path / "dispatches"
+    producer_bundle(fixture.record_root, stage="artifact", vendor="codex", name="draft-1.md")
+    native_bundle(fixture.record_root, monkeypatch, stage="cold-seat", vendor="claude", name="cold-1",
+                  launched_at="2026-09-20T09:00:00Z", completed_at="2026-09-20T09:30:00Z")
+    producer_bundle(fixture.record_root, stage="artifact", vendor="claude", name="draft-2.md",
+                    completed_at="2026-09-20T10:30:00Z")
+    native_bundle(fixture.record_root, monkeypatch, stage="cold-seat", vendor="codex", name="cold-2",
+                  launched_at="2026-09-20T11:15:00Z", completed_at="2026-09-20T11:30:00Z")
+    work.validate_marker_claims(fixture)
+    phase = fixture.artifact_phase
+    assert phase.would_not_count == 2
+    assert phase.latest_settlement.attributes["route"] == "cap"
+    assert phase.invalid_settlements == ()
+    assert work.decide(fixture, RULES).stage == "build"
+    verdicts = [marker for marker in fixture.raw_markers if marker.name == "cold-verdict"]
+    for marker, vendor in zip(verdicts, ("claude", "codex")):
+        assert_native_claim(fixture, marker, "cold-seat", vendor=vendor, staffing="qualified")
+
+
+@pytest.mark.parametrize("stage", ["use", "cold-seat"])
+@pytest.mark.parametrize("outcome", ["success", "success_uncontinuable"])
+@pytest.mark.parametrize("claim,reason,error", [
+    ("qualified", None, "no recorded same-vendor reason"),
+    ("qualified", "owner-selected", "staffing disagrees"),
+    ("degraded", "owner-selected", None),
+])
+def test_historical_native_attempt_vendor_precedes_request(
+        tmp_path, monkeypatch, stage, outcome, claim, reason, error):
+    fixture, marker = native_marker_state(tmp_path, stage=stage, staffing=claim,
+                                          reason=reason if claim == "degraded" else None)
+    producer_bundle(fixture.record_root, stage="build" if stage == "use" else "artifact")
+    output = native_bundle(fixture.record_root, monkeypatch, stage=stage, vendor="claude",
+                           actual_vendor="codex", historical=True, reason=reason)
+    run_path = work.records.sidecar(output, ".run.json")
+    run = json.loads(run_path.read_bytes())
+    assert "actual_vendor" not in run
+    run["attempts"][0]["outcome"] = outcome
+    run_path.write_bytes(work.records.json_bytes(run))
+    assert_native_claim(fixture, marker, stage, vendor="codex", staffing="degraded", reason=reason, error=error)
+
+
+@pytest.mark.parametrize("stage", ["use", "cold-seat"])
+@pytest.mark.parametrize("vendor", ["unsupported", None, ["codex"], {"vendor": "codex"}])
+def test_historical_native_explicit_attempt_vendor_is_refused(tmp_path, monkeypatch, stage, vendor):
+    fixture, marker = native_marker_state(tmp_path, stage=stage)
+    producer_bundle(fixture.record_root, stage="build" if stage == "use" else "artifact")
+    output = native_bundle(fixture.record_root, monkeypatch, stage=stage, historical=True)
+    run_path = work.records.sidecar(output, ".run.json")
+    run = json.loads(run_path.read_bytes())
+    run["attempts"][0]["vendor"] = vendor
+    run_path.write_bytes(work.records.json_bytes(run))
+    assert_native_claim(fixture, marker, stage, error="supported seat vendor")
+
+
+@pytest.mark.parametrize("stage", ["use", "cold-seat"])
+@pytest.mark.parametrize("attempt", ["missing", "vendor-missing", "unsuccessful"])
+def test_historical_native_request_vendor_is_last_resort(tmp_path, monkeypatch, stage, attempt):
+    fixture, marker = native_marker_state(tmp_path, stage=stage)
+    producer_bundle(fixture.record_root, stage="build" if stage == "use" else "artifact")
+    output = native_bundle(fixture.record_root, monkeypatch, stage=stage, historical=True)
+    run_path = work.records.sidecar(output, ".run.json")
+    run = json.loads(run_path.read_bytes())
+    if attempt == "missing":
+        run["attempts"] = []
+    elif attempt == "vendor-missing":
+        run["attempts"][0].pop("vendor")
+    else:
+        run["attempts"][0].update(vendor="codex", outcome="error")
+    run_path.write_bytes(work.records.json_bytes(run))
+    assert_native_claim(fixture, marker, stage, vendor="claude", staffing="qualified")
 
 
 @pytest.mark.parametrize("stage", ["use", "cold-seat"])
@@ -3959,9 +4098,9 @@ def test_historical_native_instance_uses_exact_floor_and_last_pre_marker_request
     descendant = git(source, "rev-parse", "HEAD").stdout.decode().strip()
     fixture, marker = native_marker_state(tmp_path, head=used)
     fixture.holder_root = source
-    producer_bundle(fixture.record_root, revision=built)
+    producer_bundle(fixture.record_root, revision=built, completed_at="2026-09-20T04:00:00+00:00")
     exact = producer_bundle(fixture.record_root, stage="floor", revision=used,
-                            completed_at="2026-09-20T09:00:00+00:00")
+                            completed_at="2026-09-20T05:00:00+00:00")
     for stage in ("review-disposition", "floor"):
         producer_bundle(fixture.record_root, stage=stage, revision=descendant, name="later.md",
                         completed_at="2026-09-20T10:30:00+00:00")
@@ -3976,7 +4115,9 @@ def test_historical_native_instance_uses_exact_floor_and_last_pre_marker_request
         run = json.loads(work.records.sidecar(output, ".run.json").read_bytes())
         assert "reserved_source_output" in request
         assert request["requested"]["vendor"] == "claude"
+        assert run["attempts"][0]["vendor"] == "claude"
         assert not {"actual_vendor", "staffing_status", "staffing_qualification"} & run.keys()
+        assert work._time(json.loads(exact.read_bytes())["completed_at"]) < work._time(request["launched_at"])
     original = work._producer_vendor
     selected = []
     def capture(*args, **kwargs):
@@ -4019,6 +4160,7 @@ def test_native_judgment_mirrors_launcher_producer_arguments(tmp_path, monkeypat
     assert_native_claim(fixture, marker, stage, vendor="claude", staffing="qualified")
     expected_stages = work.RESUME_SOURCE_STAGES["build"] if stage == "use" else frozenset({"artifact"})
     expected_kwargs = {"revision": SHA, "source_root": fixture.holder_root} if stage == "use" else {}
+    expected_kwargs["completed_no_later_than"] = "2026-09-20T10:00:00+00:00"
     assert calls and all(call == (fixture, expected_stages, expected_kwargs) for call in calls)
 
 
