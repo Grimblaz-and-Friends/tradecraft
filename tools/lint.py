@@ -304,6 +304,16 @@ BASELINE_UNRESOLVABLE = {
 # reason, the reason is enforced non-empty, and a row is one visible line of
 # diff on the pull request that created the situation.
 UNREPAIRABLE_AFTER_LANDING: dict[tuple[str, int, str], str] = {
+    ("D-679-2026-09-20-cross-change-read.md", 37, "lib/use-rules.json"):
+        "target retired by issue #672; the sentence records the old policy's use classification at its base",
+    ("D-691-2026-09-21-steward-and-cross-session-intake.md", 35, "lib/use-rules.json"):
+        "target retired by issue #672; the sentence records the old policy's use obligation for PR #691",
+    ("D-701-2026-09-21-change-proof-policy-mirror.md", 9, "lib/use-rules.json"):
+        "target retired by issue #672; the sentence describes the old entrance default rather than locating current policy",
+    ("D-701-2026-09-21-change-proof-policy-mirror.md", 13, "lib/use-rules.json"):
+        "target retired by issue #672 with the two-copy arrangement this sentence records",
+    ("D-701-2026-09-21-change-proof-policy-mirror.md", 15, "tools/tests/test_change_proof_policy.py"):
+        "target retired by issue #672 with the mirror-equality test this sentence characterizes",
     ("D-156-2026-08-24-installable-plugin-and-shipped-charter.md", 43,
      "hooks/README.md"):
         "target retired by PR #222 with the lifecycle-hook fallback it documented",
