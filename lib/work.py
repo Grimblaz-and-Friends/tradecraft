@@ -55,7 +55,12 @@ PATH_NO_USE_REASON = (
     "schema-version-1 use policy"
 )
 BRIEF_GUIDANCE = (
-    "Follow <plugin-root>/skills/engagement/references/the-brief.md and write Shape, Readers, "
+    "Design the implementation brief with the owner in turns per "
+    "<plugin-root>/skills/engagement/references/design-sitting.md, one decision per "
+    "turn, starting from the problem's cause where the work is a problem rather "
+    "than a want. Bring the whole item only when "
+    "the next turn would add execution detail, in "
+    "<plugin-root>/skills/engagement/references/the-brief.md's form: Shape, Readers, "
     "a decision block, Not this, and exactly one lawful Review risk / Review lane pair. "
     "Before putting the item, run python <plugin-root>/lib/brief.py --check FILE. The "
     "command checks presence only; the reference's content pass still runs."
