@@ -32,6 +32,7 @@ class Deadline:
             raise ValueError("invocation start must be a finite past monotonic time")
         self.reserve = min(60.0, self.limit / 10)
         self.end = self.started + self.limit
+        self.probe_seconds = 0.0
 
     def remaining(self, *, cleanup=False):
         remaining = self.end - time.monotonic() - (0 if cleanup else self.reserve)
@@ -47,7 +48,12 @@ class Deadline:
             remaining -= self.reserve / 2
         if remaining <= 0:
             raise TimeoutError("caller limit leaves no probe window before final recording")
+        if cleanup and remaining <= self.probe_seconds:
+            raise TimeoutError("remaining cleanup window is shorter than an observed probe")
         return min(default, remaining)
+
+    def note_probe(self, started):
+        self.probe_seconds = max(self.probe_seconds, time.monotonic() - started)
 
     @property
     def cleanup_end(self):

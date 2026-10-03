@@ -16,6 +16,50 @@ from test_work import state, registry_row, MECHANICAL
 LIB = Path(__file__).resolve().parents[1]
 
 
+def exit_clock():
+    """Measure Windows process exit, independently of the observer's scheduling."""
+    if os.name != "nt":
+        return lambda child, started: time.monotonic() - started
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetSystemTimePreciseAsFileTime.argtypes = [ctypes.POINTER(wintypes.FILETIME)]
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
+    anchors = []
+    for _ in range(3):
+        anchor = wintypes.FILETIME()
+        kernel.GetSystemTimePreciseAsFileTime(ctypes.byref(anchor))
+        # Each later monotonic reading is an upper bound. Pick the tightest
+        # calibration so a descheduled observer cannot enlarge that bound.
+        monotonic = time.monotonic()
+        ticks = anchor.dwHighDateTime << 32 | anchor.dwLowDateTime
+        anchors.append((monotonic, ticks))
+    anchor_monotonic, anchor_ticks = min(anchors, key=lambda pair: pair[0] - pair[1] / 10000000)
+    def elapsed(child, started):
+        assert child.returncode is not None, "The launcher must have exited."
+        values = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel.GetProcessTimes(int(child._handle), *(ctypes.byref(v) for v in values)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        exit_ticks = values[1].dwHighDateTime << 32 | values[1].dwLowDateTime
+        assert exit_ticks > anchor_ticks
+        return anchor_monotonic - started + (exit_ticks - anchor_ticks) / 10000000
+    return elapsed
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native process exit timestamp")
+def test_exit_clock_excludes_delay_after_the_launcher_has_exited(tmp_path):
+    elapsed = exit_clock()
+    started = time.monotonic()
+    with subprocess.Popen([sys.executable, "-c", "pass"], cwd=tmp_path,
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+        child.communicate(timeout=10)
+        measured = elapsed(child, started)
+        observed_exit = time.monotonic()
+        time.sleep(0.2)
+        assert elapsed(child, started) == measured
+        assert time.monotonic() - observed_exit >= 0.19
+
+
 def kill_tree(pid):
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -78,6 +122,7 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
         command.extend(["--lineage-branch", branch, "--holder-session-id", "holder-session"])
     if kind == "seat":
         command.extend(["--classification", "cold", "--requires", "read", "--own-vendor", "claude" if vendor == "codex" else "codex"])
+    measured_exit = exit_clock()
     started = time.monotonic()
     command.extend(["--invocation-started-monotonic", str(started)])
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -100,12 +145,15 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
                     break
             except (OSError, ValueError):
                 pass
+            if process.poll() is not None:
+                break
             time.sleep(0.05)
         if termination == "hard-kill":
             kill_tree(process.pid)
         process.communicate(timeout=20 if ceiling else 5)
         if ceiling:
-            elapsed = time.monotonic() - started
+            elapsed = measured_exit(process, started)
+            record_property("observer_elapsed_seconds", time.monotonic() - started)
             record_property("launcher_elapsed_seconds", elapsed)
             record_property("caller_limit_seconds", caller_limit)
             assert elapsed < caller_limit, f"whole invocation took {elapsed:.3f}s against the declared {caller_limit}s limit"
@@ -114,7 +162,11 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
         if termination == "hard-kill":
             assert not saved.get("completed_at")
         else:
-            assert saved["completed_at"] and saved["outcome"] == "interrupted"
+            assert saved["completed_at"] and saved["outcome"] == "interrupted", {
+                "outcome": saved["outcome"], "error": saved.get("error"),
+                "attempts": [{key: attempt.get(key) for key in ("outcome", "reason", "exit_code")}
+                             for attempt in saved["attempts"]],
+            }
             assert saved["interruption_cause"] == "ceiling"
             attempt = saved["attempts"][0]
             assert "caller limit 15s" in attempt["reason"]

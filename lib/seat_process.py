@@ -106,6 +106,39 @@ def _buffered_process(command, *, input, cwd, timeout, env=None):
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
+def _windows_pipe_reader(process, ended):
+    """Read only available bytes; never leave a synchronous pipe read pending."""
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.PeekNamedPipe.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                                    wintypes.LPVOID, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+    kernel.PeekNamedPipe.restype = wintypes.BOOL
+    streams = [(name, getattr(process, name)) for name in ("stdout", "stderr")]
+    handles = {name: msvcrt.get_osfhandle(stream.fileno()) for name, stream in streams}
+    def read_event(timeout):
+        for name, stream in streams:
+            if name in ended:
+                continue
+            available = wintypes.DWORD()
+            if not kernel.PeekNamedPipe(handles[name], None, 0, None, ctypes.byref(available), None):
+                error = ctypes.get_last_error()
+                if error in (109, 232):  # Broken pipe / no data: all writers closed.
+                    return name, None
+                raise ctypes.WinError(error)
+            if available.value:
+                # Only this thread reads; bytes reported by PeekNamedPipe cannot
+                # disappear before this read. Alternate streams to avoid starvation.
+                streams.reverse()
+                return name, os.read(stream.fileno(), min(available.value, 65536))
+        if timeout:
+            time.sleep(timeout)
+        raise queue.Empty
+    return read_event
+
+
 def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 on_launch=None, env=None, cleanup_deadline=None):
     """Drain both pipes while input is supplied independently of the deadline.
@@ -135,6 +168,10 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
             except (OSError, ValueError):
                 pass
             finally:
+                # The reader owns closure; a descendant can retain this pipe
+                # after bounded cleanup ends. Never close its pending read from
+                # the deadline thread.
+                getattr(process, name).close()
                 events.put((name, None))
 
         def supply():
@@ -158,9 +195,6 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 except ProcessLookupError:
                     pass
 
-        threads = [threading.Thread(target=drain, args=(name,), daemon=True)
-                   for name in captured]
-        threads.append(threading.Thread(target=supply, daemon=True))
         ended = set()
         stopped = False
         drain_deadline = None
@@ -170,6 +204,20 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
             return min(end, cleanup_deadline) if cleanup_deadline is not None else end
 
         try:
+            if os.name == "nt":
+                # Thread.start itself waits for its new thread to be scheduled.
+                # Poll Windows pipes in the deadline thread, including short Git
+                # probes, instead of spending their reserve starting blocked readers.
+                threads = []
+                read_event = _windows_pipe_reader(process, ended)
+            else:
+                threads = [threading.Thread(target=drain, args=(name,), daemon=True)
+                           for name in captured]
+                read_event = events.get
+            if input:
+                threads.append(threading.Thread(target=supply, daemon=True))
+            else:
+                process.stdin.close()
             if on_launch:
                 on_launch(process.pid)
             for thread in threads:
@@ -186,11 +234,18 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                     drain_deadline = drain_end(current)
                 if drain_deadline is not None and current >= drain_deadline:
                     break
-                if on_tick:
+                if on_tick and not stopped:
                     on_tick()
+                # A checkpoint can consume the remaining allowance. Recheck
+                # after it instead of renewing a wait using the earlier clock.
+                current = time.monotonic()
+                if not stopped and current >= deadline:
+                    continue
+                wait_end = drain_deadline if drain_deadline is not None else deadline
+                if current >= wait_end:
+                    break
                 try:
-                    name, chunk = events.get(timeout=min(0.05, max(0, deadline - current))
-                                             if not stopped else 0.01)
+                    name, chunk = read_event(timeout=min(0.05, wait_end - current))
                 except queue.Empty:
                     continue
                 if chunk is None:
@@ -217,8 +272,12 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 process.wait(timeout=max(0, wait_end - time.monotonic()))
             except subprocess.TimeoutExpired:
                 pass
-            for stream in (process.stdout, process.stderr):
-                stream.close()
+            if os.name == "nt":
+                # Polling leaves no outstanding read to make close wait for EOF.
+                process.stdout.close()
+                process.stderr.close()
+            # POSIX reader threads close their own handles once reads finish.
+            # Never acquire their close/read lock after the drain has expired.
         stdout, stderr = bytes(captured["stdout"]), bytes(captured["stderr"])
         if stopped:
             raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)

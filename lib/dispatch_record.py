@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 from winio import utf8_stdio
@@ -91,12 +92,17 @@ def require_output_outside_root(output: Path, root: Path | None) -> None:
 
 
 def runtime_version(executable: list[str]) -> str | None:
+    started = time.monotonic()
     try:
         result = run_process([*executable, "--version"], input=b"", cwd=Path.cwd(),
                              timeout=lifecycle.probe_timeout(), on_tick=lambda: None,
                              cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
+    finally:
+        deadline = lifecycle.current_deadline()
+        if deadline is not None:
+            deadline.note_probe(started)
     if result.returncode:
         return None
     try:
@@ -106,12 +112,17 @@ def runtime_version(executable: list[str]) -> str | None:
 
 
 def git_revision(root: Path) -> str | None:
+    started = time.monotonic()
     try:
         result = run_process(["git", "-C", str(root), "rev-parse", "HEAD"], input=b"", cwd=Path.cwd(),
                              timeout=lifecycle.probe_timeout(), on_tick=lambda: None,
                              cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
+    finally:
+        deadline = lifecycle.current_deadline()
+        if deadline is not None:
+            deadline.note_probe(started)
     if result.returncode:
         return None
     try:

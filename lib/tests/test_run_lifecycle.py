@@ -241,6 +241,77 @@ def test_growing_record_keeps_identity_after_malformed_partial_events(tmp_path, 
             growing.checkpoint()
 
 
+
+def test_stream_chunks_record_identity_immediately_without_redundant_writes(tmp_path, monkeypatch):
+    output = tmp_path / "return"
+    run_path = records.sidecar(output, ".run.json")
+    out, err = records.sidecar(output, ".stdout.log"), records.sidecar(output, ".stderr.log")
+    current, writes = [10.0], []
+    monkeypatch.setattr(capture.time, "monotonic", lambda: current[0])
+    original = capture.atomic_record
+    def recording(path, value):
+        original(path, value)
+        writes.append(json.loads(path.read_bytes()))
+    monkeypatch.setattr(capture, "atomic_record", recording)
+    with records.reserve_bundle([output, run_path, out, err], output) as streams:
+        streams.mark_ready()
+        run, attempt = {}, {}
+        growing = capture.GrowingRun(run_path, run, streams)
+        growing.begin_attempt(attempt, "codex", out, err)
+        growing.launched(os.getpid())
+        writes.clear()
+        growing.output("stdout", b"diagnostic\n")
+        assert len(writes) == 1
+        growing.output("stdout", b"more diagnostic\n")
+        assert len(writes) == 1
+        current[0] += 0.1  # Earlier than the elapsed checkpoint interval.
+        event = b'{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}\n'
+        growing.output("stdout", event)
+        assert len(writes) == 2 and writes[-1]["session_identity"]["session_id"]
+        current[0] += 0.25
+        growing.tick()
+        assert len(writes) == 3 and writes[-1]["elapsed_checkpoint_seconds"] > 0
+        current[0] += 1
+        growing.finish_attempt()
+        assert len(writes) == 3, "Completion must not pay for another timer fsync."
+        growing.finish()
+        assert len(writes) == 4 and writes[-1]["lifecycle"] == "completed"
+        assert out.read_bytes() == b"diagnostic\nmore diagnostic\n" + event
+
+
+@pytest.mark.parametrize("failure", ["transient", "persistent", "permission", "expired"])
+def test_atomic_record_replacement_retry_is_bounded_and_preserves_previous_record(tmp_path, monkeypatch, failure):
+    path = tmp_path / "run.json"
+    path.write_bytes(b'{"prior":true}')
+    current, calls = [100.0], []
+    monkeypatch.setattr(capture.time, "monotonic", lambda: current[0])
+    monkeypatch.setattr(capture.time, "sleep", lambda delay: current.__setitem__(0, current[0] + delay))
+    deadline = lifecycle.Deadline(1)
+    if failure == "expired":
+        current[0] = deadline.end
+    original = capture.os.replace
+    def replace(source, target):
+        calls.append(current[0])
+        if failure == "transient" and len(calls) > 1:
+            return original(source, target)
+        error = PermissionError("replacement denied")
+        error.winerror = 1314 if failure == "permission" else 32
+        raise error
+    monkeypatch.setattr(capture.os, "replace", replace)
+    with lifecycle.deadline_scope(deadline):
+        if failure == "transient" and os.name == "nt":
+            capture.atomic_record(path, {"new": True})
+            assert json.loads(path.read_bytes()) == {"new": True} and len(calls) == 2
+        else:
+            with pytest.raises(PermissionError):
+                capture.atomic_record(path, {"new": True})
+            assert json.loads(path.read_bytes()) == {"prior": True}
+    bound = deadline.end if failure == "expired" else deadline.end - deadline.reserve / 4
+    assert current[0] <= bound + 0.000001
+    if failure in {"permission", "expired"}:
+        assert len(calls) == 1
+    assert not list(tmp_path.glob(".run-*"))
+
 def test_claude_stream_terminal_and_historical_json():
     result = {"type": "result", "result": "final", "is_error": False}
     raw = json.dumps(result).encode()
@@ -258,6 +329,25 @@ def test_malformed_usage_and_expired_probes_stay_unknown(monkeypatch, tmp_path):
         assert records.runtime_version(["never-launched"]) is None
         assert records.git_revision(tmp_path) is None
 
+
+
+@pytest.mark.parametrize("probe_seconds", [0.1, 0.9])
+def test_cleanup_does_not_start_a_probe_that_previously_outlasted_its_window(tmp_path, monkeypatch, probe_seconds):
+    current, calls = [100.0], []
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: current[0])
+    deadline = lifecycle.Deadline(15)
+    def probe(command, **kwargs):
+        calls.append(command)
+        current[0] += probe_seconds
+        return subprocess.CompletedProcess(command, 0, b"fixture-head", b"")
+    monkeypatch.setattr(records, "run_process", probe)
+    with lifecycle.deadline_scope(deadline):
+        assert records.git_revision(tmp_path) == "fixture-head"
+        assert deadline.probe_seconds == pytest.approx(probe_seconds)
+        current[0] = 113.5
+        with lifecycle.cleanup_scope():
+            assert records.git_revision(tmp_path) == ("fixture-head" if probe_seconds < 0.75 else None)
+    assert len(calls) == (2 if probe_seconds < 0.75 else 1)
 
 def test_cleanup_probes_leave_time_for_the_completion_write(monkeypatch, tmp_path):
     current = [100.0]

@@ -9,7 +9,7 @@ import re
 import tempfile
 import time
 
-from run_lifecycle import process_identity
+from run_lifecycle import current_deadline, process_identity
 
 SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
 HEADER = re.compile(r"(?im)^session id:\s*([0-9a-f]{8}-[0-9a-f-]{27,})\s*$")
@@ -22,7 +22,23 @@ def atomic_record(path, value):
         stream.flush()
         os.fsync(stream.fileno())
     try:
-        os.replace(staged, path)
+        # A Windows reader opened without delete sharing can briefly prevent
+        # replacement. Retry the staged write, never the vendor launch, and keep
+        # the retry inside the caller's recording allowance.
+        retry_end = time.monotonic() + 1.0
+        deadline = current_deadline()
+        if deadline is not None:
+            retry_end = min(retry_end, deadline.end - deadline.reserve / 4)
+        while True:
+            try:
+                os.replace(staged, path)
+                break
+            except PermissionError as exc:
+                remaining = retry_end - time.monotonic()
+                if (os.name != "nt" or getattr(exc, "winerror", None) not in (5, 32, 33)
+                        or not path.exists() or remaining <= 0):
+                    raise
+                time.sleep(min(0.01, remaining))
     finally:
         staged.unlink(missing_ok=True)
 
@@ -56,6 +72,7 @@ class GrowingRun:
         self.last_tick = 0
         self.started = None
         self.closed = False
+        self.identity_changed = False
         record["launcher_process"] = process_identity()
         record["lifecycle"] = "running"
         record["elapsed_checkpoint_seconds"] = 0
@@ -71,6 +88,7 @@ class GrowingRun:
         if self.closed:
             raise RuntimeError("completed run is immutable")
         atomic_record(self.path, self.record)
+        self.identity_changed = False
 
     def begin_attempt(self, attempt, vendor, stdout_path, stderr_path):
         if self.started is not None:
@@ -93,11 +111,11 @@ class GrowingRun:
             self.record["recipient_process"] = {"pid": pid, "unavailable_reason": "process exited before identity read"}
         self.checkpoint()
 
-    def tick(self):
+    def tick(self, *, persist=True):
         current = time.monotonic()
         if self.started is not None:
             self.record["elapsed_checkpoint_seconds"] = current - self.started
-        if current - self.last_tick >= 0.25:
+        if persist and (self.identity_changed or current - self.last_tick >= 0.25):
             self.last_tick = current
             self.checkpoint()
 
@@ -105,6 +123,8 @@ class GrowingRun:
         if not isinstance(session, str) or not SESSION.fullmatch(session):
             return
         identity = self.record.setdefault("session_identity", {})
+        before = dict(identity)
+        previous_error = self.record.get("session_identity_error")
         previous = identity.get("session_id")
         identity.update(reported_session_id=session, reported_source=source)
         if session == self.holder:
@@ -116,6 +136,7 @@ class GrowingRun:
         else:
             identity.update(session_id=session, source=source)
             self.attempt.setdefault("observed", {}).update(session_id=session, session_id_source=source)
+        self.identity_changed |= (identity != before or self.record.get("session_identity_error") != previous_error)
 
     def output(self, name, chunk):
         stream = self.streams[self.paths[name]]
@@ -126,9 +147,9 @@ class GrowingRun:
         self.pending[name] = lines.pop()
         for line in lines:
             self.event(name, line)
+        # Flush raw bytes on every chunk; atomically record new identity at once
+        # and elapsed time on the timer, without duplicate fsyncs per chunk.
         self.tick()
-        # Identity changes become durable immediately, independently of the timer.
-        self.checkpoint()
 
     def event(self, name, line):
         if name == "stderr":
@@ -154,7 +175,10 @@ class GrowingRun:
         for name, data in self.pending.items():
             if data:
                 self.event(name, data)
-        self.tick()
+        # Finalization owns the next durable completion write. Preserve a newly
+        # parsed trailing identity immediately, but do not spend the reserve on
+        # another timer checkpoint after the runner has already stopped.
+        self.tick(persist=self.identity_changed)
 
     def finish(self):
         self.record["lifecycle"] = "completed"

@@ -697,7 +697,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                     attempt["permission_boundary_unavailable_reason"] = reason
                 if "observed" not in attempt:
                     records.add_unobserved(attempt, reason)
-                growing.checkpoint()
+                if record.get("interruption_cause") != "ceiling":
+                    growing.checkpoint()
                 if outcome == "success":
                     record["actual_vendor"] = vendor
                     if record["fallback_reason"]:

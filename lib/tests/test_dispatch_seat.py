@@ -1107,7 +1107,7 @@ def test_fallback_cannot_read_discarded_transcript_but_caller_can(job, monkeypat
     assert b"DISCARDED_PARTIAL_VERDICT" in seat.sidecar(args.output, ".claude.stdout.log").read_bytes()
 
 
-def test_timeout_stops_a_started_descendant(job, monkeypatch):
+def test_timeout_stops_a_started_descendant(job, monkeypatch, record_property):
     args, _ = job
     child = args.root / "child.py"
     child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(16)\nPath('finished').write_bytes(b'yes')\n")
@@ -1119,6 +1119,8 @@ def test_timeout_stops_a_started_descendant(job, monkeypatch):
     started = time.monotonic()
     assert seat.run_dispatch(args) == 1
     elapsed = time.monotonic() - started
+    record_property("launcher_elapsed_seconds", elapsed)
+    record_property("caller_limit_seconds", args.timeout_seconds)
     assert (args.root / "started").exists(), "The descendant must actually start before cancellation."
     survival_check_at = (args.root / "started").stat().st_mtime + 16.3
     time.sleep(max(0, survival_check_at - time.time()))
@@ -1127,6 +1129,27 @@ def test_timeout_stops_a_started_descendant(job, monkeypatch):
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
 
+
+
+def test_ceiling_uses_one_completion_write_after_recipient_stop(job, monkeypatch):
+    args, _ = job
+    writes = []
+    original = seat.records.GrowingRun.checkpoint
+    def checkpoint(growing):
+        if growing.record.get("interruption_cause") == "ceiling":
+            writes.append(growing.record["lifecycle"])
+        return original(growing)
+    monkeypatch.setattr(seat.records.GrowingRun, "checkpoint", checkpoint)
+    event = {"type": "system", "subtype": "init", "session_id": "0199a213-81c0-7800-8aa1-bbab2a035a53"}
+    def timed_out(command, **kwargs):
+        raw = json.dumps(event).encode() + b"\n"
+        kwargs["on_launch"](os.getpid())
+        kwargs["on_output"]("stdout", raw)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=raw)
+    monkeypatch.setattr(seat, "run_process", timed_out)
+    assert seat.run_dispatch(args) == 1
+    assert writes == ["completed"], "Redundant post-stop writes consume the completion reserve."
+    assert record(args)["outcome"] == "interrupted"
 
 @pytest.mark.parametrize("failure", ["write", "flush", "close"])
 def test_record_failure_never_publishes_a_verdict(job, monkeypatch, failure):
