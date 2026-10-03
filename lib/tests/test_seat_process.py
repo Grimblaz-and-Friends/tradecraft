@@ -53,6 +53,46 @@ def test_incremental_capture_drains_both_full_pipes(tmp_path):
     assert result.returncode == 0 and len(output) > 2
 
 
+@pytest.mark.parametrize("cleanup_end", [None, 0.15])
+@pytest.mark.parametrize("queued", [False, True])
+def test_incremental_drain_and_wait_share_one_cleanup_allowance(tmp_path, monkeypatch, cleanup_end, queued):
+    current = [0.0]
+    monkeypatch.setattr(process.time, "monotonic", lambda: current[0])
+    class Child:
+        pid = 123
+        stdin, stdout, stderr = io.BytesIO(), io.BytesIO(), io.BytesIO()
+        def poll(self):
+            return None
+        def wait(self, timeout):
+            current[0] += timeout
+            raise subprocess.TimeoutExpired(["vendor"], timeout)
+    class Events:
+        emitted = False
+        remaining = 3 if queued else 0
+        def get(self, timeout):
+            current[0] += timeout
+            if not self.emitted:
+                self.emitted = True
+                return "stdout", b"received before stop"
+            raise process.queue.Empty
+        def empty(self):
+            return not self.remaining
+        def get_nowait(self):
+            self.remaining -= 1
+            current[0] += 0.1
+            return "stdout", b"queued after drain allowance"
+    monkeypatch.setattr(process, "os", SimpleNamespace(name="posix", killpg=lambda *_: None))
+    monkeypatch.setattr(process, "signal", SimpleNamespace(SIGKILL=9))
+    monkeypatch.setattr(process.subprocess, "Popen", lambda *_a, **_k: Child())
+    monkeypatch.setattr(process.queue, "Queue", Events)
+    monkeypatch.setattr(process.threading, "Thread", lambda **_k: SimpleNamespace(start=lambda: None))
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        process.run_process(["vendor"], input=b"", cwd=tmp_path, timeout=0.05,
+                            on_tick=lambda: None, cleanup_deadline=cleanup_end)
+    assert caught.value.output == b"received before stop"
+    assert current[0] <= (0.30 if cleanup_end is None else cleanup_end) + 0.000001
+
+
 def test_containment_failure_never_launches_the_vendor(tmp_path, monkeypatch):
     error = tmp_path / "error.json"
     calls = []

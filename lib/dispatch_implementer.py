@@ -489,15 +489,16 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                             args.handover_state, args.session_id or args.resume, "running"
                         )
                     allocation = min(allocation, deadline.remaining())
+                    attempt["allocation_seconds"] = allocation
                     result = run_process(command, input=effective_prompt, cwd=root, timeout=allocation,
                                          on_output=growing.output, on_tick=growing.tick,
-                                         on_launch=growing.launched)
+                                         on_launch=growing.launched,
+                                         cleanup_deadline=deadline.cleanup_end)
                 except subprocess.TimeoutExpired as exc:
                     ceiling = True
                     record["interruption_cause"] = "ceiling"
                     result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
-                    effective_limit = min(args.timeout_seconds, request["stage_ceiling_seconds"] or args.timeout_seconds)
-                    reason = f"{args.vendor} timed out after {effective_limit:g}s"
+                    reason = ""
                     attempt["launched"] = True
                 except OSError as exc:
                     result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
@@ -511,6 +512,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         growing.output(name, getattr(result, name))
                 growing.finish_attempt()
                 elapsed = time.monotonic() - started
+                if ceiling:
+                    reason = lifecycle.ceiling_reason(args.vendor, caller_limit=args.timeout_seconds,
+                                                       allocation=allocation, elapsed=elapsed)
                 attempt["exit_code"] = result.returncode
                 if args.vendor == "claude":
                     complete, message, session_id, failure_reason = _claude_result(result.stdout)

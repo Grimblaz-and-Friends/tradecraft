@@ -178,6 +178,37 @@ def test_elapsed_accounting_does_not_clip_a_measured_overrun(job, monkeypatch):
     assert record(args)["attempts"][0]["elapsed_seconds"] > request["recipient_allocation_seconds"]
 
 
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_ceiling_reason_distinguishes_caller_allocation_and_elapsed(job, monkeypatch, vendor):
+    args, _ = job
+    args.vendor, args.timeout_seconds = vendor, 120
+    args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+    args.lifecycle_input.write_bytes(json.dumps({"recipient_allocation_seconds": 90.78}).encode())
+    clock = [100.0]
+    monkeypatch.setattr(implementer.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(implementer.records, "git_revision", lambda *_: None)
+    snapshots = []
+    def snapshot(*_a, **_k):
+        if not snapshots:
+            clock[0] += 20.2  # Preflight consumes part of the same caller window.
+        snapshots.append(True)
+        return {"digest": "fixture"}
+    monkeypatch.setattr(implementer.lifecycle, "content_snapshot", snapshot)
+    def stopped(command, **kwargs):
+        clock[0] += kwargs["timeout"]
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=b"", stderr=b"")
+    monkeypatch.setattr(implementer, "run_process", stopped)
+    assert implementer.run_implementer(args) == 1
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    attempt = record(args)["attempts"][0]
+    assert request["recipient_allocation_seconds"] == 90.78
+    assert attempt["allocation_seconds"] == pytest.approx(87.8)
+    assert attempt["elapsed_seconds"] == pytest.approx(87.8)
+    assert attempt["reason"] == (
+        f"{vendor} stopped at the recipient ceiling; caller limit 120s; "
+        "recipient allocation 87.80s; measured elapsed 87.80s")
+
+
 def test_direct_fresh_launch_reads_machine_vendor_and_records_its_source(job, tmp_path, monkeypatch):
     args, scenario = job
     home = tmp_path / "home"

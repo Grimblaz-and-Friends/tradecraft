@@ -633,13 +633,16 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                             started = time.monotonic()
                             try:
                                 record["actual_vendor"] = vendor
-                                result = run_process(command, input=prompt, cwd=root, timeout=deadline.remaining(),
+                                allocation = deadline.remaining()
+                                attempt["allocation_seconds"] = allocation
+                                result = run_process(command, input=prompt, cwd=root, timeout=allocation,
                                                      on_output=growing.output, on_tick=growing.tick,
-                                                     on_launch=growing.launched)
+                                                     on_launch=growing.launched,
+                                                     cleanup_deadline=deadline.cleanup_end)
                             except subprocess.TimeoutExpired as exc:
                                 record["interruption_cause"] = "ceiling"
                                 result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
-                                outcome, reason = "error", f"{vendor} timed out after {args.timeout_seconds:g}s; no fallback"
+                                outcome, reason = "error", ""
                                 attempt["launched"] = True
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
@@ -663,6 +666,9 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
                             elapsed = time.monotonic() - started
+                            if record.get("interruption_cause") == "ceiling":
+                                reason = lifecycle.ceiling_reason(vendor, caller_limit=args.timeout_seconds,
+                                                                  allocation=allocation, elapsed=elapsed) + "; no fallback"
                             growing.finish_attempt()
                             attempt["exit_code"] = result.returncode
                             for stream in ("stdout", "stderr"):

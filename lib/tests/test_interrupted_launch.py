@@ -44,8 +44,8 @@ def git(root, *args):
 
 @pytest.mark.parametrize("kind", ["implementer", "seat"])
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
-@pytest.mark.parametrize("termination", ["hard-kill", "ceiling"])
-def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatch, kind, vendor, termination):
+@pytest.mark.parametrize("termination", ["hard-kill", "ceiling", "ceiling-slow-final-probe"])
+def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatch, record_property, kind, vendor, termination):
     root = tmp_path / "tree"
     root.mkdir()
     git(root, "init")
@@ -65,11 +65,15 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
     store.mkdir()
     (store / "nonce").write_bytes(b"retained-before-hard-kill")
     output = tmp_path / "bundle" / "return"
+    ceiling = termination.startswith("ceiling")
+    caller_limit = 15 if ceiling else 60
     command = [sys.executable, str(LIB / "tests/fixtures/interrupted_launcher.py"), kind, vendor, str(store),
                "--dispatch", str(dispatch), "--root", str(root), "--vendor", vendor,
                "--work", "example/product#12", "--stage", "build" if kind == "implementer" else "cold-seat",
                "--settings-source", "fixture", "--settings-scope", "fixture",
-               "--output", str(output), "--timeout-seconds", "15" if termination == "ceiling" else "60"]
+               "--output", str(output), "--timeout-seconds", str(caller_limit)]
+    if termination == "ceiling-slow-final-probe":
+        command.append("--slow-final-probe")
     if kind == "implementer":
         command.extend(["--lineage-branch", branch, "--holder-session-id", "holder-session"])
     if kind == "seat":
@@ -99,9 +103,12 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             time.sleep(0.05)
         if termination == "hard-kill":
             kill_tree(process.pid)
-        process.communicate(timeout=20 if termination == "ceiling" else 5)
-        if termination == "ceiling":
-            assert time.monotonic() - started < 16
+        process.communicate(timeout=20 if ceiling else 5)
+        if ceiling:
+            elapsed = time.monotonic() - started
+            record_property("launcher_elapsed_seconds", elapsed)
+            record_property("caller_limit_seconds", caller_limit)
+            assert elapsed < caller_limit, f"whole invocation took {elapsed:.3f}s against the declared {caller_limit}s limit"
         saved = json.loads(run_path.read_bytes())
         assert saved["session_identity"]["session_id"] == "0199a213-81c0-7800-8aa1-bbab2a035a53"
         if termination == "hard-kill":
@@ -109,6 +116,16 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
         else:
             assert saved["completed_at"] and saved["outcome"] == "interrupted"
             assert saved["interruption_cause"] == "ceiling"
+            attempt = saved["attempts"][0]
+            assert "caller limit 15s" in attempt["reason"]
+            assert f"recipient allocation {attempt['allocation_seconds']:.2f}s" in attempt["reason"]
+            assert f"measured elapsed {attempt['elapsed_seconds']:.2f}s" in attempt["reason"]
+            assert "timed out after 15s" not in attempt["reason"]
+        if termination == "ceiling-slow-final-probe":
+            assert saved["revision_after"] is None
+            if kind == "implementer":
+                assert saved["stop_snapshot"]["digest"] is None
+                assert saved["stop_snapshot"]["unavailable_reason"]
         assert not output.exists()
         assert Path(saved["attempts"][0]["stdout"]).read_bytes().strip()
         identities.append(saved["launcher_process"])

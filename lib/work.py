@@ -46,7 +46,8 @@ def _run_probe(command, **kwargs):
         return subprocess.run(command, **kwargs)
     return run_process(command, input=kwargs.get("input", b""),
                        cwd=kwargs.get("cwd", Path.cwd()), timeout=kwargs["timeout"],
-                       env=kwargs.get("env"), on_tick=lambda: None)
+                       env=kwargs.get("env"), on_tick=lambda: None,
+                       cleanup_deadline=lifecycle.cleanup_deadline())
 
 COMMANDS = (
     "artifact", "cold-seat", "build", "floor", "use",

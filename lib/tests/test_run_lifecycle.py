@@ -259,6 +259,48 @@ def test_malformed_usage_and_expired_probes_stay_unknown(monkeypatch, tmp_path):
         assert records.git_revision(tmp_path) is None
 
 
+def test_cleanup_probes_leave_time_for_the_completion_write(monkeypatch, tmp_path):
+    current = [100.0]
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: current[0])
+    deadline = lifecycle.Deadline(15)
+    with lifecycle.deadline_scope(deadline):
+        current[0] = 113.5  # The recipient has reached its stopping ceiling.
+        with pytest.raises(TimeoutError):
+            lifecycle.probe_timeout()
+        with lifecycle.cleanup_scope():
+            assert lifecycle.probe_timeout() == 0.75
+            assert lifecycle.cleanup_deadline() == 114.25
+            current[0] = 114.3
+            monkeypatch.setattr(records, "run_process", lambda *_a, **_k: pytest.fail("launched after cleanup allowance"))
+            assert records.git_revision(tmp_path) is None
+        assert deadline.remaining(cleanup=True) > 0  # Final recording still has its allowance.
+
+
+@pytest.mark.parametrize("paths", [1, 100])
+def test_snapshot_bounds_deleted_path_traversal(monkeypatch, tmp_path, paths):
+    current = [0.0]
+    def clock():
+        current[0] += 0.01
+        return current[0]
+    monkeypatch.setattr(lifecycle.time, "monotonic", clock)
+    def git(command, **_kwargs):
+        if "rev-parse" in command:
+            output = b"fixture-head"
+        elif "--stage" in command:
+            output = b""
+        else:
+            output = b"\0".join(f"deleted-{i}".encode() for i in range(paths))
+        return subprocess.CompletedProcess(command, 0, output, b"")
+    monkeypatch.setattr(lifecycle, "run_process", git)
+    with lifecycle.deadline_scope(lifecycle.Deadline(1)):
+        snapshot = lifecycle.content_snapshot(tmp_path, timeout=0.1)
+    if paths == 1:
+        assert snapshot["digest"]
+    else:
+        assert snapshot["digest"] is None
+        assert "content snapshot deadline" in snapshot["unavailable_reason"]
+
+
 @pytest.mark.parametrize("entry", ["runtime-version", "entrance-probe"])
 def test_slow_preflight_probe_stops_its_tree_within_the_caller_limit(tmp_path, entry):
     import work
@@ -283,7 +325,7 @@ def test_slow_preflight_probe_stops_its_tree_within_the_caller_limit(tmp_path, e
                 work._run_probe([sys.executable, str(probe)], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 timeout=lifecycle.probe_timeout(), env=os.environ.copy())
-    assert time.monotonic() - started < 16
+    assert time.monotonic() - started < 15
     identities = json.loads(trace.read_bytes())
     until_dead = time.monotonic() + 2
     while time.monotonic() < until_dead and any(

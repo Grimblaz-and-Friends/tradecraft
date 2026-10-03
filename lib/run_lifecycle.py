@@ -40,7 +40,18 @@ class Deadline:
         return remaining
 
     def probe(self, default=20, *, cleanup=False):
-        return min(default, self.remaining(cleanup=cleanup))
+        remaining = self.remaining(cleanup=cleanup)
+        if cleanup:
+            # Cleanup probes share only half the reserve. Closing streams and
+            # atomically completing the record still need time afterward.
+            remaining -= self.reserve / 2
+        if remaining <= 0:
+            raise TimeoutError("caller limit leaves no probe window before final recording")
+        return min(default, remaining)
+
+    @property
+    def cleanup_end(self):
+        return self.end - self.reserve / 2
 
 
 def stage_deadline(stage, caller_limit, *, started=None):
@@ -52,6 +63,16 @@ def stage_deadline(stage, caller_limit, *, started=None):
 
 def current_deadline():
     return _DEADLINE.get()
+
+
+def cleanup_deadline():
+    deadline = current_deadline()
+    return deadline.cleanup_end if deadline else None
+
+
+def ceiling_reason(vendor, *, caller_limit, allocation, elapsed):
+    return (f"{vendor} stopped at the recipient ceiling; caller limit {caller_limit:g}s; "
+            f"recipient allocation {allocation:.2f}s; measured elapsed {elapsed:.2f}s")
 
 
 @contextmanager
@@ -167,7 +188,7 @@ def content_snapshot(root, *, timeout=20):
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=allowance)
         else:
             result = run_process(command, input=b"", cwd=Path.cwd(), timeout=allowance,
-                                 on_tick=lambda: None)
+                                 on_tick=lambda: None, cleanup_deadline=cleanup_deadline())
         if result.returncode:
             raise OSError("cannot read Git content snapshot: " + result.stderr.decode("utf-8", "replace"))
         return result.stdout
@@ -179,6 +200,8 @@ def content_snapshot(root, *, timeout=20):
         digest = hashlib.sha256()
         digest.update(head.encode("ascii") + b"\0" + hashlib.sha256(index).digest())
         for raw in paths:
+            if time.monotonic() >= end:
+                raise TimeoutError("content snapshot deadline")
             digest.update(b"\0path\0" + raw + b"\0")
             path = root / os.fsdecode(raw)
             if path.is_symlink():

@@ -107,13 +107,13 @@ def _buffered_process(command, *, input, cwd, timeout, env=None):
 
 
 def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
-                on_launch=None, env=None):
+                on_launch=None, env=None, cleanup_deadline=None):
     """Drain both pipes while input is supplied independently of the deadline.
 
     Callbacks run serially on the calling thread. A blocked stdin or silent
     descendant therefore cannot prevent capture or elapsed checkpoints.
     """
-    if on_output is None and on_tick is None and on_launch is None:
+    if on_output is None and on_tick is None and on_launch is None and cleanup_deadline is None:
         return _buffered_process(command, input=input, cwd=cwd, timeout=timeout, env=env)
     deadline = time.monotonic() + timeout
     with tempfile.TemporaryDirectory(prefix="tradecraft-launch-") as temporary:
@@ -164,6 +164,11 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
         ended = set()
         stopped = False
         drain_deadline = None
+
+        def drain_end(current):
+            end = current + 0.25
+            return min(end, cleanup_deadline) if cleanup_deadline is not None else end
+
         try:
             if on_launch:
                 on_launch(process.pid)
@@ -174,11 +179,11 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 if current >= deadline and not stopped:
                     stopped = True
                     stop_tree()
-                    drain_deadline = current + 0.25
+                    drain_deadline = drain_end(current)
                 # Even a normally exited parent may leave inherited pipes open.
                 if process.poll() is not None and drain_deadline is None:
                     stop_tree()
-                    drain_deadline = current + 0.25
+                    drain_deadline = drain_end(current)
                 if drain_deadline is not None and current >= drain_deadline:
                     break
                 if on_tick:
@@ -196,6 +201,8 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                         on_output(name, chunk)
             # Retain queued bytes at the bounded drain's edge too.
             while not events.empty():
+                if drain_deadline is not None and time.monotonic() >= drain_deadline:
+                    break
                 name, chunk = events.get_nowait()
                 if chunk is not None:
                     captured[name].extend(chunk)
@@ -203,8 +210,11 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                         on_output(name, chunk)
         finally:
             stop_tree()
+            # Draining and waiting share one allowance, rather than adding a
+            # fresh wait after the drain or after the caller's cleanup deadline.
+            wait_end = drain_deadline if drain_deadline is not None else drain_end(time.monotonic())
             try:
-                process.wait(timeout=0.25)
+                process.wait(timeout=max(0, wait_end - time.monotonic()))
             except subprocess.TimeoutExpired:
                 pass
             for stream in (process.stdout, process.stderr):

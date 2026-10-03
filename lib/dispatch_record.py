@@ -93,7 +93,8 @@ def require_output_outside_root(output: Path, root: Path | None) -> None:
 def runtime_version(executable: list[str]) -> str | None:
     try:
         result = run_process([*executable, "--version"], input=b"", cwd=Path.cwd(),
-                             timeout=lifecycle.probe_timeout(), on_tick=lambda: None)
+                             timeout=lifecycle.probe_timeout(), on_tick=lambda: None,
+                             cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
     if result.returncode:
@@ -107,7 +108,8 @@ def runtime_version(executable: list[str]) -> str | None:
 def git_revision(root: Path) -> str | None:
     try:
         result = run_process(["git", "-C", str(root), "rev-parse", "HEAD"], input=b"", cwd=Path.cwd(),
-                             timeout=lifecycle.probe_timeout(), on_tick=lambda: None)
+                             timeout=lifecycle.probe_timeout(), on_tick=lambda: None,
+                             cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return None
     if result.returncode:
