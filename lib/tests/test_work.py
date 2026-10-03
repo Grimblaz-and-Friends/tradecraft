@@ -2205,6 +2205,69 @@ def test_synchronization_reads_effective_strictness_sources(source):
     assert facts["behind"] is True
     assert facts["strict"] is (None if source == "unavailable" else source in {"ruleset", "protection"})
     assert all(method == "GET" for method, _, _ in transport.calls)
+    if source == "ruleset":
+        assert not any(endpoint.endswith("/protection") for _, endpoint, _ in transport.calls)
+
+
+@pytest.mark.parametrize("error", ["403 Resource not accessible", "404 Not Found"])
+@pytest.mark.parametrize("behind", [False, True])
+def test_unreadable_strictness_blocks_only_a_behind_head(error, behind):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True)
+    transport = FakeTransport({
+        f"repos/example/product/compare/{BASE_SHA}...{SHA}": {"behind_by": int(behind)},
+        "repos/example/product/branches/main/protection": work.WorkError(error),
+    })
+    fixture.synchronization = work._collect_synchronization(transport, fixture.pr)
+    assert fixture.synchronization["strict"] is None
+    assert error in fixture.synchronization["uncertainties"][0]
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == ("waiting" if behind else "ready-reviewers")
+    if behind:
+        assert error in decision.detail
+
+
+@pytest.mark.parametrize("problem", ["ruleset strictness unavailable: 403", "base confirmation unavailable: 403",
+                                      "mergeability unknown"])
+def test_current_head_ignores_only_strictness_uncertainty(problem):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True)
+    fixture.synchronization.update(strict=None, uncertainties=[problem])
+    if problem == "mergeability unknown":
+        fixture.pr["mergeable"] = None
+        fixture.synchronization["mergeability_known"] = False
+    assert work.decide(fixture, RULES).stage == ("ready-reviewers" if problem.startswith("ruleset") else "waiting")
+
+
+@pytest.mark.parametrize("behind", [False, True])
+def test_named_ready_stage_ignores_strictness_only_when_current(behind, tmp_path, capsys, monkeypatch):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, pr=True)
+    fixture.synchronization.update(behind=behind, strict=None,
+                                   uncertainties=["branch-protection strictness unavailable: 403"])
+    reached = []
+    monkeypatch.setattr(work, "_execute_ready_reviewers", lambda *args: reached.append(True) or 0)
+    assert work.execute_stage(fixture, work.Decision("ready-reviewers", False, None, "holder-named-stage"),
+                              tmp_path, None, transport=FakeTransport({}), rules=RULES) == 0
+    assert reached == ([] if behind else [True])
+    if behind:
+        report = json.loads(capsys.readouterr().out)
+        assert report["stage"] == "waiting" and "403" in report["detail"]
+
+
+@pytest.mark.parametrize("behind", [False, True])
+def test_release_ignores_unreadable_strictness_only_when_current(behind, tmp_path, capsys):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE, pr=True, draft=False, reviewer_ran=True)
+    fixture.checks = [gate_check()]
+    transport = FakeTransport({
+        "repos/example/product/pulls/7": deepcopy(fixture.pr),
+        f"repos/example/product/compare/{BASE_SHA}...{SHA}": {"behind_by": int(behind)},
+        "repos/example/product/branches/main/protection": work.WorkError("404 Not Found"),
+    })
+    assert work.execute_stage(fixture, work.Decision("release-report", False, None, "all-evidence-complete"),
+                              tmp_path, None, transport=transport) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == ("waiting" if behind else "release-report")
+    assert report["required_gate"]["verdict"] == "green"
+    if behind:
+        assert "404" in report["detail"] and report["reason"] != "all-evidence-complete"
 
 
 @pytest.mark.parametrize("stage", ["floor", "ready-reviewers", "review-disposition", "use", "proof"])
@@ -2326,6 +2389,32 @@ def actions_proof(fixture, tmp_path):
                           ("use_rules", "lib/use-rules.json"))
     }
     return work.compose_proof(fixture, RULES)
+
+
+@pytest.mark.parametrize("reported_count", [1, 2, None])
+def test_incomplete_current_paths_make_ancestor_history_unavailable(reported_count, tmp_path):
+    ancestor = "b" * 40
+    marker = f"<!-- tradecraft:use:v1 head={ancestor} status=pass changed=false staffing_status=qualified -->"
+    transport = actions_transport()
+    transport.values["repos/example/product/pulls/7"]["changed_files"] = reported_count
+    transport.values["repos/example/product/issues/12/comments"] = state(
+        AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, marker).issue_comments
+    fixture = collect_actions(transport)
+    ancestry = AncestryTransport(ancestor, SHA, {BASE_SHA: [{"filename": "lib/disjoint.py"}]})
+    work.prepare_use_evidence(fixture, ancestry, RULES)
+    if reported_count == 1:
+        assert fixture.use_application["applicability"] == "ancestor"
+        assert actions_proof(fixture, tmp_path)["use"]["applicability"] == "ancestor"
+        return
+    assert fixture.applicable_use is None
+    assert any(item["code"] == "use-history-unavailable" and "changed paths are unavailable" in item["message"]
+               for item in fixture.collection_diagnostics)
+    assert work.decide(fixture, RULES).stage == "use"
+    assert actions_proof(fixture, tmp_path)["use"]["applicability"] == "missing"
+    fixture.issue_comments.append({"body": USE, "user": {"login": PRODUCER}})
+    work.prepare_use_evidence(fixture, ancestry, RULES)
+    assert fixture.use_application["applicability"] == "current-head"
+    assert actions_proof(fixture, tmp_path)["use"]["applicability"] == "current-head"
 
 
 @pytest.mark.parametrize("patch", [

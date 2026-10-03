@@ -2,7 +2,7 @@
 
 **Loaded when** configuring a connected reviewer, marking a pull request ready, dispositioning what one posted, or buying a second look after a non-mechanical fix.
 
-Every connected reviewer fires once per pull request, when the pull request is marked ready, never per push. Open the pull request as a draft; run the executable floor and the required experience session, or post its declining line; then mark ready and apply the `reviewers` label. **Every change carries one or the other before ready, mechanical work included** — the line costs a sentence and is what makes ready mean proven. Codex fires on ready without that label. A repository with no connected reviewer owes nothing here.
+Every connected reviewer fires once per pull request, when the pull request is marked ready, never per push. Open the pull request as a draft; run the executable floor, apply the configured `reviewers` label, then mark ready. After dispositioning the reviewers and any bought panel, run the experience session where required, then compose proof with its current or applicable carried use, or its generated current-head no-use line. This order applies to every lane, mechanical work included. Codex fires on ready without that label. A repository with no connected reviewer retains the ready transition, use where required, and proof.
 
 On issue-backed product work, the `work` cell performs the state read: it returns waiting while a required reviewer has not run and sends unanswered threads, body findings and unidentified reviews to the builder. It does not retrigger a reviewer or turn the label into a stage marker.
 

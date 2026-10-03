@@ -849,21 +849,24 @@ def _collect_synchronization(transport: GitHubREST, pr: dict[str, object]) -> di
         strict_values.append(False)
     except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
         result["uncertainties"].append(f"ruleset strictness unavailable: {exc}")
-    try:
-        protection = _dict(transport.get(f"{prefix}/branches/{encoded}/protection"), "branch protection")
-        checks = protection.get("required_status_checks")
-        strict = checks.get("strict") if isinstance(checks, dict) else False
-        if type(strict) is not bool:
-            raise WorkError("branch protection has no strictness value")
-        strict_values.append(strict)
-    except WorkError as exc:
-        # A generic Not Found may hide permissions; only the specific absence counts.
-        if "404" in str(exc) and "branch not protected" in str(exc).lower():
-            strict_values.append(False)
-        else:
+    if not any(strict_values):
+        # A readable strict ruleset already proves the requirement. Classic
+        # protection can add it, but its endpoint may require administration.
+        try:
+            protection = _dict(transport.get(f"{prefix}/branches/{encoded}/protection"), "branch protection")
+            checks = protection.get("required_status_checks")
+            strict = checks.get("strict") if isinstance(checks, dict) else False
+            if type(strict) is not bool:
+                raise WorkError("branch protection has no strictness value")
+            strict_values.append(strict)
+        except WorkError as exc:
+            # A generic Not Found may hide permissions; only the specific absence counts.
+            if "404" in str(exc) and "branch not protected" in str(exc).lower():
+                strict_values.append(False)
+            else:
+                result["uncertainties"].append(f"branch-protection strictness unavailable: {exc}")
+        except (KeyError, OSError, UnicodeError, ValueError) as exc:
             result["uncertainties"].append(f"branch-protection strictness unavailable: {exc}")
-    except (KeyError, OSError, UnicodeError, ValueError) as exc:
-        result["uncertainties"].append(f"branch-protection strictness unavailable: {exc}")
     if any(strict_values):
         result["strict"] = True
     elif len(strict_values) >= 2 and not result["uncertainties"]:
@@ -887,9 +890,13 @@ def _synchronization_decision(state: WorkState) -> Decision | None:
         return Decision("catch-up", False, None,
                         "pull-request-conflicting" if conflict else "strict-base-behind",
                         "Run the holder-owned catch-up; other conflicts return to the builder.")
-    if (not facts or facts.get("behind") is None or facts.get("strict") is None
+    uncertainties = [message for message in facts.get("uncertainties", [])
+                     if facts.get("behind") is not False or not str(message).startswith(
+                         ("ruleset strictness unavailable:", "branch-protection strictness unavailable:"))]
+    if (not facts or facts.get("behind") is None
+            or (facts.get("behind") is not False and facts.get("strict") is None)
             or facts.get("mergeability_known") is not True
-            or not isinstance(state.pr.get("mergeable"), bool) or facts.get("uncertainties")):
+            or not isinstance(state.pr.get("mergeable"), bool) or uncertainties):
         return Decision("waiting", False, None, "base-synchronization-unavailable",
                         "; ".join(facts.get("uncertainties") or ["base synchronization or mergeability is unknown"]))
     return None
@@ -2138,6 +2145,10 @@ def _public_marker_valid(state: WorkState, marker: Marker) -> bool:
 
 def _ancestor_application(transport: GitHubREST, state: WorkState, ancestor: str,
                           head: str, rules: dict[str, object]) -> dict[str, object]:
+    inventory_problems = [item["message"] for item in state.collection_diagnostics
+                          if item.get("code") in {"changed-file-count-unavailable", "changed-files-incomplete"}]
+    if inventory_problems:
+        raise WorkError("current pull-request changed paths are unavailable: " + "; ".join(inventory_problems))
     facts = state.synchronization or {}
     base = facts.get("base") or (state.pr or {}).get("base") or {}
     revision = base.get("sha")
@@ -4908,8 +4919,8 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
     pinned = _dict(base_record.get("object"), base_endpoint).get("sha")
     if not isinstance(pinned, str) or HEAD_SHA.fullmatch(pinned) is None:
         raise WorkError("catch-up base has no full revision")
-    # Fetch the API-proved repository, then verify the fetched object against the pin.
-    fetched = _git(["fetch", "--no-tags", f"https://github.com/{base['repository']}.git",
+    # Keep the selected remote's transport and verify its base object against the API pin.
+    fetched = _git(["fetch", "--no-tags", remote,
                     f"refs/heads/{base['ref']}"], root)
     if fetched.returncode:
         raise WorkError(f"cannot fetch catch-up base: {_git_failure(fetched)}")
@@ -4926,17 +4937,21 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
     spec = version_policy.declaration(rules)
     new_version = None
     if spec:
-        base_content = _policy_blob(root, pinned, spec["path"])
-        if base_content is None:
-            raise WorkError("declared base version file is unavailable")
-        new_version = version_policy.increment(base_content, spec)
+        common = _git_text(["merge-base", start, pinned], root, "read catch-up merge base")
+        version_changed = _git_text(
+            ["diff", "--no-renames", "--name-only", "-z", common, pinned,
+             "--", f":(literal){spec['path']}"], root, "read base-side version changes")
+        if version_changed:
+            base_content = _policy_blob(root, pinned, spec["path"])
+            if base_content is None:
+                raise WorkError("declared base version file is unavailable")
+            new_version = version_policy.increment(base_content, spec)
     attempt_path.parent.mkdir(parents=True, exist_ok=True)
     attempt = {"start": start, "base": pinned, "branch": branch, "result": None}
     attempt_path.write_bytes((json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8"))
     prepared = _git(["merge", "--no-commit", "--no-ff", pinned], root)
     if not merge_path.exists():
         raise WorkError(f"catch-up merge was not prepared: {_git_failure(prepared)}")
-    landing_started = False
     try:
         conflicts = _git_text(["diff", "--name-only", "--diff-filter=U", "-z"], root,
                               "read catch-up conflicts").split("\0")
@@ -4950,7 +4965,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
                 raise WorkError(f"builder-required: {exc}") from exc
         elif prepared.returncode:
             raise WorkError(f"catch-up merge failed: {_git_failure(prepared)}")
-        if spec and not conflicts:
+        if spec and new_version is not None and not conflicts:
             target = root / spec["path"]
             if target.is_symlink() or not _path_inside(target, root):
                 raise WorkError("declared version file is not an in-root regular file")
@@ -4963,7 +4978,6 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
                 or _git_text(["rev-parse", "HEAD"], root, "verify catch-up head") != start):
             raise WorkError("catch-up head or base moved before landing")
         script = Path(__file__).resolve().parents[1] / "skills" / "persist-changes" / "scripts" / "persist.py"
-        landing_started = True
         landed = subprocess.run([sys.executable, str(script), "--expect-branch", branch,
                                  "-m", f"Catch up {branch} with its pinned base"], cwd=root,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -4973,7 +4987,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
         report = {"schema_version": 1, "stage": "catch-up", "dispatch": False,
                   "status": "holder-owned" if landed.returncode == 0 else "refused",
                   "starting_head": start, "pinned_base": pinned, "head": resulting,
-                  "version_adjustment": {**spec, "value": new_version} if spec else None,
+                  "version_adjustment": {**spec, "value": new_version} if new_version is not None else None,
                   "landing": landed.stdout.decode("utf-8", errors="backslashreplace").strip(),
                   "landing_error": landed.stderr.decode("utf-8", errors="backslashreplace").strip()}
         if landed.returncode == 0:
@@ -4996,7 +5010,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
             return 0
         raise
     finally:
-        if not landing_started and merge_path.exists():
+        if merge_path.exists() and _git_text(["rev-parse", "HEAD"], root, "check unfinished catch-up") == start:
             aborted = _git(["merge", "--abort"], root)
             if aborted.returncode:
                 raise WorkError(f"catch-up could not remove its merge state: {_git_failure(aborted)}")

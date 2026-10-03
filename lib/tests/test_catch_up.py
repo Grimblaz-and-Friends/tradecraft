@@ -373,12 +373,6 @@ def registered(graph, tmp_path, monkeypatch):
     git(implementation, "push", "-u", "origin", branch)
     monkeypatch.setattr(work, "registry_path", lambda: tmp_path / "registry.json")
     work.register_worktree(implementation, "example/product", 12, None, "holder-id", holder_root=root, branch=branch)
-    original_git = work._git
-    def local_fetch(arguments, cwd):
-        if arguments[:2] == ["fetch", "--no-tags"]:
-            arguments = [*arguments[:2], str(remote), *arguments[3:]]
-        return original_git(arguments, cwd)
-    monkeypatch.setattr(work, "_git", local_fetch)
     transport = CatchTransport(root, implementation, branch, remote)
     def fresh_state(*args):
         state = work.WorkState("example/product", 12, {"state": "open"}, pr=transport.get("repos/example/product/pulls/7"))
@@ -424,6 +418,97 @@ def test_holder_catch_up_lands_checked_merge_without_launch(registered, version,
     assert work._execute_catch_up(transport, state, root, None, "holder-id", rules) == 0
     assert json.loads(capsys.readouterr().out)["reason"] == "already-up-to-date"
     assert git(implementation, "rev-parse", "HEAD") == head
+
+
+@pytest.mark.usefixtures("persist_script")
+@pytest.mark.parametrize("collision", ["none", "clean", "conflict"])
+def test_catch_up_adjusts_only_base_changed_version_and_carries_use(registered, collision, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    if collision != "clean":
+        own_version = "1.8.0" if collision == "none" else "1.3.0"
+        commit(implementation, "version.json", json.dumps({"version": own_version, "name": "fixture"}) + "\n")
+        git(implementation, "push")
+    if collision == "none":
+        commit(root, "src/other", "incoming\n")
+    else:
+        commit(root, "version.json", '{"version":"1.4.0","name":"fixture"}\n')
+    git(root, "push", "origin", "main")
+    start = git(implementation, "rev-parse", "HEAD")
+    work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "holder-owned"
+    head = git(implementation, "rev-parse", "HEAD")
+    expected = "1.8.0" if collision == "none" else "1.5.0"
+    assert json.loads((implementation / "version.json").read_bytes())["version"] == expected
+    assert report["version_adjustment"] == (None if collision == "none" else {**SPEC, "value": expected})
+    carry = apply(transport, "example/product", start, head, report["pinned_base"], RULES, work.use_required)
+    assert carry["applicable"] and carry["carried"], carry
+    if collision == "none":
+        assert "version.json" not in carry["merge_commits"][0]["own_paths"]
+
+
+def test_catch_up_fetch_uses_selected_remote_and_refuses_a_moved_pin(registered, monkeypatch):
+    root, implementation, branch, remote, transport, state = registered
+    commit(root, "src/other", "incoming\n")
+    git(root, "push", "origin", "main")
+    start = git(implementation, "rev-parse", "HEAD")
+    original = work._git
+    fetches = []
+    def move_before_fetch(arguments, cwd):
+        if arguments[:2] == ["fetch", "--no-tags"]:
+            fetches.append(arguments)
+            commit(root, "src/other", "base advanced\n")
+            git(root, "push", "origin", "main")
+        return original(arguments, cwd)
+    monkeypatch.setattr(work, "_git", move_before_fetch)
+    with pytest.raises(work.WorkError, match="base moved during fetch"):
+        work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
+    assert fetches == [["fetch", "--no-tags", "origin", "refs/heads/main"]]
+    assert git(implementation, "rev-parse", "HEAD") == start
+    assert git(implementation, "status", "--porcelain") == ""
+
+
+@pytest.mark.usefixtures("persist_script")
+def test_precommit_failure_aborts_uncommitted_catch_up_and_allows_retry(registered, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    commit(root, "src/other", "incoming\n")
+    git(root, "push", "origin", "main")
+    start = git(implementation, "rev-parse", "HEAD")
+    hook = Path(git(implementation, "rev-parse", "--git-path", "hooks/pre-commit"))
+    if not hook.is_absolute():
+        hook = implementation / hook
+    hook.write_bytes(b"#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["status"] == "refused"
+    assert git(implementation, "rev-parse", "HEAD") == start
+    assert git(implementation, "status", "--porcelain") == ""
+    assert not (implementation / git(implementation, "rev-parse", "--git-path", "MERGE_HEAD")).exists()
+    assert git(root, "ls-remote", "--heads", str(remote), f"refs/heads/{branch}").split()[0] == start
+    hook.unlink()
+    work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
+    landed = json.loads(capsys.readouterr().out)
+    assert landed["status"] == "holder-owned"
+    assert git(implementation, "show", "-s", "--format=%P", landed["head"]).split() == [start, landed["pinned_base"]]
+    assert git(root, "ls-remote", "--heads", str(remote), f"refs/heads/{branch}").split()[0] == landed["head"]
+
+
+def test_failed_landing_preserves_merge_after_another_head_move(registered, monkeypatch, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    pinned = commit(root, "src/other", "incoming\n")
+    git(root, "push", "origin", "main")
+    original = subprocess.run
+    def failed_landing(arguments, **kwargs):
+        if len(arguments) > 1 and Path(arguments[1]).name == "persist.py":
+            git(implementation, "update-ref", f"refs/heads/{branch}", pinned)
+            return subprocess.CompletedProcess(arguments, 1, b"not-persisted: branch moved\n", b"")
+        return original(arguments, **kwargs)
+    monkeypatch.setattr(work.subprocess, "run", failed_landing)
+    work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
+    assert json.loads(capsys.readouterr().out)["status"] == "refused"
+    assert git(implementation, "rev-parse", "HEAD") == pinned
+    assert (implementation / git(implementation, "rev-parse", "--git-path", "MERGE_HEAD")).exists()
 
 
 @pytest.mark.parametrize("path", ["src/own", "version.json"])
