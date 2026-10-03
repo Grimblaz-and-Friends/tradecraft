@@ -1,5 +1,6 @@
 import json
 import hashlib
+import subprocess
 from pathlib import Path
 import sys
 
@@ -94,7 +95,7 @@ def job(tmp_path, monkeypatch):
         "--work", "issue-592", "--stage", "build",
         "--settings-source", "issuecomment-5655702442",
         "--settings-scope", "Codex turns after the artifact",
-        "--output", str(output), "--timeout-seconds", "10",
+        "--output", str(output), "--timeout-seconds", "60",
     ])
     monkeypatch.setattr(
         implementer, "resolve_command",
@@ -159,6 +160,22 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     assert request["settings_source"] == "issuecomment-5655702442"
     assert args.output.read_bytes() == b"built\n"
     assert Path(logged["result"]["source_output"]).read_bytes() == b"built\n"
+
+
+def test_elapsed_accounting_does_not_clip_a_measured_overrun(job, monkeypatch):
+    args, _ = job
+    clock = [100.0]
+    monkeypatch.setattr(implementer.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(implementer.records, "git_revision", lambda *_: None)
+    monkeypatch.setattr(implementer.lifecycle, "content_snapshot", lambda *a, **k: {"digest": "fixture"})
+    def returned(command, **kwargs):
+        clock[0] += kwargs["timeout"] + 0.1
+        Path(command[command.index("--output-last-message") + 1]).write_bytes(b"built\n")
+        return subprocess.CompletedProcess(command, 0, success_events().encode(), b"")
+    monkeypatch.setattr(implementer, "run_process", returned)
+    assert implementer.run_implementer(args) == 0
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert record(args)["attempts"][0]["elapsed_seconds"] > request["recipient_allocation_seconds"]
 
 
 def test_direct_fresh_launch_reads_machine_vendor_and_records_its_source(job, tmp_path, monkeypatch):

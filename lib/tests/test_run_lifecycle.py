@@ -60,7 +60,7 @@ def test_git_progress_uses_content(tree, change, stage):
     else:
         git(tree, "status", "--porcelain")
     after = lifecycle.content_snapshot(tree)
-    assert lifecycle.progress(before, after) == ("unchanged" if change in {"ignored", "check"} else "changed")
+    assert lifecycle.progress(before, after) == ("unchanged" if change in {"ignored", "check"} else "changed"), {"before": before, "after": after}
     if change == "untracked":
         (tree / "new").write_bytes(b"different content")
         assert lifecycle.progress(after, lifecycle.content_snapshot(tree)) == "changed"
@@ -96,6 +96,22 @@ def bundle(dispatch, stage, elapsed, *, unfinished=False, allocation=1000, reaso
     if not unfinished:
         run["completed_at"] = "2026-10-03T10:00:00Z"
     return "order", dispatch, request, run
+
+
+@pytest.mark.parametrize("stage", ["floor", "review-disposition"])
+def test_repair_run_keeps_stage_ceiling_and_shorter_caller_limit(monkeypatch, stage):
+    import dispatch_implementer as implementer
+    from types import SimpleNamespace
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 10)
+    seen = []
+    monkeypatch.setattr(implementer, "_run_implementer", lambda args, deadline: seen.append(deadline) or 0)
+    for caller in [8000, 30]:
+        window = lifecycle.stage_deadline(stage, caller)
+        assert window.remaining() == (3540 if caller == 8000 else 27)
+        args = SimpleNamespace(stage=stage, timeout_seconds=caller)
+        assert implementer.run_implementer(args) == 0
+        assert seen[-1].end == window.end
+    assert lifecycle.stage_deadline("build", 7200).remaining() == 7140
 
 
 def test_build_budget_excludes_repairs_deduplicates_and_retains_uncertainty():

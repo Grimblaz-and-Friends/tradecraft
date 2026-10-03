@@ -213,9 +213,9 @@ def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
 
 def run_implementer(args: argparse.Namespace) -> int:
     if args.timeout_seconds is None:
-        args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else 3600
-    deadline = lifecycle.Deadline(args.timeout_seconds,
-                                  started=getattr(args, "invocation_started_monotonic", None))
+        args.timeout_seconds = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
+    deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
+                                         started=getattr(args, "invocation_started_monotonic", None))
     with lifecycle.deadline_scope(deadline):
         return _run_implementer(args, deadline)
 
@@ -375,6 +375,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 "retained_session_id", "retained_session_source",
             ) if key in metadata})
             request["caller_limit_seconds"] = args.timeout_seconds
+            request["stage_ceiling_seconds"] = (
+                lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS if args.stage in lifecycle.REPAIR_STAGES else None)
             allocation = deadline.remaining()
             supplied = metadata.get("recipient_allocation_seconds")
             if supplied is not None:
@@ -494,7 +496,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     ceiling = True
                     record["interruption_cause"] = "ceiling"
                     result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
-                    reason = f"{args.vendor} timed out after {args.timeout_seconds:g}s"
+                    effective_limit = min(args.timeout_seconds, request["stage_ceiling_seconds"] or args.timeout_seconds)
+                    reason = f"{args.vendor} timed out after {effective_limit:g}s"
                     attempt["launched"] = True
                 except OSError as exc:
                     result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
@@ -507,7 +510,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     if streams[path].tell() == 0 and getattr(result, name):
                         growing.output(name, getattr(result, name))
                 growing.finish_attempt()
-                elapsed = min(time.monotonic() - started, allocation)
+                elapsed = time.monotonic() - started
                 attempt["exit_code"] = result.returncode
                 if args.vendor == "claude":
                     complete, message, session_id, failure_reason = _claude_result(result.stdout)

@@ -88,6 +88,8 @@ def info(state, source):
             "vendor": request["requested"]["vendor"], "continuity": "resume",
             "interruption": "ceiling" if run.get("interruption_cause") == "ceiling" else "unfinished or failed turn; cause unknown",
             "caller_limit_seconds": request.get("caller_limit_seconds"),
+            "stage_ceiling_seconds": request.get("stage_ceiling_seconds"),
+            "recipient_allocation_seconds": request.get("recipient_allocation_seconds"),
             "baseline_snapshot": baseline, "stop_snapshot": current,
             "progress": lifecycle.progress(baseline, current), "build_runtime": budget}
 

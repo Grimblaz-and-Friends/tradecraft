@@ -143,7 +143,7 @@ PROOF_MECHANISM_VERSION = "0.153.0"
 TRUTHFUL_ENTRANCE_VERSION = "0.154.0"
 VENDOR_IMPLEMENTER_VERSION = "0.159.0"
 REGISTERED_ROOT_VERSION = "0.149.0"
-DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
+DEFAULT_STAGE_TIMEOUT_SECONDS = lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS
 DEFAULT_BUILD_TIMEOUT_SECONDS = lifecycle.DEFAULT_BUILD_TIMEOUT_SECONDS
 TOTAL_BUILD_BUDGET_SECONDS = lifecycle.TOTAL_BUILD_BUDGET_SECONDS
 STAGE_SAFETY = {
@@ -5297,7 +5297,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     if budget_override_reason is not None and (decision.stage != "build" or not budget_override_reason.strip()):
         raise WorkError("budget override requires a build stage and nonempty reason")
     timeout_argument = f"{effective_timeout:g}"
-    deadline = lifecycle.current_deadline() or lifecycle.Deadline(effective_timeout)
+    deadline = lifecycle.current_deadline() or lifecycle.stage_deadline(decision.stage, effective_timeout)
     recovery_info = None
     if decision.stage in RESUME_SOURCE_STAGES and work_recovery.latest_stopped(state, decision.stage) is not None:
         decision = replace(decision, continuity="resume")
@@ -6063,7 +6063,7 @@ def run(
     if args.command == "run":
         limit = args.timeout_seconds if args.timeout_seconds is not None else (
             DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else DEFAULT_STAGE_TIMEOUT_SECONDS)
-        with lifecycle.deadline_scope(lifecycle.Deadline(limit)):
+        with lifecycle.deadline_scope(lifecycle.stage_deadline(args.stage, limit)):
             return _run(args, transport=transport, executor=executor)
     return _run(args, transport=transport, executor=executor)
 

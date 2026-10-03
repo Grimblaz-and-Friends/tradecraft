@@ -15,7 +15,9 @@ from seat_process import run_process
 import time
 
 DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
+DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
 TOTAL_BUILD_BUDGET_SECONDS = 14400.0
+REPAIR_STAGES = frozenset({"floor", "review-disposition"})
 _DEADLINE = ContextVar("tradecraft_caller_deadline", default=None)
 _CLEANUP = ContextVar("tradecraft_recording_phase", default=False)
 
@@ -39,6 +41,13 @@ class Deadline:
 
     def probe(self, default=20, *, cleanup=False):
         return min(default, self.remaining(cleanup=cleanup))
+
+
+def stage_deadline(stage, caller_limit, *, started=None):
+    deadline = Deadline(caller_limit, started=started)
+    if stage in REPAIR_STAGES:
+        deadline.end = min(deadline.end, deadline.started + DEFAULT_STAGE_TIMEOUT_SECONDS)
+    return deadline
 
 
 def current_deadline():
