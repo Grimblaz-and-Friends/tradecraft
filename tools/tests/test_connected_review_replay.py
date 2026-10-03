@@ -74,12 +74,14 @@ def test_export_contains_only_snapshot_diff_rules_and_hashes(tmp_path, monkeypat
         replay.cr, "repository_review_rules",
         lambda *_: "## Code Review Rules\n\nRepository rule.\n",
     )
+    monkeypatch.setattr(replay.cr, "base_attribute_material", lambda _repo, base, paths=(): {"schema_version": 1, "base": base, "files": []})
     result = replay.export_replay(source, output)
     assert result["repository"] == "owner/repo"
     assert (output / "cases/pr-1/snapshot/app.py").is_file()
     assert set(result["cases"][0]) == {
         "id", "number", "head", "base", "snapshot", "diff", "rules",
         "snapshot_sha256", "diff_sha256", "rules_sha256",
+        "base_attributes", "base_attributes_sha256",
     }
     assert "answer" not in json.dumps(result).lower()
     assert replay.validate_export(output) == result
@@ -94,6 +96,7 @@ def test_export_validation_detects_changed_bytes(tmp_path, monkeypatch):
         lambda endpoint, **_kwargs: archive() if "/tarball/" in endpoint else b"diff",
     )
     monkeypatch.setattr(replay.cr, "repository_review_rules", lambda *_: "No rules.")
+    monkeypatch.setattr(replay.cr, "base_attribute_material", lambda _repo, base, paths=(): {"schema_version": 1, "base": base, "files": []})
     replay.export_replay(source, output)
     (output / "cases/pr-1/snapshot/app.py").write_text("changed", encoding="utf-8")
     with pytest.raises(replay.ReplayError, match="no longer matches"):
@@ -117,6 +120,8 @@ def build_export(root: Path, cases=2) -> Path:
             encoding="utf-8",
         )
         rules.write_text("## Code Review Rules\n\nLocal.\n", encoding="utf-8")
+        attributes = inputs / "base-attributes.json"
+        replay.write_object(attributes, {"schema_version": 1, "base": BASE, "files": []})
         records.append({
             "id": f"pr-{index}", "number": str(index), "head": str(index) * 40,
             "base": BASE, "snapshot": f"cases/pr-{index}/snapshot",
@@ -125,9 +130,11 @@ def build_export(root: Path, cases=2) -> Path:
             "snapshot_sha256": replay.tree_digest(snapshot),
             "diff_sha256": replay.file_digest(diff),
             "rules_sha256": replay.file_digest(rules),
+            "base_attributes": f"cases/pr-{index}/input/base-attributes.json",
+            "base_attributes_sha256": replay.file_digest(attributes),
         })
     write(root / "manifest.json", {
-        "schema_version": 1, "repository": "owner/repo", "cases": records,
+        "schema_version": 2, "repository": "owner/repo", "cases": records,
     })
     return root
 
@@ -154,6 +161,34 @@ def prepare_run(monkeypatch) -> None:
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
     monkeypatch.setattr(replay.cr, "verify_managed_settings", lambda: None)
     monkeypatch.setattr(replay.cr, "verify_claude_version", lambda *_: None)
+
+
+@pytest.mark.parametrize("effort", [None, "medium"])
+def test_replay_records_large_preloaded_finder_inputs_without_live_refusal(tmp_path, monkeypatch, effort):
+    export = build_export(tmp_path / "export", cases=1)
+    manifest = replay.read_object(export / "manifest.json")
+    case = manifest["cases"][0]
+    snapshot = export / case["snapshot"]
+    (snapshot / "only-1.py").write_bytes(b"X" * replay.cr.DEFAULT_PRELOAD_BUDGET_BYTES)
+    case["snapshot_sha256"] = replay.tree_digest(snapshot)
+    replay.write_object(export / "manifest.json", manifest)
+    finder = tmp_path / "finder.md"
+    finder.write_bytes(b"finder")
+    prepare_run(monkeypatch)
+    inputs = []
+    def run(*args, **kwargs):
+        inputs.append(replay.cr.pass_input_bytes(args[3]))
+        return {"candidates": []}, {}, []
+    monkeypatch.setattr(replay.cr, "run_pass", run)
+    result = replay.run_replay(export, tmp_path / "results.json", finder, None, "claude",
+                               replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True,
+                               finder_effort=effort, preload_changed_files=True)
+    assert result["complete"] and result["cases"][0]["status"] == "completed"
+    assert len(inputs) == len(replay.cr.FINDER_PASSES)
+    assert len(inputs[0]) > replay.cr.MAX_FINDER_PROMPT_BYTES
+    assert result["cases"][0]["finder_input_utf8_bytes"] == {
+        name: len(sent) for (name, _), sent in zip(replay.cr.FINDER_PASSES, inputs)
+    }
 
 
 def test_default_reviewer_identity_is_unchanged_without_measurement_options(tmp_path):
@@ -368,8 +403,10 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
     assert result["cases"][0]["status"] == "completed"
     assert result["cases"][1] == {
         "case_id": "pr-2", "head": "2" * 40, "base": BASE,
-        "status": "error", "error": "case-specific failure",
+        "status": "error", "error": "case-specific failure", "excluded_files": [],
+        "finder_input_utf8_bytes": result["cases"][1]["finder_input_utf8_bytes"],
     }
+    assert all(size > 0 for size in result["cases"][1]["finder_input_utf8_bytes"].values())
     assert result["complete"] is False
 
 
@@ -561,6 +598,7 @@ def test_resume_reruns_only_incomplete_cases_and_preserves_completed_case(tmp_pa
             for index in range(1, 4)
         ],
         "reviewer": reviewer,
+        "base_attribute_sources": {case["id"]: case["base_attributes_sha256"] for case in replay.validate_export(export)["cases"]},
         "complete": False,
         "cases": [
             completed,
@@ -869,3 +907,112 @@ def test_change_proof_remains_unscorable_until_owner_sets_bar(tmp_path):
     score = grade_files(tmp_path, result_record([]), key, [])
     assert score["status"] == "unscorable" and score["pass"] is False
     assert "owner-set" in score["reason"]
+
+
+@pytest.mark.parametrize("effort", [None, "high"])
+@pytest.mark.parametrize("preload", [False, True])
+def test_replay_uses_offline_base_policy_for_all_prompt_paths(tmp_path, monkeypatch, effort, preload):
+    from test_connected_review import attribute_material, file_diff
+    export = build_export(tmp_path / "export", cases=1)
+    manifest = replay.read_object(export / "manifest.json")
+    case = manifest["cases"][0]
+    snapshot = export / case["snapshot"]
+    (snapshot / ".gitattributes").write_bytes(b"* linguist-generated\n")
+    (snapshot / "package-lock.json").write_bytes(b"LOCK_SECRET" * 100)
+    (snapshot / "generated.json").write_bytes(b"GEN_SECRET" * 100)
+    (snapshot / "only-1.py").write_bytes(b"SOURCE_CONTROL")
+    (export / case["diff"]).write_bytes((file_diff("package-lock.json", "LOCK_SECRET") + file_diff("generated.json", "GEN_SECRET") + file_diff("only-1.py")).encode())
+    replay.write_object(export / case["base_attributes"], attribute_material({".gitattributes": b"generated.json linguist-generated\n"}))
+    for field in ["diff", "base_attributes"]:
+        case[field + "_sha256"] = replay.file_digest(export / case[field])
+    case["snapshot_sha256"] = replay.tree_digest(snapshot)
+    replay.write_object(export / "manifest.json", manifest)
+    prepare_run(monkeypatch)
+    monkeypatch.setattr(replay.cr, "gh_json", lambda *_args, **_kwargs: pytest.fail("must be offline"))
+    monkeypatch.setattr(replay.cr, "gh_bytes", lambda *_args, **_kwargs: pytest.fail("must be offline"))
+    prompts = []
+    def run(_exe, _root, _snapshot, prompt, schema, _token, **kwargs):
+        prompts.append(prompt)
+        assert (_snapshot / "package-lock.json").read_bytes().startswith(b"LOCK_SECRET")
+        return ({"candidates": []} if schema == replay.cr.FINDER_SCHEMA else {"decisions": []}), {}, []
+    monkeypatch.setattr(replay.cr, "run_pass", run)
+    finder = tmp_path / "finder.md"; finder.write_bytes(b"finder")
+    checker = tmp_path / "checker.md"; checker.write_bytes(b"checker")
+    result = replay.run_replay(export, tmp_path / "results.json", finder, checker, "claude", replay.cr.DEFAULT_CLAUDE_VERSION, HEAD,
+                               finder_effort=effort, checker_effort=effort, preload_changed_files=preload, preload_budget_bytes=14)
+    assert result["complete"] and len(prompts) == 2
+    assert result["cases"][0]["excluded_files"] == [
+        {"path": "package-lock.json", "reason": "lockfile"}, {"path": "generated.json", "reason": "generated"},
+    ]
+    for prompt in prompts:
+        assert "LOCK_SECRET" not in prompt and "GEN_SECRET" not in prompt
+        assert "SOURCE_CONTROL" in prompt and "package-lock.json" in prompt and "generated.json" in prompt
+        if preload:
+            assert '"preloaded_bytes": 14' in prompt
+
+
+@pytest.mark.parametrize("rehash_manifest", [False, True])
+def test_replay_refuses_modified_base_attributes_before_launch(tmp_path, monkeypatch, rehash_manifest):
+    export = build_export(tmp_path / "export", cases=1)
+    manifest = replay.read_object(export / "manifest.json")
+    case = manifest["cases"][0]
+    material_path = export / case["base_attributes"]
+    from test_connected_review import attribute_material
+    material = attribute_material({".gitattributes": b"* linguist-generated\n"})
+    material["files"][0]["sha256"] = "0" * 64
+    replay.write_object(material_path, material)
+    if rehash_manifest:
+        case["base_attributes_sha256"] = replay.file_digest(material_path)
+        replay.write_object(export / "manifest.json", manifest)
+    monkeypatch.setattr(replay.cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("must not launch"))
+    with pytest.raises(replay.ReplayError, match="no longer match"):
+        replay.run_replay(export, tmp_path / "results.json", tmp_path / "unused", None, "claude", replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True)
+
+
+def test_older_export_remains_readable_but_new_run_names_exact_recovery(tmp_path):
+    export = build_export(tmp_path / "export", cases=1)
+    manifest = replay.read_object(export / "manifest.json")
+    manifest["schema_version"] = 1
+    case = manifest["cases"][0]
+    del case["base_attributes"]
+    del case["base_attributes_sha256"]
+    replay.write_object(export / "manifest.json", manifest)
+    assert replay.validate_export(export) == manifest
+    with pytest.raises(replay.ReplayError, match="re-export into a new directory") as raised:
+        replay.run_replay(export, tmp_path / "results.json", tmp_path / "unused", None, "claude", replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True)
+    for required in ["owner/repo", "pr-1", BASE, "1" * 40, '"number": 1', "SOURCE.json", "NEW_DIRECTORY"]:
+        assert required in str(raised.value)
+
+
+def test_resume_cannot_mix_coverage_policy_or_budget(tmp_path):
+    export = build_export(tmp_path / "export", cases=1)
+    finder = tmp_path / "finder.md"; finder.write_bytes(b"finder")
+    current = replay.reviewer_record(finder, None, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True)
+    manifest = replay.validate_export(export)
+    for field in ["coverage_policy_version", "max_finder_prompt_bytes"]:
+        changed = {**current, field: current[field] + 1}
+        results = {"repository": "owner/repo", "manifest_cases": [{"case_id": "pr-1", "head": "1" * 40, "base": BASE}], "reviewer": changed}
+        path = tmp_path / "old-results.json"; replay.write_object(path, results)
+        with pytest.raises(replay.ReplayError, match=field):
+            replay._resume_cases(path, manifest, current)
+
+
+def test_resume_compares_captured_base_attribute_source_hashes(tmp_path):
+    export = build_export(tmp_path / "export", cases=1)
+    manifest = replay.validate_export(export)
+    finder = tmp_path / "finder.md"
+    finder.write_bytes(b"finder")
+    reviewer = replay.reviewer_record(finder, None, replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True)
+    record = {
+        "repository": "owner/repo",
+        "manifest_cases": [{"case_id": "pr-1", "head": "1" * 40, "base": BASE}],
+        "reviewer": reviewer, "cases": [],
+        "base_attribute_sources": {"pr-1": manifest["cases"][0]["base_attributes_sha256"]},
+    }
+    results = tmp_path / "results.json"
+    replay.write_object(results, record)
+    assert replay._resume_cases(results, manifest, reviewer)[1] == ["pr-1"]
+    record["base_attribute_sources"]["pr-1"] = "0" * 64
+    replay.write_object(results, record)
+    with pytest.raises(replay.ReplayError, match="base attribute source hashes differ"):
+        replay._resume_cases(results, manifest, reviewer)
