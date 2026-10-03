@@ -31,7 +31,7 @@ def main() -> int:
             diff = stream.read()
         rules = cr.repository_review_rules(repository, base)
         original = cr._pass_prompt(instructions, snapshot, diff, rules)
-        retained, excluded, _lines = cr.select_coverage(diff, cr.base_attribute_material(repository, base))
+        retained, excluded, _lines = cr.select_coverage(diff, cr.base_attribute_material(repository, base, cr.coverage_paths(diff)))
         selected = cr._pass_prompt(instructions, snapshot, retained, rules, exclusions=excluded)
         print(json.dumps({
             "repository": repository, "base": base, "head": head, "snapshot_path": str(snapshot),

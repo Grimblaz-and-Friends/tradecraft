@@ -55,7 +55,7 @@ MAX_COMMENT_BODY = 60_000
 MAX_REVIEW_COMMENTS = 100
 MAX_FAILURE_EVIDENCE = 2_000
 MAX_FINDER_PROMPT_BYTES = 600_000
-COVERAGE_POLICY_VERSION = 1
+COVERAGE_POLICY_VERSION = 2
 LOCKFILE_NAMES = frozenset({
     "Berksfile.lock", "bun.lock", "bun.lockb", "Cargo.lock", "Cartfile.resolved",
     "composer.lock", "conan.lock", "deno.lock", "flake.lock", "Gemfile.lock",
@@ -94,6 +94,7 @@ def coverage_settings() -> dict[str, Any]:
         "lockfile_names": sorted(LOCKFILE_NAMES),
         "generated_attributes_revision": "base",
         "max_finder_prompt_bytes": MAX_FINDER_PROMPT_BYTES,
+        "finder_prompt_budget_scope": "live",
     }
 
 
@@ -589,26 +590,54 @@ def export_inputs(
     return snapshot, diff_path, rules_path
 
 
-def base_attribute_material(repo: str, base_sha: str) -> dict[str, Any]:
+def _validate_tree_entries(response: Any) -> list[dict[str, str]]:
+    if not isinstance(response, dict) or not isinstance(response.get("tree"), list):
+        raise ReviewError("base Git tree is malformed")
+    entries = response["tree"]
+    if any(not isinstance(entry, dict) or any(
+        not isinstance(entry.get(field), str) for field in ("path", "sha", "type", "mode")
+    ) for entry in entries):
+        raise ReviewError("base Git tree is malformed")
+    return entries
+
+
+def coverage_paths(diff: str) -> list[str]:
+    return [record["path"] for record in _changed_file_records(diff)]
+
+
+def base_attribute_material(
+    repo: str, base_sha: str, changed_paths: Iterable[str] = (),
+) -> dict[str, Any]:
     """Capture regular attribute blobs from the base, never from the head."""
     recursive = gh_json(f"repos/{repo}/git/trees/{base_sha}?recursive=1")
-    if not isinstance(recursive, dict) or not isinstance(recursive.get("tree"), list):
-        raise ReviewError("base Git tree is malformed")
-    entries = recursive["tree"]
+    entries = _validate_tree_entries(recursive)
     if recursive.get("truncated"):
         entries = []
-        pending = [("", base_sha)]
-        while pending:
-            prefix, sha = pending.pop()
-            tree = gh_json(f"repos/{repo}/git/trees/{sha}")
-            if not isinstance(tree, dict) or tree.get("truncated") or not isinstance(tree.get("tree"), list):
-                raise ReviewError("base Git tree traversal is incomplete")
-            for entry in tree["tree"]:
-                path = prefix + entry["path"]
-                if entry.get("type") == "tree":
-                    pending.append((path + "/", entry["sha"]))
-                else:
-                    entries.append({**entry, "path": path})
+        directories = {""}
+        for path in changed_paths:
+            directories.update("" if str(parent) == "." else str(parent)
+                               for parent in PurePosixPath(path).parents)
+        trees: dict[str, list[dict[str, str]]] = {}
+        for directory in sorted(directories, key=lambda path: (path.count("/") + bool(path), path)):
+            sha = base_sha
+            if directory:
+                parent, _, name = directory.rpartition("/")
+                entry = next((row for row in trees.get(parent, [])
+                              if row["path"] == name and row["type"] == "tree"), None)
+                if entry is None:
+                    # A directory absent at the base has no nested base policy.
+                    continue
+                sha = entry["sha"]
+            try:
+                tree = gh_json(f"repos/{repo}/git/trees/{sha}")
+            except ReviewError as exc:
+                raise ReviewError(f"base attribute tree lookup failed for {directory or '/'}: {exc}") from exc
+            children = _validate_tree_entries(tree)
+            if tree.get("truncated"):
+                raise ReviewError(f"base attribute tree lookup is incomplete for {directory or '/'}")
+            trees[directory] = children
+            entries.extend({**row, "path": (directory + "/" if directory else "") + row["path"]}
+                           for row in children if row["path"] == ".gitattributes")
     files = []
     for entry in sorted(entries, key=lambda row: row["path"]):
         if (
@@ -665,8 +694,10 @@ def validate_attribute_material(material: dict[str, Any], base_sha: str) -> list
 
 def generated_paths(paths: list[str], material: dict[str, Any]) -> set[str]:
     attributes = validate_attribute_material(material, material.get("base", ""))
-    if not attributes or not paths:
+    if not paths or not any(b"linguist-generated" in content for _path, content in attributes):
         return set()
+    if not which_on_path("git"):
+        raise ReviewError("git executable is unavailable on PATH")
     with tempfile.TemporaryDirectory(prefix="connected-review-attributes-") as temporary:
         root = Path(temporary)
         empty = root / "empty"
@@ -680,8 +711,8 @@ def generated_paths(paths: list[str], material: dict[str, Any]) -> set[str]:
             "GIT_CONFIG_GLOBAL": str(empty / "config"), "GIT_ATTR_NOSYSTEM": "1",
         })
         repository = root / "repository"
-        _run(["git", "init", "--quiet", f"--template={empty}", str(repository)], environment=environment)
-        command = ["git", "-c", f"core.attributesFile={empty / 'attributes'}"]
+        command = ["git", "-c", "core.ignorecase=false", "-c", f"core.attributesFile={empty / 'attributes'}"]
+        _run(command + ["init", "--quiet", f"--template={empty}", str(repository)], environment=environment)
         index = bytearray()
         for path, content in attributes:
             sha = _run(command + ["hash-object", "-w", "--stdin"], cwd=repository,
@@ -940,11 +971,103 @@ def coverage_text(exclusions: list[dict[str, str]]) -> str:
         return ""
     rows = []
     for entry in exclusions:
-        path = _escaped_json(entry["path"]).replace("`", "\\u0060")
+        path = _coverage_path(entry["path"])
         old = entry.get("old_path")
-        renamed = " (from " + _escaped_json(old).replace("`", "\\u0060") + ")" if old else ""
+        renamed = " (from " + _coverage_path(old) + ")" if old else ""
         rows.append(f"- `{path}`{renamed} - {entry['reason']}")
     return "Files excluded from diff coverage:\n" + "\n".join(rows)
+
+
+def _coverage_path(path: str) -> str:
+    # JSON escapes preserve the path while preventing notice phrases or table cells.
+    return _escaped_json(path).replace("`", "\\u0060").replace(" ", "\\u0020").replace("|", "\\u007c")
+
+
+def coverage_plan(exclusions: list[dict[str, str]], repo: str, number: int, attempt: str) -> dict[str, Any]:
+    """Bound coverage publication before buying a live finder run."""
+    text = coverage_text(exclusions)
+    if not text:
+        return {"text": text, "parts": []}
+    rows = text.splitlines()[1:]
+    capacity = MAX_COMMENT_BODY - 200 - len(attempt) - 2 * len(str(len(rows)))
+    chunks: list[list[str]] = []
+    chunk: list[str] = []
+    size = 0
+    for row in rows:
+        if len(row) > capacity:
+            raise ReviewError("coverage entry exceeds GitHub's comment limit")
+        if size + len(row) + 1 > capacity:
+            chunks.append(chunk)
+            chunk, size = [], 0
+        chunk.append(row)
+        size += len(row) + 1
+    if chunk:
+        chunks.append(chunk)
+    parts = []
+    for ordinal, lines in enumerate(chunks, 1):
+        marker = f"<!-- connected-review-coverage:v1 attempt={attempt} part={ordinal} -->"
+        body = (f"Files excluded from diff coverage (part {ordinal}; {len(lines)} files):\n"
+                + "\n".join(lines) + "\n\n" + marker)
+        parts.append({"body": body, "marker": marker, "count": len(lines)})
+    placeholder = [{**part, "url": f"https://github.com/{repo}/pull/{number}#issuecomment-" + "9" * 20}
+                   for part in parts]
+    if len(coverage_links(placeholder)) > MAX_COMMENT_BODY - 1000:
+        raise ReviewError("coverage links exceed GitHub's comment limit")
+    return {"text": text, "parts": parts}
+
+
+def coverage_for_body(plan: dict[str, Any], repo: str, number: int, room: int) -> dict[str, Any]:
+    if len(plan["text"]) <= min(room, MAX_COMMENT_BODY // 4):
+        return {"text": plan["text"], "parts": []}
+    placeholder = [{**part, "url": f"https://github.com/{repo}/pull/{number}#issuecomment-" + "9" * 20}
+                   for part in plan["parts"]]
+    if len(coverage_links(placeholder)) > room:
+        raise ReviewError("review body leaves insufficient space for coverage links")
+    return {"text": "", "parts": plan["parts"]}
+
+
+def coverage_links(parts: list[dict[str, Any]]) -> str:
+    return "Files excluded from diff coverage:\n" + "\n".join(
+        f"- [Part {ordinal}]({part['url']}) - {part['count']} files"
+        for ordinal, part in enumerate(parts, 1)
+    )
+
+
+def publish_coverage(repo: str, number: int, plan: dict[str, Any]) -> str:
+    if not plan["parts"]:
+        return plan["text"]
+    endpoint = f"repos/{repo}/issues/{number}/comments"
+    comments = gh_json(endpoint, paginate=True)
+    if not isinstance(comments, list):
+        raise ReviewError("GitHub comment list is malformed")
+    published = []
+    for part in plan["parts"]:
+        def existing(rows):
+            matches = [row for row in rows if isinstance(row, dict)
+                       and isinstance(row.get("user"), dict)
+                       and row.get("user", {}).get("login") == BOT_LOGIN
+                       and isinstance(row.get("body"), str) and part["marker"] in row["body"]]
+            if len(matches) > 1 or matches and matches[0]["body"] != part["body"]:
+                raise ReviewError("coverage continuation does not match this attempt")
+            return matches[0] if matches else None
+        record = existing(comments)
+        if record is None:
+            try:
+                record = gh_json(endpoint, method="POST", payload={"body": part["body"]})
+            except ReviewError:
+                reconciled = gh_json(endpoint, paginate=True)
+                if not isinstance(reconciled, list):
+                    raise ReviewError("GitHub comment list is malformed")
+                record = existing(reconciled)
+                if record is None:
+                    raise
+        identifier = record.get("id") if isinstance(record, dict) else None
+        url = record.get("html_url") if isinstance(record, dict) else None
+        expected = f"https://github.com/{repo}/pull/{number}#issuecomment-{identifier}"
+        if type(identifier) is not int or identifier <= 0 or url != expected:
+            raise ReviewError("coverage continuation URL is malformed")
+        published.append({**part, "url": url})
+    return coverage_links(published)
 
 
 def preload_changed_file_data(
@@ -1458,6 +1581,7 @@ def review_payload(
     checker_usage: dict[str, Any] | None = None,
     *,
     exclusions: list[dict[str, str]] | None = None,
+    coverage: str | None = None,
 ) -> dict[str, Any]:
     if survivors:
         summary = f"{len(survivors)} validated finding(s)."
@@ -1477,7 +1601,10 @@ def review_payload(
             f"Proof: {evidence}"
             + (f"\n\n{explanation}" if explanation else "")
         )
-    if exclusions:
+    if coverage is not None:
+        if coverage:
+            body_parts.append(coverage)
+    elif exclusions:
         body_parts.append(coverage_text(exclusions))
     body_parts.extend((
         _usage_text(finder_usage, checker_usage),
@@ -1542,14 +1669,14 @@ def _pass_prompt(
     if candidates is not None:
         candidate_block = (
             "\n<finder_candidates>\n"
-            + _escaped_json({"candidates": candidates})
+            + json.dumps({"candidates": candidates}, ensure_ascii=True, sort_keys=True)
             + "\n</finder_candidates>\n"
         )
     preload_block = ""
     if preloaded_changed_files is not None:
         preload_block = (
             "\n<preloaded_changed_files>\n"
-            + _escaped_json(preloaded_changed_files)
+            + json.dumps(preloaded_changed_files, ensure_ascii=True, sort_keys=True)
             + "\n</preloaded_changed_files>\n"
         )
     coverage_block = ""
@@ -1597,9 +1724,6 @@ def finder_prompts(
         ))
         for name, focus in FINDER_PASSES
     ]
-    largest = max((len(pass_input_bytes(prompt)) for _name, prompt in prompts), default=0)
-    if largest > MAX_FINDER_PROMPT_BYTES:
-        raise FinderPromptTooLarge(largest, exclusions or [])
     return prompts
 
 
@@ -1616,11 +1740,14 @@ def run_finders(
     *,
     effort: str = FINDER_EFFORT,
     exclusions: list[dict[str, str]] | None = None,
+    composed_prompts: list[tuple[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     candidates = []
     usage: dict[str, Any] = finder_usage_template()
     traces = {}
-    prompts = finder_prompts(instructions, snapshot, diff, rules, preloaded_changed_files, exclusions)
+    prompts = composed_prompts if composed_prompts is not None else finder_prompts(
+        instructions, snapshot, diff, rules, preloaded_changed_files, exclusions,
+    )
     for name, prompt in prompts:
         try:
             value, pass_usage, trace = run_pass(
@@ -1748,14 +1875,20 @@ def execute_review(
             diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
             rules_text = rules_path.read_text(encoding="utf-8", errors="replace")
             diff_text, exclusions, lines = select_coverage(
-                diff_text, base_attribute_material(repo, admitted["base"]),
+                diff_text, base_attribute_material(repo, admitted["base"], coverage_paths(diff_text)),
             )
+            publication = coverage_plan(exclusions, repo, number, attempt)
+            instructions = finder_prompt.read_text(encoding="utf-8")
+            prompts = finder_prompts(instructions, snapshot, diff_text, rules_text, exclusions=exclusions)
+            largest = max((len(pass_input_bytes(prompt)) for _name, prompt in prompts), default=0)
+            if largest > MAX_FINDER_PROMPT_BYTES:
+                raise FinderPromptTooLarge(largest, exclusions)
             try:
                 candidates, finder_usage, _finder_traces = run_finders(
                     executable,
                     root,
                     snapshot,
-                    finder_prompt.read_text(encoding="utf-8"),
+                    instructions,
                     diff_text,
                     rules_text,
                     lines,
@@ -1763,6 +1896,7 @@ def execute_review(
                     None,
                     effort=LIVE_FINDER_EFFORT,
                     exclusions=exclusions,
+                    composed_prompts=prompts,
                 )
             except FinderPromptTooLarge:
                 raise
@@ -1779,11 +1913,17 @@ def execute_review(
                 raise ReviewError("pull request became draft during review")
             if completed_review_at_head(repo, number, head_sha) is not None:
                 return {"status": "suppressed", "cause": "review appeared before publication"}
-            payload = review_payload(survivors, head_sha, attempt, finder_usage, exclusions=exclusions)
+            # Check all unpublished bytes for the credential before publishing any part.
+            payload = review_payload(survivors, head_sha, attempt, finder_usage)
+            if _payload_contains_secret(publication, token):
+                raise ReviewError("coverage contained the model credential; nothing was published")
             if _payload_contains_secret(payload, token):
                 raise ReviewError(
                     "finder output contained the model credential; nothing was published"
                 )
+            publication = coverage_for_body(publication, repo, number, MAX_COMMENT_BODY - len(payload["body"]) - 2)
+            coverage = publish_coverage(repo, number, publication)
+            payload = review_payload(survivors, head_sha, attempt, finder_usage, coverage=coverage)
             try:
                 gh_json(f"repos/{repo}/pulls/{number}/reviews", method="POST", payload=payload)
             except ReviewError:
@@ -1897,7 +2037,10 @@ def report_skip(
         usage_line = 'Usage: {"finder":{"observed_usage":0,"status":"not-started"}}'
     parts = [f"Review skipped: {named}"]
     if exclusions:
-        parts.append(coverage_text(exclusions))
+        plan = coverage_plan(exclusions, repo, number, attempt)
+        base_length = len("\n\n".join([*parts, usage_line, _attempt_marker(attempt)]))
+        plan = coverage_for_body(plan, repo, number, MAX_COMMENT_BODY - base_length - 2)
+        parts.append(publish_coverage(repo, number, plan))
     parts.extend((usage_line, _attempt_marker(attempt)))
     body = "\n\n".join(parts)
     if len(body) > MAX_COMMENT_BODY:

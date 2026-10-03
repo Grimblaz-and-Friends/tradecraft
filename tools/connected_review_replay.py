@@ -120,7 +120,9 @@ def export_replay(source: Path, output: Path) -> dict[str, Any]:
         ))
         rules_path.write_bytes(cr.repository_review_rules(repository, case["base"]).encode("utf-8"))
         attributes_path = input_dir / "base-attributes.json"
-        write_object(attributes_path, cr.base_attribute_material(repository, case["base"]))
+        write_object(attributes_path, cr.base_attribute_material(
+            repository, case["base"], cr.coverage_paths(diff_path.read_text(encoding="utf-8", errors="replace")),
+        ))
         exported.append({
             **case,
             "snapshot": f"cases/{case['id']}/snapshot",
@@ -539,6 +541,11 @@ def run_replay(
                     )
                     if preload_changed_files else None
                 )
+                case_result["finder_input_utf8_bytes"] = {
+                    name: len(cr.pass_input_bytes(prompt)) for name, prompt in cr.finder_prompts(
+                        finder_text, snapshot, diff_text, rules_text, preloaded, exclusions,
+                    )
+                }
                 candidates, finder_usage, finder_trace = _run_finders_for_replay(
                     executable, case_root, snapshot, finder_text, diff_text,
                     rules_text, lines, token, finder_effort, preloaded, exclusions,

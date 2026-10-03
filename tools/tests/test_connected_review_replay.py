@@ -74,7 +74,7 @@ def test_export_contains_only_snapshot_diff_rules_and_hashes(tmp_path, monkeypat
         replay.cr, "repository_review_rules",
         lambda *_: "## Code Review Rules\n\nRepository rule.\n",
     )
-    monkeypatch.setattr(replay.cr, "base_attribute_material", lambda _repo, base: {"schema_version": 1, "base": base, "files": []})
+    monkeypatch.setattr(replay.cr, "base_attribute_material", lambda _repo, base, paths=(): {"schema_version": 1, "base": base, "files": []})
     result = replay.export_replay(source, output)
     assert result["repository"] == "owner/repo"
     assert (output / "cases/pr-1/snapshot/app.py").is_file()
@@ -96,7 +96,7 @@ def test_export_validation_detects_changed_bytes(tmp_path, monkeypatch):
         lambda endpoint, **_kwargs: archive() if "/tarball/" in endpoint else b"diff",
     )
     monkeypatch.setattr(replay.cr, "repository_review_rules", lambda *_: "No rules.")
-    monkeypatch.setattr(replay.cr, "base_attribute_material", lambda _repo, base: {"schema_version": 1, "base": base, "files": []})
+    monkeypatch.setattr(replay.cr, "base_attribute_material", lambda _repo, base, paths=(): {"schema_version": 1, "base": base, "files": []})
     replay.export_replay(source, output)
     (output / "cases/pr-1/snapshot/app.py").write_text("changed", encoding="utf-8")
     with pytest.raises(replay.ReplayError, match="no longer matches"):
@@ -161,6 +161,34 @@ def prepare_run(monkeypatch) -> None:
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
     monkeypatch.setattr(replay.cr, "verify_managed_settings", lambda: None)
     monkeypatch.setattr(replay.cr, "verify_claude_version", lambda *_: None)
+
+
+@pytest.mark.parametrize("effort", [None, "medium"])
+def test_replay_records_large_preloaded_finder_inputs_without_live_refusal(tmp_path, monkeypatch, effort):
+    export = build_export(tmp_path / "export", cases=1)
+    manifest = replay.read_object(export / "manifest.json")
+    case = manifest["cases"][0]
+    snapshot = export / case["snapshot"]
+    (snapshot / "only-1.py").write_bytes(b"X" * replay.cr.DEFAULT_PRELOAD_BUDGET_BYTES)
+    case["snapshot_sha256"] = replay.tree_digest(snapshot)
+    replay.write_object(export / "manifest.json", manifest)
+    finder = tmp_path / "finder.md"
+    finder.write_bytes(b"finder")
+    prepare_run(monkeypatch)
+    inputs = []
+    def run(*args, **kwargs):
+        inputs.append(replay.cr.pass_input_bytes(args[3]))
+        return {"candidates": []}, {}, []
+    monkeypatch.setattr(replay.cr, "run_pass", run)
+    result = replay.run_replay(export, tmp_path / "results.json", finder, None, "claude",
+                               replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True,
+                               finder_effort=effort, preload_changed_files=True)
+    assert result["complete"] and result["cases"][0]["status"] == "completed"
+    assert len(inputs) == len(replay.cr.FINDER_PASSES)
+    assert len(inputs[0]) > replay.cr.MAX_FINDER_PROMPT_BYTES
+    assert result["cases"][0]["finder_input_utf8_bytes"] == {
+        name: len(sent) for (name, _), sent in zip(replay.cr.FINDER_PASSES, inputs)
+    }
 
 
 def test_default_reviewer_identity_is_unchanged_without_measurement_options(tmp_path):
@@ -376,7 +404,9 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
     assert result["cases"][1] == {
         "case_id": "pr-2", "head": "2" * 40, "base": BASE,
         "status": "error", "error": "case-specific failure", "excluded_files": [],
+        "finder_input_utf8_bytes": result["cases"][1]["finder_input_utf8_bytes"],
     }
+    assert all(size > 0 for size in result["cases"][1]["finder_input_utf8_bytes"].values())
     assert result["complete"] is False
 
 

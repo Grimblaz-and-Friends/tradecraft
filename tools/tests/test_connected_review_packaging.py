@@ -141,7 +141,7 @@ def test_measured_two_pass_replay_defaults_and_prompt_hashes_remain_reproducible
         "c7c352d97e6b971ffff6343d113cbc299dd2a3c6c72363b6debee28e665a3f83"
     )
     assert hashlib.sha256(cr._json_bytes(settings)).hexdigest() == (
-        "36f7b019e5225cad500d188b70c353d5f9fbb58a492fd65aed8e8ca295d42126"
+        "7b101cc3a5661e80b8f347b6e2aff358280daf40bcf5987bd1b39da4d30370c8"
     )
 
 
@@ -247,6 +247,8 @@ def test_workflow_permissions_exactly_cover_each_job_api_call_graph():
             ("GET", "repos/{}/git/trees/{}?recursive=1"),
             ("GET", "repos/{}/git/trees/{}"),
             ("GET", "repos/{}/git/blobs/{}"),
+            ("GET", "repos/{}/issues/{}/comments"),
+            ("POST", "repos/{}/issues/{}/comments"),
             ("POST", "repos/{}/pulls/{}/reviews"),
         },
         "report": {
@@ -364,7 +366,8 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
     assert "`REVIEW_OWNER_LOGIN` names the one account" in prose
     assert "already names the lab owner, `Grimblaz`" in prose
     assert "any other author is refused without a notice" in prose
-    assert "`gh`, Python 3.14, Node and npm" in prose
+    assert "`gh`, `git`, Python 3.14, Node and npm" in prose
+    assert "`gh`, `git`, Python 3.14, Node and npm" in (ROOT / "skills/connected-review/SKILL.md").read_text(encoding="utf-8")
     assert "run the runner as the account whose PATH holds them" in prose
     assert "runner installed as a service runs under a service account" in prose
     assert "for example from a logon task" in prose
@@ -406,7 +409,7 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
     assert ".github/" not in reference
 
     live = (ROOT / "tools/connected-review-live-checks.md").read_text(encoding="utf-8")
-    assert "`gh`, Python 3.14, Node and npm" in live
+    assert "`gh`, `git`, Python 3.14, Node and npm" in live
     assert "`RUNNER_TOOL_CACHE` a stable writable location" in live
     assert "under its `claude-cli` directory" in live
     assert "disables the auto-updater" in live

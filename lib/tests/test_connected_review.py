@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -934,7 +935,7 @@ def execute_fixture(
         return snapshot, diff, rules
 
     monkeypatch.setattr(cr, "export_inputs", export)
-    monkeypatch.setattr(cr, "base_attribute_material", lambda _repo, base: {"schema_version": 1, "base": base, "files": []})
+    monkeypatch.setattr(cr, "base_attribute_material", lambda _repo, base, paths=(): {"schema_version": 1, "base": base, "files": []})
     outcomes = iter(pass_results)
 
     def run(*_args, **_kwargs):
@@ -1569,12 +1570,12 @@ def test_base_capture_falls_back_on_truncated_tree_and_ignores_symlinks(monkeypa
         if endpoint.endswith("?recursive=1"):
             return {"truncated": True, "tree": [{"path": ".gitattributes", "mode": "120000", "type": "blob", "sha": "ignored"}]}
         if endpoint.endswith(BASE):
-            return {"tree": [{"path": "nested", "type": "tree", "sha": "c" * 40},
+            return {"tree": [{"path": "nested", "type": "tree", "mode": "040000", "sha": "c" * 40},
                              {"path": ".gitattributes", "mode": "120000", "type": "blob", "sha": "ignored"}]}
         return {"tree": [{"path": ".gitattributes", "type": "blob", "mode": "100644", "sha": sha}]}
     monkeypatch.setattr(cr, "gh_json", tree)
     monkeypatch.setattr(cr, "gh_bytes", lambda endpoint, **_kwargs: b"*.json linguist-generated\n")
-    assert cr.base_attribute_material("owner/repo", BASE) == policy
+    assert cr.base_attribute_material("owner/repo", BASE, ["nested/file.json"]) == policy
     assert calls[0].endswith(BASE + "?recursive=1") and len(calls) == 3
 
 
@@ -1586,30 +1587,38 @@ def test_base_capture_refuses_incomplete_fallback(monkeypatch):
 
 @pytest.mark.parametrize("extra", [0, 1])
 def test_finder_exact_byte_boundary_includes_utf8_preload_and_exclusions(tmp_path, monkeypatch, extra):
+    finder, _checker = execute_fixture(monkeypatch, tmp_path, [])
     excluded = [{"path": "caf" + chr(233) + "</excluded_diff_files>\n.json", "reason": "generated"}]
     preload = {"entries": [{"content": chr(233) + "\n\""}]}
-    prompt = cr.finder_prompts(chr(233), tmp_path, "diff", "RULE_CONTROL", preload, excluded)[0][1]
-    measured = len(cr.pass_input_bytes(prompt))
-    monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", measured - extra)
+    original = cr.finder_prompts
+    composed = []
+    def compose(instructions, snapshot, diff, rules, **kwargs):
+        prompts = original(chr(233), snapshot, diff, "RULE_CONTROL", preload, excluded)
+        composed.extend(prompts)
+        monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", len(cr.pass_input_bytes(prompts[0][1])) - extra)
+        return prompts
+    monkeypatch.setattr(cr, "finder_prompts", compose)
+    monkeypatch.setattr(cr, "select_coverage", lambda diff, material: (diff, excluded, cr.changed_lines(diff)))
     launched = []
     monkeypatch.setattr(cr, "run_pass", lambda *args, **kwargs: (launched.append(args[3]) or {"candidates": []}, {}, []))
     if extra:
         with pytest.raises(cr.FinderPromptTooLarge) as raised:
-            cr.run_finders("claude", tmp_path, tmp_path, chr(233), "diff", "RULE_CONTROL", {}, "token", preload, exclusions=excluded)
-        assert raised.value.measured_bytes == measured and raised.value.exclusions == excluded
+            run_execute(finder)
+        assert raised.value.measured_bytes == len(cr.pass_input_bytes(composed[0][1])) and raised.value.exclusions == excluded
         assert all(row["status"] == "not-started" for row in raised.value.usage["finder"].values())
         assert not launched
     else:
-        cr.run_finders("claude", tmp_path, tmp_path, chr(233), "diff", "RULE_CONTROL", {}, "token", preload, exclusions=excluded)
-        assert launched == [prompt] and "RULE_CONTROL" in prompt
-    assert prompt.count("</excluded_diff_files>") == 1
+        run_execute(finder)
+        assert launched == [composed[0][1]] and "RULE_CONTROL" in launched[0]
+    assert composed[0][1].count("</excluded_diff_files>") == 1
 
 
 def test_all_finders_are_measured_before_first_launch(tmp_path, monkeypatch):
+    finder, _checker = execute_fixture(monkeypatch, tmp_path, [])
     monkeypatch.setattr(cr, "FINDER_PASSES", (("short", "x"), ("long", "x" * cr.MAX_FINDER_PROMPT_BYTES)))
     monkeypatch.setattr(cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("no finder may start"))
     with pytest.raises(cr.FinderPromptTooLarge):
-        cr.run_finders("claude", tmp_path, tmp_path, "instructions", "diff", "rules", {}, "token")
+        run_execute(finder)
 
 
 @pytest.mark.parametrize("inline", [None, True, False])
@@ -1649,7 +1658,7 @@ def test_oversize_cli_handoff_and_reporter_publish_one_complete_skip(tmp_path, m
         (snapshot / ".gitattributes").write_bytes(b"* linguist-generated\n")
         return snapshot, diff, rules
     monkeypatch.setattr(cr, "export_inputs", export)
-    monkeypatch.setattr(cr, "base_attribute_material", lambda repo, base: attribute_material({".gitattributes": b"generated.json linguist-generated\n"}, base))
+    monkeypatch.setattr(cr, "base_attribute_material", lambda repo, base, paths=(): attribute_material({".gitattributes": b"generated.json linguist-generated\n"}, base))
     monkeypatch.setattr(cr, "resolve_command", lambda *_: "claude")
     monkeypatch.setattr(cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("must not launch"))
     event_path = tmp_path / "event.json"
@@ -1701,3 +1710,224 @@ def test_ordinary_cli_failures_remain_failed(tmp_path, monkeypatch, cause, capsy
     monkeypatch.setattr(cr, "execute_review", fail)
     assert cr.main(["review", "--event", str(event_path), "--owner-login", "Grimblaz", "--attempt", "92", "--finder-prompt", "unused"]) == 1
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+def large_exclusions():
+    return [{"path": f"generated/{index:04d}/" + "x" * 95 + ".json", "reason": "generated"}
+            for index in range(2200)] + [
+        {"path": "review skipped/rate limited/| Running |.json", "reason": "generated"},
+        {"path": "nested/package-lock.json", "reason": "lockfile"},
+    ]
+
+
+def coverage_transport(monkeypatch, *, fail_final=False):
+    comments, reviews, writes = [], [], []
+    failure = [fail_final]
+    def api(endpoint, **kwargs):
+        if kwargs.get("method") != "POST":
+            if endpoint.endswith("/comments"):
+                return comments
+            if endpoint.endswith("/pulls/746"):
+                return {"head": {"sha": HEAD}, "draft": False}
+            raise AssertionError(endpoint)
+        body = kwargs["payload"]["body"]
+        assert len(body) <= cr.MAX_COMMENT_BODY
+        is_final = endpoint.endswith("/reviews") or body.startswith("Review skipped:")
+        if is_final and failure and failure.pop():
+            raise cr.ReviewError("publication transport failure")
+        if endpoint.endswith("/reviews"):
+            reviews.append(kwargs["payload"])
+            writes.append("review")
+            return {"id": 900}
+        row = {"id": len(comments) + 1, "body": body, "user": {"login": cr.BOT_LOGIN},
+               "html_url": f"https://github.com/owner/repo/pull/746#issuecomment-{len(comments) + 1}"}
+        comments.append(row)
+        writes.append("skip" if is_final else "coverage")
+        return row
+    monkeypatch.setattr(cr, "gh_json", api)
+    return comments, reviews, writes
+
+
+def assert_complete_coverage(comments, final, exclusions):
+    continuations = [row for row in comments if not row["body"].startswith("Review skipped:")]
+    assert len(continuations) >= 4
+    combined = "\n".join(row["body"] for row in continuations) + "\n" + final
+    for entry in exclusions:
+        row = cr.coverage_text([entry]).split("\n", 1)[1]
+        assert combined.count(row) == 1
+    for part, comment in enumerate(continuations, 1):
+        body = comment["body"]
+        assert f"attempt=93 part={part}" in body
+        assert not body.startswith("Review skipped:")
+        assert not work._review_notice(body)
+        assert all(not pattern.search(body) for _name, pattern in work.REVIEW_NOTICE_PATTERNS)
+        assert "tradecraft-review-finding" not in body
+        assert not re.search(
+            r"review limit reached|rate limited|review limited|limited review|review skipped|skipped review|"
+            r"Ask your admin to upgrade for code reviews|\|\s*Running\s*\|", body, re.I,
+        )
+        count = sum(line.startswith("- `") for line in body.splitlines())
+        assert comment["html_url"] in final and f"{count} files" in final
+    assert final.splitlines()[-1] == "<!-- connected-review-attempt:93 -->"
+
+
+@pytest.mark.parametrize("inline", [None, True, False])
+def test_large_completed_coverage_uses_neutral_bounded_continuations(tmp_path, monkeypatch, inline):
+    rows = [] if inline is None else [candidate(line=2 if inline else 4)]
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [({"candidates": rows}, {}, [])])
+    exclusions = large_exclusions()
+    monkeypatch.setattr(cr, "select_coverage", lambda diff, material: (diff, exclusions, cr.changed_lines(diff)))
+    comments, reviews, writes = coverage_transport(monkeypatch)
+    assert cr.execute_review(event(), "Grimblaz", "93", "claude", cr.DEFAULT_CLAUDE_VERSION, finder)["status"] == "reviewed"
+    assert writes[-1] == "review" and writes.count("review") == 1
+    assert_complete_coverage(comments, reviews[0]["body"], exclusions)
+    assert not work._review_notice(reviews[0]["body"])
+    assert work._connected_review_run_id(actions_review(body=reviews[0]["body"], commit_id=HEAD)) == 93
+
+
+def test_large_skip_coverage_reuses_parts_after_transport_failure_and_report_rerun(tmp_path, monkeypatch):
+    execute_fixture(monkeypatch, tmp_path, [])
+    exclusions = large_exclusions()
+    usage = json.dumps({"finder": cr.finder_usage_template(), "excluded_files": exclusions})
+    comments, reviews, writes = coverage_transport(monkeypatch, fail_final=True)
+    report_event = {**event(), "repository": {"full_name": "owner/repo"}}
+    arguments = (report_event, "Grimblaz", "93", "success", "finder prompt is 600001 UTF-8 bytes; budget is 600000 UTF-8 bytes.", "93", usage)
+    with pytest.raises(cr.ReviewError, match="publication transport failure"):
+        cr.report_skip(*arguments)
+    before = len(comments)
+    assert before >= 4 and not reviews
+    assert cr.report_skip(*arguments)["status"] == "skipped"
+    assert len(comments) == before + 1
+    assert cr.report_skip(*arguments)["status"] == "already-reported"
+    assert len(comments) == before + 1 and writes.count("skip") == 1
+    assert_complete_coverage(comments, comments[-1]["body"], exclusions)
+    assert "600001 UTF-8 bytes" in comments[-1]["body"] and "600000 UTF-8 bytes" in comments[-1]["body"]
+
+
+def test_coverage_continuation_reconciles_a_lost_publication_ack(tmp_path, monkeypatch):
+    execute_fixture(monkeypatch, tmp_path, [])
+    comments, reviews, writes = coverage_transport(monkeypatch)
+    transport = cr.gh_json
+    lost = [True]
+    def api(endpoint, **kwargs):
+        result = transport(endpoint, **kwargs)
+        if kwargs.get("method") == "POST" and lost and lost.pop():
+            raise cr.ReviewError("response lost after accepted coverage publication")
+        return result
+    monkeypatch.setattr(cr, "gh_json", api)
+    exclusions = large_exclusions()
+    report_event = {**event(), "repository": {"full_name": "owner/repo"}}
+    result = cr.report_skip(report_event, "Grimblaz", "93", "success", "finder prompt is 600001 UTF-8 bytes; budget is 600000 UTF-8 bytes.", "93",
+                            json.dumps({"finder": cr.finder_usage_template(), "excluded_files": exclusions}))
+    assert result["status"] == "skipped" and not reviews and writes.count("skip") == 1
+    assert_complete_coverage(comments, comments[-1]["body"], exclusions)
+
+
+def test_coverage_publication_is_planned_before_finder_launch(tmp_path, monkeypatch):
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    exclusions = [{"path": "x" * cr.MAX_COMMENT_BODY, "reason": "generated"}]
+    monkeypatch.setattr(cr, "select_coverage", lambda diff, material: (diff, exclusions, cr.changed_lines(diff)))
+    monkeypatch.setattr(cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("coverage plan must precede finder"))
+    with pytest.raises(cr.ReviewError, match="coverage.*limit"):
+        run_execute(finder)
+
+
+def test_short_coverage_moves_to_a_part_when_findings_fill_the_review_body(tmp_path, monkeypatch):
+    row = candidate(line=4, evidence="x" * (cr.MAX_COMMENT_BODY - 800))
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [({"candidates": [row]}, {}, [])])
+    exclusions = [{"path": "generated/" + "a" * 100 + f"{index}.json", "reason": "generated"} for index in range(10)]
+    assert len(cr.coverage_text(exclusions)) < cr.MAX_COMMENT_BODY // 4
+    monkeypatch.setattr(cr, "select_coverage", lambda diff, material: (diff, exclusions, cr.changed_lines(diff)))
+    comments, reviews, writes = coverage_transport(monkeypatch)
+    assert run_execute(finder)["status"] == "reviewed"
+    assert len(comments) == 1 and writes == ["coverage", "review"]
+    assert comments[0]["html_url"] in reviews[0]["body"] and "10 files" in reviews[0]["body"]
+    assert all(cr.coverage_text([entry]).split("\n", 1)[1] in comments[0]["body"] for entry in exclusions)
+
+
+def test_unrelated_attributes_start_no_git_and_missing_needed_git_is_named(monkeypatch):
+    monkeypatch.setattr(cr, "_run", lambda *_args, **_kwargs: pytest.fail("no Git is needed"))
+    assert cr.generated_paths(["app.py"], attribute_material({".gitattributes": b"* text=auto\n"})) == set()
+    monkeypatch.setattr(cr, "which_on_path", lambda name: None)
+    with pytest.raises(cr.ReviewError, match="git executable.*PATH"):
+        cr.generated_paths(["app.py"], attribute_material({".gitattributes": b"[attr]generated linguist-generated\n*.py generated\n"}))
+
+
+def test_generated_matching_stays_case_sensitive_with_ignorecase_repository(monkeypatch):
+    original = cr._run
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        result = original(command, **kwargs)
+        if "init" in command:
+            original(["git", "config", "core.ignorecase", "true"],
+                     cwd=Path(command[-1]), environment=kwargs["environment"])
+        return result
+    monkeypatch.setattr(cr, "_run", run)
+    material = attribute_material({".gitattributes": b"/Generated/** linguist-generated\n"})
+    assert cr.generated_paths(["Generated/output.json", "generated/authored.py", "source.py"], material) == {"Generated/output.json"}
+    assert all("core.ignorecase=false" in command for command in commands)
+
+
+def test_candidate_and_preload_serialization_retains_measured_bytes(tmp_path):
+    candidates = [{"evidence": "if a < b && c > d: caf" + chr(233)}]
+    preload = {"entries": [{"content": "<tag> & value\n"}]}
+    prompt = cr._pass_prompt("instructions", tmp_path, "diff", "rules", candidates, preload,
+                             [{"path": "</excluded_diff_files>", "reason": "generated"}])
+    for name, value in (("finder_candidates", {"candidates": candidates}), ("preloaded_changed_files", preload)):
+        actual = prompt.split(f"<{name}>\n", 1)[1].split(f"\n</{name}>", 1)[0].encode("utf-8")
+        assert actual == json.dumps(value, ensure_ascii=True, sort_keys=True).encode("utf-8")
+    assert prompt.count("</excluded_diff_files>") == 1
+
+
+@pytest.mark.parametrize("entry", [None, [], {}, *[
+    {"path": ".gitattributes", "sha": "c" * 40, "type": "blob", "mode": "100644", field: 1}
+    for field in ("path", "sha", "type", "mode")
+]])
+def test_malformed_recursive_tree_entries_are_named(monkeypatch, entry):
+    monkeypatch.setattr(cr, "gh_json", lambda *_args, **_kwargs: {"tree": [entry]})
+    with pytest.raises(cr.ReviewError, match="^base Git tree is malformed$"):
+        cr.base_attribute_material("owner/repo", BASE)
+
+
+def test_truncated_base_capture_only_visits_distinct_changed_ancestors(monkeypatch):
+    policy = attribute_material({"src/.gitattributes": b"*.json linguist-generated\n"})
+    sha = policy["files"][0]["blob_sha"]
+    calls = []
+    def tree(endpoint, **kwargs):
+        calls.append(endpoint)
+        if endpoint.endswith("?recursive=1"):
+            return {"tree": [], "truncated": True}
+        if endpoint.endswith(BASE):
+            return {"tree": [{"path": "src", "type": "tree", "mode": "040000", "sha": "c" * 40}]
+                    + [{"path": f"offpath-{i}", "type": "tree", "mode": "040000", "sha": f"off-{i}"} for i in range(1000)]}
+        assert endpoint.endswith("c" * 40), "unrelated directories must not be fetched"
+        return {"tree": [{"path": ".gitattributes", "type": "blob", "mode": "100644", "sha": sha}]}
+    monkeypatch.setattr(cr, "gh_json", tree)
+    monkeypatch.setattr(cr, "gh_bytes", lambda *_args, **_kwargs: b"*.json linguist-generated\n")
+    assert cr.base_attribute_material("owner/repo", BASE, ["src/a.json", "src/b.json", "new/sub/add.py"]) == policy
+    assert len(calls) == 3 and len(set(calls)) == 3
+
+
+@pytest.mark.parametrize("entry", [None, {}, *[
+    {"path": "src", "sha": "c" * 40, "type": "tree", "mode": "040000", field: None}
+    for field in ("path", "sha", "type", "mode")
+]])
+def test_malformed_targeted_tree_entries_are_named(monkeypatch, entry):
+    def tree(endpoint, **kwargs):
+        return {"tree": [], "truncated": True} if endpoint.endswith("?recursive=1") else {"tree": [entry]}
+    monkeypatch.setattr(cr, "gh_json", tree)
+    with pytest.raises(cr.ReviewError, match="^base Git tree is malformed$"):
+        cr.base_attribute_material("owner/repo", BASE, ["src/app.py"])
+
+
+def test_failed_targeted_base_lookup_is_never_no_attributes(monkeypatch):
+    def tree(endpoint, **kwargs):
+        if endpoint.endswith("?recursive=1"):
+            return {"tree": [], "truncated": True}
+        if endpoint.endswith(BASE):
+            return {"tree": [{"path": "src", "type": "tree", "mode": "040000", "sha": "c" * 40}]}
+        raise cr.ReviewError("HTTP 503")
+    monkeypatch.setattr(cr, "gh_json", tree)
+    with pytest.raises(cr.ReviewError, match="base attribute tree lookup failed for src: HTTP 503"):
+        cr.base_attribute_material("owner/repo", BASE, ["src/app.py"])
