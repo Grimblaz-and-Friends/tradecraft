@@ -1430,6 +1430,35 @@ def _marker_value_error(marker: Marker) -> str | None:
     return None
 
 
+def _native_staffing(state: WorkState, marker: Marker,
+                     request: dict[str, object], run: dict[str, object]
+                     ) -> dict[str, object] | None:
+    """Judge native seats from facts, including the historical request vendor."""
+    if marker.name not in {"use", "cold-verdict"} or "reserved_source_output" not in request:
+        return None
+    requested = request.get("requested")
+    vendor = (run["actual_vendor"] if "actual_vendor" in run else
+              requested.get("vendor") if isinstance(requested, dict) else None)
+    if vendor not in ("codex", "claude"):
+        raise WorkError("native seat bundle does not prove a supported seat vendor")
+    if marker.name == "use":
+        producer, _source = _producer_vendor(
+            state, RESUME_SOURCE_STAGES["build"],
+            revision=marker.attributes["head"], source_root=state.holder_root,
+        )
+    else:
+        producer, _source = _producer_vendor(state, frozenset({"artifact"}))
+    degraded = vendor == producer
+    reason = request.get("same_vendor_reason") if degraded else None
+    if degraded and (not isinstance(reason, str) or not reason):
+        raise WorkError("native same-vendor seat has no recorded same-vendor reason")
+    return {
+        "actual_vendor": vendor,
+        "staffing_status": "degraded" if degraded else "qualified",
+        "same_vendor_reason": reason,
+    }
+
+
 def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
     if state.record_root is None:
         return None
@@ -1495,10 +1524,16 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
         if run.get("revision_after") != marker.attributes["head"]:
             return "floor head disagrees with its successful bundle"
     if marker.name in {"cold-verdict", "use"}:
-        if run.get("staffing_status") != marker.attributes["staffing_status"]:
+        try:
+            native = _native_staffing(state, marker, request, run)
+        except WorkError as exc:
+            return str(exc)
+        staffing = native["staffing_status"] if native else run.get("staffing_status")
+        if staffing != marker.attributes["staffing_status"]:
             return f"{marker.name} staffing disagrees with its seat bundle"
         qualification = run.get("staffing_qualification")
-        bundled_reason = (qualification.get("same_vendor_reason")
+        bundled_reason = (native["same_vendor_reason"] if native else
+                          qualification.get("same_vendor_reason")
                           if isinstance(qualification, dict) else None)
         if marker.attributes.get("same_vendor_reason") != bundled_reason:
             return f"{marker.name} same-vendor reason disagrees with its seat bundle"
@@ -3901,7 +3936,11 @@ def _marker_declaration(state: WorkState, marker: Marker | None,
     if not isinstance(requested, dict):
         return _unverifiable_declaration(stage, "matching dispatch request is incomplete")
     attempts = [attempt for attempt in run.get("attempts", []) if isinstance(attempt, dict)]
-    actual_vendor = run.get("actual_vendor")
+    try:
+        native = _native_staffing(state, marker, request, run)
+    except WorkError as exc:
+        return _unverifiable_declaration(stage, str(exc))
+    actual_vendor = native["actual_vendor"] if native else run.get("actual_vendor")
     actual = next((
         attempt for attempt in reversed(attempts)
         if attempt.get("vendor") == actual_vendor and attempt.get("outcome") in {
@@ -3914,9 +3953,9 @@ def _marker_declaration(state: WorkState, marker: Marker | None,
     observed = actual.get("observed") if isinstance(actual, dict) else None
     usage = actual.get("usage") if isinstance(actual, dict) else None
     usage_dispatch = usage.get("dispatch") if isinstance(usage, dict) else None
-    qualification = run.get("staffing_qualification")
-    staffing_status = run.get("staffing_status")
-    if staffing_status is None and isinstance(usage_dispatch, dict):
+    qualification = native if native else run.get("staffing_qualification")
+    staffing_status = native["staffing_status"] if native else run.get("staffing_status")
+    if native is None and staffing_status is None and isinstance(usage_dispatch, dict):
         staffing_status = usage_dispatch.get("staffing_status")
     return {
         "stage": stage, "status": "declared", "reason": None,
@@ -3934,6 +3973,7 @@ def _marker_declaration(state: WorkState, marker: Marker | None,
             str(requested.get("classification")) if requested.get("classification") else None
         ),
         "actual_vendor": (
+            str(actual_vendor) if native else
             str(actual.get("vendor")) if isinstance(actual, dict) and actual.get("vendor")
             else str(actual_vendor) if actual_vendor else None
         ),
