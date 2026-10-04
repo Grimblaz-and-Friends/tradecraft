@@ -337,6 +337,13 @@ def test_claude_stream_terminal_and_historical_json():
     assert capture.claude_terminal(b'{"type":"system"}\n' + raw + b'\n') == result
 
 
+@pytest.mark.parametrize("tail", [b"\xe2", b"\xff"])
+def test_claude_terminal_keeps_complete_events_before_invalid_trailing_bytes(tail):
+    result = {"type": "result", "result": "final", "is_error": False}
+    assert capture.claude_terminal(json.dumps(result).encode() + b"\n" + tail) == result
+    assert capture.claude_terminal(b'{"type":"system"}\n' + tail) is None
+
+
 def test_malformed_usage_and_expired_probes_stay_unknown(monkeypatch, tmp_path):
     evidence = records.runtime_evidence("claude", b'bad\xff', "fresh")
     assert evidence["normalized"] is None and evidence["normalized_unavailable_reason"]

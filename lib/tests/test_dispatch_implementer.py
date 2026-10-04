@@ -394,6 +394,23 @@ def test_ceiling_reason_distinguishes_caller_allocation_and_elapsed(job, monkeyp
         "recipient allocation 87.80s; measured elapsed 87.80s")
 
 
+def test_claude_ceiling_with_truncated_utf8_retains_interruption_and_identity(job, monkeypatch):
+    args, _ = job
+    args.vendor = "claude"
+    session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    raw = json.dumps({"type": "system", "subtype": "init", "session_id": session}).encode() + b"\n\xe2"
+    def stopped(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=raw, stderr=b"")
+    monkeypatch.setattr(implementer, "run_process", stopped)
+    assert implementer.run_implementer(args) == 1
+    saved = record(args)
+    assert saved["outcome"] == "interrupted" and saved["interruption_cause"] == "ceiling"
+    assert saved["session_identity"]["session_id"] == session
+    assert "stopped at the recipient ceiling" in saved["attempts"][0]["reason"]
+    assert Path(saved["attempts"][0]["stdout"]).read_bytes() == raw
+    assert not args.output.exists()
+
+
 def test_direct_fresh_launch_reads_machine_vendor_and_records_its_source(job, tmp_path, monkeypatch):
     args, scenario = job
     home = tmp_path / "home"

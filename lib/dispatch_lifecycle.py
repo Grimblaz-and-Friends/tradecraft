@@ -45,9 +45,8 @@ def atomic_record(path, value):
 
 def claude_terminal(raw):
     """Read historical JSON or the terminal result in a stream-json log."""
-    decoded = raw.decode("utf-8")
     try:
-        value = json.loads(decoded)
+        value = json.loads(raw.decode("utf-8"))
         if isinstance(value, dict):
             return value
     except (UnicodeError, ValueError):
