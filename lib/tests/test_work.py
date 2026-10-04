@@ -3697,12 +3697,13 @@ def test_execute_cold_seat_uses_the_bounded_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "artifact bundle"))
     monkeypatch.setattr(work, "_git_snapshot", lambda _root: (SHA, ""))
 
-    def run(command):
+    def run(command, **_kwargs):
         dispatch = Path(command[command.index("--dispatch") + 1])
         captured.append((command, dispatch.read_bytes()))
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "_recipient_run", run)
     runtime = Path(sys.executable).resolve()
     decision = work.Decision("cold-seat", True, "fresh", "fixture")
     assert work.execute_stage(
@@ -5416,6 +5417,7 @@ def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
             return subprocess.CompletedProcess(command, status)
         return original_run(command, *positional, **keywords)
     monkeypatch.setattr(work.subprocess, "run", launch)
+    monkeypatch.setattr(work, "_recipient_run", launch)
     session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
     scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, first_return, session)}).encode())
     assert work.run(args, transport=ArtifactTransport()) == 1
@@ -5553,6 +5555,7 @@ def test_codex_lineage_requires_machine_trigger_and_honors_matching_override(
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", capture)
+    monkeypatch.setattr(work, "_recipient_run", capture)
     decision = work.Decision(stage, True, "resume", "fixture")
     handover = work._handover_path(fixture, role, root, None)
     if outcome == "refuse":
@@ -5606,6 +5609,7 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", capture)
+    monkeypatch.setattr(work, "_recipient_run", capture)
     decision = work.Decision(stage, True, "resume", "fixture")
     assert work.execute_stage(fixture, decision, root, None, "holder", floor_command="python fixture-check.py") == 0
     first = launches[-1]
@@ -5660,10 +5664,13 @@ def test_codex_to_claude_handover_reserves_once_and_stays_claude_after_flip(
 @pytest.mark.parametrize("machine_vendor", ["codex", "claude"])
 @pytest.mark.parametrize("case", [
     "reserved", "no_launch_record", "observed", "completed_no_output",
-    "missing_result", "missing_session",
+    "missing_result", "missing_session", "missing_session_current_format",
 ])
 def test_incomplete_handover_keeps_its_replacement_session(
         tmp_path, monkeypatch, stage, machine_vendor, case):
+    current_format = case == "missing_session_current_format"
+    if current_format:
+        case = "missing_session"
     home = tmp_path / "home"
     (home / ".tradecraft").mkdir(parents=True)
     (home / ".tradecraft" / "implementer-vendor").write_bytes(
@@ -5722,6 +5729,25 @@ def test_incomplete_handover_keeps_its_replacement_session(
                     }],
                 }).encode()
             )
+    if current_format:
+        predecessor_request = store / source_stage / "result.md.request.json"
+        prior = json.loads(predecessor_request.read_bytes())
+        prior.update(dispatch_id="predecessor", root=str(root), lineage_branch=None,
+                     launched_at="2026-09-20T09:59:00+00:00")
+        predecessor_request.write_bytes(json.dumps(prior).encode())
+        predecessor_run = Path(predecessor)
+        prior_run = json.loads(predecessor_run.read_bytes())
+        prior_run["dispatch_id"] = "predecessor"
+        predecessor_run.write_bytes(json.dumps(prior_run).encode())
+        req = json.loads(attempt_request.read_bytes())
+        req["launched_at"] = "2026-09-20T10:59:00+00:00"
+        attempt_request.write_bytes(json.dumps(req).encode())
+        run_path = attempt_request.with_name("handover-attempt.run.json")
+        current_run = json.loads(run_path.read_bytes())
+        identity = work.lifecycle.process_identity()
+        identity["birth"] += "dead"
+        current_run.update(lifecycle="completed", launcher_process=identity, dispatch_id="handover-attempt")
+        run_path.write_bytes(json.dumps(current_run).encode())
     monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
     monkeypatch.setattr(work, "_runtime_argument",
                         lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
@@ -5735,8 +5761,15 @@ def test_incomplete_handover_keeps_its_replacement_session(
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", capture)
+    monkeypatch.setattr(work, "_recipient_run", capture)
     decision = work.Decision(stage, True, "resume", "fixture")
-    if case in {"missing_result", "missing_session"}:
+    if case == "missing_result":
+        # A newer unproved launch cannot be replaced, even by a reserved UUID.
+        assert work.execute_stage(fixture, decision, root, None, "holder") == 0
+        assert work.execute_stage(fixture, decision, root, None, "holder",
+                                  handover_recovery_session=OTHER_SESSION) == 0
+        assert launches == []
+    elif case == "missing_session":
         with pytest.raises(work.WorkError) as error:
             work.execute_stage(fixture, decision, root, None, "holder", floor_command="python fixture-check.py")
         assert str(attempt_request) in str(error.value)
@@ -5797,6 +5830,7 @@ def test_unavailable_claude_does_not_reserve_handover_before_a_retry(tmp_path, m
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", capture)
+    monkeypatch.setattr(work, "_recipient_run", capture)
     decision = work.Decision("floor", True, "resume", "fixture")
     assert work.execute_stage(fixture, decision, root, None, "holder", floor_command="python fixture-check.py") == 1
     handover = work._handover_path(fixture, "implementer", root, None)
@@ -5812,7 +5846,7 @@ def test_resume_without_bundle_or_marker_returns_a_non_dispatching_decision(
         tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        work.subprocess, "run",
+        work, "_recipient_run",
         lambda *_args, **_kwargs: pytest.fail("a missing resume session must not launch"),
     )
     decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
@@ -5836,7 +5870,7 @@ def test_resume_without_bundle_or_marker_returns_a_non_dispatching_decision(
 
 def test_build_launch_without_holder_identity_is_refused(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
-        work.subprocess, "run",
+        work, "_recipient_run",
         lambda *_args, **_kwargs: pytest.fail("missing holder identity must not launch"),
     )
     decision = work.Decision("build", True, "fresh", "pull-request-absent")
@@ -5856,6 +5890,7 @@ def test_dispatching_use_without_registration_names_absence_before_prompt_or_lau
     monkeypatch.setattr(work, "judging_root", fail)
     monkeypatch.setattr(work, "_stage_prompt", fail)
     monkeypatch.setattr(work.subprocess, "run", fail)
+    monkeypatch.setattr(work, "_recipient_run", fail)
 
     decision = work.Decision("use", True, "fresh", "externally-constructed-use")
     assert work.execute_stage(state(pr=True), decision, tmp_path, None, floor_command="python fixture-check.py") == 0
@@ -5977,6 +6012,7 @@ def test_run_use_launches_only_with_the_holder_job_and_validated_tree(
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "_recipient_run", run)
     monkeypatch.setattr(
         work, "_runtime_argument", lambda vendor: [f"--{vendor}", f"/{vendor}-fixture"]
     )
@@ -6103,6 +6139,7 @@ def test_tree_revision_and_run_use_need_no_registration(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(command, 0)
         return original_run(command, *run_args, **run_kwargs)
     monkeypatch.setattr(work.subprocess, "run", capture_seat)
+    monkeypatch.setattr(work, "_recipient_run", capture_seat)
     assert work.execute_stage(
         state(AFFIRMED), work.Decision("use", True, "fresh", "holder-named-stage"),
         holder, None, dispatch_path=dispatch, tree_metadata=metadata, transport=transport,
@@ -6155,6 +6192,7 @@ def test_run_use_refuses_recomputed_metadata_for_an_unlanded_commit(
         return original_run(command, *run_args, **run_kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", capture_seat)
+    monkeypatch.setattr(work, "_recipient_run", capture_seat)
     transport = FakeTransport({
         "repos/example/product": {"default_branch": branch},
     })
@@ -6200,7 +6238,7 @@ def test_tree_revision_refuses_an_unlanded_commit_before_creating_output(
     assert not work.recipient_tree.metadata_path(output).exists()
 
 
-@pytest.mark.parametrize("timeout, expected", [(None, "10800"), (42.5, "42.5")])
+@pytest.mark.parametrize("timeout, expected", [(None, "7200"), (42.5, "42.5")])
 def test_build_launch_forwards_holder_identity_and_timeout_to_the_launcher(
         tmp_path, monkeypatch, timeout, expected):
     commands = []
@@ -6209,8 +6247,8 @@ def test_build_launch_forwards_holder_identity_and_timeout_to_the_launcher(
     monkeypatch.setattr(work, "_attached_branch", lambda _root: branch)
     runtime = Path(sys.executable).resolve()
     monkeypatch.setattr(
-        work.subprocess, "run",
-        lambda command: commands.append(command) or subprocess.CompletedProcess(command, 0),
+        work, "_recipient_run",
+        lambda command, **_kwargs: commands.append(command) or subprocess.CompletedProcess(command, 0),
     )
     decision = work.Decision("build", True, "fresh", "pull-request-absent")
     fixture = state(
@@ -6220,8 +6258,9 @@ def test_build_launch_forwards_holder_identity_and_timeout_to_the_launcher(
     assert work.execute_stage(
         fixture, decision, tmp_path, "2", "stable-holder-token", codex_path=runtime,
         timeout_seconds=timeout,
-     floor_command="python fixture-check.py") == 0
-    assert commands[0][-2:] == ["--holder-session-id", "stable-holder-token"]
+        floor_command="python fixture-check.py",
+    ) == 0
+    assert commands[0][commands[0].index("--holder-session-id") + 1] == "stable-holder-token"
     assert commands[0][commands[0].index("--root") + 1] == str(tmp_path)
     assert commands[0][commands[0].index("--timeout-seconds") + 1] == expected
     assert commands[0][commands[0].index("--model") + 1] == "gpt-owner"
@@ -6262,7 +6301,7 @@ def test_resume_marker_equal_to_holder_identity_is_rejected(
     fixture = state(f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->", pr=True)
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
     monkeypatch.setattr(
-        work.subprocess, "run",
+        work, "_recipient_run",
         lambda *_args, **_kwargs: pytest.fail("holder session must not resume as builder"),
     )
     decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
@@ -6287,18 +6326,19 @@ def test_execute_stage_passes_the_recovered_session_to_the_implementer(
     )
     monkeypatch.setattr(work, "_attached_branch", lambda _root: "tradecraft/12-fixture")
 
-    def run(command):
+    def run(command, **_kwargs):
         commands.append(command)
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "_recipient_run", run)
     decision = work.Decision("floor", True, "resume", "current-head-floor-missing-or-red")
     assert work.execute_stage(
         fixture, decision, tmp_path, None, "holder-session", timeout_seconds=timeout,
-     floor_command="python fixture-check.py") == 0
-    assert commands[0][-4:] == [
-        "--holder-session-id", "holder-session", "--resume", SESSION,
-    ]
+        floor_command="python fixture-check.py",
+    ) == 0
+    assert commands[0][commands[0].index("--holder-session-id") + 1] == "holder-session"
+    assert commands[0][commands[0].index("--resume") + 1] == SESSION
     assert commands[0][commands[0].index("--timeout-seconds") + 1] == expected
 
 
@@ -6538,6 +6578,7 @@ def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holde
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "_recipient_run", run)
     decision = work.Decision("build", True, "fresh", "pull-request-absent")
     assert work.execute_stage(
         state(AFFIRMED), decision, holder, None, "holder-session"
@@ -6657,6 +6698,7 @@ def test_failed_initial_publication_is_retried_and_verified_before_launch(
 
     monkeypatch.setattr(work, "publish_implementation_branch", publish)
     monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "_recipient_run", run)
     decision = work.Decision("build", True, "fresh", "holder-named-stage")
 
     assert work.execute_stage(state(AFFIRMED), decision, holder, None, "holder-session", floor_command="python fixture-check.py") == 0
@@ -6701,6 +6743,7 @@ def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
         return nullcontext(source)
 
     monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "_recipient_run", run)
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
     fixture = state(AFFIRMED, ARTIFACT, pr=True)
     fixture.record_root = tmp_path / "dispatches"
@@ -6860,6 +6903,7 @@ def test_legacy_registration_migrates_before_dispatch_and_names_the_proof_gap(
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(work.subprocess, "run", run)
+    monkeypatch.setattr(work, "_recipient_run", run)
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
     fixture = state(AFFIRMED, pr=True)
     fixture.record_root = tmp_path / "dispatches"
@@ -7426,6 +7470,7 @@ def test_report_launch_plan_is_read_only(tmp_path, monkeypatch, stage, role, ven
     monkeypatch.setattr(work, "sweep_registry", lambda *_a: pytest.fail("report swept registry"))
     monkeypatch.setattr(work, "_reserve_handover", lambda *_a, **_k: pytest.fail("report reserved handover"))
     monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_k: pytest.fail("report ran a process"))
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("report ran a process"))
     before = sorted(tmp_path.rglob("*"))
     decision = work.Decision(stage, stage != "use", "fresh", "fixture")
     plan = work._reported_decision(fixture, decision).as_dict()["launch_settings"]
@@ -7529,7 +7574,7 @@ def test_named_run_plan_is_snapshot_and_agrees_with_command(tmp_path, monkeypatc
         return root, None, False
     monkeypatch.setattr(work, "_dispatch_root", selected_root)
     monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
-    def launch(command):
+    def launch(command, **_kwargs):
         printed = capsys.readouterr().out
         plans = [json.loads(line.split("launch_settings ", 1)[1]) for line in printed.splitlines()
                  if line.startswith("work: launch_settings ")]
@@ -7540,6 +7585,7 @@ def test_named_run_plan_is_snapshot_and_agrees_with_command(tmp_path, monkeypatc
         assert command[command.index("--model-source") + 1] == primary["sources"]["model"]
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr(work.subprocess, "run", launch)
+    monkeypatch.setattr(work, "_recipient_run", launch)
     assert work.execute_stage(fixture, work.Decision("build", True, "fresh", "holder-named-stage"),
                               tmp_path, None, "holder", floor_command="python fixture-check.py") == 0
 
@@ -7558,6 +7604,7 @@ def test_report_invalid_registration_root_is_unresolved_and_read_only(tmp_path, 
     monkeypatch.setattr(work, "write_registry", lambda *_a: pytest.fail("report wrote registry"))
     monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("report proved a root"))
     monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_k: pytest.fail("report ran a process"))
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("report ran a process"))
     report = work._reported_decision(fixture, work.Decision("floor", True, "resume", "fixture")).as_dict()
     assert report["stage"] == "floor" and report["dispatch"] is True
     assert report["launch_settings"]["status"] == "unresolved"
@@ -7611,6 +7658,7 @@ def test_resume_plan_source_change_then_reversion_is_refused(tmp_path, monkeypat
     monkeypatch.setattr(work, "_dispatch_root", reverted_source)
     monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
     monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_kw: pytest.fail("launched a session different from the plan"))
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_kw: pytest.fail("launched a session different from the plan"))
     with pytest.raises(work.WorkError, match="resume source changed after launch planning"):
         work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"),
                            tmp_path, None, "holder", floor_command="python fixture-check.py")
@@ -7734,6 +7782,7 @@ def test_resume_source_change_is_refused_before_recipient(tmp_path, monkeypatch)
     monkeypatch.setattr(work, "_dispatch_root", change_source)
     monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
     monkeypatch.setattr(work.subprocess, "run", lambda *_a, **_k: pytest.fail("launched changed session"))
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched changed session"))
     with pytest.raises(work.WorkError, match="resume source changed"):
         work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"),
                            tmp_path, None, "holder", floor_command="python fixture-check.py")
@@ -7768,5 +7817,6 @@ def test_changed_handover_identity_refuses_before_recipient(tmp_path, monkeypatc
             pytest.fail("launched changed handover identity")
         return original(command, *a, **kw)
     monkeypatch.setattr(work.subprocess, "run", launch)
+    monkeypatch.setattr(work, "_recipient_run", launch)
     with pytest.raises(work.WorkError, match="handover identity changed"):
         work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"), root, None, "holder", floor_command="python fixture-check.py")

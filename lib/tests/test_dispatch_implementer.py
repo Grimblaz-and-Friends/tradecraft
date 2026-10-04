@@ -1,5 +1,6 @@
 import json
 import hashlib
+import subprocess
 import os
 from pathlib import Path
 import sys
@@ -97,7 +98,7 @@ def job(tmp_path, monkeypatch):
         "--work", "issue-592", "--stage", "build",
         "--settings-source", "issuecomment-5655702442",
         "--settings-scope", "Codex turns after the artifact",
-        "--output", str(output), "--timeout-seconds", "10",
+        "--output", str(output), "--timeout-seconds", "60",
     ])
     monkeypatch.setattr(
         implementer, "resolve_command",
@@ -117,6 +118,17 @@ def record(args):
 
 def seen(args):
     return json.loads((args.root / "seen-codex.json").read_bytes())
+
+
+@pytest.mark.parametrize("limit", [5, 10])
+def test_caller_limit_with_no_launch_window_starts_no_implementer(job, monkeypatch, limit):
+    args, _ = job
+    args.timeout_seconds = limit
+    monkeypatch.setattr(implementer, "run_process", lambda *_a, **_k: pytest.fail("launched without a useful window"))
+    with pytest.raises(TimeoutError, match="no useful launch window"):
+        implementer.run_implementer(args)
+    assert not args.output.exists()
+    assert not (args.root / "seen-codex.json").exists()
 
 
 def success_events(session_id="0199a213-81c0-7800-8aa1-bbab2a035a53"):
@@ -290,7 +302,7 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
     observed = json.loads((args.root / "seen-claude.json").read_bytes())
     expected = [
         "-p", "--model", "claude-opus-5-5", "--effort", "high",
-        "--output-format", "json", "--permission-mode", "auto",
+        "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
         "--setting-sources", "user", "--plugin-dir", str(LIB.parent),
     ]
     if resume:
@@ -333,6 +345,70 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     assert request["settings_source"] == "issuecomment-5655702442"
     assert args.output.read_bytes() == b"built\n"
     assert Path(logged["result"]["source_output"]).read_bytes() == b"built\n"
+
+
+def test_elapsed_accounting_does_not_clip_a_measured_overrun(job, monkeypatch):
+    args, _ = job
+    clock = [100.0]
+    monkeypatch.setattr(implementer.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(implementer.records, "git_revision", lambda *_: None)
+    monkeypatch.setattr(implementer.lifecycle, "content_snapshot", lambda *a, **k: {"digest": "fixture"})
+    def returned(command, **kwargs):
+        clock[0] += kwargs["timeout"] + 0.1
+        Path(command[command.index("--output-last-message") + 1]).write_bytes(b"built\n")
+        return subprocess.CompletedProcess(command, 0, success_events().encode(), b"")
+    monkeypatch.setattr(implementer, "run_process", returned)
+    assert implementer.run_implementer(args) == 0
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert record(args)["attempts"][0]["elapsed_seconds"] > request["recipient_allocation_seconds"]
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_ceiling_reason_distinguishes_caller_allocation_and_elapsed(job, monkeypatch, vendor):
+    args, _ = job
+    args.vendor, args.timeout_seconds = vendor, 120
+    args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+    args.lifecycle_input.write_bytes(json.dumps({"recipient_allocation_seconds": 90.78}).encode())
+    clock = [100.0]
+    monkeypatch.setattr(implementer.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(implementer.records, "git_revision", lambda *_: None)
+    snapshots = []
+    def snapshot(*_a, **_k):
+        if not snapshots:
+            clock[0] += 20.2  # Preflight consumes part of the same caller window.
+        snapshots.append(True)
+        return {"digest": "fixture"}
+    monkeypatch.setattr(implementer.lifecycle, "content_snapshot", snapshot)
+    def stopped(command, **kwargs):
+        clock[0] += kwargs["timeout"]
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=b"", stderr=b"")
+    monkeypatch.setattr(implementer, "run_process", stopped)
+    assert implementer.run_implementer(args) == 1
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    attempt = record(args)["attempts"][0]
+    assert request["recipient_allocation_seconds"] == 90.78
+    assert attempt["allocation_seconds"] == pytest.approx(87.8)
+    assert attempt["elapsed_seconds"] == pytest.approx(87.8)
+    assert attempt["reason"] == (
+        f"{vendor} stopped at the recipient ceiling; caller limit 120s; "
+        "recipient allocation 87.80s; measured elapsed 87.80s")
+
+
+def test_claude_ceiling_with_truncated_utf8_retains_interruption_and_identity(job, monkeypatch):
+    args, _ = job
+    args.vendor = "claude"
+    session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    raw = json.dumps({"type": "system", "subtype": "init", "session_id": session}).encode() + b"\n\xe2"
+    def stopped(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=raw, stderr=b"")
+    monkeypatch.setattr(implementer, "run_process", stopped)
+    assert implementer.run_implementer(args) == 1
+    saved = record(args)
+    assert saved["outcome"] == "interrupted" and saved["interruption_cause"] == "ceiling"
+    assert saved["session_identity"]["session_id"] == session
+    assert "stopped at the recipient ceiling" in saved["attempts"][0]["reason"]
+    assert Path(saved["attempts"][0]["stdout"]).read_bytes() == raw
+    assert not args.output.exists()
 
 
 def test_direct_fresh_launch_reads_machine_vendor_and_records_its_source(job, tmp_path, monkeypatch):
@@ -1141,3 +1217,25 @@ def test_unavailable_bridged_request_retains_provenance_without_observation(job)
     assert attempt["launched"] is False
     assert attempt["observed"]["reported_models"] == []
     assert attempt["observed"]["reported_effort"] is None
+
+
+def test_deadline_expiry_is_a_ceiling_not_a_spawn_error(job, monkeypatch):
+    args, _scenario = job
+    def expired(*_a, **_k):
+        raise TimeoutError("caller limit has no useful launch window")
+    monkeypatch.setattr(implementer, "run_process", expired)
+    assert implementer.run_implementer(args) == 1
+    run = json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
+    assert run["outcome"] == "interrupted" and run["interruption_cause"] == "ceiling"
+    assert not run["attempts"][0]["launched"]
+    assert "cannot launch" not in run["attempts"][0]["reason"]
+
+
+
+def test_real_missing_vendor_does_not_credit_an_implementer_launch(job, monkeypatch):
+    args, _scenario = job
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_a: [str(args.root / "missing-vendor")])
+    assert implementer.run_implementer(args) == 1
+    run = json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
+    assert not run["attempts"][0]["launched"]
+    assert not implementer.lifecycle.stopped(run)

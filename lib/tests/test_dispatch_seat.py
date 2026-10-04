@@ -75,7 +75,7 @@ def job(tmp_path, monkeypatch, primary_template):
         "--requires", "read",
         "--settings-source", "issuecomment-5655702442",
         "--settings-scope", "Codex turns after the artifact",
-        "--hold-file", str(tmp_path / "holds"), "--timeout-seconds", "10",
+        "--hold-file", str(tmp_path / "holds"), "--timeout-seconds", "60",
     ])
     def resolver(vendor, explicit):
         return [sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)]
@@ -142,7 +142,7 @@ def test_claude_primary_and_fallback_keep_pytest_environment(job, monkeypatch, f
 
     observed = seen(args, "claude")
     assert observed["argv"] == [
-        "-p", "--model", "claude-opus-5-5", "--effort", "high", "--output-format", "json",
+        "-p", "--model", "claude-opus-5-5", "--effort", "high", "--output-format", "stream-json", "--verbose",
         "--no-session-persistence", "--safe-mode", "--tools", "Read,Glob,Grep",
         "--allowedTools", "Read,Glob,Grep", "--permission-mode", "dontAsk", "--strict-mcp-config",
     ]
@@ -178,7 +178,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, monkeypat
     flags = observed["argv"]
     if vendor == "claude":
         tools = "Read,Glob,Grep,Bash" if required_capability == "execute" else "Read,Glob,Grep"
-        assert flags == ["-p", "--model", "claude-opus-5-5", "--effort", "high", "--output-format", "json",
+        assert flags == ["-p", "--model", "claude-opus-5-5", "--effort", "high", "--output-format", "stream-json", "--verbose",
                          "--no-session-persistence", "--safe-mode", "--tools", tools,
                          "--allowedTools", tools, "--permission-mode", "dontAsk", "--strict-mcp-config"]
     else:
@@ -861,15 +861,20 @@ def test_degraded_fallback_qualifies_only_with_stage_local_same_vendor_reason(jo
     {"exit": 2, "stderr": "invalid argument --bad", "stdout": "not JSON"},
     {"stdout": "not JSON"},
     {"message": ""},
-    {"sleep": 20},
+    {"sleep": 45},
 ])
-def test_other_failures_never_fallback_or_publish(job, vendor, scenario):
+def test_other_failures_never_fallback_or_publish(job, monkeypatch, vendor, scenario):
     args, _ = job
     args.vendor = vendor
     args.own_vendor = "claude" if vendor == "codex" else "codex"
     configure(job, {vendor: scenario})
     if "sleep" in scenario:
-        args.timeout_seconds = 0.1
+        # Classification and refusal are the contract here. Real timeout
+        # containment is covered by the native deadline and descendant cases.
+        def timed_out(command, **kwargs):
+            kwargs["on_launch"](os.getpid())
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        monkeypatch.setattr(seat, "run_process", timed_out)
     assert seat.run_dispatch(args) == 1
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
@@ -1097,9 +1102,8 @@ def test_malformed_claude_bytes_are_rejected_and_recoverable(job, monkeypatch):
         seat.run_dispatch(args)
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
-    retained = json.loads(seat.sidecar(args.output, ".claude.stdout.log").read_bytes())
-    assert retained["encoding"] == "base64"
-    assert base64.b64decode(retained["data"]) == raw
+    assert record(args)["attempts"][0]["stdout_encoding"] == "raw-bytes"
+    assert seat.sidecar(args.output, ".claude.stdout.log").read_bytes() == raw
 
 
 @pytest.mark.parametrize("http_status", [401, 429])
@@ -1164,24 +1168,73 @@ def test_fallback_cannot_read_discarded_transcript_but_caller_can(job, monkeypat
     assert b"DISCARDED_PARTIAL_VERDICT" in seat.sidecar(args.output, ".claude.stdout.log").read_bytes()
 
 
-def test_timeout_stops_a_started_descendant(job, monkeypatch):
+def test_timeout_stops_a_started_descendant(job, monkeypatch, record_property):
     args, _ = job
     child = args.root / "child.py"
-    child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(6)\nPath('finished').write_bytes(b'yes')\n")
-    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(10)"
-    monkeypatch.setattr(seat, "resolve_command", lambda *a: [sys.executable, "-c", wrapper, str(child)])
-    args.timeout_seconds = 5
+    child.write_text(
+        "import json,sys,time\nfrom pathlib import Path\n"
+        f"sys.path.insert(0,{str(LIB)!r})\nimport run_lifecycle as lifecycle\n"
+        "Path('pending').write_bytes(json.dumps(lifecycle.process_identity()).encode())\n"
+        "Path('pending').replace('started')\n"
+        "time.sleep(45)\nPath('finished').write_bytes(b'yes')\n", encoding="utf-8", newline="\n")
+    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(50)"
+    monkeypatch.setattr(seat, "resolve_command", lambda *a: [sys._base_executable, "-c", wrapper, str(child)])
+    original = seat.run_process
+    def stop_after_child_started(command, **kwargs):
+        tick = kwargs["on_tick"]
+        def trigger():
+            tick()
+            if (args.root / "started").exists():
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return original(command, **{**kwargs, "on_tick": trigger})
+    monkeypatch.setattr(seat, "run_process", stop_after_child_started)
+    # The state transition triggers cancellation; this limit only guards hangs.
+    args.timeout_seconds = 60
     started = time.monotonic()
     assert seat.run_dispatch(args) == 1
     elapsed = time.monotonic() - started
+    record_property("launcher_elapsed_seconds", elapsed)
+    record_property("caller_limit_seconds", args.timeout_seconds)
     assert (args.root / "started").exists(), "The descendant must actually start before cancellation."
-    survival_check_at = (args.root / "started").stat().st_mtime + 6.3
-    time.sleep(max(0, survival_check_at - time.time()))
+    identity = json.loads((args.root / "started").read_bytes())
+    assert seat.lifecycle.liveness({"launcher_process": identity}) == "stopped", "The descendant survived cancellation."
     assert not (args.root / "finished").exists(), "The descendant continued after the deadline."
-    assert elapsed < args.timeout_seconds + 1, "Pipe-owning descendants delayed timeout cleanup."
+    assert elapsed < args.timeout_seconds, "Pipe-owning descendants delayed timeout cleanup."
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
 
+
+@pytest.mark.parametrize("limit", [5, 10])
+def test_caller_limit_with_no_launch_window_starts_no_seat(job, monkeypatch, limit):
+    args, _ = job
+    args.timeout_seconds = limit
+    monkeypatch.setattr(seat, "run_process", lambda *_a, **_k: pytest.fail("launched without a useful window"))
+    with pytest.raises(seat.DispatchError, match="no useful launch window"):
+        seat.run_dispatch(args)
+    assert not args.output.exists()
+    assert not list(args.root.glob("seen-*.json"))
+
+
+
+def test_ceiling_uses_one_completion_write_after_recipient_stop(job, monkeypatch):
+    args, _ = job
+    writes = []
+    original = seat.records.GrowingRun.checkpoint
+    def checkpoint(growing):
+        if growing.record.get("interruption_cause") == "ceiling":
+            writes.append(growing.record["lifecycle"])
+        return original(growing)
+    monkeypatch.setattr(seat.records.GrowingRun, "checkpoint", checkpoint)
+    event = {"type": "system", "subtype": "init", "session_id": "0199a213-81c0-7800-8aa1-bbab2a035a53"}
+    def timed_out(command, **kwargs):
+        raw = json.dumps(event).encode() + b"\n"
+        kwargs["on_launch"](os.getpid())
+        kwargs["on_output"]("stdout", raw)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=raw)
+    monkeypatch.setattr(seat, "run_process", timed_out)
+    assert seat.run_dispatch(args) == 1
+    assert writes == ["completed"], "Redundant post-stop writes consume the completion reserve."
+    assert record(args)["outcome"] == "interrupted"
 
 @pytest.mark.parametrize("failure", ["write", "flush", "close"])
 def test_record_failure_never_publishes_a_verdict(job, monkeypatch, failure):
@@ -1211,7 +1264,7 @@ def test_record_failure_never_publishes_a_verdict(job, monkeypatch, failure):
         monkeypatch.setattr(Path, "open", opened)
     else:
         monkeypatch.setattr(
-            seat.records, "finalize_reserved_json",
+            seat.records.GrowingRun, "finish",
             lambda *_args: (_ for _ in ()).throw(OSError(f"record {failure} failed")),
         )
     with pytest.raises(OSError, match="record"):
@@ -1239,7 +1292,7 @@ def test_verdict_publication_race_is_recorded_without_a_false_success(job, monke
     def raced(source, destination):
         if source == args.output:
             return link(source, destination)
-        assert seat.sidecar(args.output, ".run.json").read_bytes() == b""
+        assert not record(args).get("completed_at")
         assert Path(source).read_bytes()
         destination.write_bytes(b"another caller")
         link(source, destination)
@@ -1317,7 +1370,7 @@ def test_interpretation_failure_still_completes_the_attempt(job, monkeypatch):
     assert attempt["elapsed_seconds"] >= 0
 
 
-def test_fallback_cannot_read_primary_transcript_until_it_finishes(job, monkeypatch):
+def test_fallback_keeps_durable_primary_transcript_outside_recipient_tree(job, monkeypatch):
     args, _ = job
     configure(job, {"claude": {"message": "Not logged in"}})
     original = seat.run_process
@@ -1326,8 +1379,11 @@ def test_fallback_cannot_read_primary_transcript_until_it_finishes(job, monkeypa
         nonlocal calls
         calls += 1
         if calls == 2:
-            assert seat.sidecar(args.output, ".claude.stdout.log").read_bytes() == b""
-            assert seat.sidecar(args.output, ".claude.stderr.log").read_bytes() == b""
+            log = seat.sidecar(args.output, ".claude.stdout.log")
+            assert log.read_bytes()
+            assert not log.is_relative_to(args.root)
+            assert str(log) not in command
+            assert str(log).encode() not in kwargs["input"]
         return original(command, **kwargs)
     monkeypatch.setattr(seat, "run_process", checked)
     assert seat.run_dispatch(args) == 0
@@ -1526,3 +1582,32 @@ def test_direct_role_inference_and_conflict(job, stage, classification, expected
     args.role = "ordinary_seat" if classification != "ordinary" else "artifact_author"
     with pytest.raises(seat.DispatchError, match="classification"):
         seat.selected_role(args)
+
+
+def test_deadline_expiry_is_a_ceiling_not_an_elevation_error(job, monkeypatch):
+    args, _scenario = job
+    def expired(*_a, **_k):
+        raise TimeoutError("caller limit has no useful launch window")
+    monkeypatch.setattr(seat, "run_process", expired)
+    assert seat.run_dispatch(args) == 1
+    run = record(args)
+    assert run["interruption_cause"] == "ceiling"
+    assert not run["attempts"][0]["launched"]
+    assert "Cannot launch" not in run["attempts"][0]["reason"]
+    assert "no fallback" in run["attempts"][0]["reason"]
+
+
+def test_detached_root_deadline_is_not_a_git_spawn_error(tmp_path, monkeypatch):
+    def expired(*_a, **_k):
+        raise TimeoutError("caller limit has no useful launch window")
+    monkeypatch.setattr(seat.lifecycle, "probe_timeout", expired)
+    with pytest.raises(TimeoutError, match="caller limit"):
+        seat.detached_worktree_root(tmp_path)
+
+
+
+def test_real_missing_vendor_does_not_credit_a_seat_launch(job, monkeypatch):
+    args, _scenario = job
+    monkeypatch.setattr(seat, "resolve_command", lambda *_a: [str(args.root / "missing-vendor")])
+    assert seat.run_dispatch(args) == 1
+    assert all(not attempt["launched"] for attempt in record(args)["attempts"])
