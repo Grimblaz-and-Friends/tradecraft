@@ -78,14 +78,31 @@ def test_default_deadline_and_invalid_limits(monkeypatch):
     assert window.remaining() == 7140
     assert window.remaining(cleanup=True) == 7200
     assert lifecycle.TOTAL_BUILD_BUDGET_SECONDS == 14400
-    short = lifecycle.Deadline(5)
-    assert short.remaining() == 4.5
+    short = lifecycle.Deadline(15)
+    assert short.remaining() == 5
     for bad in [0, -1, float("nan"), float("inf")]:
         with pytest.raises(ValueError):
             lifecycle.Deadline(bad)
     monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 15)
     with pytest.raises(TimeoutError):
         short.remaining()
+
+
+@pytest.mark.parametrize("limit, reserve, allocation", [
+    (5, 10, None), (10, 10, None), (10.5, 10, 0.5),
+    (15, 10, 5), (30, 10, 20), (100, 10, 90),
+    (120, 12, 108), (600, 60, 540), (7200, 60, 7140),
+])
+def test_cleanup_reserve_minimum_proportion_cap_and_launch_window(monkeypatch, limit, reserve, allocation):
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 100)
+    deadline = lifecycle.Deadline(limit)
+    assert deadline.reserve == reserve
+    assert deadline.remaining(cleanup=True) == limit
+    if allocation is None:
+        with pytest.raises(TimeoutError, match="no useful launch window"):
+            deadline.remaining()
+    else:
+        assert deadline.remaining() == allocation
 
 
 def bundle(dispatch, stage, elapsed, *, unfinished=False, allocation=1000, reason=None):
@@ -107,7 +124,7 @@ def test_repair_run_keeps_stage_ceiling_and_shorter_caller_limit(monkeypatch, st
     monkeypatch.setattr(implementer, "_run_implementer", lambda args, deadline: seen.append(deadline) or 0)
     for caller in [8000, 30]:
         window = lifecycle.stage_deadline(stage, caller)
-        assert window.remaining() == (3540 if caller == 8000 else 27)
+        assert window.remaining() == (3540 if caller == 8000 else 20)
         args = SimpleNamespace(stage=stage, timeout_seconds=caller)
         assert implementer.run_implementer(args) == 0
         assert seen[-1].end == window.end
@@ -286,7 +303,8 @@ def test_atomic_record_replacement_retry_is_bounded_and_preserves_previous_recor
     current, calls = [100.0], []
     monkeypatch.setattr(capture.time, "monotonic", lambda: current[0])
     monkeypatch.setattr(capture.time, "sleep", lambda delay: current.__setitem__(0, current[0] + delay))
-    deadline = lifecycle.Deadline(1)
+    deadline = lifecycle.Deadline(15)
+    current[0] = deadline.end - deadline.reserve / 4 - 0.1
     if failure == "expired":
         current[0] = deadline.end
     original = capture.os.replace
@@ -331,11 +349,11 @@ def test_malformed_usage_and_expired_probes_stay_unknown(monkeypatch, tmp_path):
 
 
 
-@pytest.mark.parametrize("probe_seconds", [0.1, 0.9])
+@pytest.mark.parametrize("probe_seconds", [0.1, 6])
 def test_cleanup_does_not_start_a_probe_that_previously_outlasted_its_window(tmp_path, monkeypatch, probe_seconds):
     current, calls = [100.0], []
     monkeypatch.setattr(lifecycle.time, "monotonic", lambda: current[0])
-    deadline = lifecycle.Deadline(15)
+    deadline = lifecycle.Deadline(30)
     def probe(command, **kwargs):
         calls.append(command)
         current[0] += probe_seconds
@@ -344,23 +362,23 @@ def test_cleanup_does_not_start_a_probe_that_previously_outlasted_its_window(tmp
     with lifecycle.deadline_scope(deadline):
         assert records.git_revision(tmp_path) == "fixture-head"
         assert deadline.probe_seconds == pytest.approx(probe_seconds)
-        current[0] = 113.5
+        current[0] = 120
         with lifecycle.cleanup_scope():
-            assert records.git_revision(tmp_path) == ("fixture-head" if probe_seconds < 0.75 else None)
-    assert len(calls) == (2 if probe_seconds < 0.75 else 1)
+            assert records.git_revision(tmp_path) == ("fixture-head" if probe_seconds < 5 else None)
+    assert len(calls) == (2 if probe_seconds < 5 else 1)
 
 def test_cleanup_probes_leave_time_for_the_completion_write(monkeypatch, tmp_path):
     current = [100.0]
     monkeypatch.setattr(lifecycle.time, "monotonic", lambda: current[0])
-    deadline = lifecycle.Deadline(15)
+    deadline = lifecycle.Deadline(30)
     with lifecycle.deadline_scope(deadline):
-        current[0] = 113.5  # The recipient has reached its stopping ceiling.
+        current[0] = 120  # The recipient has reached its stopping ceiling.
         with pytest.raises(TimeoutError):
             lifecycle.probe_timeout()
         with lifecycle.cleanup_scope():
-            assert lifecycle.probe_timeout() == 0.75
-            assert lifecycle.cleanup_deadline() == 114.25
-            current[0] = 114.3
+            assert lifecycle.probe_timeout() == 5
+            assert lifecycle.cleanup_deadline() == 125
+            current[0] = 125.1
             monkeypatch.setattr(records, "run_process", lambda *_a, **_k: pytest.fail("launched after cleanup allowance"))
             assert records.git_revision(tmp_path) is None
         assert deadline.remaining(cleanup=True) > 0  # Final recording still has its allowance.
@@ -382,7 +400,7 @@ def test_snapshot_bounds_deleted_path_traversal(monkeypatch, tmp_path, paths):
             output = b"\0".join(f"deleted-{i}".encode() for i in range(paths))
         return subprocess.CompletedProcess(command, 0, output, b"")
     monkeypatch.setattr(lifecycle, "run_process", git)
-    with lifecycle.deadline_scope(lifecycle.Deadline(1)):
+    with lifecycle.deadline_scope(lifecycle.Deadline(15)):
         snapshot = lifecycle.content_snapshot(tmp_path, timeout=0.1)
     if paths == 1:
         assert snapshot["digest"]

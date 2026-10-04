@@ -17,6 +17,7 @@ import time
 DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
 DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
 TOTAL_BUILD_BUDGET_SECONDS = 14400.0
+MINIMUM_CLEANUP_RESERVE_SECONDS = 10.0
 REPAIR_STAGES = frozenset({"floor", "review-disposition"})
 _DEADLINE = ContextVar("tradecraft_caller_deadline", default=None)
 _CLEANUP = ContextVar("tradecraft_recording_phase", default=False)
@@ -30,7 +31,7 @@ class Deadline:
         self.started = time.monotonic() if started is None else started
         if not math.isfinite(self.started) or self.started > time.monotonic():
             raise ValueError("invocation start must be a finite past monotonic time")
-        self.reserve = min(60.0, self.limit / 10)
+        self.reserve = min(60.0, max(MINIMUM_CLEANUP_RESERVE_SECONDS, self.limit / 10))
         self.end = self.started + self.limit
         self.probe_seconds = 0.0
 

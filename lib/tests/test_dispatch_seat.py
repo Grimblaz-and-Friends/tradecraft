@@ -861,7 +861,7 @@ def test_degraded_fallback_qualifies_only_with_stage_local_same_vendor_reason(jo
     {"exit": 2, "stderr": "invalid argument --bad", "stdout": "not JSON"},
     {"stdout": "not JSON"},
     {"message": ""},
-    {"sleep": 20},
+    {"sleep": 45},
 ])
 def test_other_failures_never_fallback_or_publish(job, vendor, scenario):
     args, _ = job
@@ -869,7 +869,7 @@ def test_other_failures_never_fallback_or_publish(job, vendor, scenario):
     args.own_vendor = "claude" if vendor == "codex" else "codex"
     configure(job, {vendor: scenario})
     if "sleep" in scenario:
-        args.timeout_seconds = 5
+        args.timeout_seconds = 30
     assert seat.run_dispatch(args) == 1
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
@@ -1166,24 +1166,35 @@ def test_fallback_cannot_read_discarded_transcript_but_caller_can(job, monkeypat
 def test_timeout_stops_a_started_descendant(job, monkeypatch, record_property):
     args, _ = job
     child = args.root / "child.py"
-    child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(16)\nPath('finished').write_bytes(b'yes')\n")
-    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(20)"
+    child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(45)\nPath('finished').write_bytes(b'yes')\n")
+    wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(50)"
     monkeypatch.setattr(seat, "resolve_command", lambda *a: [sys.executable, "-c", wrapper, str(child)])
     # Allow startup under the full parallel suite; the assertion below still
     # bounds the whole invocation and verifies a genuinely started descendant.
-    args.timeout_seconds = 15
+    args.timeout_seconds = 30
     started = time.monotonic()
     assert seat.run_dispatch(args) == 1
     elapsed = time.monotonic() - started
     record_property("launcher_elapsed_seconds", elapsed)
     record_property("caller_limit_seconds", args.timeout_seconds)
     assert (args.root / "started").exists(), "The descendant must actually start before cancellation."
-    survival_check_at = (args.root / "started").stat().st_mtime + 16.3
+    survival_check_at = (args.root / "started").stat().st_mtime + 45.3
     time.sleep(max(0, survival_check_at - time.time()))
     assert not (args.root / "finished").exists(), "The descendant continued after the deadline."
     assert elapsed < args.timeout_seconds, "Pipe-owning descendants delayed timeout cleanup."
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
+
+
+@pytest.mark.parametrize("limit", [5, 10])
+def test_caller_limit_with_no_launch_window_starts_no_seat(job, monkeypatch, limit):
+    args, _ = job
+    args.timeout_seconds = limit
+    monkeypatch.setattr(seat, "run_process", lambda *_a, **_k: pytest.fail("launched without a useful window"))
+    with pytest.raises(seat.DispatchError, match="no useful launch window"):
+        seat.run_dispatch(args)
+    assert not args.output.exists()
+    assert not list(args.root.glob("seen-*.json"))
 
 
 

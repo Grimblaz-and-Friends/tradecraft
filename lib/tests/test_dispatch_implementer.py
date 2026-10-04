@@ -120,6 +120,17 @@ def seen(args):
     return json.loads((args.root / "seen-codex.json").read_bytes())
 
 
+@pytest.mark.parametrize("limit", [5, 10])
+def test_caller_limit_with_no_launch_window_starts_no_implementer(job, monkeypatch, limit):
+    args, _ = job
+    args.timeout_seconds = limit
+    monkeypatch.setattr(implementer, "run_process", lambda *_a, **_k: pytest.fail("launched without a useful window"))
+    with pytest.raises(TimeoutError, match="no useful launch window"):
+        implementer.run_implementer(args)
+    assert not args.output.exists()
+    assert not (args.root / "seen-codex.json").exists()
+
+
 def success_events(session_id="0199a213-81c0-7800-8aa1-bbab2a035a53"):
     return "\n".join((
         json.dumps({"type": "thread.started", "thread_id": session_id}),

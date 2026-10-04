@@ -239,7 +239,8 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
     (store / "nonce").write_bytes(b"retained-before-hard-kill")
     output = tmp_path / "bundle" / "return"
     ceiling = termination.startswith("ceiling")
-    caller_limit = 15 if ceiling else 60
+    # Leave startup time after the fixed cleanup reserve, even under CI load.
+    caller_limit = 30 if ceiling else 60
     command = [sys.executable, str(LIB / "tests/fixtures/interrupted_launcher.py"), kind, vendor, str(store),
                "--dispatch", str(dispatch), "--root", str(root), "--vendor", vendor,
                "--work", "example/product#12", "--stage", "build" if kind == "implementer" else "cold-seat",
@@ -280,7 +281,7 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             time.sleep(0.05)
         if termination == "hard-kill":
             identities.extend(hard_kill_blocked_launch(process, saved, identities))
-        process.communicate(timeout=20 if ceiling else 5)
+        process.communicate(timeout=caller_limit if ceiling else 5)
         if ceiling:
             elapsed = measured_exit(process, started)
             record_property("observer_elapsed_seconds", time.monotonic() - started)
@@ -299,10 +300,10 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             }
             assert saved["interruption_cause"] == "ceiling"
             attempt = saved["attempts"][0]
-            assert "caller limit 15s" in attempt["reason"]
+            assert f"caller limit {caller_limit}s" in attempt["reason"]
             assert f"recipient allocation {attempt['allocation_seconds']:.2f}s" in attempt["reason"]
             assert f"measured elapsed {attempt['elapsed_seconds']:.2f}s" in attempt["reason"]
-            assert "timed out after 15s" not in attempt["reason"]
+            assert f"timed out after {caller_limit}s" not in attempt["reason"]
         if termination == "ceiling-slow-final-probe":
             assert saved["revision_after"] is None
             if kind == "implementer":
@@ -342,7 +343,8 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             continuity = work._named_continuity(fixture, "build", recommendation)
             assert continuity == "resume"
             decision = work.Decision("build", True, continuity, "holder-named-stage")
-            assert work.execute_stage(fixture, decision, holder, None, "holder-session", timeout_seconds=30) == 0
+            # Give the resumed turn its own useful preflight window under load.
+            assert work.execute_stage(fixture, decision, holder, None, "holder-session", timeout_seconds=60) == 0
             assert len(launches) == 1
             assert launches[0][launches[0].index("--resume") + 1] == saved["session_identity"]["session_id"]
             assert b"retained-before-hard-kill" in resumed.read_bytes()
