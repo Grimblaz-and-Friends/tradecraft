@@ -73,7 +73,7 @@ A holder reading counts only after the latest effective settlement. A newer draf
 
 - **Exact form:** `<!-- tradecraft:holder-reading:v1 result=RESULT -->`.
 - **Attributes and lawful values:** `result=no-amendment|amended`.
-- **Producer, surface, moment:** the holder, in the issue comment carrying the whole-change reading, after a qualifying cold verdict and before the first build.
+- **Producer, surface, moment:** the holder, in an issue comment carrying the whole-change reading after a qualifying cold verdict and before the first build, or, after that reading, in an issue comment carrying a later direction to the builder on the settled artifact with `result=amended`, because both record the holder's calls without a new verdict.
 
 ```text
 <!-- tradecraft:holder-reading:v1 result=no-amendment -->

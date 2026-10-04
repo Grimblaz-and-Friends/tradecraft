@@ -613,6 +613,267 @@ def test_build_prompt_uses_only_the_latest_terms_settled_artifact():
     assert b"FIRST TERM" not in prompt
 
 
+def _holder_reading(body, result="amended"):
+    return f"<!-- tradecraft:holder-reading:v1 result={result} -->\n\n{body}"
+
+
+@pytest.mark.parametrize(("stage", "mechanical", "revision"), [
+    *[
+        pytest.param(stage, mechanical, False,
+                     id=f"{'mechanical' if mechanical else 'connected'}-{stage}")
+        for mechanical in (False, True)
+        for stage in ("artifact", "build", "floor", "review-disposition")
+    ],
+    pytest.param("artifact", False, True, id="connected-artifact-revision"),
+])
+def test_admitted_implementer_prompt_carries_its_governing_sources(
+        stage, mechanical, revision):
+    # This collection supplies both the gate's records and the carriage oracle.
+    # Drafts, verdicts, floor evidence and review state only support admission.
+    governing = [("affirmed-brief", (MECHANICAL if mechanical else AFFIRMED)
+                  + "\nFixture maintenance must preserve the product's behavior.")]
+    readings = [
+        _holder_reading(f"INITIAL CALL\nRetain the fixture for caf{chr(0xE9)} inputs.\nEnd initial call."),
+        _holder_reading("INTERVENING CALL\nRemove its obsolete alias.\nEnd intervening call.",
+                        "no-amendment"),
+        _holder_reading("LATER DIRECTION\nRetain only the replacement fixture.\nEnd later direction."),
+    ]
+    settlement = _settled("would", "would") + "\nSETTLED PRODUCT ARTIFACT\nEnd artifact."
+    if (stage != "artifact" or revision) and not mechanical:
+        governing.extend([("artifact", settlement),
+                          *(("holder-reading", reading) for reading in readings)])
+    comments = [AFFIRMED + "\nPREVIOUS TERM"] if revision else []
+    for kind, body in governing[1:] if revision else governing:
+        if kind == "artifact":
+            comments.append(ARTIFACT + "\nSUPPORTING DRAFT")
+        if body == readings[-1] and stage in {"floor", "review-disposition"}:
+            comments.append(f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->")
+        comments.append(body)
+    if revision:
+        comments.append(governing[0][1])
+    if mechanical and stage != "artifact":
+        comments.extend([ARTIFACT + "\nSTRAY MECHANICAL DRAFT", settlement, *readings])
+    if stage == "review-disposition":
+        comments.extend([FLOOR, USE])
+    fixture = state(*comments, pr=stage in {"floor", "review-disposition"},
+                    draft=stage != "review-disposition",
+                    reviewer_ran=stage == "review-disposition")
+    if stage == "review-disposition":
+        fixture.review_comments = [{
+            "id": 41, "body": "Product fixture needs a repair.", "commit_id": SHA,
+            "user": {"login": REVIEWER, "type": "Bot"},
+        }]
+    recommendation = work.decide(fixture, RULES)
+    if mechanical and stage == "artifact":
+        assert recommendation.stage == "build"
+        decision = work.Decision("artifact", True, "fresh", "holder-named-stage")
+    else:
+        assert recommendation.stage == stage
+        assert recommendation.dispatch is True
+        decision = recommendation
+
+    prompt = work._stage_prompt(fixture, decision, floor_command="python fixture-check.py")
+
+    positions = [prompt.index(body.encode("utf-8")) for _kind, body in governing]
+    assert positions == sorted(positions)
+    assert b"SUPPORTING DRAFT" not in prompt
+    if (stage in {"build", "floor", "review-disposition"} or revision) and not mechanical:
+        lawful_readings = [marker.body for marker in fixture.validated_markers
+                          if marker.name == "holder-reading"]
+        assert lawful_readings == readings
+        artifact_end = (b"--- artifact under revision end ---" if revision
+                        else b"--- settled artifact end ---")
+        assert positions[2] > prompt.index(artifact_end)
+        assert positions[-1] < prompt.index(b"Fetch current state only if this stage needs it:")
+        assert b"The newest governs where readings differ from each other." in prompt
+        if revision:
+            assert prompt.count(
+                b"--- holder reading made against artifact under revision "
+                b"(governs where it differs) begin ---"
+            ) == len(readings)
+        else:
+            assert b"Holder readings govern where they differ from the settled artifact." in prompt
+            assert b"The affirmed brief remains binding over both." in prompt
+    else:
+        assert settlement.encode("utf-8") not in prompt
+        assert all(reading.encode("utf-8") not in prompt for reading in readings)
+        assert b"--- holder reading begin ---" not in prompt
+    if mechanical and stage == "artifact":
+        assert b"holder-explicit artifact stage remains authoritative" in prompt
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+@pytest.mark.parametrize("boundary", [
+    "earlier-term", "before-settlement", "reopened", "resettled",
+    "routed-repost", "spent-repost", "no-settlement",
+])
+def test_implementer_readings_follow_the_final_effective_settlement(stage, boundary):
+    old = _holder_reading("STALE CALL")
+    current = _holder_reading("CURRENT CALL")
+    settlement = _settled("would", "would") + "\nCURRENT ARTIFACT"
+    routeless = (
+        "<!-- tradecraft:artifact:v1 status=settled -->\n"
+        "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+    )
+    if boundary == "earlier-term":
+        comments = [AFFIRMED, ARTIFACT, WOULD, old, AFFIRMED, ARTIFACT, settlement, current]
+        expected, excluded, recommendation = [current], [old], "build"
+    elif boundary == "before-settlement":
+        comments = [AFFIRMED, ARTIFACT, old, settlement, current]
+        expected, excluded, recommendation = [current], [old], "build"
+    elif boundary == "reopened":
+        comments = [AFFIRMED, ARTIFACT, settlement, old, ARTIFACT, current]
+        expected, excluded, recommendation = [], [old, current], "cold-seat"
+    elif boundary == "resettled":
+        comments = [AFFIRMED, ARTIFACT, WOULD, old, ARTIFACT, settlement, current]
+        expected, excluded, recommendation = [current], [old], "build"
+    elif boundary == "routed-repost":
+        comments = [AFFIRMED, ARTIFACT, old, routeless, current, _settled("would")]
+        expected, excluded, recommendation = [current], [old], "build"
+    elif boundary == "spent-repost":
+        comments = [AFFIRMED, ARTIFACT, routeless, old, _settled("would"),
+                    _settled("would"), current]
+        expected, excluded, recommendation = [current], [old], "build"
+    else:
+        comments = [AFFIRMED, ARTIFACT, old, current]
+        expected, excluded, recommendation = [], [old, current], "cold-seat"
+    fixture = state(*comments)
+    assert work.decide(fixture, RULES).stage == recommendation
+    prompt = work._stage_prompt(
+        fixture, work.Decision(stage, True, "fresh", "holder-named-stage"),
+        floor_command="python fixture-check.py",
+    )
+    for body in expected:
+        assert body.encode("utf-8") in prompt
+        assert prompt.index(body.encode("utf-8")) > prompt.index(b"--- settled artifact end ---")
+    for body in excluded:
+        assert body.encode("utf-8") not in prompt
+    assert (b"--- holder reading begin ---" in prompt) == bool(expected)
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+@pytest.mark.parametrize(("support", "route", "verdict"), [
+    ([ARTIFACT], "would", "would"),
+    ([ARTIFACT, WOULD_NOT, ARTIFACT, WOULD_NOT], "cap", None),
+    ([ARTIFACT], "discharge", "not-settleable"),
+    ([ARTIFACT], "unobtainable", None),
+])
+def test_implementer_prompt_carries_readings_for_every_settlement_route(
+        stage, support, route, verdict):
+    settlement = _settled(route, verdict) + f"\n{route} ARTIFACT"
+    reading = _holder_reading(f"{route} READING")
+    fixture = state(AFFIRMED, *support, settlement, reading)
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == ("build", "pull-request-absent")
+    assert not decision.invalid_markers
+    prompt = work._stage_prompt(
+        fixture, work.Decision(stage, True, "fresh", "holder-named-stage"),
+        floor_command="python fixture-check.py",
+    )
+    assert settlement.encode("utf-8") in prompt
+    assert reading.encode("utf-8") in prompt
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+def test_implementer_readings_use_record_order_and_only_validated_claims(stage):
+    first = _holder_reading("FIRST ORDERED CALL")
+    second = _holder_reading("SECOND ORDERED CALL", "no-amendment")
+    third = _holder_reading("THIRD ORDERED CALL")
+    unauthorized = _holder_reading("UNAUTHORIZED CALL")
+    quoted = _holder_reading("QUOTED CALL")
+    invalid = _holder_reading("INVALID CALL", "unlawful")
+    before = _holder_reading("EARLIER ID BEFORE SETTLEMENT")
+    unrelated = "UNRELATED COMMENT"
+    fixture = state(AFFIRMED, ARTIFACT, before, WOULD, first, second, third,
+                    unauthorized, "> " + quoted.replace("\n", "\n> "), invalid, unrelated)
+    for index, comment in enumerate(fixture.issue_comments):
+        comment["id"] = 100 + index
+        comment["created_at"] = (
+            "2026-09-23T09:00:00Z" if index < 2 else
+            "2026-09-23T10:00:00Z" if index < 6 else "2026-09-23T11:00:00Z"
+        )
+    fixture.issue_comments[7]["user"] = {"login": "unauthorized-commenter"}
+    # A later timestamp governs even when its id is lower than earlier sources.
+    fixture.issue_comments[6]["id"] = 90
+    fixture.issue_comments.reverse()
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    assert any("not authorized" in item["reason"] for item in decision.invalid_markers)
+    assert any("result is invalid" in item["reason"] for item in decision.invalid_markers)
+    assert any(item["name"] == "holder-reading" for item in decision.quotations)
+    prompt = work._stage_prompt(
+        fixture, work.Decision(stage, True, "fresh", "holder-named-stage"),
+        floor_command="python fixture-check.py",
+    )
+    expected = [first, second, third]
+    positions = [prompt.index(body.encode("utf-8")) for body in expected]
+    assert positions == sorted(positions)
+    for body in [unauthorized, quoted, invalid, before, unrelated]:
+        assert body.split("\n\n")[-1].encode("utf-8") not in prompt
+
+
+@pytest.mark.parametrize("revision", [False, True], ids=["build", "artifact-revision"])
+def test_identical_reading_bodies_are_carried_without_deduplication(revision):
+    reading = _holder_reading("REPEATED COMPLETE CALL")
+    comments = [AFFIRMED, ARTIFACT, WOULD, reading, reading]
+    if revision:
+        comments.append(AFFIRMED)
+    fixture = state(*comments)
+    prompt = work._stage_prompt(fixture, work.decide(fixture, RULES))
+    assert prompt.count(reading.encode("utf-8")) == 2
+
+
+@pytest.mark.parametrize("reverse_sources", [False, True], ids=["record", "reversed-input"])
+def test_artifact_revision_prompt_carries_every_applicable_prior_reading(reverse_sources):
+    stale = _holder_reading("STALE CALL BEFORE THE NEWER DRAFT")
+    artifact = _settled("would", "would") + "\nARTIFACT TO REVISE\nEnd artifact."
+    first = _holder_reading(
+        f"R1\nKeep the caf{chr(0xE9)} fixture; drop alias A.\nEnd first call."
+    )
+    second = _holder_reading("R2\nRename helper B.\nEnd later direction.")
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, stale, ARTIFACT, artifact,
+                    first, second, AFFIRMED + "\nAMENDED TERM")
+    if reverse_sources:
+        for index, comment in enumerate(fixture.issue_comments):
+            comment["id"] = 100 + index
+            comment["created_at"] = "2026-10-04T12:00:00Z"
+        fixture.issue_comments.reverse()
+    recommendation = work.decide(fixture, RULES)
+    assert (recommendation.stage, recommendation.reason) == ("artifact", "artifact-marker-absent")
+    prompt = work._stage_prompt(
+        fixture, work.Decision("artifact", True, "fresh", "holder-named-stage"),
+    )
+
+    assert artifact.encode("utf-8") in prompt
+    assert stale.encode("utf-8") not in prompt
+    first_position = prompt.index(first.encode("utf-8"))
+    second_position = prompt.index(second.encode("utf-8"))
+    assert prompt.index(b"--- artifact under revision end ---") < first_position < second_position
+    label = b"holder reading made against artifact under revision (governs where it differs)"
+    assert prompt.count(b"--- " + label + b" begin ---") == 2
+    assert b"The newest governs where readings differ from each other." in prompt
+
+
+@pytest.mark.parametrize("replacement", ["draft", "settled", "routed-repost"])
+def test_artifact_revision_prompt_clears_readings_before_newer_artifact(replacement):
+    first = _holder_reading("OLD WHOLE-CHANGE CALL")
+    second = _holder_reading("OLD LATER DIRECTION")
+    earlier = ("<!-- tradecraft:artifact:v1 status=settled -->\n"
+               "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+               if replacement == "routed-repost" else WOULD)
+    newer = ((ARTIFACT if replacement == "draft" else _settled("would"))
+             + "\nNEWER ARTIFACT TEXT")
+    fixture = state(AFFIRMED, ARTIFACT, earlier, first, second, newer, AFFIRMED)
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.stage == "artifact"
+    prompt = work._stage_prompt(fixture, recommendation)
+
+    assert newer.encode("utf-8") in prompt
+    assert first.encode("utf-8") not in prompt
+    assert second.encode("utf-8") not in prompt
+    assert b"holder reading made against artifact under revision" not in prompt
+
+
 ARTIFACT_PROMPT_TERM_KINDS = ("draft", "routeless", "reading", "empty")
 ARTIFACT_PROMPT_TERM_SEQUENCES = tuple(
     sequence
@@ -625,16 +886,16 @@ def _artifact_prompt_term(kind, index):
     draft_token = f"TERM {index} DRAFT"
     draft = ARTIFACT + f"\n{draft_token}"
     if kind == "empty":
-        return [], None, None, []
+        return [], None, [], []
     if kind == "draft":
-        return [draft], draft_token.encode("ascii"), None, []
+        return [draft], draft_token.encode("ascii"), [], []
     settlement_token = f"TERM {index} SETTLEMENT"
     if kind == "routeless":
         settlement = (
             "<!-- tradecraft:artifact:v1 status=settled -->\n"
             + settlement_token
         )
-        return [draft, settlement], settlement_token.encode("ascii"), None, []
+        return [draft, settlement], settlement_token.encode("ascii"), [], []
     earlier_reading_token = f"TERM {index} EARLIER HOLDER READING"
     reading_token = f"TERM {index} HOLDER READING"
     settlement = _settled("would", "would") + f"\n{settlement_token}"
@@ -643,7 +904,7 @@ def _artifact_prompt_term(kind, index):
     return (
         [draft, settlement, earlier_reading, reading],
         settlement_token.encode("ascii"),
-        reading_token.encode("ascii"),
+        [earlier_reading_token.encode("ascii"), reading_token.encode("ascii")],
         [earlier_reading_token.encode("ascii"), reading_token.encode("ascii")],
     )
 
@@ -662,23 +923,23 @@ def _artifact_prompt_term(kind, index):
         for current_has_draft in (False, True)
     ],
 )
-def test_artifact_prompt_selects_latest_prior_term_pair(
+def test_artifact_prompt_selects_latest_prior_term_artifact_and_readings(
         term_sequence, current_has_draft):
     comments = []
     artifact_tokens = []
     reading_tokens = []
     expected_artifact = None
-    expected_reading = None
+    expected_readings = []
     for index, kind in enumerate(term_sequence, start=1):
         comments.append(AFFIRMED)
-        term_comments, artifact_token, reading_token, term_reading_tokens = (
+        term_comments, artifact_token, term_readings, term_reading_tokens = (
             _artifact_prompt_term(kind, index)
         )
         comments.extend(term_comments)
         if artifact_token is not None:
             artifact_tokens.append(artifact_token)
             expected_artifact = artifact_token
-            expected_reading = reading_token
+            expected_readings = term_readings
         reading_tokens.extend(term_reading_tokens)
 
     comments.append(AFFIRMED)
@@ -687,7 +948,7 @@ def test_artifact_prompt_selects_latest_prior_term_pair(
         comments.append(ARTIFACT + "\n" + current_token.decode("ascii"))
         artifact_tokens.append(current_token)
         expected_artifact = current_token
-        expected_reading = None
+        expected_readings = []
 
     fixture = state(*comments)
     recommendation = work.decide(fixture, RULES)
@@ -708,13 +969,15 @@ def test_artifact_prompt_selects_latest_prior_term_pair(
     for token in artifact_tokens:
         assert (token in prompt) == (token == expected_artifact)
     reading_label = b"holder reading made against artifact under revision"
-    assert (reading_label in prompt) == (expected_reading is not None)
+    assert (reading_label in prompt) == bool(expected_readings)
     for token in reading_tokens:
-        assert (token in prompt) == (token == expected_reading)
-    if expected_reading is not None:
+        assert (token in prompt) == (token in expected_readings)
+    if expected_readings:
         assert prompt.index(reading_label) > prompt.index(
             b"--- artifact under revision end ---"
         )
+        positions = [prompt.index(token) for token in expected_readings]
+        assert positions == sorted(positions)
 
 
 def test_artifact_prompt_preserves_746_shape_across_four_empty_brief_records():
@@ -6563,8 +6826,9 @@ def test_runtime_without_project_hook_records_enforcement_gap(tmp_path, monkeypa
     assert work.holder_guard_status(tmp_path) == "unavailable"
 
 
+@pytest.mark.parametrize("holder_dispatch", [False, True], ids=["composed", "holder-written"])
 def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holder(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, holder_dispatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -6594,13 +6858,19 @@ def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holde
 
     monkeypatch.setattr(work.subprocess, "run", run)
     monkeypatch.setattr(work, "_recipient_run", run)
+    dispatch_bytes = f"Scoped fixture maintenance: caf{chr(0xE9)}.\r\nKeep these exact bytes.\r\n".encode("utf-8")
+    dispatch = tmp_path / "holder-dispatch.txt" if holder_dispatch else None
+    if dispatch is not None:
+        dispatch.write_bytes(dispatch_bytes)
     decision = work.Decision("build", True, "fresh", "pull-request-absent")
     assert work.execute_stage(
-        state(AFFIRMED), decision, holder, None, "holder-session"
-    , floor_command="python fixture-check.py") == 0
+        state(AFFIRMED, ARTIFACT, WOULD, HOLDER), decision, holder, None, "holder-session",
+        dispatch_path=dispatch, floor_command="python fixture-check.py",
+    ) == 0
     assert work.execute_stage(
-        state(AFFIRMED), decision, holder, None, "holder-session"
-    , floor_command="python fixture-check.py") == 0
+        state(AFFIRMED, ARTIFACT, WOULD, HOLDER), decision, holder, None, "holder-session",
+        dispatch_path=dispatch, floor_command="python fixture-check.py",
+    ) == 0
 
     recorded = work.read_registry()["worktrees"]
     assert len(recorded) == 1
@@ -6620,8 +6890,13 @@ def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holde
     assert [Path(command[command.index("--root") + 1]) for command, _prompt in launches] == [
         implementation, implementation,
     ]
-    assert row["branch"].encode() in launches[0][1]
-    assert b"do not create or switch to another branch" in launches[0][1]
+    if holder_dispatch:
+        assert [prompt for _command, prompt in launches] == [dispatch_bytes, dispatch_bytes]
+        assert all(Path(command[command.index("--dispatch") + 1]) == dispatch
+                   for command, _prompt in launches)
+    else:
+        assert row["branch"].encode() in launches[0][1]
+        assert b"do not create or switch to another branch" in launches[0][1]
     assert {
         "branch": git(holder, "symbolic-ref", "--short", "HEAD").stdout,
         "head": git(holder, "rev-parse", "HEAD").stdout,
@@ -6629,6 +6904,26 @@ def test_fresh_build_creates_and_reuses_a_branch_worktree_without_touching_holde
         "tracked": (holder / "fixture.txt").read_bytes(),
         "untracked": (holder / "untracked.txt").read_bytes(),
     } == before
+
+
+@pytest.mark.parametrize("branch_change", ["switch", "rename"])
+def test_later_dispatch_refuses_when_the_registered_tree_changes_branch(
+        tmp_path, branch_change):
+    holder = repository(tmp_path, "holder")
+    implementation, _branch = work.create_implementation_root(
+        holder, "example/product", 12, None, "holder-session"
+    )
+    if branch_change == "switch":
+        git(implementation, "switch", "-c", "another-implementation-branch")
+    else:
+        git(implementation, "branch", "-m", "another-implementation-branch")
+    refused = work._dispatch_root(
+        state(AFFIRMED, pr=True), work.Decision("floor", True, "resume", "holder-named-stage"),
+        holder, None, "holder-session",
+    )
+    assert isinstance(refused, work.Decision)
+    assert refused.dispatch is False
+    assert "registered implementation branch mismatch" in refused.detail
 
 
 def test_build_missing_brief_refuses_before_registry_worktree_or_remote_mutation(
