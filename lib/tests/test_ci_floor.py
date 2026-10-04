@@ -145,6 +145,31 @@ def test_landed_gate_corpus_collection_routing_proof_and_ready_floor(case, monke
     assert "tradecraft:no-use:" not in proof.document(composed)
 
 
+@pytest.mark.parametrize("case_name, builder_owed, own_diagnostic", [
+    ("declared-matrix-failure", False, "floor-blocked"),
+    ("queued-empty-inventory-at-bound", False, "floor-stalled"),
+    ("base-policy-read-failure", False, "floor-unverifiable"),
+    ("job-start-controls-stall-clock", False, "floor-pending"),
+    ("skipped-without-builder", True, "floor-nonexecution"),
+    ("newest-completed-run-omits-job", True, None),
+    ("declaration-absent", True, None),
+    ("undeclared-repo-ordinary-red", True, None),
+])
+def test_proof_missing_floor_source_is_only_a_builder_obligation(
+        case_name, builder_owed, own_diagnostic):
+    case = deepcopy(next(case for case in CORPUS["cases"] if case["name"] == case_name))
+    case["builder_source"] = None
+    state = corpus_state(case)
+    work.collect_floor(state, CorpusTransport(case, state),
+                       observed_at=datetime.fromisoformat(case["observed_at"]))
+    composed = work.compose_proof(state, support.RULES)
+    assert composed["floor"]["source"] is None
+    codes = {item["code"] for item in composed["diagnostics"]}
+    assert ("floor-missing" in codes) is builder_owed
+    if own_diagnostic is not None:
+        assert own_diagnostic in codes
+
+
 def test_fixture_bytes_are_the_landed_gate_blobs():
     for path, expected in [(CORPUS_PATH, "4ff396c367e447a4aa9daeadfdc459fc2713f7c5"),
                            (SHARED / "proof-v1.schema.json" if SHARED.exists() else LOCAL_FIXTURES / "proof-v1.schema.json",

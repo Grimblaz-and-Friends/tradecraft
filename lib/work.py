@@ -4283,7 +4283,9 @@ def _proof_diagnostics(state: WorkState, floor: Marker | None,
                        for claim in state.invalid_marker_claims
                        if claim.get("name") != "proof")
     evaluation = floor_evaluation(state)
-    if floor is None and evaluation["outcome"] != "ci-met":
+    if floor is None and evaluation["outcome"] in {
+        "fallback", "builder-missing", "builder-red", "builder-met",
+    }:
         diagnostics.append({
             "code": "floor-missing", "message": "current-head floor source is missing",
             "source": None,
