@@ -583,6 +583,17 @@ def check_zone_wall(root: Path) -> list[str]:
             if text is None:
                 continue
             rel_file = path.relative_to(root).as_posix()
+            # The independently landed floor corpus contains literal synthetic
+            # adopter paths. Its exact Git blob is data, never a dependency on
+            # this repository's private workflows. No edited copy is exempt.
+            if rel_file in {"skills/work/references/proof-fixtures/v1-ci-floor.json",
+                            "lib/tests/fixtures/proof-v1/v1-ci-floor.json"}:
+                content = path.read_bytes()
+                import hashlib
+                blob_id = hashlib.sha1(b"blob " + str(len(content)).encode("ascii")
+                                      + b"\0" + content).hexdigest()
+                if blob_id == "4ff396c367e447a4aa9daeadfdc459fc2713f7c5":
+                    continue
             for lineno, line in enumerate(text.splitlines(), 1):
                 if path.suffix.lower() == ".md":
                     for marker in DECISION_MARKER.findall(line):
