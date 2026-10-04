@@ -156,6 +156,29 @@ def test_runtime_budget_keeps_historical_runs_with_the_resumed_builder(report_in
     assert len(lineages[0]["runs"]) == 3
 
 
+@pytest.mark.parametrize("evidence", ["dead", "unresolved", "missing-checkpoint"])
+def test_runtime_report_names_each_unfinished_bound_basis(report_inputs, monkeypatch, evidence):
+    request_path, run_path, request = write_bundle(report_inputs, "stopped")
+    request.update(stage="build", root="fixture-tree", lineage_branch="change", recipient_allocation_seconds=7134.7)
+    run = json.loads(run_path.read_bytes())
+    run.pop("completed_at")
+    run.update(elapsed_checkpoint_seconds=74.7, launcher_process={"kind": "launcher"},
+               recipient_process={"kind": "recipient"})
+    if evidence == "missing-checkpoint":
+        run.pop("elapsed_checkpoint_seconds")
+    monkeypatch.setattr(cost.lifecycle, "_identity_liveness",
+                        lambda _identity: "unresolved" if evidence == "unresolved" else "stopped")
+    write_json(request_path, request)
+    write_json(run_path, run)
+    result = cost.report(**report_inputs)
+    row = result["runtime_lineages"][0]["runs"][0]
+    assert row["lower_seconds"] == (0 if evidence == "missing-checkpoint" else 74.7)
+    assert row["upper_seconds"] == pytest.approx(84.95 if evidence == "dead" else 7134.7)
+    assert row["lower_basis"] and row["upper_basis"]
+    assert ("both processes proved dead" if evidence == "dead" else "enforced recipient allocation") in row["upper_basis"]
+    assert result["dated_rate_card_equivalent"][0]["value"]["status"] == "unknown"
+
+
 @pytest.mark.parametrize("work", ["acme/widget#13", "other/widget#12", "12", "issue-12"])
 @pytest.mark.parametrize("completion", [b"", b"{", b'{"schema_version": 2, "attempts": []}'])
 def test_foreign_and_unqualified_requests_never_open_completions(

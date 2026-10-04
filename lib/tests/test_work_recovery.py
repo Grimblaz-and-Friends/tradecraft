@@ -160,6 +160,33 @@ def test_progress_does_not_hide_exhausted_or_unknown_build_budget(stopped_build,
     assert json.loads(recommendation.detail)["progress"] == "changed"
 
 
+@pytest.mark.parametrize("configuration", ["repository-session", "adopter"])
+def test_proved_dead_checkpoint_budget_reaches_entrance_recommendation(stopped_build, configuration):
+    fixture, root, request, run, save = stopped_build
+    fixture.config = replace(fixture.config,
+        product_repositories=frozenset({"example/consumer"}) if configuration == "repository-session" else frozenset())
+    run.update(elapsed_checkpoint_seconds=74.7, recipient_process=run["launcher_process"])
+    request["recipient_allocation_seconds"] = 7134.7
+    (root / "fixture.txt").write_bytes(b"productive edit")
+    save()
+    prior_request = {**request, "dispatch_id": "previous", "launched_at": "2026-10-03T09:00:00Z"}
+    prior_run = {"schema_version": 2, "dispatch_id": "previous", "completed_at": "2026-10-03T09:59:00Z",
+                 "outcome": "success", "attempts": [{"launched": True, "elapsed_seconds": 8000}]}
+    (fixture.record_root / "previous.request.json").write_bytes(json.dumps(prior_request).encode())
+    (fixture.record_root / "previous.run.json").write_bytes(json.dumps(prior_run).encode())
+    decision = recovery.recommend(fixture, work.Decision("build", True, "fresh", "fixture"))
+    assert decision.dispatch and decision.continuity == "resume"
+    assert decision.reason == "stopped-run-resume"
+    budget = json.loads(decision.detail)["build_runtime"]
+    assert budget["lower_seconds"] == 8074.7
+    assert budget["upper_seconds"] == pytest.approx(8084.95)
+    assert budget["remaining_seconds"] == pytest.approx(6315.05)
+    assert lifecycle.allocation(budget, 7140) == pytest.approx(6315.05)
+    stopped = next(row for row in budget["runs"] if row["dispatch_id"] == "stopped")
+    assert stopped["lower_basis"] == "last durable elapsed checkpoint"
+    assert "both processes proved dead" in stopped["upper_basis"]
+
+
 def test_artifact_stays_in_affirmed_term(stopped_build):
     fixture, root, request, run, save = stopped_build
     fixture.issue_comments[0]["body"] = AFFIRMED

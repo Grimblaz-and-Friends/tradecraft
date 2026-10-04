@@ -18,6 +18,8 @@ DEFAULT_BUILD_TIMEOUT_SECONDS = 7200.0
 DEFAULT_STAGE_TIMEOUT_SECONDS = 3600.0
 TOTAL_BUILD_BUDGET_SECONDS = 14400.0
 MINIMUM_CLEANUP_RESERVE_SECONDS = 10.0
+ELAPSED_CHECKPOINT_INTERVAL_SECONDS = 0.25
+ELAPSED_CHECKPOINT_MARGIN_SECONDS = 10.0
 REPAIR_STAGES = frozenset({"floor", "review-disposition"})
 _DEADLINE = ContextVar("tradecraft_caller_deadline", default=None)
 _CLEANUP = ContextVar("tradecraft_recording_phase", default=False)
@@ -247,20 +249,46 @@ def progress(baseline, current):
 
 def runtime_bounds(request, run):
     if run.get("recovery_error"):
-        return {"lower_seconds": 0, "upper_seconds": None, "basis": run["recovery_error"]}
+        return {"lower_seconds": 0, "upper_seconds": None, "basis": run["recovery_error"],
+                "lower_basis": "runtime evidence unavailable", "upper_basis": run["recovery_error"]}
     attempts = run.get("attempts") or []
     if run.get("completed_at") and attempts:
         measured = [a.get("elapsed_seconds") for a in attempts if isinstance(a, dict) and a.get("launched") is not False]
         if all(isinstance(a, dict) for a in attempts) and all(isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in measured):
             total = sum(measured)
-            return {"lower_seconds": total, "upper_seconds": total, "basis": "measured recipient runtime"}
-    lower = run.get("elapsed_checkpoint_seconds", 0)
-    if not isinstance(lower, (int, float)) or not math.isfinite(lower) or lower < 0:
-        lower = 0
+            return {"lower_seconds": total, "upper_seconds": total, "basis": "measured recipient runtime",
+                    "lower_basis": "measured recipient runtime", "upper_basis": "measured recipient runtime"}
+    checkpoint = run.get("elapsed_checkpoint_seconds")
+    valid_checkpoint = (isinstance(checkpoint, (int, float)) and not isinstance(checkpoint, bool)
+                        and math.isfinite(checkpoint) and checkpoint >= 0)
+    lower = checkpoint if valid_checkpoint else 0
+    lower_basis = "last durable elapsed checkpoint" if valid_checkpoint else "no valid elapsed checkpoint; zero lower bound"
     allocation = request.get("recipient_allocation_seconds")
     upper = max(lower, allocation) if isinstance(allocation, (int, float)) and math.isfinite(allocation) and allocation >= 0 else None
+    upper_basis = "enforced recipient allocation" if upper is not None else "runtime upper bound unavailable"
+    # Historical growing records used the same timer but did not retain its
+    # policy. Missing process identities still leave liveness unresolved.
+    interval = run.get("elapsed_checkpoint_interval_seconds", ELAPSED_CHECKPOINT_INTERVAL_SECONDS)
+    margin = run.get("elapsed_checkpoint_margin_seconds", ELAPSED_CHECKPOINT_MARGIN_SECONDS)
+    timing_known = all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                       and math.isfinite(v) and v > 0 for v in (interval, margin))
+    if not run.get("completed_at"):
+        launcher = _identity_liveness(run.get("launcher_process"))
+        recipient = _identity_liveness(run.get("recipient_process"))
+        if not valid_checkpoint:
+            upper_basis += "; elapsed checkpoint missing or invalid"
+        elif launcher != "stopped" or recipient != "stopped":
+            upper_basis += f"; launcher {launcher}, recipient {recipient}"
+        elif run.get("cleanup_proven") is False or run.get("launch_unresolved") or not timing_known:
+            upper_basis += "; cleanup, spawn or checkpoint timing unproved"
+        else:
+            checkpoint_upper = lower + interval + margin
+            upper = min(upper, checkpoint_upper) if upper is not None else checkpoint_upper
+            upper_basis = (f"both processes proved dead; durable checkpoint + {interval:g}s interval + {margin:g}s margin"
+                           + ("; capped by enforced allocation" if upper < checkpoint_upper else ""))
     return {"lower_seconds": lower, "upper_seconds": upper,
-            "basis": "unfinished checkpoint and enforced allocation" if upper is not None else "runtime upper bound unavailable"}
+            "lower_basis": lower_basis, "upper_basis": upper_basis,
+            "basis": lower_basis + "; " + upper_basis}
 
 
 def runtime_account(bundles, *, root=None, branch=None, lineage=None):

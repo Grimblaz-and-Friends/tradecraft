@@ -149,6 +149,71 @@ def test_build_budget_excludes_repairs_deduplicates_and_retains_uncertainty():
     assert account["upper_seconds"] is None and account["remaining_seconds"] is None
 
 
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("evidence", ["dead", "launcher-unresolved", "recipient-unresolved",
+                                      "launcher-active", "recipient-active", "missing-checkpoint"])
+def test_unfinished_runtime_uses_checkpoint_only_with_both_deaths_proved(monkeypatch, historical, evidence):
+    row = bundle("killed", "build", 74.7, unfinished=True, allocation=7134.7)
+    request, run = row[2:]
+    host = lifecycle.socket.gethostname()
+    launcher = {"pid": 101, "host": host, "birth": "launcher"}
+    recipient = {"pid": 102, "host": host, "birth": "recipient"}
+    run.update(launcher_process=launcher, recipient_process=recipient)
+    if not historical:
+        run.update(elapsed_checkpoint_interval_seconds=0.25, elapsed_checkpoint_margin_seconds=10)
+    if evidence == "missing-checkpoint":
+        run.pop("elapsed_checkpoint_seconds")
+    def identity(pid):
+        kind = "launcher" if pid == 101 else "recipient"
+        if evidence == kind + "-unresolved":
+            raise OSError("liveness read unavailable")
+        if evidence == kind + "-active":
+            return launcher if pid == 101 else recipient
+        raise ProcessLookupError(pid)
+    monkeypatch.setattr(lifecycle, "process_identity", identity)
+    bounds = lifecycle.runtime_bounds(request, run)
+    account = lifecycle.runtime_account([row])
+    expected_upper = 84.95 if evidence == "dead" else 7134.7
+    assert bounds["lower_seconds"] == (0 if evidence == "missing-checkpoint" else 74.7)
+    assert bounds["upper_seconds"] == pytest.approx(expected_upper)
+    assert account["remaining_seconds"] == pytest.approx(14400 - expected_upper)
+    if evidence == "dead":
+        assert bounds["lower_basis"] == "last durable elapsed checkpoint"
+        assert "both processes proved dead" in bounds["upper_basis"]
+        assert "0.25s interval + 10s margin" in bounds["upper_basis"]
+    else:
+        assert "enforced recipient allocation" in bounds["upper_basis"]
+        assert ("checkpoint missing" if evidence == "missing-checkpoint" else evidence.split("-")[1]) in bounds["upper_basis"]
+
+
+@pytest.mark.parametrize("problem", ["missing-recipient", "invalid-checkpoint", "invalid-timing", "unproved-cleanup"])
+def test_incomplete_checkpoint_evidence_retains_allocation(monkeypatch, problem):
+    row = bundle("killed", "build", 74.7, unfinished=True, allocation=7134.7)
+    run = row[3]
+    run.update(launcher_process={"dead": True}, recipient_process={"dead": True})
+    monkeypatch.setattr(lifecycle, "_identity_liveness", lambda value: "stopped" if value else "unresolved")
+    if problem == "missing-recipient":
+        run.pop("recipient_process")
+    elif problem == "invalid-checkpoint":
+        run["elapsed_checkpoint_seconds"] = float("nan")
+    elif problem == "invalid-timing":
+        run["elapsed_checkpoint_interval_seconds"] = None
+    else:
+        run["cleanup_proven"] = False
+    bounds = lifecycle.runtime_bounds(row[2], run)
+    assert bounds["upper_seconds"] == 7134.7
+    assert "enforced recipient allocation" in bounds["upper_basis"]
+
+
+def test_proved_dead_checkpoint_bound_is_capped_by_allocation(monkeypatch):
+    row = bundle("killed", "build", 74.7, unfinished=True, allocation=80)
+    row[3].update(launcher_process={"dead": True}, recipient_process={"dead": True})
+    monkeypatch.setattr(lifecycle, "_identity_liveness", lambda _value: "stopped")
+    bounds = lifecycle.runtime_bounds(row[2], row[3])
+    assert bounds["upper_seconds"] == 80
+    assert "capped by enforced allocation" in bounds["upper_basis"]
+
+
 def test_allocation_bounds_and_holder_override():
     account = lifecycle.runtime_account([bundle("first", "build", 14000)])
     assert lifecycle.allocation(account, 7140) == 400
@@ -295,6 +360,29 @@ def test_stream_chunks_record_identity_immediately_without_redundant_writes(tmp_
         growing.finish()
         assert len(writes) == 4 and writes[-1]["lifecycle"] == "completed"
         assert out.read_bytes() == b"diagnostic\nmore diagnostic\n" + event
+
+
+def test_silent_elapsed_checkpoint_retains_bounded_timer_policy(tmp_path, monkeypatch):
+    output = tmp_path / "return"
+    run_path = records.sidecar(output, ".run.json")
+    out, err = records.sidecar(output, ".stdout.log"), records.sidecar(output, ".stderr.log")
+    current = [10.0]
+    monkeypatch.setattr(capture.time, "monotonic", lambda: current[0])
+    with records.reserve_bundle([output, run_path, out, err], output) as streams:
+        streams.mark_ready()
+        growing = capture.GrowingRun(run_path, {}, streams)
+        growing.begin_attempt({}, "codex", out, err)
+        growing.launched(os.getpid())
+        growing.tick()
+        current[0] += 0.249
+        growing.tick()
+        assert json.loads(run_path.read_bytes())["elapsed_checkpoint_seconds"] == 0
+        current[0] = 10.25
+        growing.tick()
+        saved = json.loads(run_path.read_bytes())
+        assert saved["elapsed_checkpoint_seconds"] == 0.25
+        assert saved["elapsed_checkpoint_interval_seconds"] == 0.25
+        assert saved["elapsed_checkpoint_margin_seconds"] == 10
 
 
 @pytest.mark.parametrize("failure", ["transient", "persistent", "permission", "expired"])

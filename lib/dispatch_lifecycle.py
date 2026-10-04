@@ -9,7 +9,8 @@ import re
 import tempfile
 import time
 
-from run_lifecycle import current_deadline, process_identity
+from run_lifecycle import (ELAPSED_CHECKPOINT_INTERVAL_SECONDS, ELAPSED_CHECKPOINT_MARGIN_SECONDS,
+                           current_deadline, process_identity)
 
 SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
 HEADER = re.compile(r"(?im)^session id:\s*([0-9a-f]{8}-[0-9a-f-]{27,})\s*$")
@@ -75,6 +76,8 @@ class GrowingRun:
         record["launcher_process"] = process_identity()
         record["lifecycle"] = "running"
         record["elapsed_checkpoint_seconds"] = 0
+        record["elapsed_checkpoint_interval_seconds"] = ELAPSED_CHECKPOINT_INTERVAL_SECONDS
+        record["elapsed_checkpoint_margin_seconds"] = ELAPSED_CHECKPOINT_MARGIN_SECONDS
         if retained:
             record["session_identity"] = {"session_id": retained,
                 "source": "proved predecessor", "bundle": retained_source,
@@ -114,7 +117,7 @@ class GrowingRun:
         current = time.monotonic()
         if self.started is not None:
             self.record["elapsed_checkpoint_seconds"] = current - self.started
-        if persist and (self.identity_changed or current - self.last_tick >= 0.25):
+        if persist and (self.identity_changed or current - self.last_tick >= ELAPSED_CHECKPOINT_INTERVAL_SECONDS):
             self.last_tick = current
             self.checkpoint()
 
