@@ -81,7 +81,7 @@ def frozen_tree(pid):
 
     def pause(target, parent=None):
         assert target != os.getpid(), "The fixture cannot suspend its test runner."
-        handle = kernel.OpenProcess(0x101001, False, target)
+        handle = kernel.OpenProcess(0x101000, False, target)
         if not handle:
             raise ctypes.WinError(ctypes.get_last_error())
         processes.append(handle)
@@ -91,6 +91,12 @@ def frozen_tree(pid):
             # make an older orphan part of this newly launched fixture.
             older.add(target)
             return
+        # Keep the query handle held while opening the termination handle:
+        # the PID cannot be reused between ownership checking and this open.
+        handle = kernel.OpenProcess(0x101001, False, target)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        processes.append(handle)
         owned = [tid for tid, owner in entries(
             4, ThreadEntry, kernel.Thread32First, kernel.Thread32Next, ("tid", "pid")
         ) if owner == target]
