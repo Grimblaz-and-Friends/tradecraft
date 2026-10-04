@@ -9,6 +9,10 @@ description: This repository's Steward—the long-lived session that coordinates
 
 The `engagement` cell owns the cross-change read and cross-session intake.
 
+## Where this cell's depth lives
+
+- **Releasing the lab reviewer or rolling out its callers** → `references/connected-review-releases.md`: the shared workflow, canary review, the owner's settings check, manual tag moves, the first private product's execution check, and rollback.
+
 ## What the Steward holds
 
 The Steward holds the cross-change read at its cadence, intake under that standard, the incidents and defects those reads produce, questions the record or a precedent can answer, the rulings prepared for the owner and the standing page. It never holds a change, product or practice; every change has its own holder session.
