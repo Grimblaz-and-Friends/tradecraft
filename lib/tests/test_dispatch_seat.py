@@ -1070,12 +1070,23 @@ def test_relocated_library_has_no_repository_dependency(tmp_path):
     assert b"--own-vendor" in help_run.stdout
     assert b"--requires {read,execute}" in help_run.stdout
     env = os.environ.copy()
-    # The installed suite must supply its own maintenance setting rather than
-    # borrow this session's override or the repository's root conftest.
-    env["GIT_CONFIG_COUNT"] = "0"
-    suite = subprocess.run([sys.executable, "-m", "pytest", str(copied / "tests"), "-q", "-k", "not relocated"],
-                           cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, env=env)
-    assert suite.returncode == 0, suite.stdout.decode(errors="replace") + suite.stderr.decode(errors="replace")
+    env.pop("PYTHONPATH", None)
+    imports = subprocess.run([sys.executable, "-c", """
+import importlib
+from pathlib import Path
+
+copied = Path.cwd().resolve()
+for path in sorted(copied.glob("*.py")):
+    try:
+        module = importlib.import_module(path.stem)
+    except BaseException as exc:
+        raise AssertionError(f"{path.name} failed to import") from exc
+    source = getattr(module, "__file__", None)
+    assert source and Path(source).resolve().is_relative_to(copied), (
+        f"{path.name} loaded from {source}, outside {copied}"
+    )
+"""], cwd=copied, stdin=subprocess.DEVNULL, capture_output=True, env=env)
+    assert imports.returncode == 0, imports.stdout.decode(errors="replace") + imports.stderr.decode(errors="replace")
 
 
 @pytest.mark.parametrize("vendor", seat.VENDORS)

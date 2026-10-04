@@ -133,8 +133,6 @@ def test_unverifiable_declaration_requires_a_reason():
 
 def test_shipped_positive_fixture_is_canonical_and_negative_cases_name_rejections():
     references = LIB.parent / "skills" / "work" / "references" / "proof-fixtures"
-    if not references.exists():
-        pytest.skip("proof fixtures are outside a relocated lib-only installation")
     valid = json.loads((references / "v1-valid.json").read_bytes())
     negative = json.loads((references / "v1-negative-cases.json").read_bytes())
 
@@ -159,8 +157,6 @@ def test_shipped_positive_fixture_is_canonical_and_negative_cases_name_rejection
 
 def test_shared_actions_receipt_facts_need_no_new_proof_fields():
     references = LIB.parent / "skills" / "work" / "references" / "proof-fixtures"
-    if not references.exists():
-        pytest.skip("proof fixtures are outside a relocated lib-only installation")
     valid = json.loads((references / "v1-valid.json").read_bytes())
     cases = json.loads((references / "v1-actions-receipts.json").read_bytes())
     candidate = deepcopy(valid)
