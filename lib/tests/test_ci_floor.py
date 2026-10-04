@@ -17,9 +17,7 @@ import test_work as support
 
 ROOT = Path(__file__).resolve().parents[2]
 SHARED = ROOT / "skills" / "work" / "references"
-LOCAL_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "proof-v1"
-CORPUS_PATH = (SHARED / "proof-fixtures" / "v1-ci-floor.json" if SHARED.exists()
-               else LOCAL_FIXTURES / "v1-ci-floor.json")
+CORPUS_PATH = SHARED / "proof-fixtures" / "v1-ci-floor.json"
 CORPUS = json.loads(CORPUS_PATH.read_bytes())
 POLICY_PATH = "/".join((".github", "change-proof.json"))
 
@@ -172,11 +170,10 @@ def test_proof_missing_floor_source_is_only_a_builder_obligation(
 
 def test_fixture_bytes_are_the_landed_gate_blobs():
     for path, expected in [(CORPUS_PATH, "4ff396c367e447a4aa9daeadfdc459fc2713f7c5"),
-                           (SHARED / "proof-v1.schema.json" if SHARED.exists() else LOCAL_FIXTURES / "proof-v1.schema.json",
+                           (SHARED / "proof-v1.schema.json",
                             "876e6441224462168e8db3b07686a23dcc893a27")]:
         data = path.read_bytes()
         assert hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() == expected
-        assert (LOCAL_FIXTURES / path.name).read_bytes() == data
 
 
 @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])

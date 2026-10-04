@@ -2742,11 +2742,10 @@ def test_actions_collector_handles_real_rest_object_pages(monkeypatch):
 
 ACTIONS_FIXTURES = LIB.parent / "skills" / "work" / "references" / "proof-fixtures"
 ACTIONS_CASE_PATH = ACTIONS_FIXTURES / "v1-actions-receipts.json"
-ACTIONS_CASES = json.loads(ACTIONS_CASE_PATH.read_bytes()) if ACTIONS_CASE_PATH.exists() else None
+ACTIONS_CASES = json.loads(ACTIONS_CASE_PATH.read_bytes())
 
 
-@pytest.mark.parametrize("case", ACTIONS_CASES["cases"] if ACTIONS_CASES else [],
-                         ids=lambda case: case["name"])
+@pytest.mark.parametrize("case", ACTIONS_CASES["cases"], ids=lambda case: case["name"])
 def test_actions_interoperability_cases_use_collected_facts(case, tmp_path):
     live = deepcopy(ACTIONS_CASES["live"])
     for key, value in case["live_patch"].items():
