@@ -5,16 +5,25 @@ import os
 import run_lifecycle as lifecycle
 
 
+class FrozenTree(list):
+    """Fixture identities with their held process handles, keyed by PID."""
+
+    def __init__(self, pid, identities, handles):
+        super().__init__(identities)
+        self.pid = pid
+        self.handles = handles
+
+
 @contextmanager
 def frozen_tree(pid):
-    """Keep waiting parents from exiting between taskkill's descendant kills.
+    """Keep waiting parents from exiting between the frozen processes' kills.
 
     SuspendThread runs no recipient code. Hold the process/thread handles until
     the kill returns; resume our suspension on failure before ordinary cleanup.
     The caller must already have synchronized on its blocked fixture.
     """
     if os.name != "nt":
-        yield []
+        yield FrozenTree(pid, [], {})
         return
     import ctypes
     from ctypes import wintypes
@@ -68,11 +77,11 @@ def frozen_tree(pid):
         finally:
             kernel.CloseHandle(handle)
 
-    processes, threads, identities, older = [], [], {}, set()
+    processes, threads, identities, handles, older = [], [], {}, {}, set()
 
     def pause(target, parent=None):
         assert target != os.getpid(), "The fixture cannot suspend its test runner."
-        handle = kernel.OpenProcess(0x101000, False, target)
+        handle = kernel.OpenProcess(0x101001, False, target)
         if not handle:
             raise ctypes.WinError(ctypes.get_last_error())
         processes.append(handle)
@@ -97,6 +106,7 @@ def frozen_tree(pid):
             threads.append(thread)
         assert lifecycle.liveness({"launcher_process": identity}) == "active", identity
         identities[target] = identity
+        handles[target] = handle
 
     try:
         pause(pid)
@@ -110,7 +120,7 @@ def frozen_tree(pid):
                 break
             for child, parent in children:
                 pause(child, parent)
-        yield list(identities.values())
+        yield FrozenTree(pid, identities.values(), handles)
     finally:
         for thread in reversed(threads):
             kernel.ResumeThread(thread)
