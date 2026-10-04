@@ -45,7 +45,7 @@ class CorpusTransport:
                 raise work.WorkError("HTTP 404 Not Found")
             return {"type": "file", "encoding": "base64", "content":
                     base64.b64encode(json.dumps(policy["content"]).encode()).decode()}
-        if endpoint == f"{prefix}/git/trees/{case['base_tip']}?recursive=1":
+        if endpoint == f"{prefix}/git/trees/{case['base_tip']}":
             return {"truncated": False, "tree": []}
         if endpoint == f"{prefix}/pulls/7":
             return self.state.pr
@@ -114,7 +114,10 @@ def test_landed_gate_corpus_collection_routing_proof_and_ready_floor(case, monke
         assert report["policy"]["revision"] == case["base_tip"]
         assert report["policy"]["sha256"] == hashlib.sha256(state.floor_policy_bytes).hexdigest()
     composed = work.compose_proof(state, case["local_override"])
-    assert composed["policy"]["floor"] == report["policy"]
+    if report["policy_status"] == "unreadable":
+        assert "floor" not in composed["policy"]
+    else:
+        assert composed["policy"]["floor"] == report["policy"]
     if report["outcome"] == "ci-met":
         assert composed["floor"]["head"] == case["head"]
         assert composed["floor"]["source"] is None

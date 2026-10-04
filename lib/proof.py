@@ -253,7 +253,9 @@ def render(value: dict[str, object], *, floor_context: dict[str, object] | None 
         f"- evidence: use classification {use['classification']}; applicability "
         f"{use['applicability']}",
     ]
-    if "floor" in proof["policy"]:
+    if floor_context and floor_context.get("policy_status") == "unreadable":
+        lines.append("- diagnostic: base floor policy could not be read; floor authority is unverifiable")
+    elif "floor" in proof["policy"]:
         authority = proof["policy"]["floor"]
         lines.append(f"- evidence: base floor policy {authority or 'confirmed absent'}")
     for check in floor["checks"]:

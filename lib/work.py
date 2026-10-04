@@ -2371,14 +2371,28 @@ def _floor_blob(transport: GitHubREST, repository: str, tip: str) -> bytes | Non
         if "404" not in str(exc):
             raise
         # A hidden permissions failure is not a confirmed absent declaration.
-        tree_endpoint = f"repos/{repository}/git/trees/{tip}?recursive=1"
-        tree = _dict(transport.get(tree_endpoint), tree_endpoint)
-        if tree.get("truncated") is not False:
-            raise WorkError("base policy absence cannot be proved by an incomplete tree") from exc
-        entries = _list(tree.get("tree"), tree_endpoint)
-        if any(entry.get("path") == path for entry in entries):
-            raise WorkError("base policy exists but could not be read") from exc
-        return None
+        tree_sha = tip
+        segments = path.split("/")
+        for index, segment in enumerate(segments):
+            tree_endpoint = f"repos/{repository}/git/trees/{tree_sha}"
+            tree = _dict(transport.get(tree_endpoint), tree_endpoint)
+            if tree.get("truncated") is not False:
+                raise WorkError("base policy absence cannot be proved by an incomplete tree") from exc
+            entries = [entry for entry in _list(tree.get("tree"), tree_endpoint)
+                       if entry.get("path") == segment]
+            if not entries:
+                return None
+            if len(entries) != 1:
+                raise WorkError("base policy path has ambiguous tree entries") from exc
+            entry = entries[0]
+            if index == len(segments) - 1:
+                raise WorkError("base policy exists but could not be read") from exc
+            if entry.get("type") in {"blob", "commit"}:
+                return None
+            sha = entry.get("sha")
+            if entry.get("type") != "tree" or not isinstance(sha, str) or HEAD_SHA.fullmatch(sha) is None:
+                raise WorkError("base policy path has an unreadable tree identity") from exc
+            tree_sha = sha
     if value.get("type") != "file" or value.get("encoding") != "base64":
         raise WorkError("base floor policy is not a readable Git blob")
     content = value.get("content")
@@ -2395,11 +2409,12 @@ def collect_floor(state: WorkState, transport: GitHubREST, *,
                   observed_at: datetime | None = None) -> None:
     """Retain base authority and one public selection for every entrance consumer."""
     head = _head_sha(state)
-    report = {"base": None, "policy": None, "declaration": None,
+    report = {"base": None, "policy": None, "policy_status": "unreadable", "declaration": None,
               "head": head, "outcome": "unverifiable", "checks": [],
               "executions": [], "excluded": [], "limitations": [],
               "observed_at": (observed_at or datetime.now(timezone.utc)).isoformat()}
     state.floor_public = report
+    state.floor_policy_bytes = None
     try:
         if state.pr is None or head is None:
             raise WorkError("floor requires a pull request and full head")
@@ -2407,6 +2422,7 @@ def collect_floor(state: WorkState, transport: GitHubREST, *,
         report["base"] = base
         blob = _floor_blob(transport, base["repository"], base["sha"])
         state.floor_policy_bytes = blob
+        report["policy_status"] = "absent" if blob is None else "read"
         report["policy"] = None if blob is None else {
             "repository": base["repository"], "path": "/".join((".github", "change-proof.json")),
             "revision": base["sha"], "sha256": hashlib.sha256(blob).hexdigest(),
@@ -2417,11 +2433,10 @@ def collect_floor(state: WorkState, transport: GitHubREST, *,
         declaration = ci_floor.declaration(policy)
         report["declaration"] = declaration
         if declaration["jobs"]:
-            gates = _matched_gate_checks(state)
+            gates = [check for check in _matched_gate_checks(state) if ci_floor._is_proof_job(check)]
             selection = ci_floor.collect(
                 transport, state.repo, head, declaration, None, None,
                 observed_at or datetime.fromisoformat(report["observed_at"]),
-                gate_check_ids=frozenset(check["id"] for check in gates),
                 gate_run_ids=frozenset(_action_run_id(check) for check in gates),
             )
             report.update(outcome=selection.outcome, checks=selection.checks,
@@ -2434,13 +2449,13 @@ def collect_floor(state: WorkState, transport: GitHubREST, *,
         else:
             report["outcome"] = "builder"
         confirmed = _dict(transport.get(endpoint), endpoint)
-        if (confirmed.get("object") or {}).get("sha") != base["sha"]:
+        if _dict(confirmed.get("object"), endpoint).get("sha") != base["sha"]:
             raise WorkError("floor base tip moved during collection; reread")
         pull_endpoint = f"repos/{state.repo}/pulls/{state.pr['number']}"
         confirmed_pull = _dict(transport.get(pull_endpoint), pull_endpoint)
         if _pull_coordinates(confirmed_pull) != _pull_coordinates(state.pr):
             raise WorkError("floor head or base moved during collection; reread")
-    except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+    except (AttributeError, KeyError, OSError, TypeError, UnicodeError, ValueError, WorkError) as exc:
         report["outcome"] = "unverifiable"
         report["limitations"].append(str(exc) or type(exc).__name__)
 
@@ -4344,7 +4359,8 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
             "head": head, "producer_version": records.producer_version(),
         },
         "policy": {**state.policy_sources, **({"floor": state.floor_public["policy"]}
-                    if state.floor_public is not None else {})},
+                    if state.floor_public is not None
+                    and state.floor_public.get("policy_status") != "unreadable" else {})},
         "floor": {
             "head": head if ci_met else floor.attributes.get("head") if floor else None,
             "source": _marker_source(state, floor) if floor else None,

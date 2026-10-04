@@ -251,17 +251,16 @@ def _execution_state(
 def collect(
     transport, repo: str, head: str, declaration: dict[str, object],
     current_run_id: int | None, current_run_attempt: int | None,
-    observed_at: datetime, *, gate_check_ids: frozenset[int] = frozenset(),
-    gate_run_ids: frozenset[int] = frozenset(),
+    observed_at: datetime, *, gate_run_ids: frozenset[int] = frozenset(),
 ) -> DeclaredFloor:
     """Select complete public job executions independently of producer claims."""
     result = DeclaredFloor([], [], [], [], "ci-met")
     try:
         _collect_declared_floor(
             transport, repo, head, declaration, current_run_id,
-            current_run_attempt, observed_at, result, gate_check_ids, gate_run_ids,
+            current_run_attempt, observed_at, result, gate_run_ids,
         )
-    except (OSError, UnicodeError, ValueError, ProofError) as exc:
+    except (AttributeError, KeyError, OSError, TypeError, UnicodeError, ValueError) as exc:
         result.outcome = "unverifiable"
         result.findings.append(Finding(
             f"verifiable declared floor at {head}: {str(exc) or type(exc).__name__}",
@@ -274,7 +273,7 @@ def _collect_declared_floor(
     transport, repo: str, head: str, declaration: dict[str, object],
     current_run_id: int | None, current_run_attempt: int | None,
     observed_at: datetime, result: DeclaredFloor,
-    gate_check_ids: frozenset[int], gate_run_ids: frozenset[int],
+    gate_run_ids: frozenset[int],
 ) -> None:
     if not isinstance(observed_at, datetime) or observed_at.tzinfo is None:
         raise ProofError("floor observation time must be timezone-aware")
@@ -338,9 +337,16 @@ def _collect_declared_floor(
             raise ProofError(f"run #{run_id} has unavailable or contradictory public URL identity")
         jobs = _run_jobs(transport, repo, run_id)
         declared_names = {pair["job"] for pair in pairs if pair["workflow"] == path}
+        gate_run = run_id in gate_run_ids or run_id == current_run_id or _run_references_gate(run)
+        relevant_jobs: list[dict[str, object]] = []
         seen_jobs: set[int] = set()
         check_jobs: dict[int, list[dict[str, object]]] = {}
         for job in jobs:
+            name = job.get("name")
+            if isinstance(name, str) and name not in declared_names and not (gate_run and _is_proof_job(job)):
+                continue
+            if not isinstance(name, str):
+                raise ProofError(f"run #{run_id} has a job with unavailable name provenance")
             check_url = job.get("check_run_url")
             origin = getattr(transport, "api_url", "https://api.github.com").rstrip("/")
             match = re.fullmatch(
@@ -349,11 +355,6 @@ def _collect_declared_floor(
             )
             if match is not None:
                 check_jobs.setdefault(int(match.group(1)), []).append(job)
-            name = job.get("name")
-            if isinstance(name, str) and name not in declared_names:
-                continue
-            if not isinstance(name, str):
-                raise ProofError(f"run #{run_id} has a job with unavailable name provenance")
             job_id = _positive_id(job.get("id"), f"job in run #{run_id}")
             job_attempt = _positive_id(job.get("run_attempt"), f"job #{job_id} attempt")
             if job_id in seen_jobs or job_attempt > attempt:
@@ -369,10 +370,11 @@ def _collect_declared_floor(
                 or run_url.lower() != f"{origin}/repos/{repo}/actions/runs/{run_id}".lower()
             ):
                 raise ProofError(f"job #{job_id} has contradictory run_url identity")
+            relevant_jobs.append(job)
         for check_id, associated in check_jobs.items():
             if len(associated) > 1 and any(job.get("name") in declared_names for job in associated):
                 raise ProofError(f"check #{check_id} is ambiguously associated with jobs")
-        jobs_by_run[run_id] = jobs
+        jobs_by_run[run_id] = relevant_jobs
 
     for pair in pairs:
         path, name = pair["workflow"], pair["job"]
@@ -397,7 +399,7 @@ def _collect_declared_floor(
             gate_run = run_id in gate_run_ids or run_id == current_run_id or _run_references_gate(run)
             proof_attempt = run_attempt if current_gate else newest_attempt
             proof_jobs = [job for job in jobs
-                          if job.get("run_attempt") == proof_attempt and (_is_proof_job(job) or int(job["check_run_url"].rsplit("/", 1)[-1]) in gate_check_ids)]
+                          if job.get("run_attempt") == proof_attempt and _is_proof_job(job)]
             if gate_run and matches and len(proof_jobs) != 1:
                 raise ProofError(
                     f"an unambiguous reusable proof job in run #{run_id} attempt #{proof_attempt}; "
@@ -421,7 +423,7 @@ def _collect_declared_floor(
                 continue
             for job in matches:
                 check_id = int(job["check_run_url"].rsplit("/", 1)[-1])
-                if check_id in gate_check_ids or gate_run and _is_proof_job(job):
+                if gate_run and _is_proof_job(job):
                     result.excluded.append(
                         f"proof execution run #{run_id} attempt #{newest_attempt} check #{check_id} "
                         "cannot establish its own declared floor"
