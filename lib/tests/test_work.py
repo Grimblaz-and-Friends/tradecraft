@@ -617,9 +617,17 @@ def _holder_reading(body, result="amended"):
     return f"<!-- tradecraft:holder-reading:v1 result={result} -->\n\n{body}"
 
 
-@pytest.mark.parametrize("stage", ["artifact", "build", "floor", "review-disposition"])
-@pytest.mark.parametrize("mechanical", [False, True], ids=["connected", "mechanical"])
-def test_admitted_implementer_prompt_carries_its_governing_sources(stage, mechanical):
+@pytest.mark.parametrize(("stage", "mechanical", "revision"), [
+    *[
+        pytest.param(stage, mechanical, False,
+                     id=f"{'mechanical' if mechanical else 'connected'}-{stage}")
+        for mechanical in (False, True)
+        for stage in ("artifact", "build", "floor", "review-disposition")
+    ],
+    pytest.param("artifact", False, True, id="connected-artifact-revision"),
+])
+def test_admitted_implementer_prompt_carries_its_governing_sources(
+        stage, mechanical, revision):
     # This collection supplies both the gate's records and the carriage oracle.
     # Drafts, verdicts, floor evidence and review state only support admission.
     governing = [("affirmed-brief", (MECHANICAL if mechanical else AFFIRMED)
@@ -631,16 +639,18 @@ def test_admitted_implementer_prompt_carries_its_governing_sources(stage, mechan
         _holder_reading("LATER DIRECTION\nRetain only the replacement fixture.\nEnd later direction."),
     ]
     settlement = _settled("would", "would") + "\nSETTLED PRODUCT ARTIFACT\nEnd artifact."
-    if stage != "artifact" and not mechanical:
+    if (stage != "artifact" or revision) and not mechanical:
         governing.extend([("artifact", settlement),
                           *(("holder-reading", reading) for reading in readings)])
-    comments = []
-    for kind, body in governing:
+    comments = [AFFIRMED + "\nPREVIOUS TERM"] if revision else []
+    for kind, body in governing[1:] if revision else governing:
         if kind == "artifact":
             comments.append(ARTIFACT + "\nSUPPORTING DRAFT")
         if body == readings[-1] and stage in {"floor", "review-disposition"}:
             comments.append(f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->")
         comments.append(body)
+    if revision:
+        comments.append(governing[0][1])
     if mechanical and stage != "artifact":
         comments.extend([ARTIFACT + "\nSTRAY MECHANICAL DRAFT", settlement, *readings])
     if stage == "review-disposition":
@@ -667,15 +677,23 @@ def test_admitted_implementer_prompt_carries_its_governing_sources(stage, mechan
     positions = [prompt.index(body.encode("utf-8")) for _kind, body in governing]
     assert positions == sorted(positions)
     assert b"SUPPORTING DRAFT" not in prompt
-    if stage in {"build", "floor", "review-disposition"} and not mechanical:
+    if (stage in {"build", "floor", "review-disposition"} or revision) and not mechanical:
         lawful_readings = [marker.body for marker in fixture.validated_markers
                           if marker.name == "holder-reading"]
         assert lawful_readings == readings
-        assert positions[2] > prompt.index(b"--- settled artifact end ---")
+        artifact_end = (b"--- artifact under revision end ---" if revision
+                        else b"--- settled artifact end ---")
+        assert positions[2] > prompt.index(artifact_end)
         assert positions[-1] < prompt.index(b"Fetch current state only if this stage needs it:")
-        assert b"Holder readings govern where they differ from the settled artifact." in prompt
         assert b"The newest governs where readings differ from each other." in prompt
-        assert b"The affirmed brief remains binding over both." in prompt
+        if revision:
+            assert prompt.count(
+                b"--- holder reading made against artifact under revision "
+                b"(governs where it differs) begin ---"
+            ) == len(readings)
+        else:
+            assert b"Holder readings govern where they differ from the settled artifact." in prompt
+            assert b"The affirmed brief remains binding over both." in prompt
     else:
         assert settlement.encode("utf-8") not in prompt
         assert all(reading.encode("utf-8") not in prompt for reading in readings)
@@ -794,11 +812,66 @@ def test_implementer_readings_use_record_order_and_only_validated_claims(stage):
         assert body.split("\n\n")[-1].encode("utf-8") not in prompt
 
 
-def test_identical_reading_bodies_are_carried_without_deduplication():
+@pytest.mark.parametrize("revision", [False, True], ids=["build", "artifact-revision"])
+def test_identical_reading_bodies_are_carried_without_deduplication(revision):
     reading = _holder_reading("REPEATED COMPLETE CALL")
-    fixture = state(AFFIRMED, ARTIFACT, WOULD, reading, reading)
+    comments = [AFFIRMED, ARTIFACT, WOULD, reading, reading]
+    if revision:
+        comments.append(AFFIRMED)
+    fixture = state(*comments)
     prompt = work._stage_prompt(fixture, work.decide(fixture, RULES))
     assert prompt.count(reading.encode("utf-8")) == 2
+
+
+@pytest.mark.parametrize("reverse_sources", [False, True], ids=["record", "reversed-input"])
+def test_artifact_revision_prompt_carries_every_applicable_prior_reading(reverse_sources):
+    stale = _holder_reading("STALE CALL BEFORE THE NEWER DRAFT")
+    artifact = _settled("would", "would") + "\nARTIFACT TO REVISE\nEnd artifact."
+    first = _holder_reading(
+        f"R1\nKeep the caf{chr(0xE9)} fixture; drop alias A.\nEnd first call."
+    )
+    second = _holder_reading("R2\nRename helper B.\nEnd later direction.")
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, stale, ARTIFACT, artifact,
+                    first, second, AFFIRMED + "\nAMENDED TERM")
+    if reverse_sources:
+        for index, comment in enumerate(fixture.issue_comments):
+            comment["id"] = 100 + index
+            comment["created_at"] = "2026-10-04T12:00:00Z"
+        fixture.issue_comments.reverse()
+    recommendation = work.decide(fixture, RULES)
+    assert (recommendation.stage, recommendation.reason) == ("artifact", "artifact-marker-absent")
+    prompt = work._stage_prompt(
+        fixture, work.Decision("artifact", True, "fresh", "holder-named-stage"),
+    )
+
+    assert artifact.encode("utf-8") in prompt
+    assert stale.encode("utf-8") not in prompt
+    first_position = prompt.index(first.encode("utf-8"))
+    second_position = prompt.index(second.encode("utf-8"))
+    assert prompt.index(b"--- artifact under revision end ---") < first_position < second_position
+    label = b"holder reading made against artifact under revision (governs where it differs)"
+    assert prompt.count(b"--- " + label + b" begin ---") == 2
+    assert b"The newest governs where readings differ from each other." in prompt
+
+
+@pytest.mark.parametrize("replacement", ["draft", "settled", "routed-repost"])
+def test_artifact_revision_prompt_clears_readings_before_newer_artifact(replacement):
+    first = _holder_reading("OLD WHOLE-CHANGE CALL")
+    second = _holder_reading("OLD LATER DIRECTION")
+    earlier = ("<!-- tradecraft:artifact:v1 status=settled -->\n"
+               "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
+               if replacement == "routed-repost" else WOULD)
+    newer = ((ARTIFACT if replacement == "draft" else _settled("would"))
+             + "\nNEWER ARTIFACT TEXT")
+    fixture = state(AFFIRMED, ARTIFACT, earlier, first, second, newer, AFFIRMED)
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.stage == "artifact"
+    prompt = work._stage_prompt(fixture, recommendation)
+
+    assert newer.encode("utf-8") in prompt
+    assert first.encode("utf-8") not in prompt
+    assert second.encode("utf-8") not in prompt
+    assert b"holder reading made against artifact under revision" not in prompt
 
 
 ARTIFACT_PROMPT_TERM_KINDS = ("draft", "routeless", "reading", "empty")
@@ -813,16 +886,16 @@ def _artifact_prompt_term(kind, index):
     draft_token = f"TERM {index} DRAFT"
     draft = ARTIFACT + f"\n{draft_token}"
     if kind == "empty":
-        return [], None, None, []
+        return [], None, [], []
     if kind == "draft":
-        return [draft], draft_token.encode("ascii"), None, []
+        return [draft], draft_token.encode("ascii"), [], []
     settlement_token = f"TERM {index} SETTLEMENT"
     if kind == "routeless":
         settlement = (
             "<!-- tradecraft:artifact:v1 status=settled -->\n"
             + settlement_token
         )
-        return [draft, settlement], settlement_token.encode("ascii"), None, []
+        return [draft, settlement], settlement_token.encode("ascii"), [], []
     earlier_reading_token = f"TERM {index} EARLIER HOLDER READING"
     reading_token = f"TERM {index} HOLDER READING"
     settlement = _settled("would", "would") + f"\n{settlement_token}"
@@ -831,7 +904,7 @@ def _artifact_prompt_term(kind, index):
     return (
         [draft, settlement, earlier_reading, reading],
         settlement_token.encode("ascii"),
-        reading_token.encode("ascii"),
+        [earlier_reading_token.encode("ascii"), reading_token.encode("ascii")],
         [earlier_reading_token.encode("ascii"), reading_token.encode("ascii")],
     )
 
@@ -850,23 +923,23 @@ def _artifact_prompt_term(kind, index):
         for current_has_draft in (False, True)
     ],
 )
-def test_artifact_prompt_selects_latest_prior_term_pair(
+def test_artifact_prompt_selects_latest_prior_term_artifact_and_readings(
         term_sequence, current_has_draft):
     comments = []
     artifact_tokens = []
     reading_tokens = []
     expected_artifact = None
-    expected_reading = None
+    expected_readings = []
     for index, kind in enumerate(term_sequence, start=1):
         comments.append(AFFIRMED)
-        term_comments, artifact_token, reading_token, term_reading_tokens = (
+        term_comments, artifact_token, term_readings, term_reading_tokens = (
             _artifact_prompt_term(kind, index)
         )
         comments.extend(term_comments)
         if artifact_token is not None:
             artifact_tokens.append(artifact_token)
             expected_artifact = artifact_token
-            expected_reading = reading_token
+            expected_readings = term_readings
         reading_tokens.extend(term_reading_tokens)
 
     comments.append(AFFIRMED)
@@ -875,7 +948,7 @@ def test_artifact_prompt_selects_latest_prior_term_pair(
         comments.append(ARTIFACT + "\n" + current_token.decode("ascii"))
         artifact_tokens.append(current_token)
         expected_artifact = current_token
-        expected_reading = None
+        expected_readings = []
 
     fixture = state(*comments)
     recommendation = work.decide(fixture, RULES)
@@ -896,13 +969,15 @@ def test_artifact_prompt_selects_latest_prior_term_pair(
     for token in artifact_tokens:
         assert (token in prompt) == (token == expected_artifact)
     reading_label = b"holder reading made against artifact under revision"
-    assert (reading_label in prompt) == (expected_reading is not None)
+    assert (reading_label in prompt) == bool(expected_readings)
     for token in reading_tokens:
-        assert (token in prompt) == (token == expected_reading)
-    if expected_reading is not None:
+        assert (token in prompt) == (token in expected_readings)
+    if expected_readings:
         assert prompt.index(reading_label) > prompt.index(
             b"--- artifact under revision end ---"
         )
+        positions = [prompt.index(token) for token in expected_readings]
+        assert positions == sorted(positions)
 
 
 def test_artifact_prompt_preserves_746_shape_across_four_empty_brief_records():
