@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import signal
@@ -12,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import run_lifecycle as lifecycle
 import work
 from test_work import state, registry_row, MECHANICAL
+from fixtures.frozen_tree import frozen_tree
 
 LIB = Path(__file__).resolve().parents[1]
 
@@ -62,9 +64,14 @@ def test_exit_clock_excludes_delay_after_the_launcher_has_exited(tmp_path):
 
 def kill_tree(pid):
     if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, timeout=10, check=True)
+        result = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=10)
+        assert result.returncode == 0, {
+            "pid": pid, "exit_code": result.returncode,
+            "stdout": result.stdout.decode("utf-8", "replace"),
+            "stderr": result.stderr.decode("utf-8", "replace"),
+        }
     else:
         snapshot = subprocess.run(["ps", "-eo", "pid=,ppid="],
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -78,6 +85,128 @@ def kill_tree(pid):
                 os.kill(child, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def hard_kill_blocked_launch(process, saved, identities):
+    """An exited launcher is a failed setup, never a successful hard kill."""
+    assert process.poll() is None, {"error": "launcher exited before hard kill", "run": saved}
+    assert saved.get("session_identity", {}).get("session_id"), "Session was not durably recorded."
+    assert not saved.get("completed_at"), "Launcher completed before hard kill."
+    assert all(lifecycle.liveness({"launcher_process": identity}) == "active"
+               for identity in identities), "The fixture was no longer blocked."
+    with frozen_tree(process.pid) as frozen:
+        if os.name == "nt":
+            assert saved["launcher_process"] in frozen, "The recorded writer was outside the killed tree."
+            assert all(identity in frozen for identity in identities), "Blocked descendants left the tree."
+        kill_tree(process.pid)
+        process.wait(timeout=5)
+        return frozen
+
+
+@pytest.mark.parametrize("failure", ["exited", "missing-session", "completed", "dead-descendant"])
+def test_hard_kill_refuses_unproved_setup(monkeypatch, failure):
+    class Process:
+        pid = 123
+
+        def poll(self):
+            return 1 if failure == "exited" else None
+
+    saved = {"session_identity": {"session_id": "observed-session"}, "launcher_process": {"pid": 123}}
+    if failure == "missing-session":
+        saved["session_identity"] = {}
+    if failure == "completed":
+        saved["completed_at"] = "2026-10-03T00:00:00Z"
+    monkeypatch.setattr(lifecycle, "liveness", lambda *_: "stopped" if failure == "dead-descendant" else "active")
+    monkeypatch.setattr(sys.modules[__name__], "frozen_tree", lambda *_: nullcontext([{"pid": 123}, {"pid": 456}]))
+    monkeypatch.setattr(sys.modules[__name__], "kill_tree", lambda *_: pytest.fail("An unproved setup was killed."))
+    with pytest.raises(AssertionError):
+        hard_kill_blocked_launch(Process(), saved, [{"pid": 456}])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows taskkill diagnostics")
+def test_taskkill_failure_retains_both_diagnostic_streams(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess(
+        ["taskkill"], 255, b"child was terminated", b"parent already ended"
+    ))
+    with pytest.raises(AssertionError) as failure:
+        kill_tree(123)
+    assert "child was terminated" in str(failure.value)
+    assert "parent already ended" in str(failure.value)
+    assert "255" in str(failure.value)
+
+
+@pytest.mark.skipif(os.name != "nt" or sys.executable == sys._base_executable,
+                    reason="Windows virtual-environment waiting-bootstrap race")
+@pytest.mark.parametrize("older_child", [False, True], ids=["owned-child", "stale-parent-id"])
+def test_frozen_parent_cannot_exit_after_its_child_is_terminated(tmp_path, monkeypatch, older_child):
+    import ctypes
+    from ctypes import wintypes
+    ready = tmp_path / "ready"
+    code = ("import json,os,sys,threading,time; from pathlib import Path; "
+            "ready=Path(sys.argv[1]); staged=ready.with_suffix('.pending'); "
+            "staged.write_bytes(json.dumps({'pid':os.getpid(),'tid':threading.get_native_id()}).encode()); "
+            "os.replace(staged,ready); time.sleep(90)")
+    process = subprocess.Popen([sys.executable, "-c", code, str(ready)],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               creationflags=subprocess.HIGH_PRIORITY_CLASS)
+    try:
+        until = time.monotonic() + 10
+        while not ready.exists() and process.poll() is None and time.monotonic() < until:
+            time.sleep(0.05)
+        assert ready.exists(), "The native child never became ready."
+        child_info = json.loads(ready.read_bytes())
+        child = child_info["pid"]
+        # A Windows virtual environment has a waiting native bootstrap.
+        assert child != process.pid
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenThread.restype = wintypes.HANDLE
+        kernel.SuspendThread.argtypes = [wintypes.HANDLE]
+        kernel.SuspendThread.restype = wintypes.DWORD
+        kernel.ResumeThread.argtypes = [wintypes.HANDLE]
+        if older_child:
+            read_identity = lifecycle.process_identity
+
+            def stale_parent_id(pid):
+                identity = read_identity(pid)
+                if pid == child:
+                    identity["birth"] = "0"
+                return identity
+
+            monkeypatch.setattr(lifecycle, "process_identity", stale_parent_id)
+        with frozen_tree(process.pid) as frozen:
+            expected = {process.pid} if older_child else {process.pid, child}
+            assert {identity["pid"] for identity in frozen} == expected
+            thread = kernel.OpenThread(0x2, False, child_info["tid"])
+            assert thread
+            try:
+                previous = kernel.SuspendThread(thread)
+                assert previous != 0xFFFFFFFF
+                kernel.ResumeThread(thread)
+                assert previous == (0 if older_child else 1)
+            finally:
+                kernel.CloseHandle(thread)
+            handle = kernel.OpenProcess(0x100001, False, child)
+            assert handle
+            try:
+                assert kernel.TerminateProcess(handle, 1)
+                assert kernel.WaitForSingleObject(handle, 5000) == 0
+                time.sleep(0.1)
+                assert process.poll() is None, "The waiting parent escaped taskkill's remaining tree."
+            finally:
+                kernel.CloseHandle(handle)
+            kill_tree(process.pid)
+            process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            with frozen_tree(process.pid):
+                kill_tree(process.pid)
+        process.communicate(timeout=5)
 
 
 def git(root, *args):
@@ -128,6 +257,7 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
     run_path = Path(str(output) + ".run.json")
+    saved = {}
     try:
         until = time.monotonic() + 25
         while not (store / "blocked.json").exists() and time.monotonic() < until:
@@ -149,7 +279,7 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
                 break
             time.sleep(0.05)
         if termination == "hard-kill":
-            kill_tree(process.pid)
+            identities.extend(hard_kill_blocked_launch(process, saved, identities))
         process.communicate(timeout=20 if ceiling else 5)
         if ceiling:
             elapsed = measured_exit(process, started)
@@ -219,5 +349,6 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             assert len(list(output.parent.glob("*.run.json"))) == 2
     finally:
         if process.poll() is None:
-            kill_tree(process.pid)
+            with frozen_tree(process.pid):
+                kill_tree(process.pid)
         process.communicate(timeout=5)

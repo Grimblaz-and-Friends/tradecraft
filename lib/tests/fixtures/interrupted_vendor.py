@@ -7,6 +7,19 @@ import sys
 import time
 
 vendor, store = sys.argv[1], Path(sys.argv[2])
+
+
+def announce(name, content):
+    pending = store / (name + ".pending")
+    pending.write_bytes(content)
+    os.replace(pending, store / name)
+
+
+if vendor == "blocked-command":
+    announce("child-ready", str(os.getpid()).encode("ascii"))
+    while not (store / "release").exists():
+        time.sleep(0.05)
+    raise SystemExit(0)
 flags = sys.argv[3:]
 sys.stdin.buffer.read()
 session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
@@ -22,10 +35,14 @@ event = ({"type": "thread.started", "thread_id": session} if vendor == "codex"
          else {"type": "system", "subtype": "init", "session_id": session})
 print(json.dumps(event), flush=True)
 if not resume:
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(90)"],
+    child = subprocess.Popen([sys.executable, __file__, "blocked-command", str(store)],
                              stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr)
-    (store / "blocked.json").write_bytes(json.dumps([os.getpid(), child.pid]).encode())
-    time.sleep(90)
+    while not (store / "child-ready").exists():
+        time.sleep(0.05)
+    native_child = int((store / "child-ready").read_bytes())
+    announce("blocked.json", json.dumps(sorted({os.getpid(), child.pid, native_child})).encode())
+    while not (store / "release").exists():
+        time.sleep(0.05)
 else:
     message = "Recovered knowledge: " + knowledge["nonce"]
     if vendor == "codex":
