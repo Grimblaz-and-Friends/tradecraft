@@ -266,6 +266,20 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
             end = current + 0.25
             return min(end, cleanup_deadline) if cleanup_deadline is not None else end
 
+        def notify(callback, *args):
+            nonlocal drain_deadline
+            started = time.monotonic()
+            try:
+                return callback(*args)
+            finally:
+                if drain_deadline is not None and not stopped:
+                    # After normal exit, the pipe grace bounds waiting for EOF,
+                    # not the recorder's work on bytes already received. A slow
+                    # checkpoint must not discard the next available chunk.
+                    # The invocation's cleanup allowance remains an absolute cap.
+                    hard_end = cleanup_deadline if cleanup_deadline is not None else deadline + 0.25
+                    drain_deadline = min(hard_end, drain_deadline + time.monotonic() - started)
+
         def acknowledge():
             nonlocal notified
             if os.name != "nt" or notified:
@@ -279,7 +293,7 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
             if on_launch:
                 # Recovery must watch the job owner too: a short-lived CLI
                 # shim can exit while its vendor and the worker are still live.
-                on_launch(process.pid)
+                notify(on_launch, process.pid)
             notified = True
 
         try:
@@ -298,7 +312,7 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
             else:
                 process.stdin.close()
             if on_launch and os.name != "nt":
-                on_launch(process.pid)
+                notify(on_launch, process.pid)
                 notified = True
             for thread in threads:
                 thread.start()
@@ -318,7 +332,7 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 if drain_deadline is not None and current >= drain_deadline:
                     break
                 if on_tick and not stopped:
-                    on_tick()
+                    notify(on_tick)
                 # A checkpoint can consume the remaining allowance. Recheck
                 # after it instead of renewing a wait using the earlier clock.
                 current = time.monotonic()
@@ -336,7 +350,7 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 else:
                     captured[name].extend(chunk)
                     if on_output:
-                        on_output(name, chunk)
+                        notify(on_output, name, chunk)
             # Retain queued bytes at the bounded drain's edge too.
             while not events.empty():
                 if drain_deadline is not None and time.monotonic() >= drain_deadline:
@@ -345,7 +359,7 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 if chunk is not None:
                     captured[name].extend(chunk)
                     if on_output:
-                        on_output(name, chunk)
+                        notify(on_output, name, chunk)
         finally:
             stop_tree()
             # Draining and waiting share one allowance, rather than adding a

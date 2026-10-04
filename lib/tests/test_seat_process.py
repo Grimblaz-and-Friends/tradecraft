@@ -76,6 +76,42 @@ def test_incremental_capture_drains_both_full_pipes(tmp_path):
     assert result.returncode == 0 and len(output) > 2
 
 
+@pytest.mark.parametrize("slow_callback", ["tick", "output"])
+def test_completed_capture_keeps_unread_bytes_during_slow_recording(tmp_path, monkeypatch, slow_callback):
+    native_clock = process.time.monotonic
+    offset = [0.0]
+    monkeypatch.setattr(process.time, "monotonic", lambda: native_clock() + offset[0])
+    original_spawn = process.subprocess.Popen
+
+    def already_exited(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        # Both small pipe payloads fit without a reader. Synchronize on exit,
+        # rather than depending on whether a loaded runner schedules us first.
+        child.wait(timeout=60)
+        return child
+
+    monkeypatch.setattr(process.subprocess, "Popen", already_exited)
+    output = []
+
+    def slow_tick():
+        if slow_callback == "tick":
+            offset[0] += 0.4
+
+    def retain(name, chunk):
+        output.append((name, chunk))
+        if slow_callback == "output":
+            offset[0] += 0.4
+
+    command = [sys._base_executable, "-c",
+               "import sys; sys.stdout.buffer.write(b'final result'); sys.stderr.buffer.write(b'diagnostic')"]
+    result = process.run_process(command, input=b"", cwd=tmp_path, timeout=60,
+                                 on_output=retain, on_tick=slow_tick)
+    assert result.returncode == 0
+    assert result.stdout == b"final result" and result.stderr == b"diagnostic"
+    assert b"".join(chunk for name, chunk in output if name == "stdout") == result.stdout
+    assert b"".join(chunk for name, chunk in output if name == "stderr") == result.stderr
+
+
 @pytest.mark.parametrize("cleanup_end", [None, 0.15])
 @pytest.mark.parametrize("queued", [False, True])
 def test_incremental_drain_and_wait_share_one_cleanup_allowance(tmp_path, monkeypatch, cleanup_end, queued):
@@ -114,6 +150,78 @@ def test_incremental_drain_and_wait_share_one_cleanup_allowance(tmp_path, monkey
                             on_tick=lambda: None, cleanup_deadline=cleanup_end)
     assert caught.value.output == b"received before stop"
     assert current[0] <= (0.30 if cleanup_end is None else cleanup_end) + 0.000001
+
+
+def test_slow_output_recording_cannot_extend_the_absolute_cleanup_deadline(tmp_path, monkeypatch):
+    current = [0.0]
+    monkeypatch.setattr(process.time, "monotonic", lambda: current[0])
+
+    class Child:
+        pid, returncode = 123, 0
+        stdin, stdout, stderr = io.BytesIO(), io.BytesIO(), io.BytesIO()
+        def poll(self):
+            return self.returncode
+        def wait(self, timeout):
+            current[0] += timeout
+            return self.returncode
+
+    class Events:
+        def get(self, timeout):
+            # An inherited writer keeps supplying bytes after the parent exits.
+            return "stdout", b"received"
+        def empty(self):
+            return True
+
+    monkeypatch.setattr(process, "os", SimpleNamespace(name="posix", killpg=lambda *_: None))
+    monkeypatch.setattr(process, "signal", SimpleNamespace(SIGKILL=9))
+    monkeypatch.setattr(process.subprocess, "Popen", lambda *_a, **_k: Child())
+    monkeypatch.setattr(process.queue, "Queue", Events)
+    monkeypatch.setattr(process.threading, "Thread", lambda **_k: SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(process, "Descendants", lambda: SimpleNamespace(kill=lambda: None, finish=lambda *_: True))
+
+    def recording(*_args):
+        current[0] += 0.1
+
+    result = process.run_process(["vendor"], input=b"", cwd=tmp_path, timeout=10,
+                                 on_output=recording, cleanup_deadline=0.5)
+    assert result.stdout == b"received" * 5
+    assert current[0] <= 0.500001
+
+
+def test_slow_recording_does_not_renew_timeout_cleanup(tmp_path, monkeypatch):
+    current = [0.0]
+    monkeypatch.setattr(process.time, "monotonic", lambda: current[0])
+
+    class Child:
+        pid = 123
+        stdin, stdout, stderr = io.BytesIO(), io.BytesIO(), io.BytesIO()
+        def poll(self):
+            return None
+        def wait(self, timeout):
+            current[0] += timeout
+            raise subprocess.TimeoutExpired(["vendor"], timeout)
+
+    class Events:
+        def get(self, timeout):
+            current[0] += timeout
+            return "stdout", b"received"
+        def empty(self):
+            return True
+
+    monkeypatch.setattr(process, "os", SimpleNamespace(name="posix", killpg=lambda *_: None))
+    monkeypatch.setattr(process, "signal", SimpleNamespace(SIGKILL=9))
+    monkeypatch.setattr(process.subprocess, "Popen", lambda *_a, **_k: Child())
+    monkeypatch.setattr(process.queue, "Queue", Events)
+    monkeypatch.setattr(process.threading, "Thread", lambda **_k: SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(process, "Descendants", lambda: SimpleNamespace(kill=lambda: None, finish=lambda *_: True))
+
+    def recording(*_args):
+        current[0] += 0.1
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        process.run_process(["vendor"], input=b"", cwd=tmp_path, timeout=0.05,
+                            on_output=recording, cleanup_deadline=1)
+    assert current[0] < 0.5
 
 
 

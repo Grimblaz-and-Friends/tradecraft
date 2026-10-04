@@ -283,10 +283,12 @@ def test_unproved_descendant_cleanup_cannot_supply_resume(stopped_build, complet
         recovery.stopped_source(fixture, "build")
 
 
-def test_entrance_wait_includes_child_recording_but_reserves_its_own_return(monkeypatch):
+@pytest.mark.parametrize("origin", [-100, 0, 1, 100])
+def test_entrance_wait_includes_child_recording_but_reserves_its_own_return(monkeypatch, origin):
     import subprocess
-    deadline = lifecycle.Deadline(30, started=100)
-    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 103)
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: origin)
+    deadline = lifecycle.Deadline(30, started=origin)
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: origin + 3)
     calls = []
     def capture(command, **kwargs):
         calls.append(kwargs)
@@ -296,7 +298,7 @@ def test_entrance_wait_includes_child_recording_but_reserves_its_own_return(monk
     monkeypatch.setattr(work.subprocess, "run", capture)
     assert work._invoke_recipient(["launcher"], deadline) == 0
     assert calls[0]["timeout"] == 24.5
-    assert calls[0]["cleanup_deadline"] == 128.75
+    assert calls[0]["cleanup_deadline"] == origin + 28.75
     assert calls[0]["timeout"] > deadline.remaining()
 
 
