@@ -119,7 +119,8 @@ def test_named_budget_guards_before_launch_and_excludes_repairs(stopped_build, m
     monkeypatch.setattr(work, "_recipient_run", capture, raising=False)
     result = work.execute_stage(fixture, work.Decision(stage, True, "resume", "holder-named-stage"),
                                 fixture.holder_root, None, "holder-session", codex_path=Path(sys.executable),
-                                budget_override_reason=reason)
+                                budget_override_reason=reason,
+                                floor_command="python fixture-check.py" if stage == "floor" else None)
     assert result == 0
     assert bool(commands) is launched
     if launched:

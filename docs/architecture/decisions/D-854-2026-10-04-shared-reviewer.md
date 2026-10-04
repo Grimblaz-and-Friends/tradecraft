@@ -1,8 +1,8 @@
-# D-847 — one lab reviewer release control
+# D-854 — one lab reviewer release control
 
 **Purpose:** retain #847's release-control choice and the holder's implementation reading. **Audience:** the holder and a future session changing the lab reviewer. **Success:** that reader can distinguish lab release authority, runtime provenance and review credit without changing adopter control.
 
-This entry uses work issue #847 provisionally; the holder rekeys it to the implementing pull request in the builder's first resumed turn. The governing sources are the [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/847#issuecomment-5982099648), [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/847#issuecomment-5982400986) and amended holder reading supplied with this build. The build base is `8b6fbdb3ad72fd98b9ca569fd6daae5a058f01e6`; the version increment uses `main` at `6dee8252afc62b4151bfec63ae455607972c9027`.
+This entry is keyed to implementing pull request #854 for work issue #847. The governing sources are the [affirmed brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/847#issuecomment-5982099648), [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/847#issuecomment-5982400986) and amended holder reading supplied with this build. The build base is `8b6fbdb3ad72fd98b9ca569fd6daae5a058f01e6`; the version increment uses `main` at `6dee8252afc62b4151bfec63ae455607972c9027`.
 
 ## Decisions and meaning changes
 

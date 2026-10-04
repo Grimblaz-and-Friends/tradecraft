@@ -22,5 +22,22 @@
     "path": ".claude-plugin/plugin.json",
     "field": "version",
     "increment": "minor"
+  },
+  "floor": {
+    "jobs": [
+      {
+        "workflow": ".github/workflows/ci.yml",
+        "job": "lint-and-test (ubuntu-latest)"
+      },
+      {
+        "workflow": ".github/workflows/ci.yml",
+        "job": "lint-and-test (windows-latest)"
+      },
+      {
+        "workflow": ".github/workflows/ask-declaration.yml",
+        "job": "ask-declaration"
+      }
+    ],
+    "stall_after_seconds": 3600
   }
 }

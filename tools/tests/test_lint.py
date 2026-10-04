@@ -19,6 +19,22 @@ import figures  # noqa: E402
 import lint
 
 
+def test_zone_wall_exempts_only_the_exact_landed_floor_corpus(tmp_path):
+    relative = Path("skills/work/references/proof-fixtures/v1-ci-floor.json")
+    corpus = Path(__file__).resolve().parents[2] / relative
+    target = tmp_path / relative
+    target.parent.mkdir(parents=True)
+    target.write_bytes(corpus.read_bytes())
+    assert lint.check_zone_wall(tmp_path) == []
+    target.write_bytes(corpus.read_bytes() + b"\n")
+    assert lint.check_zone_wall(tmp_path)
+    target.write_bytes(corpus.read_bytes())
+    ordinary = tmp_path / "lib/another-fixture.json"
+    ordinary.parent.mkdir()
+    ordinary.write_bytes(corpus.read_bytes())
+    assert lint.check_zone_wall(tmp_path)
+
+
 NL = chr(10)
 BS = chr(92)
 

@@ -105,19 +105,19 @@ def test_validation_rejects_a_verification_field_anywhere():
         proof.validate(value)
 
 
-def test_document_carries_one_json_object_readable_labels_and_legacy_no_use():
+def test_document_carries_one_json_object_and_marker_free_no_use():
     value = document()
     value["use"].update({
         "required": False, "classification": "not-required", "evidence_head": SHA,
         "applicability": "generated", "source": None,
         "reason": "no changed path matches a use-bought rule",
     })
-    rendered = proof.document(value, "Use: not required - no changed path buys use.")
+    rendered = proof.document(value)
     payload = rendered.split("```json\n", 1)[1].split("\n```", 1)[0]
 
     assert json.loads(payload) == proof.validate(value)
     assert rendered.count("<!-- tradecraft:proof:v1") == 1
-    assert rendered.count("<!-- tradecraft:no-use:v1") == 1
+    assert "<!-- tradecraft:no-use:v1" not in rendered
     assert "- evidence:" in rendered
     assert "use reason no changed path matches a use-bought rule; source none" in rendered
     assert "- declared:" in rendered
