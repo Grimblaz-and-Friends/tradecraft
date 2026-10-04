@@ -1,9 +1,14 @@
 import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
+import textwrap
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -317,7 +322,7 @@ def test_finder_prompt_stays_frozen_and_historical_checker_remains_replayable():
     assert "Keep at most one candidate for one root cause" in checker
 
 
-def test_workflow_template_matches_documentation_and_enabled_copy_pins_ref():
+def test_workflow_template_matches_documentation():
     template = (ROOT / "skills/connected-review/templates/connected-review.yml").read_text(
         encoding="utf-8"
     )
@@ -329,23 +334,194 @@ def test_workflow_template_matches_documentation_and_enabled_copy_pins_ref():
     )[1]
     documented = section.split("```yaml\n", 1)[1].split("\n```", 1)[0] + "\n"
     assert documented == template
-    installed = (ROOT / ".github/workflows/connected-review.yml").read_text(
-        encoding="utf-8"
+
+
+def lab_workflow():
+    return (ROOT / ".github/workflows/connected-review-shared.yml").read_text(encoding="utf-8")
+
+
+def lab_job(job):
+    body = lab_workflow().split(f"  {job}:\n", 1)[1]
+    return re.split(r"\n  [a-z][a-z-]*:\n", body, maxsplit=1)[0]
+
+
+def lab_python_steps(job):
+    return [textwrap.dedent(script).rstrip() + "\n" for script in re.findall(
+        r"        run: \|\n(.*?)(?=      - name:|\Z)", lab_job(job), re.S,
+    )]
+
+
+def run_workflow_script(script, tmp_path, variables):
+    return subprocess.run(
+        [sys.executable, "-c", script], cwd=tmp_path, env={**os.environ, **variables},
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        encoding="utf-8", errors="replace", check=False,
     )
-    template_lines = template.splitlines(keepends=True)
-    installed_lines = installed.splitlines(keepends=True)
-    assert len(installed_lines) == len(template_lines)
-    differences = [
-        (expected, actual)
-        for expected, actual in zip(template_lines, installed_lines)
-        if expected != actual
-    ]
-    assert len(differences) == 1
-    expected, actual = differences[0]
-    assert expected == (
-        "  TRADECRAFT_REVIEWER_REF: SET_BY_ENABLEMENT_TO_FROZEN_MERGED_COMMIT\n"
+
+
+def test_lab_stub_and_downstream_example_call_one_release_control():
+    stub = (ROOT / ".github/workflows/connected-review.yml").read_text(encoding="utf-8")
+    assert stub == (
+        "name: connected-review\n\non:\n  pull_request_target:\n"
+        "    types: [ready_for_review, labeled]\n\njobs:\n  connected-review:\n"
+        "    permissions:\n      actions: read\n      contents: read\n"
+        "      pull-requests: write\n"
+        "    uses: Grimblaz-and-Friends/tradecraft/.github/workflows/connected-review-shared.yml@main\n"
+        "    secrets: inherit\n"
     )
-    assert re.fullmatch(r"  TRADECRAFT_REVIEWER_REF: [0-9a-f]{40}\n", actual)
+    procedure = (ROOT / "docs/cells/steward/references/connected-review-releases.md").read_text(encoding="utf-8")
+    documented = procedure.split("```yaml\n", 1)[1].split("\n```", 1)[0] + "\n"
+    assert documented == stub.replace("@main", "@reviewer-stable")
+    steward = (ROOT / "docs/cells/steward/SKILL.md").read_text(encoding="utf-8")
+    assert "`references/connected-review-releases.md`" in steward
+
+
+def test_shared_workflow_preserves_security_and_runtime_boundaries():
+    workflow = lab_workflow()
+    trigger = workflow.split("on:\n", 1)[1].split("\nenv:", 1)[0]
+    assert trigger == (
+        "  workflow_call:\n    secrets:\n      CLAUDE_CODE_OAUTH_TOKEN:\n"
+        "        required: true\n"
+    )
+    assert "inputs:" not in workflow
+    assert workflow.count("CLAUDE_CLI_VERSION: 2.1.280") == 1
+    assert workflow.count("2.1.280") == 1
+    assert 'npm install --global @anthropic-ai/claude-code@"$CLAUDE_CLI_VERSION"' in workflow
+    assert "TRADECRAFT_REVIEWER_REF" not in workflow
+    assert "reviewer-stable" not in workflow and "@main" not in workflow
+    assert "github.workflow_sha" not in workflow and "github.sha" not in workflow
+    assert workflow.count("concurrency:") == 1
+    review = lab_job("review")
+    assert "runs-on: ${{ needs.prepare.outputs.visibility == 'private' && 'self-hosted' || 'ubuntu-latest' }}" in review
+    assert "timeout-minutes: 120" in review
+    assert "group: connected-review-${{ github.repository }}-${{ needs.prepare.outputs.number }}" in review
+    assert "cancel-in-progress: false" in review
+    assert "--finder-prompt" in review and "--checker-prompt" not in review
+    assert 'DISABLE_AUTOUPDATER: "1"' in review
+    assert review.count("needs.prepare.outputs.visibility == 'public'") == 2
+    for job, entrypoint in (("prepare", "eligibility"), ("review", "execute_review"), ("report", "report_skip")):
+        body = lab_job(job)
+        assert _job_permissions(workflow, job) == _required_permissions(_runtime_api_calls(entrypoint), body)
+        assert "persist-credentials: false" in body
+        assert "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09" in body
+        assert "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1" in body
+        assert body.index("job.workflow_sha") < body.index("actions/checkout@")
+        assert body.index("Verify trusted reviewer checkout") < body.index("lib/connected_review.py")
+        if job != "review":
+            assert "runs-on: ubuntu-latest" in body
+            assert "secrets." not in body
+        else:
+            before, finder = body.split("      - name: Run connected review\n")
+            assert "secrets." not in before
+            assert finder.count("secrets.CLAUDE_CODE_OAUTH_TOKEN") == 1
+    assert "always() &&" in lab_job("report")
+    assert "needs.prepare.result != 'success'" in lab_job("report")
+    assert "reviewer_sha: ${{ steps.identity.outputs.reviewer_sha }}" in lab_job("prepare")
+    assert "ref: ${{ needs.prepare.outputs.reviewer_sha }}" in review
+    for job in ("prepare", "report"):
+        assert "ref: ${{ steps.identity.outputs.reviewer_sha }}" in lab_job(job)
+    for job, revision in (("review", "needs.prepare.outputs.reviewer_sha"), ("report", "steps.identity.outputs.reviewer_sha")):
+        assert lab_job(job).count("CONNECTED_REVIEW_REVIEWER_SHA: ${{ " + revision + " }}") == 2
+
+
+@pytest.mark.parametrize("job", ["prepare", "review", "report"])
+@pytest.mark.parametrize("patch,accepted", [
+    ({}, True),
+    ({"WORKFLOW_REPOSITORY": "example/product"}, False),
+    ({"WORKFLOW_FILE_PATH": ".github/workflows/connected-review.yml"}, False),
+    ({"WORKFLOW_SHA": ""}, False),
+    ({"WORKFLOW_SHA": "c" * 39}, False),
+    ({"WORKFLOW_SHA": "main"}, False),
+])
+def test_called_identity_is_the_workflow_commit_not_the_caller(job, patch, accepted, tmp_path):
+    revision = "c" * 40
+    output = tmp_path / "output"
+    variables = {
+        "WORKFLOW_REPOSITORY": "Grimblaz-and-Friends/tradecraft",
+        "WORKFLOW_FILE_PATH": ".github/workflows/connected-review-shared.yml",
+        "WORKFLOW_SHA": revision, "CAPTURED_REVIEWER_SHA": revision,
+        "GITHUB_SHA": "a" * 40, "GITHUB_WORKFLOW_SHA": "a" * 40,
+        "GITHUB_OUTPUT": str(output), **patch,
+    }
+    result = run_workflow_script(lab_python_steps(job)[0], tmp_path, variables)
+    assert (result.returncode == 0) == accepted, result.stderr
+    if accepted:
+        assert output.read_bytes() == f"reviewer_sha={revision}\n".encode()
+    else:
+        assert not output.exists()
+
+
+@pytest.mark.parametrize("job", ["review", "report"])
+def test_later_jobs_reject_a_changed_workflow_commit(job, tmp_path):
+    output = tmp_path / "output"
+    result = run_workflow_script(lab_python_steps(job)[0], tmp_path, {
+        "WORKFLOW_REPOSITORY": "Grimblaz-and-Friends/tradecraft",
+        "WORKFLOW_FILE_PATH": ".github/workflows/connected-review-shared.yml",
+        "WORKFLOW_SHA": "d" * 40, "CAPTURED_REVIEWER_SHA": "c" * 40,
+        "GITHUB_OUTPUT": str(output),
+    })
+    assert result.returncode != 0 and "disagrees with preparation" in result.stderr
+    assert not output.exists()
+
+
+def test_report_recovers_immutable_identity_after_prepare_failure_but_review_requires_it(tmp_path):
+    variables = {
+        "WORKFLOW_REPOSITORY": "Grimblaz-and-Friends/tradecraft",
+        "WORKFLOW_FILE_PATH": ".github/workflows/connected-review-shared.yml",
+        "WORKFLOW_SHA": "c" * 40, "CAPTURED_REVIEWER_SHA": "",
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+    }
+    review = run_workflow_script(lab_python_steps("review")[0], tmp_path, variables)
+    assert review.returncode != 0 and "no reviewer commit" in review.stderr
+    report = run_workflow_script(lab_python_steps("report")[0], tmp_path, variables)
+    assert report.returncode == 0, report.stderr
+    assert (tmp_path / "output").read_bytes() == b"reviewer_sha=" + b"c" * 40 + b"\n"
+
+
+def test_mutable_ref_movement_does_not_change_captured_execution_identity(tmp_path):
+    revision = "c" * 40
+    output = tmp_path / "output"
+    variables = {
+        "WORKFLOW_REPOSITORY": "Grimblaz-and-Friends/tradecraft",
+        "WORKFLOW_FILE_PATH": ".github/workflows/connected-review-shared.yml",
+        "WORKFLOW_SHA": revision, "GITHUB_OUTPUT": str(output),
+    }
+    assert run_workflow_script(lab_python_steps("prepare")[0], tmp_path, variables).returncode == 0
+    captured = output.read_text().strip().split("=", 1)[1]
+    for job in ("review", "report"):
+        result = run_workflow_script(lab_python_steps(job)[0], tmp_path, {
+            **variables, "CAPTURED_REVIEWER_SHA": captured,
+            "TRADECRAFT_REVIEWER_REF": "d" * 40, "GITHUB_SHA": "a" * 40,
+        })
+        assert result.returncode == 0, result.stderr
+    assert output.read_bytes() == (f"reviewer_sha={revision}\n" * 3).encode()
+
+
+@pytest.mark.parametrize("job", ["prepare", "review", "report"])
+@pytest.mark.parametrize("matches", [True, False])
+def test_each_job_verifies_checkout_head_before_runtime(job, matches, tmp_path):
+    # Exercise the actual inline script with Git's HEAD response controlled.
+    script = (
+        "from unittest.mock import patch\nimport subprocess\n"
+        "with patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, "
+        + repr("c" * 40 + "\n") + ", '')):\n"
+        + textwrap.indent(lab_python_steps(job)[1], "    ")
+    )
+    result = run_workflow_script(script, tmp_path, {
+        "CONNECTED_REVIEW_REVIEWER_SHA": ("c" if matches else "d") * 40,
+    })
+    assert (result.returncode == 0) == matches, result.stderr
+    if not matches:
+        assert "checkout does not match" in result.stderr
+
+
+def test_no_shipped_consumer_names_lab_release_controls():
+    for directory in ("skills", "lib", "commands", "agents", "hooks", ".claude-plugin"):
+        for path in (ROOT / directory).rglob("*"):
+            if path.is_file() and path.suffix in {".py", ".md", ".yml", ".json"}:
+                text = path.read_text(encoding="utf-8")
+                assert "connected-review-shared.yml" not in text, path
+                assert "reviewer-stable" not in text, path
 
 
 def test_setup_names_login_only_enablement_and_private_prerequisites():

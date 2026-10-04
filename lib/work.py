@@ -25,6 +25,7 @@ import urllib.parse
 import uuid
 
 from brief import LANES, review_lane
+from connected_review import is_review_job
 import dispatch_record as records
 import run_lifecycle as lifecycle
 import work_recovery
@@ -2728,7 +2729,7 @@ def _connected_review_receipt_error(state: WorkState, review: dict[str, object])
     if evidence.run.get("head_sha") != review["commit_id"]:
         return "workflow run head does not match the review commit"
     if not any(type(job.get("run_id")) is int and job["run_id"] == run_id
-               and job.get("name") == "review" and job.get("status") == "completed"
+               and is_review_job(job.get("name")) and job.get("status") == "completed"
                and job.get("conclusion") == "success" for job in evidence.jobs):
         return "workflow run has no completed successful review job in any attempt"
     return None

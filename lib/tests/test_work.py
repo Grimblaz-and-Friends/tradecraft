@@ -2712,8 +2712,11 @@ def test_actions_trailing_marker_cannot_fall_back_to_an_earlier_run(tmp_path):
     {"path": None}, {"event": "push"}, {"event": "workflow_dispatch"}, {"event": []},
     {"head_sha": SHA}, {"head_sha": None},
 ])
-def test_actions_wrong_run_facts_grant_no_credit(patch, tmp_path):
-    fixture = collect_actions(actions_transport(run=actions_run(**patch)))
+@pytest.mark.parametrize("job_name", ["review", "connected-review / review", "outer / inner / review"])
+def test_actions_wrong_run_facts_grant_no_credit(patch, job_name, tmp_path):
+    fixture = collect_actions(actions_transport(run=actions_run(**patch), job_pages=[{
+        "total_count": 1, "jobs": [actions_job(name=job_name)],
+    }]))
     assert work._reviewer_receipts(fixture)[0]["result"] == "missing"
     assert work.decide(fixture, RULES).stage == "waiting"
     composed = actions_proof(fixture, tmp_path)
@@ -2724,6 +2727,10 @@ def test_actions_wrong_run_facts_grant_no_credit(patch, tmp_path):
 
 @pytest.mark.parametrize("patch", [
     {"name": "report"}, {"name": "prepare"}, {"name": "review (matrix)"},
+    {"name": "preview"}, {"name": "review-extra"}, {"name": "caller / preview"},
+    {"name": "caller / review-extra"}, {"name": " / review"},
+    {"name": "outer /  / review"}, {"name": "caller / report"},
+    {"name": None}, {"name": []},
     {"status": "queued"}, {"status": "in_progress"},
     {"conclusion": "failure"}, {"conclusion": "cancelled"}, {"conclusion": "skipped"},
     {"conclusion": None}, {"run_id": REVIEW_RUN + 1}, {"run_id": None},
@@ -2735,6 +2742,16 @@ def test_actions_requires_its_successful_completed_review_job(patch, tmp_path):
     assert not work._reviewer_ran(fixture)
     assert work.decide(fixture, RULES).stage == "waiting"
     assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == "missing"
+
+
+@pytest.mark.parametrize("name", ["review", "connected-review / review", "outer / inner / review"])
+def test_actions_direct_and_called_leaf_jobs_earn_the_same_receipt(name, tmp_path):
+    fixture = collect_actions(actions_transport(job_pages=[{
+        "total_count": 1, "jobs": [actions_job(name=name)],
+    }]))
+    assert work._reviewer_ran(fixture)
+    assert work.decide(fixture, RULES).stage == "proof"
+    assert actions_proof(fixture, tmp_path)["reviewers"][0]["result"] == "present"
 
 
 def test_actions_pull_request_event_gets_no_credit_at_fixed_workflow_path(tmp_path):
@@ -2754,8 +2771,9 @@ def test_actions_pull_request_event_gets_no_credit_at_fixed_workflow_path(tmp_pa
 
 @pytest.mark.parametrize("status", sorted(work.COMPLETED_REVIEWS))
 @pytest.mark.parametrize("suffix", ["", "@refs/heads/main"])
+@pytest.mark.parametrize("job_name", ["review", "connected-review / review"])
 def test_actions_real_review_survives_failed_later_attempt_and_report(
-        status, suffix, tmp_path):
+        status, suffix, job_name, tmp_path):
     run = actions_run(conclusion="failure", run_attempt=2)
     run["path"] += suffix
     transport = actions_transport(
@@ -2764,7 +2782,7 @@ def test_actions_real_review_survives_failed_later_attempt_and_report(
                 actions_job(id=92, run_attempt=2, conclusion="failure"),
                 actions_job(id=93, name="report", conclusion="failure"),
             ]},
-            {"total_count": 3, "jobs": [actions_job()]},
+            {"total_count": 3, "jobs": [actions_job(name=job_name)]},
         ],
     )
     fixture = collect_actions(transport)
