@@ -1638,6 +1638,7 @@ class ArtifactPhase:
     settlement_order: tuple[datetime, int, int] | None
     latest_holder_reading: Marker | None
     holder_reading_order: tuple[datetime, int, int] | None
+    holder_readings: tuple[Marker, ...]
     current_verdicts: tuple[Marker, ...]
     would_not_count: int
     invalid_settlements: tuple[tuple[Marker, str], ...]
@@ -1696,6 +1697,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
     settlement_order: tuple[datetime, int, int] | None = None
     latest_holder_reading: Marker | None = None
     holder_reading_order: tuple[datetime, int, int] | None = None
+    holder_readings: list[Marker] = []
     verdicts: list[tuple[Marker, tuple[int, int] | None]] = []
     invalid: list[tuple[Marker, str]] = []
     migration_candidate: tuple[Marker, tuple[datetime, int, int], int] | None = None
@@ -1728,6 +1730,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
             settlement_order = None
             latest_holder_reading = None
             holder_reading_order = None
+            holder_readings = []
             verdicts = []
             migration_candidate = None
             migration_generation = 0
@@ -1785,6 +1788,7 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
             elif marker.name == "holder-reading":
                 latest_holder_reading = marker
                 holder_reading_order = order
+                holder_readings.append(marker)
 
     current_verdicts = tuple(
         verdict for verdict, draft_identity in verdicts
@@ -1802,6 +1806,10 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
         settlement_order=settlement_order,
         latest_holder_reading=latest_holder_reading,
         holder_reading_order=holder_reading_order,
+        holder_readings=tuple(
+            reading for reading in holder_readings
+            if settlement_order is not None and _source_order(reading) > settlement_order
+        ),
         current_verdicts=current_verdicts,
         would_not_count=would_not_count,
         invalid_settlements=tuple(invalid),
@@ -3817,6 +3825,18 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             f"--- {reading_label} begin ---\n" + prior_holder_reading.body
             + f"\n--- {reading_label} end ---"
         )
+    if (decision.stage in {"build", "floor", "review-disposition"}
+            and not mechanical and phase.holder_readings):
+        sections.append(
+            "Holder readings govern where they differ from the settled artifact. "
+            "The newest governs where readings differ from each other. "
+            "The affirmed brief remains binding over both."
+        )
+        for reading in phase.holder_readings:
+            sections.append(
+                "--- holder reading begin ---\n" + reading.body
+                + "\n--- holder reading end ---"
+            )
     sections.append("Fetch current state only if this stage needs it:\n" + "\n".join(fetches))
     return ("\n\n".join(sections) + "\n").encode("utf-8")
 
