@@ -1573,6 +1573,33 @@ def _usage_text(
     return result
 
 
+def is_review_job(name: object) -> bool:
+    """Match a direct review or the exact leaf of a called job's display name."""
+    if not isinstance(name, str):
+        return False
+    parts = name.split(" / ")
+    return parts[-1] == "review" and all(part.strip() for part in parts)
+
+
+def _provenance_text(
+    reviewer_revision: str | None,
+    claude_version: str | None,
+    *,
+    verified: bool = True,
+) -> str:
+    # Direct callers publish their existing body unless they opt into provenance.
+    if reviewer_revision is None:
+        return ""
+    if not isinstance(reviewer_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", reviewer_revision):
+        raise ReviewError("reviewer revision must be a full commit SHA")
+    if not isinstance(claude_version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", claude_version):
+        raise ReviewError("reviewer provenance requires a Claude CLI version")
+    version = f"Claude CLI: {claude_version}." if verified else (
+        f"Claude CLI pin: {claude_version} (configured; execution unconfirmed)."
+    )
+    return f"Reviewer: Grimblaz-and-Friends/tradecraft@{reviewer_revision}; {version}"
+
+
 def review_payload(
     survivors: list[dict[str, Any]],
     head_sha: str,
@@ -1582,6 +1609,8 @@ def review_payload(
     *,
     exclusions: list[dict[str, str]] | None = None,
     coverage: str | None = None,
+    reviewer_revision: str | None = None,
+    claude_version: str | None = None,
 ) -> dict[str, Any]:
     if survivors:
         summary = f"{len(survivors)} validated finding(s)."
@@ -1606,10 +1635,11 @@ def review_payload(
             body_parts.append(coverage)
     elif exclusions:
         body_parts.append(coverage_text(exclusions))
-    body_parts.extend((
-        _usage_text(finder_usage, checker_usage),
-        f"<!-- {ATTEMPT_PREFIX}{attempt} -->",
-    ))
+    body_parts.append(_usage_text(finder_usage, checker_usage))
+    provenance = _provenance_text(reviewer_revision, claude_version)
+    if provenance:
+        body_parts.append(provenance)
+    body_parts.append(f"<!-- {ATTEMPT_PREFIX}{attempt} -->")
     body = "\n\n".join(body_parts)
     if len(body) > MAX_COMMENT_BODY:
         raise ReviewError("review body exceeds GitHub's limit")
@@ -1851,9 +1881,12 @@ def execute_review(
     executable: str | list[str],
     expected_version: str,
     finder_prompt: Path,
+    *,
+    reviewer_revision: str | None = None,
 ) -> dict[str, Any]:
     ledger: dict[str, Any] = {"finder": finder_usage_template()}
     try:
+        _provenance_text(reviewer_revision, expected_version)
         admitted = eligibility(event, owner_login)
         if admitted.get("admitted") != "true":
             return {"status": "suppressed", "cause": admitted.get("reason", "ineligible")}
@@ -1914,7 +1947,10 @@ def execute_review(
             if completed_review_at_head(repo, number, head_sha) is not None:
                 return {"status": "suppressed", "cause": "review appeared before publication"}
             # Check all unpublished bytes for the credential before publishing any part.
-            payload = review_payload(survivors, head_sha, attempt, finder_usage)
+            payload = review_payload(
+                survivors, head_sha, attempt, finder_usage,
+                reviewer_revision=reviewer_revision, claude_version=expected_version,
+            )
             if _payload_contains_secret(publication, token):
                 raise ReviewError("coverage contained the model credential; nothing was published")
             if _payload_contains_secret(payload, token):
@@ -1923,7 +1959,10 @@ def execute_review(
                 )
             publication = coverage_for_body(publication, repo, number, MAX_COMMENT_BODY - len(payload["body"]) - 2)
             coverage = publish_coverage(repo, number, publication)
-            payload = review_payload(survivors, head_sha, attempt, finder_usage, coverage=coverage)
+            payload = review_payload(
+                survivors, head_sha, attempt, finder_usage, coverage=coverage,
+                reviewer_revision=reviewer_revision, claude_version=expected_version,
+            )
             try:
                 gh_json(f"repos/{repo}/pulls/{number}/reviews", method="POST", payload=payload)
             except ReviewError:
@@ -1972,7 +2011,7 @@ def _job_cause(repo: str, run_id: str, review_result: str, visibility: str) -> s
         jobs = response.get("jobs", []) if isinstance(response, dict) else []
         review_jobs = [
             job for job in jobs
-            if isinstance(job, dict) and str(job.get("name", "")).startswith("review")
+            if isinstance(job, dict) and is_review_job(job.get("name"))
         ] if isinstance(jobs, list) else []
         if review_jobs and all(not job.get("runner_name") for job in review_jobs):
             if visibility == "private":
@@ -1995,7 +2034,11 @@ def report_skip(
     run_id: str,
     usage: str | None = None,
     prepare_result: str = "success",
+    *,
+    reviewer_revision: str | None = None,
+    claude_version: str | None = None,
 ) -> dict[str, Any]:
+    provenance = _provenance_text(reviewer_revision, claude_version, verified=False)
     repo = _repository_name(event)
     number = _event_pr_number(event)
     if completed_review_for_attempt(repo, number, attempt) is not None:
@@ -2036,6 +2079,8 @@ def report_skip(
     ):
         usage_line = 'Usage: {"finder":{"observed_usage":0,"status":"not-started"}}'
     parts = [f"Review skipped: {named}"]
+    if provenance:
+        parts.append(provenance)
     if exclusions:
         plan = coverage_plan(exclusions, repo, number, attempt)
         base_length = len("\n\n".join([*parts, usage_line, _attempt_marker(attempt)]))
@@ -2095,6 +2140,7 @@ def parser() -> argparse.ArgumentParser:
     attempt_default = os.environ.get("GITHUB_RUN_ID")
     review.add_argument("--attempt", default=attempt_default, required=attempt_default is None)
     review.add_argument("--claude")
+    review.add_argument("--reviewer-revision", default=os.environ.get("CONNECTED_REVIEW_REVIEWER_SHA"))
     review.add_argument(
         "--claude-version", default=os.environ.get("CLAUDE_CLI_VERSION", DEFAULT_CLAUDE_VERSION)
     )
@@ -2127,6 +2173,8 @@ def parser() -> argparse.ArgumentParser:
         required=not (os.environ.get("REVIEW_RUN_ID") or os.environ.get("GITHUB_RUN_ID")),
     )
     report.add_argument("--output", default=os.environ.get("GITHUB_OUTPUT"))
+    report.add_argument("--reviewer-revision", default=os.environ.get("CONNECTED_REVIEW_REVIEWER_SHA"))
+    report.add_argument("--claude-version", default=os.environ.get("CLAUDE_CLI_VERSION"))
     return cli
 
 
@@ -2153,11 +2201,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = execute_review(
                 event, args.owner_login, args.attempt, executable, args.claude_version,
                 args.finder_prompt,
+                reviewer_revision=args.reviewer_revision,
             )
         else:
             result = report_skip(
                 event, args.owner_login, args.attempt, args.review_result,
                 args.cause, args.run_id, args.usage, args.prepare_result,
+                reviewer_revision=args.reviewer_revision, claude_version=args.claude_version,
             )
         _write_outputs(args.output, result)
         print(json.dumps(result, ensure_ascii=True, sort_keys=True))

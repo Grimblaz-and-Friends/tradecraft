@@ -1165,6 +1165,172 @@ def test_review_payload_is_one_completed_review_for_clean_or_survivor():
     assert "checker=" not in payload["body"]
 
 
+@pytest.mark.parametrize("inline", [None, True, False])
+def test_explicit_provenance_preserves_findings_and_final_receipt_marker(inline, monkeypatch):
+    monkeypatch.setattr(cr, "_run", lambda *_args, **_kwargs: pytest.fail("rendering must not run Git"))
+    rows = [] if inline is None else [candidate(inline=inline)]
+    direct = cr.review_payload(rows, HEAD, "91", {"input_tokens": 1})
+    revision = "c" * 40
+    lab = cr.review_payload(rows, HEAD, "91", {"input_tokens": 1},
+                            reviewer_revision=revision, claude_version="2.1.999")
+    provenance = f"Reviewer: Grimblaz-and-Friends/tradecraft@{revision}; Claude CLI: 2.1.999."
+    assert lab == {**direct, "body": direct["body"].replace(
+        "\n\n<!-- connected-review-attempt:91 -->", f"\n\n{provenance}\n\n<!-- connected-review-attempt:91 -->")}
+    assert lab["commit_id"] == HEAD != revision
+    assert work._connected_review_run_id(actions_review(body=lab["body"])) == 91
+    assert "Reviewer:" not in direct["body"]
+
+
+def test_direct_clean_payload_stays_byte_for_byte_unchanged_without_provenance(monkeypatch):
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("TRADECRAFT_REVIEWER_REF", "c" * 40)
+    monkeypatch.setenv("CLAUDE_CLI_VERSION", "2.1.999")
+    monkeypatch.setattr(cr, "_run", lambda *_args, **_kwargs: pytest.fail("no provenance derivation"))
+    assert cr.review_payload([], HEAD, "91", {}) == {
+        "body": "No findings were found.\n\nUsage: finder={}\n\n<!-- connected-review-attempt:91 -->",
+        "event": "COMMENT", "commit_id": HEAD, "comments": [],
+    }
+
+
+@pytest.mark.parametrize("revision,version", [("main", "2.1.280"), ("c" * 39, "2.1.280"),
+                                               ("c" * 40, None), ("c" * 40, "unverified")])
+def test_incomplete_explicit_provenance_is_refused(revision, version):
+    with pytest.raises(cr.ReviewError, match="reviewer"):
+        cr.review_payload([], HEAD, "91", {}, reviewer_revision=revision, claude_version=version)
+
+
+def test_provenance_is_counted_at_the_exact_review_body_limit():
+    arguments = {"reviewer_revision": "c" * 40, "claude_version": "2.1.280"}
+    empty = cr.review_payload([], HEAD, "91", {}, **arguments)
+    coverage = "x" * (cr.MAX_COMMENT_BODY - len(empty["body"]) - 2)
+    boundary = cr.review_payload([], HEAD, "91", {}, coverage=coverage, **arguments)
+    assert len(boundary["body"]) == cr.MAX_COMMENT_BODY
+    assert boundary["body"].endswith("<!-- connected-review-attempt:91 -->")
+    with pytest.raises(cr.ReviewError, match="review body exceeds"):
+        cr.review_payload([], HEAD, "91", {}, coverage=coverage + "x", **arguments)
+    direct = cr.review_payload([], HEAD, "91", {})
+    old_room = "x" * (cr.MAX_COMMENT_BODY - len(direct["body"]) - 2)
+    assert len(cr.review_payload([], HEAD, "91", {}, coverage=old_room)["body"]) == cr.MAX_COMMENT_BODY
+    with pytest.raises(cr.ReviewError, match="review body exceeds"):
+        cr.review_payload([], HEAD, "91", {}, coverage=old_room, **arguments)
+
+
+def test_execute_posts_the_revision_and_version_of_the_verified_executable(tmp_path, monkeypatch):
+    verify = cr.verify_claude_version
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [({"candidates": []}, {}, [])])
+    monkeypatch.setattr(cr, "verify_claude_version", verify)
+    observed = []
+    def version(command, **_kwargs):
+        observed.append(command)
+        return subprocess.CompletedProcess(command, 0, b"2.1.999 (Claude Code)\n", b"")
+    monkeypatch.setattr(cr, "_run", version)
+    _comments, reviews, _writes = coverage_transport(monkeypatch)
+    assert cr.execute_review(event(), "Grimblaz", "93", "trusted-claude", "2.1.999", finder,
+                             reviewer_revision="c" * 40)["status"] == "reviewed"
+    assert observed == [["trusted-claude", "--version"]]
+    assert "tradecraft@" + "c" * 40 in reviews[0]["body"]
+    assert "Claude CLI: 2.1.999." in reviews[0]["body"]
+    assert reviews[0]["commit_id"] == HEAD
+
+
+def test_cli_version_mismatch_publishes_no_completed_review(tmp_path, monkeypatch):
+    verify = cr.verify_claude_version
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cr, "verify_claude_version", verify)
+    monkeypatch.setattr(cr, "_run", lambda command, **_kwargs:
+                        subprocess.CompletedProcess(command, 0, b"2.1.998 (Claude Code)\n", b""))
+    comments, reviews, writes = coverage_transport(monkeypatch)
+    with pytest.raises(cr.ReviewError, match="expected 2.1.999"):
+        cr.execute_review(event(), "Grimblaz", "93", "trusted-claude", "2.1.999", finder,
+                          reviewer_revision="c" * 40)
+    assert not comments and not reviews and not writes
+
+
+@pytest.mark.parametrize("name,accepted", [
+    ("review", True), ("connected-review / review", True), ("outer / inner / review", True),
+    ("preview", False), ("review-extra", False), ("caller / preview", False),
+    ("caller / review-extra", False), ("review (matrix)", False), (" / review", False),
+    ("outer /  / review", False), ("caller / report", False), (None, False), ([], False),
+])
+@pytest.mark.parametrize("started", [False, True])
+def test_reporter_cancelled_job_uses_the_same_exact_leaf_as_receipt_credit(name, accepted, started, monkeypatch):
+    monkeypatch.setattr(cr, "completed_review_for_attempt", lambda *_: None)
+    monkeypatch.setattr(cr, "eligibility", lambda *_: {
+        "admitted": "true", "visibility": "private",
+    })
+    monkeypatch.setattr(cr, "existing_skip", lambda *_: False)
+    posts = []
+    def api(endpoint, **kwargs):
+        if endpoint.endswith("/jobs"):
+            return {"jobs": [{"name": name, "runner_name": "private-worker" if started else None},
+                             {"name": "caller / prepare", "runner_name": "hosted-worker"}]}
+        if kwargs.get("method") == "POST":
+            posts.append(kwargs["payload"]["body"])
+            return {"id": 1}
+        raise AssertionError(endpoint)
+    monkeypatch.setattr(cr, "gh_json", api)
+    result = cr.report_skip(event(), "Grimblaz", "93", "cancelled", None, "93")
+    before = accepted and not started
+    expected = ("self-hosted review job was cancelled before it started" if before else
+                "review job was cancelled after it started")
+    assert result["cause"] == expected
+    assert posts[0].startswith("Review skipped: " + expected)
+    if before:
+        assert '"status":"not-started"' in posts[0]
+
+
+@pytest.mark.parametrize("prepare_result", ["success", "failure", "cancelled"])
+def test_skip_provenance_names_only_a_configured_pin(prepare_result, tmp_path, monkeypatch):
+    execute_fixture(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cr, "existing_skip", lambda *_: False)
+    comments, reviews, _writes = coverage_transport(monkeypatch)
+    assert cr.report_skip(event(), "Grimblaz", "93", "success", "finder prompt exceeds budget", "93",
+                          prepare_result=prepare_result, reviewer_revision="c" * 40,
+                          claude_version="2.1.999")["status"] == "skipped"
+    body = comments[0]["body"]
+    assert "tradecraft@" + "c" * 40 in body
+    assert "Claude CLI pin: 2.1.999 (configured; execution unconfirmed)." in body
+    assert "Claude CLI:" not in body and not reviews
+    assert body.endswith("<!-- connected-review-attempt:93 -->")
+
+
+@pytest.mark.parametrize("skip", [False, True])
+def test_provenance_reduces_coverage_allowance_before_any_publication(skip, tmp_path, monkeypatch):
+    rows = [candidate(line=4, inline=False, evidence="x" * (cr.MAX_COMMENT_BODY - 1500))]
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [({"candidates": rows}, {}, [])])
+    exclusions = [{"path": "generated.json", "reason": "generated"}]
+    monkeypatch.setattr(cr, "select_coverage", lambda diff, material: (diff, exclusions, cr.changed_lines(diff)))
+    monkeypatch.setattr(cr, "existing_skip", lambda *_: False)
+    comments, reviews, writes = coverage_transport(monkeypatch)
+    # This fits without provenance and must move to a continuation with it.
+    usage = {"padding": "x" * (cr.MAX_COMMENT_BODY - 1500)}
+    base = ("Review skipped: prompt exceeds budget\n\nUsage: "
+            + json.dumps(usage, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            + "\n\n<!-- connected-review-attempt:93 -->"
+            if skip else cr.review_payload(rows, HEAD, "93", {"coverage": {}})["body"])
+    inline = "x" * (cr.MAX_COMMENT_BODY - len(base) - 2)
+    real_plan = cr.coverage_plan
+    def plan(*args):
+        return {**real_plan(*args), "text": inline}
+    monkeypatch.setattr(cr, "coverage_plan", plan)
+    control = plan(exclusions, "owner/repo", 746, "93")
+    assert cr.coverage_for_body(control, "owner/repo", 746, len(inline))["text"] == inline
+    if skip:
+        report_event = {**event(), "repository": {"full_name": "owner/repo"}}
+        assert cr.report_skip(report_event, "Grimblaz", "93", "success", "prompt exceeds budget", "93",
+                              json.dumps({**usage, "excluded_files": exclusions}), reviewer_revision="c" * 40,
+                              claude_version="2.1.280")["status"] == "skipped"
+        final = comments[-1]["body"]
+    else:
+        assert cr.execute_review(event(), "Grimblaz", "93", "claude", cr.DEFAULT_CLAUDE_VERSION, finder,
+                                 reviewer_revision="c" * 40)["status"] == "reviewed"
+        final = reviews[0]["body"]
+    assert writes[0] == "coverage"
+    assert comments[0]["html_url"] in final
+    assert len(final) <= cr.MAX_COMMENT_BODY
+    assert "Reviewer:" in final and final.endswith("<!-- connected-review-attempt:93 -->")
+
+
 def test_reporter_reconciles_review_and_skip_before_writing(monkeypatch):
     reviews = fixture("connected_review_reviews.json")
     reviews[0]["commit_id"] = "c" * 40
