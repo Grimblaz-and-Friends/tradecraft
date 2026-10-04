@@ -738,8 +738,6 @@ def test_artifact_prompt_preserves_746_shape_across_four_empty_brief_records():
 
 
 def test_governing_references_carry_route_disposition_and_optional_reviewer_rules():
-    if not (LIB.parent / "skills").is_dir():
-        pytest.skip("repository references are absent from a relocated lib-only copy")
     markers_reference = (LIB.parent / "skills" / "work" / "references" / "markers.md").read_text(
         encoding="utf-8"
     )

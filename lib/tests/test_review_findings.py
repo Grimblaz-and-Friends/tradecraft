@@ -46,13 +46,10 @@ def snapshot(result):
     }
 
 
-SHARED_CASES = (json.loads(FIXTURE.read_bytes())['cases'] if FIXTURE.is_file() else [
-    pytest.param(None, marks=pytest.mark.skip(
-        reason='shared fixtures are absent from a relocated lib-only copy'), id='lib-only'),
-])
+SHARED_CASES = json.loads(FIXTURE.read_bytes())['cases']
 
 
-@pytest.mark.parametrize('case', SHARED_CASES, ids=lambda c: c['name'] if c else 'lib-only')
+@pytest.mark.parametrize('case', SHARED_CASES, ids=lambda c: c['name'])
 def test_shared_live_record_cases(case):
     result = rf.classify(case['repository'], case['pull_request'], case['reviews'],
                          case['inline_comments'], case['conversation_comments'],
