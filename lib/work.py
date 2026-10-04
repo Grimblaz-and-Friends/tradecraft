@@ -2497,10 +2497,13 @@ def _floor_detail(evaluation: dict[str, object]) -> str:
         )
     if evaluation["outcome"] in {"blocked", "stalled", "unverifiable"}:
         details.append(
-            "The holder determines the route: resume the builder only for a failure caused "
-            "by the change, carrying the failing job; for a failure outside the change, rerun "
-            "once and record the reason and execution identity on the work record; fix a "
-            "pull-request-body failure in the body; investigate a stalled runner from the "
+            "The holder determines the route: use run build with --dispatch FILE to resume "
+            "the recorded builder only for a failure caused by the change, carrying workflow, "
+            "job, run, attempt and failing log lines; run floor cannot clear a declared red. "
+            "For a failure outside the change, rerun once using the entrance's proof reference "
+            "for the prior issue comment and rerun limit; fix a pull-request-body failure in "
+            "the body using that reference's edited-event or one-rerun procedure; "
+            "investigate a stalled runner from the "
             "named public execution. Restore unavailable public facts before continuing."
         )
     return "; ".join(details)

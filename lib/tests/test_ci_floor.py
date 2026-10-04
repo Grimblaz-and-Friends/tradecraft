@@ -221,7 +221,11 @@ def test_holder_failure_routes_name_execution_and_never_spend_builder_automatica
     assert not result.dispatch
     assert "lint-and-test (windows-latest)" in result.detail
     for text in [case["head"], "run #91", "attempt #1", "outside the change, rerun once",
-                 "fix a pull-request-body failure in the body", "only for a failure caused by the change"]:
+                 "fix a pull-request-body failure in the body", "only for a failure caused by the change",
+                 "run build with --dispatch FILE", "recorded builder", "workflow, job, run, attempt",
+                 "failing log lines", "run floor cannot clear a declared red", "entrance's proof reference",
+                 "prior issue comment",
+                 "rerun limit", "edited-event or one-rerun procedure"]:
         assert text in result.detail
 
 
