@@ -384,14 +384,6 @@ def registered(graph, tmp_path, monkeypatch):
     return root, implementation, branch, remote, transport, state
 
 
-@pytest.fixture
-def persist_script():
-    path = LIB.parent / "skills" / "persist-changes" / "scripts" / "persist.py"
-    if not path.is_file():
-        pytest.skip("the relocated lib-only copy omits the shipped persist cell")
-
-
-@pytest.mark.usefixtures("persist_script")
 @pytest.mark.parametrize("version,conflict", [(False, False), (True, False), (True, True)])
 def test_holder_catch_up_lands_checked_merge_without_launch(registered, version, conflict, monkeypatch, capsys):
     root, implementation, branch, remote, transport, state = registered
@@ -420,7 +412,6 @@ def test_holder_catch_up_lands_checked_merge_without_launch(registered, version,
     assert git(implementation, "rev-parse", "HEAD") == head
 
 
-@pytest.mark.usefixtures("persist_script")
 @pytest.mark.parametrize("collision", ["none", "clean", "conflict"])
 def test_catch_up_adjusts_only_base_changed_version_and_carries_use(registered, collision, capsys):
     root, implementation, branch, remote, transport, state = registered
@@ -468,7 +459,6 @@ def test_catch_up_fetch_uses_selected_remote_and_refuses_a_moved_pin(registered,
     assert git(implementation, "status", "--porcelain") == ""
 
 
-@pytest.mark.usefixtures("persist_script")
 def test_precommit_failure_aborts_uncommitted_catch_up_and_allows_retry(registered, capsys):
     root, implementation, branch, remote, transport, state = registered
     commit(root, "src/other", "incoming\n")
@@ -539,7 +529,6 @@ def test_dirty_and_wrong_holder_are_refused(registered):
         work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
 
 
-@pytest.mark.usefixtures("persist_script")
 def test_failed_push_retry_never_merges_or_bumps_again(registered, capsys):
     root, implementation, branch, remote, transport, state = registered
     commit(root, "version.json", '{"version":"1.4.0","name":"fixture"}\n')
@@ -620,7 +609,6 @@ def test_base_movement_aborts_only_this_endpoints_merge(registered, capsys):
     assert git(implementation, "status", "--porcelain") == ""
 
 
-@pytest.mark.usefixtures("persist_script")
 def test_hook_rewrite_is_not_published_and_remains_reviewable(registered, capsys):
     root, implementation, branch, remote, transport, state = registered
     commit(root, "src/other", "incoming\n")
@@ -640,8 +628,6 @@ def test_hook_rewrite_is_not_published_and_remains_reviewable(registered, capsys
 
 def test_shared_public_fixtures_have_the_same_entrance_interpretation():
     path = LIB.parent / "skills" / "work" / "references" / "proof-fixtures" / "v1-ancestor-use.json"
-    if not path.is_file():
-        pytest.skip("reference fixtures are absent from relocated lib-only copy")
     for case in json.loads(path.read_bytes())["cases"]:
         class Transport:
             def get(self, endpoint, paginate=False):
