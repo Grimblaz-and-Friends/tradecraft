@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ import dispatch_seat
 import launch_settings as setting_resolution
 from launch_settings import LaunchSettings
 import proof as proof_document
+import ci_floor
 import recipient_tree
 import review_findings
 import vendor_cli
@@ -80,7 +82,6 @@ MARKER = re.compile(r"<!--\s*tradecraft:([a-z-]+):v1(?:\s+([^>]*?))?\s*-->", re.
 ATTRIBUTE = re.compile(r"([a-z_]+)=([^\s]+)", re.I)
 SETTLEMENT_ROUTES = frozenset({"would", "cap", "discharge", "unobtainable"})
 TRAVELS_WITH = {
-    "proof": frozenset({"no-use"}),
     "implementing-pr": frozenset({"builder-session"}),
 }
 CLOSING_REFERENCE = re.compile(
@@ -95,7 +96,7 @@ GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
-    "no-use", "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
+    "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
     "builder-session", "model-override", "proof",
 })
 RED_CONCLUSIONS = {
@@ -321,6 +322,8 @@ class WorkState:
     holder_root: Path | None = None
     instalment: str | None = None
     synchronization: dict[str, object] | None = None
+    floor_public: dict[str, object] | None = None
+    floor_policy_bytes: bytes | None = None
 
     @property
     def issue_sources(self) -> list[tuple[str, str]]:
@@ -377,6 +380,8 @@ class Decision:
     synchronization: dict[str, object] | None = None
     use_application: dict[str, object] | None = None
 
+    floor: dict[str, object] | None = None
+
     def as_dict(self) -> dict[str, object]:
         return {
             "schema_version": 1,
@@ -395,6 +400,7 @@ class Decision:
             "launch_settings": self.launch_settings,
             "synchronization": self.synchronization,
             "use_application": self.use_application,
+            "floor": self.floor,
         }
 
 
@@ -1103,6 +1109,7 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     except WorkError as exc:
         state.synchronization["uncertainties"].append(str(exc))
     state.pr = live_pr
+    collect_floor(state, transport)
     return state
 
 
@@ -2342,6 +2349,160 @@ def latest_checks(state: WorkState) -> list[dict[str, object]]:
     return [selected[group] for group in sorted(selected)]
 
 
+def _floor_base_tip(transport: GitHubREST, pr: dict[str, object]) -> tuple[dict, str]:
+    base, problem = _gate_base(pr)
+    if base is None:
+        raise WorkError(problem or "floor base is unavailable")
+    ref = urllib.parse.quote(str(base["ref"]), safe="")
+    endpoint = f"repos/{base['repository']}/git/ref/heads/{ref}"
+    value = _dict(transport.get(endpoint), endpoint)
+    tip = _dict(value.get("object"), "floor base ref").get("sha")
+    if not isinstance(tip, str) or HEAD_SHA.fullmatch(tip) is None:
+        raise WorkError("floor base tip has no full revision")
+    return {**base, "sha": tip}, endpoint
+
+
+def _floor_blob(transport: GitHubREST, repository: str, tip: str) -> bytes | None:
+    path = "/".join((".github", "change-proof.json"))
+    endpoint = f"repos/{repository}/contents/{path}?ref={tip}"
+    try:
+        value = _dict(transport.get(endpoint), endpoint)
+    except WorkError as exc:
+        if "404" not in str(exc):
+            raise
+        # A hidden permissions failure is not a confirmed absent declaration.
+        tree_endpoint = f"repos/{repository}/git/trees/{tip}?recursive=1"
+        tree = _dict(transport.get(tree_endpoint), tree_endpoint)
+        if tree.get("truncated") is not False:
+            raise WorkError("base policy absence cannot be proved by an incomplete tree") from exc
+        entries = _list(tree.get("tree"), tree_endpoint)
+        if any(entry.get("path") == path for entry in entries):
+            raise WorkError("base policy exists but could not be read") from exc
+        return None
+    if value.get("type") != "file" or value.get("encoding") != "base64":
+        raise WorkError("base floor policy is not a readable Git blob")
+    content = value.get("content")
+    if not isinstance(content, str):
+        raise WorkError("base floor policy has no blob bytes")
+    try:
+        blob = base64.b64decode("".join(content.split()), validate=True)
+    except ValueError as exc:
+        raise WorkError("base floor policy has invalid blob bytes") from exc
+    return blob
+
+
+def collect_floor(state: WorkState, transport: GitHubREST, *,
+                  observed_at: datetime | None = None) -> None:
+    """Retain base authority and one public selection for every entrance consumer."""
+    head = _head_sha(state)
+    report = {"base": None, "policy": None, "declaration": None,
+              "head": head, "outcome": "unverifiable", "checks": [],
+              "executions": [], "excluded": [], "limitations": [],
+              "observed_at": (observed_at or datetime.now(timezone.utc)).isoformat()}
+    state.floor_public = report
+    try:
+        if state.pr is None or head is None:
+            raise WorkError("floor requires a pull request and full head")
+        base, endpoint = _floor_base_tip(transport, state.pr)
+        report["base"] = base
+        blob = _floor_blob(transport, base["repository"], base["sha"])
+        state.floor_policy_bytes = blob
+        report["policy"] = None if blob is None else {
+            "repository": base["repository"], "path": "/".join((".github", "change-proof.json")),
+            "revision": base["sha"], "sha256": hashlib.sha256(blob).hexdigest(),
+        }
+        policy = {} if blob is None else json.loads(blob)
+        if not isinstance(policy, dict) or blob is not None and policy.get("schema_version") != 1:
+            raise WorkError("base floor policy must be a schema-version-1 object")
+        declaration = ci_floor.declaration(policy)
+        report["declaration"] = declaration
+        if declaration["jobs"]:
+            gates = _matched_gate_checks(state)
+            selection = ci_floor.collect(
+                transport, state.repo, head, declaration, None, None,
+                observed_at or datetime.fromisoformat(report["observed_at"]),
+                gate_check_ids=frozenset(check["id"] for check in gates),
+                gate_run_ids=frozenset(_action_run_id(check) for check in gates),
+            )
+            report.update(outcome=selection.outcome, checks=selection.checks,
+                          executions=selection.executions, excluded=selection.excluded,
+                          limitations=[finding.requirement for finding in selection.findings])
+            for execution in report["executions"]:
+                execution["head"] = head
+                execution["url"] = (f"https://github.com/{state.repo}/actions/runs/{execution['run_id']}"
+                                    if execution["run_id"] else None)
+        else:
+            report["outcome"] = "builder"
+        confirmed = _dict(transport.get(endpoint), endpoint)
+        if (confirmed.get("object") or {}).get("sha") != base["sha"]:
+            raise WorkError("floor base tip moved during collection; reread")
+        pull_endpoint = f"repos/{state.repo}/pulls/{state.pr['number']}"
+        confirmed_pull = _dict(transport.get(pull_endpoint), pull_endpoint)
+        if _pull_coordinates(confirmed_pull) != _pull_coordinates(state.pr):
+            raise WorkError("floor head or base moved during collection; reread")
+    except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+        report["outcome"] = "unverifiable"
+        report["limitations"].append(str(exc) or type(exc).__name__)
+
+
+def floor_evaluation(state: WorkState) -> dict[str, object]:
+    """Use the same obligation and lawful marker in routing, proof and readiness."""
+    report = dict(state.floor_public or {"outcome": "builder", "head": _head_sha(state)})
+    head = _head_sha(state)
+    marker = _current_marker(state, "floor", head=head or "", status="pass")
+    outcome = report["outcome"]
+    if state.floor_public is not None and report.get("head") != head:
+        outcome = "unverifiable"
+        report["limitations"] = ["floor was collected at another head; reread"]
+    if outcome == "builder":
+        if _checks_red(state):
+            outcome = "builder-red"
+        elif marker is None:
+            outcome = "builder-missing"
+        elif _checks_pending(state):
+            outcome = "pending"
+        else:
+            outcome = "builder-met"
+    elif outcome == "fallback" and marker is not None:
+        outcome = "builder-met"
+    report.update(outcome=outcome, satisfied=outcome in {"ci-met", "builder-met"})
+    return report
+
+
+def _floor_detail(evaluation: dict[str, object]) -> str:
+    details = list(evaluation.get("limitations", []))
+    for execution in evaluation.get("executions", []):
+        if execution["state"] == "success":
+            continue
+        details.append(
+            f"{execution['workflow']} job {execution['job']!r} at {execution['head']} "
+            f"run #{execution['run_id']} attempt #{execution['attempt']} "
+            f"check #{execution['check_id']}: {execution['state']} "
+            f"({execution['conclusion']}); {execution['url']}"
+        )
+    if evaluation["outcome"] in {"blocked", "stalled", "unverifiable"}:
+        details.append(
+            "The holder determines the route: resume the builder only for a failure caused "
+            "by the change, carrying the failing job; for a failure outside the change, rerun "
+            "once and record the reason and execution identity on the work record; fix a "
+            "pull-request-body failure in the body; investigate a stalled runner from the "
+            "named public execution. Restore unavailable public facts before continuing."
+        )
+    return "; ".join(details)
+
+
+def _verify_floor_identity(transport: GitHubREST, state: WorkState,
+                           pr: dict[str, object]) -> None:
+    if state.floor_public is None:
+        return
+    base = state.floor_public.get("base")
+    if not isinstance(base, dict) or state.floor_public.get("head") != (pr.get("head") or {}).get("sha"):
+        raise WorkError("floor authority or head is unavailable; recollect")
+    current, _endpoint = _floor_base_tip(transport, pr)
+    if current != base:
+        raise WorkError("floor base tip moved; recollect before reporting completion")
+
+
 def _floor_checks(state: WorkState) -> list[dict[str, object]]:
     checks = latest_checks(state)
     gates = {id(check) for check in _matched_gate_checks(state)}
@@ -2383,7 +2544,7 @@ def _decision_status(decision: Decision) -> str:
     if decision.stage in {"artifact-cap", "artifact-settlement", "open-pull-request",
                           "merged-pull-request", "holder-read",
                           "ready-reviewers", "proof", "use", "release-report", "catch-up",
-                          "ambiguous-pr", "panel"}:
+                          "ambiguous-pr", "panel", "floor-blocked", "floor-stalled", "floor-unverifiable"}:
         return "holder-owned"
     if decision.stage == "terminal":
         return "terminal"
@@ -2407,7 +2568,7 @@ def _reported_decision(state: WorkState, decision: Decision) -> Decision:
         quotations=tuple(state.quotation_claims),
         latest_checks=tuple(latest_checks(state)),
         launch_settings=plan, synchronization=state.synchronization,
-        use_application=state.use_application,
+        use_application=state.use_application, floor=floor_evaluation(state),
     )
 
 
@@ -2853,16 +3014,24 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     sha = _head_sha(state)
     if sha is None:
         return result("floor", True, "resume", "pull-request-head-sha-absent")
-    floor = _current_marker(state, "floor", head=sha, status="pass")
-    if floor is None or _checks_red(state):
-        return result("floor", True, "resume", "current-head-floor-missing-or-red")
-    if _checks_pending(state):
-        return result("waiting", False, None, "latest-check-run-pending")
+    evaluation = floor_evaluation(state)
+    outcome = evaluation["outcome"]
+    if outcome in {"blocked", "stalled", "unverifiable"}:
+        return result("floor-" + outcome, False, None, "declared-floor-" + outcome,
+                      _floor_detail(evaluation))
+    if outcome in {"fallback", "builder-missing", "builder-red"}:
+        return result("floor", True, "resume", "current-head-floor-missing-or-red",
+                      _floor_detail(evaluation) or None)
+    if outcome == "pending":
+        return result("waiting", False, None, "latest-check-run-pending", _floor_detail(evaluation) or None)
     latest_use = next((marker for marker in reversed(state.markers) if marker.name == "use"), None)
     if latest_use and latest_use.attributes.get("head") == sha and latest_use.attributes.get("changed") == "true":
         return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
     if bool(state.pr.get("draft")):
-        return result("ready-reviewers", False, None, "floor-complete-pr-draft")
+        return result("ready-reviewers", False, None, "floor-complete-pr-draft",
+                      "Before authorizing ready-reviewers, account for every criterion in the latest "
+                      "build or repair return and record all owed non-CI results and holder-launched "
+                      "fresh-reader returns; green CI does not discharge them.")
     reviewers = state.config.connected_reviewers
     if reviewers and not _reviewer_ran(state):
         return result("waiting", False, None, "required-connected-reviewer-has-not-run")
@@ -2892,17 +3061,6 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
             applicable_use is None or not applicable_lawful
             or not staffing_qualified(applicable_use)):
         return result("use", False, None, "current-head-use-absent", USE_HOLDER_DETAIL)
-    if not bought:
-        no_use = _current_marker(state, "no-use", head=sha)
-        if no_use is None or "Use: not required" not in no_use.body:
-            reason = (
-                "mechanical-lane-requires-generated-no-use-carrier"
-                if policy.mechanical else "path-rules-require-generated-no-use-carrier"
-            )
-            return result(
-                "proof", False, "fresh", reason,
-                "Run proof to compose the current-head document and its legacy no-use carrier.",
-            )
     current_proof = _current_marker(state, "proof", head=sha)
     if current_proof is None or state.proof_current is False:
         return result("proof", False, "fresh", "current-head-proof-absent-or-outdated")
@@ -3503,7 +3661,7 @@ def sweep_registry(transport: GitHubREST) -> None:
 
 
 def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None,
-                  branch: str | None = None) -> bytes:
+                  branch: str | None = None, *, floor_command: str | None = None) -> bytes:
     if decision.stage == "use":
         raise WorkError("the entrance does not dispatch the use stage; return it to the holder")
     if decision.stage == "cold-seat":
@@ -3532,6 +3690,26 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         instruction += (
             " Build and validate the affirmed work and any supplied settled artifact, commit "
             "the finished change, push the supplied branch, and then return to the holder."
+        )
+    if decision.stage == "floor":
+        if not isinstance(floor_command, str) or not floor_command.strip() or "\x00" in floor_command:
+            raise WorkError("composed run floor requires --floor-command with the exact repository command")
+        instruction += (
+            " Run this exact floor command:\n" + floor_command + "\n"
+            "Return the actual tested head, command, output and result, and on success return "
+            "<!-- tradecraft:floor:v1 head=TESTED_HEAD status=pass --> for the holder to post. "
+            "A failed command produces no passing marker line."
+        )
+    if decision.stage in {"build", "floor", "review-disposition"}:
+        instruction += (
+            " At the end of every build or implementation repair (including reviewer disposition, "
+            "use findings, or a floor turn changing implementation), map every artifact acceptance "
+            "criterion to a committed test carried by CI, a check you can run, or an owed fresh reader. "
+            "Commit executable criteria as tests when they can be tests. Run each remaining "
+            "builder-executable criterion and return its ID, command or procedure, tested revision, "
+            "result and limitation. Return each owed fresh-reader criterion's ID and exact artifact "
+            "text for a separate holder-launched recorded seat; do not launch or judge that reader. "
+            "Repairs renew this duty even on an already-ready pull request."
         )
     brief, lane_pair = _affirmed_review(state)
     mechanical = lane_pair == ("ordinary", "mechanical")
@@ -4065,11 +4243,23 @@ def _proof_diagnostics(state: WorkState, floor: Marker | None,
     diagnostics.extend(_invalid_marker_diagnostic(state, claim)
                        for claim in state.invalid_marker_claims
                        if claim.get("name") != "proof")
-    if floor is None:
+    evaluation = floor_evaluation(state)
+    if floor is None and evaluation["outcome"] != "ci-met":
         diagnostics.append({
             "code": "floor-missing", "message": "current-head floor source is missing",
             "source": None,
         })
+    if state.floor_public is not None:
+        for execution in evaluation.get("executions", []):
+            if execution["state"] == "fallback":
+                diagnostics.append({"code": "floor-nonexecution", "message":
+                    f"{execution['workflow']} job {execution['job']!r} did not execute successfully "
+                    f"at {evaluation['head']}; run #{execution['run_id']} attempt #{execution['attempt']}",
+                    "source": None})
+        if evaluation["outcome"] in {"blocked", "stalled", "pending", "unverifiable"}:
+            diagnostics.append({"code": "floor-" + evaluation["outcome"],
+                                "message": _floor_detail(evaluation) or evaluation["outcome"],
+                                "source": None})
     if bought and use_marker is None:
         diagnostics.append({
             "code": "use-missing", "message": "required applicable use source is missing",
@@ -4114,7 +4304,9 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
         raise WorkError("proof requires a full pull-request head revision")
     if not state.policy_sources:
         raise WorkError("proof policy source identities are unavailable")
-    floor = _latest_public_marker(state, "floor", head=head, status="pass")
+    evaluation = floor_evaluation(state)
+    ci_met = evaluation["outcome"] == "ci-met"
+    floor = None if ci_met else _latest_public_marker(state, "floor", head=head, status="pass")
     policy = effective_policy(state, rules)
     bought = policy.use_required
     use_marker = state.applicable_use if bought else None
@@ -4140,7 +4332,8 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
             ),
             "intervening_commits": [], "reason": policy.use_reason,
         }
-    declarations = [_marker_declaration(state, floor, "floor")]
+    builder_owed = not state.floor_public or not (state.floor_public.get("declaration") or {}).get("jobs") or state.floor_public["outcome"] == "fallback"
+    declarations = [_marker_declaration(state, floor, "floor")] if builder_owed else []
     if bought:
         declarations.append(_marker_declaration(state, use_marker, "use"))
     evidence = {
@@ -4150,11 +4343,14 @@ def compose_proof(state: WorkState, rules: dict[str, object]) -> dict[str, objec
             "issue": state.issue_number, "pull_request": int(state.pr["number"]),
             "head": head, "producer_version": records.producer_version(),
         },
-        "policy": state.policy_sources,
+        "policy": {**state.policy_sources, **({"floor": state.floor_public["policy"]}
+                    if state.floor_public is not None else {})},
         "floor": {
-            "head": floor.attributes.get("head") if floor else None,
+            "head": head if ci_met else floor.attributes.get("head") if floor else None,
             "source": _marker_source(state, floor) if floor else None,
-            "checks": [_check_record(state, check) for check in _floor_checks(state)],
+            "checks": (state.floor_public["checks"] if state.floor_public is not None
+                       and (state.floor_public.get("declaration") or {}).get("jobs")
+                       else [_check_record(state, check) for check in _floor_checks(state)]),
         },
         "use": use, "reviewers": reviewers, "dispositions": dispositions,
         "declarations": declarations,
@@ -5108,15 +5304,13 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
         raise WorkError(
             "pull-request head or base changed before proof publication; recompose and retry"
         )
+    _verify_floor_identity(transport, fresh, before)
     before_state = replace(fresh, pr=before, synchronization=_collect_synchronization(transport, before))
     sync = _synchronization_decision(before_state)
     if sync is not None:
         print(json.dumps(_reported_decision(before_state, sync).as_dict(), ensure_ascii=True, sort_keys=True))
         return 0
-    no_use_line = None
-    if not bool(composed["use"]["required"]):
-        no_use_line = f"Use: not required - {composed['use']['reason']}."
-    body = proof_document.document(composed, no_use_line)
+    body = proof_document.document(composed, floor_context=floor_evaluation(fresh))
     _verify_policy_snapshot(root, state.repo, use_rules_path, snapshot)
     publication = _publish_proof_comment(transport, fresh, body, head)
     after = _dict(transport.get(pull_endpoint), pull_endpoint)
@@ -5125,6 +5319,7 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
             "pull-request head or base changed during proof publication; the posted document is "
             "preserved for the older identity and completion is not current"
         )
+    _verify_floor_identity(transport, fresh, after)
     _verify_policy_snapshot(
         root, state.repo, use_rules_path, snapshot, posted=True
     )
@@ -5150,8 +5345,7 @@ def _ready_evidence_error(state: WorkState, rules: dict[str, object]) -> str | N
     head = _head_sha(state)
     if head is None:
         return "ready-reviewers requires a full pull-request head revision"
-    floor = _current_marker(state, "floor", head=head, status="pass")
-    if floor is None or _checks_red(state) or _checks_pending(state):
+    if not floor_evaluation(state)["satisfied"]:
         return "ready-reviewers requires a current-head floor and no failed or pending floor run"
     return None
 
@@ -5172,6 +5366,7 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     live_pr = _dict(transport.get(endpoint), endpoint)
     if _pull_coordinates(live_pr) != _pull_coordinates(state.pr):
         raise WorkError("pull-request head or base changed before ready evidence validation")
+    _verify_floor_identity(transport, state, live_pr)
     live = replace(state, pr=live_pr, synchronization=_collect_synchronization(transport, live_pr))
     sync = _synchronization_decision(live)
     if sync is not None:
@@ -5206,6 +5401,7 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
             "pull-request head changed after ready evidence validation; "
             "retry ready-reviewers on the new head"
         )
+    _verify_floor_identity(transport, state, current_pull)
     ready_changed = False
     if bool(state.pr.get("draft")):
         node_id = state.pr.get("node_id")
@@ -5226,6 +5422,7 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
             "pull-request head changed during the ready transition; "
             "readiness is not confirmed for the validated head"
         )
+    _verify_floor_identity(transport, state, verified_pull)
     if bool(verified_pull.get("draft")):
         detail = " reviewer label is present;" if label is not None else ""
         raise WorkError(f"ready transition could not be confirmed;{detail} retry ready-reviewers")
@@ -5248,7 +5445,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                   codex_path: Path | None = None,
                   handover_recovery_session: str | None = None,
                   rules: dict[str, object] | None = None,
-                  use_rules_path: Path | None = None) -> int:
+                  use_rules_path: Path | None = None,
+                  floor_command: str | None = None) -> int:
     if state.validated_markers is None:
         validate_marker_claims(state)
     if decision.stage == "catch-up":
@@ -5266,6 +5464,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         if sync is not None:
             print(json.dumps(_reported_decision(state, sync).as_dict(), ensure_ascii=True, sort_keys=True))
             return 0
+    if decision.stage == "floor" and dispatch_path is None and (
+            not isinstance(floor_command, str) or not floor_command.strip() or "\x00" in floor_command):
+        refusal = replace(decision, dispatch=False, continuity=None, status="holder-owned",
+                          reason="floor-command-missing",
+                          detail="Supply --floor-command with the exact repository command.")
+        print(json.dumps(_reported_decision(state, refusal).as_dict(), ensure_ascii=True, sort_keys=True))
+        return 0
     effective_timeout = (
         timeout_seconds if timeout_seconds is not None else
         DEFAULT_BUILD_TIMEOUT_SECONDS if decision.stage == "build" else
@@ -5581,7 +5786,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                     raise WorkError("artifact dispatch requires an authorized affirmed brief")
             if dispatch_path is None:
                 prepared_prompt = _stage_prompt(
-                    state, decision, branch=BRANCH_PLACEHOLDER
+                    state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command
                 )
             else:
                 prepared_dispatch = dispatch_path.expanduser().resolve()
@@ -5714,7 +5919,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         )
         if prepared_prompt is not None:
             prepared_prompt = _stage_prompt(
-                state, decision, branch=BRANCH_PLACEHOLDER
+                state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command
             )
         print(json.dumps(_reported_decision(state, decision).as_dict(),
                          ensure_ascii=True, sort_keys=True))
@@ -5726,7 +5931,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 raise WorkError("cold-seat uses the exact bounded artifact-and-brief prompt")
             with judging_root(dispatch_root) as recipient:
                 own_vendor, own_vendor_source = _producer_vendor(state, frozenset({"artifact"}))
-                prompt = _stage_prompt(state, decision, recipient)
+                prompt = _stage_prompt(state, decision, recipient, floor_command=floor_command)
                 dispatch.write_bytes(prompt)
                 common = [
                     "--dispatch", str(dispatch), "--root", str(recipient),
@@ -5878,6 +6083,7 @@ def parser() -> argparse.ArgumentParser:
     )
     cli.add_argument("--dispatch", type=Path,
                      help="holder-authored dispatch file outside the implementation root")
+    cli.add_argument("--floor-command", help="exact repository command for a composed run floor dispatch")
     cli.add_argument("--tree-metadata", type=Path,
                      help="adjacent metadata from tree; required by run use")
     cli.add_argument(
@@ -6107,7 +6313,7 @@ def run(
             timeout_seconds=args.timeout_seconds, transport=github,
             claude_path=args.claude, codex_path=args.codex,
             handover_recovery_session=args.handover_recovery_session,
-            rules=rules, use_rules_path=use_rules_path,
+            rules=rules, use_rules_path=use_rules_path, floor_command=args.floor_command,
         )
     return executor(state, decision, root, args.instalment, args.holder_session_id)
 

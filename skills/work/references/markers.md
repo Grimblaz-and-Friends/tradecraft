@@ -17,7 +17,6 @@ A reviewer-thread reply instead opens with a disposition when its first line of 
 | Opening claim | Claims that travel with it |
 |---|---|
 | `artifact` with `status=settled` | `cold-verdict` |
-| `proof` | `no-use` |
 | `implementing-pr` | `builder-session` |
 | lawful disposition opening a reviewer-thread reply | `connected-reviewer` |
 
@@ -113,7 +112,7 @@ A later bare line returns every role to default resolution:
 
 - **Exact form:** `<!-- tradecraft:floor:v1 head=SHA status=STATUS -->`.
 - **Attributes and lawful values:** `head` is the tested pull-request head SHA; `status=pass`.
-- **Producer, surface, moment:** the builder returning the floor stage to the holder, in the issue or pull-request comment carrying the exact command output, after the floor passes at that head.
+- **Producer, surface, moment:** the builder returning the floor stage to the holder, in the issue or pull-request comment carrying the exact command output, after the command passes at the actual tested head. The builder returns this line and result; the holder posts them without reconstructing the marker.
 
 ```text
 <!-- tradecraft:floor:v1 head=0123456789abcdef0123456789abcdef01234567 status=pass -->
@@ -129,16 +128,6 @@ A later bare line returns every role to default resolution:
 <!-- tradecraft:use:v1 head=0123456789abcdef0123456789abcdef01234567 status=pass changed=false staffing_status=qualified -->
 ```
 
-## `no-use`
-
-- **Exact form:** `<!-- tradecraft:no-use:v1 head=SHA -->` followed in the same comment by `Use: not required` and its reason.
-- **Attributes and lawful values:** `head` is the pull-request head SHA whose effective use obligation was classified.
-- **Producer, surface, moment:** the proof command, in its pull-request proof comment, after the effective classification concludes no use was bought and before the pull request is marked ready. Its required prose states the actual reason — the affirmed mechanical lane or the path policy — and the proof object names the affirmed-comment source for a lane exemption. The legacy holder-authored form remains accepted for the compatibility release.
-
-```text
-<!-- tradecraft:no-use:v1 head=0123456789abcdef0123456789abcdef01234567 -->
-```
-
 ## `proof`
 
 - **Exact form:** `<!-- tradecraft:proof:v1 head=SHA -->` followed by the fenced version-one JSON object and its readable rendering.
@@ -149,7 +138,7 @@ A later bare line returns every role to default resolution:
 <!-- tradecraft:proof:v1 head=0123456789abcdef0123456789abcdef01234567 -->
 ```
 
-The object and publication contract are `proof.md`. For one compatibility release, the entrance continues to accept the marker family above as input and the proof comment also carries a generated `no-use` carrier when no use was bought.
+The object and publication contract are `proof.md`. The gate evaluates only an authorized current-head proof document; its `use` section is the sole no-use carrier. Standalone historical markers cannot replace that document.
 
 ## `connected-reviewer`
 

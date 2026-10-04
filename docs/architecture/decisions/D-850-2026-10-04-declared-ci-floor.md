@@ -1,0 +1,31 @@
+# D-850 — Declared CI is the applicable floor
+
+**Purpose:** preserve the owner's floor decision and the entrance's implementation choices. **Audience:** a future session changing floor authority, proof or reviewer readiness. **Success:** it can reconsider the choice from the affirmed record and executable falsifiers without reconstructing the design.
+
+The owner affirmed [#741's implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/741) on 2026-10-03. The [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/741#issuecomment-5976003581) and the amended holder reading supplied to this build govern [pull request #850](https://github.com/Grimblaz-and-Friends/tradecraft/pull/850). The gate half landed first in [change-proof #45](https://github.com/Grimblaz-and-Friends/change-proof/pull/45), at `93296b1f01f23cbe3d5442c2fc65b43944c6dcc8`.
+
+## Decision and implementation choices
+
+Let each repository declare its merge-stopping workflow/job pairs, and let their successful current-head public executions satisfy the floor. The owner chose a declaration over treating every check as the floor because the declaration says what must run. Missing or skipped execution retains builder fallback; a red, pending, stalled or unverifiable obligation cannot be overridden by a builder marker. Undeclared checks do not create a declared-floor obligation, including during fallback. Repositories without a declaration retain their builder floor and existing public-check behavior.
+
+Read floor authority at the resolved pull-request base tip. A declaration's introduction pull request therefore owes the previous floor. This supersedes D-747's publication stability rationale only for the new floor input: base movement now invalidates the independently fetched floor authority. D-828's checkout-selected use rules and explicit override remain their own inputs. Keep required-gate identification and the existing provenance query unchanged.
+
+Keep the public Actions selector in a self-contained shipped helper and one normalized evaluation in the entrance for routing, proof and readiness. Its implementation is exercised by `lib/tests/test_ci_floor.py`; it imports no change-proof runtime code. Select newest runs separately by workflow path and triggering event, matching the landed gate's review repair so a newer push cannot erase a failed pull-request execution. Keep complete rerun history, retained partial-rerun jobs and separate same-named job records.
+
+Return declared failures and stalled runners to the holder with the execution identity. The holder determines whether the change caused the failure before choosing a builder repair, one recorded external-failure rerun, a body fix or runner investigation. Repeated entrance reads perform none of those mutations.
+
+Retire D-733's compatibility projection and the entrance's separate no-use prerequisite. Use/no-use lives in the proof document's use section, while the independently landed gate consumes only authorized current-head documents. Preserve the proof envelope and optional floor-policy descriptor's diagnostic authority limits; this does not repair #742.
+
+Require an exact holder-selected command for composed builder floors and return the passing marker with the actual tested revision, command, output and result. A failed command produces no passing marker. Holder-supplied dispatches retain their exact bytes. Explicit floor-stage authority remains even when ordinary routing accepts CI; #838's separate missing-head mechanism is outside this change.
+
+Every build or implementation repair accounts for artifact criteria: commit executable criteria as CI tests, run remaining builder-executable checks, and return each owed fresh-reader criterion verbatim. The holder launches and records those readers and checks all renewed results before readiness or repaired-head release readiness. This is a holder responsibility rather than a producer-certified gate field; readiness validates the applicable floor. The panel's after-the-fix floor is unchanged.
+
+Tradecraft declares both expanded lint-and-test jobs and the body job. Move the body job to its own workflow and remove body-edit scheduling from the suite; `tools/tests/test_ci_floor_configuration.py` tests the actual policy, expanded names, event schedules and retained body-check behavior. Product declarations remain separate holder-owned filings after both halves land; Organizations of Verra's runner choice remains outside the brief.
+
+## Evidence and boundaries
+
+The copied floor corpus and schema have Git blob IDs `4ff396c367e447a4aa9daeadfdc459fc2713f7c5` and `876e6441224462168e8db3b07686a23dcc893a27`, respectively, at the landed gate revision. The entrance's corpus test verifies those bytes and evaluates the raw public cases. Its library-local fixture mirror carries the same pinned bytes so the independently relocated library suite remains self-contained; CI compares the mirror with the exported shared fixtures. Packaging lint exempts only that exact floor-corpus blob at the shared export and library-local mirror from interpreting synthetic adopter workflow paths as dependencies on this repository's private files; an edited blob receives the ordinary wall check. Shipped runtime code and guidance remain usable by an adopter without this repository's workflows, tools or documentation.
+
+Run `python tools/dev.py check` on this pull request's tree. Its executable regressions cover collection, routing, proof, floor prompts, readiness and actual workflow scheduling. E8 remains a holder-launched fresh-reader criterion; E11 requires the holder's actual return, result, dispatch and readiness records; E9 is checked against landing and the three product filings. No later stage is performed by this build.
+
+The shipped meaning changes are the applicable floor, base-tip authority, holder-owned CI failure/stall routes, exact floor-command return, renewed acceptance duties and readiness order, and proof-owned no-use. Their reasons travel with the governing instructions; no rule reason was dropped. The wire contract stays in the work proof reference, while the engagement stretch owns builder and holder acceptance responsibilities. The holder assigned plugin version `0.181.0` for this build.

@@ -6,11 +6,6 @@
 
 **A review's fix batch buys a second one where it rewrote what the material instructs, or changed what someone using the result can do.** The first run is spent on the tree the fixes then replace, so what merges has been read again and never used — and a fix batch meeting either condition is itself a change of the kind above. It fires once, on the last tree the review's fixes produce — where more fixes are still expected, it waits for them — before the review closes. A batch that changed only the record of the change — a decision entry, an index row, a pull request body — buys no second session because it changes neither an instruction nor the result anyone uses.
 
-**A session a change bought and did not get costs one line** — say so and why, on the change's pull request or issue. **So does a change that concluded it bought none:** the conclusion is written down with its reason, because *nothing was bought* and *the trigger never named my case* are the same silence from outside, and the second is what a missed session actually looks like from inside. The `work` cell keeps a bought current-head use for non-mechanical lanes, or generates the current-head no-use carrier from the affirmed mechanical lane or the path classification, ahead of ready-for-review. The session remains an instrument rather than a review stage. **That line names no successor**: one naming a later session binds whoever it names to nothing.
+**A session a change bought and did not get costs one line** — say so and why, on the change's pull request or issue. **So does a change that concluded it bought none:** the conclusion is written down with its reason, because *nothing was bought* and *the trigger never named my case* are the same silence from outside, and the second is what a missed session actually looks like from inside. The `work` cell keeps a bought current-head use for non-mechanical lanes, or records current-head no-use in the proof's `use` section from the affirmed mechanical lane or the path classification, with the actual reason and trigger. The session remains an instrument rather than a review stage. **That line names no successor**: one naming a later session binds whoever it names to nothing.
 
-Post that conclusion with the `work` cell's marker and the required line, replacing `HEAD` and `REASON`:
-
-```text
-<!-- tradecraft:no-use:v1 head=HEAD -->
-Use: not required — REASON
-```
+Run the work entrance's `proof` endpoint to record that conclusion and reason in the current-head document. A separate no-use marker supplies no release evidence.

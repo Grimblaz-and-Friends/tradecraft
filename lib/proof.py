@@ -115,7 +115,10 @@ def validate(value: object) -> dict[str, object]:
         raise ProofError("proof identity head must be a full revision")
 
     policy = _object(proof["policy"], "proof.policy")
-    _exact_keys(policy, {"work_configuration", "use_rules"}, "proof.policy")
+    if set(policy) not in ({"work_configuration", "use_rules"}, {"work_configuration", "use_rules", "floor"}):
+        raise ProofError("proof.policy has the wrong fields")
+    if policy.get("floor") is not None:
+        _policy_source(policy["floor"], "proof.policy.floor")
     _policy_source(policy["work_configuration"], "proof.policy.work_configuration")
     _policy_source(policy["use_rules"], "proof.policy.use_rules")
 
@@ -235,7 +238,7 @@ def canonical_json(value: dict[str, object]) -> str:
     return json.dumps(validate(value), ensure_ascii=True, indent=2, sort_keys=True) + "\n"
 
 
-def render(value: dict[str, object]) -> str:
+def render(value: dict[str, object], *, floor_context: dict[str, object] | None = None) -> str:
     """Render every proof section without claiming independent verification."""
     proof = validate(value)
     identity = proof["identity"]
@@ -245,11 +248,25 @@ def render(value: dict[str, object]) -> str:
         "### Readable proof",
         "",
         f"- evidence: {identity['work']} pull request #{identity['pull_request']} at {identity['head']}",
-        f"- evidence: floor source {('present' if floor['source'] else 'missing')}; "
+        f"- evidence: floor source {('builder attestation' if floor['source'] else 'declared CI; no builder floor needed' if floor_context and floor_context['outcome'] == 'ci-met' else 'missing')}; "
         f"{len(floor['checks'])} public check record(s)",
         f"- evidence: use classification {use['classification']}; applicability "
         f"{use['applicability']}",
     ]
+    if "floor" in proof["policy"]:
+        authority = proof["policy"]["floor"]
+        lines.append(f"- evidence: base floor policy {authority or 'confirmed absent'}")
+    for check in floor["checks"]:
+        lines.append(f"- evidence: floor check #{check['id']} {check['name']!r} "
+                     f"run #{check['run_id']} at {check['head']}: {check['conclusion']}")
+    if floor_context:
+        for execution in sorted(floor_context.get("executions", []), key=lambda item: (
+                item["workflow"], item["job"], item["event"] or "", item["run_id"] or 0,
+                item["attempt"] or 0, item["check_id"] or 0)):
+            lines.append(f"- evidence: declared {execution['workflow']} job {execution['job']!r} "
+                         f"event {execution['event']!r} run #{execution['run_id']} "
+                         f"attempt #{execution['attempt']} check #{execution['check_id']}: "
+                         f"{execution['state']} ({execution['conclusion']})")
     use_source = use["source"]
     source_name = "none"
     if isinstance(use_source, dict):
@@ -272,15 +289,13 @@ def render(value: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def document(value: dict[str, object], no_use_line: str | None = None) -> str:
-    """Build the marked comment containing JSON, its rendering, and a legacy carrier."""
+def document(value: dict[str, object], *, floor_context: dict[str, object] | None = None) -> str:
+    """Build the single marked proof document containing JSON and its rendering."""
     proof = validate(value)
     head = proof["identity"]["head"]
     parts = [
         f"<!-- tradecraft:proof:v1 head={head} -->",
         "```json\n" + canonical_json(proof).rstrip("\n") + "\n```",
-        render(proof).rstrip("\n"),
+        render(proof, floor_context=floor_context).rstrip("\n"),
     ]
-    if no_use_line is not None:
-        parts.append(f"<!-- tradecraft:no-use:v1 head={head} -->\n{no_use_line}")
     return "\n\n".join(parts) + "\n"
