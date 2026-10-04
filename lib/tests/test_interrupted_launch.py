@@ -232,6 +232,13 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
         git(holder, "worktree", "add", "-b", branch, str(root))
     if kind == "seat":
         git(root, "checkout", "--detach")
+    # This fixture never edits its tree. Capture it once; content-change and
+    # snapshot-deadline contracts have separate executable tests.
+    snapshot = lifecycle.content_snapshot(root)
+    assert snapshot["digest"]
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_bytes(json.dumps(snapshot).encode())
+    monkeypatch.setattr(lifecycle, "content_snapshot", lambda *_a, **_k: dict(snapshot))
     dispatch = tmp_path / "dispatch"
     dispatch.write_bytes(b"Perform this stage and return.\n")
     store = tmp_path / "vendor-state"
@@ -239,15 +246,23 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
     (store / "nonce").write_bytes(b"retained-before-hard-kill")
     output = tmp_path / "bundle" / "return"
     ceiling = termination.startswith("ceiling")
-    # Leave startup time after the fixed cleanup reserve, even under CI load.
-    caller_limit = 30 if ceiling else 60
-    command = [sys.executable, str(LIB / "tests/fixtures/interrupted_launcher.py"), kind, vendor, str(store),
+    # Keep one native deadline per launcher, including a real slow final probe.
+    # Five seconds remain for startup after the production ten-second reserve.
+    production_ceiling = (termination, kind, vendor) in {
+        ("ceiling", "implementer", "claude"),
+        ("ceiling-slow-final-probe", "seat", "codex"),
+    }
+    caller_limit = 15 if production_ceiling else 60
+    command = [sys._base_executable, str(LIB / "tests/fixtures/interrupted_launcher.py"), kind, vendor, str(store),
                "--dispatch", str(dispatch), "--root", str(root), "--vendor", vendor,
                "--work", "example/product#12", "--stage", "build" if kind == "implementer" else "cold-seat",
                "--settings-source", "fixture", "--settings-scope", "fixture",
-               "--output", str(output), "--timeout-seconds", str(caller_limit)]
+               "--output", str(output), "--timeout-seconds", str(caller_limit),
+               "--snapshot-fixture", str(snapshot_path)]
     if termination == "ceiling-slow-final-probe":
         command.append("--slow-final-probe")
+    if ceiling and not production_ceiling:
+        command.append("--fast-ceiling")
     if kind == "implementer":
         command.extend(["--lineage-branch", branch, "--holder-session-id", "holder-session"])
     if kind == "seat":
@@ -260,14 +275,13 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
     run_path = Path(str(output) + ".run.json")
     saved = {}
     try:
-        until = time.monotonic() + 25
+        until = time.monotonic() + 60  # Hang guard, never the stop trigger.
         while not (store / "blocked.json").exists() and time.monotonic() < until:
             if process.poll() is not None:
                 break
             time.sleep(0.05)
         assert (store / "blocked.json").exists(), process.communicate(timeout=1) if process.poll() is not None else "vendor never reached blocked command"
-        pids = json.loads((store / "blocked.json").read_bytes())
-        identities = [lifecycle.process_identity(pid) for pid in pids]
+        identities = json.loads((store / "blocked-identities.json").read_bytes())
         # Wait for the launcher's flush, without giving it a chance to finish.
         while time.monotonic() < until:
             try:
@@ -281,20 +295,24 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             time.sleep(0.05)
         if termination == "hard-kill":
             identities.extend(hard_kill_blocked_launch(process, saved, identities))
-        process.communicate(timeout=caller_limit if ceiling else 5)
+        else:
+            (store / "ceiling-ready").write_bytes(b"ready")
+        stdout, stderr = process.communicate(timeout=caller_limit if ceiling else 5)
         if ceiling:
             elapsed = measured_exit(process, started)
             record_property("observer_elapsed_seconds", time.monotonic() - started)
             record_property("launcher_elapsed_seconds", elapsed)
             record_property("caller_limit_seconds", caller_limit)
+            record_property("production_reserve", production_ceiling)
             assert elapsed < caller_limit, f"whole invocation took {elapsed:.3f}s against the declared {caller_limit}s limit"
         saved = json.loads(run_path.read_bytes())
         assert saved["session_identity"]["session_id"] == "0199a213-81c0-7800-8aa1-bbab2a035a53"
         if termination == "hard-kill":
             assert not saved.get("completed_at")
         else:
-            assert saved["completed_at"] and saved["outcome"] == "interrupted", {
-                "outcome": saved["outcome"], "error": saved.get("error"),
+            assert saved.get("completed_at") and saved["outcome"] == "interrupted", {
+                "outcome": saved.get("outcome"), "error": saved.get("error"),
+                "stdout": stdout, "stderr": stderr,
                 "attempts": [{key: attempt.get(key) for key in ("outcome", "reason", "exit_code")}
                              for attempt in saved["attempts"]],
             }
@@ -335,8 +353,9 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             def launch(command, *args, **kwargs):
                 if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
                     launches.append(command)
-                    actual = [sys.executable, str(LIB / "tests/fixtures/interrupted_launcher.py"),
-                              "implementer", vendor, str(store), *command[2:], "--output", str(resumed)]
+                    actual = [sys._base_executable, str(LIB / "tests/fixtures/interrupted_launcher.py"),
+                              "implementer", vendor, str(store), *command[2:], "--output", str(resumed),
+                              "--snapshot-fixture", str(snapshot_path)]
                     return original_recipient(actual, **kwargs)
                 return original_run(command, *args, **kwargs)
             monkeypatch.setattr(work, "_recipient_run", launch)

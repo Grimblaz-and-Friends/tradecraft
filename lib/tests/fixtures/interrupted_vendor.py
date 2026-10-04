@@ -6,6 +6,9 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import run_lifecycle as lifecycle
+
 vendor, store = sys.argv[1], Path(sys.argv[2])
 
 
@@ -40,6 +43,8 @@ if not resume:
     while not (store / "child-ready").exists():
         time.sleep(0.05)
     native_child = int((store / "child-ready").read_bytes())
+    identities = [lifecycle.process_identity(pid) for pid in sorted({os.getpid(), child.pid, native_child})]
+    announce("blocked-identities.json", json.dumps(identities).encode())
     announce("blocked.json", json.dumps(sorted({os.getpid(), child.pid, native_child})).encode())
     while not (store / "release").exists():
         time.sleep(0.05)

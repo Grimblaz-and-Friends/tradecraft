@@ -79,6 +79,7 @@ def test_default_deadline_and_invalid_limits(monkeypatch):
     assert window.remaining(cleanup=True) == 7200
     assert lifecycle.TOTAL_BUILD_BUDGET_SECONDS == 14400
     short = lifecycle.Deadline(15)
+    assert lifecycle.MINIMUM_CLEANUP_RESERVE_SECONDS == 10
     assert short.remaining() == 5
     for bad in [0, -1, float("nan"), float("inf")]:
         with pytest.raises(ValueError):
@@ -432,15 +433,15 @@ def test_slow_preflight_probe_stops_its_tree_within_the_caller_limit(tmp_path, e
         "print('version probe still running',flush=True)\ntime.sleep(90)\n",
         encoding="utf-8", newline="\n")
     started = time.monotonic()
-    with lifecycle.deadline_scope(lifecycle.Deadline(15)):
+    with lifecycle.deadline_scope(lifecycle.Deadline(12)):
         if entry == "runtime-version":
-            assert records.runtime_version([sys.executable, str(probe)]) is None
+            assert records.runtime_version([sys._base_executable, str(probe)]) is None
         else:
             with pytest.raises(subprocess.TimeoutExpired):
-                work._run_probe([sys.executable, str(probe)], stdin=subprocess.DEVNULL,
+                work._run_probe([sys._base_executable, str(probe)], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 timeout=lifecycle.probe_timeout(), env=os.environ.copy())
-    assert time.monotonic() - started < 15
+    assert time.monotonic() - started < 12
     identities = json.loads(trace.read_bytes())
     until_dead = time.monotonic() + 2
     while time.monotonic() < until_dead and any(

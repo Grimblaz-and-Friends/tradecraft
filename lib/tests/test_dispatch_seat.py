@@ -863,13 +863,18 @@ def test_degraded_fallback_qualifies_only_with_stage_local_same_vendor_reason(jo
     {"message": ""},
     {"sleep": 45},
 ])
-def test_other_failures_never_fallback_or_publish(job, vendor, scenario):
+def test_other_failures_never_fallback_or_publish(job, monkeypatch, vendor, scenario):
     args, _ = job
     args.vendor = vendor
     args.own_vendor = "claude" if vendor == "codex" else "codex"
     configure(job, {vendor: scenario})
     if "sleep" in scenario:
-        args.timeout_seconds = 30
+        # Classification and refusal are the contract here. Real timeout
+        # containment is covered by the native deadline and descendant cases.
+        def timed_out(command, **kwargs):
+            kwargs["on_launch"](os.getpid())
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        monkeypatch.setattr(seat, "run_process", timed_out)
     assert seat.run_dispatch(args) == 1
     assert not args.output.exists()
     assert len(record(args)["attempts"]) == 1
@@ -1166,20 +1171,33 @@ def test_fallback_cannot_read_discarded_transcript_but_caller_can(job, monkeypat
 def test_timeout_stops_a_started_descendant(job, monkeypatch, record_property):
     args, _ = job
     child = args.root / "child.py"
-    child.write_bytes(b"import time\nfrom pathlib import Path\nPath('started').write_bytes(b'yes')\ntime.sleep(45)\nPath('finished').write_bytes(b'yes')\n")
+    child.write_text(
+        "import json,sys,time\nfrom pathlib import Path\n"
+        f"sys.path.insert(0,{str(LIB)!r})\nimport run_lifecycle as lifecycle\n"
+        "Path('pending').write_bytes(json.dumps(lifecycle.process_identity()).encode())\n"
+        "Path('pending').replace('started')\n"
+        "time.sleep(45)\nPath('finished').write_bytes(b'yes')\n", encoding="utf-8", newline="\n")
     wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(50)"
-    monkeypatch.setattr(seat, "resolve_command", lambda *a: [sys.executable, "-c", wrapper, str(child)])
-    # Allow startup under the full parallel suite; the assertion below still
-    # bounds the whole invocation and verifies a genuinely started descendant.
-    args.timeout_seconds = 30
+    monkeypatch.setattr(seat, "resolve_command", lambda *a: [sys._base_executable, "-c", wrapper, str(child)])
+    original = seat.run_process
+    def stop_after_child_started(command, **kwargs):
+        tick = kwargs["on_tick"]
+        def trigger():
+            tick()
+            if (args.root / "started").exists():
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return original(command, **{**kwargs, "on_tick": trigger})
+    monkeypatch.setattr(seat, "run_process", stop_after_child_started)
+    # The state transition triggers cancellation; this limit only guards hangs.
+    args.timeout_seconds = 60
     started = time.monotonic()
     assert seat.run_dispatch(args) == 1
     elapsed = time.monotonic() - started
     record_property("launcher_elapsed_seconds", elapsed)
     record_property("caller_limit_seconds", args.timeout_seconds)
     assert (args.root / "started").exists(), "The descendant must actually start before cancellation."
-    survival_check_at = (args.root / "started").stat().st_mtime + 45.3
-    time.sleep(max(0, survival_check_at - time.time()))
+    identity = json.loads((args.root / "started").read_bytes())
+    assert seat.lifecycle.liveness({"launcher_process": identity}) == "stopped", "The descendant survived cancellation."
     assert not (args.root / "finished").exists(), "The descendant continued after the deadline."
     assert elapsed < args.timeout_seconds, "Pipe-owning descendants delayed timeout cleanup."
     assert not args.output.exists()

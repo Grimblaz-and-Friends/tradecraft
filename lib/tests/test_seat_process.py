@@ -51,14 +51,14 @@ def test_worker_preserves_binary_streams_exit_status_and_missing_launch(tmp_path
 
 def test_incremental_capture_checkpoints_while_stdin_blocks(tmp_path):
     output, ticks, launched = [], [], []
-    child = [sys.executable, "-c", "import sys,time; print('identity',flush=True); sys.stderr.write('diagnostic'); sys.stderr.flush(); time.sleep(30)"]
+    child = [sys._base_executable, "-c", "import sys,time; print('identity',flush=True); sys.stderr.write('diagnostic'); sys.stderr.flush(); time.sleep(30)"]
     started = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired) as caught:
-        process.run_process(child, input=b'x' * 1000000, cwd=tmp_path, timeout=15,
+        process.run_process(child, input=b'x' * 1000000, cwd=tmp_path, timeout=3,
                             on_output=lambda *event: output.append(event),
                             on_tick=lambda: ticks.append(time.monotonic()),
                             on_launch=launched.append)
-    assert time.monotonic() - started < 16
+    assert time.monotonic() - started < 5
     assert launched and len(ticks) > 2
     assert b'identity' in caught.value.stdout
     assert b'diagnostic' in caught.value.stderr
@@ -331,11 +331,11 @@ def test_detached_descendant_cannot_hold_timeout_drain_open(tmp_path):
     child = tmp_path / "detached.py"
     child.write_bytes(b"import os,time\nfrom pathlib import Path\nos.setsid()\nPath('child-pid').write_text(str(os.getpid()))\nprint('detached output',flush=True)\ntime.sleep(20)\nPath('finished').write_bytes(b'yes')\n")
     wrapper = "import subprocess,sys,time; subprocess.Popen([sys.executable,sys.argv[1]],stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr); time.sleep(30)"
-    timeout = 5
+    timeout = 2
     started = time.monotonic()
     try:
         with pytest.raises(subprocess.TimeoutExpired) as caught:
-            process.run_process([sys.executable, "-c", wrapper, str(child)], input=b"", cwd=tmp_path, timeout=timeout)
+            process.run_process([sys._base_executable, "-c", wrapper, str(child)], input=b"", cwd=tmp_path, timeout=timeout)
         assert (tmp_path / "child-pid").exists(), "The detached child must actually start."
         assert time.monotonic() - started < timeout + 1
         assert b"detached output" in caught.value.output
@@ -360,7 +360,7 @@ def test_setsid_descendant_is_dead_or_cleanup_is_explicitly_unproved(tmp_path, i
                f"subprocess.Popen([sys.executable, '-c', {escaped_code!r}]); time.sleep(30)"]
     try:
         with pytest.raises(subprocess.TimeoutExpired) as caught:
-            process.run_process(command, input=b"", cwd=tmp_path, timeout=5,
+            process.run_process(command, input=b"", cwd=tmp_path, timeout=2,
                                 **({"on_tick": lambda: None} if incremental else {}))
         assert escaped_pid.is_file()
         if caught.value.cleanup_proven:

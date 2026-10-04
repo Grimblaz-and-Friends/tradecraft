@@ -300,25 +300,41 @@ def test_entrance_wait_includes_child_recording_but_reserves_its_own_return(monk
     assert calls[0]["timeout"] > deadline.remaining()
 
 
-def test_entrance_stops_a_stuck_launcher_and_its_descendant_before_caller_limit(tmp_path, record_property):
+def test_entrance_stops_a_stuck_launcher_and_its_descendant_before_caller_limit(tmp_path, monkeypatch, record_property):
     import subprocess
     import time
     child_pid = tmp_path / "child-pid"
+    child_code = ("import json,sys,time; from pathlib import Path; "
+                  f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r}); "
+                  "import run_lifecycle as lifecycle; "
+                  f"pending=Path({str(child_pid.with_suffix('.pending'))!r}); "
+                  "pending.write_bytes(json.dumps(lifecycle.process_identity()).encode()); "
+                  f"pending.replace({str(child_pid)!r}); "
+                  "time.sleep(60)")
     code = ("import pathlib, subprocess, sys, time; "
-            "child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
-            f"pathlib.Path({str(child_pid)!r}).write_text(str(child.pid)); "
+            f"child=subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
             "print('launcher blocked', flush=True); time.sleep(60)")
     started = time.monotonic()
     deadline = lifecycle.Deadline(15, started=started)
+    original = work._recipient_run
+    def short_trigger(command, *, timeout, cleanup_deadline):
+        # The adjacent allocation test proves the entrance's deadline math.
+        # Exercise its real tree cancellation here with a two-second trigger.
+        assert 0 < timeout < 15
+        return original(command, timeout=min(timeout, 2), cleanup_deadline=cleanup_deadline)
+    monkeypatch.setattr(work, "_recipient_run", short_trigger)
     with pytest.raises(work.WorkError, match="bounded recording allowance"):
-        work._invoke_recipient([sys.executable, "-c", code], deadline)
+        work._invoke_recipient([sys._base_executable, "-c", code], deadline)
     elapsed = time.monotonic() - started
     record_property("entrance_elapsed_seconds", elapsed)
     print(f"entrance exit {elapsed:.3f}s / 15s")
     assert elapsed < 15
     assert child_pid.is_file()
-    with pytest.raises(ProcessLookupError):
-        lifecycle.process_identity(int(child_pid.read_text()))
+    identity = json.loads(child_pid.read_bytes())
+    until = started + 5  # Bounded death observation, not a survival sleep.
+    while lifecycle.liveness({"launcher_process": identity}) != "stopped" and time.monotonic() < until:
+        time.sleep(0.01)
+    assert lifecycle.liveness({"launcher_process": identity}) == "stopped"
 
 
 
