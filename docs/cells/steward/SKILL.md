@@ -11,7 +11,7 @@ The `engagement` cell owns the cross-change read and cross-session intake.
 
 ## Where this cell's depth lives
 
-- **Releasing the lab reviewer or rolling out its callers** → `references/connected-review-releases.md`: the shared workflow, canary, private trials, manual tag moves and rollback.
+- **Releasing the lab reviewer or rolling out its callers** → `references/connected-review-releases.md`: the shared workflow, canary review, the owner's settings check, manual tag moves, the first private product's execution check, and rollback.
 
 ## What the Steward holds
 
