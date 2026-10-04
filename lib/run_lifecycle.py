@@ -176,6 +176,8 @@ def liveness(run):
     status = _identity_liveness(run.get("launcher_process"))
     if status != "stopped":
         return status
+    if run.get("completed_at") and run.get("cleanup_proven") is True:
+        return "stopped"
     # A launcher may die without taking an escaped or orphaned recipient with it.
     if "recipient_process" in run:
         return _identity_liveness(run["recipient_process"])
@@ -346,6 +348,10 @@ def launch_bundles(store, work, stages, *, after=None, exact_work=False):
 
 
 def stopped(run):
+    if run.get("cleanup_proven") is False:
+        return True
+    if run.get("launch_unresolved"):
+        return True
     if str(run.get("recovery_error", "")).startswith("conflicting copied"):
         return True
     if not run.get("completed_at"):
@@ -368,6 +374,10 @@ def allocation(account, requested, *, override_reason=None):
 
 
 def recovery_session(request, run):
+    if run.get("cleanup_proven") is False:
+        raise ValueError("descendant cleanup is unproved; refuse another writer")
+    if run.get("launch_unresolved"):
+        raise ValueError("vendor spawn is unresolved; refuse another writer")
     if run.get("recovery_error"):
         raise ValueError(run["recovery_error"])
     if run.get("session_identity_error"):

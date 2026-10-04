@@ -230,6 +230,8 @@ def detached_worktree_root(root):
         )
     except subprocess.TimeoutExpired:
         return "Git root probe timed out"
+    except TimeoutError:
+        raise
     except OSError as exc:
         detail = str(exc).encode("ascii", errors="backslashreplace").decode("ascii")
         return f"Git root probe could not start: {detail}"
@@ -463,7 +465,10 @@ def run_dispatch(args, *, now=None) -> int:
     except ValueError as exc:
         raise DispatchError(str(exc)) from exc
     with lifecycle.deadline_scope(deadline):
-        return _run_dispatch(args, deadline, now=now)
+        try:
+            return _run_dispatch(args, deadline, now=now)
+        except TimeoutError as exc:
+            raise DispatchError(str(exc)) from exc
 
 
 def _run_dispatch(args, deadline, *, now=None) -> int:
@@ -642,16 +647,28 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                                      on_launch=growing.launched,
                                                      cleanup_deadline=deadline.cleanup_end)
                             except subprocess.TimeoutExpired as exc:
+                                if hasattr(exc, "cleanup_proven"):
+                                    record["cleanup_proven"] = exc.cleanup_proven
                                 record["interruption_cause"] = "ceiling"
                                 result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
                                 outcome, reason = "error", ""
-                                attempt["launched"] = True
+                                attempt["launched"] = getattr(exc, "launched", True)
+                                if getattr(exc, "launch_unresolved", False):
+                                    record["launch_unresolved"] = True
                                 attempt["permission_boundary"] = boundary
                                 attempt["permission_boundary_unavailable_reason"] = None
+                            except TimeoutError as exc:
+                                record["interruption_cause"] = "ceiling"
+                                allocation = 0
+                                result = subprocess.CompletedProcess(command, -1, b"", b"")
+                                outcome, reason = "error", str(exc)
                             except FileNotFoundError as exc:
                                 result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
                                 outcome, reason = "unavailable", f"{vendor} executable disappeared before launch"
                             except OSError as exc:
+                                if hasattr(exc, "cleanup_proven"):
+                                    record["cleanup_proven"] = exc.cleanup_proven
+                                attempt["launched"] = getattr(exc, "launched", attempt["launched"])
                                 reason = (
                                     f"Cannot launch {vendor}: {exc}. From native Codex on Windows, "
                                     "use approval-managed host execution for the user's CLI/login. "
@@ -663,6 +680,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 records.add_unobserved(attempt, reason)
                                 raise DispatchError(reason) from exc
                             else:
+                                if hasattr(result, "cleanup_proven"):
+                                    record["cleanup_proven"] = result.cleanup_proven
                                 returned = True
                                 attempt["launched"] = True
                                 attempt["permission_boundary"] = boundary

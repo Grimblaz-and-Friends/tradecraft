@@ -18,6 +18,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Callable
 import urllib.parse
 import uuid
@@ -37,7 +38,7 @@ import vendor_cli
 import use_history
 import version_policy
 from winio import utf8_stdio
-from seat_process import run_process
+from seat_process import run_process, run_inherited_process
 
 
 def _run_probe(command, **kwargs):
@@ -4216,10 +4217,16 @@ def set_proof_freshness(state: WorkState, expected: dict[str, object]) -> None:
 
 
 def _resume_source(work_value: str, stage: str, record_root: Path, *,
-                   completed_after: str | None = None) -> ResumeSource | None:
+                   completed_after: str | None = None, state: WorkState | None = None) -> ResumeSource | None:
     latest = lifecycle.launch_bundles(record_root, work_value,
         RESUME_SOURCE_STAGES.get(stage, frozenset({stage})), after=completed_after)
+    if state is not None:
+        latest = work_recovery.scoped(state, latest)
     if latest and lifecycle.stopped(latest[-1][3]):
+        if state is not None:
+            predecessor = work_recovery.handover_predecessor(state, latest[-1])
+            if predecessor is not None:
+                latest = [predecessor]
         order, path, request, run = latest[-1]
         try:
             session = lifecycle.recovery_session(request, run)
@@ -4233,8 +4240,12 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
         work_value, allowed_stages, record_root, outcomes=RESUMABLE_BUNDLE_OUTCOMES,
         completed_after=completed_after,
     )
+    if state is not None:
+        matched = work_recovery.scoped(state, matched)
     candidates: list[ResumeSource] = []
     for completed, run_path, request, run in (matched[-1:] if stage == "artifact" else matched):
+        if run.get("cleanup_proven") is False:
+            raise WorkError(f"descendant cleanup is unproved in bundle: {run_path}")
         requested = request.get("requested")
         vendor = requested.get("vendor") if isinstance(requested, dict) else None
         actual = run.get("actual_vendor")
@@ -4318,15 +4329,15 @@ def _producer_vendor(state: WorkState, stages: frozenset[str], *,
     )
 
 
-def _bundle_session(work_value: str, stage: str, record_root: Path) -> str | None:
-    source = _resume_source(work_value, stage, record_root)
+def _bundle_session(work_value: str, stage: str, record_root: Path, *, state=None) -> str | None:
+    source = _resume_source(work_value, stage, record_root, state=state)
     return source.session if source is not None else None
 
 
 def resume_session(state: WorkState, stage: str, record_root: Path | None = None) -> str | None:
     work_value = f"{state.repo}#{state.issue_number}"
     bundled = _bundle_session(
-        work_value, stage, record_root or records.default_record_root().expanduser().resolve()
+        work_value, stage, record_root or records.default_record_root().expanduser().resolve(), state=state
     )
     if bundled:
         return bundled
@@ -4408,7 +4419,7 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
     source = None
     if decision.continuity == "resume":
         source = _resume_source(f"{state.repo}#{state.issue_number}", decision.stage,
-                                state.record_root or records.default_record_root().expanduser().resolve())
+                                state.record_root or records.default_record_root().expanduser().resolve(), state=state)
         if source is not None:
             plan["session"] = _session_settings(source)
             pinned = source.request["requested"]["vendor"]
@@ -5270,11 +5281,23 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     return 0
 
 
+def _recipient_run(command, *, timeout, cleanup_deadline):
+    return run_inherited_process(command, cwd=Path.cwd(), timeout=timeout,
+                                 cleanup_deadline=cleanup_deadline)
+
+
 def _invoke_recipient(command, deadline):
     deadline.remaining()
     if "--invocation-started-monotonic" not in command:
         command.extend(("--invocation-started-monotonic", str(deadline.started)))
-    return subprocess.run(command).returncode
+    # Let the child spend its recording reserve, then stop a stuck launcher
+    # with time still left for the entrance's own containment and return.
+    wait_end = deadline.end - deadline.reserve / 4
+    try:
+        return _recipient_run(command, timeout=max(0, wait_end - time.monotonic()),
+                              cleanup_deadline=deadline.end - deadline.reserve / 8).returncode
+    except subprocess.TimeoutExpired:
+        raise WorkError("launcher exceeded its bounded recording allowance; retained bundle may be unfinished") from None
 
 
 def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
@@ -5286,6 +5309,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                   codex_path: Path | None = None,
                   handover_recovery_session: str | None = None,
                   budget_override_reason: str | None = None,
+                  restart_unresolved_reason: str | None = None,
                   rules: dict[str, object] | None = None,
                   use_rules_path: Path | None = None) -> int:
     if state.validated_markers is None:
@@ -5317,7 +5341,15 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     timeout_argument = f"{effective_timeout:g}"
     deadline = lifecycle.current_deadline() or lifecycle.stage_deadline(decision.stage, effective_timeout)
     recovery_info = None
-    if decision.stage in RESUME_SOURCE_STAGES and work_recovery.latest_stopped(state, decision.stage) is not None:
+    restart_source = None
+    if restart_unresolved_reason is not None:
+        restart_source = work_recovery.latest_stopped(state, decision.stage)
+        if (not restart_unresolved_reason.strip() or restart_source is None
+                or not work_recovery.restartable(restart_source[2], restart_source[3])):
+            raise WorkError("restart requires a dead completed fresh failure with no reported session and a nonempty reason")
+        work_recovery.validate_target(state, decision.stage, restart_source[2], restart_source[1])
+        decision = replace(decision, continuity="fresh")
+    if restart_source is None and decision.stage in RESUME_SOURCE_STAGES and work_recovery.latest_stopped(state, decision.stage) is not None:
         decision = replace(decision, continuity="resume")
     implementer_role = "artifact_author" if decision.stage == "artifact" else "implementer"
     selected_vendor = "codex"
@@ -5336,7 +5368,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             resume_source = _resume_source(
                 f"{state.repo}#{state.issue_number}", decision.stage, record_root,
                 completed_after=(_affirmed_review(state)[0].timestamp
-                                 if decision.stage == "artifact" and _affirmed_review(state)[0] else None),
+                                 if decision.stage == "artifact" and _affirmed_review(state)[0] else None), state=state,
             )
             stopped_source = work_recovery.stopped_source(state, decision.stage)
             if stopped_source is not None:
@@ -5830,10 +5862,15 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "--timeout-seconds", timeout_argument,
             ]
             metadata = {
+                "instalment": instalment,
+                "recovery_restart_reason": restart_unresolved_reason,
+                "recovery_restart_bundle": restart_source[1] if restart_source else None,
                 "recipient_allocation_seconds": min(allocation, deadline.remaining()),
                 "budget_account_before": account,
                 "budget_override_reason": budget_override_reason,
             }
+            if restart_source and restart_source[2].get("budget_lineage"):
+                metadata["budget_lineage"] = restart_source[2]["budget_lineage"]
             if resume_source is not None:
                 metadata["predecessor_bundle"] = resume_source.path
                 if resume_source.request.get("budget_lineage"):
@@ -5867,7 +5904,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 planned_source = launch_plan.get("predecessor") or launch_plan.get("session") or {}
                 current_source = (_resume_source(
                     f"{state.repo}#{state.issue_number}", decision.stage,
-                    state.record_root or records.default_record_root().expanduser().resolve())
+                    state.record_root or records.default_record_root().expanduser().resolve(), state=state)
                     if resume_source is not None else None)
                 if (planned_source.get("id") != session
                         or (resume_source is not None and (
@@ -5978,6 +6015,7 @@ def parser() -> argparse.ArgumentParser:
                      help="explicit Claude executable for run instead of discovery")
     cli.add_argument("--codex", type=Path,
                      help="explicit Codex executable for run instead of discovery")
+    cli.add_argument("--restart-unresolved-reason", help="explicit fresh replacement of a dead completed failure with no reported session")
     cli.add_argument("--handover-recovery-session",
                      help="reserved Claude session confirmed by the holder for an unresolved handover")
     cli.add_argument("--mode", choices=("adopter", "repository-session"))
@@ -6128,6 +6166,9 @@ def _run(
         raise WorkError("run requires a stage")
     if args.command == "run" and args.stage == "catch-up" and args.implementation_root is not None:
         raise WorkError("run catch-up accepts no caller-supplied implementation root")
+    if args.restart_unresolved_reason is not None and (
+            args.command != "run" or args.stage not in RESUME_SOURCE_STAGES):
+        raise WorkError("--restart-unresolved-reason requires an implementer run stage")
     if args.handover_recovery_session is not None and (
             args.command != "run" or args.stage not in {
                 "artifact", "build", "floor", "review-disposition",
@@ -6213,6 +6254,7 @@ def _run(
             dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
             timeout_seconds=args.timeout_seconds, transport=github,
             budget_override_reason=args.budget_override_reason,
+            restart_unresolved_reason=args.restart_unresolved_reason,
             claude_path=args.claude, codex_path=args.codex,
             handover_recovery_session=args.handover_recovery_session,
             rules=rules, use_rules_path=use_rules_path,

@@ -373,6 +373,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             request["lineage_branch"] = args.lineage_branch
             request["lineage_pull_request"] = args.lineage_pull_request
             request.update({key: metadata[key] for key in (
+                "instalment", "recovery_restart_reason", "recovery_restart_bundle",
                 "budget_lineage", "budget_account_before", "budget_override_reason",
                 "progress_baseline", "predecessor_bundle", "predecessor_stop_snapshot",
                 "retained_session_id", "retained_session_source",
@@ -498,16 +499,31 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                                          on_launch=growing.launched,
                                          cleanup_deadline=deadline.cleanup_end)
                 except subprocess.TimeoutExpired as exc:
+                    if hasattr(exc, "cleanup_proven"):
+                        record["cleanup_proven"] = exc.cleanup_proven
                     ceiling = True
                     record["interruption_cause"] = "ceiling"
                     result = subprocess.CompletedProcess(command, -1, exc.stdout or b"", exc.stderr or b"")
                     reason = ""
-                    attempt["launched"] = True
+                    attempt["launched"] = getattr(exc, "launched", True)
+                    if getattr(exc, "launch_unresolved", False):
+                        record["launch_unresolved"] = True
+                except TimeoutError as exc:
+                    ceiling = True
+                    record["interruption_cause"] = "ceiling"
+                    result = subprocess.CompletedProcess(command, -1, b"", b"")
+                    reason = str(exc)
+                    allocation = 0
                 except OSError as exc:
+                    if hasattr(exc, "cleanup_proven"):
+                        record["cleanup_proven"] = exc.cleanup_proven
+                    attempt["launched"] = getattr(exc, "launched", attempt["launched"])
                     result = subprocess.CompletedProcess(command, -1, b"", str(exc).encode("utf-8"))
                     reason = f"cannot launch {args.vendor}: {exc}"
                     record["error"] = reason
                 else:
+                    if hasattr(result, "cleanup_proven"):
+                        record["cleanup_proven"] = result.cleanup_proven
                     reason = ""
                     attempt["launched"] = True
                 for name, path in (("stdout", stdout_path), ("stderr", stderr_path)):

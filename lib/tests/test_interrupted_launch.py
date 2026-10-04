@@ -330,15 +330,16 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             (store / "nonce").unlink()
             resumed = output.parent / "resumed"
             original_run = subprocess.run
+            original_recipient = work._recipient_run
             launches = []
             def launch(command, *args, **kwargs):
                 if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
                     launches.append(command)
                     actual = [sys.executable, str(LIB / "tests/fixtures/interrupted_launcher.py"),
                               "implementer", vendor, str(store), *command[2:], "--output", str(resumed)]
-                    return original_run(actual, *args, **kwargs)
+                    return original_recipient(actual, **kwargs)
                 return original_run(command, *args, **kwargs)
-            monkeypatch.setattr(work.subprocess, "run", launch)
+            monkeypatch.setattr(work, "_recipient_run", launch)
             recommendation = work.decide(fixture, {"schema_version": 1, "rules": []})
             continuity = work._named_continuity(fixture, "build", recommendation)
             assert continuity == "resume"

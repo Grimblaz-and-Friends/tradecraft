@@ -1564,3 +1564,32 @@ def test_direct_role_inference_and_conflict(job, stage, classification, expected
     args.role = "ordinary_seat" if classification != "ordinary" else "artifact_author"
     with pytest.raises(seat.DispatchError, match="classification"):
         seat.selected_role(args)
+
+
+def test_deadline_expiry_is_a_ceiling_not_an_elevation_error(job, monkeypatch):
+    args, _scenario = job
+    def expired(*_a, **_k):
+        raise TimeoutError("caller limit has no useful launch window")
+    monkeypatch.setattr(seat, "run_process", expired)
+    assert seat.run_dispatch(args) == 1
+    run = record(args)
+    assert run["interruption_cause"] == "ceiling"
+    assert not run["attempts"][0]["launched"]
+    assert "Cannot launch" not in run["attempts"][0]["reason"]
+    assert "no fallback" in run["attempts"][0]["reason"]
+
+
+def test_detached_root_deadline_is_not_a_git_spawn_error(tmp_path, monkeypatch):
+    def expired(*_a, **_k):
+        raise TimeoutError("caller limit has no useful launch window")
+    monkeypatch.setattr(seat.lifecycle, "probe_timeout", expired)
+    with pytest.raises(TimeoutError, match="caller limit"):
+        seat.detached_worktree_root(tmp_path)
+
+
+
+def test_real_missing_vendor_does_not_credit_a_seat_launch(job, monkeypatch):
+    args, _scenario = job
+    monkeypatch.setattr(seat, "resolve_command", lambda *_a: [str(args.root / "missing-vendor")])
+    assert seat.run_dispatch(args) == 1
+    assert all(not attempt["launched"] for attempt in record(args)["attempts"])

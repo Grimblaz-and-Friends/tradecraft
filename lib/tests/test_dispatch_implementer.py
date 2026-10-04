@@ -1217,3 +1217,25 @@ def test_unavailable_bridged_request_retains_provenance_without_observation(job)
     assert attempt["launched"] is False
     assert attempt["observed"]["reported_models"] == []
     assert attempt["observed"]["reported_effort"] is None
+
+
+def test_deadline_expiry_is_a_ceiling_not_a_spawn_error(job, monkeypatch):
+    args, _scenario = job
+    def expired(*_a, **_k):
+        raise TimeoutError("caller limit has no useful launch window")
+    monkeypatch.setattr(implementer, "run_process", expired)
+    assert implementer.run_implementer(args) == 1
+    run = json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
+    assert run["outcome"] == "interrupted" and run["interruption_cause"] == "ceiling"
+    assert not run["attempts"][0]["launched"]
+    assert "cannot launch" not in run["attempts"][0]["reason"]
+
+
+
+def test_real_missing_vendor_does_not_credit_an_implementer_launch(job, monkeypatch):
+    args, _scenario = job
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_a: [str(args.root / "missing-vendor")])
+    assert implementer.run_implementer(args) == 1
+    run = json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
+    assert not run["attempts"][0]["launched"]
+    assert not implementer.lifecycle.stopped(run)

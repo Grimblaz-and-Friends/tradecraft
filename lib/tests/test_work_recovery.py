@@ -116,6 +116,7 @@ def test_named_budget_guards_before_launch_and_excludes_repairs(stopped_build, m
             return subprocess.CompletedProcess(command, 0)
         return original(command, *args, **kwargs)
     monkeypatch.setattr(work.subprocess, "run", capture)
+    monkeypatch.setattr(work, "_recipient_run", capture, raising=False)
     result = work.execute_stage(fixture, work.Decision(stage, True, "resume", "holder-named-stage"),
                                 fixture.holder_root, None, "holder-session", codex_path=Path(sys.executable),
                                 budget_override_reason=reason)
@@ -191,3 +192,156 @@ def test_latest_unproved_run_refuses_another_writer(stopped_build, problem):
     save()
     with pytest.raises(work.WorkError, match="stopped bundle"):
         recovery.stopped_source(fixture, "build")
+
+
+@pytest.mark.parametrize("explicit_instalment", [False, True])
+@pytest.mark.parametrize("mode", ["repository-session", "adopter"])
+def test_sibling_stopped_attempt_cannot_replace_selected_instalment(stopped_build, monkeypatch, explicit_instalment, mode):
+    fixture, root, request, run, save = stopped_build
+    fixture.instalment = "B"
+    fixture.config = replace(fixture.config, product_repositories=frozenset({"example/consumer"}) if mode == "repository-session" else frozenset())
+    own = registry_row(root, fixture.holder_root, "change")
+    own["instalment"] = "B"
+    other_root = root.parent / "sibling"
+    other = registry_row(other_root, fixture.holder_root, "sibling-change")
+    other["instalment"] = "A"
+    monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [other, own]})
+    sibling = {**request, "dispatch_id": "sibling", "root": str(other_root),
+               "lineage_branch": "sibling-change", "launched_at": "2026-10-03T12:00:00Z"}
+    if explicit_instalment:
+        sibling["instalment"] = "A"
+    (fixture.record_root / "sibling.request.json").write_bytes(json.dumps(sibling).encode())
+    (fixture.record_root / "sibling.run.json").write_bytes(json.dumps({
+        "schema_version": 2, "dispatch_id": "sibling", "launcher_process": lifecycle.process_identity()}).encode())
+    source = recovery.stopped_source(fixture, "floor")
+    assert source.session == SESSION and source.request["root"] == str(root)
+    selected = work._resume_source("example/product#12", "floor", fixture.record_root, state=fixture)
+    assert selected == source
+
+
+def test_dead_unidentified_failure_has_an_explicit_recorded_restart(stopped_build, monkeypatch):
+    import subprocess
+    fixture, root, request, run, save = stopped_build
+    run.pop("session_identity")
+    request["budget_lineage"] = "original-budget"
+    run.update(lifecycle="completed", completed_at="2026-10-03T11:00:00Z", outcome="error",
+               attempts=[{"launched": True, "elapsed_seconds": 3}])
+    save()
+    recommendation = recovery.recommend(fixture, work.Decision("build", True, "fresh", "fixture"))
+    assert not recommendation.dispatch and "--restart-unresolved-reason" in recommendation.detail
+    commands, metadata = [], []
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, "change", False))
+    original = subprocess.run
+    def capture(command, *args, **kwargs):
+        if len(command) > 1 and Path(command[1]).name == "dispatch_implementer.py":
+            commands.append(command)
+            metadata.append(json.loads(Path(command[command.index("--lifecycle-input") + 1]).read_bytes()))
+            return subprocess.CompletedProcess(command, 0)
+        return original(command, *args, **kwargs)
+    monkeypatch.setattr(work.subprocess, "run", capture)
+    monkeypatch.setattr(work, "_recipient_run", capture, raising=False)
+    decision = work.Decision("build", True, "resume", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, fixture.holder_root, None, "holder-session",
+        codex_path=Path(sys.executable), restart_unresolved_reason="verified no saved session") == 0
+    assert len(commands) == 1 and "--resume" not in commands[0]
+    assert metadata[0]["recovery_restart_reason"] == "verified no saved session"
+    assert metadata[0]["budget_lineage"] == "original-budget"
+    assert metadata[0]["budget_account_before"]["upper_seconds"] == 3
+
+
+@pytest.mark.parametrize("problem", ["live", "uncertain", "identity", "cleanup", "unfinished"])
+def test_restart_cannot_replace_unproved_or_existing_session(stopped_build, problem):
+    fixture, root, request, run, save = stopped_build
+    run.pop("session_identity")
+    run.update(lifecycle="completed", completed_at="2026-10-03T11:00:00Z", outcome="error",
+               attempts=[{"launched": True, "elapsed_seconds": 3}])
+    if problem == "live":
+        run["launcher_process"] = lifecycle.process_identity()
+    elif problem == "uncertain":
+        run.pop("launcher_process")
+    elif problem == "identity":
+        run["session_identity"] = {"session_id": SESSION}
+    elif problem == "cleanup":
+        run["cleanup_proven"] = False
+    else:
+        run.pop("completed_at")
+    save()
+    with pytest.raises(work.WorkError, match="restart requires"):
+        work.execute_stage(fixture, work.Decision("build", True, "resume", "holder-named-stage"),
+            fixture.holder_root, None, "holder-session", restart_unresolved_reason="replace")
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_unproved_descendant_cleanup_cannot_supply_resume(stopped_build, completed):
+    fixture, root, request, run, save = stopped_build
+    run["cleanup_proven"] = False
+    if completed:
+        run.update(lifecycle="completed", completed_at="2026-10-03T11:00:00Z", outcome="interrupted",
+                   attempts=[{"launched": True, "elapsed_seconds": 20}])
+    save()
+    with pytest.raises(work.WorkError, match="descendant cleanup is unproved"):
+        recovery.stopped_source(fixture, "build")
+
+
+def test_entrance_wait_includes_child_recording_but_reserves_its_own_return(monkeypatch):
+    import subprocess
+    deadline = lifecycle.Deadline(30, started=100)
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: 103)
+    calls = []
+    def capture(command, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(work, "_recipient_run", capture, raising=False)
+    # The old unbounded route returns without calling the contained recipient seam.
+    monkeypatch.setattr(work.subprocess, "run", capture)
+    assert work._invoke_recipient(["launcher"], deadline) == 0
+    assert calls[0]["timeout"] == 24.5
+    assert calls[0]["cleanup_deadline"] == 128.75
+    assert calls[0]["timeout"] > deadline.remaining()
+
+
+def test_entrance_stops_a_stuck_launcher_and_its_descendant_before_caller_limit(tmp_path, record_property):
+    import subprocess
+    import time
+    child_pid = tmp_path / "child-pid"
+    code = ("import pathlib, subprocess, sys, time; "
+            "child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+            f"pathlib.Path({str(child_pid)!r}).write_text(str(child.pid)); "
+            "print('launcher blocked', flush=True); time.sleep(60)")
+    started = time.monotonic()
+    deadline = lifecycle.Deadline(15, started=started)
+    with pytest.raises(work.WorkError, match="bounded recording allowance"):
+        work._invoke_recipient([sys.executable, "-c", code], deadline)
+    elapsed = time.monotonic() - started
+    record_property("entrance_elapsed_seconds", elapsed)
+    print(f"entrance exit {elapsed:.3f}s / 15s")
+    assert elapsed < 15
+    assert child_pid.is_file()
+    with pytest.raises(ProcessLookupError):
+        lifecycle.process_identity(int(child_pid.read_text()))
+
+
+
+def test_completed_cleanup_proves_death_after_a_short_lived_process(stopped_build):
+    fixture, root, request, run, save = stopped_build
+    run.pop("session_identity")
+    run.update(lifecycle="completed", completed_at="2026-10-03T11:00:00Z", outcome="error",
+               cleanup_proven=True, recipient_process={"pid": 42, "unavailable_reason": "exited before identity read"},
+               attempts=[{"launched": True, "elapsed_seconds": 3}])
+    save()
+    assert recovery.restartable(request, run)
+    run["cleanup_proven"] = False
+    assert not recovery.restartable(request, run)
+
+
+def test_sibling_copy_conflict_cannot_hide_selected_dispatch(stopped_build, monkeypatch):
+    fixture, root, request, run, save = stopped_build
+    fixture.instalment = "B"
+    sibling = {**request, "instalment": "A"}
+    row = ("2026-10-03T12:00:00Z", "conflicted.run.json", sibling,
+           {**run, "recovery_error": "conflicting copied requests"})
+    monkeypatch.setattr(lifecycle, "launch_bundles", lambda *_a, **_k: [row])
+    decision = recovery.recommend(fixture, work.Decision("build", True, "fresh", "fixture"))
+    assert not decision.dispatch and "conflicting copied requests" in decision.detail
+    row[3].pop("recovery_error")
+    assert recovery.latest_stopped(fixture, "build") is None

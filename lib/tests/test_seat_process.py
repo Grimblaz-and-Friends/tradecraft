@@ -14,6 +14,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import seat_process as process
 
 
+def test_failed_vendor_spawn_does_not_report_a_launch(tmp_path):
+    launched = []
+    with pytest.raises(FileNotFoundError):
+        process.run_process([str(tmp_path / "missing-vendor")], input=b"", cwd=tmp_path,
+                            timeout=20, on_launch=launched.append)
+    assert launched == []
+
+
+def test_successful_vendor_spawn_acknowledges_the_containment_owner(tmp_path, monkeypatch):
+    launched = []
+    owners = []
+    original = process.subprocess.Popen
+    def spawn(*args, **kwargs):
+        child = original(*args, **kwargs)
+        owners.append(child.pid)
+        return child
+    monkeypatch.setattr(process.subprocess, "Popen", spawn)
+    result = process.run_process([sys._base_executable, "-c", "import os; print(os.getpid())"],
+        input=b"", cwd=tmp_path, timeout=20, on_launch=launched.append)
+    assert launched == owners
+    assert int(result.stdout) > 0 and result.returncode == 0
+
+
 def test_worker_preserves_binary_streams_exit_status_and_missing_launch(tmp_path):
     content = bytes(range(256)) * 1000
     command = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); sys.stderr.buffer.write(b'diagnostic'); sys.exit(7)"]
@@ -323,3 +346,65 @@ def test_detached_descendant_cannot_hold_timeout_drain_open(tmp_path):
                 os.kill(int(pid.read_text()), signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX setsid descendant")
+@pytest.mark.parametrize("incremental", [False, True])
+def test_setsid_descendant_is_dead_or_cleanup_is_explicitly_unproved(tmp_path, incremental):
+    import run_lifecycle
+    escaped_pid = tmp_path / "escaped-pid"
+    escaped_code = ("import os, pathlib, time; os.setsid(); "
+                    f"pathlib.Path({str(escaped_pid)!r}).write_text(str(os.getpid())); "
+                    "os.close(0); os.close(1); os.close(2); time.sleep(30)")
+    command = [sys.executable, "-c", "import subprocess, sys, time; "
+               f"subprocess.Popen([sys.executable, '-c', {escaped_code!r}]); time.sleep(30)"]
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            process.run_process(command, input=b"", cwd=tmp_path, timeout=5,
+                                **({"on_tick": lambda: None} if incremental else {}))
+        assert escaped_pid.is_file()
+        if caught.value.cleanup_proven:
+            with pytest.raises(ProcessLookupError):
+                run_lifecycle.process_identity(int(escaped_pid.read_text()))
+        else:
+            assert caught.value.cleanup_proven is False
+        if sys.platform.startswith("linux"):
+            assert caught.value.cleanup_proven, "Linux must reap adopted escapees, even without open pipes."
+    finally:
+        if escaped_pid.is_file():
+            try:
+                os.kill(int(escaped_pid.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+
+def test_worker_ack_failure_retains_proof_that_vendor_spawned(tmp_path, monkeypatch):
+    error = tmp_path / "error.json"
+    monkeypatch.setattr(process, "_join_kill_on_close_job", lambda: None)
+    monkeypatch.setattr(process.subprocess, "Popen", lambda *_a, **_k: SimpleNamespace(pid=42))
+    original = Path.write_bytes
+    def write(path, data):
+        if path.suffix == ".tmp":
+            raise PermissionError("acknowledgement unavailable")
+        return original(path, data)
+    monkeypatch.setattr(Path, "write_bytes", write)
+    monkeypatch.setattr(sys, "argv", ["worker", str(error), "vendor"])
+    assert process.main() == 1
+    assert json.loads(error.read_bytes())["launched"] is True
+    assert process._launch_error(error).launched is True
+
+
+
+def test_contained_entrance_inherits_binary_streams_and_exit_status(tmp_path):
+    payload = bytes(range(256)) * 100
+    child = "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); sys.stderr.buffer.write(bytes([255])+b'diagnostic'); sys.exit(7)"
+    caller = (f"import sys, time; sys.path.insert(0, {str(Path(process.__file__).parent)!r}); "
+              "from seat_process import run_inherited_process; "
+              f"result=run_inherited_process([sys.executable, '-c', {child!r}], "
+              f"cwd={str(tmp_path)!r}, timeout=20, cleanup_deadline=time.monotonic()+21); "
+              "sys.exit(result.returncode)")
+    result = subprocess.run([sys.executable, "-c", caller], input=payload,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmp_path, timeout=30)
+    assert result.returncode == 7 and result.stdout == payload
+    assert result.stderr == b"\xffdiagnostic"
