@@ -1020,7 +1020,8 @@ def _collect_workflow_provenance(transport: GitHubREST,
 
 
 def read_state(transport: GitHubREST, repo: str, issue_number: int,
-               config: WorkConfig | None = None) -> WorkState:
+               config: WorkConfig | None = None,
+               raw_output_patterns: list[str] | None = None) -> WorkState:
     work_config = config or WorkConfig()
     base = f"repos/{repo}"
     issue_endpoint = f"{base}/issues/{issue_number}"
@@ -1058,6 +1059,8 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     try:
         files = _get_list(transport, f"{pr_endpoint}/files")
     except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+        if not raw_output_patterns:
+            raise
         files = []
         state.file_inventory_error = f"Cannot collect PR file inventory: {exc}"
     state.files = files
@@ -5388,7 +5391,8 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
         if landed.returncode == 0:
             row["revision_before"], row["status_before"] = _git_snapshot(root)
             write_registry(registry)
-            fresh = read_state(transport, state.repo, state.issue_number, state.config)
+            fresh = read_state(transport, state.repo, state.issue_number, state.config,
+                               rules.get("raw_output_patterns") if rules is not None else None)
             fresh.record_root = state.record_root
             prepare_use_evidence(fresh, transport, rules)
             report["use_application"] = fresh.use_application
@@ -5426,7 +5430,8 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     if use_blob is None:
         raise WorkError("committed use policy is unavailable")
     effective_rules = _use_rules_bytes(use_blob, snapshot.paths["use_rules"])
-    fresh = read_state(transport, state.repo, state.issue_number, effective_config)
+    fresh = read_state(transport, state.repo, state.issue_number, effective_config,
+                       effective_rules.get("raw_output_patterns"))
     fresh.record_root = state.record_root
     fresh.policy_sources = snapshot.sources
     _evaluate_raw_output(fresh, effective_rules, str(use_rules_path))
@@ -5436,7 +5441,7 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
         return 0
     sync = _synchronization_decision(fresh)
     if sync is not None:
-        _emit_report(_reported_decision(fresh, sync).as_dict(), state)
+        _emit_report(_reported_decision(fresh, sync).as_dict(), fresh)
         return 0
     prepare_use_evidence(fresh, transport, effective_rules)
     composed = compose_proof(fresh, effective_rules)
@@ -5455,7 +5460,7 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     before_state = replace(fresh, pr=before, synchronization=_collect_synchronization(transport, before))
     sync = _synchronization_decision(before_state)
     if sync is not None:
-        _emit_report(_reported_decision(before_state, sync).as_dict(), state)
+        _emit_report(_reported_decision(before_state, sync).as_dict(), before_state)
         return 0
     body = proof_document.document(composed, floor_context=floor_evaluation(fresh))
     _verify_policy_snapshot(root, state.repo, use_rules_path, snapshot)
@@ -5473,7 +5478,7 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     after_state = replace(fresh, pr=after, synchronization=_collect_synchronization(transport, after))
     sync = _synchronization_decision(after_state)
     if sync is not None:
-        _emit_report({**_reported_decision(after_state, sync).as_dict(), "comment": publication}, state)
+        _emit_report({**_reported_decision(after_state, sync).as_dict(), "comment": publication}, after_state)
         return 0
     reruns = _rerun_gate_evaluations(transport, fresh, head)
     _emit_report({
@@ -6540,7 +6545,12 @@ def _run(
             )
         except WorkError as exc:
             policy_problem = str(exc)
-    state = read_state(github, args.repo, args.issue, config)
+    try:
+        state = read_state(github, args.repo, args.issue, config, rules.get("raw_output_patterns"))
+    except (OSError, UnicodeError, ValueError, WorkError) as exc:
+        exc.raw_output = raw_output.evaluate(rules, str(use_rules_path))
+        exc.stage = args.stage
+        raise
     state.record_root = records.default_record_root().expanduser().resolve()
     state.holder_root = root
     state.instalment = args.instalment

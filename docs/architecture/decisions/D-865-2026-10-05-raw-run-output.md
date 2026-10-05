@@ -1,8 +1,8 @@
-# D-845 (provisional issue key) — Raw run output leaves summaries alone
+# D-865 — Raw run output leaves summaries alone
 
 **Purpose:** preserve the owner choices and entrance boundaries behind #845. **Audience:** a future session revising run-evidence guidance or the raw-output check. **Success:** it can reconsider retention, declaration, matching and proof separation from the governing record and pinned evidence.
 
-This key is provisional because the build precedes its pull request. The holder's supplied reading directs the builder to rekey this entry and its index row to the PR number in its first resumed turn after the PR exists.
+The build preceded [pull request #865](https://github.com/Grimblaz-and-Friends/tradecraft/pull/865). This entry and its index now use that PR's key, as the holder's supplied reading requires on the builder's first resumed turn.
 
 The owner affirmed the implementation brief on [#845](https://github.com/Grimblaz-and-Friends/tradecraft/issues/845) on 2026-10-05. The [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/845#issuecomment-5988291572), settled by the [cold verdict](https://github.com/Grimblaz-and-Friends/tradecraft/issues/845#issuecomment-5988289355), and the supplied amended holder reading govern this build. The brief records the earlier 2026-10-03 practice-wide ruling and the product harm: raw evidence swelled changes and exceeded reviewer input limits. This entry adds no product declaration or cleanup.
 
@@ -21,6 +21,8 @@ Choose optional top-level `raw_output_patterns` in the selected repository chang
 Choose status-bearing, complete paginated PR inventories over flattened changed paths, because only the former distinguishes deletion. Ignore `removed`, check recognized non-removal statuses, and check both rename names. Renaming out retains the file and is not deletion. A malformed declaration or insufficient inventory stays unverifiable; it cannot silently become absence or clear. Collect all matched names without truncation, and return removal to the builder instead of editing history in the entrance.
 
 Use shared report emission for ordinary, named-stage, registration and tree results. Registration/tree declaration reads report absence or uncertainty without acquiring the use-policy prerequisites those routes bypass. Keep raw-output evaluation out of proof fields, prose, diagnostics and source descriptors. The policy blob's existing digest naturally covers the new member; the selected policy snapshot, fresh proof read and readiness checks before effects answer policy/head races. Keep floor, synchronization, repair routes and the gate's authority under their prior contracts.
+
+The connected review found that `read_state` at `81e9acda4c8c5971512d4e7315f36ef42ef3ce46` retained a failed file read even without a declaration. Its empty substitute reached `effective_policy` and `_panel_next`, where absence of paths could skip owed use and revision-diff evidence. Restore the original collection refusal for absent or empty declarations. Only a selected nonempty declaration retains the failure for an unverifiable raw-output report; ordinary reads, proof's committed-policy fresh read and catch-up carry that selection into collection. This preserves the affirmed absence allowance without weakening existing evidence prerequisites.
 
 ## Pinned evidence for the boundaries
 
