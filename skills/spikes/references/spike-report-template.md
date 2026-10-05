@@ -11,6 +11,7 @@ Copy the template below whole; fill each applicable field and mark the rest `not
 - **Arms:** <the material each arm carried | not applicable>
 - **Docket and seats:** <item count; seats per arm | not applicable>
 - **What came back:** <result>
+- **Raw-output summaries:** <entries under the `authoring` cell's run-output reference | no raw files produced>
 - **What it changes in what you are writing:** <change>
 - **Seats dispatched:** <each seat; where it stopped; what it was told it could not leave | none>
 - **Record search:** <hit, with location | none | not applicable>

@@ -34,6 +34,8 @@ An incomplete handover keeps its reserved Claude identity. A later run reuses th
 
 ## Criteria after every implementation turn
 
+Builders return summary entries for their raw run evidence under the `authoring` cell's run-output reference. Before the floor, the holder checks the build's PR diff for raw output and sends removal to the builder as a repair; undeclared repositories still owe this manual check because patterns cannot define raw output for every product. The holder retains summaries alone.
+
 At the end of every build or repair through build, reviewer disposition, use findings, or a floor turn that changes implementation, the builder maps each artifact criterion to a committed test carried by CI, a check it can run itself, or an owed fresh reader. Commit criteria that can be tests so later heads rerun them. Run every remaining builder-executable criterion and return its ID, command or procedure, tested revision, result and limitation. Return each fresh-reader criterion's ID and exact artifact text as an outstanding holder obligation; the builder neither launches nor judges that reader.
 
 The holder reads that return and launches each owed reader as a separate fresh recorded seat through `lib/dispatch_seat.py`, with a distinct stage such as `acceptance-criterion`, the criterion's verbatim artifact text, required capability and built-result inputs. Retain the actual staffing, result and dispatch identity and post the whole return. Before authorizing reviewer readiness, check that every non-CI criterion is accounted for and passed, and every owed fresh-reader return is recorded; missing, unrun, failed or unresolved criteria stop readiness even when CI is green. Record the results and seat references used for that authorization.

@@ -15,6 +15,7 @@ sys.path.insert(0, str(LIB))
 import work
 import launch_settings
 import connected_review
+import raw_output
 
 
 # Synthetic entrance policy: these fixtures do not load a repository's rules.
@@ -6721,6 +6722,534 @@ class ReadyTransport:
         self.operations.append(("ready", query, variables))
         self.draft = False
         return {"data": {"markPullRequestReadyForReview": {"pullRequest": {"isDraft": False}}}}
+
+
+RAW_RULES = {**RULES, "raw_output_patterns": ["run-output/**"]}
+
+
+def raw_fixture(files, *, draft=True, count=None, brief=MECHANICAL):
+    fixture = state(brief, FLOOR, pr=True, draft=draft,
+                    config=work.WorkConfig(marker_producers=frozenset({PRODUCER}),
+                                           reviewer_label="reviewers"))
+    fixture.pr.update(node_id="PR_fixture", changed_files=len(files) if count is None else count)
+    fixture.files = deepcopy(files)
+    fixture.issue_comments[0].update(id=41, created_at="2026-09-23T12:00:00Z",
+                                    html_url="https://github.example/issues/12#issuecomment-41")
+    work.validate_marker_claims(fixture)
+    return fixture
+
+
+def raw_endpoint(stage, fixture, rules, tmp_path, monkeypatch, *, read=None, transport=None):
+    """Exercise real endpoint effects, with synthetic public state and policy."""
+    effects = []
+    transport = transport or ReadyTransport(draft=bool(fixture.pr.get("draft")))
+    original_compose = work.compose_proof
+
+    def compose(*args):
+        effects.append(("compose",))
+        return original_compose(*args)
+
+    monkeypatch.setattr(work, "compose_proof", compose)
+    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args: None)
+    monkeypatch.setattr(work, "_publish_proof_comment", lambda _t, _s, body, _h:
+                        effects.append(("publish", body)) or {"action": "created", "id": 91})
+    monkeypatch.setattr(work, "_rerun_gate_evaluations", lambda *_args:
+                        effects.append(("rerun",)) or [])
+    if stage == "proof":
+        root = policy_repository(tmp_path)
+        path = write_policy(root, rules)
+        git(root, "add", POLICY_PATH)
+        git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "commit", "-m", "synthetic raw policy")
+        monkeypatch.setattr(work, "read_state", read or (lambda *_args: fixture))
+        assert work._execute_proof(transport, fixture, root, rules, path, None, None) == 0
+    else:
+        assert work._execute_ready_reviewers(transport, fixture, rules, None, None) == 0
+    return effects + transport.operations
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+@pytest.mark.parametrize("draft", [False, True])
+@pytest.mark.parametrize("files, expected", [
+    ([{"filename": "run-output/a.json", "status": "added"}], ["run-output/a.json"]),
+    ([{"filename": "run-output/a.json", "status": "modified"}], ["run-output/a.json"]),
+    ([{"filename": "run-output/a.json", "status": "unchanged"}], ["run-output/a.json"]),
+    ([{"filename": "run-output/new.bin", "status": "renamed", "previous_filename": "src/old.bin"}],
+     ["run-output/new.bin"]),
+    ([{"filename": "src/new.bin", "status": "renamed", "previous_filename": "run-output/old.bin"}],
+     ["run-output/old.bin"]),
+    ([{"filename": "run-output/z.bin", "status": "renamed", "previous_filename": "run-output/a.bin"},
+      {"filename": "run-output/b.bin", "status": "copied"}],
+     ["run-output/a.bin", "run-output/b.bin", "run-output/z.bin"]),
+])
+def test_raw_output_refuses_both_endpoints_before_every_effect(
+        stage, draft, files, expected, tmp_path, monkeypatch, capsys):
+    fixture = raw_fixture(files, draft=draft)
+    assert raw_endpoint(stage, fixture, RAW_RULES, tmp_path, monkeypatch) == []
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == stage and report["status"] == "holder-owned"
+    assert report["raw_output"]["status"] == "blocked"
+    assert report["raw_output"]["paths"] == expected
+    assert SHA in report["detail"] and "summary" in report["detail"]
+    assert stage in report["detail"] and report["raw_output"]["policy"] in report["detail"]
+    assert all(path in report["detail"] for path in expected)
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+@pytest.mark.parametrize("risk,lane", work.LANES)
+def test_raw_output_refuses_on_every_review_lane(
+        stage, risk, lane, tmp_path, monkeypatch, capsys):
+    fixture = raw_fixture(
+        [{"filename": "run-output/a.bin", "status": "added"}],
+        brief=AFFIRMED.replace("connected", lane).replace("ordinary", risk),
+    )
+    assert raw_endpoint(stage, fixture, RAW_RULES, tmp_path, monkeypatch) == []
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "raw-output-blocked"
+    assert report["raw_output"]["paths"] == ["run-output/a.bin"]
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+@pytest.mark.parametrize("files, blocked", [
+    ([{"filename": "run-output/a.bin", "status": "removed"}], False),
+    ([{"filename": "src/a.py", "status": "added"},
+      {"filename": "src/b.py", "status": "changed"},
+      {"filename": "C:/src/a.py", "status": "added"}], False),
+    ([{"filename": "run-output/a.bin", "status": "removed"},
+      {"filename": "run-output/b.bin", "status": "added"}], True),
+])
+def test_raw_output_deletions_unrelated_changes_and_mixed_changes(
+        stage, files, blocked, tmp_path, monkeypatch, capsys):
+    effects = raw_endpoint(stage, raw_fixture(files), RAW_RULES, tmp_path, monkeypatch)
+    report = json.loads(capsys.readouterr().out)
+    assert report["raw_output"]["status"] == ("blocked" if blocked else "clear")
+    assert [item[0] for item in effects] == ([] if blocked else
+                                           ["compose", "publish", "rerun"] if stage == "proof"
+                                           else ["label", "ready"])
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+@pytest.mark.parametrize("files, count, error, reason", [
+    ([], 1, None, "retrieved"),
+    ([], True, None, "changed_files"),
+    ([{"filename": "src/a", "status": "added"}] * 2, 2, None, "Duplicate"),
+    ([{"filename": "", "status": "added"}], 1, None, "filename"),
+    ([{"filename": "../src/a", "status": "added"}], 1, None, "filename"),
+    ([{"filename": "/src/a", "status": "added"}], 1, None, "filename"),
+    ([{"filename": "src/a"}], 1, None, "status"),
+    ([{"filename": "src/a", "status": "mystery"}], 1, None, "status"),
+    ([{"filename": "src/a", "status": "renamed"}], 1, None, "previous_filename"),
+    ([], 0, "file endpoint unavailable", "unavailable"),
+    ([{"filename": "src/a", "status": []}], 1, None, "status"),
+])
+def test_raw_output_unverifiable_inventory_never_authorizes_effects(
+        stage, files, count, error, reason, tmp_path, monkeypatch, capsys):
+    fixture = raw_fixture(files, count=count)
+    fixture.file_inventory_error = error
+    assert raw_endpoint(stage, fixture, RAW_RULES, tmp_path, monkeypatch) == []
+    report = json.loads(capsys.readouterr().out)
+    assert report["raw_output"]["status"] == "unverifiable"
+    assert reason in report["detail"] and "retry" in report["detail"]
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+@pytest.mark.parametrize("patterns", [None, []])
+def test_raw_output_absent_and_empty_skip_inventory_validation(
+        stage, patterns, tmp_path, monkeypatch, capsys):
+    rules = RULES if patterns is None else {**RULES, "raw_output_patterns": patterns}
+    fixture = raw_fixture([{"filename": "run-output/a"}], count=99)
+    fixture.file_inventory_error = "incomplete"
+    assert raw_endpoint(stage, fixture, rules, tmp_path, monkeypatch)
+    assert json.loads(capsys.readouterr().out)["raw_output"]["message"] == "No raw-output patterns are declared."
+
+
+@pytest.mark.parametrize("value", [None, "raw/**", 1, {}, [None], [1], [""], [" \t"]])
+def test_raw_output_malformed_policy_is_a_named_policy_error(value, tmp_path):
+    path = write_policy(tmp_path, {**RULES, "raw_output_patterns": value})
+    with pytest.raises(work.WorkError, match="raw_output_patterns") as raised:
+        work.load_use_rules(path)
+    assert str(path) in str(raised.value)
+    assert raw_output.inspect_policy(path)["status"] == "unverifiable"
+
+
+@pytest.mark.parametrize("path, pattern, blocked", [
+    ("raw/a/b.bin", "raw/*", True),
+    ("raw/a/b.bin", "raw/**", True),
+    ("raw/a.bin", "raw/**", True),
+    ("Raw/a.bin", "raw/**", False),
+    ("src/raw/a.bin", "raw/**", False),
+    ("raw\\a.bin", "raw/**", True),
+    ("raw/a.bin ", "raw/* ", True),
+    ("C:/src/a", "C:/**", True),
+    ("C:/src/a", "raw/**", False),
+])
+def test_raw_output_matching_is_literal_case_sensitive_fnmatch(path, pattern, blocked):
+    fixture = raw_fixture([{"filename": path, "status": "added"}])
+    work._evaluate_raw_output(fixture, {**RULES, "raw_output_patterns": [pattern]}, "fixture policy")
+    assert fixture.raw_output["status"] == ("blocked" if blocked else "clear")
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+def test_raw_output_pagination_names_every_match(stage, tmp_path, monkeypatch, capsys):
+    # Run the production slurp/flatten transport, not a flattened fixture alone.
+    pages = [[{"filename": f"run-output/{i:03}.bin", "status": "added"}
+              for i in range(100)],
+             [{"filename": "run-output/last.bin", "status": "modified"}]]
+    transport = adopter_transport()
+    base = "repos/acme/widget"
+    transport.values[f"{base}/pulls/9"]["changed_files"] = 101
+    commands = []
+
+    def gh(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(pages).encode(), b"")
+
+    original_probe = work._run_probe
+
+    def probe(command, **kwargs):
+        return gh(command, **kwargs) if command[0] == "gh" else original_probe(command, **kwargs)
+
+    monkeypatch.setattr(work, "_run_probe", probe)
+
+    class PagedTransport(FakeTransport):
+        def get(self, endpoint, *, paginate=False):
+            if endpoint.endswith("/files"):
+                return work.GitHubREST().get(endpoint, paginate=paginate)
+            return super().get(endpoint, paginate=paginate)
+
+    collected = work.read_state(PagedTransport(transport.values), "acme/widget", 3)
+    assert len(collected.files) == 101
+    assert commands == [["gh", "api", "--method", "GET", f"{base}/pulls/9/files", "--paginate", "--slurp"]]
+    fixture = raw_fixture(collected.files)
+    assert raw_endpoint(stage, fixture, RAW_RULES, tmp_path, monkeypatch) == []
+    report = json.loads(capsys.readouterr().out)
+    assert len(report["raw_output"]["paths"]) == 101
+    assert report["raw_output"]["paths"][-1] == "run-output/last.bin"
+
+
+def test_raw_output_proof_rechecks_fresh_head_before_composition(tmp_path, monkeypatch, capsys):
+    initial = raw_fixture([{"filename": "src/a", "status": "added"}])
+    fresh = raw_fixture([{"filename": "run-output/new.bin", "status": "added"}])
+    fresh.pr["head"]["sha"] = "b" * 40
+    work._evaluate_raw_output(initial, RAW_RULES, "initial policy")
+    assert initial.raw_output["status"] == "clear"
+    assert raw_endpoint("proof", initial, RAW_RULES, tmp_path, monkeypatch,
+                        read=lambda *_args: fresh) == []
+    report = json.loads(capsys.readouterr().out)
+    assert "b" * 40 in report["detail"]
+    assert report["raw_output"]["paths"] == ["run-output/new.bin"]
+
+
+def test_raw_output_ready_refuses_head_movement_before_first_effect(tmp_path, monkeypatch):
+    fixture = raw_fixture([{"filename": "src/a", "status": "added"}])
+
+    class Moving(ReadyTransport):
+        def get(self, endpoint, *, paginate=False):
+            result = super().get(endpoint, paginate=paginate)
+            if endpoint.endswith("/issues/7"):
+                self.head = "b" * 40  # The new head's inventory carries raw output.
+            return result
+
+    transport = Moving()
+    with pytest.raises(work.WorkError, match="before ready effects"):
+        raw_endpoint("ready-reviewers", fixture, RAW_RULES, tmp_path, monkeypatch, transport=transport)
+    assert transport.operations == []
+
+
+@pytest.mark.parametrize("initial", [RULES, RAW_RULES])
+def test_raw_output_ready_policy_change_requires_recollection_before_first_effect(
+        initial, tmp_path, monkeypatch, capsys):
+    fixture = raw_fixture([{"filename": "src/a", "status": "added"}])
+    path = write_policy(tmp_path, initial)
+    fixture.readiness_policy = (path, path.read_bytes())
+
+    class Changing(ReadyTransport):
+        def get(self, endpoint, *, paginate=False):
+            result = super().get(endpoint, paginate=paginate)
+            if endpoint.endswith("/issues/7"):
+                path.write_bytes(json.dumps({**RULES, "raw_output_patterns": ["src/**"]}).encode())
+            return result
+
+    transport = Changing()
+    assert raw_endpoint("ready-reviewers", fixture, initial, tmp_path, monkeypatch, transport=transport) == []
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "readiness-policy-changed" and "retry" in report["detail"]
+
+
+def test_raw_output_ready_policy_change_during_label_write_stops_ready(tmp_path, monkeypatch):
+    fixture = raw_fixture([{"filename": "src/a", "status": "added"}])
+    path = write_policy(tmp_path, RAW_RULES)
+    fixture.readiness_policy = (path, path.read_bytes())
+
+    class Changing(ReadyTransport):
+        def post(self, endpoint, payload):
+            result = super().post(endpoint, payload)
+            path.write_bytes(json.dumps({**RULES, "raw_output_patterns": ["src/**"]}).encode())
+            return result
+
+    transport = Changing()
+    with pytest.raises(work.WorkError, match="policy changed before ready transition"):
+        raw_endpoint("ready-reviewers", fixture, RAW_RULES, tmp_path, monkeypatch, transport=transport)
+    assert [item[0] for item in transport.operations] == ["label"]
+
+
+@pytest.mark.parametrize("selection", ["default", "override"])
+def test_raw_output_readiness_uses_and_snapshots_selected_checkout_policy(
+        selection, tmp_path, monkeypatch, capsys):
+    root = policy_repository(tmp_path)
+    write_policy(root, {**RULES, "raw_output_patterns": ["other/**"]})
+    selected = root / POLICY_PATH if selection == "default" else root / "override.json"
+    # Uncommitted policy is lawful for readiness, including an override.
+    write_policy(root, RAW_RULES, selected.relative_to(root).as_posix())
+    fixture = raw_fixture([{"filename": "run-output/a.bin", "status": "added"}])
+    fixture.floor_public = {"outcome": "ci-met", "head": SHA}
+    monkeypatch.setattr(work, "read_state", lambda *_args: fixture)
+    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args: None)
+    args = ["run", "ready-reviewers", "--repo", fixture.repo, "--issue", "12", "--root", str(root)]
+    if selection == "override":
+        args.extend(["--use-rules", "override.json"])
+    transport = ReadyTransport()
+    assert work.run(work.parser().parse_args(args), transport=transport) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert transport.operations == []
+    assert fixture.readiness_policy == (selected, selected.read_bytes())
+    assert report["raw_output"]["status"] == "blocked"
+    assert report["raw_output"]["policy"] == str(selected)
+
+
+@pytest.mark.parametrize("invalid", [b"not json", b'{"schema_version": 2}', b'[]'])
+def test_raw_output_malformed_required_policy_never_reports_absence(invalid, tmp_path, monkeypatch, capsys):
+    path = tmp_path / POLICY_PATH
+    path.parent.mkdir()
+    path.write_bytes(invalid)
+    monkeypatch.setattr(work, "GitHubREST", lambda: object())
+    assert work.main(["--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path)]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["raw_output"]["status"] == "unverifiable"
+    assert "No raw-output patterns are declared." not in report["raw_output"]["message"]
+
+
+@pytest.mark.parametrize("files", [
+    [{"filename": "src/a", "status": "added"}],
+    [{"filename": "run-output/a.bin", "status": "removed"}],
+])
+def test_raw_output_declared_proof_keeps_existing_schema_rendering_and_blob_digest(
+        files, tmp_path, monkeypatch, capsys):
+    effects = raw_endpoint("proof", raw_fixture(files), RAW_RULES, tmp_path, monkeypatch)
+    body = next(item[1] for item in effects if item[0] == "publish")
+    composed = work._proof_payload(body)
+    assert work.proof_document.validate(composed) == composed
+    assert set(composed) == {"schema_version", "identity", "policy", "floor", "use",
+                             "reviewers", "dispositions", "declarations", "diagnostics"}
+    assert set(composed["policy"]) == {"work_configuration", "use_rules"}
+    assert "raw_output" not in body and "raw-output" not in body and "run-output/" not in body
+    root = tmp_path / "policy-repository"
+    committed = git(root, "show", f"HEAD:{POLICY_PATH}").stdout
+    assert b'raw_output_patterns' in committed
+    assert composed["policy"]["use_rules"]["sha256"] == hashlib.sha256(committed).hexdigest()
+    assert set(composed["policy"]["use_rules"]) == {"repository", "path", "revision", "sha256"}
+    assert json.loads(capsys.readouterr().out)["raw_output"]["status"] == "clear"
+
+
+@pytest.mark.parametrize("patterns", [None, []])
+@pytest.mark.parametrize("route", ["ordinary", "success", "refusal", "waiting", "release-report", "catch-up"])
+def test_raw_output_undeclared_survives_decision_and_stage_report_envelopes(
+        patterns, route, tmp_path, monkeypatch, capsys):
+    rules = RULES if patterns is None else {**RULES, "raw_output_patterns": patterns}
+    fixture = raw_fixture([])
+    if route == "ordinary":
+        work._emit_report(work.decide(fixture, rules).as_dict(), fixture)
+    elif route == "catch-up":
+        monkeypatch.setattr(work.records, "producer_version", lambda: "0.1.0")
+        work.execute_stage(fixture, work.Decision("catch-up", False, None, "named"),
+                           tmp_path, None, rules=rules)
+    else:
+        stage = "release-report" if route == "release-report" else "build"
+        if route == "waiting":
+            stage = "floor"
+            fixture.synchronization.update(behind=True, strict=None)
+        elif route == "refusal":
+            stage = "floor"
+        work.execute_stage(fixture, work.Decision(stage, False, None, "named"),
+                           tmp_path, None, rules=rules)
+    report = json.loads(capsys.readouterr().out)
+    assert report["raw_output"] == raw_output.evaluate({}, "selected change-proof policy")
+
+
+@pytest.mark.parametrize("route", ["release", "adopt", "tree"])
+@pytest.mark.parametrize("policy", ["missing", "absent", "empty", "declared", "malformed", "unreadable"])
+def test_raw_output_registration_and_tree_report_without_new_policy_prerequisites(
+        route, policy, tmp_path, monkeypatch, capsys):
+    path = tmp_path / POLICY_PATH
+    if policy != "missing":
+        # Deliberately omit schema/rules: these routes do not acquire use-policy prerequisites.
+        value = {} if policy == "absent" else {"raw_output_patterns": []} if policy == "empty" else {
+            "raw_output_patterns": ["run-output/**"] if policy == "declared" else None}
+        path.parent.mkdir(parents=True)
+        path.write_bytes(json.dumps(value).encode())
+    if policy == "unreadable":
+        original_read = Path.read_bytes
+
+        def unreadable(target):
+            if target == path:
+                raise PermissionError("fixture unreadable policy")
+            return original_read(target)
+
+        monkeypatch.setattr(Path, "read_bytes", unreadable)
+    calls = []
+    monkeypatch.setattr(work, "sweep_registry", lambda *_args: calls.append("sweep"))
+    monkeypatch.setattr(work, "release_registration", lambda *_args: calls.append("release") or tmp_path / "implementation")
+    monkeypatch.setattr(work, "adopt_registration", lambda *_args:
+                        calls.append("adopt") or (tmp_path / "implementation", "tradecraft/3-fixture"))
+    monkeypatch.setattr(work, "resolve_implementation_root", lambda *_args:
+                        (tmp_path / "implementation", "tradecraft/3-fixture", False))
+    monkeypatch.setattr(work.recipient_tree, "create_consumer_tree", lambda **_kwargs:
+                        calls.append("tree") or tmp_path / "metadata.json")
+    arguments = [route, "--repo", "acme/widget", "--issue", "3", "--root", str(tmp_path)]
+    if route == "adopt":
+        arguments.extend(["--implementation-root", str(tmp_path / "implementation"),
+                          "--holder-session-id", SESSION])
+    elif route == "tree":
+        arguments.extend(["--mode", "adopter", "--output", str(tmp_path / "tree"),
+                          "--path", "job.md", "--loading-surface", "job.md"])
+    assert work.run(work.parser().parse_args(arguments), transport=object()) == 0
+    report = json.loads(capsys.readouterr().out)["raw_output"]
+    assert report["status"] == ("not-evaluated" if policy == "declared" else
+                                "unverifiable" if policy in {"malformed", "unreadable"} else "undeclared")
+    assert route in calls
+    if report["status"] == "undeclared":
+        assert report["message"] == "No raw-output patterns are declared."
+
+
+def test_raw_output_ordinary_freshness_skips_composition_and_cached_completion(
+        tmp_path, monkeypatch, capsys):
+    root = policy_repository(tmp_path)
+    path = write_policy(root, RAW_RULES)
+    git(root, "add", POLICY_PATH)
+    git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "synthetic raw policy")
+    fixture = raw_fixture([{"filename": "run-output/a.bin", "status": "added"}], draft=False)
+    fixture.proof_current = True
+    fixture.issue_comments.append({"body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+                                   "user": {"login": PRODUCER}})
+    monkeypatch.setattr(work, "read_state", lambda *_args: fixture)
+    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args: None)
+    monkeypatch.setattr(work, "compose_proof", lambda *_args: pytest.fail("raw refusal composed expected proof"))
+    fixture.floor_public = {"outcome": "ci-met", "head": SHA}
+    args = work.parser().parse_args(["--repo", fixture.repo, "--issue", "12", "--root", str(root)])
+    assert work.run(args, transport=object()) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert fixture.proof_current is False
+    assert report["stage"] == "proof" and report["reason"] == "raw-output-blocked"
+
+
+@pytest.mark.parametrize("declared_view", ["checkout", "committed"])
+def test_raw_output_freshness_keeps_both_policy_views(declared_view, tmp_path, monkeypatch, capsys):
+    root = policy_repository(tmp_path)
+    committed = RAW_RULES if declared_view == "committed" else RULES
+    checkout = RULES if declared_view == "committed" else RAW_RULES
+    write_policy(root, committed)
+    git(root, "add", POLICY_PATH)
+    git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "--allow-empty", "-m", "synthetic policy view")
+    write_policy(root, checkout)
+    fixture = raw_fixture([{"filename": "run-output/a.bin", "status": "added"}], draft=False)
+    fixture.floor_public = {"outcome": "ci-met", "head": SHA}
+    fixture.proof_current = True
+    monkeypatch.setattr(work, "read_state", lambda *_args: fixture)
+    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args: None)
+    monkeypatch.setattr(work, "compose_proof", lambda *_args: pytest.fail("refused policy view composed proof"))
+    args = work.parser().parse_args(["--repo", fixture.repo, "--issue", "12", "--root", str(root)])
+    assert work.run(args, transport=object()) == 0
+    assert fixture.proof_current is False
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == "proof"
+    assert report["raw_output"]["status"] == ("blocked" if declared_view == "checkout" else "undeclared")
+
+
+def test_raw_output_head_movement_during_inventory_is_unverifiable():
+    base = "repos/acme/widget"
+    original = adopter_transport()
+    original.values[f"{base}/pulls/9"].update(deepcopy(state(pr=True).pr))
+    original.values[f"{base}/pulls/9"].update(number=9, changed_files=1)
+    original.values[f"{base}/pulls/9/files"] = [{"filename": "src/a", "status": "added"}]
+
+    class Moving(FakeTransport):
+        reads = 0
+
+        def get(self, endpoint, *, paginate=False):
+            value = deepcopy(super().get(endpoint, paginate=paginate))
+            if endpoint == f"{base}/pulls/9":
+                self.reads += 1
+                if self.reads > 1:
+                    value["head"]["sha"] = "b" * 40
+            return value
+
+    fixture = work.read_state(Moving(original.values), "acme/widget", 3)
+    work._evaluate_raw_output(fixture, RAW_RULES, "fixture policy")
+    assert fixture.raw_output["status"] == "unverifiable"
+    assert "identity moved" in fixture.raw_output["message"]
+
+
+def test_raw_output_named_endpoint_exception_keeps_report_context(tmp_path, monkeypatch, capsys):
+    path = write_policy(tmp_path, RULES)
+    fixture = raw_fixture([])
+    monkeypatch.setattr(work, "read_state", lambda *_args: fixture)
+    monkeypatch.setattr(work, "prepare_use_evidence", lambda *_args: None)
+    monkeypatch.setattr(work, "GitHubREST", lambda: object())
+
+    def fail_endpoint(*_args, **_kwargs):
+        raise work.WorkError("fixture endpoint refused")
+
+    monkeypatch.setattr(work, "_execute_ready_reviewers", fail_endpoint)
+    assert work.main(["run", "ready-reviewers", "--repo", fixture.repo, "--issue", "12", "--root", str(tmp_path)]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "fixture endpoint refused"
+    assert report["stage"] == "ready-reviewers" and report["head"] == SHA
+    assert report["raw_output"] == raw_output.evaluate({}, str(path))
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+def test_raw_output_does_not_close_builder_repair_routes(stage, tmp_path, capsys, monkeypatch):
+    fixture = raw_fixture([{"filename": "run-output/a.bin", "status": "added"}])
+    # Enter each repair route and stop at its existing version guard, proving
+    # the raw check neither replaces that guard nor authorizes readiness.
+    monkeypatch.setattr(work.records, "producer_version", lambda: "0.1.0")
+    work.execute_stage(fixture, work.Decision(stage, True, "fresh", "named"),
+                       tmp_path, None, rules=RAW_RULES, floor_command="python fixture.py")
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == stage and "version" in report["reason"]
+    assert report["raw_output"]["status"] == "blocked"
+
+
+@pytest.mark.parametrize("inventory", [work.WorkError("403 unavailable"), [None]])
+def test_raw_output_collection_failure_is_report_only_and_unverifiable(inventory):
+    transport = adopter_transport()
+    transport.values["repos/acme/widget/pulls/9/files"] = inventory
+    fixture = work.read_state(transport, "acme/widget", 3)
+    work._evaluate_raw_output(fixture, RAW_RULES, "fixture policy")
+    assert fixture.raw_output["status"] == "unverifiable"
+    assert "inventory" in fixture.raw_output["message"]
+    assert all("raw-output" not in str(item) for item in fixture.collection_diagnostics)
+
+
+def test_raw_output_summary_can_reproduce_a_committed_inventory_after_discard(tmp_path):
+    root = repository(tmp_path)
+    revision = git(root, "rev-parse", "HEAD").stdout.decode().strip()
+    command = ["git", "-C", str(root), "ls-tree", "-r", "--name-only", revision]
+    original = tmp_path / "inventory.raw"
+    original.write_bytes(subprocess.run(command, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout)
+    content = original.read_bytes()
+    summary = {"file": "inventory.raw", "revision": revision,
+               "sha256": hashlib.sha256(content).hexdigest(), "size_bytes": len(content),
+               "command": command}
+    original.unlink()
+    assert not original.exists()
+    reproduced = subprocess.run(summary["command"], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
+    assert hashlib.sha256(reproduced).hexdigest() == summary["sha256"]
+    assert len(reproduced) == summary["size_bytes"]
 
 
 def test_ready_reviewers_applies_configured_label_before_ready(capsys):

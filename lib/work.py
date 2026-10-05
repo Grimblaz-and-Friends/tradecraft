@@ -40,6 +40,7 @@ import review_findings
 import vendor_cli
 import use_history
 import version_policy
+import raw_output
 from winio import utf8_stdio
 from seat_process import run_process, run_inherited_process
 
@@ -340,6 +341,9 @@ class WorkState:
     synchronization: dict[str, object] | None = None
     floor_public: dict[str, object] | None = None
     floor_policy_bytes: bytes | None = None
+    raw_output: dict[str, object] | None = None
+    file_inventory_error: str | None = None
+    readiness_policy: tuple[Path, bytes] | None = None
 
     @property
     def issue_sources(self) -> list[tuple[str, str]]:
@@ -397,6 +401,7 @@ class Decision:
     use_application: dict[str, object] | None = None
 
     floor: dict[str, object] | None = None
+    raw_output: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -417,6 +422,7 @@ class Decision:
             "synchronization": self.synchronization,
             "use_application": self.use_application,
             "floor": self.floor,
+            "raw_output": self.raw_output,
         }
 
 
@@ -1049,7 +1055,11 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     state.reviews = _get_list(transport, f"{pr_endpoint}/reviews")
     _collect_connected_review_runs(transport, state)
     state.review_comments = _get_list(transport, f"{pr_endpoint}/comments")
-    files = _get_list(transport, f"{pr_endpoint}/files")
+    try:
+        files = _get_list(transport, f"{pr_endpoint}/files")
+    except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+        files = []
+        state.file_inventory_error = f"Cannot collect PR file inventory: {exc}"
     state.files = files
     paths: list[str] = []
     for item in files:
@@ -1122,6 +1132,7 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     try:
         if _pull_coordinates(live_pr) != _pull_coordinates(state.pr):
             state.synchronization["uncertainties"].append("pull-request identity moved during collection; reread")
+            state.file_inventory_error = "Pull-request identity moved during file collection"
     except WorkError as exc:
         state.synchronization["uncertainties"].append(str(exc))
     state.pr = live_pr
@@ -2163,6 +2174,10 @@ def _use_rules(value: object, source: str) -> dict[str, object]:
         version_policy.declaration(value)
     except ValueError as exc:
         raise WorkError(f"invalid use-policy version declaration: {exc}") from exc
+    try:
+        raw_output.declaration(value, source)
+    except ValueError as exc:
+        raise WorkError(str(exc)) from exc
     return value
 
 
@@ -2614,7 +2629,38 @@ def _reported_decision(state: WorkState, decision: Decision) -> Decision:
         latest_checks=tuple(latest_checks(state)),
         launch_settings=plan, synchronization=state.synchronization,
         use_application=state.use_application, floor=floor_evaluation(state),
+        raw_output=state.raw_output,
     )
+
+
+def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
+                 raw: dict[str, object] | None = None, flush: bool = False) -> None:
+    if payload.get("raw_output") is None:
+        payload = {**payload, "raw_output": raw if raw is not None else
+                   state.raw_output if state is not None else None}
+    print(json.dumps(payload, ensure_ascii=True, sort_keys=True), flush=flush)
+
+
+def _evaluate_raw_output(state: WorkState, rules: dict[str, object], source: str) -> None:
+    state.raw_output = raw_output.evaluate(
+        rules, source, pr=state.pr, files=state.files,
+        inventory_error=state.file_inventory_error,
+    )
+
+
+def _raw_output_refusal(state: WorkState, stage: str) -> Decision | None:
+    report = state.raw_output or {}
+    if report.get("status") not in raw_output.REFUSALS:
+        return None
+    remedy = (
+        "Have the builder remove every named file from the PR change and return its "
+        f"raw-output summary; then rerun {stage}."
+        if report["status"] == "blocked" else
+        f"Recollect the selected policy and complete PR file inventory, then retry {stage}."
+    )
+    return Decision(stage, False, None, "raw-output-" + str(report["status"]),
+                    f"{stage} at head {_head_sha(state)} with policy {report.get('policy')}: "
+                    + str(report["message"]) + " " + remedy, status="holder-owned")
 
 
 def _public_source(state: WorkState, item: dict[str, object], kind: str,
@@ -2967,6 +3013,7 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
 
 
 def decide(state: WorkState, rules: dict[str, object]) -> Decision:
+    _evaluate_raw_output(state, rules, str((state.raw_output or {}).get("policy") or "selected change-proof policy"))
     return work_recovery.recommend(state, _decide(state, rules))
 
 
@@ -2975,6 +3022,10 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
 
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
                detail: str | None = None) -> Decision:
+        if stage in {"ready-reviewers", "proof"}:
+            refusal = _raw_output_refusal(state, stage)
+            if refusal is not None:
+                return _reported_decision(state, refusal)
         suffix = (_ignored_marker_suffix(state) + _ignored_disposition_suffix(state)
                   + _ignored_product_incident_suffix(state))
         return _reported_decision(
@@ -3111,7 +3162,8 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
             or not staffing_qualified(applicable_use)):
         return result("use", False, None, "current-head-use-absent", USE_HOLDER_DETAIL)
     current_proof = _current_marker(state, "proof", head=sha)
-    if current_proof is None or state.proof_current is False:
+    if (current_proof is None or state.proof_current is False
+            or (state.raw_output or {}).get("status") in raw_output.REFUSALS):
         return result("proof", False, "fresh", "current-head-proof-absent-or-outdated")
     gate = _release_gate_status(state, sha)
     verdict = gate["verdict"]
@@ -5250,10 +5302,9 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
     attempt = _json_object(attempt_path) or {}
     if start != expected["head"] or not remote_head or remote_head[0] != start:
         if attempt.get("result") == start and attempt.get("start") == expected["head"]:
-            print(json.dumps({"stage": "catch-up", "status": "refused", "dispatch": False,
+            _emit_report({"stage": "catch-up", "status": "refused", "dispatch": False,
                               "reason": "checked-commit-publication-recovery-required",
-                              "head": start, "detail": "Use the existing persist push-failure route; no second merge or bump."},
-                             ensure_ascii=True, sort_keys=True))
+                              "head": start, "detail": "Use the existing persist push-failure route; no second merge or bump."}, state)
             return 0
         raise WorkError("catch-up local, remote and pull-request heads differ")
     base = expected["base"]
@@ -5272,9 +5323,9 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
         raise WorkError("catch-up base moved during fetch; reread and retry")
     reachable = _git(["merge-base", "--is-ancestor", pinned, start], root)
     if reachable.returncode == 0:
-        print(json.dumps({"stage": "catch-up", "dispatch": False, "status": "holder-owned",
+        _emit_report({"stage": "catch-up", "dispatch": False, "status": "holder-owned",
                           "reason": "already-up-to-date", "starting_head": start, "pinned_base": pinned,
-                          "head": start}, ensure_ascii=True, sort_keys=True))
+                          "head": start}, state)
         return 0
     if reachable.returncode != 1:
         raise WorkError("catch-up cannot prove base reachability")
@@ -5342,15 +5393,15 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
             prepare_use_evidence(fresh, transport, rules)
             report["use_application"] = fresh.use_application
             report["next"] = decide(fresh, rules).as_dict()
-        print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+            report["raw_output"] = fresh.raw_output
+        _emit_report(report, state)
         return 0
     except WorkError as exc:
         if str(exc).startswith("builder-required:"):
-            print(json.dumps({"stage": "catch-up", "dispatch": False, "status": "holder-owned",
+            _emit_report({"stage": "catch-up", "dispatch": False, "status": "holder-owned",
                               "reason": "builder-required", "detail": str(exc), "conflicts": conflicts,
                               "starting_head": start, "pinned_base": pinned,
-                              "next": {"stage": "build", "continuity": "resume"}},
-                             ensure_ascii=True, sort_keys=True))
+                              "next": {"stage": "build", "continuity": "resume"}}, state)
             return 0
         raise
     finally:
@@ -5378,9 +5429,14 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     fresh = read_state(transport, state.repo, state.issue_number, effective_config)
     fresh.record_root = state.record_root
     fresh.policy_sources = snapshot.sources
+    _evaluate_raw_output(fresh, effective_rules, str(use_rules_path))
+    refusal = _raw_output_refusal(fresh, "proof")
+    if refusal is not None:
+        _emit_report(_reported_decision(fresh, refusal).as_dict(), fresh)
+        return 0
     sync = _synchronization_decision(fresh)
     if sync is not None:
-        print(json.dumps(_reported_decision(fresh, sync).as_dict(), ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(fresh, sync).as_dict(), state)
         return 0
     prepare_use_evidence(fresh, transport, effective_rules)
     composed = compose_proof(fresh, effective_rules)
@@ -5399,7 +5455,7 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     before_state = replace(fresh, pr=before, synchronization=_collect_synchronization(transport, before))
     sync = _synchronization_decision(before_state)
     if sync is not None:
-        print(json.dumps(_reported_decision(before_state, sync).as_dict(), ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(before_state, sync).as_dict(), state)
         return 0
     body = proof_document.document(composed, floor_context=floor_evaluation(fresh))
     _verify_policy_snapshot(root, state.repo, use_rules_path, snapshot)
@@ -5417,16 +5473,15 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     after_state = replace(fresh, pr=after, synchronization=_collect_synchronization(transport, after))
     sync = _synchronization_decision(after_state)
     if sync is not None:
-        print(json.dumps({**_reported_decision(after_state, sync).as_dict(), "comment": publication},
-                         ensure_ascii=True, sort_keys=True))
+        _emit_report({**_reported_decision(after_state, sync).as_dict(), "comment": publication}, state)
         return 0
     reruns = _rerun_gate_evaluations(transport, fresh, head)
-    print(json.dumps({
+    _emit_report({
         "schema_version": 1, "work": f"{state.repo}#{state.issue_number}",
         "producer_version": records.producer_version(), "stage": "proof",
         "status": "holder-owned", "head": head, "comment": publication,
         "gate_reruns": reruns,
-    }, ensure_ascii=True, sort_keys=True))
+    }, fresh)
     return 0
 
 
@@ -5446,6 +5501,12 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
                              tree_metadata: Path | None) -> int:
     if dispatch_path is not None or tree_metadata is not None:
         raise WorkError("run ready-reviewers accepts no dispatch or consumer tree")
+    source = str(state.readiness_policy[0]) if state.readiness_policy else "selected change-proof policy"
+    _evaluate_raw_output(state, rules, source)
+    refusal = _raw_output_refusal(state, "ready-reviewers")
+    if refusal is not None:
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
+        return 0
     error = _ready_evidence_error(state, rules)
     if error is not None:
         raise WorkError(error)
@@ -5461,7 +5522,7 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     live = replace(state, pr=live_pr, synchronization=_collect_synchronization(transport, live_pr))
     sync = _synchronization_decision(live)
     if sync is not None:
-        print(json.dumps(_reported_decision(live, sync).as_dict(), ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(live, sync).as_dict(), state)
         return 0
     label = state.config.reviewer_label
     label_applied = False
@@ -5471,6 +5532,26 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
         str(item.get("name")) for item in issue_record.get("labels", [])
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
+    # The inventory belongs to the validated head. Recheck it after all reads
+    # that precede the first readiness effect, including policy-byte stability.
+    before_effect = _dict(transport.get(endpoint), endpoint)
+    if _pull_coordinates(before_effect) != _pull_coordinates(state.pr):
+        raise WorkError("pull-request head or base changed before ready effects; recollect and retry")
+    _verify_floor_identity(transport, state, before_effect)
+    if state.readiness_policy is not None:
+        path, content = state.readiness_policy
+        try:
+            unchanged = path.read_bytes() == content
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            state.raw_output = raw_output.report(
+                "unverifiable", "Selected policy bytes changed or became unreadable; recollect and retry.", str(path))
+            retry = Decision("ready-reviewers", False, None, "readiness-policy-changed",
+                             "Selected policy changed before ready effects; recollect and retry ready-reviewers.",
+                             status="holder-owned")
+            _emit_report(_reported_decision(state, retry).as_dict(), state)
+            return 0
     if label is not None and label not in labels:
         _transport_mutation(
             transport, "post", f"{issue_endpoint}/labels", {"labels": [label]}
@@ -5495,6 +5576,16 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     _verify_floor_identity(transport, state, current_pull)
     ready_changed = False
     if bool(state.pr.get("draft")):
+        if state.readiness_policy is not None:
+            path, content = state.readiness_policy
+            try:
+                unchanged = path.read_bytes() == content
+            except OSError:
+                unchanged = False
+            if not unchanged:
+                state.raw_output = raw_output.report(
+                    "unverifiable", "Selected policy changed before ready transition; recollect and retry.", str(path))
+                raise WorkError("selected policy changed before ready transition; recollect and retry")
         node_id = state.pr.get("node_id")
         if not isinstance(node_id, str) or not node_id:
             detail = " after applying the reviewer label" if label_applied else ""
@@ -5517,13 +5608,13 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     if bool(verified_pull.get("draft")):
         detail = " reviewer label is present;" if label is not None else ""
         raise WorkError(f"ready transition could not be confirmed;{detail} retry ready-reviewers")
-    print(json.dumps({
+    _emit_report({
         "schema_version": 1, "work": f"{state.repo}#{state.issue_number}",
         "producer_version": records.producer_version(), "stage": "ready-reviewers",
         "status": "holder-owned", "pull_request": number,
         "reviewer_label": label, "label_applied": label_applied,
         "ready_changed": ready_changed, "ready": True,
-    }, ensure_ascii=True, sort_keys=True))
+    }, state)
     return 0
 
 
@@ -5559,12 +5650,14 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                   rules: dict[str, object] | None = None,
                   use_rules_path: Path | None = None,
                   floor_command: str | None = None) -> int:
+    if state.raw_output is None and rules is not None:
+        _evaluate_raw_output(state, rules, str(use_rules_path or "selected change-proof policy"))
     if state.validated_markers is None:
         validate_marker_claims(state)
     if decision.stage == "catch-up":
         refused = _version_refusal(state, replace(decision, continuity=None), None)
         if refused is not None:
-            print(json.dumps(_reported_decision(state, refused).as_dict(), ensure_ascii=True, sort_keys=True))
+            _emit_report(_reported_decision(state, refused).as_dict(), state)
             return 0
         if dispatch_path is not None or tree_metadata is not None or claude_path is not None or codex_path is not None:
             raise WorkError("run catch-up accepts no dispatch, tree or recipient executable")
@@ -5574,14 +5667,14 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     if decision.stage in {"floor", "use", "review-disposition", "proof", "ready-reviewers"}:
         sync = _synchronization_decision(state)
         if sync is not None:
-            print(json.dumps(_reported_decision(state, sync).as_dict(), ensure_ascii=True, sort_keys=True))
+            _emit_report(_reported_decision(state, sync).as_dict(), state)
             return 0
     if decision.stage == "floor" and dispatch_path is None and (
             not isinstance(floor_command, str) or not floor_command.strip() or "\x00" in floor_command):
         refusal = replace(decision, dispatch=False, continuity=None, status="holder-owned",
                           reason="floor-command-missing",
                           detail="Supply --floor-command with the exact repository command.")
-        print(json.dumps(_reported_decision(state, refusal).as_dict(), ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
         return 0
     effective_timeout = (
         timeout_seconds if timeout_seconds is not None else
@@ -5633,12 +5726,11 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 decision.stage, False, None,
                 f"resume-bundle-invalid-for-{decision.stage}", str(exc), status="refused",
             ))
-            print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+            _emit_report(refused.as_dict(), state)
             return 0
     refused = _version_refusal(state, decision, resume_source)
     if refused is not None:
-        print(json.dumps(_reported_decision(state, refused).as_dict(),
-                         ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(state, refused).as_dict(), state)
         return 0
     if decision.dispatch and decision.stage in {"artifact", "build", "floor", "review-disposition"}:
         found = records.producer_version()
@@ -5648,7 +5740,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 f"stage={decision.stage}; found={found}; required={VENDOR_IMPLEMENTER_VERSION}; "
                 "mechanism=vendor-aware implementer launch", status="refused",
             ))
-            print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+            _emit_report(refused.as_dict(), state)
             return 0
         (selected_vendor, vendor_source, role_overridden,
          machine_vendor, machine_source) = _implementer_vendor(state, implementer_role)
@@ -5720,9 +5812,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                                  synchronization=_collect_synchronization(transport, current_pr))
             sync = _synchronization_decision(fresh_sync)
             if sync is not None:
-                print(json.dumps({**_reported_decision(fresh_sync, sync).as_dict(),
-                                  "required_gate": _release_gate_status(state, current_head)},
-                                 ensure_ascii=True, sort_keys=True))
+                _emit_report({**_reported_decision(fresh_sync, sync).as_dict(),
+                                  "required_gate": _release_gate_status(state, current_head)}, state)
                 return 0
         required_gate = _release_gate_status(state, current_head)
         verdict = required_gate["verdict"]
@@ -5798,7 +5889,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             "required_gate": required_gate,
             "path_departures": path_departures,
         })
-        print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
+        _emit_report(payload, state)
         return 0
     if decision.stage == "use" and decision.dispatch:
         launch_plan = _launch_plan(state, decision, resolve_comparison=False)
@@ -5807,7 +5898,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "use", False, None, "use-requires-holder-job-and-tree",
                 "run use requires --dispatch and --tree-metadata", status="refused",
             ))
-            print(json.dumps(refused_use.as_dict(), ensure_ascii=True, sort_keys=True))
+            _emit_report(refused_use.as_dict(), state)
             return 0
         try:
             claim = recipient_tree.load_consumer_tree_metadata(
@@ -5839,7 +5930,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             refused_use = _reported_decision(state, Decision(
                 "use", False, None, "consumer-tree-unproved-for-use", str(exc), status="refused",
             ))
-            print(json.dumps(refused_use.as_dict(), ensure_ascii=True, sort_keys=True))
+            _emit_report(refused_use.as_dict(), state)
             return 0
         dispatch = dispatch_path.expanduser().resolve()
         if _path_inside(dispatch, source_root):
@@ -5877,8 +5968,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
     if decision.stage == "use" and decision.detail == USE_HOLDER_DETAIL:
         decision = _resolved_use_holder_decision(state, decision, root, instalment)
     if not decision.dispatch:
-        print(json.dumps(_reported_decision(state, decision).as_dict(),
-                         ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(state, decision).as_dict(), state)
         return 0
     uses_implementer = decision.stage != "cold-seat"
     holder_identity = holder_session_id.strip() if holder_session_id else ""
@@ -5886,24 +5976,21 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         refused = _holder_identity_decision(
             state, decision, f"holder-session-id-required-for-{decision.stage}"
         )
-        print(json.dumps(_reported_decision(state, refused).as_dict(),
-                         ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(state, refused).as_dict(), state)
         return 0
     session = None
     if decision.continuity == "resume":
         session = (resume_source.session if resume_source is not None
                    else resume_session(state, decision.stage, state.record_root))
         if session is None:
-            print(json.dumps(_reported_decision(
-                state, _missing_resume_decision(state, decision)).as_dict(),
-                             ensure_ascii=True, sort_keys=True))
+            _emit_report(_reported_decision(
+                state, _missing_resume_decision(state, decision)).as_dict(), state)
             return 0
         if holder_identity and session.casefold() == holder_identity.casefold():
             refused = _holder_identity_decision(
                 state, decision, f"resume-session-identifies-holder-for-{decision.stage}"
             )
-            print(json.dumps(_reported_decision(state, refused).as_dict(),
-                             ensure_ascii=True, sort_keys=True))
+            _emit_report(_reported_decision(state, refused).as_dict(), state)
             return 0
     prepared_prompt: bytes | None = None
     prepared_dispatch: Path | None = None
@@ -5935,15 +6022,14 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 decision.stage, False, None,
                 f"stage-input-invalid-for-{decision.stage}", str(exc), status="refused",
             ))
-            print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+            _emit_report(refused.as_dict(), state)
             return 0
     try:
         launch_plan = _launch_plan(state, decision, root=root,
                                    recovery_session=handover_recovery_session)
     except _LaunchRootError as exc:
         refused = _implementation_root_decision(state, decision, str(exc))
-        print(json.dumps(_reported_decision(state, refused).as_dict(),
-                         ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(state, refused).as_dict(), state)
         return 0
     if launch_plan is not None and launch_plan["status"] == "unresolved":
         raise WorkError(launch_plan["reason"])
@@ -5962,14 +6048,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         except ValueError as exc:
             refused = _reported_decision(state, Decision("build", False, "resume", "build-budget-holder-owned",
                 json.dumps({"reason": str(exc), "account": account}, ensure_ascii=True), status="holder-owned"))
-            print(json.dumps(refused.as_dict(), ensure_ascii=True, sort_keys=True))
+            _emit_report(refused.as_dict(), state)
             return 0
     selected = _dispatch_root(
         state, decision, root, instalment, holder_identity
     )
     if isinstance(selected, Decision):
-        print(json.dumps(_reported_decision(state, selected).as_dict(),
-                         ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(state, selected).as_dict(), state)
         return 0
     dispatch_root, branch, migrated = selected
     if resume_source is not None:
@@ -6068,8 +6153,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             prepared_prompt = _stage_prompt(
                 state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command
             )
-        print(json.dumps(_reported_decision(state, decision).as_dict(),
-                         ensure_ascii=True, sort_keys=True))
+        _emit_report(_reported_decision(state, decision).as_dict(), state)
     here = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(prefix="tradecraft-work-") as temporary:
         dispatch = prepared_dispatch or Path(temporary) / "dispatch.txt"
@@ -6135,7 +6219,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             if recovery_info is not None:
                 metadata["progress_baseline"] = recovery_info["stop_snapshot"]
                 metadata["predecessor_stop_snapshot"] = recovery_info["stop_snapshot"]
-                print(json.dumps({"stopped_run": recovery_info}, ensure_ascii=True, sort_keys=True), flush=True)
+                _emit_report({"stopped_run": recovery_info}, state, flush=True)
             metadata_path = Path(temporary) / "lifecycle.json"
             metadata_path.write_bytes(records.json_bytes(metadata))
             common.extend(("--lifecycle-input", str(metadata_path),
@@ -6204,14 +6288,14 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 command.extend(("--handover-from", resume_source.path))
             elif decision.continuity == "resume":
                 command.extend(("--resume", session))
-            print(json.dumps({
+            _emit_report({
                 "stage": decision.stage, "implementer_role": implementer_role,
                 "selected_vendor": selected_vendor, "vendor_source": vendor_source,
                 "model": settings.model, "effort": settings.effort,
                 "model_source": settings.model_source, "effort_source": settings.effort_source,
                 "continuity": "handover" if handover_record or handover_unavailable else decision.continuity,
                 "handover_state": str(handover_state_path) if handover_record else None,
-            }, ensure_ascii=True, sort_keys=True), flush=True)
+            }, state, flush=True)
             if handover_record is not None:
                 planned_session = launch_plan.get("handover", {}).get("replacement_session")
                 if planned_session and planned_session != handover_record["replacement_session"]:
@@ -6357,10 +6441,10 @@ def _tree_command(args: argparse.Namespace, root: Path, transport: GitHubREST) -
         )
     except recipient_tree.RecipientTreeError as exc:
         raise WorkError(str(exc)) from exc
-    print(json.dumps({
+    _emit_report({
         "schema_version": 1, "work": f"{args.repo}#{args.issue}",
         "producer_version": current, "tree_metadata": str(metadata),
-    }, ensure_ascii=True, sort_keys=True))
+    }, raw=raw_output.inspect_policy(_selected_policy_path(args, root)))
     return 0
 
 
@@ -6379,6 +6463,11 @@ def run(
     return _run(args, transport=transport, executor=executor)
 
 
+def _selected_policy_path(args: argparse.Namespace, root: Path) -> Path:
+    path = args.use_rules.expanduser() if args.use_rules is not None else root / ".github" / "change-proof.json"
+    return (path if path.is_absolute() else root / path).resolve()
+
+
 def _run(
     args: argparse.Namespace, *, transport: GitHubREST | None = None,
     executor: Callable[..., int] = execute_stage,
@@ -6391,10 +6480,10 @@ def _run(
             raise WorkError("release does not accept a stage")
         sweep_registry(github)
         released = release_registration(args.repo, args.issue, root, args.instalment)
-        print(json.dumps({
+        _emit_report({
             "schema_version": 1, "work": f"{args.repo}#{args.issue}",
             "producer_version": records.producer_version(), "released_root": str(released),
-        }, ensure_ascii=True, sort_keys=True))
+        }, raw=raw_output.inspect_policy(_selected_policy_path(args, root)))
         return 0
     if args.command == "adopt":
         if args.stage is not None:
@@ -6406,12 +6495,9 @@ def _run(
             root, args.implementation_root, args.repo, args.issue, args.instalment,
             args.holder_session_id or "",
         )
-        print(json.dumps(
-            {"schema_version": 1, "work": f"{args.repo}#{args.issue}",
+        _emit_report({"schema_version": 1, "work": f"{args.repo}#{args.issue}",
              "producer_version": records.producer_version(),
-             "adopted_root": str(adopted), "branch": branch},
-            ensure_ascii=True, sort_keys=True,
-        ))
+             "adopted_root": str(adopted), "branch": branch}, raw=raw_output.inspect_policy(_selected_policy_path(args, root)))
         return 0
     if args.command == "tree":
         return _tree_command(args, root, github)
@@ -6429,13 +6515,7 @@ def _run(
                 "artifact", "build", "floor", "review-disposition",
             }):
         raise WorkError("--handover-recovery-session requires an implementer run stage")
-    use_rules_path = (
-        args.use_rules.expanduser() if args.use_rules is not None
-        else root / ".github" / "change-proof.json"
-    )
-    if not use_rules_path.is_absolute():
-        use_rules_path = root / use_rules_path
-    use_rules_path = use_rules_path.resolve()
+    use_rules_path = _selected_policy_path(args, root)
     if args.use_rules is None and not use_rules_path.exists():
         raise WorkError(f"repository's change-proof policy is missing: {use_rules_path}")
     proof_preflight: PolicySnapshot | None = None
@@ -6444,7 +6524,13 @@ def _run(
             root, args.repo, use_rules_path, enforce_clean=True
         )
     config = load_work_config(root)
-    rules = load_use_rules(use_rules_path)
+    try:
+        selected_policy_bytes = use_rules_path.read_bytes()
+        rules = _use_rules_bytes(selected_policy_bytes, str(use_rules_path))
+    except (OSError, WorkError) as exc:
+        error = WorkError(f"cannot read use rules: {use_rules_path}" if isinstance(exc, OSError) else str(exc))
+        error.raw_output = raw_output.report("unverifiable", str(error), str(use_rules_path))
+        raise error from exc
     policy_snapshot = proof_preflight
     policy_problem: str | None = None
     if policy_snapshot is None:
@@ -6458,6 +6544,8 @@ def _run(
     state.record_root = records.default_record_root().expanduser().resolve()
     state.holder_root = root
     state.instalment = args.instalment
+    state.readiness_policy = (use_rules_path, selected_policy_bytes)
+    _evaluate_raw_output(state, rules, str(use_rules_path))
     policy_diagnostics: list[dict[str, object]] = []
     if policy_snapshot is not None:
         state.policy_sources = policy_snapshot.sources
@@ -6487,7 +6575,11 @@ def _run(
             )
             prepare_use_evidence(freshness_state, github, freshness_rules)
     prepare_use_evidence(state, github, rules)
-    if has_freshness_context:
+    if (has_freshness_context and state.raw_output["status"] not in raw_output.REFUSALS
+            and raw_output.evaluate(
+            freshness_rules, str(use_rules_path), pr=freshness_state.pr,
+            files=freshness_state.files,
+            inventory_error=freshness_state.file_inventory_error)["status"] not in raw_output.REFUSALS):
         expected_proof = compose_proof(freshness_state, freshness_rules)
         set_proof_freshness(state, expected_proof)
     elif state.pr is not None and _head_sha(state) is not None:
@@ -6495,7 +6587,7 @@ def _run(
     state.collection_diagnostics.extend(policy_diagnostics)
     recommendation = decide(state, rules)
     if args.command is None:
-        print(json.dumps(recommendation.as_dict(), ensure_ascii=True, sort_keys=True))
+        _emit_report(recommendation.as_dict(), state)
         return 0
     decision = _reported_decision(state, Decision(
         args.stage, args.stage not in {"proof", "ready-reviewers", "release-report", "catch-up"},
@@ -6503,18 +6595,25 @@ def _run(
         "holder-named-stage",
         f"current recommendation: {recommendation.stage} ({recommendation.reason})",
     ))
-    if executor is execute_stage:
-        return executor(
-            state, decision, root, args.instalment, args.holder_session_id,
-            dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
-            timeout_seconds=args.timeout_seconds, transport=github,
-            budget_override_reason=args.budget_override_reason,
-            restart_unresolved_reason=args.restart_unresolved_reason,
-            claude_path=args.claude, codex_path=args.codex,
-            handover_recovery_session=args.handover_recovery_session,
-            rules=rules, use_rules_path=use_rules_path, floor_command=args.floor_command,
-        )
-    return executor(state, decision, root, args.instalment, args.holder_session_id)
+    try:
+        if executor is execute_stage:
+            return executor(
+                state, decision, root, args.instalment, args.holder_session_id,
+                dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
+                timeout_seconds=args.timeout_seconds, transport=github,
+                budget_override_reason=args.budget_override_reason,
+                restart_unresolved_reason=args.restart_unresolved_reason,
+                claude_path=args.claude, codex_path=args.codex,
+                handover_recovery_session=args.handover_recovery_session,
+                rules=rules, use_rules_path=use_rules_path, floor_command=args.floor_command,
+            )
+        return executor(state, decision, root, args.instalment, args.holder_session_id)
+    except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
+        if getattr(exc, "raw_output", None) is None:
+            exc.raw_output = state.raw_output
+        exc.stage = args.stage
+        exc.head = _head_sha(state)
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -6522,6 +6621,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run(parser().parse_args(argv))
     except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
+        if getattr(exc, "raw_output", None) is not None:
+            _emit_report({"status": "refused", "reason": str(exc),
+                          "stage": getattr(exc, "stage", None), "head": getattr(exc, "head", None)},
+                         raw=exc.raw_output)
         print(f"work: {exc}", file=sys.stderr)
         return 1
 

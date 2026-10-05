@@ -99,6 +99,8 @@ A merged implementing pull request on an open issue names that pull request and 
 
 `run proof` and `run ready-reviewers` are holder-owned endpoints and launch nobody. The former composes and publishes the current-head proof from the record and requests a specifically identified gate rerun; for a mechanical lane its generated no-use evidence names the affirmed comment and the lane exemption rather than claiming the paths did not match. The latter validates the same applicable floor as the read-only report, then applies the optional configured reviewer label before marking the pull request ready. Before authorizing readiness, the holder accounts for every artifact criterion in the latest build or repair return, obtains every owed non-CI result and holder-launched fresh-reader return, and records the results and seat references it relied on. Repairs renew this duty before the repaired head is treated as release-ready, even on an already-ready pull request. Their full contract is `references/proof.md`.
 
+A repository may declare `raw_output_patterns` in its selected change-proof policy. The entrance refuses readiness and proof while a complete PR inventory adds or changes matching paths, keeping the charter's raw-output rule enforceable where the repository knows its output locations. Every report carries `raw_output`; no patterns means `No raw-output patterns are declared.` and no diff check. The matching, repair and report contract is in `references/proof.md`.
+
 `run use` requires both the holder's job and a tree produced below:
 
 ```text
