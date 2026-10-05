@@ -1849,6 +1849,181 @@ def _marker_setting_source(marker: Marker) -> str:
     return marker.url or f"{marker.surface}:{marker.source_id or 'unknown'}"
 
 
+def _aware_time(value: object) -> datetime | None:
+    """Cross-record ordering needs a timezone, never the machine's local zone."""
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return moment.astimezone(timezone.utc) if moment.tzinfo is not None else None
+    except ValueError:
+        return None
+
+
+def _governing_sources(state: WorkState) -> list[Marker]:
+    brief, pair = _affirmed_review(state)
+    if brief is None:
+        return []
+    sources = [brief]
+    if pair != ("ordinary", "mechanical"):
+        phase = state.artifact_phase or _artifact_phase(state)
+        if phase.latest_settlement is not None:
+            sources.append(phase.latest_settlement)
+            sources.extend(phase.holder_readings)
+    return sources
+
+
+def _governing_identity(marker: Marker) -> dict[str, object]:
+    return {
+        "kind": marker.name, "surface": marker.surface, "source_id": marker.source_id,
+        "timestamp": marker.timestamp,
+        "body_sha256": hashlib.sha256(marker.body.encode("utf-8")).hexdigest(),
+    }
+
+
+def _prompt_composition(state: WorkState) -> dict[str, object]:
+    # These identities come from the same frozen state as _stage_prompt, not a
+    # later collection whose timestamps might precede this composition clock.
+    sources = [_governing_identity(marker) for marker in _governing_sources(state)]
+    return {"origin": "entrance", "composed_at": datetime.now(timezone.utc).isoformat(),
+            "sources": sources}
+
+
+def _composition_error(request: dict[str, object], record: Marker) -> str | None:
+    evidence = request.get("prompt_composition")
+    if not isinstance(evidence, dict):
+        return "prompt composition evidence is missing"
+    composed = _aware_time(evidence.get("composed_at"))
+    launched = _aware_time(request.get("launched_at"))
+    if composed is None or launched is None or composed > launched:
+        return "prompt composition time is invalid or later than launcher request"
+    if evidence.get("origin") not in {"entrance", "holder"}:
+        return "prompt composition origin is unproved"
+    try:
+        prompt = Path(request["input"]).read_bytes()
+        context_record = request.get("context")
+        context = Path(context_record["path"]).read_bytes() if context_record else b""
+    except (OSError, KeyError, TypeError, ValueError):
+        return "retained composition input is missing or unreadable"
+    if hashlib.sha256(prompt).hexdigest() != evidence.get("dispatch_sha256"):
+        return "composition evidence differs from retained dispatch"
+    effective = context + b"\n\n" + prompt if context else prompt
+    digest = hashlib.sha256(effective).hexdigest()
+    if digest != request.get("effective_input_sha256") or digest != evidence.get("effective_input_sha256"):
+        return "composition evidence differs from retained effective input"
+    if evidence["origin"] == "entrance":
+        sources = evidence.get("sources")
+        if not isinstance(sources, list):
+            return "frozen governing source identities are missing"
+        if _governing_identity(record) not in sources:
+            return "governing record was absent from the frozen prompt snapshot"
+    return None
+
+
+def _validate_builder_turn(state: WorkState, turn: tuple) -> None:
+    _order, path, request, run = turn
+    work_recovery.validate_target(state, "build", request, path)
+    session = lifecycle.recovery_session(request, run)
+    if SESSION_ID.fullmatch(session) is None:
+        raise WorkError("builder session identity is invalid")
+    if lifecycle.stopped(run) or run.get("outcome") not in SUCCESSFUL_BUNDLE_OUTCOMES:
+        raise WorkError("builder attempt did not successfully return")
+
+
+def _first_build_never_launched(state: WorkState, turns: list[tuple]) -> bool:
+    """A proved pre-spawn failure leaves no builder session to resume."""
+    if state.pr is not None or any(marker.name == "builder-session" for marker in state.issue_markers):
+        return False
+    for _order, path, request, run in turns:
+        attempts = run.get("attempts")
+        requested = request.get("requested")
+        if (request["stage"] != "build" or not isinstance(requested, dict) or requested.get("continuity") != "fresh"
+                or not isinstance(attempts, list) or not attempts
+                or any(not isinstance(attempt, dict) or attempt.get("launched") is not False for attempt in attempts)
+                or not work_recovery.restartable(request, run)):
+            return False
+        try:
+            work_recovery.validate_target(state, "build", request, path)
+        except (WorkError, OSError, ValueError):
+            return False
+    return True
+
+
+def _governing_terms_decision(state: WorkState) -> Decision | None:
+    """An existing head cannot certify terms posted after its builder's input."""
+    sources = _governing_sources(state)
+    records_to_build = [marker for marker in sources if marker.name == "affirmed-brief"
+                        or marker.name == "holder-reading" and marker.attributes["result"] == "amended"]
+    if not records_to_build:
+        return None
+    record = max(records_to_build, key=_source_order)
+    identity = (f"{record.name} {record.surface}:{record.source_id or 'unknown'}"
+                f" ({record.url or 'URL unavailable'}) at {record.timestamp or 'timestamp unavailable'}")
+
+    def result(proved_stale: bool, evidence: str) -> Decision:
+        return Decision(
+            "build", proved_stale, "resume",
+            "governing-record-not-built" if proved_stale else "governing-record-comparison-unproved",
+            f"Governing record {identity}; {evidence}. Run build on the resumed builder "
+            "to implement the current terms before opening the pull request or continuing downstream.",
+            status="runnable" if proved_stale else "holder-owned",
+        )
+
+    try:
+        turns = work_recovery.launches(state, "build")
+    except (WorkError, OSError, ValueError) as exc:
+        return result(False, f"builder discovery is unproved: {exc}")
+    if not turns:
+        registered = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
+        if (state.pr is None and not registered
+                and not any(marker.name == "builder-session" for marker in state.issue_markers)):
+            return None  # The first build retains its fresh route.
+        return result(False, "no relevant builder bundle proves the prompt boundary")
+    if _first_build_never_launched(state, turns):
+        return None  # Retry the first builder in its existing registered tree.
+    latest = turns[-1]
+    if len(turns) > 1 and turns[-2][0] == latest[0]:
+        return result(False, f"latest builder attempts have ambiguous launch order: {turns[-2][1]}, {latest[1]}")
+    # A newer unfinished attempt stays visible even if an older turn is green.
+    try:
+        _validate_builder_turn(state, latest)
+    except (WorkError, ValueError, OSError) as exc:
+        return result(False, f"builder bundle {latest[1]} is unproved: {exc}")
+    # Floor prompts ask for a command result, not implementation. Retain their
+    # lineage/recovery evidence above, but only build or repair can clear terms.
+    implementing = [turn for turn in turns if turn[2]["stage"] in {"build", "review-disposition"}]
+    if not implementing:
+        return result(True, f"bundle {latest[1]} is a floor turn, not a build or repair turn")
+    selected = implementing[-1]
+    if len(implementing) > 1 and implementing[-2][0] == selected[0]:
+        return result(False, f"build/repair launch order is ambiguous: {implementing[-2][1]}, {selected[1]}")
+    _order, path, request, run = selected
+    try:
+        if selected != latest:
+            _validate_builder_turn(state, selected)
+    except (WorkError, ValueError, OSError) as exc:
+        return result(False, f"builder bundle {path} is unproved: {exc}")
+    record_time = _aware_time(record.timestamp)
+    if record_time is None:
+        return result(False, f"record has no timezone-aware timestamp; builder bundle {path}")
+    # The old launcher boundary is later than composition, so it proves only
+    # staleness. Neither a late launch nor a completion can establish freshness.
+    launch_time = _aware_time(request.get("launched_at"))
+    if launch_time is not None and launch_time < record_time:
+        return result(True, f"build/repair bundle {path} launched at {request['launched_at']} before the record")
+    error = _composition_error(request, record)
+    if error is not None:
+        # Absence from the frozen entrance snapshot proves non-delivery.
+        stale = error == "governing record was absent from the frozen prompt snapshot"
+        return result(stale, f"build/repair bundle {path}: {error}")
+    composed = _aware_time(request["prompt_composition"]["composed_at"])
+    if composed < record_time:
+        return result(True, f"build/repair bundle {path} composed at {composed.isoformat()} before the record")
+    if composed == record_time:
+        return result(False, f"build/repair bundle {path} and record timestamps coincide; ordering is unproved")
+    return None
+
+
 def _launch_settings(state: WorkState, role: str, vendor: str,
                      classification: str | None = None, *,
                      bridge: setting_resolution.Bridge | None = None) -> LaunchSettings:
@@ -3036,14 +3211,25 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
 
 def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     _evaluate_raw_output(state, rules, str((state.raw_output or {}).get("policy") or "selected change-proof policy"))
-    return work_recovery.recommend(state, _decide(state, rules))
+    decision = _decide(state, rules)
+    recovered = work_recovery.recommend(state, decision)
+    if decision.reason.startswith("governing-record-") and recovered != decision:
+        try:
+            detail = json.loads(recovered.detail or "")
+        except ValueError:
+            detail = None
+        retained_detail = (json.dumps({**detail, "governing_record": decision.detail}, ensure_ascii=True)
+                           if isinstance(detail, dict)
+                           else (recovered.detail or "") + "; " + decision.detail)
+        recovered = replace(recovered, detail=retained_detail)
+    return recovered
 
 
 def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
     validate_marker_claims(state)
 
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
-               detail: str | None = None) -> Decision:
+               detail: str | None = None, status: str | None = None) -> Decision:
         if stage in {"ready-reviewers", "proof"}:
             refusal = _raw_output_refusal(state, stage)
             if refusal is not None:
@@ -3051,7 +3237,7 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         suffix = (_ignored_marker_suffix(state) + _ignored_disposition_suffix(state)
                   + _ignored_product_incident_suffix(state))
         return _reported_decision(
-            state, Decision(stage, dispatch, continuity, reason + suffix, detail)
+            state, Decision(stage, dispatch, continuity, reason + suffix, detail, status=status)
         )
 
     if str(state.issue.get("state") or "").lower() == "closed":
@@ -3123,6 +3309,9 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         )
         if not reading_is_current:
             return result("holder-read", False, None, "whole-change-holder-reading-absent")
+    terms = _governing_terms_decision(state)
+    if terms is not None:
+        return result(terms.stage, terms.dispatch, terms.continuity, terms.reason, terms.detail, terms.status)
     if state.pr is None:
         if any(marker.name == "builder-session" for marker in state.issue_markers):
             return result(
@@ -5842,6 +6031,12 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                                   "required_gate": _release_gate_status(state, current_head)}, state)
                 return 0
         required_gate = _release_gate_status(state, current_head)
+        terms = _governing_terms_decision(state)
+        if terms is not None:
+            refusal = replace(terms, dispatch=False, status="holder-owned")
+            _emit_report({**_reported_decision(state, refusal).as_dict(),
+                          "required_gate": required_gate}, state)
+            return 0
         verdict = required_gate["verdict"]
         head = required_gate["head"] or "unknown-current-head"
         if verdict == "green":
@@ -6020,6 +6215,7 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             return 0
     prepared_prompt: bytes | None = None
     prepared_dispatch: Path | None = None
+    prompt_composition: dict[str, object] | None = None
     artifact_brief: Marker | None = None
     if uses_implementer:
         try:
@@ -6031,6 +6227,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 prepared_prompt = _stage_prompt(
                     state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command
                 )
+                if decision.stage in {"build", "floor", "review-disposition"}:
+                    prompt_composition = _prompt_composition(state)
             else:
                 prepared_dispatch = dispatch_path.expanduser().resolve()
                 if (not prepared_dispatch.is_file()
@@ -6179,6 +6377,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             prepared_prompt = _stage_prompt(
                 state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command
             )
+            if decision.stage in {"build", "floor", "review-disposition"}:
+                prompt_composition = _prompt_composition(state)
         _emit_report(_reported_decision(state, decision).as_dict(), state)
     here = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(prefix="tradecraft-work-") as temporary:
@@ -6217,7 +6417,10 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             if branch is not None:
                 branch = _attached_branch(dispatch_root)
             if prepared_prompt is not None:
-                dispatch.write_bytes(_bind_prompt_branch(prepared_prompt, branch))
+                bound_prompt = _bind_prompt_branch(prepared_prompt, branch)
+                dispatch.write_bytes(bound_prompt)
+                if prompt_composition is not None:
+                    prompt_composition["dispatch_sha256"] = hashlib.sha256(bound_prompt).hexdigest()
             common = [
                 "--dispatch", str(dispatch), "--root", str(dispatch_root),
                 "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
@@ -6233,6 +6436,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 "budget_account_before": account,
                 "budget_override_reason": budget_override_reason,
             }
+            if prompt_composition is not None:
+                metadata["prompt_composition"] = prompt_composition
             if restart_source and restart_source[2].get("budget_lineage"):
                 metadata["budget_lineage"] = restart_source[2]["budget_lineage"]
             if resume_source is not None:
@@ -6423,7 +6628,9 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
     if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report", "catch-up"}:
         return "fresh"
     if stage == "build":
-        return "resume" if state.pr is not None else "fresh"
+        return "resume" if (state.pr is not None
+                            or any(marker.name == "builder-session" for marker in state.issue_markers)
+                            or work_recovery.launches(state, "build")) else "fresh"
     return "resume"
 
 
@@ -6623,7 +6830,9 @@ def _run(
         args.stage, args.stage not in {"proof", "ready-reviewers", "release-report", "catch-up"},
         _named_continuity(state, args.stage, recommendation),
         "holder-named-stage",
-        f"current recommendation: {recommendation.stage} ({recommendation.reason})",
+        f"current recommendation: {recommendation.stage} ({recommendation.reason})"
+        + (f"; {recommendation.detail}" if recommendation.reason.startswith("governing-record-")
+           and recommendation.detail else ""),
     ))
     try:
         if executor is execute_stage:
