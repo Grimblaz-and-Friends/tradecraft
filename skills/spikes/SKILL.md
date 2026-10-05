@@ -34,6 +34,8 @@ description: Testing a premise by running it before you assert it — a bounded,
 
 **Report on the work's issue, filing one if none exists, before the revision that relies on it.** Copy `references/spike-report-template.md` whole. Its shared heading makes every run findable with one issue-tracker search, without an index this instrument cannot commit to maintain. Without the report, *ran and found nothing* and *never ran* are the same silence; for an abandoned spike it is the only thing whoever approves the work can weigh against a premise still declared open.
 
+Record raw run evidence through the `authoring` cell's run-output reference, so the report keeps reproducible summaries after the throwaway files are discarded.
+
 **Where the premise is about what a reader does under a wording, the run is a cold-seat A/B: `references/cold-seat-ab.md`** — its six properties, plant reading and scoring route, with `references/ab-dispatch-template.md` for each seat's dispatch.
 
 ## A spike commits nothing

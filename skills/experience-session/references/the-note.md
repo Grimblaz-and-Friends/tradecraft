@@ -14,6 +14,8 @@
 
 **The note lands on the change's pull request or issue, naming the revision it was run against, before its review closes** — it is written for that review, as evidence of what use showed rather than a late comment on a settled artifact. A session that runs after that still lands its note there: late is lawful, silent is not.
 
+Record and judge raw run evidence through the `authoring` cell's run-output reference: the summary is the whole record, and a disputed figure is checked by re-running its command at its producing revision.
+
 Begin the posted note with the `work` cell's marker, replacing its uppercase values from that marker's vocabulary:
 
 ```text

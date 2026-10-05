@@ -37,6 +37,8 @@ Begin each artifact issue comment with the `work` cell's marker, replacing `STAT
 
 **Settled, the artifact is the handoff contract — which is also the test for whether it is finished.** From there the work can leave the conversation entirely, to a fresh session or another runtime, so nothing load-bearing may be left in chat: an implementer who was not there builds the agreed thing from the artifact and the implementation brief it carries, alone. Handoff across runtimes rests on that property and nothing else.
 
+Request summaries for raw run evidence, following the `authoring` cell's run-output reference, so the handoff asks for the whole retained record rather than raw files.
+
 **A premise the artifact rests on may need testing before you assert it** — that is a spike, which tests one and commits nothing.
 
 **Where a check bears on the artifact, the artifact carries what came back rather than the fact that you looked.** It carries a spike's result, **including a spike that did not resolve**; where you considered one and did not run it, it carries the material you consulted instead — the enumeration, the query and the tree it ran on, the file you opened.

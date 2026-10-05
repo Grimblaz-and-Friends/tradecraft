@@ -1,11 +1,11 @@
 ---
 name: authoring
-description: How to create and revise this practice's prose — the purpose header every governing document carries, which home each kind of content takes, what a cell carries, and the writing standards that keep it lean. Use when writing, restructuring or revising a skill or governing document, including a description alone or what sheds behind a pointer; when deciding where content belongs; or when a write-up, a pre-implementation artifact included, states derived figures or describes current behaviour; not for how code is written, though where such a rule belongs is here; not for reviewing finished content, and not for deciding what a change is for.
+description: How to create and revise this practice's prose and record run evidence. Use when writing, restructuring or revising a skill or governing document, including a description alone or what sheds behind a pointer; when deciding where content belongs; when recording or requesting raw run evidence; or when a write-up, a pre-implementation artifact included, states derived figures or describes current behaviour; not for how code is written, though where such a rule belongs is here; not for reviewing finished content, and not for deciding what a change is for.
 ---
 
 # authoring
 
-**Purpose:** make every governing document and skill in the practice accountable to a stated job, and what a write-up rests on — its figures, and its claims about how things behave — re-derivable rather than inherited. **Audience:** any session creating or revising a skill or governing document, or stating a derived figure or a behaviour claim in a write-up — in this repo or a repo that adopts the practice. **Success:** every document it governs can say what it is for, who reads it, and what its review should judge it against — and contains nothing that fails that test; every skill earns what it puts in a session's context and keeps the rest behind a pointer; every figure it governs is its command and tree, or lives where it re-derives, and every behaviour claim on a surface nobody goes back to correct names what demonstrates it.
+**Purpose:** make governing prose accountable to a stated job and its evidence re-derivable rather than inherited. **Audience:** any session creating or revising a skill or governing document, recording or requesting run evidence, or stating a derived figure or behaviour claim in a write-up — here or in an adopting repository. **Success:** governing documents say what they are for, who reads them and what review judges; skills earn their context and keep depth behind pointers; figures carry their command and tree, frozen behaviour claims name their demonstrator, and raw run files leave reproducible summaries as their whole record.
 
 ## Where this cell's depth lives
 
@@ -13,6 +13,7 @@ description: How to create and revise this practice's prose — the purpose head
 - **Deciding which home a piece of content belongs in** → `references/routing.md`: the four homes a concept takes and the four materials a rule takes instead.
 - **Changing prose that already governs something, rather than writing new prose** → `references/revising.md`: reading the cited decision first, naming every meaning change, and what a reviser owes the entry it supersedes.
 - **About to put a figure, or a claim about current behaviour, into anything that does not re-derive it at read time** → `references/frozen-documents.md`: what a frozen surface may state, and why the command and the tree go in place of the number.
+- **Recording or requesting raw run evidence** → `references/run-output.md`: conclusions, exact-byte metadata and reproducing instructions that remain after discarding raw files.
 
 ## The purpose header
 
