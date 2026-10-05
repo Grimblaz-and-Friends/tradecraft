@@ -1020,8 +1020,7 @@ def _collect_workflow_provenance(transport: GitHubREST,
 
 
 def read_state(transport: GitHubREST, repo: str, issue_number: int,
-               config: WorkConfig | None = None,
-               raw_output_patterns: list[str] | None = None) -> WorkState:
+               config: WorkConfig | None = None) -> WorkState:
     work_config = config or WorkConfig()
     base = f"repos/{repo}"
     issue_endpoint = f"{base}/issues/{issue_number}"
@@ -1059,10 +1058,10 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     try:
         files = _get_list(transport, f"{pr_endpoint}/files")
     except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
-        if not raw_output_patterns:
-            raise
-        files = []
-        state.file_inventory_error = f"Cannot collect PR file inventory: {exc}"
+        error = WorkError(f"Cannot collect PR file inventory: {exc}")
+        error.file_inventory_error = str(error)
+        error.head = _head_sha(state)
+        raise error from exc
     state.files = files
     paths: list[str] = []
     for item in files:
@@ -2649,6 +2648,26 @@ def _evaluate_raw_output(state: WorkState, rules: dict[str, object], source: str
         rules, source, pr=state.pr, files=state.files,
         inventory_error=state.file_inventory_error,
     )
+
+
+def _read_policy_state(transport: GitHubREST, repo: str, issue_number: int,
+                       config: WorkConfig, rules: dict[str, object] | None,
+                       source: str) -> WorkState:
+    """Add report context to collection errors without returning partial state."""
+    try:
+        return read_state(transport, repo, issue_number, config)
+    except (OSError, UnicodeError, ValueError, WorkError) as exc:
+        declaration = raw_output.evaluate(rules or {}, source)
+        failure = getattr(exc, "file_inventory_error", None)
+        if failure is not None:
+            absence = " " + str(declaration["message"]) if declaration["status"] == "undeclared" else ""
+            exc.raw_output = raw_output.report(
+                "unverifiable", str(failure) + "; recollect the PR file inventory and retry." + absence,
+                source, declaration["patterns"],
+            )
+        else:
+            exc.raw_output = declaration
+        raise
 
 
 def _raw_output_refusal(state: WorkState, stage: str) -> Decision | None:
@@ -5391,8 +5410,10 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
         if landed.returncode == 0:
             row["revision_before"], row["status_before"] = _git_snapshot(root)
             write_registry(registry)
-            fresh = read_state(transport, state.repo, state.issue_number, state.config,
-                               rules.get("raw_output_patterns") if rules is not None else None)
+            fresh = _read_policy_state(
+                transport, state.repo, state.issue_number, state.config, rules,
+                str((state.raw_output or {}).get("policy") or "selected change-proof policy"),
+            )
             fresh.record_root = state.record_root
             prepare_use_evidence(fresh, transport, rules)
             report["use_application"] = fresh.use_application
@@ -5430,8 +5451,8 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     if use_blob is None:
         raise WorkError("committed use policy is unavailable")
     effective_rules = _use_rules_bytes(use_blob, snapshot.paths["use_rules"])
-    fresh = read_state(transport, state.repo, state.issue_number, effective_config,
-                       effective_rules.get("raw_output_patterns"))
+    fresh = _read_policy_state(transport, state.repo, state.issue_number, effective_config,
+                              effective_rules, str(use_rules_path))
     fresh.record_root = state.record_root
     fresh.policy_sources = snapshot.sources
     _evaluate_raw_output(fresh, effective_rules, str(use_rules_path))
@@ -6546,9 +6567,8 @@ def _run(
         except WorkError as exc:
             policy_problem = str(exc)
     try:
-        state = read_state(github, args.repo, args.issue, config, rules.get("raw_output_patterns"))
+        state = _read_policy_state(github, args.repo, args.issue, config, rules, str(use_rules_path))
     except (OSError, UnicodeError, ValueError, WorkError) as exc:
-        exc.raw_output = raw_output.evaluate(rules, str(use_rules_path))
         exc.stage = args.stage
         raise
     state.record_root = records.default_record_root().expanduser().resolve()
@@ -6622,7 +6642,8 @@ def _run(
         if getattr(exc, "raw_output", None) is None:
             exc.raw_output = state.raw_output
         exc.stage = args.stage
-        exc.head = _head_sha(state)
+        if getattr(exc, "head", None) is None:
+            exc.head = _head_sha(state)
         raise
 
 

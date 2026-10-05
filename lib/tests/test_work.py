@@ -5166,7 +5166,7 @@ def test_ordinary_read_keeps_uncommitted_work_configuration(ignored, tmp_path, m
     (root / ".tradecraft" / "work.json").write_text(json.dumps(local_config))
     captured = {}
 
-    def read_state(_transport, repo, issue, config, _raw_patterns=None):
+    def read_state(_transport, repo, issue, config):
         captured["config"] = config
         fixture = work.WorkState(
             repo, issue,
@@ -7222,42 +7222,71 @@ def test_raw_output_does_not_close_builder_repair_routes(stage, tmp_path, capsys
 
 
 @pytest.mark.parametrize("inventory", [work.WorkError("403 unavailable"), [None]])
-def test_raw_output_collection_failure_is_report_only_and_unverifiable(inventory):
+def test_raw_output_collection_failure_aborts_with_report_context(inventory):
     transport = adopter_transport()
     transport.values["repos/acme/widget/pulls/9/files"] = inventory
-    fixture = work.read_state(transport, "acme/widget", 3, raw_output_patterns=RAW_RULES["raw_output_patterns"])
-    work._evaluate_raw_output(fixture, RAW_RULES, "fixture policy")
-    assert fixture.raw_output["status"] == "unverifiable"
-    assert "inventory" in fixture.raw_output["message"]
-    assert all("raw-output" not in str(item) for item in fixture.collection_diagnostics)
+    with pytest.raises(work.WorkError) as raised:
+        work._read_policy_state(transport, "acme/widget", 3, CONFIG, RAW_RULES, "fixture policy")
+    report = raised.value.raw_output
+    assert report["status"] == "unverifiable"
+    assert "inventory" in report["message"] and "retry" in report["message"]
+    assert report["policy"] == "fixture policy" and report["patterns"] == ["run-output/**"]
+    assert raised.value.head == SHA
 
 
 @pytest.mark.parametrize("patterns", [None, [], ["run-output/**"]])
 @pytest.mark.parametrize("lane", ["connected", "routine-panel"])
 @pytest.mark.parametrize("inventory", [work.WorkError("403 inventory unavailable"), [None]])
-def test_raw_output_inventory_failure_preserves_undeclared_read_refusal(
-        patterns, lane, inventory, tmp_path, capsys):
+def test_raw_output_inventory_failure_refuses_ready_use_and_panel_routing(
+        patterns, lane, inventory, tmp_path, monkeypatch, capsys):
     root = policy_repository(tmp_path)
-    rules = PRODUCT_RULES if patterns is None else {**PRODUCT_RULES, "raw_output_patterns": patterns}
+    configured_work(root, [])
+    records = tmp_path / "dispatches"
+    monkeypatch.setattr(work.records, "default_record_root", lambda: records)
+    for stage in ("cold-seat", "floor"):
+        dispatch_bundle(records, stage=stage)
+        run_path = records / stage / "result.md.run.json"
+        run = json.loads(run_path.read_bytes())
+        run.update(revision_after=SHA, staffing_status="qualified",
+                   staffing_qualification={"same_vendor_reason": None})
+        run_path.write_bytes(json.dumps(run).encode())
+    rules = RULES if patterns is None else {**RULES, "raw_output_patterns": patterns}
     write_policy(root, rules)
-    transport = adopter_transport()
-    transport.values["repos/acme/widget/issues/3/comments"][0]["body"] = (
-        AFFIRMED.replace("connected", lane).replace("ordinary", "elevated" if lane.endswith("panel") else "ordinary")
+    fixture = state(
+        AFFIRMED.replace("connected", lane).replace("ordinary", "elevated" if lane.endswith("panel") else "ordinary"),
+        ARTIFACT, WOULD, HOLDER, FLOOR,
+        "<!-- tradecraft:panel-stage:v1 stage=cold-pass status=complete -->",
+        pr=True, draft=False, reviewer_ran=True,
     )
-    transport.values["repos/acme/widget/pulls/9/files"] = inventory
-    args = work.parser().parse_args(["--repo", "acme/widget", "--issue", "3", "--root", str(root)])
-    if patterns:
-        assert work.run(args, transport=transport) == 0
-        assert json.loads(capsys.readouterr().out)["raw_output"]["status"] == "unverifiable"
-    else:
-        with pytest.raises(work.WorkError, match="403 inventory unavailable|non-object list"):
-            work.run(args, transport=transport)
+    base = "repos/example/product"
+    transport = FakeTransport({
+        f"{base}/issues/12": fixture.issue,
+        f"{base}/issues/12/comments": fixture.issue_comments,
+        f"{base}/pulls?state=all&per_page=100": [{"number": 7, "state": "open", "body": "Closes #12"}],
+        f"{base}/pulls/7": {**fixture.pr, "changed_files": 1},
+        f"{base}/issues/7/comments": fixture.pr_comments,
+        f"{base}/pulls/7/reviews": [],
+        f"{base}/pulls/7/comments": [],
+        f"{base}/pulls/7/files": [{"filename": "skills/example.md", "status": "modified"}],
+        f"{base}/commits/{SHA}/check-runs?per_page=100": {"check_runs": []},
+    })
+    args = work.parser().parse_args(["--repo", fixture.repo, "--issue", "12", "--root", str(root)])
+    assert not transport.values[f"{base}/pulls/7"]["draft"]
+    assert work.run(args, transport=transport) == 0
+    healthy = json.loads(capsys.readouterr().out)
+    assert (healthy["stage"], healthy["detail"] if lane.endswith("panel") else None) == (
+        ("panel", "revision-diff") if lane.endswith("panel") else ("use", None)
+    )
+    transport.values[f"{base}/pulls/7/files"] = inventory
+    with pytest.raises(work.WorkError, match="403 inventory unavailable|non-object list"):
+        work.run(args, transport=transport)
+    assert capsys.readouterr().out == ""
     assert all(method == "GET" for method, *_rest in transport.calls)
 
 
 @pytest.mark.parametrize("patterns", [None, [], ["run-output/**"]])
 @pytest.mark.parametrize("inventory", [work.WorkError("403 inventory unavailable"), [None]])
-def test_raw_output_inventory_failure_preserves_undeclared_proof_refusal(
+def test_raw_output_inventory_failure_preserves_every_policy_proof_refusal(
         patterns, inventory, tmp_path, capsys):
     root = policy_repository(tmp_path)
     rules = PRODUCT_RULES if patterns is None else {**PRODUCT_RULES, "raw_output_patterns": patterns}
@@ -7265,15 +7294,17 @@ def test_raw_output_inventory_failure_preserves_undeclared_proof_refusal(
     git(root, "add", POLICY_PATH)
     git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-m", "policy")
     transport = adopter_transport()
+    transport.values["repos/acme/widget/pulls/9"]["draft"] = False
     transport.values["repos/acme/widget/pulls/9/files"] = inventory
-    fixture = raw_fixture([{"filename": "product-app/main.py", "status": "added"}], brief=AFFIRMED)
+    fixture = raw_fixture([{"filename": "product-app/main.py", "status": "added"}],
+                          brief=AFFIRMED, draft=False)
     fixture.repo, fixture.issue_number = "acme/widget", 3
-    if patterns:
-        assert work._execute_proof(transport, fixture, root, rules, path, None, None) == 0
-        assert json.loads(capsys.readouterr().out)["raw_output"]["status"] == "unverifiable"
-    else:
-        with pytest.raises(work.WorkError, match="403 inventory unavailable|non-object list"):
-            work._execute_proof(transport, fixture, root, rules, path, None, None)
+    with pytest.raises(work.WorkError, match="403 inventory unavailable|non-object list") as raised:
+        work._execute_proof(transport, fixture, root, PRODUCT_RULES, path, None, None)
+    assert raised.value.raw_output["status"] == "unverifiable"
+    assert raised.value.raw_output["policy"] == str(path)
+    assert raised.value.raw_output["patterns"] == (patterns or [])
+    assert capsys.readouterr().out == ""
     assert all(method == "GET" for method, *_rest in transport.calls)
 
 
@@ -7292,20 +7323,34 @@ def test_raw_output_inventory_healthy_read_preserves_use_and_revision_diff():
     assert work._panel_next(fixture, "routine-panel") == "revision-diff"
 
 
-@pytest.mark.parametrize("patterns", [None, []])
-def test_raw_output_inventory_failure_reports_undeclared_while_refusing(
-        patterns, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("patterns", [None, [], ["run-output/**"]])
+@pytest.mark.parametrize("inventory", [work.WorkError("403 inventory unavailable"), [None]])
+@pytest.mark.parametrize("stage", [None, "use", "ready-reviewers", "proof"])
+def test_raw_output_inventory_failure_reports_unverifiable_for_every_policy(
+        patterns, inventory, stage, tmp_path, monkeypatch, capsys):
     root = policy_repository(tmp_path)
-    write_policy(root, PRODUCT_RULES if patterns is None else {**PRODUCT_RULES, "raw_output_patterns": patterns})
+    path = write_policy(root, PRODUCT_RULES if patterns is None else {**PRODUCT_RULES, "raw_output_patterns": patterns})
+    git(root, "add", POLICY_PATH)
+    git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-m", "policy")
     transport = adopter_transport()
-    transport.values["repos/acme/widget/pulls/9/files"] = work.WorkError("403 inventory unavailable")
+    transport.values["repos/acme/widget/pulls/9"]["draft"] = False
+    transport.values["repos/acme/widget/pulls/9/files"] = inventory
     monkeypatch.setattr(work, "GitHubREST", lambda: transport)
-    assert work.main(["--repo", "acme/widget", "--issue", "3", "--root", str(root)]) == 1
+    arguments = (["run", stage] if stage is not None else []) + [
+        "--repo", "acme/widget", "--issue", "3", "--root", str(root),
+    ]
+    assert work.main(arguments) == 1
     observed = capsys.readouterr()
     report = json.loads(observed.out)
-    assert report["status"] == "refused"
-    assert "403 inventory unavailable" in observed.err
-    assert report["raw_output"]["message"] == "No raw-output patterns are declared."
+    assert report["status"] == "refused" and report["stage"] == stage and report["head"] == SHA
+    assert report["raw_output"]["status"] == "unverifiable"
+    assert report["raw_output"]["policy"] == str(path)
+    assert report["raw_output"]["patterns"] == (patterns or [])
+    assert "inventory" in report["raw_output"]["message"] and "retry" in report["raw_output"]["message"]
+    if not patterns:
+        assert "No raw-output patterns are declared." in report["raw_output"]["message"]
+    assert "403 inventory unavailable" in observed.err or "non-object list" in observed.err
+    assert all(method == "GET" for method, *_rest in transport.calls)
 
 
 def test_raw_output_summary_can_reproduce_a_committed_inventory_after_discard(tmp_path):

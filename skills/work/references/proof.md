@@ -44,7 +44,7 @@ Every repository decision report carries `raw_output` with `status`, `message`, 
 
 This state never enters proof JSON, rendering or diagnostics; policy descriptors keep their existing fields and hash the selected committed blob. Freshness composition is skipped when the committed-policy raw check would refuse, so cached proof cannot claim completion. Proof recollects and evaluates again before composition; head/base moves and policy changes still require recollection. The deletion and absence allowances remove only this check, leaving existing prerequisites in force.
 
-A failed PR file read still aborts general collection when no raw-output patterns are declared, because an empty substitute cannot classify owed use or panel evidence. With declared patterns, the entrance retains the failure for the raw-output unverifiable report and refusal.
+A failed PR file read aborts collection for every repository, because an empty substitute cannot classify owed use or panel evidence. Its error report carries unverifiable raw-output state naming the read failure and retry remedy. A successfully read but incomplete or contradictory inventory retains the declared raw-output refusal and existing collection-diagnostic routing.
 
 ## Base declaration and applicable floor
 
