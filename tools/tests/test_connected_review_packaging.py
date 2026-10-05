@@ -367,7 +367,8 @@ def test_lab_stub_and_downstream_example_call_one_release_control():
         "    permissions:\n      actions: read\n      contents: read\n"
         "      pull-requests: write\n"
         "    uses: Grimblaz-and-Friends/tradecraft/.github/workflows/connected-review-shared.yml@main\n"
-        "    secrets: inherit\n"
+        "    secrets:\n"
+        "      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n"
     )
     procedure = (ROOT / "docs/cells/steward/references/connected-review-releases.md").read_text(encoding="utf-8")
     documented = procedure.split("```yaml\n", 1)[1].split("\n```", 1)[0] + "\n"
