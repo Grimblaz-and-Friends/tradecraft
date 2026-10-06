@@ -1,4 +1,5 @@
 """Git-backed reach and account controls for artifact C1-C4."""
+from dataclasses import replace
 from pathlib import Path
 import json
 import subprocess
@@ -452,6 +453,43 @@ def test_C4_payload_duplicate_keys_nonstring_disposition_and_extra_fences(repo):
                 good.replace('"turns": []', '"turns": [{"dispatch_id": "x", "items": [{"path": "a", "disposition": {}, "basis": "x"}]}]')]:
         with pytest.raises(reach.ReachError):
             reach.payload(bad)
+
+
+def test_C4_crlf_reading_with_trailing_note_and_newline_is_accepted(repo):
+    before = commit(repo, {"a": "a\nb\n"})
+    head = commit(repo, {"a": "a\n"})
+    turns = [{"dispatch_id": "build-1", "items": account(measure(repo, before, head))}]
+    reading = reader(head, turns=turns)
+    reading = replace(reading, body=(reading.body + "\nHolder's note after the fence.\n").replace("\n", "\r\n"))
+    assert reading.body.endswith("\r\n")
+    assert reach.payload(reading.body)["turns"] == turns
+    report = evaluate(repo, [turn(repo, before, head)], [reading])
+    assert report["state"] == "clear", report
+
+
+def test_C2_first_parent_walk_is_bounded_and_rejects_side_parent(repo):
+    before = commit(repo, {"a": "a\nb\n"})
+    first = commit(repo, {"a": "a\n"})
+    git(repo, "checkout", "-b", "side", before)
+    side = commit(repo, {"side": "side\n"})
+    git(repo, "checkout", "topic")
+    git(repo, "merge", "--no-edit", "side")
+    merged = revision(repo)
+    calls = []
+    def run(args, root):
+        calls.append(args)
+        return git(root, *args, check=False)
+    adapter = reach.Git(repo, run)
+    rows = adapter.path(before, merged)
+    assert [row[0] for row in rows] == [first, merged]
+    walks = [args for args in calls if "rev-list" in args]
+    assert len(walks) == 1
+    assert walks[0][-2:] == [merged, "^" + before]
+    with pytest.raises(reach.ReachError, match="first-parent"):
+        adapter.path(side, merged)
+    calls.clear()
+    assert adapter.path(merged, merged) == []
+    assert not any("rev-list" in args for args in calls)
 
 
 def test_C4_restore_reference_needs_proved_selected_lineage(repo):

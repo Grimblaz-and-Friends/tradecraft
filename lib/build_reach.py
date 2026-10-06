@@ -84,7 +84,7 @@ def _items(value):
 
 def payload(body):
     """One exact fenced object; marker provenance is checked by the entrance."""
-    blocks = re.findall(r"(?m)^```json[ \t]*\r?\n([\s\S]*?)^```[ \t]*$", body)
+    blocks = re.findall(r"(?m)^```json[ \t]*\r?\n([\s\S]*?)^```[ \t]*\r?$", body)
     if len(blocks) != 1:
         raise ReachError("reach reading needs exactly one fenced JSON object")
     try:
@@ -151,14 +151,13 @@ class Git:
 
     def path(self, before, after):
         before, after = self.commit(before), self.commit(after)
-        rows = self.read("rev-list", "--first-parent", "--parents", after).decode("ascii").splitlines()
-        result = []
-        for row in rows:
-            fields = row.split()
-            if fields[0] == before:
-                return list(reversed(result))
-            result.append(fields)
-        raise ReachError("unexpected ancestry: before is not on after's first-parent path")
+        if before == after:
+            return []
+        rows = [row.split() for row in self.read(
+            "rev-list", "--first-parent", "--parents", after, "^" + before).decode("ascii").splitlines()]
+        if not rows or len(rows[-1]) < 2 or rows[-1][1] != before:
+            raise ReachError("unexpected ancestry: before is not on after's first-parent path")
+        return list(reversed(rows))
 
     def ancestor(self, before, after):
         self.commit(before)

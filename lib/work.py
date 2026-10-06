@@ -2926,6 +2926,19 @@ def _evaluate_reach(state: WorkState) -> None:
         if state.validated_markers is None:
             validate_marker_claims(state)
         branch = (pr.get("head") or {}).get("ref") if pr else None
+        inventory = lifecycle.launch_bundles(
+            state.record_root or records.default_record_root(), f"{state.repo}#{state.issue_number}",
+            RESUME_SOURCE_STAGES["build"], include_missing_stage=True)
+        observed_sessions = [marker for marker in _state_markers(state) if marker.name == "builder-session"
+                             and marker.surface in {"issue", "issue-comment"}
+                             and _public_marker_valid(state, marker)]
+        # Missing PR/Git identity is not missing turn evidence when no builder
+        # has launched or been observed for this change.
+        if not any(not build_reach.never_launched(row[3]) for row in inventory) and not observed_sessions:
+            state.reach = build_reach.evaluate(
+                [], readings, root=state.holder_root, head=head, pr=pr, run=_git,
+                lineage={"branch": branch, "instalment": state.instalment}, instalment=state.instalment)
+            return
         if pr and (not isinstance(branch, str) or not branch):
             raise WorkError("implementing PR head branch is unavailable; restore PR identity and retry")
         if not pr:
@@ -2938,9 +2951,6 @@ def _evaluate_reach(state: WorkState) -> None:
             elif branches:
                 raise WorkError("registered pre-PR branch is ambiguous; open/select the implementing PR")
         lineage = {"branch": branch, "instalment": state.instalment}
-        inventory = lifecycle.launch_bundles(
-            state.record_root or records.default_record_root(), f"{state.repo}#{state.issue_number}",
-            RESUME_SOURCE_STAGES["build"], include_missing_stage=True)
         selected = []
         for order, bundle, request, record in inventory:
             named_branch = request.get("lineage_branch")
@@ -2967,9 +2977,7 @@ def _evaluate_reach(state: WorkState) -> None:
                            or isinstance(record.get("recipient_process"), dict) and lifecycle.liveness(
                                {"launcher_process": record["recipient_process"]}) == "active")
             turns.append((order, bundle, request, record, error, pending))
-        for observed in [marker for marker in _state_markers(state) if marker.name == "builder-session"
-                         and marker.surface in {"issue", "issue-comment"}
-                         and _public_marker_valid(state, marker)]:
+        for observed in observed_sessions:
             # A native bundle on any branch of this issue accounts for its own
             # session. A truly unmatched authorized session remains uncertainty.
             if any(_reach_session_matches(observed, request, record)

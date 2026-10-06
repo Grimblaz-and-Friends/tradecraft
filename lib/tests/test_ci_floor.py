@@ -93,6 +93,23 @@ def corpus_state(case):
     return state
 
 
+@pytest.mark.parametrize("head_ref", [None, "fixture-change"])
+def test_C3_no_builder_evidence_is_not_due_without_git_or_branch_identity(
+        tmp_path, monkeypatch, head_ref):
+    state = corpus_state(CORPUS["cases"][0])
+    state.record_root = tmp_path / "no-dispatches"
+    if head_ref is not None:
+        state.pr["head"]["ref"] = head_ref
+    assert not work.lifecycle.launch_bundles(
+        state.record_root, f"{state.repo}#{state.issue_number}",
+        work.RESUME_SOURCE_STAGES["build"], include_missing_stage=True)
+    assert not any(marker.name == "builder-session" for marker in work._state_markers(state))
+    monkeypatch.setattr(work, "_git", lambda *_args: pytest.fail("no turn needs Git measurement"))
+    work._evaluate_reach(state)
+    assert state.reach["state"] == "not-due"
+    assert state.reach["turns"] == []
+
+
 @pytest.mark.parametrize("case", CORPUS["cases"], ids=lambda case: case["name"])
 def test_landed_gate_corpus_collection_routing_proof_and_ready_floor(case, monkeypatch):
     state = corpus_state(case)
@@ -127,6 +144,7 @@ def test_landed_gate_corpus_collection_routing_proof_and_ready_floor(case, monke
         assert not any(item["code"] == "floor-missing" for item in composed["diagnostics"])
         assert work._ready_evidence_error(state, support.RULES) is None
     decision = work.decide(state, support.RULES)
+    assert state.reach["state"] == "not-due"
     outcome = work.floor_evaluation(state)["outcome"]
     if outcome in {"blocked", "stalled", "unverifiable"}:
         assert decision.stage == "floor-" + outcome
