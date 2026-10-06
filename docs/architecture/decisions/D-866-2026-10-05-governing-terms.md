@@ -30,6 +30,8 @@ The reading also distinguishes delivery from later unsuccessful attempts. A succ
 
 A review-lane change at any time uses a new affirmed brief because lane selection reads that carrier alone. The post-build amended-reading route applies when the lane stays the same. Moving off mechanical writes and settles the newly owed artifact; keeping or moving onto mechanical owes none. This preserves lane changes while making their carrier explicit in both amendment references.
 
+The [third holder reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/860#issuecomment-6007616324) narrows the repair to its governing principle: only a stale or unproved delivering turn in the active lineage adds a terms obligation, while unrelated recovery, missing-session and released-registration states keep their own routes, including resuming a stopped further build after a merge with its runtime still charged.
+
 ## Pinned implementation evidence
 
 All paths below are from the repository root, at `d47474f4888b4eda2f0eaa835525edb9b1a10375`:

@@ -1923,11 +1923,21 @@ def _composition_error(request: dict[str, object], record: Marker) -> str | None
 def _validate_builder_turn(state: WorkState, turn: tuple) -> None:
     _order, path, request, run = turn
     work_recovery.validate_target(state, "build", request, path)
-    session = lifecycle.recovery_session(request, run)
-    if SESSION_ID.fullmatch(session) is None:
-        raise WorkError("builder session identity is invalid")
-    if lifecycle.stopped(run) or run.get("outcome") not in SUCCESSFUL_BUNDLE_OUTCOMES:
+    requested = request.get("requested") or {}
+    if (lifecycle.stopped(run) or run.get("outcome") not in SUCCESSFUL_BUNDLE_OUTCOMES
+            or not any(attempt.get("launched") is True for attempt in run.get("attempts", [])
+                       if isinstance(attempt, dict))):
         raise WorkError("builder attempt did not successfully return")
+    if (run.get("recovery_error") or run.get("session_identity_error")
+            or requested.get("vendor") not in {"codex", "claude"}
+            or run.get("actual_vendor") != requested.get("vendor")):
+        raise WorkError("builder delivery attribution is unproved")
+    # A completed recipient can deliver its input without a resumable session.
+    # Session-bearing successes still owe the existing identity consistency check.
+    if run.get("outcome") != "success_uncontinuable":
+        session = lifecycle.recovery_session(request, run)
+        if SESSION_ID.fullmatch(session) is None:
+            raise WorkError("builder session identity is invalid")
 
 
 def _first_build_never_launched(state: WorkState, turns: list[tuple]) -> bool:
@@ -1940,7 +1950,7 @@ def _first_build_never_launched(state: WorkState, turns: list[tuple]) -> bool:
         if (request["stage"] != "build" or not isinstance(requested, dict) or requested.get("continuity") != "fresh"
                 or not isinstance(attempts, list) or not attempts
                 or any(not isinstance(attempt, dict) or attempt.get("launched") is not False for attempt in attempts)
-                or run.get("outcome") not in {"error", "unavailable"}
+                or run.get("outcome") not in {"error", "interrupted", "unavailable"}
                 # Unavailable runtimes also prove no first recipient exists.
                 # Keep restartable's identity, cleanup and liveness requirements;
                 # this does not broaden its explicit replacement contract.
@@ -1959,7 +1969,10 @@ def _completed_non_delivery(request: dict, run: dict) -> bool:
     return (isinstance(requested, dict) and requested.get("vendor") in {"codex", "claude"}
             and run.get("actual_vendor") == requested["vendor"]
             and run.get("lifecycle") == "completed" and bool(run.get("completed_at"))
-            and run.get("outcome") in {"completed_no_output", "unavailable"}
+            and (run.get("outcome") in {"completed_no_output", "unavailable"}
+                 or isinstance(run.get("attempts"), list) and bool(run["attempts"])
+                 and all(isinstance(attempt, dict) and attempt.get("launched") is False
+                         for attempt in run["attempts"]))
             and not lifecycle.stopped(run) and not run.get("recovery_error")
             and not run.get("session_identity_error"))
 
@@ -1976,16 +1989,19 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
                 f" ({record.url or 'URL unavailable'}) at {record.timestamp or 'timestamp unavailable'}")
 
     def result(proved_stale: bool, evidence: str) -> Decision:
+        next_step = "continuing downstream" if state.pr is not None else "opening the pull request"
         return Decision(
             "build", proved_stale, "resume",
             "governing-record-not-built" if proved_stale else "governing-record-comparison-unproved",
             f"Governing record {identity}; {evidence}. Run build on the resumed builder "
-            "to implement the current terms before opening the pull request or continuing downstream.",
+            f"to implement the current terms before {next_step}.",
             status="runnable" if proved_stale else "holder-owned",
         )
 
     try:
         registered = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
+        if not registered and state.pr is None:
+            return None  # Released history does not create a current builder obligation.
         if state.instalment is None and len(registered) > 1:
             return Decision(
                 "implementation-scope", False, None, "implementation-instalment-required",
@@ -2004,6 +2020,15 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
     if _first_build_never_launched(state, turns):
         return None  # Retry the first builder in its existing registered tree.
     turns = list(turns)
+    if lifecycle.stopped(turns[-1][3]):
+        recovery = work_recovery.recommend(state, Decision("build", True, "resume", "builder-recovery"))
+        try:
+            detail = json.loads(recovery.detail or "")
+        except ValueError:
+            detail = None
+        return replace(recovery, detail=(json.dumps({**detail, "governing_record": identity}, ensure_ascii=True)
+                                         if isinstance(detail, dict) else
+                                         f"{recovery.detail}; governing record {identity}; delivery waits for recovery"))
     while turns and _completed_non_delivery(turns[-1][2], turns[-1][3]):
         _order, path, request, _run = turns[-1]
         try:
@@ -2054,6 +2079,9 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
         return result(True, f"build/repair bundle {path} composed at {composed.isoformat()} before the record")
     if composed == record_time:
         return result(False, f"build/repair bundle {path} and record timestamps coincide; ordering is unproved")
+    if state.pr is None:
+        return Decision("open-pull-request", False, None, "builder-returned-without-pull-request",
+                        "Open the implementing pull request from the registered implementation branch.")
     return None
 
 
@@ -3245,6 +3273,8 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
 def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     _evaluate_raw_output(state, rules, str((state.raw_output or {}).get("policy") or "selected change-proof policy"))
     decision = _decide(state, rules)
+    if decision.reason.startswith(("stopped-run-", "stopped-handover-")):
+        return decision  # Recovery already selected its route before the terms comparison.
     try:
         recovered = work_recovery.recommend(state, decision)
     except (WorkError, OSError, ValueError) as exc:
@@ -5955,15 +5985,19 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             raise WorkError("restart requires a dead completed fresh failure with no reported session and a nonempty reason")
         work_recovery.validate_target(state, decision.stage, restart_source[2], restart_source[1])
         decision = replace(decision, continuity="fresh")
-    if restart_source is None and decision.stage in RESUME_SOURCE_STAGES and not merged_fresh_build:
+    if restart_source is None and decision.stage in RESUME_SOURCE_STAGES:
         try:
-            if work_recovery.latest_stopped(state, decision.stage) is not None:
+            stopped = work_recovery.latest_stopped(state, decision.stage)
+            if stopped is not None and (not merged_fresh_build
+                                        or stopped[2].get("lineage_pull_request") is None):
                 decision = replace(decision, continuity="resume")
+                merged_fresh_build = False
         except (WorkError, OSError, ValueError) as exc:
-            refusal = Decision(decision.stage, False, None, f"resume-bundle-invalid-for-{decision.stage}",
-                               f"{exc}; {decision.detail}" if decision.detail else str(exc), status="refused")
-            _emit_report(_reported_decision(state, refusal).as_dict(), state)
-            return 0
+            if not merged_fresh_build:
+                refusal = Decision(decision.stage, False, None, f"resume-bundle-invalid-for-{decision.stage}",
+                                   f"{exc}; {decision.detail}" if decision.detail else str(exc), status="refused")
+                _emit_report(_reported_decision(state, refusal).as_dict(), state)
+                return 0
     implementer_role = "artifact_author" if decision.stage == "artifact" else "implementer"
     selected_vendor = "codex"
     vendor_source = ""
@@ -6655,16 +6689,21 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _named_continuity(state: WorkState, stage: str, recommendation: Decision) -> str:
-    if stage == "build" and state.merged_pr is not None:
-        # A further build is fresh; _dispatch_root enforces release of the old
-        # registration before creating its new tree. Old markers cannot resume it.
-        return "fresh"
+    merged_build = stage == "build" and state.merged_pr is not None
     try:
-        if stage in RESUME_SOURCE_STAGES and work_recovery.latest_stopped(state, stage) is not None:
-            return "resume"
+        if stage == "build" and state.pr is None and not _change_rows(
+                state.repo, state.issue_number, state.instalment, active_only=True):
+            return "fresh"
+        if stage in RESUME_SOURCE_STAGES:
+            stopped = work_recovery.latest_stopped(state, stage)
+            if stopped is not None and (not merged_build or stopped[2].get("lineage_pull_request") is None):
+                return "resume"
     except (WorkError, OSError, ValueError):
         # Let the named stage's existing refusal report discovery uncertainty.
-        return "resume"
+        return "fresh" if merged_build else "resume"
+    if merged_build:
+        # Without a stopped further lineage, release the old registration first.
+        return "fresh"
     if stage == "artifact":
         continuity = (recommendation.continuity if recommendation.stage == stage
                       and recommendation.continuity is not None else "fresh")

@@ -29,13 +29,22 @@ def launches(state, stage):
 
 
 def scoped(state, rows):
-    """Discard proved sibling instalments, never an unattributed newer attempt."""
+    """Discard released lineages and proved siblings, never an unattributed attempt."""
     work = _entrance()
     registrations = work._change_rows(state.repo, state.issue_number, None, active_only=False)
     selected = [r for r in registrations if
                 (state.instalment is None or r.get("instalment") == state.instalment)
                 and (not state.holder_root or work._same_path(
                     Path(str(r.get("holder_root") or "")), state.holder_root))]
+    def released(request):
+        if request.get("stage") == "artifact":
+            return False
+        root, branch = request.get("root"), request.get("lineage_branch")
+        if not isinstance(root, str) or not root:
+            return False
+        matches = [r for r in registrations if work._same_path(Path(root), Path(str(r.get("root") or "")))
+                   and r.get("branch") == branch]
+        return bool(matches) and not any(r.get("active") is True for r in matches)
     def relevant(request):
         if "instalment" in request and state.instalment is not None:
             if request["instalment"] != state.instalment:
@@ -52,8 +61,8 @@ def scoped(state, rows):
         return not any(work._same_path(Path(root), Path(str(r.get("root") or "")))
                        and (request.get("stage") == "artifact" or r.get("branch") == branch)
                        for r in registrations)
-    return [row for row in rows if relevant(row[2])
-            or str(row[3].get("recovery_error", "")).startswith("conflicting copied")]
+    return [row for row in rows if not released(row[2]) and (relevant(row[2])
+            or str(row[3].get("recovery_error", "")).startswith("conflicting copied"))]
 
 
 def restartable(request, run):

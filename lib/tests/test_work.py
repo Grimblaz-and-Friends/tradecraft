@@ -206,7 +206,7 @@ class TestGoverningTerms:
         assert builder.issue_comments[0]["body"] in prompt
         assert builder.issue_comments[-1]["body"] in prompt
 
-    @pytest.mark.parametrize("failure", ["no-bundle", "unavailable", "error"])
+    @pytest.mark.parametrize("failure", ["no-bundle", "unavailable", "error", "interrupted"])
     def test_repair_866_unlaunched_first_builder_stays_fresh(self, builder, monkeypatch, failure):
         _request, run = self.never_launched(builder)
         if failure == "no-bundle":
@@ -390,6 +390,150 @@ class TestGoverningTerms:
         self.post(builder, AFFIRMED, stamp="2026-10-05T13:00:00Z")
         assert work.decide(builder, RULES).stage == "artifact"
         assert builder.artifact_phase.latest_settlement is None
+
+    @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+    @pytest.mark.parametrize("outcome", ["error", "interrupted"])
+    @pytest.mark.parametrize("current", [False, True])
+    def test_second_look_866_pre_spawn_failure_does_not_change_delivery(self, builder, stage, outcome, current):
+        comment = self.amendment(builder)
+        if current:
+            self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z")
+        _request, run = self.turn(builder, stage=stage, launched="2026-10-05T13:01:00Z")
+        run.update(outcome=outcome, attempts=[{"launched": False, "observed": {}}])
+        self.save(builder)
+        if current:
+            builder.floor_public = None
+            decision = work.decide(builder, RULES)
+            assert decision.stage == "floor" and "Run build" not in (decision.detail or "")
+        else:
+            self.due(builder, comment)
+
+    @pytest.mark.parametrize("stage", ["build", "review-disposition"])
+    @pytest.mark.parametrize("current", [False, True])
+    def test_second_look_866_delivery_without_session_is_separate_from_resume(
+            self, builder, monkeypatch, capsys, stage, current):
+        comment = self.amendment(builder)
+        # Retain only this delivery: no older session can mask the missing one.
+        for request_path, run_path, *_ in builder.term_turns:
+            request_path.unlink()
+            run_path.unlink()
+        builder.term_turns.clear()
+        builder.record_root = builder.record_root / "only-delivery"
+        request, run = self.turn(builder, stage=stage, session=None,
+                                 composed="2026-10-05T12:00:00Z" if current else "2026-10-05T10:00:00Z",
+                                 launched="2026-10-05T12:01:00Z")
+        run["outcome"] = "success_uncontinuable"
+        self.save(builder)
+        if current:
+            assert work.decide(builder, RULES).stage == "release-report"
+            assert work._governing_terms_decision(builder) is None
+            assert self.endpoint(builder, monkeypatch, "release-report") == 0
+            report = json.loads(capsys.readouterr().out)
+            assert report["stage"] == "release-report" and report["required_gate"]["verdict"] == "green"
+            with pytest.raises(work.WorkError, match="no valid session"):
+                work._resume_source("example/product#12", "build", builder.record_root, state=builder)
+        else:
+            self.due(builder, comment)
+        # Success alone cannot deliver without evidence that the recipient launched.
+        run["attempts"] = []
+        self.save(builder)
+        held = work.decide(builder, RULES)
+        assert held.stage == "build" and not held.dispatch and held.status == "holder-owned"
+
+    def test_second_look_866_floor_without_session_preserves_prior_delivery(self, builder):
+        self.amendment(builder)
+        self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z")
+        _request, run = self.turn(builder, stage="floor", session=None, launched="2026-10-05T13:01:00Z")
+        run["outcome"] = "success_uncontinuable"
+        self.save(builder)
+        assert work.decide(builder, RULES).stage == "release-report"
+
+    @pytest.mark.parametrize("problem", ["vendor", "conflicting-identity"])
+    def test_second_look_866_sessionless_delivery_still_needs_attribution(self, builder, problem):
+        request, run = builder.term_turns[0][2:]
+        request["requested"]["session_id"] = None
+        run["outcome"] = "success_uncontinuable"
+        run["attempts"][0]["observed"]["session_id"] = None
+        if problem == "vendor":
+            run["actual_vendor"] = "claude"
+        else:
+            run["session_identity_error"] = "conflicting reported identities"
+        self.save(builder)
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.status == "holder-owned"
+        assert decision.reason == "governing-record-comparison-unproved"
+
+    def test_second_look_866_launched_failure_keeps_recovery_its_own_route(self, builder):
+        comment = self.amendment(builder)
+        _request, run = self.turn(builder, stage="floor", launched="2026-10-05T13:01:00Z")
+        run["outcome"] = "interrupted"
+        self.save(builder)
+        work.validate_marker_claims(builder)
+        comparison = work._governing_terms_decision(builder)
+        assert comparison.stage == "floor" and comparison.reason == "stopped-run-resume"
+        assert comment["html_url"] in comparison.detail and "Run build" not in comparison.detail
+        decision = work.decide(builder, RULES)
+        assert decision.reason == "stopped-run-resume" and comment["html_url"] in decision.detail
+        assert "Run build" not in decision.detail
+
+    def test_second_look_866_released_stopped_bundle_does_not_own_successor(self, builder, monkeypatch):
+        builder.pr = None
+        request, run = builder.term_turns[0][2:]
+        request["lineage_pull_request"] = None
+        run["outcome"] = "interrupted"
+        self.save(builder)
+        old = builder.term_registration
+        old["active"] = False
+        fresh = builder.term_root.parent / "active-successor"
+        git(builder.holder_root, "worktree", "add", "-b", "active-change", str(fresh))
+        row = registry_row(fresh, builder.holder_root, "active-change")
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [old, row]})
+        assert work.work_recovery.launches(builder, "build") == []
+        assert work.work_recovery.latest_stopped(builder, "build") is None
+        decision = work.decide(builder, RULES)
+        assert (decision.stage, decision.dispatch, decision.continuity) == ("build", True, "fresh")
+        assert work._named_continuity(builder, "build", decision) == "fresh"
+
+    @pytest.mark.parametrize("marker", [False, True])
+    def test_second_look_866_released_lineage_cannot_prevent_fresh_build(self, builder, monkeypatch, marker):
+        builder.pr = None
+        builder.term_turns[0][2]["lineage_pull_request"] = None
+        self.save(builder)
+        builder.term_registration["active"] = False
+        if marker:
+            self.post(builder, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->")
+        decision = work.decide(builder, RULES)
+        assert work._governing_terms_decision(builder) is None
+        assert work._named_continuity(builder, "build", decision) == "fresh"
+        fresh = builder.term_root.parent / "released-successor"
+        git(builder.holder_root, "worktree", "add", "-b", "successor-change", str(fresh))
+        monkeypatch.setattr(work, "create_implementation_root", lambda *_a: (fresh, "successor-change"))
+        monkeypatch.setattr(work, "publish_implementation_branch", lambda *_a: None)
+        launches = []
+        def launch(command, **_kwargs):
+            launches.append(command)
+            assert "--resume" not in command
+            assert Path(command[command.index("--root") + 1]) == fresh
+            return subprocess.CompletedProcess(command, 0)
+        monkeypatch.setattr(work, "_recipient_run", launch)
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        assert len(launches) == 1
+
+    @pytest.mark.parametrize("has_pr", [False, True])
+    def test_second_look_866_detail_names_only_the_pending_step(self, builder, monkeypatch, capsys, has_pr):
+        if not has_pr:
+            builder.pr = None
+            builder.term_turns[0][2]["lineage_pull_request"] = None
+            self.save(builder)
+        comment = self.amendment(builder)
+        decision = self.due(builder, comment)
+        expected = "before continuing downstream" if has_pr else "before opening the pull request"
+        excluded = "opening the pull request" if has_pr else "continuing downstream"
+        assert expected in decision.detail and excluded not in decision.detail
+        if has_pr:
+            assert self.endpoint(builder, monkeypatch, "release-report") == 0
+            detail = json.loads(capsys.readouterr().out)["detail"]
+            assert expected in detail and excluded not in detail
 
     @pytest.mark.parametrize("composition_after_record", [False, True])
     def test_C2_request_completion_and_missing_snapshot_cannot_clear_terms(self, builder, composition_after_record):
@@ -582,7 +726,13 @@ class TestGoverningTerms:
         work.validate_marker_claims(builder)
         decision = work._governing_terms_decision(builder)
         assert (decision.dispatch, decision.status) == (False, "holder-owned")
-        assert comment["html_url"] in decision.detail and "Run build on the resumed builder" in decision.detail
+        assert comment["html_url"] in decision.detail
+        if problem == "unproved-cleanup":
+            # Direction 8 keeps an unrelated writer refusal in recovery; it is
+            # not evidence that this delivering prompt lacked the terms.
+            assert decision.reason == "stopped-run-unresolved" and "Run build" not in decision.detail
+        else:
+            assert "Run build on the resumed builder" in decision.detail
         if problem not in {"missing-bundle", "missing-timestamp", "naive-timestamp"}:
             assert "turn-0" in decision.detail
 
