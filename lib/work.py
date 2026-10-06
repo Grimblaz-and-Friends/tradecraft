@@ -1741,7 +1741,9 @@ def _settlement_artifact(state: WorkState, settlement: Marker, brief: Marker,
         observed = artifact_digest(latest_draft.body)
         if expected != observed:
             return None, (prefix + f"draft comment {reference} body changed; expected sha256 "
-                          f"{expected}, observed sha256 {observed}")
+                          f"{expected}, observed sha256 {observed}. "
+                          "Do not use the observed digest to re-settle: restore the judged text, "
+                          "or post a new draft for a fresh cold seat.")
         return latest_draft, None
     if dispatch_implementer.artifact_opening_carries_brief(brief.body, settlement.body):
         return settlement, None
@@ -2297,6 +2299,19 @@ def _handover_path(state: WorkState, role: str, root: Path, branch: str | None) 
     return store.expanduser().resolve() / "handovers" / (hashlib.sha256(identity).hexdigest() + ".json")
 
 
+def _settled_draft_explanation(phase: ArtifactPhase) -> str | None:
+    artifact = phase.settled_artifact
+    settlement = phase.latest_settlement
+    if artifact is None or artifact.attributes.get("status") != "draft" or settlement is None:
+        return None
+    return (
+        "The text below is the draft comment that settlement "
+        f"{_marker_setting_source(settlement)} (route={settlement.attributes['route']}) "
+        f"settles, verified against its draft_sha256={settlement.attributes['draft_sha256']}, "
+        "so its status=draft marker is expected."
+    )
+
+
 def _handover_context(state: WorkState, source: ResumeSource, root: Path,
                       branch: str | None) -> bytes:
     """Keep the handover's source record and live tree evidence separate from dispatch bytes."""
@@ -2370,9 +2385,11 @@ def _handover_context(state: WorkState, source: ResumeSource, root: Path,
         for row in rows if isinstance(row.get("body"), str) and row.get("body")
     ]
     facts["findings"] = findings
+    draft_explanation = _settled_draft_explanation(phase) if source_stage != "artifact" else None
     return (
         "Implementer handover. Continue exactly the named stage. Preserve uncommitted work; "
-        "do not reset the tree. The exact affirmed brief and artifact follow in the dispatch.\n"
+        "do not reset the tree. The exact affirmed brief and artifact follow in the dispatch."
+        + (" " + draft_explanation if draft_explanation else "") + "\n"
         + json.dumps(facts, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
 
@@ -4319,6 +4336,9 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
     ]
     if artifact is not None:
         artifact_label = "artifact under revision" if explicit_artifact else "settled artifact"
+        draft_explanation = _settled_draft_explanation(phase) if not explicit_artifact else None
+        if draft_explanation:
+            sections.append(draft_explanation)
         sections.append(
             f"--- {artifact_label} begin ---\n" + artifact.body
             + f"\n--- {artifact_label} end ---"

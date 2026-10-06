@@ -111,10 +111,25 @@ def _artifact_section(prompt, label="settled artifact"):
 
 def _assert_source_consumers(fixture, expected, tmp_path, monkeypatch):
     work.validate_marker_claims(fixture)
+    phase = fixture.artifact_phase
+    draft_explanation = None
+    if phase.settled_artifact.attributes.get("status") == "draft":
+        settlement = phase.latest_settlement
+        draft_explanation = (
+            "The text below is the draft comment that settlement "
+            f"{work._marker_setting_source(settlement)} (route={settlement.attributes['route']}) "
+            f"settles, verified against its draft_sha256={settlement.attributes['draft_sha256']}, "
+            "so its status=draft marker is expected."
+        ).encode("utf-8")
     for stage in ("build", "floor", "review-disposition"):
         prompt = work._stage_prompt(fixture, work.Decision(stage, True, "fresh", "fixture"),
                                     floor_command="python fixture-check.py")
         assert _artifact_section(prompt) == expected.encode("utf-8")
+        before_artifact = prompt.split(b"--- settled artifact begin ---", 1)[0]
+        if draft_explanation is not None:
+            assert before_artifact.endswith(draft_explanation + b"\n\n")
+        else:
+            assert b"so its status=draft marker is expected." not in prompt
         assert b"BEFORE SETTLEMENT READING" not in prompt
         assert prompt.index(b"--- settled artifact end ---") < prompt.index(b"FIRST APPLICABLE READING") < prompt.index(b"SECOND APPLICABLE READING")
         facts = json.loads(prompt.split(b"\n\n", 2)[1])
@@ -127,6 +142,10 @@ def _assert_source_consumers(fixture, expected, tmp_path, monkeypatch):
     monkeypatch.setattr(work, "_git", lambda *_: subprocess.CompletedProcess([], 0, b"", b""))
     source = work.ResumeSource("", "source-bundle", {"stage": "build"}, {}, SESSION)
     context = work._handover_context(fixture, source, tmp_path, "fixture-branch")
+    if draft_explanation is not None:
+        assert context.split(b"\n", 1)[0].endswith(draft_explanation)
+    else:
+        assert b"so its status=draft marker is expected." not in context
     facts = json.loads(context.split(b"\n", 1)[1])
     assert facts["artifact"]["text"] == expected
     assert facts["artifact"]["source"] == work._marker_setting_source(fixture.artifact_phase.settled_artifact)
@@ -211,6 +230,11 @@ def test_broken_pointer_refuses_ordinary_and_explicit_launch_before_mutation(
     if failure == "changed":
         assert _fixture_digest(SOURCE_DRAFT) in recommendation.detail
         assert _fixture_digest(fixture.issue_comments[1]["body"]) in recommendation.detail
+        remedy = (
+            "Do not use the observed digest to re-settle: restore the judged text, "
+            "or post a new draft for a fresh cold seat."
+        )
+        assert remedy in recommendation.detail
     dispatch = tmp_path / "custom.md"
     supplied = b"Holder dispatch must not erase the source failure.\r\n"
     dispatch.write_bytes(supplied)
@@ -223,13 +247,19 @@ def test_broken_pointer_refuses_ordinary_and_explicit_launch_before_mutation(
     assert report["stage"] == stage and not report["dispatch"]
     assert report["reason"] == "artifact-source-unusable"
     assert SOURCE_FAILURES[failure] in report["detail"]
+    if failure == "changed":
+        assert remedy in report["detail"]
     assert dispatch.read_bytes() == supplied
-    with pytest.raises(work.WorkError, match=SOURCE_FAILURES[failure]):
+    with pytest.raises(work.WorkError, match=SOURCE_FAILURES[failure]) as composed_error:
         work._stage_prompt(fixture, decision, floor_command="python check.py")
+    if failure == "changed":
+        assert remedy in str(composed_error.value)
     monkeypatch.setattr(work, "_git_snapshot", lambda *_: pytest.fail("read a tree before refusing a broken handover"))
     source = work.ResumeSource("", "source-bundle", {"stage": stage}, {}, SESSION)
-    with pytest.raises(work.WorkError, match=SOURCE_FAILURES[failure]):
+    with pytest.raises(work.WorkError, match=SOURCE_FAILURES[failure]) as handover_error:
         work._handover_context(fixture, source, tmp_path, "fixture-branch")
+    if failure == "changed":
+        assert remedy in str(handover_error.value)
 
 
 @pytest.mark.parametrize("replacement", ["settlement", "draft", "term"])
