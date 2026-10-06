@@ -312,6 +312,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         instruction = ARTIFACT_RETURN_INSTRUCTION.encode("utf-8")
         context = context + b"\n\n" + instruction if context else instruction
     effective_prompt = context + b"\n\n" + prompt if context else prompt
+    input_composed_at = datetime.now(timezone.utc).isoformat()
     if args.resume and not args.resume.strip():
         raise ImplementerError("--resume must be a nonempty explicit session id")
     if args.resume and args.session_id:
@@ -334,6 +335,26 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         metadata = json.loads(lifecycle_input.read_bytes())
         if not isinstance(metadata, dict):
             raise ImplementerError("lifecycle input must be an object")
+    composition = metadata.get("prompt_composition")
+    if composition is not None:
+        if (not isinstance(composition, dict) or composition.get("origin") != "entrance"
+                or composition.get("dispatch_sha256") != hashlib.sha256(prompt).hexdigest()
+                or not isinstance(composition.get("sources"), list)):
+            raise ImplementerError("entrance composition evidence differs from frozen dispatch")
+        try:
+            composed = datetime.fromisoformat(composition["composed_at"].replace("Z", "+00:00"))
+            frozen = datetime.fromisoformat(input_composed_at)
+            if composed > frozen:
+                raise ValueError("unproved prompt boundary")
+        except (KeyError, AttributeError, TypeError, ValueError) as exc:
+            raise ImplementerError("entrance composition time is invalid") from exc
+        composition = dict(composition)
+    else:
+        # Holder dispatches keep their supplied bytes and responsibility. This
+        # clock proves when their effective input froze, not source inclusion.
+        composition = {"origin": "holder", "composed_at": input_composed_at,
+                       "dispatch_sha256": hashlib.sha256(prompt).hexdigest()}
+    composition["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
     budget_reason = getattr(args, "budget_override_reason", None) or metadata.get("budget_override_reason")
     if budget_reason is not None and (args.stage != "build" or not isinstance(budget_reason, str) or not budget_reason.strip()):
         raise ImplementerError("budget override requires a build stage and a nonempty reason")
@@ -429,6 +450,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 if context_path else None
             )
             request["effective_input_sha256"] = hashlib.sha256(effective_prompt).hexdigest()
+            request["prompt_composition"] = composition
             if brief_path:
                 request["artifact_brief"] = {
                     "path": str(brief_path),

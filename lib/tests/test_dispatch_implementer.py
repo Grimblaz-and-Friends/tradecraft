@@ -113,6 +113,67 @@ def configure(job, value):
     job[1].write_bytes(json.dumps({"codex": value}).encode("utf-8"))
 
 
+@pytest.mark.parametrize("origin", ["entrance", "holder"])
+def test_composition_boundary_belongs_to_exact_retained_effective_input(job, origin):
+    import hashlib
+    from datetime import datetime, timedelta
+    args, _ = job
+    args.context = args.dispatch.with_name("context.txt")
+    args.context.write_bytes(b"Bounded launcher context.\n")
+    frozen_before = datetime.now().astimezone()
+    entrance_composed_at = (frozen_before - timedelta(seconds=1)).isoformat()
+    sources = [{"kind": "affirmed-brief", "surface": "issue-comment", "source_id": "7",
+                "timestamp": "2026-10-05T09:00:00Z", "body_sha256": "fixture"}]
+    if origin == "entrance":
+        args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+        args.lifecycle_input.write_bytes(json.dumps({"prompt_composition": {
+            "origin": origin, "composed_at": entrance_composed_at, "sources": sources,
+            "dispatch_sha256": hashlib.sha256(args.dispatch.read_bytes()).hexdigest(),
+        }}).encode())
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    assert implementer.run_implementer(args) == 0
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    composition = request["prompt_composition"]
+    prompt = implementer.records.sidecar(args.output, ".dispatch.bin").read_bytes()
+    context = implementer.records.sidecar(args.output, ".context.bin").read_bytes()
+    assert prompt == args.dispatch.read_bytes() and context == args.context.read_bytes()
+    assert composition["origin"] == origin
+    assert composition["dispatch_sha256"] == hashlib.sha256(prompt).hexdigest()
+    assert composition["effective_input_sha256"] == request["effective_input_sha256"] == hashlib.sha256(context + b"\n\n" + prompt).hexdigest()
+    composed = datetime.fromisoformat(composition["composed_at"])
+    assert composed <= datetime.fromisoformat(request["launched_at"])
+    if origin == "entrance":
+        assert composition["sources"] == sources and composition["composed_at"] == entrance_composed_at
+    else:
+        assert composed >= frozen_before and "sources" not in composition
+
+
+@pytest.mark.parametrize("problem", ["digest", "time", "naive", "future", "sources", "origin"])
+def test_invalid_entrance_composition_refuses_before_bundle_or_launch(job, problem):
+    import hashlib
+    args, _ = job
+    evidence = {"origin": "entrance", "composed_at": "2026-10-05T10:00:00Z", "sources": [],
+                "dispatch_sha256": hashlib.sha256(args.dispatch.read_bytes()).hexdigest()}
+    if problem == "digest":
+        evidence["dispatch_sha256"] = "wrong"
+    elif problem == "time":
+        evidence["composed_at"] = "not a time"
+    elif problem == "naive":
+        evidence["composed_at"] = "2026-10-05T10:00:00"
+    elif problem == "future":
+        evidence["composed_at"] = "9999-01-01T00:00:00Z"
+    elif problem == "sources":
+        evidence.pop("sources")
+    else:
+        evidence["origin"] = "unproved"
+    args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+    args.lifecycle_input.write_bytes(json.dumps({"prompt_composition": evidence}).encode())
+    with pytest.raises(implementer.ImplementerError, match="composition"):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+    assert not (args.root / "seen-codex.json").exists()
+
+
 def record(args):
     return json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
 

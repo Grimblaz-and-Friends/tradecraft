@@ -15,6 +15,10 @@ import proof
 import work
 import test_work as support
 
+# The independent floor corpus starts after implementation has received its
+# terms. Governing-record admission has its own retained-launch integration tests.
+already_built_terms = support.already_built_terms
+
 ROOT = Path(__file__).resolve().parents[2]
 SHARED = ROOT / "skills" / "work" / "references"
 CORPUS_PATH = SHARED / "proof-fixtures" / "v1-ci-floor.json"
