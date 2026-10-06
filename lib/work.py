@@ -3026,7 +3026,7 @@ def _decision_status(decision: Decision) -> str:
 def _reported_decision(state: WorkState, decision: Decision) -> Decision:
     try:
         plan = _launch_plan(state, decision)
-    except (WorkError, setting_resolution.SettingsError, OSError, ValueError) as exc:
+    except (WorkError, artifact_tree.ArtifactTreeError, setting_resolution.SettingsError, OSError, ValueError) as exc:
         plan = {"status": "unresolved", "stage": decision.stage, "reason": str(exc)}
     return replace(
         decision,
@@ -5337,10 +5337,12 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
                         holder, captured = artifact_tree.source(holder)
                 except (artifact_tree.ArtifactTreeError, OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
                     plan["artifact_source_unavailable_reason"] = str(exc)
+                    plan.update(status="unresolved", reason=str(exc))
             plan["artifact_copy"] = {"selection": "planned", "root": None,
                 "holder_root": str(holder) if holder else None, "source_commit": captured,
                 "committed_only": True, "remotes": None, "verified": False}
-        plan["artifact_copy"].update(lfs_mode="pointers", lfs_pointer_count=None)
+        plan["artifact_copy"].update(lfs_mode="pointers", lfs_pointer_count=None,
+                                    history_blobs="holder-available; checkout-only hydration")
         if recovery:
             plan["artifact_copy_recovery"] = recovery
         plan["permission_boundary"] = (
@@ -6181,7 +6183,10 @@ def execute_stage(state, decision, *args, **kwargs):
             try:
                 return _execute_stage(state, decision, *args, **kwargs)
             except artifact_tree.ArtifactTreeError as exc:
-                raise WorkError(str(exc)) from exc
+                refusal = replace(decision, dispatch=False, continuity=None, status="holder-owned",
+                                  reason="artifact-copy-unproved", detail=str(exc))
+                _emit_report(_reported_decision(state, refusal).as_dict(), state)
+                return 0
     return _execute_stage(state, decision, *args, **kwargs)
 
 
@@ -6837,7 +6842,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     common.extend(("--output", str(output)))
                     launch_plan["artifact_copy"] = {**copy, "verified": True,
                         "selection": copy_record["selection"], "lfs_mode": "pointers",
-                        "lfs_pointer_count": copy_record["lfs_pointer_count"]}
+                        "lfs_pointer_count": copy_record["lfs_pointer_count"],
+                        "history_blobs": copy_record["history_blobs"]}
                     if copy_record.get("recovery"):
                         _emit_report({"artifact_copy_recovery": copy_record["recovery"]}, state, flush=True)
                     if copy_record["legacy_recovery"]:
@@ -6919,6 +6925,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         "Uncommitted holder files are not imported. Failed turns keep this copy; "
                         "accepted returns dispose of it. "
                         f"LFS content remains as {copy_record['lfs_pointer_count']} tracked pointer paths. "
+                        "Only this checkout's missing blobs are fetched; older blobs absent from the holder "
+                        "remain unavailable after remote removal. "
                         + (copy_record["recovery"]["message"] + " " if copy_record.get("recovery") else "")
                         + ("Codex uses workspace-write with automatic approval review.\n" if selected_vendor == "codex"
                            else "Claude starts here with no OS write sandbox.\n")

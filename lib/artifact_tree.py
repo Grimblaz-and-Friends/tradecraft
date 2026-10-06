@@ -36,6 +36,22 @@ class CopyDamage(ArtifactTreeError):
     """An attributed allocation lost readable Git state, without redirecting it."""
 
 
+class GitCommandError(ArtifactTreeError):
+    """Git finished with a nonzero status, rather than leaving a probe unproved."""
+
+    def __init__(self, message, returncode):
+        super().__init__(message)
+        self.returncode = returncode
+
+
+def _remaining():
+    try:
+        deadline = lifecycle.current_deadline() or lifecycle.Deadline(lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS)
+        return deadline.remaining()
+    except TimeoutError as exc:
+        raise ArtifactTreeError(f"artifact Git deadline failed: {exc}") from exc
+
+
 def _binding(key):
     key = key.upper()
     return key in GIT_BINDINGS or key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
@@ -58,20 +74,28 @@ def isolated_git_environment():
         os.environ.update(saved)
 
 
-def git(root, *args, trust=()):
+def git(root, *args, trust=(), lazy_fetch=False):
     command = ["git"]
     for path in trust:
         command.extend(("-c", f"safe.directory={path}"))
     command.extend(("-C", str(root), *args))
-    result = run_process(command, input=b"", cwd=Path.cwd(), env=environment(),
-                         timeout=lifecycle.probe_timeout(120), on_tick=lambda: None,
-                         cleanup_deadline=lifecycle.cleanup_deadline())
+    env = environment()
+    if lazy_fetch:
+        env["GIT_NO_LAZY_FETCH"] = "0"
+    try:
+        result = run_process(command, input=b"", cwd=Path.cwd(), env=env,
+                             timeout=_remaining(), on_tick=lambda: None,
+                             cleanup_deadline=lifecycle.cleanup_deadline())
+    except (OSError, subprocess.SubprocessError) as exc:
+        error = ArtifactTreeError(f"artifact Git {args[0] if args else 'probe'} failed at {root}: {exc}")
+        error.cleanup_proven = getattr(exc, "cleanup_proven", True)
+        raise error from exc
     if getattr(result, "cleanup_proven", True) is False:
         error = ArtifactTreeError("artifact Git process cleanup is unproved")
         error.cleanup_proven = False
         raise error
     if result.returncode:
-        raise ArtifactTreeError(result.stderr.decode("utf-8", "backslashreplace").strip())
+        raise GitCommandError(result.stderr.decode("utf-8", "backslashreplace").strip(), result.returncode)
     return result.stdout.decode("utf-8").strip()
 
 
@@ -164,15 +188,25 @@ def _storage(copy, *, forbidden=()):
         raise ArtifactTreeError(f"artifact copy has worktree links: {root}")
     for directory, dirs, files in os.walk(root / ".git", followlinks=False):
         if lifecycle.current_deadline() is not None:
-            lifecycle.current_deadline().remaining()
+            _remaining()
         if any(_linked(Path(directory) / name) for name in [*dirs, *files]):
             raise ArtifactTreeError(f"artifact copy has linked Git storage: {root}")
+        if Path(directory) == root / ".git" and "objects" in dirs:
+            dirs.remove("objects")  # Structural roots are checked below; never walk loose objects.
+    containers = [objects, objects / "info", objects / "pack"]
+    for container in containers:
+        if not container.is_dir():
+            continue
+        for path in container.iterdir():
+            if lifecycle.current_deadline() is not None:
+                _remaining()
+            if _linked(path):
+                raise ArtifactTreeError(f"artifact copy has linked Git storage: {root}")
     # Read configuration independently of HEAD, which a temp cleaner may erase.
     try:
-        config = git(root, "config", "--file", str(root / ".git/config"), "--includes", "--list", "-z")
-    except ArtifactTreeError as exc:
-        if getattr(exc, "cleanup_proven", True) is False:
-            raise
+        config = (git(root, "config", "--file", str(root / ".git/config"), "--includes", "--list", "-z")
+                  if (root / ".git/config").exists() else "")
+    except GitCommandError as exc:
         raise CopyDamage(f"artifact copy lost readable Git configuration: {root}: {exc}") from exc
     for entry in config.split("\0"):
         key, _, value = entry.partition("\n")
@@ -211,10 +245,24 @@ def retained_recovery(copy):
             reason = str(exc)
         else:
             try:
-                git(root, "fsck", "--no-reflogs", "--no-dangling", "HEAD")
-            except ArtifactTreeError as exc:
-                if getattr(exc, "cleanup_proven", True) is False:
-                    raise
+                _working_root(root)
+                # An unborn branch is healthy: do not require a commit for staged work.
+                try:
+                    git(root, "rev-parse", "--verify", "--quiet", "HEAD")
+                except GitCommandError as exc:
+                    if exc.returncode != 1:
+                        raise
+                    ref = git(root, "symbolic-ref", "--quiet", "HEAD")
+                    try:
+                        git(root, "show-ref", "--verify", "--quiet", ref)
+                    except GitCommandError as missing:
+                        if missing.returncode != 1:
+                            raise
+                    else:
+                        raise CopyDamage("HEAD names an unreadable existing reference") from exc
+                else:
+                    git(root, "cat-file", "-e", "HEAD^{tree}")
+            except (GitCommandError, CopyDamage) as exc:
                 reason = "retained HEAD is damaged: " + str(exc)
             else:
                 prove(copy)
@@ -229,7 +277,7 @@ def lfs_pointer_count(root):
     count = 0
     for name in git(root, "ls-files", "-z").split("\0"):
         if lifecycle.current_deadline() is not None:
-            lifecycle.current_deadline().remaining()
+            _remaining()
         path = root / name
         if not name or _linked(path) or not path.is_file() or not _inside(path.resolve(), root):
             continue
@@ -242,16 +290,17 @@ def lfs_pointer_count(root):
 
 
 def _hydrate(holder, root, commit):
-    missing = git(root, "rev-list", "--objects", "--missing=print", commit)
-    if not any(line.startswith("?") for line in missing.splitlines()):
+    # Checkout requests only its tree's missing blobs. No history traversal or refetch.
+    config = source_git(holder, "config", "--list", "-z")
+    values = dict(entry.split("\n", 1) for entry in config.split("\0") if "\n" in entry)
+    remotes = [key.removeprefix("remote.").removesuffix(".promisor")
+               for key, value in values.items()
+               if key.startswith("remote.") and key.endswith(".promisor") and value.lower() == "true"]
+    if not remotes:
+        git(root, "checkout", "--detach", commit)
         return
-    remotes = source_git(holder, "remote").splitlines()
     failures = []
     for remote in remotes:
-        config = source_git(holder, "config", "--get-regexp", r"^remote\..*\.(promisor|url)$")
-        values = dict(line.split(" ", 1) for line in config.splitlines())
-        if values.get(f"remote.{remote}.promisor", "").lower() != "true":
-            continue
         url = values.get(f"remote.{remote}.url")
         if not url:
             continue
@@ -259,15 +308,13 @@ def _hydrate(holder, root, commit):
         if ":" not in url and not Path(url).is_absolute():
             url = str((holder / url).resolve())
         try:
-            git(root, "fetch", "--refetch", "--no-filter", "--no-tags", "--no-write-fetch-head",
-                "--no-recurse-submodules", "--no-auto-maintenance", "--", url, commit)
-            remaining = git(root, "rev-list", "--objects", "--missing=print", commit)
-            if not any(line.startswith("?") for line in remaining.splitlines()):
-                return
-            failures.append(f"{remote}: captured commit still has missing blobs")
-        except ArtifactTreeError as exc:
-            if getattr(exc, "cleanup_proven", True) is False:
-                raise
+            git(root, "config", "remote.origin.url", url)
+            git(root, "config", "remote.origin.promisor", "true")
+            git(root, "config", "remote.origin.partialclonefilter", "blob:none")
+            git(root, "-c", "fetch.recurseSubmodules=false", "-c", "maintenance.auto=false",
+                "-c", "gc.auto=0", "checkout", "--detach", commit, lazy_fetch=True)
+            return
+        except GitCommandError as exc:
             failures.append(f"{remote}: {exc}")
     raise ArtifactTreeError("cannot hydrate captured commit's missing blobs from holder promisor remote: "
                             + ("; ".join(failures) or "no usable promisor remote"))
@@ -349,7 +396,10 @@ def validate_resume(request, run, bundle, **kwargs):
         record = _read(copy["lifecycle_record"])
         if record.get("state") not in {"running", "retained"}:
             raise ArtifactTreeError(f"failed author has no retained copy: {bundle}; copy {copy['root']}")
-        retained_recovery(copy)
+        try:
+            retained_recovery(copy)
+        except ArtifactTreeError as exc:
+            raise ArtifactTreeError(f"artifact bundle {bundle}; copy {copy['root']}: {exc}") from exc
     return copy
 
 
@@ -477,21 +527,25 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
                      "-c", "filter.lfs.smudge=", "-c", "filter.lfs.clean=",
                      "-c", "filter.lfs.required=false", "--", str(holder), copy["root"])
             source_git(holder, *clone)
+            # Check the effective tree before checkout can write any files.
+            _working_root(Path(copy["root"]))
             _hydrate(holder, Path(copy["root"]), copy["source_commit"])
             for remote in git(Path(copy["root"]), "remote").splitlines():
                 git(Path(copy["root"]), "remote", "remove", remote)
-            # Check the effective tree before checkout can write any files.
-            _working_root(Path(copy["root"]))
-            git(Path(copy["root"]), "checkout", "--detach", copy["source_commit"])
         prove(copy, fresh=not reuse, forbidden=forbidden)
         record["lfs_pointer_count"] = lfs_pointer_count(Path(copy["root"]))
+        record["history_blobs"] = "holder-available; checkout-only hydration"
         _atomic(lifecycle_path, record)
         yield copy, invoked, record
     except (subprocess.TimeoutExpired, OSError, ArtifactTreeError) as exc:
         if getattr(exc, "cleanup_proven", True) is False:
             # A still-unproved clone subprocess may own files in the allocation.
             invoked["value"] = True
-        raise
+        if not isinstance(exc, ArtifactTreeError):
+            raise  # Caller failures (including publication) keep their existing contract.
+        error = ArtifactTreeError(f"artifact bundle {record['bundle']}; copy {copy['root']}: {exc}")
+        error.cleanup_proven = getattr(exc, "cleanup_proven", True)
+        raise error from exc
     finally:
         result = finish(copy, output, invoked=invoked["value"], unused=not reuse, forbidden=forbidden)
         print("artifact-copy: " + json.dumps({"root": copy["root"], **result}, ensure_ascii=True), flush=True)

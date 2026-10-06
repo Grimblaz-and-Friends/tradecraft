@@ -86,6 +86,56 @@ def snapshot(root):
             "index": git(root, "ls-files", "--stage").stdout}
 
 
+def test_public_retained_git_timeout_is_unresolved_and_resumable(entrance, monkeypatch, capsys):
+    holder, store, commands, setup = entrance
+    args, _, _ = setup("codex", returned="/tmp/artifact.md")
+    assert work.run(args, transport=ArtifactTransport()) == 1
+    _, bundle, request, _ = bundles(store)[-1]
+    root, copy = Path(request["root"]), request["artifact_copy"]
+    before = snapshot(root)
+    original = trees.run_process
+    def timeout(command, **kwargs):
+        if str(root) in command and any(probe in command for probe in ("fsck", "cat-file")):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return original(command, **kwargs)
+    with monkeypatch.context() as m:
+        m.setattr(trees, "run_process", timeout)
+        state = repair_state(holder, store)
+        decision = work.Decision("artifact", True, "resume", "artifact-marker-absent", "resume draft")
+        report = work._reported_decision(state, decision)
+        assert report.launch_settings["status"] == "unresolved"
+        assert str(root) in report.launch_settings["reason"] and bundle in report.launch_settings["reason"]
+        count = len(commands)
+        args, _, _ = setup("codex", probe=True)
+        assert work.run(args, transport=ArtifactTransport()) == 0
+        assert len(commands) == count and len(bundles(store)) == 1
+        assert snapshot(root) == before and trees._read(copy["lifecycle_record"])["state"] == "retained"
+        output = capsys.readouterr().out.replace("\\\\", "\\")
+        assert "resume-bundle-invalid-for-artifact" in output and str(root) in output and bundle in output
+    args, capture, _ = setup("codex", probe=True)
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    resumed = bundles(store)[-1][2]
+    assert resumed["root"] == str(root) and resumed["requested"]["session_id"] == SESSION
+    assert json.loads(capture.read_bytes())["draft_before"] == b"unfinished draft\n".hex()
+
+
+def test_public_clone_timeout_returns_holder_owned_copy_and_bundle_refusal(entrance, monkeypatch, capsys):
+    _holder, store, commands, setup = entrance
+    original = trees.run_process
+    def timeout(command, **kwargs):
+        if "clone" in command:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return original(command, **kwargs)
+    monkeypatch.setattr(trees, "run_process", timeout)
+    args, _, _ = setup("codex")
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    assert not commands and not bundles(store)
+    record = trees._read(next(store.rglob("*.artifact-copy.json")))
+    output = capsys.readouterr().out.replace("\\\\", "\\")
+    assert "holder-owned" in output and "artifact-copy-unproved" in output
+    assert record["bundle"] in output and record["artifact_copy"]["root"] in output
+
+
 def test_public_partial_clone_fetch_failure_names_cause_and_writes_no_author_bundle(
         entrance, capsys):
     origin, store, commands, setup = entrance
@@ -106,13 +156,13 @@ def test_public_partial_clone_fetch_failure_names_cause_and_writes_no_author_bun
     git(holder, "remote", "set-url", "origin", (store.parent / "absent-promisor.git").as_uri())
     args, _, _ = setup("codex", probe=True)
     args.root = holder
-    with pytest.raises(work.WorkError, match="missing blobs.*promisor"):
-        work.run(args, transport=ArtifactTransport())
+    assert work.run(args, transport=ArtifactTransport()) == 0
     assert not commands and not bundles(store)
     assert not list(store.rglob("*.request.json"))
     records = list(store.rglob("*.artifact-copy.json"))
     assert len(records) == 1 and trees._read(records[0])["state"] == "removed"
-    assert "artifact-copy:" in capsys.readouterr().out
+    report = capsys.readouterr().out
+    assert "artifact-copy:" in report and "promisor" in report and "holder-owned" in report
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
@@ -142,14 +192,16 @@ def test_public_lfs_pointer_policy_and_count_are_reported(entrance, monkeypatch,
     plan = json.loads(line.removeprefix("work: launch_settings "))
     assert plan["artifact_copy"]["lfs_mode"] == "pointers"
     assert plan["artifact_copy"]["lfs_pointer_count"] == 1
+    assert plan["artifact_copy"]["history_blobs"] == "holder-available; checkout-only hydration"
     request = bundles(store)[-1][2]
     assert trees._read(request["artifact_copy"]["lifecycle_record"])["lfs_pointer_count"] == 1
     assert b"1 tracked pointer paths" in base64.b64decode(json.loads(capture.read_bytes())["stdin"])
+    assert b"older blobs absent from the holder" in base64.b64decode(json.loads(capture.read_bytes())["stdin"])
     assert snapshot(holder) == before
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
-@pytest.mark.parametrize("damage", ["missing", "tree", "blob", "head", "config"])
+@pytest.mark.parametrize("damage", ["missing", "tree", "head", "config"])
 def test_public_lost_copy_resumes_same_author_in_new_copy_and_reports_loss(
         entrance, capsys, vendor, damage):
     holder, store, commands, setup = entrance
@@ -163,7 +215,7 @@ def test_public_lost_copy_resumes_same_author_in_new_copy_and_reports_loss(
     elif damage == "head":
         (root / ".git/HEAD").unlink()
     elif damage == "config":
-        (root / ".git/config").unlink()
+        (root / ".git/config").write_bytes(b"[broken configuration\n")
     else:
         object_id = git(root, "rev-parse", "HEAD^{tree}" if damage == "tree" else
                         "HEAD:author-commit.txt").stdout.decode().strip()

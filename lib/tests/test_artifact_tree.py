@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -168,10 +169,12 @@ def test_lfs_checkout_keeps_pointers_without_a_smudge_runtime(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("available", [True, False])
-def test_partial_clone_hydrates_missing_blobs_before_removing_remotes(tmp_path, available):
+def test_partial_clone_hydrates_only_captured_tree_before_removing_remotes(tmp_path, available):
     origin = repository(tmp_path)
+    older_blob = git(origin, "rev-parse", "HEAD:fixture.txt").stdout.decode().strip()
+    (origin / "fixture.txt").write_bytes(b"current tree only\n")
     (origin / "payload.bin").write_bytes(b"required captured blob\n")
-    git(origin, "add", "payload.bin")
+    git(origin, "add", "payload.bin", "fixture.txt")
     git(origin, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "blob")
     remote = tmp_path / "remote.git"
     git(origin, "clone", "--bare", str(origin), str(remote))
@@ -187,12 +190,14 @@ def test_partial_clone_hydrates_missing_blobs_before_removing_remotes(tmp_path, 
     output = tmp_path / "bundle/result.md"
     def create():
         with trees.checkout(holder, output, work="fixture#1", instalment=None,
-                            holder_session_id="holder") as (copy, _invoked, _record):
+                            holder_session_id="holder") as (copy, _invoked, record):
             root = Path(copy["root"])
             assert copy["source_commit"] == commit
             assert (root / "payload.bin").read_bytes().replace(b"\r\n", b"\n") == b"required captured blob\n"
             assert trees.git(root, "remote") == ""
-            assert "?" not in trees.git(root, "rev-list", "--objects", "--missing=print", "HEAD")
+            # A successful checkout must not hydrate a blob used only by history.
+            assert git(root, "cat-file", "-e", older_blob, check=False).returncode != 0
+            assert record["history_blobs"] == "holder-available; checkout-only hydration"
     if available:
         create()
     else:
@@ -202,6 +207,116 @@ def test_partial_clone_hydrates_missing_blobs_before_removing_remotes(tmp_path, 
         record = trees._read(output.with_suffix(".md.artifact-copy.json"))
         assert record["state"] == "removed"
     assert git(holder, "rev-list", "--objects", "--missing=print", "HEAD").stdout == before
+
+
+def test_retained_unborn_head_keeps_staged_draft_without_database_walk(tmp_path, monkeypatch):
+    holder = repository(tmp_path)
+    with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
+                        holder_session_id="holder") as (copy, invoked, _record):
+        invoked["value"] = True
+        root = Path(copy["root"])
+        trees.git(root, "switch", "--orphan", "author-unborn")
+        (root / "draft").write_bytes(b"staged-only author draft")
+        trees.git(root, "add", "draft")
+    before = git(root, "ls-files", "--stage").stdout
+    commands, original = [], trees.run_process
+    def captured(command, **kwargs):
+        commands.append(command)
+        return original(command, **kwargs)
+    monkeypatch.setattr(trees, "run_process", captured)
+    try:
+        assert trees.retained_recovery(copy) is None
+        assert git(root, "ls-files", "--stage").stdout == before
+        assert (root / "draft").read_bytes() == b"staged-only author draft"
+        assert trees.git(root, "symbolic-ref", "HEAD") == "refs/heads/author-unborn"
+        prior_record = trees._read(copy["lifecycle_record"])
+        predecessor = SimpleNamespace(path=prior_record["bundle"],
+            request={"artifact_copy": copy, "root": copy["root"], "work": "fixture#1",
+                     "instalment": None, "holder_session_id": "holder"},
+            run={"outcome": "invalid_artifact_return"})
+        with trees.checkout(holder, tmp_path / "resume/result.md", work="fixture#1", instalment=None,
+                holder_session_id="holder", predecessor=predecessor) as (resumed, _invoked, record):
+            assert resumed["root"] == str(root) and record["selection"] == "retained"
+            assert git(root, "ls-files", "--stage").stdout == before
+        assert not any("fsck" in command or "rev-list" in command for command in commands)
+    finally:
+        assert trees.dispose(copy)["state"] == "removed"
+
+
+@pytest.mark.parametrize("state", ["history", "blob", "missing-config"])
+def test_retained_head_tree_does_not_verify_history_or_other_blobs(tmp_path, state):
+    holder = repository(tmp_path)
+    with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
+                        holder_session_id="holder") as (copy, invoked, _record):
+        invoked["value"] = True
+    root = Path(copy["root"])
+    try:
+        if state == "history":
+            tree = trees.git(root, "rev-parse", "HEAD^{tree}")
+            malformed = (f"tree {tree}\nauthor Fixture <f@x> invalid +0000\n"
+                         "committer Fixture <f@x> 1 +0000\n\nold tolerated history\n").encode()
+            result = subprocess.run(["git", "-C", str(root), "hash-object", "-t", "commit",
+                "--literally", "-w", "--stdin"], input=malformed, capture_output=True, check=True)
+            older = result.stdout.decode().strip()
+            # Construct a normal tip with that tolerated commit as its parent.
+            tip = (f"tree {tree}\nparent {older}\nauthor Fixture <f@x> 1 +0000\n"
+                   "committer Fixture <f@x> 1 +0000\n\nhealthy tip\n").encode()
+            result = subprocess.run(["git", "-C", str(root), "hash-object", "-t", "commit",
+                "-w", "--stdin"], input=tip, capture_output=True, check=True)
+            trees.git(root, "update-ref", "HEAD", result.stdout.decode().strip())
+            assert git(root, "-c", "fsck.badDate=error", "fsck", "--no-dangling", check=False).returncode != 0
+        elif state == "blob":
+            blob = trees.git(root, "rev-parse", "HEAD:fixture.txt")
+            target = root / ".git/objects" / blob[:2] / blob[2:]
+            target.chmod(target.stat().st_mode | 0o200)
+            target.unlink()
+        else:
+            (root / ".git/config").unlink()
+        (root / "draft").write_bytes(b"retained state")
+        trees.git(root, "add", "draft")
+        before = git(root, "ls-files", "--stage").stdout
+        assert trees.retained_recovery(copy) is None
+        assert git(root, "ls-files", "--stage").stdout == before
+        assert (root / "draft").read_bytes() == b"retained state"
+    finally:
+        assert trees.dispose(copy)["state"] == "removed"
+
+
+def test_retained_structural_proof_does_not_walk_loose_object_database(tmp_path, monkeypatch):
+    holder = repository(tmp_path)
+    with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
+                        holder_session_id="holder") as (copy, invoked, _record):
+        invoked["value"] = True
+    root, walk = Path(copy["root"]), os.walk
+    def guarded(*args, **kwargs):
+        for row in walk(*args, **kwargs):
+            assert not Path(row[0]).is_relative_to(root / ".git/objects"), "walked the object database"
+            yield row
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(trees.os, "walk", guarded)
+            assert trees.retained_recovery(copy) is None
+    finally:
+        assert trees.dispose(copy)["state"] == "removed"
+
+
+@pytest.mark.parametrize("failure", ["timeout", "deadline", "spawn", "subprocess"])
+def test_git_failures_are_structured_and_take_stage_remaining_time(tmp_path, monkeypatch, failure):
+    calls = []
+    def failed(command, **kwargs):
+        calls.append(kwargs)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        if failure == "deadline":
+            raise TimeoutError("spent caller deadline")
+        if failure == "spawn":
+            raise OSError("Git launch refused")
+        raise subprocess.CalledProcessError(2, command)
+    monkeypatch.setattr(trees, "run_process", failed)
+    with lifecycle.deadline_scope(lifecycle.Deadline(900)):
+        with pytest.raises(trees.ArtifactTreeError, match="Git.*(failed|deadline)"):
+            trees.git(tmp_path, "checkout", "--detach", "HEAD")
+    assert 800 < calls[0]["timeout"] <= 840
 
 
 def test_retained_author_can_prune_original_commit_without_losing_its_git_state(tmp_path):
