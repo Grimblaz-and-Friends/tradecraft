@@ -1,4 +1,5 @@
 import json
+import base64
 import hashlib
 import subprocess
 import os
@@ -756,7 +757,9 @@ def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeyp
     assert request["requested"]["sources"]["vendor"] == "machine file: claude"
     assert request["implementer_role"] == "artifact_author"
     assert implementer.records.sidecar(args.output, ".dispatch.bin").read_bytes() == args.dispatch.read_bytes()
-    assert implementer.records.sidecar(args.output, ".context.bin").read_bytes() == context.read_bytes()
+    assert implementer.records.sidecar(args.output, ".context.bin").read_bytes() == (
+        context.read_bytes() + b"\n\n" + implementer.ARTIFACT_RETURN_INSTRUCTION.encode("utf-8")
+    )
     assert record(args)["attempts"][0]["observed"]["session_id"] == session
 
 
@@ -1060,8 +1063,11 @@ def test_artifact_inline_return_passes_and_retains_exact_sources(job, monkeypatc
     scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text)}).encode())
     assert implementer.run_implementer(args) == 0
     assert record(args)["outcome"] == "success"
-    assert record(args)["result"]["return_validation"] == {"status": "pass", "reason": ""}
-    assert args.output.read_bytes() == text.replace("\r\n", "\n").encode("utf-8")
+    assert record(args)["result"]["return_validation"] == {
+        "status": "pass", "reason": "", "maximum_characters": 60_000,
+        "observed_characters": len(text),
+    }
+    assert args.output.read_bytes() == text.encode("utf-8")
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
     retained = request["artifact_brief"]
     assert retained["source"] == "issue-comment:affirmed"
@@ -1239,3 +1245,75 @@ def test_real_missing_vendor_does_not_credit_an_implementer_launch(job, monkeypa
     run = json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
     assert not run["attempts"][0]["launched"]
     assert not implementer.lifecycle.stopped(run)
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("custom_dispatch", [False, True])
+@pytest.mark.parametrize("revision", [False, True])
+@pytest.mark.parametrize("length", [60_000, 60_001])
+def test_artifact_character_bound_keeps_exact_return_and_generated_context(
+        job, monkeypatch, capsys, vendor, custom_dispatch, revision, length):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", vendor
+    supply_artifact_brief(args)
+    if revision:
+        args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    if custom_dispatch:
+        args.dispatch.write_bytes(b"Holder-written instructions.\r\nReturn everything.\r\n")
+    else:
+        # The public entrance's composed form is tested in test_work; the
+        # launcher applies the same independent context to either carrier.
+        args.dispatch.write_bytes(b"Return the whole artifact text in your final message.\n")
+    original_dispatch = args.dispatch.read_bytes()
+    context = args.dispatch.with_name("context.md")
+    context.write_bytes(b"Existing revision and interruption context.\r\n")
+    args.context = context
+    prefix = artifact_text("combined")
+    needed = length - len(prefix)
+    text = prefix + ((chr(0x96EA) + " ") * needed)[:needed]
+    assert len(text) == length and len(text.encode("utf-8")) > 60_000
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text)}).encode())
+
+    assert implementer.run_implementer(args) == (1 if length > 60_000 else 0)
+    logged = record(args)
+    assert logged["outcome"] == ("invalid_artifact_return" if length > 60_000 else "success")
+    validation = logged["result"]["return_validation"]
+    assert validation["maximum_characters"] == 60_000
+    assert validation["observed_characters"] == length
+    assert validation["status"] == ("fail" if length > 60_000 else "pass")
+    assert Path(logged["result"]["source_output"]).read_bytes() == text.encode("utf-8")
+    assert args.output.read_bytes() == text.encode("utf-8")
+    assert logged["attempts"][0]["observed"]["session_id"] == "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    request = json.loads(Path(logged["request"]).read_bytes())
+    assert Path(request["input"]).read_bytes() == original_dispatch
+    effective_context = context.read_bytes() + b"\n\n" + implementer.ARTIFACT_RETURN_INSTRUCTION.encode("utf-8")
+    assert Path(request["context"]["path"]).read_bytes() == effective_context
+    captured = json.loads((args.root / f"seen-{vendor}.json").read_bytes())
+    effective_input = effective_context + b"\n\n" + original_dispatch
+    assert base64.b64decode(captured["stdin"]) == effective_input
+    assert request["effective_input_sha256"] == hashlib.sha256(effective_input).hexdigest()
+    assert request["context"]["sha256"] == hashlib.sha256(effective_context).hexdigest()
+    diagnostic = capsys.readouterr().err
+    if length > 60_000:
+        assert "60,001" in diagnostic and "60,000" in diagnostic
+        assert str(implementer.records.sidecar(args.output, ".run.json")) in diagnostic
+        assert "author session 0199" in diagnostic
+
+
+def test_artifact_size_refuses_before_completeness_comparison(monkeypatch):
+    monkeypatch.setattr(implementer, "artifact_opening_carries_brief",
+                        lambda *_: pytest.fail("compared an oversized return"))
+    result = implementer.validate_artifact_return(ARTIFACT_BRIEF, "x" * 60_001)
+    assert result["status"] == "fail" and result["observed_characters"] == 60_001
+
+
+@pytest.mark.parametrize("length", [60_000, 60_001])
+def test_shared_artifact_validator_counts_complete_boundary_messages(length):
+    prefix = artifact_text("combined")
+    needed = length - len(prefix)
+    text = prefix + ((chr(0x96EA) + " ") * needed)[:needed]
+    result = implementer.validate_artifact_return(ARTIFACT_BRIEF, text)
+    assert result["status"] == ("pass" if length == 60_000 else "fail")
+    assert result["observed_characters"] == length

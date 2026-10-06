@@ -153,6 +153,13 @@ def _thread_id(events: list[dict[str, object]], stderr: bytes) -> tuple[str | No
 
 
 ARTIFACT_BODY_WORDS = 8
+ARTIFACT_RETURN_MAX_CHARACTERS = 60_000
+ARTIFACT_RETURN_INSTRUCTION = (
+    f"Return the whole artifact in at most {ARTIFACT_RETURN_MAX_CHARACTERS:,} characters, "
+    "including the quoted affirmed brief and all artifact text. Preserve every decision and "
+    "acceptance criterion when condensing. If this turn resumes an oversized return, condense "
+    "it to the bound and return the whole revised artifact."
+)
 ARTIFACT_RETURN_REQUIREMENT = (
     "expected the affirmed brief anywhere in the return and an artifact body after it with at least "
     f"{ARTIFACT_BODY_WORDS} non-location words"
@@ -212,6 +219,26 @@ def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
             if _artifact_body_present(tail):
                 return True
     return False
+
+
+def validate_artifact_return(expected: str, returned: str) -> dict[str, object]:
+    """Bound the native final message before comparing its brief and following prose."""
+    count = len(returned)
+    if count > ARTIFACT_RETURN_MAX_CHARACTERS:
+        reason = (
+            f"artifact return has {count:,} characters; maximum is "
+            f"{ARTIFACT_RETURN_MAX_CHARACTERS:,} characters"
+        )
+    elif not artifact_opening_carries_brief(expected, returned):
+        reason = (ARTIFACT_RETURN_REQUIREMENT if returned.strip() else
+                  "artifact turn completed without final text; " + ARTIFACT_RETURN_REQUIREMENT)
+    else:
+        reason = ""
+    return {
+        "status": "fail" if reason else "pass", "reason": reason,
+        "maximum_characters": ARTIFACT_RETURN_MAX_CHARACTERS,
+        "observed_characters": count,
+    }
 
 
 def run_implementer(args: argparse.Namespace) -> int:
@@ -281,6 +308,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
     context = (args.context.read_bytes() if args.context else b"")
     if context:
         context.decode("utf-8")
+    if args.stage == "artifact":
+        instruction = ARTIFACT_RETURN_INSTRUCTION.encode("utf-8")
+        context = context + b"\n\n" + instruction if context else instruction
     effective_prompt = context + b"\n\n" + prompt if context else prompt
     if args.resume and not args.resume.strip():
         raise ImplementerError("--resume must be a nonempty explicit session id")
@@ -585,7 +615,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 if args.session_id and session_id and session_id != args.session_id:
                     reason = f"returned session id {session_id} does not match reserved session {args.session_id}"
                 if complete and message.strip() and not reason:
-                    verdict = message.replace(b"\r\n", b"\n")
+                    verdict = (message if artifact_brief else message.replace(b"\r\n", b"\n"))
                     if session_id:
                         attempt.update(outcome="success", reason="")
                         record["outcome"] = "success"
@@ -609,18 +639,13 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     )
                     record["outcome"] = "interrupted" if ceiling else "error"
                 if artifact_brief and complete and not reason:
-                    valid = artifact_opening_carries_brief(
+                    validation = validate_artifact_return(
                         artifact_brief.decode("utf-8"), message.decode("utf-8", errors="replace")
                     )
-                    validation_reason = ("" if valid else
-                        ARTIFACT_RETURN_REQUIREMENT if message.strip()
-                        else "artifact turn completed without final text; " + ARTIFACT_RETURN_REQUIREMENT)
-                    record["result"]["return_validation"] = {
-                        "status": "pass" if valid else "fail", "reason": validation_reason,
-                    }
-                    if not valid and message.strip():
+                    record["result"]["return_validation"] = validation
+                    if validation["status"] == "fail" and message.strip():
                         record["outcome"] = "invalid_artifact_return"
-                        record["reason"] = validation_reason
+                        record["reason"] = validation["reason"]
                         return_code = 1
                 if verdict is not None:
                     streams[source_path].write(verdict)

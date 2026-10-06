@@ -48,8 +48,12 @@ Review lane: connected
 """
 MECHANICAL = AFFIRMED.replace("connected", "mechanical")
 ARTIFACT = "<!-- tradecraft:artifact:v1 status=draft -->"
+WHOLE_ARTIFACT = (
+    "\n" + "\n".join("> " + line for line in AFFIRMED.splitlines())
+    + "\nThe artifact describes the complete implementation decisions and their executable acceptance criteria.\n"
+)
 WOULD = """<!-- tradecraft:artifact:v1 status=settled route=would -->
-<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"""
+<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->""" + WHOLE_ARTIFACT
 HOLDER = "<!-- tradecraft:holder-reading:v1 result=no-amendment -->"
 FLOOR = f"<!-- tradecraft:floor:v1 head={SHA} status=pass -->"
 USE = f"<!-- tradecraft:use:v1 head={SHA} status=pass changed=false staffing_status=qualified -->"
@@ -59,10 +63,327 @@ PRODUCER = "holder-fixture"
 REVIEWER = "reviewer-fixture[bot]"
 SESSION = "01234567-89ab-cdef-0123-456789abcdef"
 OTHER_SESSION = "89abcdef-0123-4567-89ab-cdef01234567"
+SOURCE_DRAFT = ARTIFACT + WHOLE_ARTIFACT + "\nJUDGED DRAFT SENTINEL: retain the original decision exactly.\n"
+SOURCE_REVISED = WHOLE_ARTIFACT + "\nREVISED DECISION SENTINEL: replace the original decision entirely.\n"
 CONFIG = work.WorkConfig(
     connected_reviewers=frozenset({REVIEWER}),
     marker_producers=frozenset({PRODUCER}),
 )
+
+
+def _fixture_digest(body):
+    normalized = body.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _source_settlement(route, *, reference=True, draft_id=20, body=SOURCE_DRAFT,
+                       revised=SOURCE_REVISED):
+    attributes = (f" draft_comment={draft_id} draft_sha256={_fixture_digest(body)}"
+                  if reference else "")
+    result = f"<!-- tradecraft:artifact:v1 status=settled route={route}{attributes} -->"
+    result += "\nSETTLEMENT EXPLANATION SENTINEL: this is route evidence, with no implementation decisions.\n"
+    if not reference or route in {"cap", "discharge"}:
+        result += revised
+    return result
+
+
+def _source_fixture(route="would", *, reference=True, revised=SOURCE_REVISED):
+    support = {
+        "would": ["<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->\nCOLD RETURN SENTINEL"],
+        "unobtainable": [],
+        "cap": [WOULD_NOT, WOULD_NOT],
+        "discharge": ["<!-- tradecraft:cold-verdict:v1 verdict=not-settleable staffing_status=qualified -->\nCOLD RETURN SENTINEL"],
+    }[route]
+    fixture = state(AFFIRMED, SOURCE_DRAFT, *support,
+                    HOLDER + "\nBEFORE SETTLEMENT READING",
+                    _source_settlement(route, reference=reference, revised=revised),
+                    HOLDER + "\nFIRST APPLICABLE READING", HOLDER + "\nSECOND APPLICABLE READING")
+    for index, comment in enumerate(fixture.issue_comments):
+        comment["id"] = (index + 1) * 10
+        comment["html_url"] = f"https://github.example/issue#issuecomment-{comment['id']}"
+    return fixture
+
+
+def _artifact_section(prompt, label="settled artifact"):
+    return prompt.split(f"--- {label} begin ---\n".encode(), 1)[1].split(
+        f"\n--- {label} end ---".encode(), 1)[0]
+
+
+def _assert_source_consumers(fixture, expected, tmp_path, monkeypatch):
+    work.validate_marker_claims(fixture)
+    for stage in ("build", "floor", "review-disposition"):
+        prompt = work._stage_prompt(fixture, work.Decision(stage, True, "fresh", "fixture"),
+                                    floor_command="python fixture-check.py")
+        assert _artifact_section(prompt) == expected.encode("utf-8")
+        assert b"BEFORE SETTLEMENT READING" not in prompt
+        assert prompt.index(b"--- settled artifact end ---") < prompt.index(b"FIRST APPLICABLE READING") < prompt.index(b"SECOND APPLICABLE READING")
+        facts = json.loads(prompt.split(b"\n\n", 2)[1])
+        assert facts["artifact_source"] == work._marker_setting_source(fixture.artifact_phase.settled_artifact)
+        assert facts["artifact_settlement"]["route"] == fixture.artifact_phase.latest_settlement.attributes["route"]
+    monkeypatch.setattr(work, "_git_snapshot", lambda *_: (SHA, ""))
+    monkeypatch.setattr(work, "_git", lambda *_: subprocess.CompletedProcess([], 0, b"", b""))
+    source = work.ResumeSource("", "source-bundle", {"stage": "build"}, {}, SESSION)
+    context = work._handover_context(fixture, source, tmp_path, "fixture-branch")
+    facts = json.loads(context.split(b"\n", 1)[1])
+    assert facts["artifact"]["text"] == expected
+    assert facts["artifact"]["source"] == work._marker_setting_source(fixture.artifact_phase.settled_artifact)
+    assert facts["artifact_settlement"]["source"] == work._marker_setting_source(fixture.artifact_phase.latest_settlement)
+    assert [row["text"] for row in facts["holder_readings"]] == [
+        reading.body for reading in fixture.artifact_phase.holder_readings]
+
+
+@pytest.mark.parametrize("route", ["would", "unobtainable"])
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+def test_pointer_settlement_supplies_exact_judged_draft_to_every_consumer(
+        tmp_path, monkeypatch, route, ending):
+    fixture = _source_fixture(route)
+    original = SOURCE_DRAFT.replace("\n", ending)
+    fixture.issue_comments[1]["body"] = original
+    assert work.decide(fixture, RULES).stage == "build"
+    _assert_source_consumers(fixture, original, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+def test_cold_digest_normalizes_only_line_endings_and_keeps_inline_bytes(tmp_path, monkeypatch, ending):
+    body = (SOURCE_DRAFT + f"\nUnicode {chr(0xE9)} with trailing whitespace. \n").replace("\n", ending)
+    fixture = state(AFFIRMED, body)
+    monkeypatch.setattr(work, "_git_snapshot", lambda *_: (SHA, ""))
+    prompt = work._cold_stage_prompt(fixture, tmp_path)
+    original_bytes = body.encode("utf-8")
+    assert _artifact_section(prompt, "artifact exact bytes") == original_bytes
+    assert f"Artifact byte count: {len(original_bytes)}".encode() in prompt
+    assert f"Artifact sha256: {_fixture_digest(body)}".encode() in prompt
+    assert work.artifact_digest(body + " ") != _fixture_digest(body)
+    assert work.artifact_digest(body.replace(chr(0xE9), "e" + chr(0x301))) != _fixture_digest(body)
+
+
+SOURCE_FAILURES = {
+    "changed": "body changed; expected sha256",
+    "missing": "named draft comment 20 is missing",
+    "earlier": "not the latest lawful draft",
+    "wrong-kind": "not the latest lawful draft",
+    "unauthorized": "not the latest lawful draft",
+    "ambiguous": "not the latest lawful draft",
+}
+
+
+def _broken_source_fixture(route, failure):
+    fixture = _source_fixture(route)
+    settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
+    # A good earlier settlement catches falling back instead of refusing.
+    previous = dict(settlement, id=settlement["id"] - 1, body=_source_settlement(route, reference=False),
+                    html_url="https://github.example/previous-settlement")
+    fixture.issue_comments.insert(fixture.issue_comments.index(settlement), previous)
+    if failure == "changed":
+        fixture.issue_comments[1]["body"] = SOURCE_DRAFT.replace("original decision", "altered decision")
+    elif failure == "missing":
+        fixture.issue_comments.pop(1)
+    elif failure == "ambiguous":
+        fixture.issue_comments.append(dict(fixture.issue_comments[1]))
+    else:
+        reference = 10 if failure == "wrong-kind" else 15
+        if failure != "wrong-kind":
+            fixture.issue_comments.insert(1, {
+                "id": reference, "body": SOURCE_DRAFT,
+                "user": {"login": "outsider" if failure == "unauthorized" else PRODUCER},
+            })
+        settlement["body"] = settlement["body"].replace("draft_comment=20", f"draft_comment={reference}")
+    return fixture
+
+
+@pytest.mark.parametrize("route", ["would", "unobtainable"])
+@pytest.mark.parametrize("failure", SOURCE_FAILURES)
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+@pytest.mark.parametrize("custom_dispatch", [False, True])
+def test_broken_pointer_refuses_ordinary_and_explicit_launch_before_mutation(
+        tmp_path, monkeypatch, capsys, route, failure, stage, custom_dispatch):
+    fixture = _broken_source_fixture(route, failure)
+    recommendation = work.decide(fixture, RULES)
+    assert not recommendation.dispatch and recommendation.reason.startswith("artifact-source-unusable")
+    assert SOURCE_FAILURES[failure] in recommendation.detail
+    assert "artifact settlement" in recommendation.detail
+    if failure == "changed":
+        assert _fixture_digest(SOURCE_DRAFT) in recommendation.detail
+        assert _fixture_digest(fixture.issue_comments[1]["body"]) in recommendation.detail
+    dispatch = tmp_path / "custom.md"
+    supplied = b"Holder dispatch must not erase the source failure.\r\n"
+    dispatch.write_bytes(supplied)
+    for name in ("_dispatch_root", "write_registry", "_invoke_recipient"):
+        monkeypatch.setattr(work, name, lambda *_a, **_k: pytest.fail("mutated or launched a broken pointer"))
+    decision = work.Decision(stage, True, "fresh", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder",
+                              dispatch_path=dispatch if custom_dispatch else None) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == stage and not report["dispatch"]
+    assert report["reason"] == "artifact-source-unusable"
+    assert SOURCE_FAILURES[failure] in report["detail"]
+    assert dispatch.read_bytes() == supplied
+    with pytest.raises(work.WorkError, match=SOURCE_FAILURES[failure]):
+        work._stage_prompt(fixture, decision, floor_command="python check.py")
+    monkeypatch.setattr(work, "_git_snapshot", lambda *_: pytest.fail("read a tree before refusing a broken handover"))
+    source = work.ResumeSource("", "source-bundle", {"stage": stage}, {}, SESSION)
+    with pytest.raises(work.WorkError, match=SOURCE_FAILURES[failure]):
+        work._handover_context(fixture, source, tmp_path, "fixture-branch")
+
+
+@pytest.mark.parametrize("replacement", ["settlement", "draft", "term"])
+def test_historical_source_failure_does_not_block_replacement(replacement):
+    fixture = _broken_source_fixture("would", "changed")
+    assert work.decide(fixture, RULES).reason == "artifact-source-unusable"
+    if replacement == "settlement":
+        replacement_body = _source_settlement("would", body=fixture.issue_comments[1]["body"])
+        fixture.issue_comments.extend([
+            {"id": 1000, "body": replacement_body, "user": {"login": PRODUCER}},
+            {"id": 1010, "body": HOLDER, "user": {"login": PRODUCER}},
+        ])
+        expected = "build"
+    else:
+        fixture.issue_comments.append({"id": 1000, "body": ARTIFACT if replacement == "draft" else AFFIRMED,
+                                       "user": {"login": PRODUCER}})
+        expected = "cold-seat" if replacement == "draft" else "artifact"
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == expected
+    assert any("body changed" in row["reason"] for row in decision.invalid_markers)
+
+
+@pytest.mark.parametrize("route", ["cap", "discharge"])
+@pytest.mark.parametrize("reference", ["original", "unavailable", "different-digest", "changed-body"])
+def test_revised_settlement_supplies_whole_revision_without_resolving_named_draft(
+        tmp_path, monkeypatch, route, reference):
+    fixture = _source_fixture(route)
+    settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
+    if reference == "unavailable":
+        settlement["body"] = settlement["body"].replace("draft_comment=20", "draft_comment=99999")
+    elif reference == "different-digest":
+        settlement["body"] = settlement["body"].replace(_fixture_digest(SOURCE_DRAFT), "0" * 64)
+    elif reference == "changed-body":
+        fixture.issue_comments[1]["body"] = SOURCE_DRAFT.replace("original decision", "altered decision")
+    assert work.decide(fixture, RULES).stage == "build"
+    _assert_source_consumers(fixture, settlement["body"], tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("route", ["cap", "discharge"])
+@pytest.mark.parametrize("revised", ["Only these edits follow the cold verdict.", "Retrieve the revised artifact from another comment."])
+def test_revised_settlement_requires_whole_artifact(route, revised):
+    decision = work.decide(_source_fixture(route, revised=revised), RULES)
+    assert not decision.dispatch and decision.reason == "artifact-source-unusable"
+    assert "complete revised artifact" in decision.detail
+
+
+@pytest.mark.parametrize("route", sorted(work.SETTLEMENT_ROUTES))
+@pytest.mark.parametrize("oversized", [False, True])
+def test_legacy_whole_artifact_survives_without_reference_or_retrospective_bound(
+        tmp_path, monkeypatch, route, oversized):
+    body = SOURCE_REVISED + ("padding " * 7501 if oversized else "")
+    fixture = _source_fixture(route, reference=False, revised=body)
+    monkeypatch.setattr(work.dispatch_implementer, "validate_artifact_return",
+                        lambda *_: pytest.fail("retrospectively bounded a settlement"))
+    assert work.decide(fixture, RULES).stage == "build"
+    settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
+    _assert_source_consumers(fixture, settlement["body"], tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("body", ["", "Retrieve the artifact from comment 20.",
+                                  "\n".join("> " + line for line in AFFIRMED.splitlines()),
+                                  "Cold verdict: would. The plausible builder would deliver every reader cell."])
+@pytest.mark.parametrize("route", sorted(work.SETTLEMENT_ROUTES))
+def test_legacy_pointer_or_cold_return_is_not_an_artifact(route, body):
+    fixture = _source_fixture(route, reference=False, revised=body)
+    decision = work.decide(fixture, RULES)
+    assert not decision.dispatch and decision.reason == "artifact-source-unusable"
+    assert "supply draft_comment and draft_sha256" in decision.detail
+
+
+@pytest.mark.parametrize(("attributes", "diagnostic"), [
+    ("draft_comment=20", "draft_sha256"),
+    ("draft_sha256=" + "0" * 64, "draft_comment"),
+    ("draft_comment=0 draft_sha256=" + "0" * 64, "positive decimal"),
+    ("draft_comment=020 draft_sha256=" + "0" * 64, "positive decimal"),
+    ("draft_comment=20 draft_sha256=" + "A" * 64, "lowercase hexadecimal"),
+    ("draft_comment=20 draft_sha256=abc", "lowercase hexadecimal"),
+    ("draft_comment=20 draft_comment=20 draft_sha256=" + "0" * 64, "duplicate marker attribute"),
+    ("draft_comment=20 draft_sha256=" + "0" * 64 + " extra=unknown", "unknown marker attributes"),
+])
+@pytest.mark.parametrize("route", sorted(work.SETTLEMENT_ROUTES))
+def test_reference_syntax_cannot_slip_into_legacy_compatibility(attributes, diagnostic, route):
+    fixture = _source_fixture(route)
+    fixture.issue_comments.append({
+        "id": 1000, "body": f"<!-- tradecraft:artifact:v1 status=settled route={route} {attributes} -->" + SOURCE_REVISED,
+        "user": {"login": PRODUCER},
+    })
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "artifact-source-unusable" and not decision.dispatch
+    assert diagnostic in decision.detail
+    assert any(diagnostic in claim["reason"] for claim in decision.invalid_markers)
+
+
+def test_draft_marker_forbids_a_draft_reference():
+    fixture = state(AFFIRMED, ARTIFACT.replace(" -->", " draft_comment=20 draft_sha256=" + "0" * 64 + " -->"))
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "artifact"
+    assert "draft cannot name draft_comment or draft_sha256" in decision.invalid_markers[0]["reason"]
+
+
+@pytest.mark.parametrize("form", ["pointer", "revised", "legacy", "invalid-route"])
+@pytest.mark.parametrize("empty_terms", [0, 2])
+@pytest.mark.parametrize("current_draft", [False, True])
+def test_amendment_revision_preserves_selected_source_and_its_readings(
+        form, empty_terms, current_draft):
+    route = "discharge" if form == "revised" else "would"
+    fixture = _source_fixture(route, reference=form != "legacy")
+    expected = SOURCE_DRAFT if form in {"pointer", "invalid-route"} else next(
+        row["body"] for row in fixture.issue_comments if "status=settled" in row["body"])
+    if form == "invalid-route":
+        fixture.issue_comments = [row for row in fixture.issue_comments if not row["body"].startswith("<!-- tradecraft:cold-verdict:")]
+    for index in range(empty_terms + 1):
+        fixture.issue_comments.append({"id": 1000 + index * 10, "body": AFFIRMED + "\nAMENDED TERM",
+                                       "user": {"login": PRODUCER}})
+    if current_draft:
+        expected = ARTIFACT + "\nCURRENT TERM REPLACEMENT DRAFT"
+        fixture.issue_comments.append({"id": 2000, "body": expected, "user": {"login": PRODUCER}})
+    work.decide(fixture, RULES)
+    prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
+    assert _artifact_section(prompt, "artifact under revision") == expected.encode("utf-8")
+    assert b"BEFORE SETTLEMENT READING" not in prompt
+    assert (b"FIRST APPLICABLE READING" in prompt) == (not current_draft)
+    assert (b"SECOND APPLICABLE READING" in prompt) == (not current_draft)
+    if not current_draft:
+        assert prompt.index(b"--- artifact under revision end ---") < prompt.index(b"FIRST APPLICABLE READING") < prompt.index(b"SECOND APPLICABLE READING")
+
+
+def test_unresolved_prior_pointer_refuses_revision_text_instead_of_carrying_prose():
+    fixture = _broken_source_fixture("would", "changed")
+    fixture.issue_comments.extend([
+        {"id": 1000, "body": AFFIRMED, "user": {"login": PRODUCER}},
+        {"id": 1010, "body": AFFIRMED, "user": {"login": PRODUCER}},
+    ])
+    work.decide(fixture, RULES)
+    with pytest.raises(work.WorkError, match="draft comment 20 body changed"):
+        work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
+
+
+def test_pointer_companion_verdict_settles_without_becoming_artifact_text(tmp_path, monkeypatch):
+    fixture = _source_fixture("would")
+    fixture.issue_comments = [row for row in fixture.issue_comments if not row["body"].startswith("<!-- tradecraft:cold-verdict:")]
+    settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
+    settlement["body"] += "\n<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->\nCARRIED COLD RETURN SENTINEL"
+    assert work.decide(fixture, RULES).stage == "build"
+    _assert_source_consumers(fixture, SOURCE_DRAFT, tmp_path, monkeypatch)
+
+
+def test_migrated_pointer_keeps_effective_readings_for_build_and_amendment(tmp_path, monkeypatch):
+    fixture = _source_fixture("would")
+    settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
+    settlement["body"] = "<!-- tradecraft:artifact:v1 status=settled -->" + SOURCE_REVISED
+    fixture.issue_comments.append({"id": 1000, "body": _source_settlement("would"),
+                                   "html_url": "https://github.example/migrated-settlement", "user": {"login": PRODUCER}})
+    assert work.decide(fixture, RULES).stage == "build"
+    _assert_source_consumers(fixture, SOURCE_DRAFT, tmp_path, monkeypatch)
+    fixture.issue_comments.append({"id": 1010, "body": AFFIRMED, "user": {"login": PRODUCER}})
+    work.decide(fixture, RULES)
+    prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
+    assert _artifact_section(prompt, "artifact under revision") == SOURCE_DRAFT.encode()
+    assert prompt.index(b"--- artifact under revision end ---") < prompt.index(b"FIRST APPLICABLE READING") < prompt.index(b"SECOND APPLICABLE READING")
 
 
 def git(root, *arguments, check=True):
@@ -419,14 +740,17 @@ def test_pull_request_body_uses_the_same_source_classifier():
                for item in decision.quotations)
 
 
-def _settled(route, verdict=None):
+def _settled(route, verdict=None, *, brief=AFFIRMED):
     body = f"<!-- tradecraft:artifact:v1 status=settled route={route} -->"
     if verdict is not None:
         body += (
             "\n<!-- tradecraft:cold-verdict:v1 "
             f"verdict={verdict} staffing_status=qualified -->"
         )
-    return body
+    return body + (WHOLE_ARTIFACT if brief == AFFIRMED else (
+        "\n" + "\n".join("> " + line for line in brief.splitlines())
+        + "\nThe artifact describes the complete implementation decisions and their executable acceptance criteria.\n"
+    ))
 
 
 @pytest.mark.parametrize(("comments", "route"), [
@@ -463,7 +787,7 @@ def test_routeless_settlement_requests_one_supported_route_repost():
     routeless = (
         "<!-- tradecraft:artifact:v1 status=settled -->\n"
         "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
-    )
+    ) + WHOLE_ARTIFACT
     fixture = state(AFFIRMED, ARTIFACT, routeless)
     lawful, invalid = work.validate_marker_claims(fixture)
     assert not any(marker.name == "artifact" and marker.attributes.get("status") == "settled"
@@ -482,7 +806,7 @@ def test_superseded_routeless_settlement_reports_history_without_repost_guidance
     routeless = (
         "<!-- tradecraft:artifact:v1 status=settled -->\n"
         "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
-    )
+    ) + WHOLE_ARTIFACT
     decision = work.decide(
         state(AFFIRMED, ARTIFACT, routeless, AFFIRMED), RULES,
     )
@@ -495,15 +819,16 @@ def test_superseded_routeless_settlement_reports_history_without_repost_guidance
     assert "re-post it once" not in reason
 
 
-def test_newer_draft_reopens_a_settlement_and_a_later_settlement_closes_it():
-    reopened = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, ARTIFACT)
+@pytest.mark.parametrize("pr", [False, True])
+def test_newer_draft_reopens_a_settlement_and_a_later_settlement_closes_it(pr):
+    reopened = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, ARTIFACT, pr=pr)
     assert work.decide(reopened, RULES).stage == "cold-seat"
 
     reopened.issue_comments.extend([
         {"body": WOULD, "user": {"login": PRODUCER}},
         {"body": HOLDER, "user": {"login": PRODUCER}},
     ])
-    assert work.decide(reopened, RULES).stage == "build"
+    assert work.decide(reopened, RULES).stage == ("floor" if pr else "build")
 
 
 def test_new_affirmed_brief_starts_a_new_artifact_term():
@@ -555,7 +880,7 @@ def test_routed_repost_inherits_routeless_order_across_a_holder_reading():
     routeless = (
         "<!-- tradecraft:artifact:v1 status=settled -->\n"
         "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
-    )
+    ) + WHOLE_ARTIFACT
     fixture = state(
         AFFIRMED, ARTIFACT, routeless, HOLDER, _settled("would"),
     )
@@ -572,7 +897,7 @@ def test_routeless_migration_position_is_spent_after_one_routed_settlement():
     routeless = (
         "<!-- tradecraft:artifact:v1 status=settled -->\n"
         "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
-    )
+    ) + WHOLE_ARTIFACT
     fixture = state(
         AFFIRMED, ARTIFACT, routeless, HOLDER,
         _settled("would"), _settled("would"),
@@ -586,7 +911,7 @@ def test_term_changing_claim_breaks_routeless_order_inheritance(breaker):
     routeless = (
         "<!-- tradecraft:artifact:v1 status=settled -->\n"
         "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
-    )
+    ) + WHOLE_ARTIFACT
     cold_would = "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
     comments = [AFFIRMED, ARTIFACT, routeless, HOLDER]
     if breaker == "draft":
@@ -639,7 +964,8 @@ def test_admitted_implementer_prompt_carries_its_governing_sources(
                         "no-amendment"),
         _holder_reading("LATER DIRECTION\nRetain only the replacement fixture.\nEnd later direction."),
     ]
-    settlement = _settled("would", "would") + "\nSETTLED PRODUCT ARTIFACT\nEnd artifact."
+    artifact_brief = AFFIRMED + "\nPREVIOUS TERM" if revision else governing[0][1]
+    settlement = _settled("would", "would", brief=artifact_brief) + "\nSETTLED PRODUCT ARTIFACT\nEnd artifact."
     if (stage != "artifact" or revision) and not mechanical:
         governing.extend([("artifact", settlement),
                           *(("holder-reading", reading) for reading in readings)])
@@ -715,7 +1041,7 @@ def test_implementer_readings_follow_the_final_effective_settlement(stage, bound
     routeless = (
         "<!-- tradecraft:artifact:v1 status=settled -->\n"
         "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
-    )
+    ) + WHOLE_ARTIFACT
     if boundary == "earlier-term":
         comments = [AFFIRMED, ARTIFACT, WOULD, old, AFFIRMED, ARTIFACT, settlement, current]
         expected, excluded, recommendation = [current], [old], "build"
@@ -856,12 +1182,12 @@ def test_artifact_revision_prompt_carries_every_applicable_prior_reading(reverse
 
 
 @pytest.mark.parametrize("replacement", ["draft", "settled", "routed-repost"])
-def test_artifact_revision_prompt_clears_readings_before_newer_artifact(replacement):
+def test_artifact_revision_prompt_keeps_migration_readings_and_clears_replacements(replacement):
     first = _holder_reading("OLD WHOLE-CHANGE CALL")
     second = _holder_reading("OLD LATER DIRECTION")
     earlier = ("<!-- tradecraft:artifact:v1 status=settled -->\n"
                "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
-               if replacement == "routed-repost" else WOULD)
+               + WHOLE_ARTIFACT if replacement == "routed-repost" else WOULD)
     newer = ((ARTIFACT if replacement == "draft" else _settled("would"))
              + "\nNEWER ARTIFACT TEXT")
     fixture = state(AFFIRMED, ARTIFACT, earlier, first, second, newer, AFFIRMED)
@@ -870,9 +1196,10 @@ def test_artifact_revision_prompt_clears_readings_before_newer_artifact(replacem
     prompt = work._stage_prompt(fixture, recommendation)
 
     assert newer.encode("utf-8") in prompt
-    assert first.encode("utf-8") not in prompt
-    assert second.encode("utf-8") not in prompt
-    assert b"holder reading made against artifact under revision" not in prompt
+    migrated = replacement == "routed-repost"
+    assert (first.encode("utf-8") in prompt) == migrated
+    assert (second.encode("utf-8") in prompt) == migrated
+    assert (b"holder reading made against artifact under revision" in prompt) == migrated
 
 
 ARTIFACT_PROMPT_TERM_KINDS = ("draft", "routeless", "reading", "empty")
@@ -894,7 +1221,7 @@ def _artifact_prompt_term(kind, index):
     if kind == "routeless":
         settlement = (
             "<!-- tradecraft:artifact:v1 status=settled -->\n"
-            + settlement_token
+            + settlement_token + WHOLE_ARTIFACT
         )
         return [draft, settlement], settlement_token.encode("ascii"), [], []
     earlier_reading_token = f"TERM {index} EARLIER HOLDER READING"
@@ -988,7 +1315,7 @@ def test_artifact_prompt_preserves_746_shape_across_four_empty_brief_records():
         AFFIRMED,
         ARTIFACT + "\n746 DRAFT",
         "<!-- tradecraft:artifact:v1 status=settled -->\n"
-        + settlement_token.decode("ascii"),
+        + settlement_token.decode("ascii") + WHOLE_ARTIFACT,
         HOLDER + "\n" + reading_token.decode("ascii"),
         AFFIRMED, AFFIRMED, AFFIRMED, AFFIRMED,
     )
@@ -1772,7 +2099,7 @@ def test_unknown_mergeability_is_not_reported_as_a_conflict():
 
 def test_bought_panel_routes_the_next_stage_named_by_the_lane():
     elevated = AFFIRMED.replace("ordinary", "elevated").replace("connected", "routine-panel")
-    fixture = state(elevated, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+    fixture = state(elevated, ARTIFACT, _settled("would", "would", brief=elevated), HOLDER, FLOOR, USE,
                     pr=True, draft=False, reviewer_ran=True,
                     paths=["/".join(("skills", "work", "SKILL.md"))])
     first = work.decide(fixture, RULES)
@@ -2444,7 +2771,8 @@ class FakeTransport:
 @pytest.mark.parametrize("configured", [False, True])
 def test_reviewers_precede_use_and_proof_on_every_lane(risk, lane, paths, configured):
     config = CONFIG if configured else work.WorkConfig(marker_producers=frozenset({PRODUCER}))
-    fixture = state(AFFIRMED.replace("connected", lane).replace("ordinary", risk), ARTIFACT, WOULD, HOLDER, FLOOR,
+    brief = AFFIRMED.replace("connected", lane).replace("ordinary", risk)
+    fixture = state(brief, ARTIFACT, _settled("would", "would", brief=brief), HOLDER, FLOOR,
                     pr=True, paths=paths, config=config)
     assert work.decide(fixture, RULES).stage == "ready-reviewers"
     assert work._ready_evidence_error(fixture, RULES) is None
@@ -3913,7 +4241,7 @@ def test_connected_build_prompt_keeps_its_artifact_and_has_no_lane_exception():
     artifact = ARTIFACT + "\nCONNECTED ARTIFACT\n"
     settled = """<!-- tradecraft:artifact:v1 status=settled route=would -->
 CONNECTED ARTIFACT
-<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"""
+<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->""" + WHOLE_ARTIFACT
     prompt = work._stage_prompt(
         state(AFFIRMED, artifact, settled),
         work.Decision("build", True, "fresh", "fixture")
@@ -5640,7 +5968,7 @@ def test_invalid_artifact_outcome_cannot_supply_other_stage_continuity(tmp_path)
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
-@pytest.mark.parametrize("first_return", ["/tmp/private/artifact.md", ""])
+@pytest.mark.parametrize("first_return", ["/tmp/private/artifact.md", "", "oversized"])
 @pytest.mark.parametrize("custom_dispatch", [False, True])
 def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
         tmp_path, monkeypatch, capsys, vendor, first_return, custom_dispatch):
@@ -5698,14 +6026,29 @@ def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
     monkeypatch.setattr(work.subprocess, "run", launch)
     monkeypatch.setattr(work, "_recipient_run", launch)
     session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    if first_return == "oversized":
+        first_return = artifact_text() + "x" * (60_001 - len(artifact_text()))
     scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, first_return, session)}).encode())
     assert work.run(args, transport=ArtifactTransport()) == 1
     failed_path = next(store.rglob("*.run.json"))
     failed_bytes = failed_path.read_bytes()
     failed = json.loads(failed_bytes)
     assert failed["outcome"] == ("invalid_artifact_return" if first_return else "completed_no_output")
+    assert work._matching_bundles("example/product#12", {"artifact"}, store) == []
+    failed_claim = state(ARTIFACT_BRIEF, ARTIFACT + "\n" + first_return)
+    failed_claim.record_root = store
+    lawful, invalid = work.validate_marker_claims(failed_claim)
+    if first_return:
+        assert not any(marker.name == "artifact" for marker in lawful)
+        assert any("latest artifact dispatch has a failed return" in claim["reason"] for claim in invalid)
     diagnostic = capsys.readouterr().err
     assert str(failed_path) in diagnostic and session in diagnostic
+    if len(first_return) > 60_000:
+        assert "60,001" in diagnostic and "60,000" in diagnostic
+        assert failed["result"]["return_validation"]["observed_characters"] == 60_001
+    if first_return:
+        failed_source = Path(failed["result"]["source_output"])
+        assert failed_source.read_bytes() == first_return.encode("utf-8")
     scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, artifact_text("combined"), session)}).encode())
     assert work.run(args, transport=ArtifactTransport()) == 0
     assert len(commands) == 2
@@ -5721,7 +6064,13 @@ def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
     assert request["requested"]["continuity"] == "resume"
     assert request["artifact_brief"]["source"] == "https://github.example/issue#issuecomment-751"
     assert Path(request["artifact_brief"]["path"]).read_bytes() == ARTIFACT_BRIEF.encode("utf-8")
-    assert Path(passed["result"]["source_output"]).read_bytes() == artifact_text("combined").replace("\r\n", "\n").encode("utf-8")
+    assert Path(passed["result"]["source_output"]).read_bytes() == artifact_text("combined").encode("utf-8")
+    for path in runs:
+        recorded_request = json.loads(Path(json.loads(path.read_bytes())["request"]).read_bytes())
+        generated_context = Path(recorded_request["context"]["path"]).read_bytes()
+        assert implementer.ARTIFACT_RETURN_INSTRUCTION.encode("utf-8") in generated_context
+        if custom_dispatch:
+            assert Path(recorded_request["input"]).read_bytes() == dispatch_bytes
 
 
 def test_completed_no_output_bundle_with_a_session_remains_resumable(tmp_path):
@@ -7252,9 +7601,9 @@ def test_raw_output_inventory_failure_refuses_ready_use_and_panel_routing(
         run_path.write_bytes(json.dumps(run).encode())
     rules = RULES if patterns is None else {**RULES, "raw_output_patterns": patterns}
     write_policy(root, rules)
+    brief = AFFIRMED.replace("connected", lane).replace("ordinary", "elevated" if lane.endswith("panel") else "ordinary")
     fixture = state(
-        AFFIRMED.replace("connected", lane).replace("ordinary", "elevated" if lane.endswith("panel") else "ordinary"),
-        ARTIFACT, WOULD, HOLDER, FLOOR,
+        brief, ARTIFACT, _settled("would", "would", brief=brief), HOLDER, FLOOR,
         "<!-- tradecraft:panel-stage:v1 stage=cold-pass status=complete -->",
         pr=True, draft=False, reviewer_ran=True,
     )
