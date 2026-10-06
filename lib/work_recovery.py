@@ -17,7 +17,7 @@ def _entrance():
     return work
 
 
-def launches(state, stage):
+def launches(state, stage, *, include_released=False):
     work = _entrance()
     term, _lane = work._affirmed_review(state)
     after = term.timestamp if stage == "artifact" and term else None
@@ -25,17 +25,19 @@ def launches(state, stage):
         state.record_root or records.default_record_root(),
         f"{state.repo}#{state.issue_number}",
         work.RESUME_SOURCE_STAGES.get(stage, {stage}), after=after,
-    ))
+    ), include_released=include_released)
 
 
-def scoped(state, rows):
-    """Discard released lineages and proved siblings, never an unattributed attempt."""
+def scoped(state, rows, *, include_released=False):
+    """Scope lineage; only a read-only delivery comparison includes released PR evidence."""
     work = _entrance()
     registrations = work._change_rows(state.repo, state.issue_number, None, active_only=False)
     selected = [r for r in registrations if
                 (state.instalment is None or r.get("instalment") == state.instalment)
                 and (not state.holder_root or work._same_path(
                     Path(str(r.get("holder_root") or "")), state.holder_root))]
+    if include_released and state.pr:
+        selected = [r for r in selected if r.get("branch") == (state.pr.get("head") or {}).get("ref")]
     def released(request):
         if request.get("stage") == "artifact":
             return False
@@ -61,7 +63,7 @@ def scoped(state, rows):
         return not any(work._same_path(Path(root), Path(str(r.get("root") or "")))
                        and (request.get("stage") == "artifact" or r.get("branch") == branch)
                        for r in registrations)
-    return [row for row in rows if not released(row[2]) and (relevant(row[2])
+    return [row for row in rows if (include_released or not released(row[2])) and (relevant(row[2])
             or str(row[3].get("recovery_error", "")).startswith("conflicting copied"))]
 
 
@@ -139,7 +141,7 @@ def stopped_source(state, stage):
     return work.ResumeSource(order, path, request, run, session)
 
 
-def validate_target(state, stage, request, path):
+def validate_target(state, stage, request, path, *, include_released=False):
     work = _entrance()
     root_value = request.get("root")
     if not isinstance(root_value, str) or not root_value:
@@ -148,9 +150,13 @@ def validate_target(state, stage, request, path):
     if work._version_key(request.get("producer_version")) is None:
         raise work.WorkError(f"stopped bundle {path}: producer version is missing or invalid")
     if stage != "artifact":
-        rows = work._change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
+        rows = work._change_rows(state.repo, state.issue_number, state.instalment, active_only=not include_released)
+        if include_released:
+            rows = [row for row in rows if work._same_path(root, Path(str(row.get("root") or "")))
+                    and row.get("branch") == request.get("lineage_branch")]
         if len(rows) != 1:
-            raise work.WorkError(f"stopped bundle {path}: expected one active implementation registration")
+            scope = "matching" if include_released else "active"
+            raise work.WorkError(f"stopped bundle {path}: expected one {scope} implementation registration")
         holder = state.holder_root or Path(str(rows[0].get("holder_root") or ""))
         registered, branch = work._validate_implementation_row(rows[0], holder)
         if not work._same_path(root, registered) or request.get("lineage_branch") != branch:

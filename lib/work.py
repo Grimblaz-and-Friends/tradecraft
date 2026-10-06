@@ -1920,9 +1920,9 @@ def _composition_error(request: dict[str, object], record: Marker) -> str | None
     return None
 
 
-def _validate_builder_turn(state: WorkState, turn: tuple) -> None:
+def _validate_builder_turn(state: WorkState, turn: tuple, *, include_released: bool = False) -> None:
     _order, path, request, run = turn
-    work_recovery.validate_target(state, "build", request, path)
+    work_recovery.validate_target(state, "build", request, path, include_released=include_released)
     requested = request.get("requested") or {}
     if (lifecycle.stopped(run) or run.get("outcome") not in SUCCESSFUL_BUNDLE_OUTCOMES
             or not any(attempt.get("launched") is True for attempt in run.get("attempts", [])
@@ -1987,21 +1987,26 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
     record = max(records_to_build, key=_source_order)
     identity = (f"{record.name} {record.surface}:{record.source_id or 'unknown'}"
                 f" ({record.url or 'URL unavailable'}) at {record.timestamp or 'timestamp unavailable'}")
+    released_pr = False
 
     def result(proved_stale: bool, evidence: str) -> Decision:
         next_step = "continuing downstream" if state.pr is not None else "opening the pull request"
+        dispatch = proved_stale and not released_pr
+        remedy = ("Run adopt for the implementation tree, then run build on the resumed builder"
+                  if released_pr else "Run build on the resumed builder")
         return Decision(
-            "build", proved_stale, "resume",
+            "build", dispatch, "resume",
             "governing-record-not-built" if proved_stale else "governing-record-comparison-unproved",
-            f"Governing record {identity}; {evidence}. Run build on the resumed builder "
+            f"Governing record {identity}; {evidence}. {remedy} "
             f"to implement the current terms before {next_step}.",
-            status="runnable" if proved_stale else "holder-owned",
+            status="runnable" if dispatch else "holder-owned",
         )
 
     try:
         registered = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
         if not registered and state.pr is None:
             return None  # Released history does not create a current builder obligation.
+        released_pr = not registered and state.pr is not None
         if state.instalment is None and len(registered) > 1:
             return Decision(
                 "implementation-scope", False, None, "implementation-instalment-required",
@@ -2009,10 +2014,13 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
                 "need holder scope. Run the entrance with --instalment before selecting a builder.",
                 status="holder-owned",
             )
-        turns = work_recovery.launches(state, "build")
+        turns = (work_recovery.launches(state, "build", include_released=True) if released_pr
+                 else work_recovery.launches(state, "build"))
     except (WorkError, OSError, ValueError) as exc:
         return result(False, f"builder discovery is unproved: {exc}")
     if not turns:
+        if released_pr:
+            return None  # No retained delivery evidence adds no obligation to the open PR.
         if (state.pr is None
                 and not any(marker.name == "builder-session" for marker in state.issue_markers)):
             return None  # The first build retains its fresh route.
@@ -2021,6 +2029,8 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
         return None  # Retry the first builder in its existing registered tree.
     turns = list(turns)
     if lifecycle.stopped(turns[-1][3]):
+        if released_pr:
+            return result(False, f"builder bundle {turns[-1][1]} is stopped or unresolved")
         recovery = work_recovery.recommend(state, Decision("build", True, "resume", "builder-recovery"))
         try:
             detail = json.loads(recovery.detail or "")
@@ -2032,7 +2042,7 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
     while turns and _completed_non_delivery(turns[-1][2], turns[-1][3]):
         _order, path, request, _run = turns[-1]
         try:
-            work_recovery.validate_target(state, "build", request, path)
+            work_recovery.validate_target(state, "build", request, path, include_released=released_pr)
         except (WorkError, OSError, ValueError) as exc:
             return result(False, f"failed builder bundle {path} has unproved attribution: {exc}")
         turns.pop()
@@ -2043,7 +2053,7 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
         return result(False, f"latest builder attempts have ambiguous launch order: {turns[-2][1]}, {latest[1]}")
     # A newer unfinished attempt stays visible even if an older turn is green.
     try:
-        _validate_builder_turn(state, latest)
+        _validate_builder_turn(state, latest, include_released=released_pr)
     except (WorkError, ValueError, OSError) as exc:
         return result(False, f"builder bundle {latest[1]} is unproved: {exc}")
     # Floor prompts ask for a command result, not implementation. Retain their
@@ -2058,7 +2068,7 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
     _order, path, request, run = selected
     try:
         if selected != latest:
-            _validate_builder_turn(state, selected)
+            _validate_builder_turn(state, selected, include_released=released_pr)
     except (WorkError, ValueError, OSError) as exc:
         return result(False, f"builder bundle {path} is unproved: {exc}")
     record_time = _aware_time(record.timestamp)

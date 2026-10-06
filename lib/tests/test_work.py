@@ -524,6 +524,101 @@ class TestGoverningTerms:
         assert self.endpoint(builder, monkeypatch, "build") == 0
         assert len(launches) == 1
 
+    @pytest.mark.parametrize("stage", ["build", "review-disposition"])
+    def test_fourth_reading_866_released_PR_delivered_terms_retain_handoff(
+            self, builder, monkeypatch, capsys, stage):
+        self.amendment(builder)
+        self.turn(builder, stage=stage, composed="2026-10-05T12:00:00Z",
+                  launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
+        builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched after release"))
+        assert work.work_recovery.launches(builder, "build") == []
+        assert work.decide(builder, RULES).stage == "release-report"
+        request_path, _run_path, request, _run = builder.term_turns[-1]
+        with pytest.raises(work.WorkError, match="expected one active implementation registration"):
+            work.work_recovery.validate_target(builder, "build", request, str(request_path))
+        for endpoint in (None, "release-report"):
+            assert self.endpoint(builder, monkeypatch, endpoint) == 0
+            report = json.loads(capsys.readouterr().out)
+            # The synthetic CLI policy invalidates its abbreviated proof, so
+            # ordinary read-only routing still owes proof publication.
+            expected = "proof" if endpoint is None else "release-report"
+            assert report["stage"] == expected and not report["dispatch"], report
+            assert "adopt" not in (report.get("detail") or "")
+            if endpoint is not None:
+                assert report["required_gate"]["verdict"] == "green"
+                assert not report["path_departures"]["restate"]
+        assert builder.term_registration["active"] is False
+
+    @pytest.mark.parametrize("evidence", ["stale", "unknown", "invalid-attribution", "stopped"])
+    def test_fourth_reading_866_released_PR_unbuilt_terms_require_adopt_before_resume(
+            self, builder, monkeypatch, capsys, evidence):
+        comment = self.amendment(builder)
+        request, run = builder.term_turns[0][2:]
+        if evidence == "unknown":
+            request.update(launched_at="2026-10-05T12:01:00Z")
+            request.pop("prompt_composition")
+            run["completed_at"] = "2026-10-05T12:02:00Z"
+        elif evidence == "invalid-attribution":
+            request, run = self.turn(builder, composed="2026-10-05T12:00:00Z",
+                                     launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
+            run["actual_vendor"] = "claude"
+        elif evidence == "stopped":
+            run["outcome"] = "interrupted"
+        self.save(builder)
+        builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched before adopt"))
+        for endpoint in (None, "release-report"):
+            assert self.endpoint(builder, monkeypatch, endpoint) == 0
+            report = json.loads(capsys.readouterr().out)
+            assert report["stage"] == "build" and not report["dispatch"]
+            assert report["status"] == "holder-owned" and report["continuity"] == "resume"
+            detail = report["detail"]
+            assert comment["html_url"] in detail and str(comment["id"]) in detail
+            assert comment["created_at"] in detail
+            assert "adopt" in detail and "run build on the resumed builder" in detail
+            assert detail.index("adopt") < detail.index("run build on the resumed builder")
+            assert "before continuing downstream" in detail and "opening the pull request" not in detail
+            if endpoint is not None:
+                assert report["required_gate"]["verdict"] == "green" and "path_departures" not in report
+        assert builder.term_registration["active"] is False
+
+    def test_fourth_reading_866_released_PR_without_bundles_retains_handoff(self, builder, monkeypatch, capsys):
+        self.amendment(builder)
+        for request_path, run_path, *_ in builder.term_turns:
+            request_path.unlink()
+            run_path.unlink()
+        builder.term_turns.clear()
+        builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched without bundles"))
+        assert work.decide(builder, RULES).stage == "release-report"
+        for endpoint in (None, "release-report"):
+            assert self.endpoint(builder, monkeypatch, endpoint) == 0
+            report = json.loads(capsys.readouterr().out)
+            expected = "proof" if endpoint is None else "release-report"
+            assert report["stage"] == expected and not report["dispatch"], report
+            if endpoint is not None:
+                assert report["required_gate"]["verdict"] == "green"
+                assert not report["path_departures"]["restate"]
+        assert builder.term_registration["active"] is False
+
+    def test_fourth_reading_866_released_PR_does_not_count_a_proved_sibling(self, builder, monkeypatch):
+        self.amendment(builder)
+        self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                  completed="2026-10-05T12:02:00Z")
+        sibling_root = builder.term_root.parent / "released-sibling"
+        git(builder.holder_root, "worktree", "add", "-b", "sibling-change", str(sibling_root))
+        sibling = registry_row(sibling_root, builder.holder_root, "sibling-change")
+        sibling["active"] = builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "read_registry", lambda: {
+            "schema_version": 2, "worktrees": [builder.term_registration, sibling]})
+        request, _run = self.turn(builder, composed="2026-10-05T13:00:00Z", launched="2026-10-05T13:01:00Z",
+                                  completed="2026-10-05T13:02:00Z")
+        request.update(root=str(sibling_root), lineage_branch="sibling-change")
+        self.save(builder)
+        assert work._governing_terms_decision(builder) is None
+        assert work.decide(builder, RULES).stage == "release-report"
+
     @pytest.mark.parametrize("has_pr", [False, True])
     def test_second_look_866_detail_names_only_the_pending_step(self, builder, monkeypatch, capsys, has_pr):
         if not has_pr:

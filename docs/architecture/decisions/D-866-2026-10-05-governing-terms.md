@@ -32,6 +32,8 @@ A review-lane change at any time uses a new affirmed brief because lane selectio
 
 The [third holder reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/860#issuecomment-6007616324) narrows the repair to its governing principle: only a stale or unproved delivering turn in the active lineage adds a terms obligation, while unrelated recovery, missing-session and released-registration states keep their own routes, including resuming a stopped further build after a merge with its runtime still charged.
 
+The [fourth holder reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/860#issuecomment-6008456913) preserves the open-pull-request handoff after registration release: retained evidence of current delivery, or no relevant bundles, leaves ordinary routing intact; stale or unproved delivery names adoption of the implementation tree before a resumed build, because release removes dispatch authority without erasing delivery evidence.
+
 ## Pinned implementation evidence
 
 All paths below are from the repository root, at `d47474f4888b4eda2f0eaa835525edb9b1a10375`:
