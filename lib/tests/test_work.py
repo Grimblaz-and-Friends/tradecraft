@@ -182,7 +182,8 @@ def test_cold_digest_normalizes_only_line_endings_and_keeps_inline_bytes(tmp_pat
 
 
 SOURCE_FAILURES = {
-    "changed": "body changed; expected sha256",
+    "changed": "body does not match the settlement's draft_sha256; expected sha256",
+    "miscopied-digest": "body does not match the settlement's draft_sha256; expected sha256",
     "missing": "named draft comment 20 is missing",
     "earlier": "not the latest lawful draft",
     "wrong-kind": "not the latest lawful draft",
@@ -200,6 +201,8 @@ def _broken_source_fixture(route, failure):
     fixture.issue_comments.insert(fixture.issue_comments.index(settlement), previous)
     if failure == "changed":
         fixture.issue_comments[1]["body"] = SOURCE_DRAFT.replace("original decision", "altered decision")
+    elif failure == "miscopied-digest":
+        settlement["body"] = settlement["body"].replace(_fixture_digest(SOURCE_DRAFT), "0" * 64)
     elif failure == "missing":
         fixture.issue_comments.pop(1)
     elif failure == "ambiguous":
@@ -227,9 +230,12 @@ def test_broken_pointer_refuses_ordinary_and_explicit_launch_before_mutation(
     assert recommendation.as_dict()["status"] == "holder-owned"
     assert SOURCE_FAILURES[failure] in recommendation.detail
     assert "artifact settlement" in recommendation.detail
-    if failure == "changed":
-        assert _fixture_digest(SOURCE_DRAFT) in recommendation.detail
+    if failure in {"changed", "miscopied-digest"}:
+        expected_digest = _fixture_digest(SOURCE_DRAFT) if failure == "changed" else "0" * 64
+        assert expected_digest in recommendation.detail
         assert _fixture_digest(fixture.issue_comments[1]["body"]) in recommendation.detail
+        if failure == "miscopied-digest":
+            assert fixture.issue_comments[1]["body"] == SOURCE_DRAFT
         remedy = (
             "Do not use the observed digest to re-settle: restore the judged text, "
             "or post a new draft for a fresh cold seat."
@@ -247,18 +253,18 @@ def test_broken_pointer_refuses_ordinary_and_explicit_launch_before_mutation(
     assert report["stage"] == stage and not report["dispatch"]
     assert report["reason"] == "artifact-source-unusable"
     assert SOURCE_FAILURES[failure] in report["detail"]
-    if failure == "changed":
+    if failure in {"changed", "miscopied-digest"}:
         assert remedy in report["detail"]
     assert dispatch.read_bytes() == supplied
     with pytest.raises(work.WorkError, match=SOURCE_FAILURES[failure]) as composed_error:
         work._stage_prompt(fixture, decision, floor_command="python check.py")
-    if failure == "changed":
+    if failure in {"changed", "miscopied-digest"}:
         assert remedy in str(composed_error.value)
     monkeypatch.setattr(work, "_git_snapshot", lambda *_: pytest.fail("read a tree before refusing a broken handover"))
     source = work.ResumeSource("", "source-bundle", {"stage": stage}, {}, SESSION)
     with pytest.raises(work.WorkError, match=SOURCE_FAILURES[failure]) as handover_error:
         work._handover_context(fixture, source, tmp_path, "fixture-branch")
-    if failure == "changed":
+    if failure in {"changed", "miscopied-digest"}:
         assert remedy in str(handover_error.value)
 
 
@@ -285,7 +291,7 @@ def test_historical_source_failure_does_not_block_replacement(replacement):
         expected = "build"
     decision = work.decide(fixture, RULES)
     assert decision.stage == expected
-    assert any("body changed" in row["reason"] for row in decision.invalid_markers)
+    assert any(SOURCE_FAILURES["changed"] in row["reason"] for row in decision.invalid_markers)
 
 
 @pytest.mark.parametrize("route", ["cap", "discharge"])

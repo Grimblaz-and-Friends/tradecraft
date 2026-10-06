@@ -1740,7 +1740,8 @@ def _settlement_artifact(state: WorkState, settlement: Marker, brief: Marker,
         expected = settlement.attributes["draft_sha256"]
         observed = artifact_digest(latest_draft.body)
         if expected != observed:
-            return None, (prefix + f"draft comment {reference} body changed; expected sha256 "
+            return None, (prefix + f"draft comment {reference} body does not match the settlement's "
+                          "draft_sha256; expected sha256 "
                           f"{expected}, observed sha256 {observed}. "
                           "Do not use the observed digest to re-settle: restore the judged text, "
                           "or post a new draft for a fresh cold seat.")
