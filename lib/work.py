@@ -27,6 +27,7 @@ import uuid
 from brief import LANES, review_lane
 from connected_review import is_review_job
 import dispatch_record as records
+import artifact_tree
 import run_lifecycle as lifecycle
 import work_recovery
 import dispatch_implementer
@@ -3025,7 +3026,7 @@ def _decision_status(decision: Decision) -> str:
 def _reported_decision(state: WorkState, decision: Decision) -> Decision:
     try:
         plan = _launch_plan(state, decision)
-    except (WorkError, setting_resolution.SettingsError, OSError, ValueError) as exc:
+    except (WorkError, artifact_tree.ArtifactTreeError, setting_resolution.SettingsError, OSError, ValueError) as exc:
         plan = {"status": "unresolved", "stage": decision.stage, "reason": str(exc)}
     return replace(
         decision,
@@ -4994,6 +4995,12 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
         RESUME_SOURCE_STAGES.get(stage, frozenset({stage})), after=completed_after)
     if state is not None:
         latest = work_recovery.scoped(state, latest)
+    if stage == "artifact":
+        latest = work_recovery.authored(latest, state=state, work_value=work_value)
+    if (stage == "artifact" and latest and latest[-1][2].get("artifact_copy") is not None
+            and not lifecycle.stopped(latest[-1][3])
+            and latest[-1][3].get("outcome") not in RESUMABLE_BUNDLE_OUTCOMES):
+        raise WorkError(f"latest artifact bundle has no proved continuable return: {latest[-1][1]}")
     if latest and lifecycle.stopped(latest[-1][3]):
         if state is not None:
             predecessor = work_recovery.handover_predecessor(state, latest[-1])
@@ -5006,6 +5013,13 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
             raise WorkError(f"stopped bundle {path}: {exc}") from exc
         if not SESSION_ID.fullmatch(session):
             raise WorkError(f"stopped bundle {path}: invalid session identity")
+        if stage == "artifact":
+            try:
+                artifact_tree.validate_resume(request, run, path,
+                    holder=state.holder_root if state else None, work=work_value,
+                    instalment=state.instalment if state else None)
+            except artifact_tree.ArtifactTreeError as exc:
+                raise WorkError(str(exc)) from exc
         return ResumeSource(order, path, request, run, session)
     allowed_stages = RESUME_SOURCE_STAGES.get(stage, frozenset({stage}))
     matched = _matching_bundles(
@@ -5014,16 +5028,31 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
     )
     if state is not None:
         matched = work_recovery.scoped(state, matched)
+    if stage == "artifact":
+        matched = work_recovery.authored(matched, state=state, work_value=work_value)
     candidates: list[ResumeSource] = []
     for completed, run_path, request, run in (matched[-1:] if stage == "artifact" else matched):
+        if stage == "artifact":
+            try:
+                artifact_tree.validate_resume(request, run, run_path,
+                    holder=state.holder_root if state else None, work=work_value,
+                    instalment=state.instalment if state else None)
+            except artifact_tree.ArtifactTreeError as exc:
+                raise WorkError(str(exc)) from exc
         if run.get("cleanup_proven") is False:
             raise WorkError(f"descendant cleanup is unproved in bundle: {run_path}")
         requested = request.get("requested")
         vendor = requested.get("vendor") if isinstance(requested, dict) else None
         actual = run.get("actual_vendor")
+        attempts = run.get("attempts")
+        native = stage == "artifact" and artifact_tree.native_recording(request)
+        if native and "actual_vendor" not in run and isinstance(attempts, list):
+            native_vendors = [attempt.get("vendor") for attempt in attempts
+                              if isinstance(attempt, dict) and attempt.get("launched") is True]
+            if native_vendors and all(value in ("codex", "claude") for value in native_vendors):
+                actual = native_vendors[0] if len(set(native_vendors)) == 1 else None
         if vendor not in {"codex", "claude"} or actual not in {"codex", "claude"} or vendor != actual:
             raise WorkError(f"matching dispatch bundle has unproved vendor: {run_path}")
-        attempts = run.get("attempts")
         if not isinstance(attempts, list):
             continue
         sessions: list[str] = []
@@ -5032,6 +5061,14 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
             session = observed.get("session_id") if isinstance(observed, dict) else None
             if isinstance(session, str) and SESSION_ID.fullmatch(session):
                 sessions.append(session)
+            if native and isinstance(observed, dict) and isinstance(observed.get("thread_ids"), list):
+                sessions.extend(value for value in observed["thread_ids"]
+                                if isinstance(value, str) and SESSION_ID.fullmatch(value))
+        if native:
+            identities = set(sessions)
+            if len(identities) > 1 or (identities and requested.get("session_id")
+                                      and requested["session_id"] not in identities):
+                raise WorkError(f"native artifact bundle has conflicting session identity: {run_path}")
         if sessions:
             candidates.append(ResumeSource(
                 completed, run_path, request, run, sessions[-1]
@@ -5209,7 +5246,13 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
         prior_root = source.request.get("root") if source else None
         prior_branch = source.request.get("lineage_branch") if source else None
         selected_root = Path(prior_root) if isinstance(prior_root, str) and prior_root else root or state.holder_root
-        rows = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
+        if decision.stage == "artifact" and source is not None:
+            copy = artifact_tree.provenance(source.request, source.path)
+            if copy:
+                selected_root = Path(copy["handover_root"])
+                prior_branch = copy.get("handover_branch")
+        rows = (_change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
+                if decision.stage != "artifact" else [])
         if rows:
             if len(rows) != 1:
                 raise _LaunchRootError("multiple active implementation roots prevent launch planning")
@@ -5287,6 +5330,42 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
         elif pinned != vendor:
             raise WorkError(f"selected {vendor} conflicts with pinned {pinned} session")
     plan["primary"] = _launch_settings(state, role, vendor, bridge=bridge).as_dict(vendor, vendor_source)
+    if decision.stage == "artifact":
+        copy_source = _artifact_copy_source(state, source)
+        try:
+            copy = (artifact_tree.validate_resume(copy_source.request, copy_source.run, copy_source.path,
+                    holder=root or state.holder_root, work=f"{state.repo}#{state.issue_number}",
+                    instalment=state.instalment) if copy_source else None)
+        except artifact_tree.ArtifactTreeError as exc:
+            raise WorkError(str(exc)) from exc
+        recovery = (artifact_tree.retained_recovery(copy)
+                    if copy and not artifact_tree.accepted(copy_source.run) else None)
+        if copy and not artifact_tree.accepted(copy_source.run) and recovery is None:
+            plan["artifact_copy"] = {**copy, "selection": "retained", "verified": False}
+        else:
+            holder = root or state.holder_root
+            captured = None
+            if holder is not None:
+                try:
+                    with artifact_tree.isolated_git_environment():
+                        holder, captured = artifact_tree.source(holder)
+                except (artifact_tree.ArtifactTreeError, OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
+                    plan["artifact_source_unavailable_reason"] = str(exc)
+                    plan.update(status="unresolved", reason=str(exc))
+            plan["artifact_copy"] = {"selection": "planned", "root": None,
+                "holder_root": str(holder) if holder else None, "source_commit": captured,
+                "committed_only": True, "remotes": None, "verified": False}
+        plan["artifact_copy"].update(lfs_mode="pointers", lfs_pointer_count=None,
+                                    history_blobs="holder-available; checkout-only hydration")
+        if recovery:
+            plan["artifact_copy_recovery"] = recovery
+        if copy_source and copy is None and artifact_tree.native_recording(copy_source.request):
+            plan["artifact_native_recovery"] = {"bundle": copy_source.path,
+                "message": "native recording has no copy to keep; resume in a fresh committed copy",
+                "loose_files_imported": False}
+        plan["permission_boundary"] = (
+            "workspace-write with automatic approval review; copy is the recipient root"
+            if vendor == "codex" else "Claude auto permission mode; copy is the recipient root; no OS write sandbox")
     return plan
 
 
@@ -6116,7 +6195,48 @@ def _invoke_recipient(command, deadline):
         raise WorkError("launcher exceeded its bounded recording allowance; retained bundle may be unfinished") from None
 
 
-def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
+def execute_stage(state, decision, *args, **kwargs):
+    if decision.stage == "artifact":
+        with artifact_tree.isolated_git_environment():
+            try:
+                return _execute_stage(state, decision, *args, **kwargs)
+            except artifact_tree.ArtifactTreeError as exc:
+                refusal = replace(decision, dispatch=False, continuity=None, status="holder-owned",
+                                  reason="artifact-copy-unproved", detail=str(exc))
+                _emit_report(_reported_decision(state, refusal).as_dict(), state)
+                return 0
+    return _execute_stage(state, decision, *args, **kwargs)
+
+
+@contextmanager
+def _stage_root(state, decision, root, instalment, holder, source):
+    if decision.stage != "artifact":
+        yield _dispatch_root(state, decision, root, instalment, holder), None
+        return
+    store = (state.record_root or records.default_record_root()).expanduser().resolve()
+    output = store / ("artifact-" + uuid.uuid4().hex) / "result.md"
+    forbidden = [Path(row["root"]) for row in read_registry().get("worktrees", [])
+                 if isinstance(row, dict) and isinstance(row.get("root"), str)]
+    copy_source = _artifact_copy_source(state, source)
+    with artifact_tree.checkout(root, output, work=f"{state.repo}#{state.issue_number}",
+            instalment=instalment, holder_session_id=holder, predecessor=copy_source,
+            forbidden=forbidden) as (copy, invoked, record):
+        yield (Path(copy["root"]), None, False), (copy, invoked, record, output)
+
+
+def _artifact_copy_source(state, source):
+    if source is not None:
+        latest = work_recovery.latest_stopped(state, "artifact")
+        if latest is not None:
+            predecessor = work_recovery.handover_predecessor(state, latest)
+            if predecessor is not None and predecessor[1] == source.path:
+                # Native-session recovery selects the predecessor's identity;
+                # the interrupted replacement still owns its retained copy.
+                return ResumeSource(*latest, source.session)
+    return source
+
+
+def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None, *, dispatch_path: Path | None = None,
                   tree_metadata: Path | None = None,
                   timeout_seconds: float | None = None,
@@ -6182,7 +6302,13 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         if (not restart_unresolved_reason.strip() or restart_source is None
                 or not work_recovery.restartable(restart_source[2], restart_source[3])):
             raise WorkError("restart requires a dead completed fresh failure with no reported session and a nonempty reason")
-        work_recovery.validate_target(state, decision.stage, restart_source[2], restart_source[1])
+        work_recovery.validate_target(state, decision.stage, restart_source[2], restart_source[1], restart=True)
+        if decision.stage == "artifact":
+            prior_copy = artifact_tree.provenance(restart_source[2], restart_source[1])
+            if prior_copy and Path(prior_copy["root"]).exists():
+                print("artifact-copy: " + json.dumps({"state": "restart_residue",
+                    "remaining_path": prior_copy["root"], "bundle": restart_source[1],
+                    "reason": "explicit restart uses a fresh copy; stopped copy is not reused"}, ensure_ascii=True), flush=True)
         decision = replace(decision, continuity="fresh")
     if restart_source is None and decision.stage in RESUME_SOURCE_STAGES:
         try:
@@ -6559,270 +6685,309 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
                 json.dumps({"reason": str(exc), "account": account}, ensure_ascii=True), status="holder-owned"))
             _emit_report(refused.as_dict(), state)
             return 0
-    selected = _dispatch_root(
-        state, decision, root, instalment, holder_identity
-    )
-    if isinstance(selected, Decision):
-        _emit_report(_reported_decision(state, selected).as_dict(), state)
-        return 0
-    dispatch_root, branch, migrated = selected
-    if resume_source is not None:
-        prior_root = resume_source.request.get("root")
-        if isinstance(prior_root, str) and prior_root and not _same_path(
-                Path(prior_root), dispatch_root):
-            raise WorkError("resume bundle belongs to a different implementation root")
-        prior_branch = resume_source.request.get("lineage_branch")
-        if prior_branch and branch and prior_branch != branch:
-            raise WorkError("resume bundle belongs to a different implementation branch")
-        prior_pr = resume_source.request.get("lineage_pull_request")
-        current_pr = state.pr.get("number") if state.pr else None
-        if prior_pr is not None and current_pr is not None and prior_pr != current_pr:
-            raise WorkError("resume bundle belongs to a different implementing pull request")
-    handover_record: dict[str, object] | None = None
-    handover_new = False
-    handover_context = b""
-    handover_state_path: Path | None = None
-    handover_runtime: list[str] | None = None
-    handover_unavailable = False
-    handover_retry_of: str | None = None
-    if prepared_dispatch is not None and _path_inside(prepared_dispatch, dispatch_root):
-        raise WorkError("dispatch file must be outside the registered implementation root")
-    if (uses_implementer and decision.continuity == "resume" and resume_source is not None
-            and resume_source.request.get("requested", {}).get("vendor") == "codex"):
-        handover_state_path = _handover_path(state, implementer_role, dispatch_root, branch)
-        recorded_handover = handover_state_path.is_file()
-        if handover_recovery_session is not None and not recorded_handover:
-            raise WorkError(f"no recorded handover at {handover_state_path} to recover")
-        effective_pin = "claude" if recorded_handover else "codex"
-        machine_handover = (
-            not recorded_handover and machine_vendor == "claude"
-            and selected_vendor == "claude"
-        )
-        if role_overridden and selected_vendor != effective_pin and not machine_handover:
-            if recorded_handover:
+    with _stage_root(state, decision, root, instalment, holder_identity, resume_source) as (selected, artifact_run):
+        if isinstance(selected, Decision):
+            _emit_report(_reported_decision(state, selected).as_dict(), state)
+            return 0
+        dispatch_root, branch, migrated = selected
+        if resume_source is not None and decision.stage != "artifact":
+            prior_root = resume_source.request.get("root")
+            if isinstance(prior_root, str) and prior_root and not _same_path(
+                    Path(prior_root), dispatch_root):
+                raise WorkError("resume bundle belongs to a different implementation root")
+            prior_branch = resume_source.request.get("lineage_branch")
+            if prior_branch and branch and prior_branch != branch:
+                raise WorkError("resume bundle belongs to a different implementation branch")
+        if resume_source is not None:
+            prior_pr = resume_source.request.get("lineage_pull_request")
+            current_pr = state.pr.get("number") if state.pr else None
+            if prior_pr is not None and current_pr is not None and prior_pr != current_pr:
+                raise WorkError("resume bundle belongs to a different implementing pull request")
+        handover_record: dict[str, object] | None = None
+        handover_new = False
+        handover_context = b""
+        handover_state_path: Path | None = None
+        handover_runtime: list[str] | None = None
+        handover_unavailable = False
+        handover_retry_of: str | None = None
+        handover_branch = artifact_run[0].get("handover_branch") if artifact_run else branch
+        if (artifact_run and resume_source is not None
+                and artifact_tree.provenance(resume_source.request, resume_source.path) is None):
+            handover_branch = resume_source.request.get("lineage_branch")
+        if prepared_dispatch is not None and _path_inside(prepared_dispatch, dispatch_root):
+            raise WorkError("dispatch file must be outside the registered implementation root")
+        if (uses_implementer and decision.continuity == "resume" and resume_source is not None
+                and resume_source.request.get("requested", {}).get("vendor") == "codex"):
+            handover_root = (Path(artifact_run[0]["handover_root"]) if artifact_run else dispatch_root)
+            handover_state_path = _handover_path(state, implementer_role, handover_root, handover_branch)
+            recorded_handover = handover_state_path.is_file()
+            if handover_recovery_session is not None and not recorded_handover:
+                raise WorkError(f"no recorded handover at {handover_state_path} to recover")
+            effective_pin = "claude" if recorded_handover else "codex"
+            machine_handover = (
+                not recorded_handover and machine_vendor == "claude"
+                and selected_vendor == "claude"
+            )
+            if role_overridden and selected_vendor != effective_pin and not machine_handover:
+                if recorded_handover:
+                    raise WorkError(
+                        f"{vendor_source} selects {selected_vendor}, but the recorded handover "
+                        "has a pinned Claude session; the override cannot change its vendor"
+                    )
                 raise WorkError(
-                    f"{vendor_source} selects {selected_vendor}, but the recorded handover "
-                    "has a pinned Claude session; the override cannot change its vendor"
+                    "model override conflicts with pinned Codex session; a per-issue "
+                    "entry alone cannot hand over. Set ~/.tradecraft/implementer-vendor "
+                    "to claude for a machine switch, then rerun"
                 )
-            raise WorkError(
-                "model override conflicts with pinned Codex session; a per-issue "
-                "entry alone cannot hand over. Set ~/.tradecraft/implementer-vendor "
-                "to claude for a machine switch, then rerun"
-            )
-        handover = machine_handover
-        if handover or recorded_handover:
-            handover_context = _handover_context(state, resume_source, dispatch_root, branch)
-            if handover and not handover_state_path.exists():
-                handover_runtime = _selected_runtime_argument("claude", claude_path)
-                handover_unavailable = handover_runtime[0] == "--claude-unavailable-reason"
-            if not handover_unavailable:
-                handover_record, handover_new, handover_retry_of = _reserve_handover(
-                    handover_state_path, resume_source, machine_source,
-                    recovery_session=handover_recovery_session,
+            handover = machine_handover
+            if handover or recorded_handover:
+                handover_context = _handover_context(state, resume_source, dispatch_root, branch)
+                if handover and not handover_state_path.exists():
+                    handover_runtime = _selected_runtime_argument("claude", claude_path)
+                    handover_unavailable = handover_runtime[0] == "--claude-unavailable-reason"
+                if not handover_unavailable:
+                    handover_record, handover_new, handover_retry_of = _reserve_handover(
+                        handover_state_path, resume_source, machine_source,
+                        recovery_session=handover_recovery_session,
+                    )
+                selected_vendor = "claude"
+                vendor_source = (vendor_source if not recorded_handover or handover_unavailable else
+                                 f"recorded handover {handover_state_path}")
+                if handover_recovery_session is not None:
+                    vendor_source += f"; holder-confirmed Claude session {handover_recovery_session}"
+        elif (uses_implementer and decision.continuity == "resume"
+              and resume_source is not None
+              and resume_source.request.get("requested", {}).get("vendor") == "claude"
+              and isinstance(resume_source.request.get("handover"), dict)):
+            source_handover = resume_source.request["handover"]
+            handover_root = (Path(artifact_run[0]["handover_root"]) if artifact_run else dispatch_root)
+            handover_state_path = _handover_path(state, implementer_role, handover_root, handover_branch)
+            if source_handover.get("state") != str(handover_state_path):
+                raise WorkError("Claude resume bundle names a different handover lineage")
+            handover_record = _json_object(handover_state_path)
+            if (handover_record is None or handover_record.get("schema_version") != 1
+                    or handover_record.get("from_bundle") != source_handover.get("from_bundle")
+                    or handover_record.get("replacement_session") != session
+                    or handover_record.get("to_vendor") != "claude"):
+                raise WorkError(
+                    f"Claude resume bundle disagrees with handover {handover_state_path}"
                 )
-            selected_vendor = "claude"
-            vendor_source = (vendor_source if not recorded_handover or handover_unavailable else
-                             f"recorded handover {handover_state_path}")
+            if handover_record.get("phase") == "completed":
+                handover_record = None
+            else:
+                handover_retry_of = resume_source.request.get("dispatch_id")
             if handover_recovery_session is not None:
-                vendor_source += f"; holder-confirmed Claude session {handover_recovery_session}"
-    elif (uses_implementer and decision.continuity == "resume"
-          and resume_source is not None
-          and resume_source.request.get("requested", {}).get("vendor") == "claude"
-          and isinstance(resume_source.request.get("handover"), dict)):
-        source_handover = resume_source.request["handover"]
-        handover_state_path = _handover_path(state, implementer_role, dispatch_root, branch)
-        if source_handover.get("state") != str(handover_state_path):
-            raise WorkError("Claude resume bundle names a different handover lineage")
-        handover_record = _json_object(handover_state_path)
-        if (handover_record is None or handover_record.get("schema_version") != 1
-                or handover_record.get("from_bundle") != source_handover.get("from_bundle")
-                or handover_record.get("replacement_session") != session
-                or handover_record.get("to_vendor") != "claude"):
-            raise WorkError(
-                f"Claude resume bundle disagrees with handover {handover_state_path}"
+                raise WorkError("Claude resume bundle already proves the reserved session; omit recovery")
+        elif handover_recovery_session is not None:
+            raise WorkError("--handover-recovery-session requires an incomplete Codex-to-Claude handover")
+        if migrated:
+            detail = (
+                f"{decision.detail}; {MIGRATION_NOTICE}"
+                if decision.detail else MIGRATION_NOTICE
             )
-        if handover_record.get("phase") == "completed":
-            handover_record = None
-        else:
-            handover_retry_of = resume_source.request.get("dispatch_id")
-        if handover_recovery_session is not None:
-            raise WorkError("Claude resume bundle already proves the reserved session; omit recovery")
-    elif handover_recovery_session is not None:
-        raise WorkError("--handover-recovery-session requires an incomplete Codex-to-Claude handover")
-    if migrated:
-        detail = (
-            f"{decision.detail}; {MIGRATION_NOTICE}"
-            if decision.detail else MIGRATION_NOTICE
-        )
-        decision = Decision(
-            decision.stage, decision.dispatch, decision.continuity,
-            decision.reason, detail,
-        )
-        if prepared_prompt is not None:
-            prepared_prompt = _stage_prompt(
-                state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command
+            decision = Decision(
+                decision.stage, decision.dispatch, decision.continuity,
+                decision.reason, detail,
             )
-            if decision.stage in {"build", "floor", "review-disposition"}:
-                prompt_composition = _prompt_composition(state)
-        _emit_report(_reported_decision(state, decision).as_dict(), state)
-    here = Path(__file__).resolve().parent
-    with tempfile.TemporaryDirectory(prefix="tradecraft-work-") as temporary:
-        dispatch = prepared_dispatch or Path(temporary) / "dispatch.txt"
-        if decision.stage == "cold-seat":
-            if dispatch_path is not None:
-                raise WorkError("cold-seat uses the exact bounded artifact-and-brief prompt")
-            with judging_root(dispatch_root) as recipient:
-                own_vendor, own_vendor_source = _producer_vendor(state, frozenset({"artifact"}))
-                prompt = _stage_prompt(state, decision, recipient, floor_command=floor_command)
-                dispatch.write_bytes(prompt)
+            if prepared_prompt is not None:
+                prepared_prompt = _stage_prompt(
+                    state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command
+                )
+                if decision.stage in {"build", "floor", "review-disposition"}:
+                    prompt_composition = _prompt_composition(state)
+            _emit_report(_reported_decision(state, decision).as_dict(), state)
+        here = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory(prefix="tradecraft-work-") as temporary:
+            dispatch = prepared_dispatch or Path(temporary) / "dispatch.txt"
+            if decision.stage == "cold-seat":
+                if dispatch_path is not None:
+                    raise WorkError("cold-seat uses the exact bounded artifact-and-brief prompt")
+                with judging_root(dispatch_root) as recipient:
+                    own_vendor, own_vendor_source = _producer_vendor(state, frozenset({"artifact"}))
+                    prompt = _stage_prompt(state, decision, recipient, floor_command=floor_command)
+                    dispatch.write_bytes(prompt)
+                    common = [
+                        "--dispatch", str(dispatch), "--root", str(recipient),
+                        "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
+                        "--settings-source", "work entrance cold-seat route",
+                        "--settings-scope", "cold-seat",
+                        "--timeout-seconds", timeout_argument,
+                    ]
+                    command = [sys.executable, str(here / "dispatch_seat.py"), *common,
+                                "--vendor", "claude", "--own-vendor", own_vendor,
+                                "--own-vendor-source", own_vendor_source,
+                                "--classification", "cold", "--requires", "read",
+                                *(["--same-vendor-reason", "owner-selected-claude-implementer"]
+                                  if own_vendor == "claude" else []),
+                                *_seat_launch_arguments(
+                                    state, "cold-seat", "cold",
+                                    claude_path=claude_path, codex_path=codex_path,
+                                    plan=launch_plan,
+                                )]
+                    launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
+                        **dispatch_seat.fallback_plan("claude", own_vendor, "read"),
+                        "comparison_vendor_source": own_vendor_source}
+                    setting_resolution.print_plan(launch_plan, label="work")
+                    return _invoke_recipient(command, deadline)
+            else:
+                if branch is not None:
+                    branch = _attached_branch(dispatch_root)
+                if prepared_prompt is not None:
+                    bound_prompt = _bind_prompt_branch(prepared_prompt, branch)
+                    dispatch.write_bytes(bound_prompt)
+                    if prompt_composition is not None:
+                        prompt_composition["dispatch_sha256"] = hashlib.sha256(bound_prompt).hexdigest()
                 common = [
-                    "--dispatch", str(dispatch), "--root", str(recipient),
+                    "--dispatch", str(dispatch), "--root", str(dispatch_root),
                     "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
-                    "--settings-source", "work entrance cold-seat route",
-                    "--settings-scope", "cold-seat",
+                    "--settings-source", "work entrance implementer route",
+                    "--settings-scope", implementer_role,
                     "--timeout-seconds", timeout_argument,
                 ]
-                command = [sys.executable, str(here / "dispatch_seat.py"), *common,
-                            "--vendor", "claude", "--own-vendor", own_vendor,
-                            "--own-vendor-source", own_vendor_source,
-                            "--classification", "cold", "--requires", "read",
-                            *(["--same-vendor-reason", "owner-selected-claude-implementer"]
-                              if own_vendor == "claude" else []),
-                            *_seat_launch_arguments(
-                                state, "cold-seat", "cold",
-                                claude_path=claude_path, codex_path=codex_path,
-                                plan=launch_plan,
-                            )]
-                launch_plan["fallback"] = {**launch_plan["vendors"][own_vendor],
-                    **dispatch_seat.fallback_plan("claude", own_vendor, "read"),
-                    "comparison_vendor_source": own_vendor_source}
-                setting_resolution.print_plan(launch_plan, label="work")
-                return _invoke_recipient(command, deadline)
-        else:
-            if branch is not None:
-                branch = _attached_branch(dispatch_root)
-            if prepared_prompt is not None:
-                bound_prompt = _bind_prompt_branch(prepared_prompt, branch)
-                dispatch.write_bytes(bound_prompt)
+                metadata = {
+                    "instalment": instalment,
+                    "recovery_restart_reason": restart_unresolved_reason,
+                    "recovery_restart_bundle": restart_source[1] if restart_source else None,
+                    "recipient_allocation_seconds": min(allocation, deadline.remaining()),
+                    "budget_account_before": account,
+                    "budget_override_reason": budget_override_reason,
+                }
                 if prompt_composition is not None:
-                    prompt_composition["dispatch_sha256"] = hashlib.sha256(bound_prompt).hexdigest()
-            common = [
-                "--dispatch", str(dispatch), "--root", str(dispatch_root),
-                "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
-                "--settings-source", "work entrance implementer route",
-                "--settings-scope", implementer_role,
-                "--timeout-seconds", timeout_argument,
-            ]
-            metadata = {
-                "instalment": instalment,
-                "recovery_restart_reason": restart_unresolved_reason,
-                "recovery_restart_bundle": restart_source[1] if restart_source else None,
-                "recipient_allocation_seconds": min(allocation, deadline.remaining()),
-                "budget_account_before": account,
-                "budget_override_reason": budget_override_reason,
-            }
-            if prompt_composition is not None:
-                metadata["prompt_composition"] = prompt_composition
-            if restart_source and restart_source[2].get("budget_lineage"):
-                metadata["budget_lineage"] = restart_source[2]["budget_lineage"]
-            if resume_source is not None:
-                metadata["predecessor_bundle"] = resume_source.path
-                if resume_source.request.get("budget_lineage"):
-                    metadata["budget_lineage"] = resume_source.request["budget_lineage"]
-                if selected_vendor == resume_source.request["requested"]["vendor"]:
-                    metadata["retained_session_id"] = resume_source.session
-                    metadata["retained_session_source"] = resume_source.path
-            if recovery_info is not None:
-                metadata["progress_baseline"] = recovery_info["stop_snapshot"]
-                metadata["predecessor_stop_snapshot"] = recovery_info["stop_snapshot"]
-                _emit_report({"stopped_run": recovery_info}, state, flush=True)
-            metadata_path = Path(temporary) / "lifecycle.json"
-            metadata_path.write_bytes(records.json_bytes(metadata))
-            common.extend(("--lifecycle-input", str(metadata_path),
-                           "--invocation-started-monotonic", str(deadline.started)))
-            if artifact_brief is not None:
-                brief_file = Path(temporary) / "artifact-brief.txt"
-                brief_file.write_bytes(artifact_brief.body.encode("utf-8"))
-                common.extend((
-                    "--artifact-brief", str(brief_file), "--artifact-brief-source",
-                    artifact_brief.url or artifact_brief.source_id or artifact_brief.surface,
-                ))
-            if branch:
-                common.extend(("--lineage-branch", branch))
-            if state.pr and isinstance(state.pr.get("number"), int):
-                common.extend(("--lineage-pull-request", str(state.pr["number"])))
-            planned = launch_plan["primary"]
-            if planned["vendor"] != selected_vendor:
-                raise WorkError("implementer lineage changed after launch planning; reread and retry")
-            if decision.continuity == "resume":
-                planned_source = launch_plan.get("predecessor") or launch_plan.get("session") or {}
-                current_source = (_resume_source(
-                    f"{state.repo}#{state.issue_number}", decision.stage,
-                    state.record_root or records.default_record_root().expanduser().resolve(), state=state)
-                    if resume_source is not None else None)
-                if (planned_source.get("id") != session
-                        or (resume_source is not None and (
-                            current_source != resume_source
-                            or planned_source.get("source") != resume_source.path))):
-                    raise WorkError("resume source changed after launch planning; reread and retry")
-            settings = LaunchSettings(planned["model"], planned["effort"],
-                                      planned["sources"]["model"], planned["sources"]["effort"])
-            command = [sys.executable, str(here / "dispatch_implementer.py"), *common,
-                       "--vendor", selected_vendor, "--vendor-source", vendor_source,
-                        "--model", settings.model, "--effort", settings.effort,
-                        "--model-source", settings.model_source,
-                        "--effort-source", settings.effort_source,
-                         *(handover_runtime if handover_runtime is not None else
-                           _selected_runtime_argument(
-                               selected_vendor, claude_path if selected_vendor == "claude" else codex_path
-                           )),
-                        "--holder-session-id", holder_identity]
-            if handover_retry_of is not None:
-                command.extend(("--retry-of", handover_retry_of))
-            if selected_vendor in {"claude", "codex"}:
-                context = Path(temporary) / "context.txt"
-                preamble = ((
-                    "You are the implementer for this stage. Read the repository root instructions "
-                    "and applicable ancestor and nested instructions before editing. "
-                    f"The shipped tradecraft plugin is at {here.parent}. "
-                    "Project and local Claude settings are omitted so the holder hook does not "
-                    "run in this child; retain user and managed policy.\n"
-                ).encode("utf-8") if selected_vendor == "claude" else b"")
-                window = (work_recovery.instruction(recovery_info, metadata["recipient_allocation_seconds"])
-                          if recovery_info else
-                          f"Available recipient time is at most {metadata['recipient_allocation_seconds']:g} seconds. Leave useful work in the tree if the window ends. Perform only the named stage.\n".encode("utf-8"))
-                context.write_bytes(preamble + handover_context + window)
-                command.extend(("--context", str(context)))
-            if handover_record is not None:
-                command.extend(("--handover-state", str(handover_state_path),
-                                "--handover-from", str(handover_record["from_bundle"])))
-                if handover_new:
-                    command.extend(("--session-id", str(handover_record["replacement_session"])))
-                else:
-                    command.extend(("--resume", str(handover_record["replacement_session"])))
-            elif handover_unavailable:
-                command.extend(("--handover-from", resume_source.path))
-            elif decision.continuity == "resume":
-                command.extend(("--resume", session))
-            _emit_report({
-                "stage": decision.stage, "implementer_role": implementer_role,
-                "selected_vendor": selected_vendor, "vendor_source": vendor_source,
-                "model": settings.model, "effort": settings.effort,
-                "model_source": settings.model_source, "effort_source": settings.effort_source,
-                "continuity": "handover" if handover_record or handover_unavailable else decision.continuity,
-                "handover_state": str(handover_state_path) if handover_record else None,
-            }, state, flush=True)
-            if handover_record is not None:
-                planned_session = launch_plan.get("handover", {}).get("replacement_session")
-                if planned_session and planned_session != handover_record["replacement_session"]:
-                    raise WorkError("handover identity changed after launch planning; reread and retry")
-                launch_plan["handover"] = {"state": str(handover_state_path), **handover_record,
-                    "replacement_continuity": "fresh" if handover_new else "resume"}
-                if not handover_new:
-                    launch_plan["session"] = _handover_session_settings(
-                        handover_state_path, resume_source, handover_record)
-            setting_resolution.print_plan(launch_plan, label="work")
-            return _invoke_recipient(command, deadline)
+                    metadata["prompt_composition"] = prompt_composition
+                if artifact_run:
+                    copy, invoked, copy_record, output = artifact_run
+                    metadata["artifact_copy"] = copy
+                    common.extend(("--output", str(output)))
+                    launch_plan["artifact_copy"] = {**copy, "verified": True,
+                        "selection": copy_record["selection"], "lfs_mode": "pointers",
+                        "lfs_pointer_count": copy_record["lfs_pointer_count"],
+                        "history_blobs": copy_record["history_blobs"]}
+                    if copy_record.get("recovery"):
+                        _emit_report({"artifact_copy_recovery": copy_record["recovery"]}, state, flush=True)
+                    if copy_record["native_recovery"]:
+                        _emit_report({"artifact_native_recovery": {
+                            "bundle": resume_source.path, "loose_files_imported": False,
+                            "message": "native recording has no copy to keep; resume in a fresh committed copy"}},
+                            state, flush=True)
+                    elif copy_record["legacy_recovery"]:
+                        _emit_report({"artifact_legacy_recovery": {
+                            "bundle": resume_source.path, "loose_files_imported": False}}, state, flush=True)
+                    if copy_record.get("residues"):
+                        _emit_report({"artifact_predecessor_residues": copy_record["residues"]}, state, flush=True)
+                if restart_source and restart_source[2].get("budget_lineage"):
+                    metadata["budget_lineage"] = restart_source[2]["budget_lineage"]
+                if resume_source is not None:
+                    metadata["predecessor_bundle"] = resume_source.path
+                    if resume_source.request.get("budget_lineage"):
+                        metadata["budget_lineage"] = resume_source.request["budget_lineage"]
+                    if selected_vendor == resume_source.request["requested"]["vendor"]:
+                        metadata["retained_session_id"] = resume_source.session
+                        metadata["retained_session_source"] = resume_source.path
+                if recovery_info is not None:
+                    metadata["progress_baseline"] = recovery_info["stop_snapshot"]
+                    metadata["predecessor_stop_snapshot"] = recovery_info["stop_snapshot"]
+                    _emit_report({"stopped_run": recovery_info}, state, flush=True)
+                metadata_path = Path(temporary) / "lifecycle.json"
+                metadata_path.write_bytes(records.json_bytes(metadata))
+                common.extend(("--lifecycle-input", str(metadata_path),
+                               "--invocation-started-monotonic", str(deadline.started)))
+                if artifact_brief is not None:
+                    brief_file = Path(temporary) / "artifact-brief.txt"
+                    brief_file.write_bytes(artifact_brief.body.encode("utf-8"))
+                    common.extend((
+                        "--artifact-brief", str(brief_file), "--artifact-brief-source",
+                        artifact_brief.url or artifact_brief.source_id or artifact_brief.surface,
+                    ))
+                if branch:
+                    common.extend(("--lineage-branch", branch))
+                if state.pr and isinstance(state.pr.get("number"), int):
+                    common.extend(("--lineage-pull-request", str(state.pr["number"])))
+                planned = launch_plan["primary"]
+                if planned["vendor"] != selected_vendor:
+                    raise WorkError("implementer lineage changed after launch planning; reread and retry")
+                if decision.continuity == "resume":
+                    planned_source = launch_plan.get("predecessor") or launch_plan.get("session") or {}
+                    current_source = (_resume_source(
+                        f"{state.repo}#{state.issue_number}", decision.stage,
+                        state.record_root or records.default_record_root().expanduser().resolve(), state=state)
+                        if resume_source is not None else None)
+                    if (planned_source.get("id") != session
+                            or (resume_source is not None and (
+                                current_source != resume_source
+                                or planned_source.get("source") != resume_source.path))):
+                        raise WorkError("resume source changed after launch planning; reread and retry")
+                settings = LaunchSettings(planned["model"], planned["effort"],
+                                          planned["sources"]["model"], planned["sources"]["effort"])
+                command = [sys.executable, str(here / "dispatch_implementer.py"), *common,
+                           "--vendor", selected_vendor, "--vendor-source", vendor_source,
+                            "--model", settings.model, "--effort", settings.effort,
+                            "--model-source", settings.model_source,
+                            "--effort-source", settings.effort_source,
+                             *(handover_runtime if handover_runtime is not None else
+                               _selected_runtime_argument(
+                                   selected_vendor, claude_path if selected_vendor == "claude" else codex_path
+                               )),
+                            "--holder-session-id", holder_identity]
+                if handover_retry_of is not None:
+                    command.extend(("--retry-of", handover_retry_of))
+                if selected_vendor in {"claude", "codex"}:
+                    context = Path(temporary) / "context.txt"
+                    preamble = ((
+                        "You are the implementer for this stage. Read the repository root instructions "
+                        "and applicable ancestor and nested instructions before editing. "
+                        f"The shipped tradecraft plugin is at {here.parent}. "
+                        "Project and local Claude settings are omitted so the holder hook does not "
+                        "run in this child; retain user and managed policy.\n"
+                    ).encode("utf-8") if selected_vendor == "claude" else b"")
+                    window = (work_recovery.instruction(recovery_info, metadata["recipient_allocation_seconds"])
+                              if recovery_info else
+                              f"Available recipient time is at most {metadata['recipient_allocation_seconds']:g} seconds. Leave useful work in the tree if the window ends. Perform only the named stage.\n".encode("utf-8"))
+                    copy_context = ((
+                        f"Artifact root: {copy['root']}. Independent committed-only copy of holder "
+                        f"{copy['holder_root']} at {copy['source_commit']}; remotes: []. "
+                        "Uncommitted holder files are not imported. Failed turns keep this copy; "
+                        "accepted returns dispose of it. "
+                        f"LFS content remains as {copy_record['lfs_pointer_count']} tracked pointer paths. "
+                        "Only this checkout's missing blobs are fetched; older blobs absent from the holder "
+                        "remain unavailable after remote removal. "
+                        + (copy_record["recovery"]["message"] + " " if copy_record.get("recovery") else "")
+                        + ("Codex uses workspace-write with automatic approval review.\n" if selected_vendor == "codex"
+                           else "Claude starts here with no OS write sandbox.\n")
+                    ).encode("utf-8") if artifact_run else b"")
+                    context.write_bytes(preamble + handover_context + copy_context + window)
+                    command.extend(("--context", str(context)))
+                if handover_record is not None:
+                    command.extend(("--handover-state", str(handover_state_path),
+                                    "--handover-from", str(handover_record["from_bundle"])))
+                    if handover_new:
+                        command.extend(("--session-id", str(handover_record["replacement_session"])))
+                    else:
+                        command.extend(("--resume", str(handover_record["replacement_session"])))
+                elif handover_unavailable:
+                    command.extend(("--handover-from", resume_source.path))
+                elif decision.continuity == "resume":
+                    command.extend(("--resume", session))
+                _emit_report({
+                    "stage": decision.stage, "implementer_role": implementer_role,
+                    "selected_vendor": selected_vendor, "vendor_source": vendor_source,
+                    "model": settings.model, "effort": settings.effort,
+                    "model_source": settings.model_source, "effort_source": settings.effort_source,
+                    "continuity": "handover" if handover_record or handover_unavailable else decision.continuity,
+                    "handover_state": str(handover_state_path) if handover_record else None,
+                }, state, flush=True)
+                if handover_record is not None:
+                    planned_session = launch_plan.get("handover", {}).get("replacement_session")
+                    if planned_session and planned_session != handover_record["replacement_session"]:
+                        raise WorkError("handover identity changed after launch planning; reread and retry")
+                    launch_plan["handover"] = {"state": str(handover_state_path), **handover_record,
+                        "replacement_continuity": "fresh" if handover_new else "resume"}
+                    if not handover_new:
+                        launch_plan["session"] = _handover_session_settings(
+                            handover_state_path, resume_source, handover_record)
+                setting_resolution.print_plan(launch_plan, label="work")
+                if artifact_run:
+                    invoked["value"] = True
+                return _invoke_recipient(command, deadline)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -6915,6 +7080,8 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
                 state.record_root or records.default_record_root().expanduser().resolve(),
                 outcomes=None, completed_after=term.timestamp, schema_policy="defer",
             )
+            bundles = work_recovery.authored(work_recovery.scoped(state, bundles),
+                state=state, work_value=f"{state.repo}#{state.issue_number}")
         except WorkError:
             return continuity
         if bundles and bundles[-1][3].get("outcome") in {"invalid_artifact_return", "completed_no_output"}:
@@ -6993,6 +7160,9 @@ def run(
         limit = args.timeout_seconds if args.timeout_seconds is not None else (
             DEFAULT_BUILD_TIMEOUT_SECONDS if args.stage == "build" else DEFAULT_STAGE_TIMEOUT_SECONDS)
         with lifecycle.deadline_scope(lifecycle.stage_deadline(args.stage, limit)):
+            if args.stage == "artifact":
+                with artifact_tree.isolated_git_environment():
+                    return _run(args, transport=transport, executor=executor)
             return _run(args, transport=transport, executor=executor)
     return _run(args, transport=transport, executor=executor)
 

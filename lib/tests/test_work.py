@@ -427,7 +427,7 @@ def test_unresolved_prior_pointer_refuses_revision_text_instead_of_carrying_pros
 def test_holder_artifact_dispatch_recovers_unusable_prior_source_byte_for_byte(
         tmp_path, monkeypatch, failure):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    root = repository(tmp_path, "author")
+    root = repository(tmp_path, "holder")
     fixture = _broken_source_fixture("would", failure)
     fixture.issue_comments.append({"id": 1000, "body": AFFIRMED, "user": {"login": PRODUCER}})
     fixture.record_root = tmp_path / "dispatches"
@@ -436,17 +436,28 @@ def test_holder_artifact_dispatch_recovers_unusable_prior_source_byte_for_byte(
     dispatch = tmp_path / "holder-job.md"
     supplied = b"Holder supplies the complete replacement design.\r\nKeep exact bytes.\r\n"
     dispatch.write_bytes(supplied)
-    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("artifact used implementation routing"))
     monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a: [])
     launches = []
     def launch(command, **_kwargs):
         received = Path(command[command.index("--dispatch") + 1])
         launches.append(received.read_bytes())
         assert received == dispatch.resolve()
+        copy = json.loads(Path(command[command.index("--lifecycle-input") + 1]).read_bytes())["artifact_copy"]
+        assert copy["holder_root"] == str(root.resolve())
+        assert copy["source_commit"] == git(root, "rev-parse", "HEAD").stdout.decode().strip()
+        assert command[command.index("--root") + 1] == copy["root"] != str(root.resolve())
+        work.artifact_tree.prove(copy)
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr(work, "_recipient_run", launch)
     decision = work.Decision("artifact", True, "fresh", "holder-named-stage")
-    assert work.execute_stage(fixture, decision, tmp_path, None, "holder", dispatch_path=dispatch) == 0
+    try:
+        assert work.execute_stage(fixture, decision, root, None, "holder", dispatch_path=dispatch) == 0
+    finally:
+        for record in fixture.record_root.rglob("*.artifact-copy.json"):
+            copy = json.loads(record.read_bytes())["artifact_copy"]
+            if Path(copy["root"]).exists():
+                assert work.artifact_tree.dispose(copy)["state"] == "removed"
     assert launches == [supplied]
     assert dispatch.read_bytes() == supplied
 
@@ -534,6 +545,16 @@ def test_settlement_advice_names_reference_and_revised_forms(route):
     assert "draft_comment" in decision.detail and "draft_sha256" in decision.detail
     if route in {"discharge", "cap"}:
         assert "whole revised artifact" in decision.detail
+
+
+@pytest.fixture(autouse=True)
+def remove_fixture_artifact_copies(tmp_path):
+    yield
+    # Unproved launches with reserved requests can retain fixture-owned copies.
+    for record_path in tmp_path.rglob("*.artifact-copy.json"):
+        copy = json.loads(record_path.read_bytes())["artifact_copy"]
+        if Path(copy["root"]).exists():
+            assert work.artifact_tree.dispose(copy)["state"] == "removed"
 
 
 @pytest.fixture(autouse=True)
@@ -5412,7 +5433,7 @@ def dispatch_bundle(record_root, *, work_value="example/product#12", stage="buil
                     name="result.md", producer_version=None,
                     request_schema=2, run_schema=2, outcome="success"):
     if producer_version is None:
-        producer_version = work.records.producer_version()
+        producer_version = "0.185.0" if stage == "artifact" else work.records.producer_version()
     bundle = record_root / stage
     bundle.mkdir(parents=True, exist_ok=True)
     request = bundle / f"{name}.request.json"
@@ -5480,6 +5501,39 @@ def native_bundle(record_root, monkeypatch, *, stage="use", vendor="claude",
         run["attempts"][0]["usage"]["dispatch"]["staffing_status"] = "qualified"
         run_path.write_bytes(work.records.json_bytes(run))
     return output
+
+
+@pytest.mark.parametrize("problem,error", [
+    ("multiple-sessions", "conflicting session identity"),
+    ("requested-session", "conflicting session identity"),
+    ("missing-session", "no valid session"),
+    ("vendor", "unproved vendor"),
+    ("launcher", "lacks artifact provenance"),
+])
+def test_native_artifact_recovery_requires_proved_identity_and_native_record(
+        tmp_path, monkeypatch, problem, error):
+    store = tmp_path / "dispatches"
+    output = native_bundle(store, monkeypatch, stage="artifact", vendor="codex")
+    request_path = work.records.sidecar(output, ".request.json")
+    run_path = work.records.sidecar(output, ".run.json")
+    request, run = json.loads(request_path.read_bytes()), json.loads(run_path.read_bytes())
+    session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    other = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    run["attempts"][0]["observed"]["thread_ids"] = [session]
+    if problem == "multiple-sessions":
+        run["attempts"][0]["observed"]["thread_ids"].append(other)
+    elif problem == "requested-session":
+        request["requested"].update(continuity="resume", session_id=other)
+    elif problem == "missing-session":
+        run["attempts"][0]["observed"]["thread_ids"] = None
+    elif problem == "vendor":
+        run["actual_vendor"] = "claude"
+    else:
+        request["requested"]["command"] = ["codex", "exec"]
+    request_path.write_bytes(work.records.json_bytes(request))
+    run_path.write_bytes(work.records.json_bytes(run))
+    with pytest.raises(work.WorkError, match=error):
+        work._resume_source("example/product#12", "artifact", store)
 
 
 def producer_bundle(record_root, *, stage="build", vendor="codex", revision=SHA,
@@ -5746,7 +5800,7 @@ def test_native_seats_require_proven_launcher_producer(tmp_path, monkeypatch, st
         run = json.loads(path.read_bytes())
         run["revision_after"] = SHA
         path.write_bytes(work.records.json_bytes(run))
-        with pytest.raises(work.WorkError, match="unproved vendor"):
+        with pytest.raises(work.WorkError, match="no valid session" if producer_stage == "artifact" else "unproved vendor"):
             work._resume_source("example/product#12", producer_stage, fixture.record_root)
         error = "implementation vendor is unproved"
     elif producer_kind == "unproved":
@@ -7406,7 +7460,7 @@ def test_incomplete_handover_keeps_its_replacement_session(
         attempt_request.parent.mkdir(parents=True, exist_ok=True)
         attempt_request.write_bytes(json.dumps({
             "schema_version": 2, "work": "example/product#12", "stage": stage,
-            "producer_version": work.records.producer_version(),
+            "producer_version": "0.185.0" if stage == "artifact" else work.records.producer_version(),
             "dispatch_id": "handover-attempt", "root": str(root),
             "requested": {"vendor": "claude"},
             "handover": {
@@ -9098,7 +9152,22 @@ def test_failed_initial_publication_is_retried_and_verified_before_launch(
     assert len(launches) == 1
 
 
-def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
+def test_artifact_resume_keeps_pull_request_identity_after_copy_selection(tmp_path, monkeypatch):
+    holder = repository(tmp_path, "holder")
+    fixture = state(AFFIRMED, ARTIFACT, pr=True)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, stage="artifact")
+    request_path = fixture.record_root / "artifact/result.md.request.json"
+    request = json.loads(request_path.read_bytes())
+    request["lineage_pull_request"] = fixture.pr["number"] + 1
+    request_path.write_bytes(work.records.json_bytes(request))
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("changed PR launched an author"))
+    monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a, **_k: [])
+    with pytest.raises(work.WorkError, match="different implementing pull request"):
+        work.execute_stage(fixture, work.Decision("artifact", True, "resume", "fixture"), holder, None, "holder")
+
+
+def test_post_build_stages_keep_registered_root_while_artifact_uses_holder_copy(
         tmp_path, monkeypatch):
     monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "producer bundle"))
     home = tmp_path / "home"
@@ -9152,7 +9221,20 @@ def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
         holder, None, "holder-session",
      floor_command="python fixture-check.py") == 0
 
-    implementer_launches = launches[:4]
+    artifact_command, artifact_prompt = launches[0]
+    artifact_root = Path(artifact_command[artifact_command.index("--root") + 1])
+    artifact_output = Path(artifact_command[artifact_command.index("--output") + 1])
+    copy = work.artifact_tree._read(str(artifact_output) + ".artifact-copy.json")["artifact_copy"]
+    try:
+        assert artifact_root not in {holder, implementation}
+        assert not (artifact_root / "sentinel.txt").exists()
+        assert copy["holder_root"] == str(holder)
+        assert copy["source_commit"] == git(holder, "rev-parse", "HEAD").stdout.strip().decode()
+        assert branch.encode() not in artifact_prompt
+    finally:
+        assert work.artifact_tree._read(copy["lifecycle_record"])["state"] == "removed"
+        assert not artifact_root.exists()  # This mock launcher reserved no author request.
+    implementer_launches = launches[1:4]
     assert len(launches) == 5
     assert all(
         Path(command[command.index("--root") + 1]) == implementation

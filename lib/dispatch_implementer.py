@@ -29,6 +29,7 @@ import time
 import uuid
 
 import dispatch_record as records
+import artifact_tree
 from dispatch_lifecycle import claude_terminal
 import launch_settings
 import run_lifecycle as lifecycle
@@ -97,6 +98,11 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
     ]
     for override in implementer_pytest_overrides():
         command.extend(("-c", override))
+    if getattr(args, "stage", None) == "artifact":
+        command.extend(("-c", 'sandbox_mode="workspace-write"',
+                        "-c", "sandbox_workspace_write.writable_roots=[]",
+                        "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+                        "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"))
     command.extend(("--cd", str(args.root.resolve()), "--output-last-message", str(last_message)))
     if args.resume:
         command.extend(("resume", args.resume, "-"))
@@ -249,6 +255,9 @@ def run_implementer(args: argparse.Namespace) -> int:
     deadline = lifecycle.stage_deadline(args.stage, args.timeout_seconds,
                                          started=getattr(args, "invocation_started_monotonic", None))
     with lifecycle.deadline_scope(deadline):
+        if args.stage == "artifact":
+            with artifact_tree.isolated_git_environment():
+                return _run_implementer(args, deadline)
         return _run_implementer(args, deadline)
 
 
@@ -337,6 +346,22 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         metadata = json.loads(lifecycle_input.read_bytes())
         if not isinstance(metadata, dict):
             raise ImplementerError("lifecycle input must be an object")
+    copy = metadata.get("artifact_copy")
+    if args.stage == "artifact" and copy is None:
+        raise ImplementerError("artifact requires entrance-owned copy lifecycle; use work.py run artifact")
+    if copy is not None:
+        if args.stage != "artifact":
+            raise ImplementerError("artifact copy provenance is only valid for artifact")
+        try:
+            output = records.resolved_output(args.output, args.work, args.stage)
+            artifact_tree.provenance({"artifact_copy": copy, "root": str(root), "work": args.work,
+                "instalment": metadata.get("instalment"), "holder_session_id": args.holder_session_id},
+                str(records.sidecar(output, ".run.json")))
+            artifact_tree.prove(copy)
+        except (artifact_tree.ArtifactTreeError, KeyError, TypeError) as exc:
+            raise ImplementerError(f"invalid artifact copy: {exc}") from exc
+        if str(root) != copy["root"]:
+            raise ImplementerError("launcher root disagrees with artifact copy")
     composition = metadata.get("prompt_composition")
     if composition is not None:
         if (not isinstance(composition, dict) or composition.get("origin") != "entrance"
@@ -360,7 +385,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
     budget_reason = getattr(args, "budget_override_reason", None) or metadata.get("budget_override_reason")
     if budget_reason is not None and (args.stage != "build" or not isinstance(budget_reason, str) or not budget_reason.strip()):
         raise ImplementerError("budget override requires a build stage and a nonempty reason")
-    output = records.resolved_output(args.output, args.work, args.stage)
+    if copy is None:
+        output = records.resolved_output(args.output, args.work, args.stage)
     records.require_output_outside_root(output, root)
     args.output = output
     request_path = records.sidecar(output, ".request.json")
@@ -430,6 +456,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 "budget_lineage", "budget_account_before", "budget_override_reason",
                 "progress_baseline", "predecessor_bundle", "predecessor_stop_snapshot",
                 "retained_session_id", "retained_session_source",
+                "artifact_copy",
             ) if key in metadata})
             request["caller_limit_seconds"] = args.timeout_seconds
             request["stage_ceiling_seconds"] = (
@@ -478,6 +505,11 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 None if request["runtime_version"] else "runtime version command returned no value"
             )
             request["revision_before"] = records.git_revision(root)
+            if copy is not None:
+                try:
+                    artifact_tree.provenance(request, record_path)
+                except artifact_tree.ArtifactTreeError as exc:
+                    raise ImplementerError(str(exc)) from exc
             request["input"] = str(input_path)
             streams[request_path].write(records.json_bytes(request))
             streams[request_path].flush()
@@ -549,6 +581,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     allocation = min(allocation, deadline.remaining())
                     attempt["allocation_seconds"] = allocation
                     result = run_process(command, input=effective_prompt, cwd=root, timeout=allocation,
+                                         env=artifact_tree.environment() if args.stage == "artifact" else None,
                                          on_output=growing.output, on_tick=growing.tick,
                                          on_launch=growing.launched,
                                          cleanup_deadline=deadline.cleanup_end)

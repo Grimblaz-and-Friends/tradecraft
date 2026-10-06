@@ -7,6 +7,7 @@ from pathlib import Path
 
 import dispatch_record as records
 import run_lifecycle as lifecycle
+import artifact_tree
 
 
 def _entrance():
@@ -51,6 +52,18 @@ def scoped(state, rows, *, include_released=False):
         if "instalment" in request and state.instalment is not None:
             if request["instalment"] != state.instalment:
                 return False
+        if request.get("stage") == "artifact" and isinstance(request.get("artifact_copy"), dict):
+            holder = request["artifact_copy"].get("holder_root")
+            # Only proved sibling provenance can exclude a newer attempt.
+            if isinstance(holder, str) and state.holder_root and not work._same_path(Path(holder), state.holder_root):
+                try:
+                    output = Path(request["artifact_copy"]["lifecycle_record"])
+                    bundle = str(output).removesuffix(".artifact-copy.json") + ".run.json"
+                    artifact_tree.provenance(request, bundle)
+                except (KeyError, artifact_tree.ArtifactTreeError):
+                    return True
+                return False
+            return True
         root = request.get("root")
         branch = request.get("lineage_branch")
         if not isinstance(root, str) or not root:
@@ -108,11 +121,24 @@ def handover_predecessor(state, latest):
         if row[1] == carried.get("from_bundle"):
             prior_root = row[2].get("root")
             prior_branch = row[2].get("lineage_branch")
+            if request.get("stage") == "artifact":
+                try:
+                    copy = artifact_tree.provenance(request, latest[1])
+                    prior_copy = artifact_tree.provenance(row[2], row[1])
+                except artifact_tree.ArtifactTreeError:
+                    return None
+                prior_root = (prior_copy["handover_root"] if prior_copy else prior_root)
+                current_root = copy["handover_root"] if copy else request.get("root")
+                prior_branch = prior_copy.get("handover_branch") if prior_copy else prior_branch
+                current_branch = copy.get("handover_branch") if copy else request.get("lineage_branch")
+            else:
+                current_root = request.get("root")
+                current_branch = request.get("lineage_branch")
             if (prior_root and (not isinstance(prior_root, str)
-                               or not isinstance(request.get("root"), str)
-                               or not work._same_path(Path(prior_root), Path(request["root"])))):
+                               or not isinstance(current_root, str)
+                               or not work._same_path(Path(prior_root), Path(current_root)))):
                 return None
-            if prior_branch and request.get("lineage_branch") != prior_branch:
+            if prior_branch and current_branch != prior_branch:
                 return None
             return row
     return None
@@ -120,7 +146,28 @@ def handover_predecessor(state, latest):
 
 def latest_stopped(state, stage):
     rows = launches(state, stage)
+    if stage == "artifact":
+        rows = authored(rows, state=state, work_value=f"{state.repo}#{state.issue_number}")
     return rows[-1] if rows and lifecycle.stopped(rows[-1][3]) else None
+
+
+def authored(rows, *, state=None, work_value):
+    """Ignore only proved no-author attempts; preserve ambiguous latest evidence."""
+    work = _entrance()
+    selected = []
+    for row in rows:
+        if artifact_tree.unlaunched(row[3]):
+            if work._version_key(row[2].get("producer_version")) is None:
+                raise work.WorkError(f"unlaunched artifact bundle has invalid producer version: {row[1]}")
+            try:
+                artifact_tree.provenance(row[2], row[1],
+                    holder=state.holder_root if state else None, work=work_value,
+                    instalment=state.instalment if state else None)
+            except artifact_tree.ArtifactTreeError as exc:
+                raise work.WorkError(str(exc)) from exc
+        else:
+            selected.append(row)
+    return selected
 
 
 def stopped_source(state, stage):
@@ -141,7 +188,7 @@ def stopped_source(state, stage):
     return work.ResumeSource(order, path, request, run, session)
 
 
-def validate_target(state, stage, request, path, *, include_released=False):
+def validate_target(state, stage, request, path, *, include_released=False, restart=False):
     work = _entrance()
     root_value = request.get("root")
     if not isinstance(root_value, str) or not root_value:
@@ -161,10 +208,15 @@ def validate_target(state, stage, request, path, *, include_released=False):
         registered, branch = work._validate_implementation_row(rows[0], holder)
         if not work._same_path(root, registered) or request.get("lineage_branch") != branch:
             raise work.WorkError(f"stopped bundle {path}: registered root or branch mismatch")
-    elif state.holder_root and not work._same_path(root, state.holder_root):
-        rows = work._change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
-        if len(rows) != 1 or not work._same_path(root, Path(str(rows[0].get("root") or ""))):
-            raise work.WorkError(f"stopped bundle {path}: artifact recipient root mismatch")
+    else:
+        try:
+            # Legacy roots are evidence only: execution makes a fresh committed copy.
+            validate = artifact_tree.provenance if restart else artifact_tree.validate_resume
+            args = (request, path) if restart else (request, {}, path)
+            validate(*args, holder=state.holder_root,
+                work=f"{state.repo}#{state.issue_number}", instalment=state.instalment)
+        except artifact_tree.ArtifactTreeError as exc:
+            raise work.WorkError(f"stopped bundle {path}: {exc}") from exc
     current_pr = state.pr.get("number") if state.pr else None
     prior_pr = request.get("lineage_pull_request")
     if prior_pr is not None and prior_pr != current_pr:
