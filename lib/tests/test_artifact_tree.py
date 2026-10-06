@@ -20,6 +20,31 @@ def record_author_launch(copy, invoked):
     invoked["value"] = True
 
 
+def test_artifact_copy_guard_preserves_existing_copies_and_rejects_new_ones(tmp_path, artifact_copy_guard):
+    existing = tmp_path / "tradecraft-artifact-existing"
+    existing.mkdir()
+    before = {existing}
+    (tmp_path / "unrelated-temp").mkdir()
+    artifact_copy_guard(tmp_path, before)
+    added = tmp_path / "tradecraft-artifact-new"
+    added.mkdir()
+    with pytest.raises(AssertionError, match="Tests leaked artifact copies into system temp"):
+        artifact_copy_guard(tmp_path, before)
+    assert existing.is_dir() and added.is_dir()  # The guard reports; it never deletes.
+
+
+def test_retained_copy_uses_test_owned_parent_including_child_processes(tmp_path):
+    holder = repository(tmp_path)
+    with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
+                        holder_session_id="holder") as (copy, invoked, _record):
+        record_author_launch(copy, invoked)
+    root = Path(copy["root"])
+    assert root.is_dir()  # Deliberately leave a retained allocation to test-owned cleanup.
+    child = subprocess.run([sys.executable, "-c", "import tempfile; print(tempfile.gettempdir())"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    assert root.parent == Path(child.stdout.decode().strip()) == tmp_path
+
+
 @pytest.mark.parametrize("change", [
     {"completed_at": None}, {"lifecycle": "running"}, {"cleanup_proven": False},
     {"launch_unresolved": True}, {"recovery_error": "unsupported dispatch schema"},
