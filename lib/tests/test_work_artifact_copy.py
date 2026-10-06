@@ -453,7 +453,7 @@ def test_public_author_edits_only_its_copy_for_both_routes_and_vendors(entrance,
     assert captured["git_before"]["git_dir"] == captured["git_before"]["common_dir"]
     assert Path(captured["git_before"]["git_dir"]).parent == Path(copy["root"])
     assert captured["git_after"]["head"] != captured["git_before"]["head"]
-    assert Path(run["result"]["published_output"]).read_bytes() == artifact_text("combined").replace("\r\n", "\n").encode()
+    assert Path(run["result"]["published_output"]).read_bytes() == artifact_text("combined").encode("utf-8")
     assert not Path(copy["root"]).exists()
     assert trees._read(copy["lifecycle_record"])["state"] == "removed"
     if custom:
@@ -474,10 +474,14 @@ def test_public_author_edits_only_its_copy_for_both_routes_and_vendors(entrance,
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
-@pytest.mark.parametrize("failure", ["pointer", "empty", "runtime"])
+@pytest.mark.parametrize("failure", ["pointer", "empty", "runtime", "oversized"])
 def test_public_failure_resumes_same_copy_with_draft_index_and_git_state(entrance, vendor, failure):
     holder, store, commands, setup = entrance
-    args, capture, _dispatch = setup(vendor, returned="/tmp/artifact.md" if failure == "pointer" else "",
+    returned = "/tmp/artifact.md" if failure == "pointer" else ""
+    if failure == "oversized":
+        prefix = artifact_text("combined")
+        returned = prefix + "x" * (240_001 - len(prefix.encode("utf-8")))
+    args, capture, _dispatch = setup(vendor, returned=returned,
                                      fail="runtime" if failure == "runtime" else None)
     assert work.run(args, transport=ArtifactTransport()) == 1
     _, failed_path, request, run = bundles(store)[0]
@@ -485,6 +489,12 @@ def test_public_failure_resumes_same_copy_with_draft_index_and_git_state(entranc
     root = Path(request["root"])
     before = snapshot(root)
     source_commit = request["artifact_copy"]["source_commit"]
+    if failure == "oversized":
+        assert run["outcome"] == "invalid_artifact_return"
+        assert run["result"]["return_validation"]["observed_bytes"] == 240_001
+        assert run["result"]["return_validation"]["maximum_bytes"] == 240_000
+        assert Path(run["result"]["published_output"]).read_bytes() == returned.encode("utf-8")
+        assert trees._read(request["artifact_copy"]["lifecycle_record"])["state"] == "retained"
     (holder / "new-holder.txt").write_bytes(b"holder moved after failure")
     git(holder, "add", "new-holder.txt")
     git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "holder move")
@@ -500,6 +510,53 @@ def test_public_failure_resumes_same_copy_with_draft_index_and_git_state(entranc
     assert resumed["requested"]["session_id"] == SESSION
     assert Path(failed_path).read_bytes() == old_bytes and not root.exists()
     assert passed["outcome"] == "success"
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_repair_after_draft_reference_settlement_carries_judged_text_into_fresh_copy(entrance, vendor):
+    holder, store, _commands, setup = entrance
+    args, _, _ = setup(vendor)
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    _, prior_path, prior, _ = bundles(store)[0]
+    assert not Path(prior["root"]).exists()
+    (holder / "later-commit.txt").write_bytes(b"holder moved after settlement")
+    git(holder, "add", "later-commit.txt")
+    git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "holder update")
+    fixture = work._read_policy_state(ArtifactTransport(), "example/product", 12, CONFIG,
+                                      {"rules": []}, "fixture")
+    fixture.holder_root, fixture.record_root = holder, store
+    draft = "<!-- tradecraft:artifact:v1 status=draft -->\n" + artifact_text("combined")
+    reading = "<!-- tradecraft:holder-reading:v1 result=no-amendment -->\nPreserve the judged decision."
+    next_brief = ARTIFACT_BRIEF + "\nOwner affirmed the later terms."
+    for identity, day, body in [
+        (752, 20, draft),
+        (753, 21, "<!-- tradecraft:artifact:v1 status=settled route=unobtainable "
+         f"draft_comment=752 draft_sha256={work.artifact_digest(draft)} -->\nSettlement evidence only."),
+        (754, 22, reading),
+        (755, 23, next_brief),
+    ]:
+        fixture.issue_comments.append({"id": identity, "body": body,
+            "created_at": f"2026-09-{day}T00:00:00Z", "user": {"login": PRODUCER}})
+    fixture.validated_markers, fixture.artifact_phase = None, None
+    work.validate_marker_claims(fixture)
+    assert fixture.artifact_phase.prior_artifact.body == draft
+    args, capture, _ = setup(vendor, probe=True, returned=next_brief +
+        "\nThe revised artifact preserves every implementation decision and acceptance criterion.\n")
+    assert work.execute_stage(fixture, work.Decision("artifact", True, "resume", "amended-terms"),
+                              holder, None, "holder") == 0
+    _, _, repaired, run = bundles(store)[-1]
+    assert repaired["requested"]["session_id"] == SESSION
+    assert repaired["predecessor_bundle"] == prior_path
+    assert repaired["root"] != prior["root"]
+    assert repaired["artifact_copy"]["source_commit"] == git(holder, "rev-parse", "HEAD").stdout.decode().strip()
+    prompt = Path(repaired["input"]).read_bytes()
+    assert draft.encode("utf-8") in prompt and reading.encode("utf-8") in prompt
+    assert b"Settlement evidence only." not in prompt
+    assert json.loads(capture.read_bytes())["draft_before"] is None
+    assert implementer.ARTIFACT_RETURN_INSTRUCTION.encode("utf-8") in Path(repaired["context"]["path"]).read_bytes()
+    assert run["result"]["return_validation"]["status"] == "pass"
+    assert trees._read(repaired["artifact_copy"]["lifecycle_record"])["state"] == "removed"
+    assert not Path(repaired["root"]).exists()
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
@@ -622,7 +679,7 @@ def test_public_hard_stopped_author_keeps_copy_and_resumes_its_state(entrance):
     assert captured["draft_before"] == b"unfinished draft\n".hex()
 
 
-@pytest.mark.parametrize("legacy_version", ["0.185.0", "0.186.0"])
+@pytest.mark.parametrize("legacy_version", ["0.185.0", "0.186.0", "0.187.0"])
 def test_legacy_session_recovery_never_imports_or_disposes_old_root(entrance, tmp_path, capsys, legacy_version):
     holder, store, commands, setup = entrance
     old = repository(tmp_path, "legacy-author")

@@ -1,4 +1,5 @@
 import json
+import base64
 import hashlib
 import subprocess
 import os
@@ -886,7 +887,9 @@ def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeyp
     assert request["requested"]["sources"]["vendor"] == "machine file: claude"
     assert request["implementer_role"] == "artifact_author"
     assert implementer.records.sidecar(args.output, ".dispatch.bin").read_bytes() == args.dispatch.read_bytes()
-    assert implementer.records.sidecar(args.output, ".context.bin").read_bytes() == context.read_bytes()
+    assert implementer.records.sidecar(args.output, ".context.bin").read_bytes() == (
+        context.read_bytes() + b"\n\n" + implementer.ARTIFACT_RETURN_INSTRUCTION.encode("utf-8")
+    )
     assert record(args)["attempts"][0]["observed"]["session_id"] == session
 
 
@@ -1190,8 +1193,11 @@ def test_artifact_inline_return_passes_and_retains_exact_sources(job, monkeypatc
     scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text)}).encode())
     assert implementer.run_implementer(args) == 0
     assert record(args)["outcome"] == "success"
-    assert record(args)["result"]["return_validation"] == {"status": "pass", "reason": ""}
-    assert args.output.read_bytes() == text.replace("\r\n", "\n").encode("utf-8")
+    assert record(args)["result"]["return_validation"] == {
+        "status": "pass", "reason": "", "maximum_bytes": 240_000,
+        "observed_bytes": len(text.encode("utf-8")),
+    }
+    assert args.output.read_bytes() == text.encode("utf-8")
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
     retained = request["artifact_brief"]
     assert retained["source"] == "issue-comment:affirmed"
@@ -1370,3 +1376,112 @@ def test_real_missing_vendor_does_not_credit_an_implementer_launch(job, monkeypa
     run = json.loads(implementer.records.sidecar(args.output, ".run.json").read_bytes())
     assert not run["attempts"][0]["launched"]
     assert not implementer.lifecycle.stopped(run)
+
+
+def artifact_with_byte_count(byte_count, padding):
+    prefix = artifact_text("combined")
+    needed = byte_count - len(prefix.encode("utf-8"))
+    units, remainder = divmod(needed, len(padding.encode("utf-8")))
+    text = prefix + padding * units + "x" * remainder
+    assert len(text.encode("utf-8")) == byte_count
+    assert len(text) > 80_000
+    assert len(text.replace("\r\n", "\n").encode("utf-8")) < byte_count
+    return text
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("custom_dispatch", [False, True])
+@pytest.mark.parametrize("revision", [False, True])
+@pytest.mark.parametrize("byte_count", [240_000, 240_001])
+@pytest.mark.parametrize("padding", ["plain ", chr(0x96EA) + " "], ids=["ascii", "multibyte"])
+def test_artifact_byte_bound_keeps_exact_return_and_generated_context(
+        job, monkeypatch, capsys, vendor, custom_dispatch, revision, byte_count, padding):
+    args, scenario = job
+    args.stage, args.vendor = "artifact", vendor
+    supply_artifact_brief(args)
+    if revision:
+        args.resume = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    if custom_dispatch:
+        args.dispatch.write_bytes(b"Holder-written instructions.\r\nReturn everything.\r\n")
+    else:
+        # The public entrance's composed form is tested in test_work; the
+        # launcher applies the same independent context to either carrier.
+        args.dispatch.write_bytes(b"Return the whole artifact text in your final message.\n")
+    original_dispatch = args.dispatch.read_bytes()
+    context = args.dispatch.with_name("context.md")
+    context.write_bytes(b"Existing revision and interruption context.\r\n")
+    args.context = context
+    text = artifact_with_byte_count(byte_count, padding)
+    if padding != "plain ":
+        assert len(text) < 240_000
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_: [
+        sys.executable, str(LIB / "tests/seat_cli.py"), vendor, str(scenario)])
+    scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text)}).encode())
+
+    assert implementer.run_implementer(args) == (1 if byte_count > 240_000 else 0)
+    logged = record(args)
+    assert logged["outcome"] == ("invalid_artifact_return" if byte_count > 240_000 else "success")
+    validation = logged["result"]["return_validation"]
+    assert validation["maximum_bytes"] == 240_000
+    assert validation["observed_bytes"] == byte_count
+    assert validation["status"] == ("fail" if byte_count > 240_000 else "pass")
+    assert Path(logged["result"]["source_output"]).read_bytes() == text.encode("utf-8")
+    assert args.output.read_bytes() == text.encode("utf-8")
+    assert logged["attempts"][0]["observed"]["session_id"] == "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    request = json.loads(Path(logged["request"]).read_bytes())
+    assert Path(request["input"]).read_bytes() == original_dispatch
+    assert implementer.ARTIFACT_RETURN_INSTRUCTION.startswith(
+        "Return the whole artifact in at most 240,000 UTF-8 bytes, ")
+    assert "whole final message encoded as UTF-8, including whitespace and line endings" in (
+        implementer.ARTIFACT_RETURN_INSTRUCTION)
+    effective_context = context.read_bytes() + b"\n\n" + implementer.ARTIFACT_RETURN_INSTRUCTION.encode("utf-8")
+    assert Path(request["context"]["path"]).read_bytes() == effective_context
+    captured = json.loads((args.root / f"seen-{vendor}.json").read_bytes())
+    effective_input = effective_context + b"\n\n" + original_dispatch
+    assert base64.b64decode(captured["stdin"]) == effective_input
+    assert request["effective_input_sha256"] == hashlib.sha256(effective_input).hexdigest()
+    assert request["context"]["sha256"] == hashlib.sha256(effective_context).hexdigest()
+    diagnostic = capsys.readouterr().err
+    if byte_count > 240_000:
+        assert "240,001 UTF-8 bytes" in diagnostic and "240,000 UTF-8 bytes" in diagnostic
+        assert str(implementer.records.sidecar(args.output, ".run.json")) in diagnostic
+        assert "author session 0199" in diagnostic
+
+
+def test_artifact_size_refuses_before_completeness_comparison(monkeypatch):
+    monkeypatch.setattr(implementer, "artifact_opening_carries_brief",
+                        lambda *_: pytest.fail("compared an oversized return"))
+    text = chr(0x96EA) * 80_001
+    assert len(text) < 240_000
+    result = implementer.validate_artifact_return(ARTIFACT_BRIEF, text)
+    assert result["status"] == "fail" and result["observed_bytes"] == 240_003
+    assert result["maximum_bytes"] == 240_000
+
+
+@pytest.mark.parametrize("byte_count", [240_000, 240_001])
+def test_codex_artifact_size_counts_retained_invalid_utf8_bytes(job, byte_count):
+    args, _scenario = job
+    args.stage, args.vendor = "artifact", "codex"
+    supply_artifact_brief(args)
+    message = artifact_with_byte_count(byte_count - 1, "plain ").encode("utf-8") + b"\xff"
+    assert len(message.decode("utf-8", errors="replace").encode("utf-8")) == byte_count + 2
+    native = native_artifact_result("codex", "unused final-message carrier")
+    native["last_hex"] = message.hex()
+    configure(job, native)
+    assert implementer.run_implementer(args) == (1 if byte_count > 240_000 else 0)
+    logged = record(args)
+    assert logged["result"]["return_validation"]["observed_bytes"] == byte_count
+    assert logged["result"]["return_validation"]["maximum_bytes"] == 240_000
+    assert logged["outcome"] == ("invalid_artifact_return" if byte_count > 240_000 else "success")
+    assert Path(logged["result"]["source_output"]).read_bytes() == message
+    assert args.output.read_bytes() == message
+
+
+@pytest.mark.parametrize("byte_count", [240_000, 240_001])
+@pytest.mark.parametrize("padding", ["plain ", chr(0x96EA) + " "], ids=["ascii", "multibyte"])
+def test_shared_artifact_validator_counts_complete_boundary_messages(byte_count, padding):
+    text = artifact_with_byte_count(byte_count, padding)
+    result = implementer.validate_artifact_return(ARTIFACT_BRIEF, text)
+    assert result["status"] == ("pass" if byte_count == 240_000 else "fail")
+    assert result["observed_bytes"] == byte_count
+    assert result["maximum_bytes"] == 240_000

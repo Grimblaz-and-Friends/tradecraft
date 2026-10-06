@@ -19,7 +19,7 @@ import run_lifecycle as lifecycle
 from seat_process import run_process
 from winio import utf8_stdio
 
-MECHANISM_VERSION = "0.187.0"
+MECHANISM_VERSION = "0.188.0"
 GIT_BINDINGS = frozenset({
     "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
