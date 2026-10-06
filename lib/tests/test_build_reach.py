@@ -260,10 +260,16 @@ def test_C3_true_range_recovery_and_empty_range(repo):
     after = commit(repo, {"a": "a\n"})
     for end in (before, after):
         row = turn(repo, None, end)
+        rows = [row]
+        if end == before:
+            # The previous proved return independently establishes the empty
+            # turn's start; a bare recovered before=after is not evidence.
+            rows.insert(0, turn(repo, before, before, identity="build-0", order="2026-10-06T09:00:00Z",
+                                returned="2026-10-06T09:30:00Z"))
         reading = reader(end, recovered=[{"dispatch_id": "build-1", "before": before, "after": end,
                                           "basis": "retained native contemporaneous revisions"}],
                          turns=[{"dispatch_id": "build-1", "items": account(measure(repo, before, end))}] if end != before else [])
-        report = evaluate(repo, [row], [reading], head=end, base=before)
+        report = evaluate(repo, rows, [reading], head=end, base=before)
         assert report["state"] == "clear", report
 
 
@@ -475,3 +481,99 @@ def test_C4_restore_reference_needs_proved_selected_lineage(repo):
                  "restored", restored_by={"dispatch_id": "build-2", "head": restored})}])
     report = evaluate(repo, [first, later], [reading])
     assert report["turns"][0]["state"] == "reading-required" and report["diagnostics"]
+
+
+@pytest.mark.parametrize("missing", ["before", "after"])
+@pytest.mark.parametrize("older", ["base", "intermediate"])
+def test_repair_872_superset_cannot_end_before_the_unmeasurable_turn(repo, missing, older):
+    base = commit(repo, {"a": "a\nb\nc\n"})
+    intermediate = commit(repo, {"new": "new\n"})
+    head = commit(repo, {"a": "a\n"})
+    row = turn(repo, base, head)
+    (row[2] if missing == "before" else row[3]).pop("revision_" + missing)
+    old_head = base if older == "base" else intermediate
+    fallback = reach.superset(reach.Git(repo, lambda args, root: git(root, *args, check=False)),
+                              {"number": 9, "base": {"sha": base}, "head": {"sha": old_head}})
+    stale = reader(old_head, supersets=[{**fallback, "turn_reference": "build-1", "reason": "lost range",
+                                         "items": account(fallback["items"])}])
+    report = evaluate(repo, [row], [stale], base=base)
+    assert report["state"] == "unmeasurable" and report["diagnostics"], report
+    fallback = report["turns"][0]["superset"]
+    current = reader(head, supersets=[{**fallback, "turn_reference": "build-1", "reason": "lost range",
+                                      "items": account(fallback["items"])}])
+    assert evaluate(repo, [row], [stale, current], base=base)["state"] == "clear"
+
+
+@pytest.mark.parametrize("mutation", ["empty", "narrowed", "later-after", "later-before"])
+def test_repair_872_recovery_preserves_recorded_endpoints_and_cannot_invent_empty_range(repo, mutation):
+    base = commit(repo, {"a": "a\nb\nc\n"})
+    middle = commit(repo, {"a": "a\nb\n"})
+    after = commit(repo, {"a": "a\n"})
+    head = commit(repo, {"new": "new\n"})
+    row = turn(repo, base, after)
+    recovered_before, recovered_after = base, after
+    if mutation == "later-before":
+        row[3].pop("revision_after")
+        recovered_before, recovered_after = middle, after
+    else:
+        row[2].pop("revision_before")
+        if mutation == "empty":
+            recovered_before = after
+        elif mutation == "narrowed":
+            recovered_after = middle
+        else:
+            recovered_after = head
+    measured = measure(repo, recovered_before, recovered_after)
+    reading = reader(head, recovered=[{"dispatch_id": "build-1", "before": recovered_before,
+                                       "after": recovered_after, "basis": "claimed native revisions"}],
+                     turns=[{"dispatch_id": "build-1", "items": account(measured)}] if measured else [])
+    report = evaluate(repo, [row], [reading], base=base)
+    assert report["state"] == "unmeasurable" and report["diagnostics"], report
+
+
+def test_repair_872_recovered_range_respects_neighboring_turn_order(repo):
+    base = commit(repo, {"a": "a\nb\nc\n"})
+    previous = commit(repo, {"new": "new\n"})
+    after = commit(repo, {"a": "a\n"})
+    rows = [turn(repo, base, previous, identity="build-0", order="2026-10-06T09:00:00Z",
+                 returned="2026-10-06T09:30:00Z"), turn(repo, None, after)]
+    reading = reader(after, recovered=[{"dispatch_id": "build-1", "before": base, "after": after,
+                                        "basis": "claimed revisions overlapping the previous turn"}],
+                     turns=[{"dispatch_id": "build-1", "items": account(measure(repo, base, after))}])
+    report = evaluate(repo, rows, [reading], base=base)
+    assert report["state"] == "unmeasurable" and report["diagnostics"], report
+    correct = reader(after, recovered=[{"dispatch_id": "build-1", "before": previous, "after": after,
+                                        "basis": "native launch and return revisions"}],
+                     turns=[{"dispatch_id": "build-1", "items": account(measure(repo, previous, after))}])
+    assert evaluate(repo, rows, [reading, correct], base=base)["state"] == "clear"
+
+
+def test_repair_872_recovered_after_cannot_cross_the_next_launch(repo):
+    base = commit(repo, {"a": "a\nb\nc\nd\n"})
+    middle = commit(repo, {"a": "a\nb\nc\n"})
+    head = commit(repo, {"a": "a\nb\n"})
+    rows = [turn(repo, base, None), turn(repo, middle, head, identity="build-2",
+            order="2026-10-06T11:10:00Z", returned="2026-10-06T11:30:00Z")]
+    later_account = {"dispatch_id": "build-2", "items": account(measure(repo, middle, head))}
+    reading = reader(head, recovered=[{"dispatch_id": "build-1", "before": base, "after": head,
+                                       "basis": "claimed range crossing the next launch"}],
+        turns=[{"dispatch_id": "build-1", "items": account(measure(repo, base, head))}, later_account])
+    report = evaluate(repo, rows, [reading], base=base)
+    assert report["state"] == "unmeasurable" and report["diagnostics"], report
+    correct = reader(head, recovered=[{"dispatch_id": "build-1", "before": base, "after": middle,
+                                       "basis": "retained launch and stop revisions"}],
+        turns=[{"dispatch_id": "build-1", "items": account(measure(repo, base, middle))}, later_account])
+    assert evaluate(repo, rows, [reading, correct], base=base)["state"] == "clear"
+
+
+def test_repair_872_missing_return_superset_survives_a_proved_descendant_launch(repo):
+    base = commit(repo, {"a": "a\nb\nc\n"})
+    returned_head = commit(repo, {"a": "a\n"})
+    row = turn(repo, base, None)
+    entry = evaluate(repo, [row], head=returned_head, base=base)["turns"][0]
+    reading = reader(returned_head, supersets=[{**entry["superset"], "turn_reference": "build-1",
+        "reason": "return endpoint lost", "items": account(entry["superset"]["items"])}])
+    descendant = commit(repo, {"new": "new\n"})
+    later = turn(repo, returned_head, descendant, identity="build-2", order="2026-10-06T13:00:00Z",
+                 returned="2026-10-06T14:00:00Z")
+    assert evaluate(repo, [row, later], [reading], base=base)["state"] == "clear"

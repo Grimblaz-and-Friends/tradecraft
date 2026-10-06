@@ -371,6 +371,58 @@ def diagnostic(bundle):
     return "bundle:" + hashlib.sha256(str(bundle).encode("utf-8")).hexdigest()
 
 
+def _known_commit(git, revision):
+    if not isinstance(revision, str) or not SHA.fullmatch(revision):
+        return None
+    if git.read("cat-file", "-t", revision).decode("ascii").strip() != "commit":
+        return None
+    return git.commit(revision)
+
+
+def _neighbors(entry, entries):
+    ordered = [other for other in entries if other["attribution_proved"]
+               and moment(other["order"]) is not None and other is not entry]
+    previous = [other for other in ordered if moment(other["order"]) < moment(entry["order"])]
+    following = [other for other in ordered if moment(other["order"]) > moment(entry["order"])]
+    return (max(previous, key=lambda other: moment(other["order"]), default=None),
+            min(following, key=lambda other: moment(other["order"]), default=None))
+
+
+def _recovered_range(git, entry, recovered, entries):
+    before, after = git.commit(recovered["before"]), git.commit(recovered["after"])
+    known = {bound: _known_commit(git, entry[bound]) for bound in ("before", "after")}
+    for bound, revision in known.items():
+        if revision is not None and revision != {"before": before, "after": after}[bound]:
+            raise ReachError("range recovery cannot replace valid recorded " + bound + " endpoint")
+    if (moment(entry["order"]) is None or moment(entry["returned"]) is None
+            or moment(entry["returned"]) <= moment(entry["order"])):
+        raise ReachError("range recovery needs proved launch/return ordering; use PR superset")
+    previous, following = _neighbors(entry, entries)
+    prior_end = _known_commit(git, previous["after"]) if previous else None
+    next_start = _known_commit(git, following["before"]) if following else None
+    if prior_end and not git.ancestor(prior_end, before):
+        raise ReachError("recovered before overlaps or precedes the previous builder turn")
+    if next_start and not git.ancestor(after, next_start):
+        raise ReachError("recovered after overlaps or follows the next builder turn")
+    if before == after and ((known["before"] or prior_end) != before
+                            or (known["after"] or next_start) != after):
+        raise ReachError("empty recovered range needs independently recorded start and end evidence; use PR superset")
+    return measure(git, before, after)
+
+
+def _superset_covers_turn(git, entry, entries, account_head, current_head):
+    # A current-head superset also settles replaced or unavailable old objects.
+    if account_head == current_head:
+        return
+    endpoint = _known_commit(git, entry["after"])
+    if endpoint is None:
+        # A subsequent attributed launch bounds a return whose endpoint was lost.
+        _previous, following = _neighbors(entry, entries)
+        endpoint = _known_commit(git, following["before"]) if following else None
+    if endpoint is None or not git.ancestor(endpoint, account_head):
+        raise ReachError("superset head does not cover this turn's return; record a current-head account")
+
+
 def _coverage(items, expected, turns, entry, reading, git, current_head):
     if {item["path"] for item in items} != {item["path"] for item in expected}:
         raise ReachError("missing or extraneous reach path coverage for " + entry["turn_reference"])
@@ -407,7 +459,8 @@ def evaluate(turns, readings, *, head, pr, run, lineage=None, instalment=None):
         entry = {"dispatch_id": identity, "turn_reference": identity or diagnostic(bundle),
                  "stage": request.get("stage"), "bundle": bundle, "order": order,
                  "before": request.get("revision_before"), "after": record.get("revision_after"),
-                 "returned": record.get("completed_at"), "pending": pending, "basis": "recorded-range",
+                 "returned": record.get("completed_at") or record.get("reach_resolved_at"),
+                 "resolved_by": record.get("reach_resolved_by"), "pending": pending, "basis": "recorded-range",
                  "state": "pending" if pending else "unmeasurable", "items": [],
                  "binary_modifications": [], "attribution_proved": not target_error and request.get("stage") in {"build", "floor", "review-disposition"},
                  "uncertainty": None, "reading_source": None, "outstanding_paths": []}
@@ -415,6 +468,8 @@ def evaluate(turns, readings, *, head, pr, run, lineage=None, instalment=None):
         error = target_error or record.get("recovery_error")
         if not error and (orders.count(order) > 1 or moment(order) is None or order.startswith("9999-")):
             error = "ambiguous or unavailable turn ordering"
+        if not error and moment(entry["returned"]) is not None and moment(entry["returned"]) <= moment(order):
+            error = "invalid launch/return ordering"
         if not error and (not identity or not entry["returned"] or moment(entry["returned"]) is None
                           or not isinstance(attempts, list) or not any(a.get("launched") is True for a in attempts if isinstance(a, dict))):
             error = "incomplete records or missing dispatch/launch/return attribution"
@@ -466,7 +521,7 @@ def evaluate(turns, readings, *, head, pr, run, lineage=None, instalment=None):
                 if original[4] or "ordering" in entry["uncertainty"] or "attribution" in entry["uncertainty"]:
                     raise ReachError("true-range recovery still needs proved lineage, ordering and attribution; use PR superset")
                 git = Git(original[2]["root"], run)
-                measured = measure(git, recovered["before"], recovered["after"])
+                measured = _recovered_range(git, entry, recovered, entries)
                 if not git.ancestor(recovered["after"], head):
                     raise ReachError("recovered head is outside current lineage")
                 changes[entry["turn_reference"]] = {**entry, "before": recovered["before"], "after": recovered["after"],
@@ -491,6 +546,7 @@ def evaluate(turns, readings, *, head, pr, run, lineage=None, instalment=None):
                     raise ReachError("superset settlement needs a returned unmeasurable turn")
                 if account["head"] != reading_head:
                     raise ReachError("superset head must match marker head")
+                _superset_covers_turn(Git(root, run), entry, entries, account["head"], head)
                 fallback = superset(Git(root, run), pr, bounds=account)
                 _coverage(account["items"], fallback["items"], entries, entry, reading, Git(root, run), head)
                 changes[entry["turn_reference"]] = {**entry, "basis": "pr-superset",

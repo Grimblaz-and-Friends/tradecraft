@@ -283,6 +283,102 @@ class TestBuildReach:
         work._evaluate_reach(builder)
         assert builder.reach["state"] == "clear"
 
+    @pytest.mark.parametrize("retained", ["flag-free", "unlaunched", "later-same-session"])
+    def test_repair_872_marker_only_sessions_remain_visible_beside_retained_bundles(self, builder, retained):
+        request, run = builder.term_turns[0][2:]
+        request["revision_before"] = run["revision_after"]
+        if retained == "unlaunched":
+            run["attempts"] = [{"launched": False}]
+        TestGoverningTerms().save(builder)
+        missing_session = SESSION if retained == "later-same-session" else OTHER_SESSION
+        for number, session in enumerate([missing_session, "fedcba98-7654-3210-fedc-ba9876543210"]):
+            builder.issue_comments.append({"id": 170 + number,
+                "body": f"<!-- tradecraft:builder-session:v1 session={session} vendor=codex -->",
+                "user": {"login": PRODUCER}, "created_at": f"2026-10-05T09:4{number}:00Z"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        missing = [entry for entry in builder.reach["turns"] if entry["turn_reference"].startswith("bundle:")]
+        assert len(missing) == 2 and all(entry["state"] == "unmeasurable" for entry in missing), builder.reach
+        for stage in ["ready-reviewers", "proof", "release-report"]:
+            assert work._reach_refusal(builder, stage) is not None
+        accounts = [{**entry["superset"], "turn_reference": entry["turn_reference"],
+                     "reason": entry["uncertainty"], "items": [{"path": item["path"],
+                     "disposition": "generator", "generator": "fixture generator", "basis": "Generated fixture."}
+                     for item in entry["superset"]["items"]]} for entry in missing]
+        payload = {"schema_version": 1, "turns": [], "superset_settlements": accounts}
+        builder.issue_comments.append({"id": 175, "user": {"login": PRODUCER},
+            "created_at": "2026-10-05T12:00:00Z", "body":
+            f"<!-- tradecraft:reach-reading:v1 head={builder.pr['head']['sha']} -->\n\n```json\n{json.dumps(payload)}\n```"})
+        builder.validated_markers = None
+        assert work._reach_refusal(builder, "proof") is None, builder.reach
+
+    def test_repair_872_native_session_match_does_not_invent_a_missing_turn(self, builder):
+        builder.issue_comments.append({"id": 170,
+            "body": f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->",
+            "user": {"login": PRODUCER}, "created_at": "2026-10-05T10:03:00Z"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0"]
+        assert builder.reach["state"] == "reading-required"
+
+    @pytest.mark.parametrize("settlement", ["recorded", "recovered", "superset"])
+    @pytest.mark.parametrize("stage", ["ready-reviewers", "proof", "release-report"])
+    def test_repair_872_stopped_turn_is_settleable_after_completed_resume(self, builder, monkeypatch, capsys,
+                                                                       settlement, stage):
+        request, run = builder.term_turns[0][2:]
+        before, after = request["revision_before"], run["revision_after"]
+        run.pop("completed_at")
+        run["lifecycle"] = "running"
+        dead = work.lifecycle.process_identity()
+        dead["birth"] += "dead"
+        run["launcher_process"] = dead
+        assert work.lifecycle.liveness(run) == "stopped"
+        if settlement != "recorded":
+            request.pop("revision_before")
+        TestGoverningTerms().save(builder)
+        resumed_request, resumed_run = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+            launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        resumed_request["lineage_branch"] = "reach-change"
+        resumed_request["revision_before"] = resumed_run["revision_after"] = after
+        TestGoverningTerms().save(builder)
+        assert work.work_recovery.latest_stopped(builder, "build") is None
+        work._evaluate_reach(builder)
+        assert not builder.reach["turns"][0]["pending"], builder.reach
+        assert self.endpoint(builder, stage, monkeypatch) == []
+        assert json.loads(capsys.readouterr().out)["stage"] == "reach-read"
+        comment = self.reading(builder, superset=settlement == "superset")
+        if settlement == "recovered":
+            payload = build_reach.payload(comment["body"])
+            payload["recovered_ranges"] = [{"dispatch_id": "turn-0", "before": before, "after": after,
+                                             "basis": "Retained native launch and stop revisions."}]
+            payload["turns"][0]["items"] = [{"path": "README.md", "disposition": "row-or-criterion",
+                "requirement": "Row 1, C1", "basis": "The governing criterion requires this shrink."}]
+            comment["body"] = f"<!-- tradecraft:reach-reading:v1 head={after} -->\n\n```json\n{json.dumps(payload)}\n```"
+            builder.validated_markers = None
+        self.endpoint(builder, stage, monkeypatch)
+        report = json.loads(capsys.readouterr().out)
+        assert report["stage"] == stage and report["reach"]["state"] == "clear", report
+
+    @pytest.mark.parametrize("unresolved", ["active", "spawn", "cleanup", "unlaunched-successor"])
+    def test_repair_872_completed_successor_does_not_discharge_unresolved_recovery(self, builder, monkeypatch, unresolved):
+        run = builder.term_turns[0][3]
+        run.pop("completed_at")
+        run["lifecycle"] = "running"
+        monkeypatch.setattr(work.lifecycle, "liveness", lambda record: "active" if unresolved == "active" else "stopped")
+        if unresolved == "spawn":
+            run["launch_unresolved"] = True
+        elif unresolved == "cleanup":
+            run["cleanup_proven"] = False
+        request, later = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+            launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        request["lineage_branch"] = "reach-change"
+        request["revision_before"] = later["revision_after"] = builder.pr["head"]["sha"]
+        if unresolved == "unlaunched-successor":
+            later["attempts"] = [{"launched": False}]
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        assert builder.reach["turns"][0]["pending"] and builder.reach["state"] == "pending"
+
     def test_C3_siblings_released_lineage_and_observed_missing_inventory(self, builder, monkeypatch):
         builder.instalment = "A"
         builder.term_registration["instalment"] = "A"

@@ -2930,26 +2930,67 @@ def _evaluate_reach(state: WorkState) -> None:
             if state.pr and lineage.get("branch") != (state.pr.get("head") or {}).get("ref"):
                 raise WorkError("selected implementation lineage does not match the PR branch; resolve identity before reach settlement")
         selected = work_recovery.launches(state, "build", include_released=released, include_missing_stage=True)
-        for index, (order, bundle, request, record) in enumerate(selected):
+        attributed = []
+        for order, bundle, request, record in selected:
             error = None
             try:
                 work_recovery.validate_target(state, "build", request, bundle, include_released=released)
             except (WorkError, OSError, ValueError) as exc:
                 error = str(exc)
-            # Recovery owns the latest stopped turn. Older returned failures
-            # still contribute removals even after a replacement or repair.
+            attributed.append((order, bundle, request, record, error))
+        for index, (order, bundle, request, record, error) in enumerate(attributed):
+            # Recovery owns the latest stopped turn. A completed successor in
+            # the same proved lineage bounds an older hard stop's settlement.
+            if not record.get("completed_at") and lifecycle.liveness(record) == "stopped":
+                successors = [later for later in attributed[index + 1:] if not later[4]
+                              and _same_path(Path(later[2]["root"]), Path(request["root"]))
+                              and later[2].get("lineage_branch") == request.get("lineage_branch")
+                              and build_reach.moment(later[3].get("completed_at")) is not None
+                              and build_reach.moment(later[0]) is not None
+                              and build_reach.moment(order) is not None
+                              and build_reach.moment(order) < build_reach.moment(later[0]) < build_reach.moment(later[3]["completed_at"])
+                              and any(attempt.get("launched") is True for attempt in (later[3].get("attempts") or [])
+                                      if isinstance(attempt, dict))
+                              and not lifecycle.stopped(later[3])]
+                if successors and not error and not record.get("launch_unresolved") and record.get("cleanup_proven") is not False:
+                    successor = successors[0]
+                    record = {**record, "reach_resolved_at": successor[3]["completed_at"],
+                              "reach_resolved_by": successor[2].get("dispatch_id")}
             pending = (not record.get("completed_at") or record.get("cleanup_proven") is False
                        or bool(record.get("launch_unresolved"))
                        or index == len(selected) - 1 and lifecycle.stopped(record))
+            if record.get("reach_resolved_at"):
+                pending = False
             turns.append((order, bundle, request, record, error, pending))
         sessions = [marker for marker in state.issue_markers if marker.name == "builder-session"]
-        if not selected and sessions and (rows or state.pr):
-            observed = sessions[-1]
+        for observed in sessions if rows or state.pr else []:
+            matched = False
+            for _order, _bundle, request, record, error in attributed:
+                requested = request.get("requested") or {}
+                vendor = requested.get("vendor") if isinstance(requested, dict) else None
+                native = [attempt.get("observed", {}).get("session_id") for attempt in (record.get("attempts") or [])
+                          if isinstance(attempt, dict) and attempt.get("launched") is True
+                          and isinstance(attempt.get("observed"), dict)]
+                identity = record.get("session_identity")
+                if isinstance(identity, dict):
+                    native.append(identity.get("session_id"))
+                if (not error and build_reach.moment(record.get("completed_at")) is not None
+                        and build_reach.moment(observed.timestamp) is not None
+                        and build_reach.moment(record["completed_at"]) <= build_reach.moment(observed.timestamp)
+                        and vendor in {"codex", "claude"} and vendor == record.get("actual_vendor")
+                        and observed.attributes.get("vendor", vendor) == vendor
+                        and any(isinstance(session, str) and session.casefold() == observed.attributes["session"].casefold()
+                                for session in native)):
+                    matched = True
+                    break
+            if matched:
+                continue
             reference = f"{observed.surface}:{observed.source_id or observed.attributes['session']}"
             turns.append((observed.timestamp or "unknown", reference,
                           {"stage": "build", "root": (lineage or {}).get("root")},
                           {"completed_at": observed.timestamp},
                           "observed builder has no retained attributed turn/range inventory", False))
+        turns.sort(key=lambda turn: (turn[0], turn[1]))
         if head is None and lineage and lineage.get("root"):
             # A returned pre-PR turn is measured locally; this does not invent
             # a lost turn endpoint. Opening the draft PR remains holder-owned.
