@@ -120,6 +120,26 @@ def seen(args):
     return json.loads((args.root / "seen-codex.json").read_bytes())
 
 
+@pytest.mark.parametrize("resume", [None, "0199a213-81c0-7800-8aa1-bbab2a035a53"])
+def test_artifact_codex_permissions_select_only_copy_without_broad_temp_roots(job, resume):
+    args, _ = job
+    args.stage, args.resume = "artifact", resume
+    args.model, args.effort = implementer.PROFILES["artifact_author"]["codex"]
+    command = implementer.build_command(args, ["codex"], args.output)
+    assert command[command.index("--cd") + 1] == str(args.root.resolve())
+    assert "--add-dir" not in command
+    assert "--approve-for-me" in command
+    assert 'sandbox_mode="workspace-write"' in command
+    assert "sandbox_workspace_write.writable_roots=[]" in command
+    assert "sandbox_workspace_write.exclude_slash_tmp=true" in command
+    assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in command
+    if resume:
+        assert command[-3:] == ["resume", resume, "-"]
+    args.stage = "build"
+    builder = implementer.build_command(args, ["codex"], args.output)
+    assert not any(value.startswith("sandbox_") for value in builder)
+
+
 @pytest.mark.parametrize("limit", [5, 10])
 def test_caller_limit_with_no_launch_window_starts_no_implementer(job, monkeypatch, limit):
     args, _ = job

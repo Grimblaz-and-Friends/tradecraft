@@ -65,6 +65,17 @@ CONFIG = work.WorkConfig(
 )
 
 
+@pytest.fixture(autouse=True)
+def remove_fixture_artifact_copies(tmp_path):
+    yield
+    # Mock launchers deliberately leave no accepted bundle. Their retained
+    # copies belong to this fixture, whose evidence is about to be discarded.
+    for record_path in tmp_path.rglob("*.artifact-copy.json"):
+        copy = json.loads(record_path.read_bytes())["artifact_copy"]
+        if Path(copy["root"]).exists():
+            assert work.artifact_tree.dispose(copy)["state"] == "removed"
+
+
 def git(root, *arguments, check=True):
     return subprocess.run(
         ["git", "-C", str(root), *arguments], stdin=subprocess.DEVNULL,
@@ -4005,7 +4016,7 @@ def dispatch_bundle(record_root, *, work_value="example/product#12", stage="buil
                     name="result.md", producer_version=None,
                     request_schema=2, run_schema=2, outcome="success"):
     if producer_version is None:
-        producer_version = work.records.producer_version()
+        producer_version = "0.185.0" if stage == "artifact" else work.records.producer_version()
     bundle = record_root / stage
     bundle.mkdir(parents=True, exist_ok=True)
     request = bundle / f"{name}.request.json"
@@ -4335,6 +4346,13 @@ def test_native_seats_require_proven_launcher_producer(tmp_path, monkeypatch, st
     error = "no implementation bundle proves the producer vendor"
     if producer_kind == "native":
         output = native_bundle(fixture.record_root, monkeypatch, stage=producer_stage, vendor="codex", name="native-producer")
+        if producer_stage == "artifact":
+            # This fixture describes a pre-isolation native author, without
+            # entrance-owned copy provenance. Keep the vendor proof at issue.
+            request_path = work.records.sidecar(output, ".request.json")
+            request = json.loads(request_path.read_bytes())
+            request["producer_version"] = "0.185.0"
+            request_path.write_bytes(work.records.json_bytes(request))
         path = work.records.sidecar(output, ".run.json")
         run = json.loads(path.read_bytes())
         run["revision_after"] = SHA
@@ -5977,7 +5995,7 @@ def test_incomplete_handover_keeps_its_replacement_session(
         attempt_request.parent.mkdir(parents=True, exist_ok=True)
         attempt_request.write_bytes(json.dumps({
             "schema_version": 2, "work": "example/product#12", "stage": stage,
-            "producer_version": work.records.producer_version(),
+            "producer_version": "0.185.0" if stage == "artifact" else work.records.producer_version(),
             "dispatch_id": "handover-attempt", "root": str(root),
             "requested": {"vendor": "claude"},
             "handover": {
@@ -7669,7 +7687,22 @@ def test_failed_initial_publication_is_retried_and_verified_before_launch(
     assert len(launches) == 1
 
 
-def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
+def test_artifact_resume_keeps_pull_request_identity_after_copy_selection(tmp_path, monkeypatch):
+    holder = repository(tmp_path, "holder")
+    fixture = state(AFFIRMED, ARTIFACT, pr=True)
+    fixture.record_root = tmp_path / "dispatches"
+    dispatch_bundle(fixture.record_root, stage="artifact")
+    request_path = fixture.record_root / "artifact/result.md.request.json"
+    request = json.loads(request_path.read_bytes())
+    request["lineage_pull_request"] = fixture.pr["number"] + 1
+    request_path.write_bytes(work.records.json_bytes(request))
+    monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("changed PR launched an author"))
+    monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a, **_k: [])
+    with pytest.raises(work.WorkError, match="different implementing pull request"):
+        work.execute_stage(fixture, work.Decision("artifact", True, "resume", "fixture"), holder, None, "holder")
+
+
+def test_post_build_stages_keep_registered_root_while_artifact_uses_holder_copy(
         tmp_path, monkeypatch):
     monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "producer bundle"))
     home = tmp_path / "home"
@@ -7723,7 +7756,19 @@ def test_every_post_build_dispatch_and_judging_stage_uses_registered_root(
         holder, None, "holder-session",
      floor_command="python fixture-check.py") == 0
 
-    implementer_launches = launches[:4]
+    artifact_command, artifact_prompt = launches[0]
+    artifact_root = Path(artifact_command[artifact_command.index("--root") + 1])
+    artifact_output = Path(artifact_command[artifact_command.index("--output") + 1])
+    copy = work.artifact_tree._read(str(artifact_output) + ".artifact-copy.json")["artifact_copy"]
+    try:
+        assert artifact_root not in {holder, implementation}
+        assert not (artifact_root / "sentinel.txt").exists()
+        assert copy["holder_root"] == str(holder)
+        assert copy["source_commit"] == git(holder, "rev-parse", "HEAD").stdout.strip().decode()
+        assert branch.encode() not in artifact_prompt
+    finally:
+        assert work.artifact_tree.dispose(copy)["state"] == "removed"
+    implementer_launches = launches[1:4]
     assert len(launches) == 5
     assert all(
         Path(command[command.index("--root") + 1]) == implementation

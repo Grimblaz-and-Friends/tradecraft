@@ -193,6 +193,7 @@ def test_artifact_stays_in_affirmed_term(stopped_build):
     fixture.issue_comments[0]["body"] = AFFIRMED
     fixture.issue_comments[0]["created_at"] = "2026-10-03T09:00:00Z"
     request["stage"] = "artifact"
+    request["producer_version"] = "0.185.0"
     request["root"] = str(fixture.holder_root)
     request["lineage_branch"] = None
     save()
