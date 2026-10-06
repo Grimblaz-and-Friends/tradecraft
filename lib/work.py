@@ -5142,7 +5142,9 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
                     instalment=state.instalment) if copy_source else None)
         except artifact_tree.ArtifactTreeError as exc:
             raise WorkError(str(exc)) from exc
-        if copy and not artifact_tree.accepted(copy_source.run):
+        recovery = (artifact_tree.retained_recovery(copy)
+                    if copy and not artifact_tree.accepted(copy_source.run) else None)
+        if copy and not artifact_tree.accepted(copy_source.run) and recovery is None:
             plan["artifact_copy"] = {**copy, "selection": "retained", "verified": False}
         else:
             holder = root or state.holder_root
@@ -5156,6 +5158,9 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
             plan["artifact_copy"] = {"selection": "planned", "root": None,
                 "holder_root": str(holder) if holder else None, "source_commit": captured,
                 "committed_only": True, "remotes": None, "verified": False}
+        plan["artifact_copy"].update(lfs_mode="pointers", lfs_pointer_count=None)
+        if recovery:
+            plan["artifact_copy_recovery"] = recovery
         plan["permission_boundary"] = (
             "workspace-write with automatic approval review; copy is the recipient root"
             if vendor == "codex" else "Claude auto permission mode; copy is the recipient root; no OS write sandbox")
@@ -6642,7 +6647,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     metadata["artifact_copy"] = copy
                     common.extend(("--output", str(output)))
                     launch_plan["artifact_copy"] = {**copy, "verified": True,
-                        "selection": copy_record["selection"]}
+                        "selection": copy_record["selection"], "lfs_mode": "pointers",
+                        "lfs_pointer_count": copy_record["lfs_pointer_count"]}
+                    if copy_record.get("recovery"):
+                        _emit_report({"artifact_copy_recovery": copy_record["recovery"]}, state, flush=True)
                     if copy_record["legacy_recovery"]:
                         _emit_report({"artifact_legacy_recovery": {
                             "bundle": resume_source.path, "loose_files_imported": False}}, state, flush=True)
@@ -6721,6 +6729,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         f"{copy['holder_root']} at {copy['source_commit']}; remotes: []. "
                         "Uncommitted holder files are not imported. Failed turns keep this copy; "
                         "accepted returns dispose of it. "
+                        f"LFS content remains as {copy_record['lfs_pointer_count']} tracked pointer paths. "
+                        + (copy_record["recovery"]["message"] + " " if copy_record.get("recovery") else "")
                         + ("Codex uses workspace-write with automatic approval review.\n" if selected_vendor == "codex"
                            else "Claude starts here with no OS write sandbox.\n")
                     ).encode("utf-8") if artifact_run else b"")

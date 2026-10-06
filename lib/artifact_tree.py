@@ -32,13 +32,18 @@ class ArtifactTreeError(RuntimeError):
     """Copy evidence cannot authorize an author or recursive disposal."""
 
 
+class CopyDamage(ArtifactTreeError):
+    """An attributed allocation lost readable Git state, without redirecting it."""
+
+
 def _binding(key):
     key = key.upper()
     return key in GIT_BINDINGS or key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
 
 
 def environment():
-    return {key: value for key, value in os.environ.items() if not _binding(key)}
+    return {**{key: value for key, value in os.environ.items() if not _binding(key)},
+            "GIT_LFS_SKIP_SMUDGE": "1", "GIT_NO_LAZY_FETCH": "1"}
 
 
 @contextmanager
@@ -120,15 +125,22 @@ def _protect(root, holder, forbidden):
         raise ArtifactTreeError(f"artifact allocation overlaps a holder or implementation tree: {root}")
 
 
-def validate_allocation(copy, *, forbidden=()):
+def _allocation_path(copy, *, forbidden=()):
     root = Path(copy["root"])
     parent = Path(copy["temporary_parent"])
     if (not root.is_absolute() or not parent.is_absolute() or root.parent != parent
             or root.name != "tradecraft-artifact-" + copy["allocation_id"]
             or parent.resolve() != parent or root.resolve() != root
-            or _linked(root) or not root.is_dir() or _identity(root) != copy["directory_identity"]):
+            or _linked(root)):
         raise ArtifactTreeError(f"artifact allocation is missing or substituted: {root}")
     _protect(root, copy["holder_root"], forbidden)
+    return root
+
+
+def validate_allocation(copy, *, forbidden=()):
+    root = _allocation_path(copy, forbidden=forbidden)
+    if not root.is_dir() or _identity(root) != copy["directory_identity"]:
+        raise ArtifactTreeError(f"artifact allocation is missing or substituted: {root}")
     return root
 
 
@@ -137,15 +149,14 @@ def _working_root(root):
         raise ArtifactTreeError(f"artifact copy has an external working tree: {root}")
 
 
-def prove(copy, *, fresh=False, forbidden=()):
+def _storage(copy, *, forbidden=()):
     root = validate_allocation(copy, forbidden=forbidden)
-    _working_root(root)
-    if _linked(root / ".git") or not (root / ".git").is_dir():
+    if _linked(root / ".git") or ((root / ".git").exists() and not (root / ".git").is_dir()):
         raise ArtifactTreeError(f"artifact copy has linked Git metadata: {root}")
-    for option in ("--absolute-git-dir", "--git-common-dir"):
-        directory = Path(git(root, "rev-parse", "--path-format=absolute", option)).resolve()
-        if directory != root / ".git":
-            raise ArtifactTreeError(f"artifact copy has external Git metadata: {directory}")
+    if not (root / ".git").exists():
+        raise CopyDamage(f"artifact copy lost its Git metadata: {root}")
+    if (root / ".git/commondir").exists():
+        raise ArtifactTreeError(f"artifact copy has external Git metadata: {root}")
     objects = root / ".git" / "objects"
     if (objects / "info" / "alternates").exists():
         raise ArtifactTreeError(f"artifact copy borrows objects: {root}")
@@ -156,6 +167,29 @@ def prove(copy, *, fresh=False, forbidden=()):
             lifecycle.current_deadline().remaining()
         if any(_linked(Path(directory) / name) for name in [*dirs, *files]):
             raise ArtifactTreeError(f"artifact copy has linked Git storage: {root}")
+    # Read configuration independently of HEAD, which a temp cleaner may erase.
+    try:
+        config = git(root, "config", "--file", str(root / ".git/config"), "--includes", "--list", "-z")
+    except ArtifactTreeError as exc:
+        if getattr(exc, "cleanup_proven", True) is False:
+            raise
+        raise CopyDamage(f"artifact copy lost readable Git configuration: {root}: {exc}") from exc
+    for entry in config.split("\0"):
+        key, _, value = entry.partition("\n")
+        if key.lower().startswith("remote."):
+            raise ArtifactTreeError(f"artifact copy has configured remotes: {root}")
+        if key.lower() == "core.worktree" and (root / value).resolve() != root:
+            raise ArtifactTreeError(f"artifact copy has an external working tree: {root}")
+    return root
+
+
+def prove(copy, *, fresh=False, forbidden=()):
+    root = _storage(copy, forbidden=forbidden)
+    _working_root(root)
+    for option in ("--absolute-git-dir", "--git-common-dir"):
+        directory = Path(git(root, "rev-parse", "--path-format=absolute", option)).resolve()
+        if directory != root / ".git":
+            raise ArtifactTreeError(f"artifact copy has external Git metadata: {directory}")
     if git(root, "remote"):
         raise ArtifactTreeError(f"artifact copy has configured remotes: {root}")
     if fresh:
@@ -164,6 +198,79 @@ def prove(copy, *, fresh=False, forbidden=()):
                 or git(root, "status", "--porcelain=v1", "--untracked-files=all")):
             raise ArtifactTreeError(f"artifact copy is not the clean captured commit: {root}")
     return root
+
+
+def retained_recovery(copy):
+    """Loss can replace files, never conflicting authority or redirected storage."""
+    root = _allocation_path(copy)
+    reason = "retained copy is missing"
+    if root.exists():
+        try:
+            _storage(copy)
+        except CopyDamage as exc:
+            reason = str(exc)
+        else:
+            try:
+                git(root, "fsck", "--no-reflogs", "--no-dangling", "HEAD")
+            except ArtifactTreeError as exc:
+                if getattr(exc, "cleanup_proven", True) is False:
+                    raise
+                reason = "retained HEAD is damaged: " + str(exc)
+            else:
+                prove(copy)
+                return None
+    return {"root": str(root), "reason": reason, "working_files_lost": True,
+            "message": "The earlier artifact copy is missing or damaged; its working files are lost "
+                       "from this resumed workspace and are not imported. Resume the same author "
+                       "session in a fresh copy of the holder's current commit."}
+
+
+def lfs_pointer_count(root):
+    count = 0
+    for name in git(root, "ls-files", "-z").split("\0"):
+        if lifecycle.current_deadline() is not None:
+            lifecycle.current_deadline().remaining()
+        path = root / name
+        if not name or _linked(path) or not path.is_file() or not _inside(path.resolve(), root):
+            continue
+        with path.open("rb") as stream:
+            data = stream.read(1025).replace(b"\r\n", b"\n")
+        if (len(data) <= 1024 and data.startswith(b"version https://git-lfs.github.com/spec/v1\n")
+                and re.search(rb"\noid sha256:[0-9a-f]{64}\nsize [0-9]+\n?$", data)):
+            count += 1
+    return count
+
+
+def _hydrate(holder, root, commit):
+    missing = git(root, "rev-list", "--objects", "--missing=print", commit)
+    if not any(line.startswith("?") for line in missing.splitlines()):
+        return
+    remotes = source_git(holder, "remote").splitlines()
+    failures = []
+    for remote in remotes:
+        config = source_git(holder, "config", "--get-regexp", r"^remote\..*\.(promisor|url)$")
+        values = dict(line.split(" ", 1) for line in config.splitlines())
+        if values.get(f"remote.{remote}.promisor", "").lower() != "true":
+            continue
+        url = values.get(f"remote.{remote}.url")
+        if not url:
+            continue
+        # A relative promisor URL is relative to the holder, not the new copy.
+        if ":" not in url and not Path(url).is_absolute():
+            url = str((holder / url).resolve())
+        try:
+            git(root, "fetch", "--refetch", "--no-filter", "--no-tags", "--no-write-fetch-head",
+                "--no-recurse-submodules", "--no-auto-maintenance", "--", url, commit)
+            remaining = git(root, "rev-list", "--objects", "--missing=print", commit)
+            if not any(line.startswith("?") for line in remaining.splitlines()):
+                return
+            failures.append(f"{remote}: captured commit still has missing blobs")
+        except ArtifactTreeError as exc:
+            if getattr(exc, "cleanup_proven", True) is False:
+                raise
+            failures.append(f"{remote}: {exc}")
+    raise ArtifactTreeError("cannot hydrate captured commit's missing blobs from holder promisor remote: "
+                            + ("; ".join(failures) or "no usable promisor remote"))
 
 
 def _read(path):
@@ -242,7 +349,7 @@ def validate_resume(request, run, bundle, **kwargs):
         record = _read(copy["lifecycle_record"])
         if record.get("state") not in {"running", "retained"}:
             raise ArtifactTreeError(f"failed author has no retained copy: {bundle}; copy {copy['root']}")
-        prove(copy)
+        retained_recovery(copy)
     return copy
 
 
@@ -322,7 +429,8 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
     if predecessor is not None:
         prior = validate_resume(predecessor.request, predecessor.run, predecessor.path,
                                 holder=holder, work=work, instalment=instalment)
-    reuse = prior is not None and not accepted(predecessor.run)
+    recovery = retained_recovery(prior) if prior is not None and not accepted(predecessor.run) else None
+    reuse = prior is not None and not accepted(predecessor.run) and recovery is None
     lifecycle_path = records.sidecar(output, ".artifact-copy.json")
     if lifecycle_path.exists() or lifecycle_path.is_symlink():
         raise ArtifactTreeError(f"artifact lifecycle already exists: {lifecycle_path}")
@@ -348,6 +456,8 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
               "predecessor_bundle": predecessor.path if predecessor else None, "state": "running",
               "selection": "retained" if reuse else "fresh",
               "legacy_recovery": predecessor is not None and prior is None}
+    if recovery:
+        record["recovery"] = recovery
     if prior and not reuse and Path(prior["root"]).exists():
         record["predecessor_residue"] = prior["root"]
     residues = []
@@ -363,14 +473,19 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
         _atomic(lifecycle_path, record)
         if not reuse:
             clone = ("clone", "--no-hardlinks", "--dissociate", "--no-checkout",
-                     "-c", "core.longpaths=true", "--", str(holder), copy["root"])
+                     "-c", "core.longpaths=true", "-c", "filter.lfs.process=",
+                     "-c", "filter.lfs.smudge=", "-c", "filter.lfs.clean=",
+                     "-c", "filter.lfs.required=false", "--", str(holder), copy["root"])
             source_git(holder, *clone)
+            _hydrate(holder, Path(copy["root"]), copy["source_commit"])
             for remote in git(Path(copy["root"]), "remote").splitlines():
                 git(Path(copy["root"]), "remote", "remove", remote)
             # Check the effective tree before checkout can write any files.
             _working_root(Path(copy["root"]))
             git(Path(copy["root"]), "checkout", "--detach", copy["source_commit"])
         prove(copy, fresh=not reuse, forbidden=forbidden)
+        record["lfs_pointer_count"] = lfs_pointer_count(Path(copy["root"]))
+        _atomic(lifecycle_path, record)
         yield copy, invoked, record
     except (subprocess.TimeoutExpired, OSError, ArtifactTreeError) as exc:
         if getattr(exc, "cleanup_proven", True) is False:

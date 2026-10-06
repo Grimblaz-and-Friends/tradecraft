@@ -36,6 +36,11 @@ def test_unlaunched_attempt_is_classified_by_launch_evidence_not_outcome(outcome
 
 @pytest.mark.parametrize("linked", [False, True])
 def test_source_probes_retry_dubious_ownership_with_only_scoped_trust(tmp_path, monkeypatch, linked):
+    # Runner-wide safe.directory=* otherwise defeats the ownership negative control.
+    config = tmp_path / "empty-global.config"
+    config.write_bytes(b"")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     holder = repository(tmp_path)
     if linked:
         target = tmp_path / "linked"
@@ -138,6 +143,65 @@ def test_failed_copy_keeps_draft_index_branches_and_changed_head(tmp_path):
         trees.prove(copy)  # Changed HEAD and dirty index remain lawful for resume.
     finally:
         assert trees.dispose(copy)["state"] == "removed"
+
+
+def test_lfs_checkout_keeps_pointers_without_a_smudge_runtime(tmp_path, monkeypatch):
+    holder = repository(tmp_path)
+    pointer = b"version https://git-lfs.github.com/spec/v1\noid sha256:" + b"0" * 64 + b"\nsize 123\n"
+    (holder / ".gitattributes").write_bytes(b"*.bin filter=lfs -text\n")
+    (holder / "asset.bin").write_bytes(pointer)
+    git(holder, "-c", "filter.lfs.clean=", "-c", "filter.lfs.required=false", "add", ".")
+    git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "LFS pointer")
+    config = tmp_path / "lfs-global.config"
+    config.write_text('[filter "lfs"]\n    smudge = missing-tradecraft-lfs-runtime\n'
+                      '    process =\n    required = true\n', encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    before = lifecycle.content_snapshot(holder)
+    with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
+                        holder_session_id="holder") as (copy, _invoked, record):
+        root = Path(copy["root"])
+        assert (root / "asset.bin").read_bytes() == pointer
+        assert record["lfs_pointer_count"] == 1
+        assert trees.git(root, "remote") == ""
+    assert lifecycle.content_snapshot(holder) == before
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_partial_clone_hydrates_missing_blobs_before_removing_remotes(tmp_path, available):
+    origin = repository(tmp_path)
+    (origin / "payload.bin").write_bytes(b"required captured blob\n")
+    git(origin, "add", "payload.bin")
+    git(origin, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "blob")
+    remote = tmp_path / "remote.git"
+    git(origin, "clone", "--bare", str(origin), str(remote))
+    git(remote, "config", "uploadpack.allowFilter", "true")
+    holder = tmp_path / "partial"
+    git(origin, "clone", "--filter=blob:none", "--no-checkout", remote.as_uri(), str(holder))
+    commit = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
+    missing = git(holder, "rev-list", "--objects", "--missing=print", "HEAD").stdout
+    assert b"?" in missing
+    if not available:
+        git(holder, "remote", "set-url", "origin", (tmp_path / "unavailable.git").as_uri())
+    before = git(holder, "rev-list", "--objects", "--missing=print", "HEAD").stdout
+    output = tmp_path / "bundle/result.md"
+    def create():
+        with trees.checkout(holder, output, work="fixture#1", instalment=None,
+                            holder_session_id="holder") as (copy, _invoked, _record):
+            root = Path(copy["root"])
+            assert copy["source_commit"] == commit
+            assert (root / "payload.bin").read_bytes().replace(b"\r\n", b"\n") == b"required captured blob\n"
+            assert trees.git(root, "remote") == ""
+            assert "?" not in trees.git(root, "rev-list", "--objects", "--missing=print", "HEAD")
+    if available:
+        create()
+    else:
+        with pytest.raises(trees.ArtifactTreeError, match="promisor|missing blobs"):
+            create()
+        assert not output.exists() and not output.with_suffix(".md.request.json").exists()
+        record = trees._read(output.with_suffix(".md.artifact-copy.json"))
+        assert record["state"] == "removed"
+    assert git(holder, "rev-list", "--objects", "--missing=print", "HEAD").stdout == before
 
 
 def test_retained_author_can_prune_original_commit_without_losing_its_git_state(tmp_path):

@@ -1,5 +1,7 @@
 """Public artifact entrance acceptance checks (A1, A3-A5)."""
+import base64
 import json
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
@@ -12,7 +14,7 @@ import artifact_tree as trees
 import dispatch_implementer as implementer
 import run_lifecycle as lifecycle
 import work
-from test_work import CONFIG, PRODUCER, git, policy_repository, registry_row, repository
+from test_work import CONFIG, POLICY_PATH, PRODUCER, git, policy_repository, registry_row, repository
 from test_dispatch_implementer import ARTIFACT_BRIEF, artifact_text, native_artifact_result
 
 SESSION = "0199a213-81c0-7800-8aa1-bbab2a035a53"
@@ -82,6 +84,118 @@ def bundles(store):
 def snapshot(root):
     return {"content": lifecycle.content_snapshot(root), "refs": git(root, "show-ref").stdout,
             "index": git(root, "ls-files", "--stage").stdout}
+
+
+def test_public_partial_clone_fetch_failure_names_cause_and_writes_no_author_bundle(
+        entrance, capsys):
+    origin, store, commands, setup = entrance
+    (origin / "payload.bin").write_bytes(b"captured blob remains missing\n")
+    git(origin, "add", "payload.bin")
+    git(origin, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "payload")
+    remote = store.parent / "promisor.git"
+    git(origin, "clone", "--bare", str(origin), str(remote))
+    git(remote, "config", "uploadpack.allowFilter", "true")
+    holder = store.parent / "partial-holder"
+    git(origin, "clone", "--filter=blob:none", "--no-checkout", remote.as_uri(), str(holder))
+    # Preflight reads policy files; leave the partial object database untouched.
+    for relative in (POLICY_PATH, ".tradecraft/work.json"):
+        path = holder / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((origin / relative).read_bytes())
+    assert b"?" in git(holder, "rev-list", "--objects", "--missing=print", "HEAD").stdout
+    git(holder, "remote", "set-url", "origin", (store.parent / "absent-promisor.git").as_uri())
+    args, _, _ = setup("codex", probe=True)
+    args.root = holder
+    with pytest.raises(work.WorkError, match="missing blobs.*promisor"):
+        work.run(args, transport=ArtifactTransport())
+    assert not commands and not bundles(store)
+    assert not list(store.rglob("*.request.json"))
+    records = list(store.rglob("*.artifact-copy.json"))
+    assert len(records) == 1 and trees._read(records[0])["state"] == "removed"
+    assert "artifact-copy:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_public_lfs_pointer_policy_and_count_are_reported(entrance, monkeypatch, capsys, vendor):
+    holder, store, commands, setup = entrance
+    pointer = b"version https://git-lfs.github.com/spec/v1\noid sha256:" + b"0" * 64 + b"\nsize 123\n"
+    (holder / ".gitattributes").write_bytes(b"*.bin filter=lfs -text\n")
+    (holder / "asset.bin").write_bytes(pointer)
+    git(holder, "-c", "filter.lfs.clean=", "-c", "filter.lfs.required=false", "add", ".")
+    git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "pointer")
+    config = store.parent / "lfs-global.config"
+    config.write_text('[filter "lfs"]\n    smudge = missing-tradecraft-lfs-runtime\n'
+                      '    process =\n    required = true\n', encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    original = work._recipient_run
+    def inspect(command, **kwargs):
+        root = Path(command[command.index("--root") + 1])
+        assert (root / "asset.bin").read_bytes() == pointer
+        assert trees.git(root, "remote") == ""
+        return original(command, **kwargs)
+    monkeypatch.setattr(work, "_recipient_run", inspect)
+    before = snapshot(holder)
+    args, capture, _ = setup(vendor, probe=True)
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    line = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("work: launch_settings "))
+    plan = json.loads(line.removeprefix("work: launch_settings "))
+    assert plan["artifact_copy"]["lfs_mode"] == "pointers"
+    assert plan["artifact_copy"]["lfs_pointer_count"] == 1
+    request = bundles(store)[-1][2]
+    assert trees._read(request["artifact_copy"]["lifecycle_record"])["lfs_pointer_count"] == 1
+    assert b"1 tracked pointer paths" in base64.b64decode(json.loads(capture.read_bytes())["stdin"])
+    assert snapshot(holder) == before
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("damage", ["missing", "tree", "blob", "head", "config"])
+def test_public_lost_copy_resumes_same_author_in_new_copy_and_reports_loss(
+        entrance, capsys, vendor, damage):
+    holder, store, commands, setup = entrance
+    args, _, _ = setup(vendor, custom=True, returned="/tmp/artifact.md")
+    assert work.run(args, transport=ArtifactTransport()) == 1
+    _, prior_path, prior, _ = bundles(store)[-1]
+    prior_bytes = Path(prior_path).read_bytes()
+    root = Path(prior["root"])
+    if damage == "missing":
+        assert trees.dispose(prior["artifact_copy"])["state"] == "removed"
+    elif damage == "head":
+        (root / ".git/HEAD").unlink()
+    elif damage == "config":
+        (root / ".git/config").unlink()
+    else:
+        object_id = git(root, "rev-parse", "HEAD^{tree}" if damage == "tree" else
+                        "HEAD:author-commit.txt").stdout.decode().strip()
+        target = root / ".git/objects" / object_id[:2] / object_id[2:]
+        assert target.resolve().is_relative_to(root.resolve())
+        target.chmod(stat.S_IWRITE | stat.S_IREAD)
+        target.unlink()
+    (holder / "holder-moved.txt").write_bytes(b"new holder commit\n")
+    git(holder, "add", "holder-moved.txt")
+    git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "holder moved")
+    head = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
+    before = snapshot(holder)
+    capsys.readouterr()
+    args, capture, dispatch = setup(vendor, custom=True, probe=True)
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    _, _, resumed, result = bundles(store)[-1]
+    seen = json.loads(capture.read_bytes())
+    assert resumed["requested"]["session_id"] == SESSION
+    assert resumed["predecessor_bundle"] == prior_path and resumed["root"] != str(root)
+    assert seen["draft_before"] is None and seen["git_before"]["head"] == head
+    assert resumed["artifact_copy"]["source_commit"] == head
+    prompt = base64.b64decode(seen["stdin"]).decode()
+    assert "earlier artifact copy" in prompt and "working files" in prompt and "lost" in prompt
+    assert Path(resumed["input"]).read_bytes() == dispatch.read_bytes()
+    report = capsys.readouterr().out.replace("\\\\", "\\")
+    assert "artifact_copy_recovery" in report and str(root) in report and "working_files_lost" in report
+    record = trees._read(resumed["artifact_copy"]["lifecycle_record"])
+    assert record["recovery"]["working_files_lost"] is True and record["recovery"]["root"] == str(root)
+    if damage != "missing":
+        assert str(root) in record["residues"] and root.exists()
+    assert result["outcome"] == "success" and snapshot(holder) == before
+    assert Path(prior_path).read_bytes() == prior_bytes
 
 
 def repair_state(holder, store):
@@ -442,7 +556,7 @@ def test_read_only_artifact_plan_creates_nothing_and_claims_only_planned_copy(en
     assert list(store.rglob("*")) == before
 
 
-@pytest.mark.parametrize("problem", ["missing", "swapped", "provenance", "remote", "session", "live", "newer-unproved"])
+@pytest.mark.parametrize("problem", ["swapped", "provenance", "remote", "session", "live", "newer-unproved"])
 def test_latest_failed_copy_refuses_unproved_resume_without_replacement(entrance, monkeypatch, problem):
     holder, store, commands, setup = entrance
     args, _, _ = setup("codex", returned="/tmp/artifact.md")
@@ -451,9 +565,7 @@ def test_latest_failed_copy_refuses_unproved_resume_without_replacement(entrance
     root = Path(request["root"])
     original_identity = trees._identity
     request_path = Path(str(bundle).removesuffix(".run.json") + ".request.json")
-    if problem == "missing":
-        assert trees.dispose(request["artifact_copy"])["state"] == "removed"
-    elif problem == "swapped":
+    if problem == "swapped":
         monkeypatch.setattr(trees, "_identity", lambda _root: {"device": 0, "inode": 0})
     elif problem == "provenance":
         request["artifact_copy"]["source_commit"] = "f" * 40
