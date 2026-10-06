@@ -277,7 +277,9 @@ def test_revised_settlement_requires_whole_artifact(route, revised):
 @pytest.mark.parametrize("oversized", [False, True])
 def test_legacy_whole_artifact_survives_without_reference_or_retrospective_bound(
         tmp_path, monkeypatch, route, oversized):
-    body = SOURCE_REVISED + ("padding " * 7501 if oversized else "")
+    body = SOURCE_REVISED + ("padding " * 30001 if oversized else "")
+    if oversized:
+        assert len(body.encode("utf-8")) > 240_000
     fixture = _source_fixture(route, reference=False, revised=body)
     monkeypatch.setattr(work.dispatch_implementer, "validate_artifact_return",
                         lambda *_: pytest.fail("retrospectively bounded a settlement"))
@@ -6957,7 +6959,7 @@ def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
     monkeypatch.setattr(work, "_recipient_run", launch)
     session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
     if first_return == "oversized":
-        first_return = artifact_text() + "x" * (60_001 - len(artifact_text()))
+        first_return = artifact_text() + "x" * (240_001 - len(artifact_text().encode("utf-8")))
     scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, first_return, session)}).encode())
     assert work.run(args, transport=ArtifactTransport()) == 1
     failed_path = next(store.rglob("*.run.json"))
@@ -6973,9 +6975,10 @@ def test_public_artifact_repeat_resumes_failed_author_in_a_new_bundle(
         assert any("latest artifact dispatch has a failed return" in claim["reason"] for claim in invalid)
     diagnostic = capsys.readouterr().err
     assert str(failed_path) in diagnostic and session in diagnostic
-    if len(first_return) > 60_000:
-        assert "60,001" in diagnostic and "60,000" in diagnostic
-        assert failed["result"]["return_validation"]["observed_characters"] == 60_001
+    if len(first_return.encode("utf-8")) > 240_000:
+        assert "240,001 UTF-8 bytes" in diagnostic and "240,000 UTF-8 bytes" in diagnostic
+        assert failed["result"]["return_validation"]["observed_bytes"] == 240_001
+        assert failed["result"]["return_validation"]["maximum_bytes"] == 240_000
     if first_return:
         failed_source = Path(failed["result"]["source_output"])
         assert failed_source.read_bytes() == first_return.encode("utf-8")

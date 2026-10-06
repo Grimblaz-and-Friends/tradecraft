@@ -14,7 +14,7 @@ Post the whole draft return in one issue comment with `status=draft`. When it se
 
 **The artifact opens with the affirmed implementation brief verbatim and reads only the implementation approach, file layout, tooling, work order, and other decisions the session owns.** It neither supplies nor revises a reader cell.
 
-Every artifact return, including a revision, is at most 60,000 characters including its quoted affirmed brief. Condense prose while retaining every decision and criterion, because the cold seat must receive the whole artifact from one issue comment.
+Every artifact return, including a revision, is at most 240,000 UTF-8 bytes including its quoted affirmed brief. The count covers the whole final message encoded as UTF-8, preserving its whitespace and line endings. Condense prose while retaining every decision and criterion, because the cold seat must receive the whole artifact from one issue comment. The bound leaves room below GitHub's comment limit for the holder's marker and settlement record.
 
 Where the change needs instalments, write one artifact for each instalment and write the next only after the previous instalment's pull request has merged. A new draft reopens the term's artifact phase, so posting the next while the previous pull request is open would displace the artifact its repairs require.
 

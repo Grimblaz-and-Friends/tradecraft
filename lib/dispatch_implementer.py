@@ -153,10 +153,11 @@ def _thread_id(events: list[dict[str, object]], stderr: bytes) -> tuple[str | No
 
 
 ARTIFACT_BODY_WORDS = 8
-ARTIFACT_RETURN_MAX_CHARACTERS = 60_000
+ARTIFACT_RETURN_MAX_BYTES = 240_000
 ARTIFACT_RETURN_INSTRUCTION = (
-    f"Return the whole artifact in at most {ARTIFACT_RETURN_MAX_CHARACTERS:,} characters, "
-    "including the quoted affirmed brief and all artifact text. Preserve every decision and "
+    f"Return the whole artifact in at most {ARTIFACT_RETURN_MAX_BYTES:,} UTF-8 bytes, "
+    "including the quoted affirmed brief and all artifact text. The bound counts the whole "
+    "final message encoded as UTF-8, including whitespace and line endings. Preserve every decision and "
     "acceptance criterion when condensing. If this turn resumes an oversized return, condense "
     "it to the bound and return the whole revised artifact."
 )
@@ -223,11 +224,11 @@ def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
 
 def validate_artifact_return(expected: str, returned: str) -> dict[str, object]:
     """Bound the native final message before comparing its brief and following prose."""
-    count = len(returned)
-    if count > ARTIFACT_RETURN_MAX_CHARACTERS:
+    count = len(returned.encode("utf-8"))
+    if count > ARTIFACT_RETURN_MAX_BYTES:
         reason = (
-            f"artifact return has {count:,} characters; maximum is "
-            f"{ARTIFACT_RETURN_MAX_CHARACTERS:,} characters"
+            f"artifact return has {count:,} UTF-8 bytes; maximum is "
+            f"{ARTIFACT_RETURN_MAX_BYTES:,} UTF-8 bytes"
         )
     elif not artifact_opening_carries_brief(expected, returned):
         reason = (ARTIFACT_RETURN_REQUIREMENT if returned.strip() else
@@ -236,8 +237,8 @@ def validate_artifact_return(expected: str, returned: str) -> dict[str, object]:
         reason = ""
     return {
         "status": "fail" if reason else "pass", "reason": reason,
-        "maximum_characters": ARTIFACT_RETURN_MAX_CHARACTERS,
-        "observed_characters": count,
+        "maximum_bytes": ARTIFACT_RETURN_MAX_BYTES,
+        "observed_bytes": count,
     }
 
 
