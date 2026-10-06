@@ -167,6 +167,46 @@ def test_C2_clean_merge_excludes_independent_parent_shrink(repo):
     assert {item["path"] for item in measure(repo, before, revision(repo))} == {"doc"}
 
 
+@pytest.mark.parametrize("authored", [False, True])
+@pytest.mark.parametrize("base_advanced", [False, True])
+def test_C2_fast_forward_base_removals_are_not_builder_reach(repo, authored, base_advanced):
+    before = commit(repo, {"base-shrink": "a\nb\nc\n", "base-deleted": "a\nb\n",
+                           "own": "a\nb\nc\n"})
+    git(repo, "checkout", "-b", "base")
+    base = commit(repo, {"base-shrink": "a\n", "base-deleted": None})
+    git(repo, "checkout", "topic")
+    git(repo, "merge", "--ff-only", "base")
+    after = commit(repo, {"own": "a\n"}) if authored else base
+    pinned = base
+    if base_advanced:
+        git(repo, "checkout", "base")
+        base = commit(repo, {"later-base": "incoming\n"})
+        git(repo, "checkout", "topic")
+    report = evaluate(repo, [turn(repo, before, after)], base=base)
+    entry, = report["turns"]
+    assert [item["path"] for item in entry["items"]] == (["own"] if authored else []), report
+    assert entry["uncertainty"] is None
+    if authored:
+        item, = entry["items"]
+        assert (item["added"], item["removed"]) == (0, 2)
+        assert item["contributions"] == [{"basis": "non-merge", "before": pinned, "after": after}]
+        assert measure(repo, before, after, base=pinned) == entry["items"]
+        reading = reader(after, turns=[{"dispatch_id": "build-1", "items": account(entry["items"])}])
+        assert evaluate(repo, [turn(repo, before, after)], [reading], base=base)["state"] == "clear"
+    else:
+        assert report["state"] == "clear"
+        assert measure(repo, before, after, base=pinned) == []
+
+
+def test_C2_base_exclusion_does_not_relax_first_parent_range(repo):
+    initial, branch, base, merged = merge_fixture(repo)
+    with pytest.raises(reach.ReachError, match="first-parent"):
+        measure(repo, base, merged, base=base)
+    # The incoming parent is excluded, but the branch's resolution survives.
+    assert measure(repo, branch, merged, base=base) == measure(repo, branch, merged)
+    assert {item["path"] for item in measure(repo, initial, merged, base=base)} == {"doc.md"}
+
+
 def test_C2_edits_before_and_after_merge_accumulate_without_base_shrink(repo):
     initial = commit(repo, {"doc.md": DOC, "own": "a\nb\nc\nd\n", "incoming": "a\nb\nc\n"})
     git(repo, "checkout", "-b", "base")

@@ -296,14 +296,25 @@ def _aggregate(items, conservative=False, *, include_all=False):
             item["removed"] is not None and item["removed"] > item["added"])]
 
 
-def measure(git, before, after, *, conservative=False, observations=None):
-    """Partition first-parent history; never measure a merge against one parent."""
+def measure(git, before, after, *, base=None, conservative=False, observations=None):
+    """Measure first-parent authored stretches, excluding commits carried from base."""
     history = git.path(before, after)
+    authored = None
+    if base is not None:
+        base = git.commit(base)
+        # Prove the complete turn's first-parent path before excluding base
+        # history. A fast-forward imports base commits just as a merge does.
+        authored = set(git.read("rev-list", "--first-parent", after, "^" + before,
+                                "^" + base).decode("ascii").splitlines())
     items = []
     start = end = before
     for fields in history:
         revision, *parents = fields
-        if len(parents) > 1:
+        if authored is not None and revision not in authored:
+            if start != end:
+                items.extend(_ordinary(git, start, end))
+            start = end = revision
+        elif len(parents) > 1:
             if start != end:
                 items.extend(_ordinary(git, start, end))
             items.extend(_merge(git, revision, parents))
@@ -436,7 +447,9 @@ def _evaluate(turns, readings, *, root, head, pr, run, lineage=None, instalment=
                 raise ReachError(str(error))
             git = Git(root, run)
             observations = []
-            entry["items"] = measure(git, entry["before"], entry["after"], observations=observations)
+            entry["items"] = measure(git, entry["before"], entry["after"],
+                                     base=(pr.get("base") or {}).get("sha") if pr else None,
+                                     observations=observations)
             entry["binary_modifications"] = [item for item in observations if item["binary"] and not item["deleted"]]
             if head and not git.ancestor(entry["after"], head):
                 raise ReachError("unexpected ancestry: returned head was rebased/amended away from current head")

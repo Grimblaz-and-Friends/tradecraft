@@ -412,6 +412,54 @@ def test_holder_catch_up_lands_checked_merge_without_launch(registered, version,
     assert git(implementation, "rev-parse", "HEAD") == head
 
 
+@pytest.mark.parametrize("instalment", [None, "part-a"])
+def test_C3_catch_up_recollects_holder_context_and_accepts_reach_reading(
+        registered, tmp_path, monkeypatch, capsys, instalment):
+    root, implementation, branch, remote, transport, state = registered
+    before = commit(implementation, "src/own", "a\nb\nc\n")
+    after = commit(implementation, "src/own", "a\n")
+    git(implementation, "push")
+    commit(root, "src/other", "incoming\n")
+    git(root, "push", "origin", "main")
+    state.pr = transport.get("repos/example/product/pulls/7")
+    state.record_root = tmp_path / "records"
+    state.record_root.mkdir()
+    state.instalment = instalment
+    registry = work.read_registry()
+    registry["worktrees"][0]["instalment"] = instalment
+    work.write_registry(registry)
+    request = {"schema_version": 2, "work": "example/product#12", "stage": "build",
+               "dispatch_id": "build-1", "lineage_branch": branch, "instalment": instalment,
+               "root": str(implementation), "revision_before": before,
+               "launched_at": "2026-10-06T10:00:00Z"}
+    record = {"schema_version": 2, "dispatch_id": "build-1", "revision_after": after,
+              "completed_at": "2026-10-06T11:00:00Z", "attempts": [{"launched": True}]}
+    for suffix, value in [("request", request), ("run", record)]:
+        (state.record_root / f"build.{suffix}.json").write_bytes(json.dumps(value).encode("utf-8"))
+    account = {"schema_version": 1, "turns": [{"dispatch_id": "build-1", "items": [
+        {"path": "src/own", "disposition": "row-or-criterion", "requirement": "Row 1",
+         "basis": "The holder read the required removal."}]}]}
+    state.issue_comments = [{"id": 1, "user": {"login": "holder-fixture"},
+        "created_at": "2026-10-06T12:00:00Z", "body":
+        f"<!-- tradecraft:reach-reading:v1 head={after} -->\n\n```json\n{json.dumps(account)}\n```\n"}]
+    state.config = work.WorkConfig(marker_producers=frozenset({"holder-fixture"}))
+    original = work.read_state
+    def fresh_state(*args):
+        fresh = original(*args)
+        fresh.issue_comments, fresh.config = state.issue_comments, state.config
+        return fresh
+    monkeypatch.setattr(work, "read_state", fresh_state)
+    assert work._execute_catch_up(transport, state, root, instalment, "holder-id", RULES) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "holder-owned"
+    reach = report["next"]["reach"]
+    assert reach["state"] == "clear", reach
+    assert reach["instalment"] == instalment
+    entry, = reach["turns"]
+    assert entry["reading_source"] and entry["uncertainty"] is None
+    assert [item["path"] for item in entry["items"]] == ["src/own"]
+
+
 @pytest.mark.parametrize("collision", ["none", "clean", "conflict"])
 def test_catch_up_adjusts_only_base_changed_version_and_carries_use(registered, collision, capsys):
     root, implementation, branch, remote, transport, state = registered

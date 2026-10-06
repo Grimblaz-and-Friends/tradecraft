@@ -6021,6 +6021,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
                 str((state.raw_output or {}).get("policy") or "selected change-proof policy"),
             )
             fresh.record_root = state.record_root
+            fresh.holder_root, fresh.instalment = state.holder_root or holder, state.instalment
             prepare_use_evidence(fresh, transport, rules)
             report["use_application"] = fresh.use_application
             report["next"] = decide(fresh, rules).as_dict()
