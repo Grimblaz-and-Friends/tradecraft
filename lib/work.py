@@ -2905,117 +2905,91 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True), flush=flush)
 
 
+def _reach_readings(state: WorkState) -> list[Marker]:
+    # Reach has an intrinsic issue-comment contract, independent of bundle and
+    # artifact validation. It must remain readable when another evaluator fails.
+    return [marker for marker in _state_markers(state) if marker.name == "reach-reading"
+            and marker.author.lower() in state.config.marker_producers
+            and marker.surface == "issue-comment"
+            and _attribute_error(marker) is None and _marker_value_error(marker) is None]
+
+
 def _evaluate_reach(state: WorkState) -> None:
-    """Target attribution admits failed turns; term delivery remains independent."""
+    """PR identity selects reach; registrations continue to own execution only."""
     head = None
     lineage = None
-    turns = []
+    pr = state.pr or state.merged_pr
+    readings = []
     try:
-        head = _head_sha(state)
+        head = (pr.get("head") or {}).get("sha") if pr else None
+        readings = _reach_readings(state)
         if state.validated_markers is None:
             validate_marker_claims(state)
-        rows = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
-        if state.holder_root:
-            rows = [row for row in rows if _same_path(Path(str(row.get("holder_root") or "")), state.holder_root)]
-        if len(rows) > 1:
-            raise WorkError("multiple active lineages need --instalment before reach settlement")
-        released = not rows and state.pr is not None
-        if released:
-            rows = [row for row in _change_rows(state.repo, state.issue_number, state.instalment, active_only=False)
-                    if row.get("branch") == (state.pr.get("head") or {}).get("ref")
-                    and (not state.holder_root or _same_path(Path(str(row.get("holder_root") or "")), state.holder_root))]
-        if len(rows) > 1:
-            raise WorkError("ambiguous released lineage; resolve implementation identity before reach settlement")
-        if rows:
-            lineage = {key: rows[0].get(key) for key in ("root", "branch", "instalment")}
-            if state.pr and lineage.get("branch") != (state.pr.get("head") or {}).get("ref"):
-                raise WorkError("selected implementation lineage does not match the PR branch; resolve identity before reach settlement")
-        selected = work_recovery.launches(state, "build", include_released=released, include_missing_stage=True)
-        attributed = []
-        for order, bundle, request, record in selected:
-            error = None
-            try:
-                work_recovery.validate_target(state, "build", request, bundle, include_released=released)
-            except (WorkError, OSError, ValueError) as exc:
-                error = str(exc)
-            attributed.append((order, bundle, request, record, error))
-        for index, (order, bundle, request, record, error) in enumerate(attributed):
-            # Recovery owns the latest unresolved turn and every live writer.
-            # A completed successor bounds older missing/dead/foreign-host
-            # evidence as historical reach, without rewriting its native bundle.
-            if (not record.get("completed_at") and lifecycle.liveness(record) != "active"
-                    and not record.get("launch_unresolved") and record.get("cleanup_proven") is not False):
-                successors = [later for later in attributed[index + 1:] if not later[4]
-                              and (error or (_same_path(Path(later[2]["root"]), Path(request["root"]))
-                                             and later[2].get("lineage_branch") == request.get("lineage_branch")))
-                              and build_reach.moment(later[3].get("completed_at")) is not None
-                              and build_reach.moment(later[0]) is not None
-                              and build_reach.moment(order) is not None
-                              and build_reach.moment(order) < build_reach.moment(later[0]) < build_reach.moment(later[3]["completed_at"])
-                              and any(attempt.get("launched") is True for attempt in (later[3].get("attempts") or [])
-                                      if isinstance(attempt, dict))
-                              and not lifecycle.stopped(later[3])]
-                if successors:
-                    successor = successors[0]
-                    record = {**record, "reach_resolved_at": successor[3]["completed_at"],
-                              "reach_resolved_by": successor[2].get("dispatch_id")}
-            pending = (not record.get("completed_at") or record.get("cleanup_proven") is False
-                       or bool(record.get("launch_unresolved"))
-                       or index == len(selected) - 1 and lifecycle.stopped(record))
-            if record.get("reach_resolved_at"):
-                pending = False
-            turns.append((order, bundle, request, record, error, pending))
-        sessions = [marker for marker in state.issue_markers if marker.name == "builder-session"]
-        # Marker validation is issue-wide. Proved sessions belonging to a
-        # sibling/released lineage must not become this PR's missing turn.
+        branch = (pr.get("head") or {}).get("ref") if pr else None
+        if pr and (not isinstance(branch, str) or not branch):
+            raise WorkError("implementing PR head branch is unavailable; restore PR identity and retry")
+        if not pr:
+            branches = {row.get("branch") for row in _change_rows(
+                state.repo, state.issue_number, state.instalment, active_only=True) if row.get("branch")}
+            if len(branches) == 1:
+                branch = branches.pop()
+                head = _git_text(["rev-parse", "--verify", "refs/heads/" + branch],
+                                 state.holder_root, "inspect pre-PR reach branch")
+            elif branches:
+                raise WorkError("registered pre-PR branch is ambiguous; open/select the implementing PR")
+        lineage = {"branch": branch, "instalment": state.instalment}
         inventory = lifecycle.launch_bundles(
             state.record_root or records.default_record_root(), f"{state.repo}#{state.issue_number}",
-            RESUME_SOURCE_STAGES["build"], include_missing_stage=True) if sessions else []
-        registrations = _change_rows(state.repo, state.issue_number, None, active_only=False) if sessions else []
-        selected_paths = {bundle for _order, bundle, _request, _record in selected}
-        for observed in sessions if rows or state.pr else []:
-            matched = any(not error and _reach_session_matches(observed, request, record)
-                          for _order, _bundle, request, record, error in attributed)
-            for _order, bundle, request, record in inventory if not matched else []:
-                if (bundle in selected_paths or record.get("recovery_error")
-                        or not _reach_session_matches(observed, request, record)):
-                    continue
-                root = request.get("root")
-                foreign = [row for row in registrations if isinstance(root, str) and root
-                           and _same_path(Path(root), Path(str(row.get("root") or "")))
-                           and row.get("branch") == request.get("lineage_branch")
-                           and ("instalment" not in request or request["instalment"] == row.get("instalment"))]
-                if (len(foreign) != 1 or request.get("schema_version") != records.SCHEMA_VERSION
-                        or record.get("schema_version") != records.SCHEMA_VERSION
-                        or (state.pr and request.get("lineage_pull_request") == state.pr.get("number")
-                            and request.get("lineage_branch") != (state.pr.get("head") or {}).get("ref"))):
-                    continue
-                # Retained registration/PR identity scopes a historical return;
-                # its released worktree need not still exist at today's path.
-                matched = True
-                break
-            if matched:
+            RESUME_SOURCE_STAGES["build"], include_missing_stage=True)
+        selected = []
+        for order, bundle, request, record in inventory:
+            named_branch = request.get("lineage_branch")
+            if branch and isinstance(named_branch, str) and named_branch and named_branch != branch:
+                continue
+            if state.instalment is not None and request.get("instalment") not in {None, state.instalment}:
+                continue
+            if not branch:
+                continue
+            error = None if named_branch == branch else "missing PR branch attribution"
+            if state.instalment is not None and request.get("instalment") is None:
+                error = "missing selected instalment attribution"
+            selected.append((order, bundle, request, record, error))
+        # Only the latest actual turn can remain pending for reach. Historical
+        # dead/incomplete evidence is measured or settled, never kept in recovery.
+        actual = [row for row in selected if not build_reach.never_launched(row[3])]
+        latest = actual[-1][1] if actual else None
+        turns = []
+        for order, bundle, request, record, error in selected:
+            pending = False
+            if bundle == latest:
+                pending = (bool(record.get("launch_unresolved")) or record.get("cleanup_proven") is False
+                           or lifecycle.liveness(record) == "active"
+                           or isinstance(record.get("recipient_process"), dict) and lifecycle.liveness(
+                               {"launcher_process": record["recipient_process"]}) == "active")
+            turns.append((order, bundle, request, record, error, pending))
+        for observed in [marker for marker in _state_markers(state) if marker.name == "builder-session"
+                         and marker.surface in {"issue", "issue-comment"}
+                         and _public_marker_valid(state, marker)]:
+            # A native bundle on any branch of this issue accounts for its own
+            # session. A truly unmatched authorized session remains uncertainty.
+            if any(_reach_session_matches(observed, request, record)
+                   for _order, _bundle, request, record in inventory):
+                continue
+            if not branch:
                 continue
             reference = f"{observed.surface}:{observed.source_id or observed.attributes['session']}"
-            turns.append((observed.timestamp or "unknown", reference,
-                          {"stage": "build", "root": (lineage or {}).get("root")},
+            turns.append((observed.timestamp or "unknown", reference, {"stage": "build"},
                           {"completed_at": observed.timestamp},
-                          "observed builder has no retained attributed turn/range inventory", False))
+                          "observed builder has no retained PR turn/range inventory", False))
         turns.sort(key=lambda turn: (turn[0], turn[1]))
-        if head is None and lineage and lineage.get("root"):
-            # A returned pre-PR turn is measured locally; this does not invent
-            # a lost turn endpoint. Opening the draft PR remains holder-owned.
-            head = _git_text(["rev-parse", "HEAD"], Path(lineage["root"]), "inspect reach current head")
         state.reach = build_reach.evaluate(
-            turns, [marker for marker in state.markers if marker.name == "reach-reading"],
-            head=head, pr=state.pr, run=_git, lineage=lineage, instalment=state.instalment)
+            turns, readings, root=state.holder_root, head=head, pr=pr, run=_git,
+            lineage=lineage, instalment=state.instalment)
     except Exception as exc:
-        # Reach is additive report evidence, including on an executor's error
-        # path. A malformed record or unexpected evaluator failure must never
-        # replace the entrance's original result with a traceback.
-        state.reach = {"schema_version": 1, "state": "unmeasurable", "current_head": head,
-                       "lineage": lineage, "instalment": state.instalment, "turns": [],
-                       "diagnostics": [{"reason": f"reach evaluation unproved: {type(exc).__name__}: {exc}"}]}
+        reason = f"reach evaluation unproved: {type(exc).__name__}: {exc}"
+        state.reach = build_reach.uncertainty(
+            reason, readings, root=state.holder_root, head=head, pr=pr, run=_git,
+            lineage=lineage, instalment=state.instalment)
 
 
 def _reach_session_matches(observed: Marker, request: dict, record: dict) -> bool:
@@ -3048,7 +3022,7 @@ def _reach_refusal(state: WorkState, stage: str) -> Decision | None:
         "reach-read", False, None, "reach-" + str(report.get("state")),
         f"Before {stage} at head {report.get('current_head')}, the holder owes reach-reading coverage "
         + json.dumps(owed or report.get("diagnostics"), ensure_ascii=True, sort_keys=True)
-        + ". Recover the true turn range or account for its computed PR superset; restore unavailable "
+        + ". Account for the computed current-head PR superset; restore unavailable "
         "objects/read capability and retry. Read the builder's returned should-also-go notes alongside "
         "the report, including flag-free turns. Existing live/stopped recovery remains separate.",
         status="holder-owned")

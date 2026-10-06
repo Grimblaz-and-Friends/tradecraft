@@ -93,11 +93,10 @@ def payload(body):
         raise ReachError("invalid reach reading JSON: " + str(exc)) from exc
     if (not isinstance(value, dict) or type(value.get("schema_version")) is not int
             or value["schema_version"] != 1 or "turns" not in value
-            or set(value) - {"schema_version", "turns", "recovered_ranges", "superset_settlements"}):
+            or set(value) - {"schema_version", "turns", "superset_settlements"}):
         raise ReachError("invalid reach reading schema")
     shapes = {
         "turns": ({"dispatch_id", "items"}, "dispatch_id"),
-        "recovered_ranges": ({"dispatch_id", "before", "after", "basis"}, "dispatch_id"),
         "superset_settlements": ({"turn_reference", "reason", "basis", "pull_request", "base",
                                   "merge_base", "head", "items"}, "turn_reference"),
     }
@@ -112,14 +111,7 @@ def payload(body):
             if entry[key] in seen:
                 raise ReachError("duplicate " + name + " entry")
             seen.add(entry[key])
-            if name != "recovered_ranges":
-                _items(entry["items"])
-            else:
-                if not _nonempty(entry["basis"]):
-                    raise ReachError("recovered range needs its contemporaneous evidence basis")
-                for field in ("before", "after"):
-                    if not isinstance(entry[field], str) or not SHA.fullmatch(entry[field]):
-                        raise ReachError("recovered range needs full endpoints")
+            _items(entry["items"])
             if name == "superset_settlements":
                 if (entry["basis"] != "pr-superset" or not _nonempty(entry["reason"])
                         or type(entry["pull_request"]) is not int or entry["pull_request"] <= 0
@@ -135,15 +127,11 @@ class Git:
     def __init__(self, root, run):
         self.root, self.run = Path(root), run
 
-    def read(self, *args, missing_ok=False):
+    def read(self, *args):
         try:
             result = self.run(["-c", "core.quotePath=true", *args], self.root)
         except (OSError, TimeoutError, subprocess.SubprocessError) as exc:
             raise ReachError("restore local Git read capability and retry: " + str(exc)) from exc
-        # Only quiet revision verification uses status 1 for an absent object.
-        # Fatal Git/read errors still name their evidence repair.
-        if missing_ok and result.returncode == 1:
-            return None
         if result.returncode:
             reason = result.stderr.decode("utf-8", errors="replace").strip()
             raise ReachError("restore required Git objects/read capability and retry: " + reason)
@@ -152,7 +140,11 @@ class Git:
     def commit(self, revision):
         if not isinstance(revision, str) or not SHA.fullmatch(revision):
             raise ReachError("missing or invalid full commit endpoint: " + str(revision))
-        resolved = self.read("rev-parse", "--verify", revision + "^{commit}").decode("ascii").strip()
+        try:
+            resolved = self.read("rev-parse", "--verify", revision + "^{commit}").decode("ascii").strip()
+        except ReachError as exc:
+            raise ReachError(f"commit object {revision} unavailable: fetch that revision into the holder checkout "
+                             f"or restore Git read capability and retry: {exc}") from exc
         if resolved.lower() != revision.lower():
             raise ReachError("incompatible commit endpoint: " + revision)
         return resolved
@@ -329,7 +321,7 @@ def measure(git, before, after, *, conservative=False, observations=None):
     return _aggregate(items, conservative)
 
 
-def superset(git, pr, *, bounds=None):
+def superset(git, pr, *, head=None):
     if not pr or type(pr.get("number")) is not int:
         raise ReachError("open the draft implementing PR through the holder's existing route before superset settlement")
     resolved = {}
@@ -339,20 +331,13 @@ def superset(git, pr, *, bounds=None):
             resolved[bound] = git.commit(value)
         except ReachError as exc:
             raise ReachError(f"PR #{pr['number']} requires {bound} object {value}: {exc}") from exc
-    current_base, current_head = resolved["base"], resolved["head"]
-    base, head = current_base, current_head
-    if bounds is not None:
-        if bounds["pull_request"] != pr["number"] or not git.ancestor(bounds["head"], current_head):
-            raise ReachError("stale superset PR/head; record a new current-head account")
-        # Base progress retains an earlier account; a replacement ancestry does not.
-        if not git.ancestor(bounds["base"], current_base):
-            raise ReachError("superset base ancestry changed; record a new current-head account")
-        base, head = git.commit(bounds["base"]), git.commit(bounds["head"])
+    base, current_head = resolved["base"], resolved["head"]
+    head = git.commit(head) if head is not None else current_head
+    if not git.ancestor(head, current_head):
+        raise ReachError("stale superset PR/head; record a new current-head account")
     common = git.read("merge-base", "--all", base, head).decode("ascii").splitlines()
     if len(common) != 1:
         raise ReachError("ambiguous PR merge base; resolve PR bounds before superset settlement")
-    if bounds is not None and common[0] != bounds["merge_base"]:
-        raise ReachError("superset merge-base bounds mismatch")
     # The PR merge base may be a merge's other parent. Unlike a true turn
     # range, this superset traverses every non-base authored contribution,
     # and measures each non-merge against its own parent before taking a union.
@@ -375,58 +360,12 @@ def diagnostic(bundle):
     return "bundle:" + hashlib.sha256(str(bundle).encode("utf-8")).hexdigest()
 
 
-def _known_commit(git, revision):
-    if not isinstance(revision, str) or not SHA.fullmatch(revision):
-        return None
-    resolved = git.read("rev-parse", "--verify", "--quiet", revision + "^{commit}", missing_ok=True)
-    if resolved is None:
-        return None
-    resolved = resolved.decode("ascii").strip()
-    return resolved if resolved.lower() == revision.lower() else None
-
-
-def _neighbors(entry, entries):
-    ordered = [other for other in entries if other["attribution_proved"]
-               and moment(other["order"]) is not None and other is not entry]
-    previous = [other for other in ordered if moment(other["order"]) < moment(entry["order"])]
-    following = [other for other in ordered if moment(other["order"]) > moment(entry["order"])]
-    return (max(previous, key=lambda other: moment(other["order"]), default=None),
-            min(following, key=lambda other: moment(other["order"]), default=None))
-
-
-def _recovered_range(git, entry, recovered, entries):
-    before, after = git.commit(recovered["before"]), git.commit(recovered["after"])
-    known = {bound: _known_commit(git, entry[bound]) for bound in ("before", "after")}
-    for bound, revision in known.items():
-        if revision is not None and revision != {"before": before, "after": after}[bound]:
-            raise ReachError("range recovery cannot replace valid recorded " + bound + " endpoint")
-    if (moment(entry["order"]) is None or moment(entry["returned"]) is None
-            or moment(entry["returned"]) <= moment(entry["order"])):
-        raise ReachError("range recovery needs proved launch/return ordering; use PR superset")
-    previous, following = _neighbors(entry, entries)
-    prior_end = _known_commit(git, previous["after"]) if previous else None
-    next_start = _known_commit(git, following["before"]) if following else None
-    if prior_end and not git.ancestor(prior_end, before):
-        raise ReachError("recovered before overlaps or precedes the previous builder turn")
-    if next_start and not git.ancestor(after, next_start):
-        raise ReachError("recovered after overlaps or follows the next builder turn")
-    if before == after and ((known["before"] or prior_end) != before
-                            or (known["after"] or next_start) != after):
-        raise ReachError("empty recovered range needs independently recorded start and end evidence; use PR superset")
-    return measure(git, before, after)
-
-
-def _superset_covers_turn(git, entry, entries, account_head, current_head):
-    # A current-head superset also settles replaced or unavailable old objects.
-    if account_head == current_head:
-        return
-    endpoint = _known_commit(git, entry["after"])
-    if endpoint is None:
-        # A subsequent attributed launch bounds a return whose endpoint was lost.
-        _previous, following = _neighbors(entry, entries)
-        endpoint = _known_commit(git, following["before"]) if following else None
-    if endpoint is None or not git.ancestor(endpoint, account_head):
-        raise ReachError("superset head does not cover this turn's return; record a current-head account")
+def never_launched(record):
+    attempts = record.get("attempts")
+    return bool(isinstance(attempts, list) and attempts
+                and all(isinstance(a, dict) and a.get("launched") is False for a in attempts)
+                and record.get("completed_at") and not record.get("launch_unresolved")
+                and not record.get("recovery_error"))
 
 
 def _coverage(items, expected, turns, entry, reading, git, current_head):
@@ -448,25 +387,38 @@ def _coverage(items, expected, turns, entry, reading, git, current_head):
             raise ReachError("restoration head is outside the selected current lineage")
 
 
-def evaluate(turns, readings, *, head, pr, run, lineage=None, instalment=None):
-    """Turns carry target errors separately from delivery-success checks."""
+def evaluate(turns, readings, *, root, head, pr, run, lineage=None, instalment=None):
+    """Measure PR-selected turns using only the holder's repository objects."""
+    return _evaluate(turns, readings, root=root, head=head, pr=pr, run=run,
+                     lineage=lineage, instalment=instalment)
+
+
+def uncertainty(reason, readings, *, root, head, pr, run, lineage=None, instalment=None):
+    """A failed inventory/evaluator is itself a named, settleable PR uncertainty."""
+    reference = "reach-evaluation:" + hashlib.sha256(reason.encode("utf-8")).hexdigest()
+    turn = ("unknown", reference, {}, {"recovery_error": reason}, reason, False)
+    return _evaluate([turn], readings, root=root, head=head, pr=pr, run=run,
+                     lineage=lineage, instalment=instalment)
+
+
+def _evaluate(turns, readings, *, root, head, pr, run, lineage=None, instalment=None):
     report = {"schema_version": 1, "state": "not-due", "current_head": head,
               "lineage": lineage, "instalment": instalment, "turns": [], "diagnostics": []}
     entries = report["turns"]
     orders = [turn[0] for turn in turns]
     for order, bundle, request, record, target_error, pending in turns:
-        attempts = record.get("attempts")
-        if (isinstance(attempts, list) and attempts
-                and all(isinstance(a, dict) and a.get("launched") is False for a in attempts)
-                and record.get("completed_at") and not record.get("launch_unresolved")
-                and not record.get("recovery_error")):
+        request = request if isinstance(request, dict) else {}
+        record = record if isinstance(record, dict) else {"recovery_error": "malformed run record"}
+        if never_launched(record):
             continue
         identity = request.get("dispatch_id")
+        identity = identity if _nonempty(identity) else None
         entry = {"dispatch_id": identity, "turn_reference": identity or diagnostic(bundle),
                  "stage": request.get("stage"), "bundle": bundle, "order": order,
                  "before": request.get("revision_before"), "after": record.get("revision_after"),
-                 "returned": record.get("completed_at") or record.get("reach_resolved_at"),
-                 "resolved_by": record.get("reach_resolved_by"), "pending": pending, "basis": "recorded-range",
+                 "returned": record.get("completed_at") or (order if not pending else None),
+                 "return_basis": "recorded-return" if record.get("completed_at") else "historical-launch",
+                 "pending": pending, "basis": "recorded-range",
                  "state": "pending" if pending else "unmeasurable", "items": [],
                  "binary_modifications": [], "attribution_proved": not target_error and request.get("stage") in {"build", "floor", "review-disposition"},
                  "uncertainty": None, "reading_source": None, "outstanding_paths": []}
@@ -474,35 +426,42 @@ def evaluate(turns, readings, *, head, pr, run, lineage=None, instalment=None):
         error = target_error or record.get("recovery_error")
         if not error and (orders.count(order) > 1 or moment(order) is None or order.startswith("9999-")):
             error = "ambiguous or unavailable turn ordering"
-        if not error and moment(entry["returned"]) is not None and moment(entry["returned"]) <= moment(order):
+        if not error and record.get("completed_at") and moment(entry["returned"]) is not None and moment(entry["returned"]) <= moment(order):
             error = "invalid launch/return ordering"
-        if not error and (not identity or not entry["returned"] or moment(entry["returned"]) is None
-                          or not isinstance(attempts, list) or not any(a.get("launched") is True for a in attempts if isinstance(a, dict))):
-            error = "incomplete records or missing dispatch/launch/return attribution"
+        if not error and record.get("completed_at") and moment(entry["returned"]) is None:
+            error = "invalid return timestamp"
+        if not error and not identity:
+            error = "missing dispatch attribution"
         try:
             if error:
                 raise ReachError(str(error))
-            git = Git(request["root"], run)
+            git = Git(root, run)
             observations = []
             entry["items"] = measure(git, entry["before"], entry["after"], observations=observations)
             entry["binary_modifications"] = [item for item in observations if item["binary"] and not item["deleted"]]
             if head and not git.ancestor(entry["after"], head):
                 raise ReachError("unexpected ancestry: returned head was rebased/amended away from current head")
             entry["state"] = "pending" if pending else "reading-required" if entry["items"] else "clear"
-        except (ReachError, OSError, ValueError, KeyError) as exc:
-            entry["uncertainty"] = str(exc)
-    # A missing recipient root may still settle through the selected PR's proved repository.
-    root = (lineage or {}).get("root") if isinstance(lineage, dict) else None
-    if root is None:
-        root = next((turn[2].get("root") for turn in turns if turn[2].get("root")), None)
+        except Exception as exc:
+            entry["uncertainty"] = f"{type(exc).__name__}: {exc}"
+            entry["items"] = []
+    # Missing historical evidence is one PR-level obligation. Every diagnostic
+    # names its own turn, but all use the same current-head conservative account.
+    fallback = None
+    fallback_error = None
+    if any(entry["uncertainty"] and not entry["pending"] for entry in entries):
+        try:
+            fallback = superset(Git(root, run), pr)
+            report["superset"] = fallback
+        except Exception as exc:
+            fallback_error = f"{type(exc).__name__}: {exc}"
+            report["superset_error"] = fallback_error
     for entry in entries:
         if entry["uncertainty"] and not entry["pending"]:
-            try:
-                if root is None:
-                    raise ReachError("restore the selected implementation repository attribution for PR superset reads")
-                entry["superset"] = superset(Git(root, run), pr)
-            except (ReachError, OSError, ValueError) as exc:
-                entry["superset_error"] = str(exc)
+            if fallback is not None:
+                entry["superset"] = fallback
+            else:
+                entry["superset_error"] = fallback_error
     for reading in readings:
         try:
             value = payload(reading.body)
@@ -512,33 +471,16 @@ def evaluate(turns, readings, *, head, pr, run, lineage=None, instalment=None):
             by_id = {entry["dispatch_id"]: entry for entry in entries if entry["dispatch_id"]}
             by_ref = {entry["turn_reference"]: entry for entry in entries}
             ordinary_ids = {item["dispatch_id"] for item in value["turns"]}
-            recovery_ids = {item["dispatch_id"] for item in value["recovered_ranges"]}
             fallback_ids = {item["turn_reference"] for item in value["superset_settlements"]}
-            if ordinary_ids - by_id.keys() or recovery_ids - by_id.keys() or fallback_ids - by_ref.keys():
+            if ordinary_ids - by_id.keys() or fallback_ids - by_ref.keys():
                 raise ReachError("extraneous or unknown reach turn reference")
-            if any(by_id[key]["turn_reference"] in fallback_ids for key in ordinary_ids | recovery_ids):
-                raise ReachError("duplicate ordinary/recovered and superset turn coverage")
+            if any(by_id[key]["turn_reference"] in fallback_ids for key in ordinary_ids):
+                raise ReachError("duplicate ordinary and superset turn coverage")
             changes = {}
-            for recovered in value["recovered_ranges"]:
-                entry = by_id[recovered["dispatch_id"]]
-                if not entry["uncertainty"] or entry["pending"]:
-                    raise ReachError("range recovery cannot replace a measurable range or live recovery")
-                original = next(turn for turn in turns if turn[2].get("dispatch_id") == entry["dispatch_id"])
-                if original[4] or "ordering" in entry["uncertainty"] or "attribution" in entry["uncertainty"]:
-                    raise ReachError("true-range recovery still needs proved lineage, ordering and attribution; use PR superset")
-                git = Git(original[2]["root"], run)
-                measured = _recovered_range(git, entry, recovered, entries)
-                if not git.ancestor(recovered["after"], head):
-                    raise ReachError("recovered head is outside current lineage")
-                changes[entry["turn_reference"]] = {**entry, "before": recovered["before"], "after": recovered["after"],
-                                                       "basis": "recovered-range", "recovery_basis": recovered["basis"],
-                                                       "items": measured}
-                if measured and entry["dispatch_id"] not in ordinary_ids:
-                    raise ReachError("recovered flags need complete ordinary turn coverage")
             for account in value["turns"]:
                 original = by_id[account["dispatch_id"]]
                 entry = changes.get(original["turn_reference"], original)
-                if entry["pending"] or entry["uncertainty"] and entry["basis"] != "recovered-range":
+                if entry["pending"] or entry["uncertainty"]:
                     raise ReachError("ordinary account cannot settle an unmeasurable or pending turn")
                 if not entry["items"]:
                     raise ReachError("extraneous flag-free ordinary turn account")
@@ -546,20 +488,49 @@ def evaluate(turns, readings, *, head, pr, run, lineage=None, instalment=None):
                     raise ReachError("reading head must be a covered flagged head or initial current-head account")
                 _coverage(account["items"], entry["items"], entries, entry, reading, Git(root, run), head)
                 changes[entry["turn_reference"]] = {**entry, "accepted_items": account["items"]}
+            if value["superset_settlements"]:
+                git = Git(root, run)
+                # Descendant progress retains an account only while it has no
+                # later returned uncertainty. There are no per-turn recovered
+                # ranges, neighboring bounds, or historical base snapshots.
+                if reading_head != head:
+                    posted = moment(reading.timestamp)
+                    for entry in entries:
+                        if not entry["uncertainty"] or entry["pending"]:
+                            continue
+                        returned = moment(entry["returned"])
+                        if returned is None or posted is None or returned >= posted:
+                            raise ReachError("later or undated unmeasurable turn needs a new current-head superset account")
+                    # The PR suffix must be explained by later measured turns.
+                    # This proves descendant progress without reconstructing any
+                    # uncertain turn or trusting an arbitrary old empty head.
+                    suffix = {row[0] for row in git.path(reading_head, head)}
+                    if any(entry["uncertainty"] and isinstance(entry["after"], str)
+                           and entry["after"].lower() in suffix for entry in entries):
+                        raise ReachError("unmeasurable return is after the superset head; record a current-head account")
+                    measured = set()
+                    for entry in entries:
+                        launched = moment(entry["order"])
+                        if (not entry["uncertainty"] and not entry["pending"]
+                                and launched is not None and posted is not None and launched > posted):
+                            measured.update(row[0] for row in git.path(entry["before"], entry["after"]))
+                    if suffix - measured:
+                        raise ReachError("PR progress after the superset head is not covered by later measured turns; record a current-head account")
+                accepted_fallback = superset(git, pr, head=reading_head)
             for account in value["superset_settlements"]:
                 entry = by_ref[account["turn_reference"]]
                 if not entry["uncertainty"] or entry["pending"]:
                     raise ReachError("superset settlement needs a returned unmeasurable turn")
                 if account["head"] != reading_head:
                     raise ReachError("superset head must match marker head")
-                _superset_covers_turn(Git(root, run), entry, entries, account["head"], head)
-                fallback = superset(Git(root, run), pr, bounds=account)
-                _coverage(account["items"], fallback["items"], entries, entry, reading, Git(root, run), head)
+                if any(account[key] != accepted_fallback[key] for key in ("pull_request", "base", "merge_base", "head")):
+                    raise ReachError("superset bounds must match the actual PR base, merge base and account head")
+                _coverage(account["items"], accepted_fallback["items"], entries, entry, reading, Git(root, run), head)
                 changes[entry["turn_reference"]] = {**entry, "basis": "pr-superset",
-                                                       "superset": fallback, "accepted_items": account["items"]}
+                                                       "superset": accepted_fallback, "accepted_items": account["items"]}
             for key, entry in changes.items():
-                if (moment(reading.timestamp) is None or moment(entry["returned"]) is None
-                        or moment(reading.timestamp) <= moment(entry["returned"])):
+                if (moment(reading.timestamp) is None or
+                        moment(entry["returned"]) is not None and moment(reading.timestamp) <= moment(entry["returned"])):
                     raise ReachError("reach reading must follow the builder return")
                 entry["state"] = "clear"
                 entry["reading_source"] = reading.as_dict()
@@ -567,7 +538,7 @@ def evaluate(turns, readings, *, head, pr, run, lineage=None, instalment=None):
             for index, entry in enumerate(entries):
                 if entry["turn_reference"] in changes:
                     entries[index] = changes[entry["turn_reference"]]
-        except (ReachError, KeyError, TypeError, ValueError, OSError) as exc:
+        except Exception as exc:
             report["diagnostics"].append({"source": reading.as_dict(), "reason": str(exc)})
     for entry in entries:
         entry["outstanding_paths"] = ([item["path"] for item in entry["items"]]
