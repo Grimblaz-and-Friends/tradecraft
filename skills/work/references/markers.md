@@ -34,9 +34,9 @@ A `cold-verdict` beside an artifact with `status=draft` is therefore a quotation
 
 ## `artifact`
 
-- **Exact form:** `<!-- tradecraft:artifact:v1 status=STATUS [route=ROUTE] -->`.
-- **Attributes and lawful values:** `status=draft|settled`; a settled artifact requires `route=would|cap|discharge|unobtainable`, while a draft carries no route.
-- **Producer, surface, moment:** the holder, in the issue comment carrying the artifact return, when the draft arrives and again when it takes a lawful settlement route.
+- **Exact form:** `<!-- tradecraft:artifact:v1 status=STATUS [route=ROUTE] [draft_comment=COMMENT_ID draft_sha256=SHA256] -->`.
+- **Attributes and lawful values:** `status=draft|settled`; a settled artifact requires `route=would|cap|discharge|unobtainable`, while a draft carries no route or draft reference. `draft_comment` and `draft_sha256` appear together: the former is a positive decimal issue-comment id, and the latter is a lowercase hexadecimal sha256.
+- **Producer, surface, moment:** the holder, in an issue comment, when the whole draft return arrives and when it takes a lawful settlement route.
 
 ```text
 <!-- tradecraft:artifact:v1 status=draft -->
@@ -53,9 +53,17 @@ A settled artifact follows the draft it settles and the verdicts supporting its 
 - `discharge` requires a qualifying `not-settleable` verdict for the latest draft.
 - `unobtainable` requires no qualifying verdict for the latest draft.
 
+A new settlement names its draft with `draft_comment` and `draft_sha256`. The digest is computed over the draft comment's whole body as GitHub returns it, with CRLF and CR line endings replaced by LF, then encoded as UTF-8 and hashed with sha256. The cold dispatch states its digest on that basis, so the holder copies it.
+
+On `would` and `unobtainable`, post the reference and the route's record without repeating the artifact. The entrance supplies the named draft's whole text and refuses its consumption if the comment is missing, is not the latest lawful draft in the term, or no longer matches the digest, because a changed draft is not the text that settlement names. Its original draft marker remains provenance; the settlement makes that text settled.
+
+On `discharge` and `cap`, post the whole revised artifact with its affirmed brief and name the draft it revises. The entrance supplies that revised text without resolving or checking the named draft, because the draft is not the builder's input.
+
+A settlement without a draft reference remains usable only when it carries a whole artifact recognized by the same affirmed-brief-and-body check as an artifact return. The entrance then supplies that settlement's own text. If it carries neither a reference nor a whole artifact, the refusal tells the holder to name the draft. This content check preserves correct settlements already posted while refusing a bare pointer or cold return without the quoted brief.
+
 An unsupported route does not settle the phase. A settled marker without a route is also invalid. In the current term its diagnostic tells a change in flight to re-post it once with the route the record supports; after a later affirmed brief supersedes that term, the diagnostic records the historical invalid claim and says no re-post is needed.
 
-That route-only re-post retains the earlier routeless settlement's place in the term when no affirmed brief, amendment, artifact draft or cold verdict intervenes. A holder reading may intervene: the old marker remains invalid and reported, the new marker supplies the route and source, and the earlier position decides whether that reading follows the settlement. The latest eligible routeless marker supplies the position when more than one exists. That inherited position is spent by the first routed settlement that uses it, so a later settlement takes its own position and requires a later holder reading.
+That route-only re-post retains the earlier routeless settlement's place in the term when no affirmed brief, amendment, artifact draft or cold verdict intervenes. A holder reading may intervene: the old marker remains invalid and reported, the new marker supplies the route, and the earlier position decides whether that reading follows the settlement. If the re-post names no draft and carries no whole artifact, it also retains the earlier routeless settlement's whole artifact when that text passes the same completeness check. The latest eligible routeless marker supplies the position when more than one exists. That inherited position is spent by the first routed settlement that uses it, so a later settlement takes its own position and requires a later holder reading.
 
 A holder reading counts only after the latest effective settlement. A newer draft reopens the phase; a later supported settlement closes it again.
 
