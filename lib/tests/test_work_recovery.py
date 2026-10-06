@@ -65,6 +65,23 @@ def stopped_build(tmp_path, monkeypatch):
     return fixture, root, request, run, save
 
 
+def test_artifact_resume_candidates_skip_unlaunched_resumable_outcome(stopped_build):
+    fixture, root, request, run, save = stopped_build
+    request.update(stage="artifact", producer_version="0.186.0")
+    run.update(lifecycle="completed", completed_at="2026-10-03T11:00:00Z", outcome="invalid_artifact_return",
+               attempts=[{"launched": True, "observed": {"session_id": SESSION}}])
+    save()
+    store = fixture.record_root
+    unused_request = {**request, "dispatch_id": "unlaunched", "launched_at": "2026-10-03T12:00:00Z"}
+    unused_run = {**run, "dispatch_id": "unlaunched", "completed_at": "2026-10-03T12:01:00Z",
+                  "outcome": "completed_no_output", "attempts": [{"launched": False,
+                      "observed": {"session_id": "0199a213-81c0-7800-8aa1-bbab2a035a54"}}]}
+    (store / "unlaunched.request.json").write_bytes(work.records.json_bytes(unused_request))
+    (store / "unlaunched.run.json").write_bytes(work.records.json_bytes(unused_run))
+    source = work._resume_source("example/product#12", "artifact", store, state=fixture)
+    assert source.path == str(store / "stopped.run.json") and source.session == SESSION
+
+
 @pytest.mark.parametrize("configuration", ["repository-session", "adopter"])
 @pytest.mark.parametrize("has_pr", [False, True])
 @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])

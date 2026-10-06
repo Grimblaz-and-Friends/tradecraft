@@ -4846,6 +4846,8 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
     )
     if state is not None:
         matched = work_recovery.scoped(state, matched)
+    if stage == "artifact":
+        matched = work_recovery.authored(matched, state=state, work_value=work_value)
     candidates: list[ResumeSource] = []
     for completed, run_path, request, run in (matched[-1:] if stage == "artifact" else matched):
         if stage == "artifact":
@@ -6848,6 +6850,8 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
                 state.record_root or records.default_record_root().expanduser().resolve(),
                 outcomes=None, completed_after=term.timestamp, schema_policy="defer",
             )
+            bundles = work_recovery.authored(work_recovery.scoped(state, bundles),
+                state=state, work_value=f"{state.repo}#{state.issue_number}")
         except WorkError:
             return continuity
         if bundles and bundles[-1][3].get("outcome") in {"invalid_artifact_return", "completed_no_output"}:

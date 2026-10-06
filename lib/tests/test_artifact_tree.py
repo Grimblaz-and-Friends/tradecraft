@@ -25,6 +25,15 @@ def test_unlaunched_attempt_requires_explicit_complete_no_launch_evidence(change
     assert not trees.unlaunched({**run, **change})
 
 
+@pytest.mark.parametrize("outcome", ["unavailable", "error", "interrupted", "completed_no_output", "success", "future-outcome"])
+def test_unlaunched_attempt_is_classified_by_launch_evidence_not_outcome(outcome):
+    run = {"schema_version": 2, "lifecycle": "completed", "completed_at": "2026-10-06T00:00:00Z",
+           "outcome": outcome, "interruption_cause": "ceiling",
+           "attempts": [{"launched": False, "observed": {"session_id": "inherited"}}]}
+    assert trees.unlaunched(run)
+    assert not trees.unlaunched({**run, "attempts": [{"launched": False}, {"launched": True}]})
+
+
 @pytest.mark.parametrize("linked", [False, True])
 def test_source_probes_retry_dubious_ownership_with_only_scoped_trust(tmp_path, monkeypatch, linked):
     holder = repository(tmp_path)

@@ -94,7 +94,7 @@ def repair_state(holder, store):
     return fixture
 
 
-@pytest.mark.parametrize("failure", ["unavailable", "error"])
+@pytest.mark.parametrize("failure", ["unavailable", "error", "interrupted"])
 @pytest.mark.parametrize("removal_fails", [False, True])
 def test_unlaunched_artifact_attempt_disposes_unused_copy_and_does_not_block_author(
         entrance, monkeypatch, capsys, failure, removal_fails):
@@ -112,12 +112,16 @@ def test_unlaunched_artifact_attempt_disposes_unused_copy_and_does_not_block_aut
         monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a: ["--codex-unavailable-reason", "fixture unavailable"])
     else:
         def refuse_launch(*_a, **_k):
+            if failure == "interrupted":
+                raise TimeoutError("caller limit has no useful launch window")
             raise OSError("fixture launch refused")
         monkeypatch.setattr(implementer, "run_process", refuse_launch)
     assert work.execute_stage(fixture, decision, holder, None, "holder") == 1
     _, failed_path, unused_request, unused_run = bundles(store)[-1]
     unused_root = Path(unused_request["root"])
     assert unused_run["outcome"] == failure and unused_run["attempts"][0]["launched"] is False
+    if failure == "interrupted":
+        assert unused_run["interruption_cause"] == "ceiling"
     assert work._resume_source("example/product#12", "artifact", store, state=fixture).path == accepted_path
     copy_record = trees._read(unused_request["artifact_copy"]["lifecycle_record"])
     assert copy_record["state"] == ("removal_failed" if removal_fails else "removed")
@@ -134,6 +138,94 @@ def test_unlaunched_artifact_attempt_disposes_unused_copy_and_does_not_block_aut
     assert resumed["predecessor_bundle"] == accepted_path and resumed["root"] != str(unused_root)
     assert json.loads(capture.read_bytes())["draft_before"] is None
     assert Path(failed_path).read_bytes() == old_bundle
+
+
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+@pytest.mark.parametrize("failure", ["unavailable", "error", "interrupted"])
+def test_public_unlaunched_retry_resumes_failed_author_and_preserves_its_copy(
+        entrance, monkeypatch, vendor, failure):
+    holder, store, commands, setup = entrance
+    args, _, _ = setup(vendor, returned="/tmp/artifact.md")
+    assert work.run(args, transport=ArtifactTransport()) == 1
+    _, author_path, request, author_run = bundles(store)[-1]
+    assert author_run["outcome"] == "invalid_artifact_return"
+    root = Path(request["root"])
+    before, author_bytes = snapshot(root), Path(author_path).read_bytes()
+    source_commit = request["artifact_copy"]["source_commit"]
+    original_process = implementer.run_process
+    if failure == "unavailable":
+        monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a: [
+            "--" + vendor + "-unavailable-reason", "fixture unavailable"])
+    else:
+        def refuse_launch(*_a, **_k):
+            if failure == "interrupted":
+                raise TimeoutError("caller limit has no useful launch window")
+            raise OSError("fixture launch refused")
+        monkeypatch.setattr(implementer, "run_process", refuse_launch)
+    args, _, _ = setup(vendor, probe=True)
+    assert work.run(args, transport=ArtifactTransport()) == 1
+    _, unused_path, unused_request, unused_run = bundles(store)[-1]
+    assert unused_run["outcome"] == failure and unused_run["attempts"][0]["launched"] is False
+    assert unused_request["root"] == str(root) and snapshot(root) == before
+    assert trees._read(unused_request["artifact_copy"]["lifecycle_record"])["state"] == "retained"
+    unused_bytes = Path(unused_path).read_bytes()
+    monkeypatch.setattr(implementer, "run_process", original_process)
+    monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a: [])
+    (holder / "new-holder.txt").write_bytes(b"holder moved after failed author")
+    git(holder, "add", "new-holder.txt")
+    git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "holder move")
+    args, capture, _ = setup(vendor, probe=True)
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    _, _, resumed, passed = bundles(store)[-1]
+    captured = json.loads(capture.read_bytes())
+    assert resumed["requested"]["continuity"] == "resume"
+    assert resumed["requested"]["session_id"] == SESSION
+    assert resumed["predecessor_bundle"] == author_path and captured["cwd"] == str(root)
+    assert captured["draft_before"] == b"unfinished draft\n".hex()
+    assert captured["git_before"]["head"] == before["content"]["head"]
+    assert captured["git_before"]["index"].encode() == before["index"].strip()
+    assert captured["git_before"]["refs"].encode() == before["refs"].strip()
+    assert resumed["artifact_copy"]["source_commit"] == source_commit
+    assert Path(author_path).read_bytes() == author_bytes and Path(unused_path).read_bytes() == unused_bytes
+    assert passed["outcome"] == "success" and not root.exists()
+
+
+def test_public_restart_after_prelaunch_ceiling_reaches_latest_launched_author(entrance, monkeypatch):
+    holder, store, commands, setup = entrance
+    args, _, _ = setup("codex", fail="runtime", identity=None)
+    assert work.run(args, transport=ArtifactTransport()) == 1
+    _, author_path, request, run = bundles(store)[-1]
+    run.pop("session_identity", None)
+    run.pop("session_identity_error", None)
+    for attempt in run["attempts"]:
+        attempt["observed"].pop("session_id", None)
+    dead = lifecycle.process_identity()
+    dead["birth"] += "dead"
+    run["launcher_process"] = run["recipient_process"] = dead
+    Path(author_path).write_bytes(work.records.json_bytes(run))
+    before = snapshot(Path(request["root"]))
+    original_process = implementer.run_process
+    def expired(*_a, **_k):
+        raise TimeoutError("caller limit has no useful launch window")
+    monkeypatch.setattr(implementer, "run_process", expired)
+    args, _, _ = setup("codex", probe=True)
+    args.restart_unresolved_reason = "dead author reported no native session"
+    assert work.run(args, transport=ArtifactTransport()) == 1
+    _, unused_path, unused_request, unused_run = bundles(store)[-1]
+    assert unused_run["outcome"] == "interrupted" and unused_run["attempts"][0]["launched"] is False
+    fixture = repair_state(holder, store)
+    assert work.work_recovery.latest_stopped(fixture, "artifact")[1] == author_path
+    assert trees._read(unused_request["artifact_copy"]["lifecycle_record"])["state"] == "removed"
+    assert snapshot(Path(request["root"])) == before
+    assert trees.dispose(request["artifact_copy"])["state"] == "removed"
+    monkeypatch.setattr(implementer, "run_process", original_process)
+    args, capture, _ = setup("codex", probe=True)
+    args.restart_unresolved_reason = "dead author reported no native session"
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    resumed = bundles(store)[-1][2]
+    assert resumed["recovery_restart_bundle"] == author_path
+    assert resumed["requested"]["continuity"] == "fresh" and resumed["root"] != request["root"]
+    assert json.loads(capture.read_bytes())["draft_before"] is None
 
 
 @pytest.mark.parametrize("pinned", ["codex", "claude"])

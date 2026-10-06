@@ -230,7 +230,6 @@ def unlaunched(run):
     attempts = run.get("attempts")
     return (run.get("schema_version") == records.SCHEMA_VERSION
             and run.get("lifecycle") == "completed" and bool(run.get("completed_at"))
-            and run.get("outcome") in {"unavailable", "error"}
             and not run.get("recovery_error") and not run.get("launch_unresolved")
             and run.get("cleanup_proven") is not False and not run.get("recipient_process")
             and isinstance(attempts, list) and bool(attempts)
