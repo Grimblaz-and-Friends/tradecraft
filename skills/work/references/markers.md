@@ -79,6 +79,42 @@ A holder reading counts only after the latest effective settlement. A newer draf
 <!-- tradecraft:holder-reading:v1 result=no-amendment -->
 ```
 
+## `reach-reading`
+
+- **Exact form:** `<!-- tradecraft:reach-reading:v1 head=FULL_COMMIT_SHA -->`.
+- **Attributes:** only `head`, a full 40- or 64-digit hexadecimal commit identity.
+- **Producer, surface, moment:** an authorized marker producer acting as holder, in an issue comment after the covered builder returns and before readiness, proof or release reporting. The marker claims the first content line and carries no `holder-reading` companion. It supplies reach evidence only, never whole-change reading, artifact settlement or amended-term delivery.
+- **Payload:** exactly one fenced `json` object with integer `schema_version: 1`, required `turns`, and optional `recovered_ranges` and `superset_settlements` lists. Unknown fields and duplicate JSON keys are invalid.
+
+```json
+{
+  "schema_version": 1,
+  "turns": [
+    {
+      "dispatch_id": "the-reported-turn",
+      "items": [
+        {
+          "path": "the/exact/flagged/path",
+          "disposition": "row-or-criterion",
+          "requirement": "Row 1, criterion C2",
+          "basis": "Row 1, criterion C2 requires this move."
+        }
+      ]
+    }
+  ],
+  "recovered_ranges": [],
+  "superset_settlements": []
+}
+```
+
+Each item has only `path`, `disposition`, nonempty `basis` and the disposition's reference field: `requirement` for `row-or-criterion`, `generator` for `generator`, `restored_by` for `restored`, or `ruling_source` for `owner-ruling`. String references are nonempty. `restored_by` contains exactly `dispatch_id` and full `head` of a later returned turn in the same selected lineage; the reading follows that restoration too. Every ordinary turn entry covers all its flags. Unknown turns/paths, partial coverage, duplicate paths/turns, unknown dispositions and another disposition's fields are rejected.
+
+Each recovered range contains exactly `dispatch_id`, full `before` and `after`, and nonempty evidence `basis`. It is recovery of an unmeasurable turn's actual range, recomputed before acceptance; it cannot replace valid recorded endpoints. Empty recovered ranges require no invented removal item.
+
+Each superset settlement contains exactly `turn_reference`, nonempty `reason`, `basis: "pr-superset"`, positive integer `pull_request`, full `base`, `merge_base` and `head`, and `items`. The reference is the entrance's exact dispatch identity or stable diagnostic; bounds must match the recomputed PR superset, and `head` matches the marker. Every conservative candidate needs a lawful disposition. An empty proved superset still requires its explicit settlement entry. Superset settlement preserves the historical uncertainty and clears its reach block without requiring the failed original range or attribution to pass again. Pending recovery is separate.
+
+The head binds the covered flags; initial adoption may cover historical turns at the proved current head. Subsequent descendant progress retains accepted coverage and newly flagged turns owe new accounts. A superseding rebase/amendment requires a new current-head account. Quoted, forged, unauthorized, wrong-surface, malformed or stale claims discharge nothing. The procedure, including reading the builder's returned recommendations even without flags and restoring missing superset evidence, is `reach.md`.
+
 ## `builder-session`
 
 - **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION [vendor=VENDOR] -->`.
