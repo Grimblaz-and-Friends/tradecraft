@@ -397,8 +397,10 @@ class TestGoverningTerms:
     def test_second_look_866_pre_spawn_failure_does_not_change_delivery(self, builder, stage, outcome, current):
         comment = self.amendment(builder)
         if current:
-            self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z")
-        _request, run = self.turn(builder, stage=stage, launched="2026-10-05T13:01:00Z")
+            self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                      completed="2026-10-05T12:02:00Z")
+        _request, run = self.turn(builder, stage=stage, composed="2026-10-05T13:00:00Z",
+                                  launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
         run.update(outcome=outcome, attempts=[{"launched": False, "observed": {}}])
         self.save(builder)
         if current:
@@ -421,7 +423,7 @@ class TestGoverningTerms:
         builder.record_root = builder.record_root / "only-delivery"
         request, run = self.turn(builder, stage=stage, session=None,
                                  composed="2026-10-05T12:00:00Z" if current else "2026-10-05T10:00:00Z",
-                                 launched="2026-10-05T12:01:00Z")
+                                 launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
         run["outcome"] = "success_uncontinuable"
         self.save(builder)
         if current:
@@ -442,8 +444,10 @@ class TestGoverningTerms:
 
     def test_second_look_866_floor_without_session_preserves_prior_delivery(self, builder):
         self.amendment(builder)
-        self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z")
-        _request, run = self.turn(builder, stage="floor", session=None, launched="2026-10-05T13:01:00Z")
+        self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                  completed="2026-10-05T12:02:00Z")
+        _request, run = self.turn(builder, stage="floor", session=None, composed="2026-10-05T13:00:00Z",
+                                 launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
         run["outcome"] = "success_uncontinuable"
         self.save(builder)
         assert work.decide(builder, RULES).stage == "release-report"
@@ -465,7 +469,8 @@ class TestGoverningTerms:
 
     def test_second_look_866_launched_failure_keeps_recovery_its_own_route(self, builder):
         comment = self.amendment(builder)
-        _request, run = self.turn(builder, stage="floor", launched="2026-10-05T13:01:00Z")
+        _request, run = self.turn(builder, stage="floor", composed="2026-10-05T13:00:00Z",
+                                 launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
         run["outcome"] = "interrupted"
         self.save(builder)
         work.validate_marker_claims(builder)
