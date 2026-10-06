@@ -13,6 +13,13 @@ import run_lifecycle as lifecycle
 from test_work import repository, git
 
 
+def record_author_launch(copy, invoked):
+    # A reserved request distinguishes an unfinished author from a pre-bundle refusal.
+    request = Path(copy["lifecycle_record"].removesuffix(".artifact-copy.json") + ".request.json")
+    request.write_bytes(trees.records.json_bytes({"artifact_copy": copy}))
+    invoked["value"] = True
+
+
 @pytest.mark.parametrize("change", [
     {"completed_at": None}, {"lifecycle": "running"}, {"cleanup_proven": False},
     {"launch_unresolved": True}, {"recovery_error": "unsupported dispatch schema"},
@@ -129,7 +136,7 @@ def test_failed_copy_keeps_draft_index_branches_and_changed_head(tmp_path):
     with trees.checkout(holder, output, work="fixture#1", instalment=None,
                         holder_session_id="holder") as (copy, invoked, _record):
         root = Path(copy["root"])
-        invoked["value"] = True
+        record_author_launch(copy, invoked)
         trees.git(root, "switch", "-c", "author")
         (root / "draft").write_bytes(b"author working state")
         trees.git(root, "add", "draft")
@@ -213,7 +220,7 @@ def test_retained_unborn_head_keeps_staged_draft_without_database_walk(tmp_path,
     holder = repository(tmp_path)
     with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
                         holder_session_id="holder") as (copy, invoked, _record):
-        invoked["value"] = True
+        record_author_launch(copy, invoked)
         root = Path(copy["root"])
         trees.git(root, "switch", "--orphan", "author-unborn")
         (root / "draft").write_bytes(b"staged-only author draft")
@@ -248,7 +255,7 @@ def test_retained_head_tree_does_not_verify_history_or_other_blobs(tmp_path, sta
     holder = repository(tmp_path)
     with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
                         holder_session_id="holder") as (copy, invoked, _record):
-        invoked["value"] = True
+        record_author_launch(copy, invoked)
     root = Path(copy["root"])
     try:
         if state == "history":
@@ -286,7 +293,7 @@ def test_retained_structural_proof_does_not_walk_loose_object_database(tmp_path,
     holder = repository(tmp_path)
     with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
                         holder_session_id="holder") as (copy, invoked, _record):
-        invoked["value"] = True
+        record_author_launch(copy, invoked)
     root, walk = Path(copy["root"]), os.walk
     def guarded(*args, **kwargs):
         for row in walk(*args, **kwargs):
@@ -323,7 +330,7 @@ def test_retained_author_can_prune_original_commit_without_losing_its_git_state(
     holder = repository(tmp_path)
     with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
                         holder_session_id="holder") as (copy, invoked, _record):
-        invoked["value"] = True
+        record_author_launch(copy, invoked)
         root = Path(copy["root"])
         trees.git(root, "switch", "--orphan", "author-orphan")
         (root / "draft").write_bytes(b"orphan author draft")
@@ -349,7 +356,7 @@ def test_resume_proof_refuses_route_back_or_substituted_directory(tmp_path, dama
     holder = repository(tmp_path)
     with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
                         holder_session_id="holder") as (copy, invoked, _record):
-        invoked["value"] = True
+        record_author_launch(copy, invoked)
     root = Path(copy["root"])
     try:
         if damage == "remote":
@@ -384,7 +391,7 @@ def test_disposal_positive_and_protected_negative_controls(tmp_path):
     holder = repository(tmp_path)
     with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
                         holder_session_id="holder") as (copy, invoked, _record):
-        invoked["value"] = True
+        record_author_launch(copy, invoked)
     bad = {**copy, "root": str(holder), "temporary_parent": str(holder.parent),
            "directory_identity": trees._identity(holder)}
     assert trees.dispose(bad)["state"] == "removal_failed"
@@ -414,7 +421,7 @@ def test_bounded_removal_failure_names_residue(tmp_path, monkeypatch, failure):
     holder = repository(tmp_path)
     with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
                         holder_session_id="holder") as (copy, invoked, _record):
-        invoked["value"] = True
+        record_author_launch(copy, invoked)
     with monkeypatch.context() as m:
         def refusal(*_args, **_kwargs):
             raise PermissionError("injected permission refusal") if failure == "permission" else TimeoutError("spent cleanup window")
@@ -436,6 +443,19 @@ def test_legacy_provenance_is_distinct_from_corrupt_new_record(tmp_path, legacy_
         trees.provenance({"producer_version": legacy_version, "artifact_copy": {}}, bundle)
     with pytest.raises(trees.ArtifactTreeError, match="lacks artifact provenance"):
         trees.provenance({"producer_version": trees.MECHANISM_VERSION}, bundle)
+
+
+def test_native_recording_exception_does_not_admit_launcher_or_conflicting_copy(tmp_path):
+    bundle = tmp_path / "result.md.run.json"
+    native = {"producer_version": trees.MECHANISM_VERSION,
+              "reserved_source_output": str(tmp_path / "result.md.source.bin"), "requested": {"command": None}}
+    assert trees.provenance(native, bundle) is None
+    with pytest.raises(trees.ArtifactTreeError, match="lacks artifact provenance"):
+        trees.provenance({**native, "requested": {"command": ["codex", "exec"]}}, bundle)
+    with pytest.raises(trees.ArtifactTreeError, match="conflicting artifact copy provenance"):
+        trees.provenance({**native, "artifact_copy": {}}, bundle)
+    with pytest.raises(trees.ArtifactTreeError, match="lacks artifact provenance"):
+        trees.provenance({**native, "producer_version": "invalid"}, bundle)
 
 
 @pytest.mark.parametrize("removal_fails", [False, True])
@@ -504,7 +524,7 @@ def test_disposal_requires_proved_helper_stop_even_after_directory_removal(tmp_p
     holder = repository(tmp_path)
     with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
                         holder_session_id="holder") as (copy, invoked, _record):
-        invoked["value"] = True
+        record_author_launch(copy, invoked)
     original = trees.run_process
     def unproved(*args, **kwargs):
         result = original(*args, **kwargs)
@@ -523,7 +543,7 @@ def test_independent_copy_cannot_substitute_for_another_bundle_authority(tmp_pat
     for name in ("first", "second"):
         with trees.checkout(holder, tmp_path / name / "result.md", work="fixture#1", instalment=None,
                             holder_session_id="holder") as (copy, invoked, _record):
-            invoked["value"] = True
+            record_author_launch(copy, invoked)
             copies.append(copy)
     try:
         first, second = copies

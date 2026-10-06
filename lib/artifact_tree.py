@@ -330,13 +330,20 @@ def _read(path):
     return value
 
 
+def native_recording(request):
+    requested = request.get("requested")
+    return ("reserved_source_output" in request and isinstance(requested, dict)
+            and requested.get("command") is None)
+
+
 def provenance(request, bundle, *, holder=None, work=None, instalment=None):
     copy = request.get("artifact_copy")
     if copy is None:
         version = request.get("producer_version", "")
         core = version.split("-", 1)[0].split("+", 1)[0] if isinstance(version, str) else ""
         if (re.fullmatch(r"\d+\.\d+\.\d+", core)
-                and tuple(map(int, core.split("."))) < tuple(map(int, MECHANISM_VERSION.split(".")))):
+                and (native_recording(request) or
+                     tuple(map(int, core.split("."))) < tuple(map(int, MECHANISM_VERSION.split("."))))):
             return None
         raise ArtifactTreeError(f"copy-capable bundle lacks artifact provenance: {bundle}")
     required = {"schema_version", "root", "holder_root", "source_commit", "committed_only", "remotes",
@@ -439,11 +446,19 @@ def finish(copy, output, *, invoked, unused=False, forbidden=()):
         if not invoked and unused:
             result = dispose(copy, forbidden=forbidden)
         return {**result, "lifecycle_record_error": str(exc)}
-    if not invoked and unused:
+    request_path = records.sidecar(output, ".request.json")
+    request_absent = False
+    try:
+        request_path.lstat()
+    except FileNotFoundError:
+        request_absent = True
+    except OSError:
+        pass  # Unreadable evidence is not proof that no bundle was reserved.
+    if unused and (not invoked or request_absent):
         result = dispose(copy, forbidden=forbidden)
     else:
         try:
-            request = _read(records.sidecar(output, ".request.json"))
+            request = _read(request_path)
             run = _read(records.sidecar(output, ".run.json"))
             provenance(request, records.sidecar(output, ".run.json"))
             returned = run.get("result") or {}
@@ -505,7 +520,8 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
               "holder_session_id": holder_session_id, "bundle": str(records.sidecar(output, ".run.json")),
               "predecessor_bundle": predecessor.path if predecessor else None, "state": "running",
               "selection": "retained" if reuse else "fresh",
-              "legacy_recovery": predecessor is not None and prior is None}
+              "native_recovery": predecessor is not None and prior is None and native_recording(predecessor.request),
+              "legacy_recovery": predecessor is not None and prior is None and not native_recording(predecessor.request)}
     if recovery:
         record["recovery"] = recovery
     if prior and not reuse and Path(prior["root"]).exists():
@@ -519,6 +535,7 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
         residues.append(record["predecessor_residue"])
     record["residues"] = residues
     invoked = {"value": False}
+    unused = not reuse
     try:
         _atomic(lifecycle_path, record)
         if not reuse:
@@ -541,13 +558,14 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
         if getattr(exc, "cleanup_proven", True) is False:
             # A still-unproved clone subprocess may own files in the allocation.
             invoked["value"] = True
+            unused = False
         if not isinstance(exc, ArtifactTreeError):
             raise  # Caller failures (including publication) keep their existing contract.
         error = ArtifactTreeError(f"artifact bundle {record['bundle']}; copy {copy['root']}: {exc}")
         error.cleanup_proven = getattr(exc, "cleanup_proven", True)
         raise error from exc
     finally:
-        result = finish(copy, output, invoked=invoked["value"], unused=not reuse, forbidden=forbidden)
+        result = finish(copy, output, invoked=invoked["value"], unused=unused, forbidden=forbidden)
         print("artifact-copy: " + json.dumps({"root": copy["root"], **result}, ensure_ascii=True), flush=True)
 
 

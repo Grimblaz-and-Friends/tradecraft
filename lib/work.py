@@ -5044,9 +5044,15 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
         requested = request.get("requested")
         vendor = requested.get("vendor") if isinstance(requested, dict) else None
         actual = run.get("actual_vendor")
+        attempts = run.get("attempts")
+        native = stage == "artifact" and artifact_tree.native_recording(request)
+        if native and "actual_vendor" not in run and isinstance(attempts, list):
+            native_vendors = [attempt.get("vendor") for attempt in attempts
+                              if isinstance(attempt, dict) and attempt.get("launched") is True]
+            if native_vendors and all(value in ("codex", "claude") for value in native_vendors):
+                actual = native_vendors[0] if len(set(native_vendors)) == 1 else None
         if vendor not in {"codex", "claude"} or actual not in {"codex", "claude"} or vendor != actual:
             raise WorkError(f"matching dispatch bundle has unproved vendor: {run_path}")
-        attempts = run.get("attempts")
         if not isinstance(attempts, list):
             continue
         sessions: list[str] = []
@@ -5055,6 +5061,14 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
             session = observed.get("session_id") if isinstance(observed, dict) else None
             if isinstance(session, str) and SESSION_ID.fullmatch(session):
                 sessions.append(session)
+            if native and isinstance(observed, dict) and isinstance(observed.get("thread_ids"), list):
+                sessions.extend(value for value in observed["thread_ids"]
+                                if isinstance(value, str) and SESSION_ID.fullmatch(value))
+        if native:
+            identities = set(sessions)
+            if len(identities) > 1 or (identities and requested.get("session_id")
+                                      and requested["session_id"] not in identities):
+                raise WorkError(f"native artifact bundle has conflicting session identity: {run_path}")
         if sessions:
             candidates.append(ResumeSource(
                 completed, run_path, request, run, sessions[-1]
@@ -5345,6 +5359,10 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
                                     history_blobs="holder-available; checkout-only hydration")
         if recovery:
             plan["artifact_copy_recovery"] = recovery
+        if copy_source and copy is None and artifact_tree.native_recording(copy_source.request):
+            plan["artifact_native_recovery"] = {"bundle": copy_source.path,
+                "message": "native recording has no copy to keep; resume in a fresh committed copy",
+                "loose_files_imported": False}
         plan["permission_boundary"] = (
             "workspace-write with automatic approval review; copy is the recipient root"
             if vendor == "codex" else "Claude auto permission mode; copy is the recipient root; no OS write sandbox")
@@ -6846,7 +6864,12 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         "history_blobs": copy_record["history_blobs"]}
                     if copy_record.get("recovery"):
                         _emit_report({"artifact_copy_recovery": copy_record["recovery"]}, state, flush=True)
-                    if copy_record["legacy_recovery"]:
+                    if copy_record["native_recovery"]:
+                        _emit_report({"artifact_native_recovery": {
+                            "bundle": resume_source.path, "loose_files_imported": False,
+                            "message": "native recording has no copy to keep; resume in a fresh committed copy"}},
+                            state, flush=True)
+                    elif copy_record["legacy_recovery"]:
                         _emit_report({"artifact_legacy_recovery": {
                             "bundle": resume_source.path, "loose_files_imported": False}}, state, flush=True)
                     if copy_record.get("residues"):

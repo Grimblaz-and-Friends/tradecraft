@@ -550,8 +550,7 @@ def test_settlement_advice_names_reference_and_revised_forms(route):
 @pytest.fixture(autouse=True)
 def remove_fixture_artifact_copies(tmp_path):
     yield
-    # Mock launchers deliberately leave no accepted bundle. Their retained
-    # copies belong to this fixture, whose evidence is about to be discarded.
+    # Unproved launches with reserved requests can retain fixture-owned copies.
     for record_path in tmp_path.rglob("*.artifact-copy.json"):
         copy = json.loads(record_path.read_bytes())["artifact_copy"]
         if Path(copy["root"]).exists():
@@ -5504,6 +5503,39 @@ def native_bundle(record_root, monkeypatch, *, stage="use", vendor="claude",
     return output
 
 
+@pytest.mark.parametrize("problem,error", [
+    ("multiple-sessions", "conflicting session identity"),
+    ("requested-session", "conflicting session identity"),
+    ("missing-session", "no valid session"),
+    ("vendor", "unproved vendor"),
+    ("launcher", "lacks artifact provenance"),
+])
+def test_native_artifact_recovery_requires_proved_identity_and_native_record(
+        tmp_path, monkeypatch, problem, error):
+    store = tmp_path / "dispatches"
+    output = native_bundle(store, monkeypatch, stage="artifact", vendor="codex")
+    request_path = work.records.sidecar(output, ".request.json")
+    run_path = work.records.sidecar(output, ".run.json")
+    request, run = json.loads(request_path.read_bytes()), json.loads(run_path.read_bytes())
+    session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    other = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    run["attempts"][0]["observed"]["thread_ids"] = [session]
+    if problem == "multiple-sessions":
+        run["attempts"][0]["observed"]["thread_ids"].append(other)
+    elif problem == "requested-session":
+        request["requested"].update(continuity="resume", session_id=other)
+    elif problem == "missing-session":
+        run["attempts"][0]["observed"]["thread_ids"] = None
+    elif problem == "vendor":
+        run["actual_vendor"] = "claude"
+    else:
+        request["requested"]["command"] = ["codex", "exec"]
+    request_path.write_bytes(work.records.json_bytes(request))
+    run_path.write_bytes(work.records.json_bytes(run))
+    with pytest.raises(work.WorkError, match=error):
+        work._resume_source("example/product#12", "artifact", store)
+
+
 def producer_bundle(record_root, *, stage="build", vendor="codex", revision=SHA,
                     name="producer.md", completed_at="2026-09-20T08:00:00+00:00",
                     **lineage):
@@ -5764,18 +5796,11 @@ def test_native_seats_require_proven_launcher_producer(tmp_path, monkeypatch, st
     error = "no implementation bundle proves the producer vendor"
     if producer_kind == "native":
         output = native_bundle(fixture.record_root, monkeypatch, stage=producer_stage, vendor="codex", name="native-producer")
-        if producer_stage == "artifact":
-            # This fixture describes a pre-isolation native author, without
-            # entrance-owned copy provenance. Keep the vendor proof at issue.
-            request_path = work.records.sidecar(output, ".request.json")
-            request = json.loads(request_path.read_bytes())
-            request["producer_version"] = "0.185.0"
-            request_path.write_bytes(work.records.json_bytes(request))
         path = work.records.sidecar(output, ".run.json")
         run = json.loads(path.read_bytes())
         run["revision_after"] = SHA
         path.write_bytes(work.records.json_bytes(run))
-        with pytest.raises(work.WorkError, match="unproved vendor"):
+        with pytest.raises(work.WorkError, match="no valid session" if producer_stage == "artifact" else "unproved vendor"):
             work._resume_source("example/product#12", producer_stage, fixture.record_root)
         error = "implementation vendor is unproved"
     elif producer_kind == "unproved":
@@ -9207,7 +9232,8 @@ def test_post_build_stages_keep_registered_root_while_artifact_uses_holder_copy(
         assert copy["source_commit"] == git(holder, "rev-parse", "HEAD").stdout.strip().decode()
         assert branch.encode() not in artifact_prompt
     finally:
-        assert work.artifact_tree.dispose(copy)["state"] == "removed"
+        assert work.artifact_tree._read(copy["lifecycle_record"])["state"] == "removed"
+        assert not artifact_root.exists()  # This mock launcher reserved no author request.
     implementer_launches = launches[1:4]
     assert len(launches) == 5
     assert all(

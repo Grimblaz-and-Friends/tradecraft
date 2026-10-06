@@ -86,6 +86,103 @@ def snapshot(root):
             "index": git(root, "ls-files", "--stage").stdout}
 
 
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_native_recorded_artifact_recovers_proved_session_in_fresh_copy(
+        entrance, tmp_path, capsys, vendor):
+    holder, store, _commands, setup = entrance
+    old = repository(tmp_path, "native-author")
+    (old / "native-loose-note").write_bytes(b"native files stay in their old root")
+    output = store / "native/result.md"
+    dispatch = tmp_path / "native-dispatch.md"
+    dispatch.write_bytes(b"Write the whole artifact.\n")
+    arguments = ["begin", "--work", "example/product#12", "--stage", "artifact",
+        "--settings-source", "fixture", "--settings-scope", "native author",
+        "--vendor", vendor, "--model", "fixture-model", "--effort", "max",
+        "--classification", "ordinary", "--permission-boundary", "native tool",
+        "--root", str(old), "--input-file", str(dispatch), "--output", str(output)]
+    for setting in ("vendor", "model", "effort", "classification", "continuity", "permission-boundary"):
+        arguments.extend(("--" + setting + "-source", "fixture"))
+    work.records.begin_native(work.records.parser().parse_args(arguments))
+    returned = tmp_path / "native-return.json"
+    returned.write_bytes(native_artifact_result(vendor, artifact_text("combined"), SESSION)["stdout"].encode())
+    work.records.finish_native(work.records.parser().parse_args([
+        "finish", "--output", str(output), "--vendor", vendor,
+        "--return-file", str(returned), "--outcome", "success"]))
+    native_request = work.records.sidecar(output, ".request.json")
+    native_run = work.records.sidecar(output, ".run.json")
+    request = json.loads(native_request.read_bytes())
+    assert request["producer_version"] == trees.MECHANISM_VERSION and "artifact_copy" not in request
+    assert "actual_vendor" not in json.loads(native_run.read_bytes())
+    original_bundle = native_request.read_bytes(), native_run.read_bytes()
+    (holder / "current-holder.txt").write_bytes(b"new committed holder state")
+    git(holder, "add", "current-holder.txt")
+    git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "-m", "holder moved")
+    head = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
+    before = snapshot(old), snapshot(holder)
+    setup(vendor, probe=True)
+    fixture = repair_state(holder, store)
+    decision = work.Decision("artifact", True, "resume", "cold-repair")
+    plan = work._launch_plan(fixture, decision, root=holder)
+    assert plan["status"] == "resolved" and plan["session"]["id"] == SESSION
+    assert plan["artifact_native_recovery"]["bundle"] == str(native_run)
+    assert plan["artifact_copy"]["selection"] == "planned"
+    _args, capture, _ = setup(vendor, probe=True)
+    assert work.execute_stage(fixture, decision, holder, None, "holder") == 0
+    resumed = bundles(store)[-1][2]
+    assert resumed["predecessor_bundle"] == str(native_run)
+    assert resumed["requested"]["session_id"] == SESSION and resumed["root"] not in {str(old), str(holder)}
+    assert resumed["artifact_copy"]["source_commit"] == head
+    assert json.loads(capture.read_bytes())["draft_before"] is None
+    record = trees._read(resumed["artifact_copy"]["lifecycle_record"])
+    assert record["native_recovery"] is True and record["legacy_recovery"] is False
+    report = capsys.readouterr().out
+    assert "artifact_native_recovery" in report and "native recording" in report and "no copy to keep" in report
+    assert (snapshot(old), snapshot(holder)) == before
+    assert (native_request.read_bytes(), native_run.read_bytes()) == original_bundle
+
+
+@pytest.mark.parametrize("removal_fails", [False, True])
+def test_public_undecodable_dispatch_disposes_unused_copy_without_author_bundle(
+        entrance, monkeypatch, capsys, removal_fails):
+    _holder, store, commands, setup = entrance
+    args, _capture, dispatch = setup("codex", custom=True)
+    dispatch.write_bytes(b"nonempty dispatch with invalid UTF-8: \xff")
+    original = trees.dispose
+    if removal_fails:
+        monkeypatch.setattr(trees, "dispose", lambda copy, **_k: {"state": "removal_failed",
+            "remaining_path": copy["root"], "reason": "injected permission failure"})
+    with pytest.raises(UnicodeDecodeError):
+        work.run(args, transport=ArtifactTransport())
+    assert len(commands) == 1 and not bundles(store)
+    record = trees._read(next(store.rglob("*.artifact-copy.json")))
+    root = Path(record["artifact_copy"]["root"])
+    assert record["state"] == ("removal_failed" if removal_fails else "removed")
+    report = capsys.readouterr().out.replace("\\\\", "\\")
+    assert str(root) in report and record["state"] in report
+    if removal_fails:
+        assert root.exists() and "injected permission failure" in report
+        assert original(record["artifact_copy"])["state"] == "removed"
+    else:
+        assert not root.exists()
+
+
+def test_public_unreserved_resume_retains_the_failed_authors_copy(entrance):
+    _holder, store, _commands, setup = entrance
+    args, _, _ = setup("codex", returned="/tmp/artifact.md")
+    assert work.run(args, transport=ArtifactTransport()) == 1
+    author = bundles(store)[-1][2]
+    root = Path(author["root"])
+    before = snapshot(root)
+    args, _, dispatch = setup("codex", custom=True)
+    dispatch.write_bytes(b"undecodable repair: \xff")
+    with pytest.raises(UnicodeDecodeError):
+        work.run(args, transport=ArtifactTransport())
+    record = max((trees._read(path) for path in store.rglob("*.artifact-copy.json")),
+                 key=lambda value: value.get("predecessor_bundle") is not None)
+    assert record["selection"] == "retained" and record["state"] == "retained"
+    assert snapshot(root) == before and len(bundles(store)) == 1
+
+
 def test_public_retained_git_timeout_is_unresolved_and_resumable(entrance, monkeypatch, capsys):
     holder, store, commands, setup = entrance
     args, _, _ = setup("codex", returned="/tmp/artifact.md")
