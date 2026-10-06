@@ -194,6 +194,203 @@ class TestGoverningTerms:
         decision = self.due(builder, comment)
         assert "turn-0" in decision.detail
 
+    @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+    def test_repair_866_owner_row_ruling_overrides_only_its_affirmed_row(self, builder, stage):
+        self.post(builder, _holder_reading("Owner ruling: replace row 1 whole; other rows remain affirmed."))
+        work.validate_marker_claims(builder)
+        prompt = work._stage_prompt(builder, work.Decision(stage, True, "resume", "fixture"),
+                                    floor_command="python fixture-check.py").decode()
+        assert "A holder reading recording the owner's ruling on an affirmed row governs that row" in prompt
+        assert "The affirmed brief otherwise remains binding over the artifact and readings." in prompt
+        assert "The affirmed brief remains binding over both." not in prompt
+        assert builder.issue_comments[0]["body"] in prompt
+        assert builder.issue_comments[-1]["body"] in prompt
+
+    @pytest.mark.parametrize("failure", ["no-bundle", "unavailable", "error"])
+    def test_repair_866_unlaunched_first_builder_stays_fresh(self, builder, monkeypatch, failure):
+        _request, run = self.never_launched(builder)
+        if failure == "no-bundle":
+            for request_path, run_path, *_ in builder.term_turns:
+                request_path.unlink()
+                run_path.unlink()
+            builder.term_turns.clear()
+        else:
+            run["outcome"] = failure
+            self.save(builder)
+        decision = work.decide(builder, RULES)
+        assert (decision.stage, decision.dispatch, decision.continuity) == ("build", True, "fresh")
+        assert work._named_continuity(builder, "build", decision) == "fresh"
+        launches = []
+        monkeypatch.setattr(work, "create_implementation_root", lambda *_a: pytest.fail("created another tree"))
+        monkeypatch.setattr(work, "publish_implementation_branch", lambda *_a: None)
+        def launch(command, **_kwargs):
+            launches.append(command)
+            assert "--resume" not in command
+            assert Path(command[command.index("--root") + 1]) == builder.term_root
+            return subprocess.CompletedProcess(command, 0)
+        monkeypatch.setattr(work, "_recipient_run", launch)
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        assert len(launches) == 1
+
+    @pytest.mark.parametrize("stage", ["floor", "review-disposition"])
+    @pytest.mark.parametrize("outcome", ["completed_no_output", "unavailable"])
+    @pytest.mark.parametrize("current", [False, True])
+    def test_repair_866_completed_failure_neither_delivers_nor_undoes_delivery(
+            self, builder, stage, outcome, current):
+        comment = self.amendment(builder)
+        if current:
+            self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                      completed="2026-10-05T12:02:00Z")
+        request, run = self.turn(builder, stage=stage, composed="2026-10-05T13:00:00Z",
+                                 launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        run["outcome"] = outcome
+        if outcome == "unavailable":
+            request["requested"]["session_id"] = None
+            run["attempts"] = [{"launched": False, "observed": {}}]
+        self.save(builder)
+        if current:
+            builder.floor_public = None
+            assert work.decide(builder, RULES).stage == "floor"
+            builder.floor_public = {"outcome": "ci-met", "head": SHA}
+            assert work._governing_terms_decision(builder) is None
+        else:
+            self.due(builder, comment)
+
+    @pytest.mark.parametrize("unresolved", ["unfinished", "spawn", "cleanup", "schema", "vendor"])
+    def test_repair_866_failed_later_attempt_keeps_recovery_refusals(self, builder, unresolved):
+        request, run = self.turn(builder, stage="floor", launched="2026-10-05T13:01:00Z")
+        run["outcome"] = "completed_no_output"
+        if unresolved == "unfinished":
+            run.pop("completed_at")
+        elif unresolved == "spawn":
+            run["launch_unresolved"] = True
+        elif unresolved == "cleanup":
+            run["cleanup_proven"] = False
+        elif unresolved == "schema":
+            request["schema_version"] = 1
+        else:
+            run["actual_vendor"] = "claude"
+        self.save(builder)
+        comparison = work._governing_terms_decision(builder)
+        assert comparison is not None and not comparison.dispatch
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.status == "holder-owned"
+
+    @pytest.mark.parametrize("current", [False, True])
+    def test_repair_866_successful_floor_after_failed_repair_preserves_build_delivery(self, builder, current):
+        comment = self.amendment(builder)
+        if current:
+            self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                      completed="2026-10-05T12:02:00Z")
+        _request, run = self.turn(builder, stage="review-disposition", composed="2026-10-05T13:00:00Z",
+                                  launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        run["outcome"] = "completed_no_output"
+        self.save(builder)
+        self.turn(builder, stage="floor", composed="2026-10-05T14:00:00Z",
+                  launched="2026-10-05T14:01:00Z", completed="2026-10-05T14:02:00Z")
+        if current:
+            assert work.decide(builder, RULES).stage == "release-report"
+        else:
+            self.due(builder, comment)
+
+    @pytest.mark.parametrize("released", [False, True])
+    @pytest.mark.parametrize("discovery_error", [False, True])
+    def test_repair_866_named_merged_build_is_fresh_and_requires_release(
+            self, builder, monkeypatch, capsys, released, discovery_error):
+        builder.merged_pr = {**builder.pr, "state": "closed", "merged_at": "2026-10-05T14:00:00Z"}
+        builder.pr = None
+        self.post(builder, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->")
+        builder.term_registration["active"] = not released
+        if discovery_error:
+            def broken(*_a):
+                raise work.WorkError("retained discovery unavailable")
+            monkeypatch.setattr(work.work_recovery, "launches", broken)
+        fresh = builder.term_root.parent / "fresh-builder"
+        git(builder.holder_root, "worktree", "add", "-b", "fresh-change", str(fresh))
+        creations, launches = [], []
+        def create(*_a):
+            creations.append(fresh)
+            return fresh, "fresh-change"
+        monkeypatch.setattr(work, "create_implementation_root", create)
+        monkeypatch.setattr(work, "publish_implementation_branch", lambda *_a: None)
+        def launch(command, **_kwargs):
+            launches.append(command)
+            assert "--resume" not in command
+            assert Path(command[command.index("--root") + 1]) == fresh
+            return subprocess.CompletedProcess(command, 0)
+        monkeypatch.setattr(work, "_recipient_run", launch)
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        output = capsys.readouterr().out
+        if released:
+            assert creations == [fresh] and len(launches) == 1
+        else:
+            report = json.loads(output)
+            assert not creations and not launches
+            assert report["reason"] == "fresh-build-requires-released-registration"
+
+    @pytest.mark.parametrize("boundary", ["stopped", "launches"])
+    def test_repair_866_unmerged_named_build_contains_discovery_error(self, builder, monkeypatch, boundary):
+        builder.pr = None
+        def broken(*_a):
+            raise work.WorkError("retained discovery unavailable")
+        monkeypatch.setattr(work.work_recovery, "launches", broken)
+        if boundary == "launches":
+            monkeypatch.setattr(work.work_recovery, "latest_stopped", lambda *_a: None)
+        assert work._named_continuity(builder, "build", work.Decision("waiting", False, None, "fixture")) == "resume"
+
+    def test_repair_866_ambiguous_registrations_need_holder_instalment(self, builder, monkeypatch):
+        own = builder.term_registration
+        own["instalment"] = "A"
+        sibling = {**own, "root": str(builder.term_root.parent / "sibling"), "branch": "sibling-change",
+                   "instalment": "B"}
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [own, sibling]})
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.stage != "build"
+        assert decision.status == "holder-owned" and "--instalment" in decision.detail
+        builder.instalment = "A"
+        assert work.decide(builder, RULES).stage == "release-report"
+
+    def test_repair_866_named_build_reports_unreadable_discovery_without_launch(
+            self, builder, monkeypatch, capsys):
+        def broken(*_a):
+            raise work.WorkError("retained builder discovery unavailable")
+        monkeypatch.setattr(work.work_recovery, "launches", broken)
+        monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched without discovery"))
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        report = json.loads(capsys.readouterr().out)
+        assert not report["dispatch"] and report["reason"] == "resume-bundle-invalid-for-build"
+        assert "retained builder discovery unavailable" in report["detail"]
+        assert builder.issue_comments[0]["html_url"] in report["detail"]
+        assert "Run build on the resumed builder" in report["detail"]
+
+    @pytest.mark.parametrize("bundle", [False, True])
+    def test_repair_866_unreadable_registry_returns_to_holder(self, builder, monkeypatch, bundle):
+        if not bundle:
+            builder.pr = None
+            for request_path, run_path, *_ in builder.term_turns:
+                request_path.unlink()
+                run_path.unlink()
+            builder.term_turns.clear()
+        def broken():
+            raise work.WorkError("registration registry cannot be read: fixture-registry.json")
+        monkeypatch.setattr(work, "read_registry", broken)
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.status == "holder-owned"
+        assert "fixture-registry.json" in decision.detail
+        assert builder.issue_comments[0]["html_url"] in decision.detail
+
+    def test_repair_866_lane_changes_require_affirmed_brief_and_newly_owed_artifact(self, builder):
+        self.post(builder, _holder_reading("Owner row ruling:\nReview risk: ordinary\nReview lane: mechanical"))
+        work.validate_marker_claims(builder)
+        assert work._affirmed_review(builder)[1] == ("ordinary", "connected")
+        assert work._artifact_phase(builder).latest_settlement is not None
+        mechanical = self.post(builder, MECHANICAL, stamp="2026-10-05T12:00:00Z")
+        self.due(builder, mechanical)
+        assert work._affirmed_review(builder)[1] == ("ordinary", "mechanical")
+        self.post(builder, AFFIRMED, stamp="2026-10-05T13:00:00Z")
+        assert work.decide(builder, RULES).stage == "artifact"
+        assert builder.artifact_phase.latest_settlement is None
+
     @pytest.mark.parametrize("composition_after_record", [False, True])
     def test_C2_request_completion_and_missing_snapshot_cannot_clear_terms(self, builder, composition_after_record):
         request = builder.term_turns[0][2]
@@ -1173,7 +1370,8 @@ def test_admitted_implementer_prompt_carries_its_governing_sources(
             ) == len(readings)
         else:
             assert b"Holder readings govern where they differ from the settled artifact." in prompt
-            assert b"The affirmed brief remains binding over both." in prompt
+            assert b"A holder reading recording the owner's ruling on an affirmed row governs that row." in prompt
+            assert b"The affirmed brief otherwise remains binding over the artifact and readings." in prompt
     else:
         assert settlement.encode("utf-8") not in prompt
         assert all(reading.encode("utf-8") not in prompt for reading in readings)

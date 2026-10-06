@@ -1940,13 +1940,28 @@ def _first_build_never_launched(state: WorkState, turns: list[tuple]) -> bool:
         if (request["stage"] != "build" or not isinstance(requested, dict) or requested.get("continuity") != "fresh"
                 or not isinstance(attempts, list) or not attempts
                 or any(not isinstance(attempt, dict) or attempt.get("launched") is not False for attempt in attempts)
-                or not work_recovery.restartable(request, run)):
+                or run.get("outcome") not in {"error", "unavailable"}
+                # Unavailable runtimes also prove no first recipient exists.
+                # Keep restartable's identity, cleanup and liveness requirements;
+                # this does not broaden its explicit replacement contract.
+                or not work_recovery.restartable(request, {**run, "outcome": "error"})):
             return False
         try:
             work_recovery.validate_target(state, "build", request, path)
         except (WorkError, OSError, ValueError):
             return False
     return True
+
+
+def _completed_non_delivery(request: dict, run: dict) -> bool:
+    """A resolved failed turn neither delivers nor retracts prior delivery."""
+    requested = request.get("requested")
+    return (isinstance(requested, dict) and requested.get("vendor") in {"codex", "claude"}
+            and run.get("actual_vendor") == requested["vendor"]
+            and run.get("lifecycle") == "completed" and bool(run.get("completed_at"))
+            and run.get("outcome") in {"completed_no_output", "unavailable"}
+            and not lifecycle.stopped(run) and not run.get("recovery_error")
+            and not run.get("session_identity_error"))
 
 
 def _governing_terms_decision(state: WorkState) -> Decision | None:
@@ -1970,17 +1985,34 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
         )
 
     try:
+        registered = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
+        if state.instalment is None and len(registered) > 1:
+            return Decision(
+                "implementation-scope", False, None, "implementation-instalment-required",
+                f"Governing record {identity}; multiple active implementation registrations "
+                "need holder scope. Run the entrance with --instalment before selecting a builder.",
+                status="holder-owned",
+            )
         turns = work_recovery.launches(state, "build")
     except (WorkError, OSError, ValueError) as exc:
         return result(False, f"builder discovery is unproved: {exc}")
     if not turns:
-        registered = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
-        if (state.pr is None and not registered
+        if (state.pr is None
                 and not any(marker.name == "builder-session" for marker in state.issue_markers)):
             return None  # The first build retains its fresh route.
         return result(False, "no relevant builder bundle proves the prompt boundary")
     if _first_build_never_launched(state, turns):
         return None  # Retry the first builder in its existing registered tree.
+    turns = list(turns)
+    while turns and _completed_non_delivery(turns[-1][2], turns[-1][3]):
+        _order, path, request, _run = turns[-1]
+        try:
+            work_recovery.validate_target(state, "build", request, path)
+        except (WorkError, OSError, ValueError) as exc:
+            return result(False, f"failed builder bundle {path} has unproved attribution: {exc}")
+        turns.pop()
+    if not turns:
+        return result(False, "no successful builder turn proves delivery of the governing record")
     latest = turns[-1]
     if len(turns) > 1 and turns[-2][0] == latest[0]:
         return result(False, f"latest builder attempts have ambiguous launch order: {turns[-2][1]}, {latest[1]}")
@@ -1991,7 +2023,8 @@ def _governing_terms_decision(state: WorkState) -> Decision | None:
         return result(False, f"builder bundle {latest[1]} is unproved: {exc}")
     # Floor prompts ask for a command result, not implementation. Retain their
     # lineage/recovery evidence above, but only build or repair can clear terms.
-    implementing = [turn for turn in turns if turn[2]["stage"] in {"build", "review-disposition"}]
+    implementing = [turn for turn in turns if turn[2]["stage"] in {"build", "review-disposition"}
+                    and turn[3].get("outcome") in SUCCESSFUL_BUNDLE_OUTCOMES]
     if not implementing:
         return result(True, f"bundle {latest[1]} is a floor turn, not a build or repair turn")
     selected = implementing[-1]
@@ -3212,7 +3245,15 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
 def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     _evaluate_raw_output(state, rules, str((state.raw_output or {}).get("policy") or "selected change-proof policy"))
     decision = _decide(state, rules)
-    recovered = work_recovery.recommend(state, decision)
+    try:
+        recovered = work_recovery.recommend(state, decision)
+    except (WorkError, OSError, ValueError) as exc:
+        if not decision.reason.startswith("governing-record-"):
+            raise
+        # The comparison already returned unreadable discovery to the holder;
+        # recovery's second registry read must not turn that return into an abort.
+        return replace(decision, dispatch=False, status="holder-owned",
+                       detail=f"{decision.detail} Recovery discovery is also unproved: {exc}")
     if decision.reason.startswith("governing-record-") and recovered != decision:
         try:
             detail = json.loads(recovered.detail or "")
@@ -4101,7 +4142,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         sections.append(
             "Holder readings govern where they differ from the settled artifact. "
             "The newest governs where readings differ from each other. "
-            "The affirmed brief remains binding over both."
+            "A holder reading recording the owner's ruling on an affirmed row governs that row. "
+            "The affirmed brief otherwise remains binding over the artifact and readings."
         )
         for reading in phase.holder_readings:
             sections.append(
@@ -5902,6 +5944,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         raise WorkError("budget override requires a build stage and nonempty reason")
     timeout_argument = f"{effective_timeout:g}"
     deadline = lifecycle.current_deadline() or lifecycle.stage_deadline(decision.stage, effective_timeout)
+    merged_fresh_build = (decision.stage == "build" and decision.continuity == "fresh"
+                          and state.merged_pr is not None)
     recovery_info = None
     restart_source = None
     if restart_unresolved_reason is not None:
@@ -5911,8 +5955,15 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
             raise WorkError("restart requires a dead completed fresh failure with no reported session and a nonempty reason")
         work_recovery.validate_target(state, decision.stage, restart_source[2], restart_source[1])
         decision = replace(decision, continuity="fresh")
-    if restart_source is None and decision.stage in RESUME_SOURCE_STAGES and work_recovery.latest_stopped(state, decision.stage) is not None:
-        decision = replace(decision, continuity="resume")
+    if restart_source is None and decision.stage in RESUME_SOURCE_STAGES and not merged_fresh_build:
+        try:
+            if work_recovery.latest_stopped(state, decision.stage) is not None:
+                decision = replace(decision, continuity="resume")
+        except (WorkError, OSError, ValueError) as exc:
+            refusal = Decision(decision.stage, False, None, f"resume-bundle-invalid-for-{decision.stage}",
+                               f"{exc}; {decision.detail}" if decision.detail else str(exc), status="refused")
+            _emit_report(_reported_decision(state, refusal).as_dict(), state)
+            return 0
     implementer_role = "artifact_author" if decision.stage == "artifact" else "implementer"
     selected_vendor = "codex"
     vendor_source = ""
@@ -6259,7 +6310,8 @@ def execute_stage(state: WorkState, decision: Decision, root: Path, instalment: 
         raise WorkError(launch_plan["reason"])
     # Establish budget authority before registration or branch publication.
     prior_rows = _change_rows(state.repo, state.issue_number, instalment, active_only=True)
-    budget_root = (Path(str(prior_rows[0]["root"])) if len(prior_rows) == 1 else
+    budget_root = (None if merged_fresh_build else
+                   Path(str(prior_rows[0]["root"])) if len(prior_rows) == 1 else
                    Path(resume_source.request["root"]) if resume_source and resume_source.request.get("root") else None)
     budget_branch = (prior_rows[0].get("branch") if len(prior_rows) == 1 else
                      resume_source.request.get("lineage_branch") if resume_source else None)
@@ -6603,7 +6655,15 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _named_continuity(state: WorkState, stage: str, recommendation: Decision) -> str:
-    if stage in RESUME_SOURCE_STAGES and work_recovery.latest_stopped(state, stage) is not None:
+    if stage == "build" and state.merged_pr is not None:
+        # A further build is fresh; _dispatch_root enforces release of the old
+        # registration before creating its new tree. Old markers cannot resume it.
+        return "fresh"
+    try:
+        if stage in RESUME_SOURCE_STAGES and work_recovery.latest_stopped(state, stage) is not None:
+            return "resume"
+    except (WorkError, OSError, ValueError):
+        # Let the named stage's existing refusal report discovery uncertainty.
         return "resume"
     if stage == "artifact":
         continuity = (recommendation.continuity if recommendation.stage == stage
@@ -6628,9 +6688,12 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
     if stage in {"cold-seat", "use", "proof", "ready-reviewers", "release-report", "catch-up"}:
         return "fresh"
     if stage == "build":
-        return "resume" if (state.pr is not None
-                            or any(marker.name == "builder-session" for marker in state.issue_markers)
-                            or work_recovery.launches(state, "build")) else "fresh"
+        try:
+            return "resume" if (state.pr is not None
+                                or any(marker.name == "builder-session" for marker in state.issue_markers)
+                                or work_recovery.launches(state, "build")) else "fresh"
+        except (WorkError, OSError, ValueError):
+            return "resume"
     return "resume"
 
 

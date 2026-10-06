@@ -22,6 +22,14 @@ The holder's second call preserves the existing pre-build mechanical-lane meanin
 
 The implementation retains private composition evidence tied to the exact frozen input and the governing source identities selected for it. A source absent from that snapshot cannot be certified as delivered merely because its timestamp precedes composition. Holder-written dispatches retain their bytes and content responsibility; their frozen-input boundary makes no automatic source-inclusion claim. An old launcher boundary can prove staleness, but a later request or completion cannot prove freshness. Unproved timing or lineage returns to the holder naming the record rather than falling back to older successful evidence. Existing recovery, cleanup and budget refusals retain authority.
 
+## Repair ruling
+
+On 2026-10-06 UTC, after the connected findings at `f0ee458785df391fd27e459ce7d3f6a650692963`, the owner ruled **"Fix it here"** on changing the composed prompt's precedence sentence rather than leaving it for a follow-up. The [second holder reading](https://github.com/Grimblaz-and-Friends/tradecraft/issues/860#issuecomment-6006454710) records this narrow exception to the brief's "No change to what a composed implementer prompt carries; #799 settled that." In composed build, floor and review-disposition prompts, a holder reading recording the owner's ruling on an affirmed row governs that row. The brief otherwise remains binding over the artifact and readings. Keeping the old blanket precedence would instruct the builder to follow the original row over its owner-affirmed amendment. The carried records and their order do not change.
+
+The reading also distinguishes delivery from later unsuccessful attempts. A successful build or repair proves delivered terms; a later completed failed turn neither clears a new obligation nor reintroduces one already cleared. Live or unresolved attempts remain under recovery. A first launch that reserved no bundle, or proved that no recipient launched, remains fresh even when its registration already exists. A further named build after a merged pull request remains fresh, with release of the old registration required first; retained markers and bundles cannot turn that work into a resume. Ambiguous active registrations ask the holder for instalment scope, and unreadable registration evidence returns to the holder rather than aborting.
+
+A review-lane change at any time uses a new affirmed brief because lane selection reads that carrier alone. The post-build amended-reading route applies when the lane stays the same. Moving off mechanical writes and settles the newly owed artifact; keeping or moving onto mechanical owes none. This preserves lane changes while making their carrier explicit in both amendment references.
+
 ## Pinned implementation evidence
 
 All paths below are from the repository root, at `d47474f4888b4eda2f0eaa835525edb9b1a10375`:
