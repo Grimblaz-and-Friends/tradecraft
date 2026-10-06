@@ -70,12 +70,32 @@ def git(root, *args, trust=()):
     return result.stdout.decode("utf-8").strip()
 
 
+def source_git(holder, *args):
+    """Retry only an ownership refusal, with trust limited to this source."""
+    try:
+        return git(holder, *args)
+    except ArtifactTreeError as exc:
+        if "detected dubious ownership" not in str(exc):
+            raise
+    # Git refuses rev-parse before reporting its Git directory. Resolve the
+    # worktree's own marker instead; neither global trust nor another repo is used.
+    marker = holder / ".git"
+    if marker.is_dir():
+        git_dir = marker.resolve()
+    else:
+        text = marker.read_text(encoding="utf-8").strip()
+        if not text.startswith("gitdir: "):
+            raise ArtifactTreeError(f"artifact source has an invalid Git marker: {marker}")
+        git_dir = (holder / text.removeprefix("gitdir: ")).resolve()
+    return git(holder, *args, trust=(holder.as_posix(), git_dir.as_posix()))
+
+
 def source(holder):
     holder = Path(holder).expanduser().resolve()
-    top = Path(git(holder, "rev-parse", "--show-toplevel")).resolve()
+    top = Path(source_git(holder, "rev-parse", "--show-toplevel")).resolve()
     if holder != top:
         raise ArtifactTreeError(f"artifact source must be the holder repository top level: {top}")
-    commit = git(holder, "rev-parse", "HEAD")
+    commit = source_git(holder, "rev-parse", "HEAD")
     if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:
         raise ArtifactTreeError("artifact source commit is invalid")
     return holder, commit
@@ -167,7 +187,10 @@ def provenance(request, bundle, *, holder=None, work=None, instalment=None):
         raise ArtifactTreeError(f"copy-capable bundle lacks artifact provenance: {bundle}")
     required = {"schema_version", "root", "holder_root", "source_commit", "committed_only", "remotes",
                 "lifecycle_record", "allocation_id", "temporary_parent", "directory_identity", "handover_root"}
-    if (not isinstance(copy, dict) or set(copy) != required or copy["schema_version"] != 1
+    if (not isinstance(copy, dict) or not required <= set(copy)
+            or set(copy) - required - {"handover_branch"}
+            or (copy.get("handover_branch") is not None and not isinstance(copy["handover_branch"], str))
+            or copy["schema_version"] != 1
             or copy["committed_only"] is not True or copy["remotes"] != []
             or re.fullmatch(r"[0-9a-f]{32}", str(copy["allocation_id"])) is None
             or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", str(copy["source_commit"])) is None
@@ -200,6 +223,18 @@ def accepted(run):
             and bool(run.get("completed_at")) and run.get("outcome") in {"success", "success_uncontinuable"}
             and isinstance(validation, dict) and validation.get("status") == "pass"
             and bool(result.get("published_output")))
+
+
+def unlaunched(run):
+    """Completed explicit no-launch evidence cannot supersede an author."""
+    attempts = run.get("attempts")
+    return (run.get("schema_version") == records.SCHEMA_VERSION
+            and run.get("lifecycle") == "completed" and bool(run.get("completed_at"))
+            and run.get("outcome") in {"unavailable", "error"}
+            and not run.get("recovery_error") and not run.get("launch_unresolved")
+            and run.get("cleanup_proven") is not False and not run.get("recipient_process")
+            and isinstance(attempts, list) and bool(attempts)
+            and all(isinstance(attempt, dict) and attempt.get("launched") is False for attempt in attempts))
 
 
 def validate_resume(request, run, bundle, **kwargs):
@@ -256,8 +291,10 @@ def finish(copy, output, *, invoked, unused=False, forbidden=()):
             run = _read(records.sidecar(output, ".run.json"))
             provenance(request, records.sidecar(output, ".run.json"))
             returned = run.get("result") or {}
-            if (request.get("artifact_copy") == copy and request.get("dispatch_id") == run.get("dispatch_id")
-                    and accepted(run) and run.get("cleanup_proven") is True
+            exact = request.get("artifact_copy") == copy and request.get("dispatch_id") == run.get("dispatch_id")
+            if exact and unused and unlaunched(run):
+                result = dispose(copy, forbidden=forbidden)
+            elif (exact and accepted(run) and run.get("cleanup_proven") is True
                     and not run.get("launch_unresolved") and not run.get("session_identity_error")
                     and returned.get("published_output") == str(output)
                     and output.read_bytes().strip()
@@ -303,6 +340,8 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
                 "temporary_parent": str(parent), "directory_identity": _identity(root),
                 "holder_root": str(holder), "source_commit": commit, "committed_only": True,
                 "remotes": [], "lifecycle_record": str(lifecycle_path),
+                "handover_branch": (prior.get("handover_branch") if prior else
+                    predecessor.request.get("lineage_branch") if predecessor else None),
                 "handover_root": (prior["handover_root"] if prior else
                     str(Path(predecessor.request.get("root") or holder).resolve()) if predecessor else str(root))}
     record = {"schema_version": 1, "artifact_copy": copy, "work": work, "instalment": instalment,
@@ -326,13 +365,7 @@ def checkout(holder, output, *, work, instalment, holder_session_id, predecessor
         if not reuse:
             clone = ("clone", "--no-hardlinks", "--dissociate", "--no-checkout",
                      "-c", "core.longpaths=true", "--", str(holder), copy["root"])
-            try:
-                git(holder, *clone)
-            except ArtifactTreeError as exc:
-                if "detected dubious ownership" not in str(exc):
-                    raise
-                git_dir = Path(git(holder, "rev-parse", "--absolute-git-dir")).resolve()
-                git(holder, *clone, trust=(holder.as_posix(), git_dir.as_posix()))
+            source_git(holder, *clone)
             for remote in git(Path(copy["root"]), "remote").splitlines():
                 git(Path(copy["root"]), "remote", "remove", remote)
             # Check the effective tree before checkout can write any files.

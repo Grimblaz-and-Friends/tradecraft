@@ -84,6 +84,135 @@ def snapshot(root):
             "index": git(root, "ls-files", "--stage").stdout}
 
 
+def repair_state(holder, store):
+    fixture = work._read_policy_state(ArtifactTransport(), "example/product", 12, CONFIG, {"rules": []}, "fixture")
+    fixture.holder_root, fixture.record_root = holder, store
+    fixture.issue_comments.append({"id": 752, "body": "<!-- tradecraft:artifact:v1 status=draft -->\n" + artifact_text("combined"),
+        "created_at": datetime.now(timezone.utc).isoformat(), "user": {"login": PRODUCER}})
+    fixture.validated_markers, fixture.artifact_phase = None, None
+    work.validate_marker_claims(fixture)
+    return fixture
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "error"])
+@pytest.mark.parametrize("removal_fails", [False, True])
+def test_unlaunched_artifact_attempt_disposes_unused_copy_and_does_not_block_author(
+        entrance, monkeypatch, capsys, failure, removal_fails):
+    holder, store, commands, setup = entrance
+    args, _, _ = setup("codex")
+    assert work.run(args, transport=ArtifactTransport()) == 0
+    accepted_path = bundles(store)[-1][1]
+    fixture = repair_state(holder, store)
+    decision = work.Decision("artifact", True, "resume", "cold-repair")
+    original_dispose, original_process = trees.dispose, implementer.run_process
+    if removal_fails:
+        monkeypatch.setattr(trees, "dispose", lambda copy, **_k: {
+            "state": "removal_failed", "remaining_path": copy["root"], "reason": "injected unused removal failure"})
+    if failure == "unavailable":
+        monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a: ["--codex-unavailable-reason", "fixture unavailable"])
+    else:
+        def refuse_launch(*_a, **_k):
+            raise OSError("fixture launch refused")
+        monkeypatch.setattr(implementer, "run_process", refuse_launch)
+    assert work.execute_stage(fixture, decision, holder, None, "holder") == 1
+    _, failed_path, unused_request, unused_run = bundles(store)[-1]
+    unused_root = Path(unused_request["root"])
+    assert unused_run["outcome"] == failure and unused_run["attempts"][0]["launched"] is False
+    assert work._resume_source("example/product#12", "artifact", store, state=fixture).path == accepted_path
+    copy_record = trees._read(unused_request["artifact_copy"]["lifecycle_record"])
+    assert copy_record["state"] == ("removal_failed" if removal_fails else "removed")
+    if removal_fails:
+        assert str(unused_root) in capsys.readouterr().out.replace("\\\\", "\\")
+    old_bundle = Path(failed_path).read_bytes()
+    monkeypatch.setattr(trees, "dispose", original_dispose)
+    monkeypatch.setattr(implementer, "run_process", original_process)
+    monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a: [])
+    args, capture, _ = setup("codex", probe=True)
+    assert work.execute_stage(fixture, decision, holder, None, "holder") == 0
+    resumed = bundles(store)[-1][2]
+    assert resumed["requested"]["session_id"] == SESSION
+    assert resumed["predecessor_bundle"] == accepted_path and resumed["root"] != str(unused_root)
+    assert json.loads(capture.read_bytes())["draft_before"] is None
+    assert Path(failed_path).read_bytes() == old_bundle
+
+
+@pytest.mark.parametrize("pinned", ["codex", "claude"])
+def test_legacy_artifact_handover_execution_keeps_recorded_branch(entrance, tmp_path, pinned):
+    holder, store, commands, setup = entrance
+    old = repository(tmp_path, "legacy-author")
+    store.mkdir()
+    fixture = repair_state(holder, store)
+    reserved = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    source_path = str(store / "legacy.run.json")
+    handover_path = work._handover_path(fixture, "artifact_author", old, "registered-branch")
+    handover_path.parent.mkdir(parents=True, exist_ok=True)
+    reservation = {"schema_version": 1, "from_bundle": source_path, "from_vendor": "codex",
+                   "from_session": SESSION, "to_vendor": "claude",
+                   "replacement_session": reserved, "phase": "running"}
+    handover_path.write_bytes(work.records.json_bytes(reservation))
+    request = {"schema_version": 2, "dispatch_id": "legacy", "work": "example/product#12", "stage": "artifact",
+        "producer_version": "0.186.0", "root": str(old), "lineage_branch": "registered-branch",
+        "launched_at": "2026-10-04T10:00:00Z", "requested": {"vendor": pinned, "session_id": None, "continuity": "fresh"}}
+    if pinned == "claude":
+        request["handover"] = {"state": str(handover_path), **reservation, "phase": "resume"}
+    run = {"schema_version": 2, "dispatch_id": "legacy", "actual_vendor": pinned,
+        "outcome": "invalid_artifact_return", "completed_at": "2026-10-04T11:00:00Z",
+        "attempts": [{"vendor": pinned, "launched": True, "observed": {
+            "session_id": reserved if pinned == "claude" else SESSION,
+            "session_id_source": "claude JSON result.session_id" if pinned == "claude" else "codex JSONL thread.started.thread_id"}}]}
+    (store / "legacy.request.json").write_bytes(work.records.json_bytes(request))
+    Path(source_path).write_bytes(work.records.json_bytes(run))
+    args, capture, _ = setup("claude", identity=reserved, probe=True)
+    decision = work.Decision("artifact", True, "resume", "cold-repair")
+    recovery = reserved if pinned == "codex" else None
+    plan = work._launch_plan(fixture, decision, root=holder, recovery_session=recovery)
+    assert plan["handover"]["state"] == str(handover_path)
+    assert work.execute_stage(fixture, decision, holder, None, "holder", handover_recovery_session=recovery) == 0
+    latest = bundles(store)[-1][2]
+    assert latest["handover"]["state"] == str(handover_path)
+    assert latest["requested"]["session_id"] == reserved and latest["root"] != str(old)
+    assert json.loads(capture.read_bytes())["cwd"] == latest["root"]
+    assert not work._handover_path(fixture, "artifact_author", old, None).exists()
+    # The new-mechanism successor carries the same legacy reservation identity.
+    assert work._launch_plan(fixture, decision, root=holder)["handover"]["state"] == str(handover_path)
+    setup("claude", identity=reserved, probe=True)
+    assert work.execute_stage(fixture, decision, holder, None, "holder") == 0
+    assert bundles(store)[-1][2]["artifact_copy"]["handover_branch"] == "registered-branch"
+
+
+@pytest.mark.parametrize("copy_exists", [False, True])
+def test_sessionless_artifact_restart_uses_fresh_copy_without_proving_old_copy(entrance, capsys, copy_exists):
+    holder, store, commands, setup = entrance
+    args, _, _ = setup("codex", fail="runtime", identity=None)
+    assert work.run(args, transport=ArtifactTransport()) == 1
+    _, failed_path, request, run = bundles(store)[-1]
+    # A dead native launch with no identity is restartable, never resumable.
+    run.pop("session_identity", None)
+    run.pop("session_identity_error", None)
+    for attempt in run["attempts"]:
+        attempt["observed"].pop("session_id", None)
+    dead = lifecycle.process_identity()
+    dead["birth"] += "dead"
+    run["launcher_process"] = run["recipient_process"] = dead
+    Path(failed_path).write_bytes(work.records.json_bytes(run))
+    old_root = Path(request["root"])
+    before = snapshot(old_root)
+    if not copy_exists:
+        assert trees.dispose(request["artifact_copy"])["state"] == "removed"
+    fixture = repair_state(holder, store)
+    args, capture, _ = setup("codex", probe=True)
+    decision = work.Decision("artifact", True, "resume", "stopped")
+    assert work.execute_stage(fixture, decision, holder, None, "holder",
+        restart_unresolved_reason="dead run had no saved native session") == 0
+    latest = bundles(store)[-1][2]
+    assert latest["root"] != str(old_root) and latest["requested"]["continuity"] == "fresh"
+    assert latest["recovery_restart_bundle"] == failed_path
+    assert json.loads(capture.read_bytes())["draft_before"] is None
+    if copy_exists:
+        assert snapshot(old_root) == before
+        assert str(old_root) in capsys.readouterr().out.replace("\\\\", "\\")
+
+
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
 @pytest.mark.parametrize("custom", [False, True])
 @pytest.mark.parametrize("registration", ["active", "historical", "legacy"])

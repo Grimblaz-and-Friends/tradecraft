@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tomllib
+from contextlib import ExitStack
 
 import pytest
 
@@ -80,6 +81,19 @@ def supply_artifact_brief(args):
     args.artifact_brief = args.dispatch.with_name("brief.md")
     args.artifact_brief.write_bytes(ARTIFACT_BRIEF.encode("utf-8"))
     args.artifact_brief_source = "issue-comment:affirmed"
+    # These are launcher validation tests, supplied with genuine entrance-owned
+    # copy authority; unowned direct artifacts have their own refusal tests.
+    import artifact_tree
+    from test_work import git
+    git(args.root, "init")
+    (args.root / "fixture.txt").write_bytes(b"committed author fixture\n")
+    git(args.root, "add", "fixture.txt")
+    git(args.root, "-c", "user.name=fixture", "-c", "user.email=f@x", "commit", "-m", "fixture")
+    copy, _invoked, _record = args.artifact_stack.enter_context(artifact_tree.checkout(
+        args.root, args.output, work=args.work, instalment=None, holder_session_id=args.holder_session_id))
+    args.root = Path(copy["root"])
+    args.lifecycle_input = args.dispatch.with_name("lifecycle-input.json")
+    args.lifecycle_input.write_bytes(json.dumps({"artifact_copy": copy}).encode())
 
 
 @pytest.fixture
@@ -105,11 +119,46 @@ def job(tmp_path, monkeypatch):
         lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "codex", str(scenario)],
     )
     monkeypatch.setattr(implementer.records, "runtime_version", lambda *_: "codex-cli test")
-    return args, scenario
+    with ExitStack() as stack:
+        args.artifact_stack = stack
+        yield args, scenario
 
 
 def configure(job, value):
     job[1].write_bytes(json.dumps({"codex": value}).encode("utf-8"))
+
+
+@pytest.mark.parametrize("resume", [None, "0199a213-81c0-7800-8aa1-bbab2a035a53"])
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_direct_artifact_without_owned_lifecycle_refuses_before_any_bundle(job, monkeypatch, resume, vendor):
+    args, _ = job
+    args.stage, args.vendor, args.resume = "artifact", vendor, resume
+    args.artifact_brief = args.dispatch.with_name("brief.md")
+    args.artifact_brief.write_bytes(ARTIFACT_BRIEF.encode())
+    configure(job, native_artifact_result("codex", artifact_text()))
+    with pytest.raises(implementer.ImplementerError, match="work.py run artifact"):
+        implementer.run_implementer(args)
+    assert not args.output.parent.exists()
+    assert not (args.root / "seen-codex.json").exists()
+    assert not (args.root / "seen-claude.json").exists()
+
+
+def test_artifact_independent_root_without_matching_lifecycle_refuses_before_request(job, monkeypatch):
+    args, _ = job
+    args.stage = "artifact"
+    supply_artifact_brief(args)
+    import artifact_tree
+    copy = json.loads(args.lifecycle_input.read_bytes())["artifact_copy"]
+    record = artifact_tree._read(copy["lifecycle_record"])
+    record["work"] = "another-work"
+    artifact_tree._atomic(Path(copy["lifecycle_record"]), record)
+    configure(job, native_artifact_result("codex", artifact_text()))
+    monkeypatch.setattr(implementer.records, "reserve_bundle",
+        lambda *_a: pytest.fail("invalid artifact authority reached bundle reservation"))
+    with pytest.raises(implementer.ImplementerError, match="invalid artifact copy.*lifecycle conflicts"):
+        implementer.run_implementer(args)
+    assert not implementer.records.sidecar(args.output, ".request.json").exists()
+    assert not (args.root / "seen-codex.json").exists()
 
 
 @pytest.mark.parametrize("origin", ["entrance", "holder"])
@@ -1183,10 +1232,11 @@ def test_artifact_brief_input_is_validated_before_launch(job, monkeypatch, conte
     if content is not None:
         supply_artifact_brief(args)
         args.artifact_brief.write_bytes(content)
+    before = {path: path.read_bytes() for path in args.output.parent.rglob("*") if path.is_file()}
     monkeypatch.setattr(implementer, "run_process", lambda *_a, **_k: pytest.fail("launched invalid input"))
     with pytest.raises((implementer.ImplementerError, UnicodeError)):
         implementer.run_implementer(args)
-    assert not args.output.parent.exists()
+    assert {path: path.read_bytes() for path in args.output.parent.rglob("*") if path.is_file()} == before
 
 
 @pytest.mark.parametrize("vendor", ["codex", "claude"])

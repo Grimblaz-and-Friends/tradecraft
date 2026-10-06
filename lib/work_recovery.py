@@ -129,13 +129,16 @@ def handover_predecessor(state, latest):
                     return None
                 prior_root = (prior_copy["handover_root"] if prior_copy else prior_root)
                 current_root = copy["handover_root"] if copy else request.get("root")
+                prior_branch = prior_copy.get("handover_branch") if prior_copy else prior_branch
+                current_branch = copy.get("handover_branch") if copy else request.get("lineage_branch")
             else:
                 current_root = request.get("root")
+                current_branch = request.get("lineage_branch")
             if (prior_root and (not isinstance(prior_root, str)
                                or not isinstance(current_root, str)
                                or not work._same_path(Path(prior_root), Path(current_root)))):
                 return None
-            if prior_branch and request.get("lineage_branch") != prior_branch:
+            if prior_branch and current_branch != prior_branch:
                 return None
             return row
     return None
@@ -143,7 +146,28 @@ def handover_predecessor(state, latest):
 
 def latest_stopped(state, stage):
     rows = launches(state, stage)
+    if stage == "artifact":
+        rows = authored(rows, state=state, work_value=f"{state.repo}#{state.issue_number}")
     return rows[-1] if rows and lifecycle.stopped(rows[-1][3]) else None
+
+
+def authored(rows, *, state=None, work_value):
+    """Ignore only proved no-author attempts; preserve ambiguous latest evidence."""
+    work = _entrance()
+    selected = []
+    for row in rows:
+        if artifact_tree.unlaunched(row[3]):
+            if work._version_key(row[2].get("producer_version")) is None:
+                raise work.WorkError(f"unlaunched artifact bundle has invalid producer version: {row[1]}")
+            try:
+                artifact_tree.provenance(row[2], row[1],
+                    holder=state.holder_root if state else None, work=work_value,
+                    instalment=state.instalment if state else None)
+            except artifact_tree.ArtifactTreeError as exc:
+                raise work.WorkError(str(exc)) from exc
+        else:
+            selected.append(row)
+    return selected
 
 
 def stopped_source(state, stage):
@@ -164,7 +188,7 @@ def stopped_source(state, stage):
     return work.ResumeSource(order, path, request, run, session)
 
 
-def validate_target(state, stage, request, path, *, include_released=False):
+def validate_target(state, stage, request, path, *, include_released=False, restart=False):
     work = _entrance()
     root_value = request.get("root")
     if not isinstance(root_value, str) or not root_value:
@@ -187,7 +211,9 @@ def validate_target(state, stage, request, path, *, include_released=False):
     else:
         try:
             # Legacy roots are evidence only: execution makes a fresh committed copy.
-            artifact_tree.validate_resume(request, {}, path, holder=state.holder_root,
+            validate = artifact_tree.provenance if restart else artifact_tree.validate_resume
+            args = (request, path) if restart else (request, {}, path)
+            validate(*args, holder=state.holder_root,
                 work=f"{state.repo}#{state.issue_number}", instalment=state.instalment)
         except artifact_tree.ArtifactTreeError as exc:
             raise work.WorkError(f"stopped bundle {path}: {exc}") from exc

@@ -12,6 +12,51 @@ import run_lifecycle as lifecycle
 from test_work import repository, git
 
 
+@pytest.mark.parametrize("change", [
+    {"completed_at": None}, {"lifecycle": "running"}, {"cleanup_proven": False},
+    {"launch_unresolved": True}, {"recovery_error": "unsupported dispatch schema"},
+    {"attempts": [{"launched": True}]}, {"attempts": [{}]}, {"attempts": []},
+    {"recipient_process": {"pid": 1}},
+])
+def test_unlaunched_attempt_requires_explicit_complete_no_launch_evidence(change):
+    run = {"schema_version": 2, "lifecycle": "completed", "completed_at": "2026-10-06T00:00:00Z",
+           "outcome": "error", "attempts": [{"launched": False, "observed": {"session_id": "inherited"}}]}
+    assert trees.unlaunched(run)
+    assert not trees.unlaunched({**run, **change})
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_source_probes_retry_dubious_ownership_with_only_scoped_trust(tmp_path, monkeypatch, linked):
+    holder = repository(tmp_path)
+    if linked:
+        target = tmp_path / "linked"
+        git(holder, "worktree", "add", "-b", "linked", str(target))
+        holder = target
+    git_dir = Path(git(holder, "rev-parse", "--absolute-git-dir").stdout.decode().strip()).resolve()
+    commit = git(holder, "rev-parse", "HEAD").stdout.decode().strip()
+    original = trees.run_process
+    commands = []
+    def different_owner(command, **kwargs):
+        if command[0] == "git" and command[command.index("-C") + 1] == str(holder):
+            kwargs["env"] = {**kwargs["env"], "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}
+            commands.append(command)
+        return original(command, **kwargs)
+    monkeypatch.setattr(trees, "run_process", different_owner)
+    # Negative control establishes the real Git ownership refusal being repaired.
+    with pytest.raises(trees.ArtifactTreeError, match="dubious ownership"):
+        trees.git(holder, "rev-parse", "--show-toplevel")
+    with trees.checkout(holder, tmp_path / "bundle/result.md", work="fixture#1", instalment=None,
+                        holder_session_id="holder") as (copy, _invoked, _record):
+        assert copy["source_commit"] == commit
+        assert trees.git(Path(copy["root"]), "remote") == ""
+    trusted = [command for command in commands if any(value.startswith("safe.directory=") for value in command)]
+    assert trusted
+    for command in trusted:
+        assert [value for value in command if value.startswith("safe.directory=")] == [
+            "safe.directory=" + holder.as_posix(), "safe.directory=" + git_dir.as_posix()]
+        assert "--global" not in command and "safe.directory=*" not in command
+
+
 @pytest.mark.parametrize("shape", ["ordinary", "linked", "detached", "borrowed"])
 def test_copy_has_committed_tree_history_and_no_inherited_git_route(tmp_path, monkeypatch, shape):
     holder = repository(tmp_path)

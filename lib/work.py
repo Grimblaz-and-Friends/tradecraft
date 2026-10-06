@@ -4813,6 +4813,8 @@ def _resume_source(work_value: str, stage: str, record_root: Path, *,
         RESUME_SOURCE_STAGES.get(stage, frozenset({stage})), after=completed_after)
     if state is not None:
         latest = work_recovery.scoped(state, latest)
+    if stage == "artifact":
+        latest = work_recovery.authored(latest, state=state, work_value=work_value)
     if (stage == "artifact" and latest and latest[-1][2].get("artifact_copy") is not None
             and not lifecycle.stopped(latest[-1][3])
             and latest[-1][3].get("outcome") not in RESUMABLE_BUNDLE_OUTCOMES):
@@ -5050,7 +5052,7 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
             copy = artifact_tree.provenance(source.request, source.path)
             if copy:
                 selected_root = Path(copy["handover_root"])
-                prior_branch = None
+                prior_branch = copy.get("handover_branch")
         rows = (_change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
                 if decision.stage != "artifact" else [])
         if rows:
@@ -6081,7 +6083,13 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
         if (not restart_unresolved_reason.strip() or restart_source is None
                 or not work_recovery.restartable(restart_source[2], restart_source[3])):
             raise WorkError("restart requires a dead completed fresh failure with no reported session and a nonempty reason")
-        work_recovery.validate_target(state, decision.stage, restart_source[2], restart_source[1])
+        work_recovery.validate_target(state, decision.stage, restart_source[2], restart_source[1], restart=True)
+        if decision.stage == "artifact":
+            prior_copy = artifact_tree.provenance(restart_source[2], restart_source[1])
+            if prior_copy and Path(prior_copy["root"]).exists():
+                print("artifact-copy: " + json.dumps({"state": "restart_residue",
+                    "remaining_path": prior_copy["root"], "bundle": restart_source[1],
+                    "reason": "explicit restart uses a fresh copy; stopped copy is not reused"}, ensure_ascii=True), flush=True)
         decision = replace(decision, continuity="fresh")
     if restart_source is None and decision.stage in RESUME_SOURCE_STAGES:
         try:
@@ -6483,12 +6491,16 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
         handover_runtime: list[str] | None = None
         handover_unavailable = False
         handover_retry_of: str | None = None
+        handover_branch = artifact_run[0].get("handover_branch") if artifact_run else branch
+        if (artifact_run and resume_source is not None
+                and artifact_tree.provenance(resume_source.request, resume_source.path) is None):
+            handover_branch = resume_source.request.get("lineage_branch")
         if prepared_dispatch is not None and _path_inside(prepared_dispatch, dispatch_root):
             raise WorkError("dispatch file must be outside the registered implementation root")
         if (uses_implementer and decision.continuity == "resume" and resume_source is not None
                 and resume_source.request.get("requested", {}).get("vendor") == "codex"):
             handover_root = (Path(artifact_run[0]["handover_root"]) if artifact_run else dispatch_root)
-            handover_state_path = _handover_path(state, implementer_role, handover_root, branch)
+            handover_state_path = _handover_path(state, implementer_role, handover_root, handover_branch)
             recorded_handover = handover_state_path.is_file()
             if handover_recovery_session is not None and not recorded_handover:
                 raise WorkError(f"no recorded handover at {handover_state_path} to recover")
@@ -6530,7 +6542,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
               and isinstance(resume_source.request.get("handover"), dict)):
             source_handover = resume_source.request["handover"]
             handover_root = (Path(artifact_run[0]["handover_root"]) if artifact_run else dispatch_root)
-            handover_state_path = _handover_path(state, implementer_role, handover_root, branch)
+            handover_state_path = _handover_path(state, implementer_role, handover_root, handover_branch)
             if source_handover.get("state") != str(handover_state_path):
                 raise WorkError("Claude resume bundle names a different handover lineage")
             handover_record = _json_object(handover_state_path)
