@@ -19,7 +19,7 @@ import run_lifecycle as lifecycle
 from seat_process import run_process
 from winio import utf8_stdio
 
-MECHANISM_VERSION = "0.186.0"
+MECHANISM_VERSION = "0.187.0"
 GIT_BINDINGS = frozenset({
     "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -161,7 +161,8 @@ def provenance(request, bundle, *, holder=None, work=None, instalment=None):
     if copy is None:
         version = request.get("producer_version", "")
         core = version.split("-", 1)[0].split("+", 1)[0] if isinstance(version, str) else ""
-        if re.fullmatch(r"\d+\.\d+\.\d+", core) and tuple(map(int, core.split("."))) < (0, 186, 0):
+        if (re.fullmatch(r"\d+\.\d+\.\d+", core)
+                and tuple(map(int, core.split("."))) < tuple(map(int, MECHANISM_VERSION.split(".")))):
             return None
         raise ArtifactTreeError(f"copy-capable bundle lacks artifact provenance: {bundle}")
     required = {"schema_version", "root", "holder_root", "source_commit", "committed_only", "remotes",

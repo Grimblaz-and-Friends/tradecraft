@@ -76,6 +76,932 @@ def remove_fixture_artifact_copies(tmp_path):
             assert work.artifact_tree.dispose(copy)["state"] == "removed"
 
 
+@pytest.fixture(autouse=True)
+def already_built_terms(monkeypatch):
+    # These existing unit fixtures isolate head/artifact routing from the launch
+    # ledger. TestGoverningTerms overrides this prerequisite and exercises the
+    # real comparison with attributed, retained bundles and registered trees.
+    monkeypatch.setattr(work, "_governing_terms_decision", lambda _state: None)
+
+
+class TestGoverningTerms:
+    @pytest.fixture(autouse=True)
+    def already_built_terms(self):
+        # Exercise the production prerequisite, including the real run endpoint.
+        pass
+
+    @pytest.fixture
+    def builder(self, tmp_path, monkeypatch):
+        holder = repository(tmp_path, "terms-holder")
+        root = tmp_path / "terms-builder"
+        git(holder, "worktree", "add", "-b", "terms-change", str(root))
+        row = registry_row(root, holder, "terms-change")
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [row]})
+        fixture = state(AFFIRMED, ARTIFACT, _settled("unobtainable"), HOLDER,
+                        pr=True, draft=False, paths=["README.md"],
+                        config=work.WorkConfig(marker_producers=frozenset({PRODUCER})))
+        fixture.pr["head"]["ref"] = "terms-change"
+        fixture.floor_public = {"outcome": "ci-met", "head": SHA}
+        fixture.pr_comments = [{"id": 71, "user": {"login": PRODUCER},
+                                "body": f"<!-- tradecraft:proof:v1 head={SHA} -->"}]
+        fixture.proof_current = True
+        fixture.checks = [gate_check()]
+        store = tmp_path / "term-dispatches"
+        fixture.record_root, fixture.holder_root = store, holder
+        monkeypatch.setattr(work.records, "default_record_root", lambda: store)
+        for index, comment in enumerate(fixture.issue_comments):
+            comment.update(id=100 + index, created_at=f"2026-10-05T09:0{index}:00Z",
+                           html_url=f"https://github.com/example/product/issues/12#issuecomment-{100 + index}")
+        fixture.term_root = root
+        fixture.term_registration = row
+        fixture.term_turns = []
+        self.turn(fixture)
+        return fixture
+
+    def post(self, fixture, body, *, stamp="2026-10-05T11:00:00Z", author=PRODUCER):
+        identity = 200 + len(fixture.issue_comments)
+        comment = {"id": identity, "body": body, "user": {"login": author}, "created_at": stamp,
+                   "html_url": f"https://github.com/example/product/issues/12#issuecomment-{identity}"}
+        fixture.issue_comments.append(comment)
+        return comment
+
+    def amendment(self, fixture, carrier="reading"):
+        if carrier in {"brief", "unchanged-brief", "mechanical"}:
+            brief = MECHANICAL if carrier == "mechanical" else AFFIRMED
+            comment = self.post(fixture, brief + ("\nChanged accepted row." if carrier == "brief" else ""))
+            if carrier != "mechanical":
+                self.post(fixture, ARTIFACT, stamp="2026-10-05T11:01:00Z")
+                self.post(fixture, _settled("unobtainable"), stamp="2026-10-05T11:02:00Z")
+                self.post(fixture, HOLDER, stamp="2026-10-05T11:03:00Z")
+        else:
+            comment = self.post(fixture, _holder_reading("Whole accepted row: build the changed product behavior."))
+        return comment
+
+    def turn(self, fixture, *, stage="build", composed="2026-10-05T10:00:00Z",
+             launched="2026-10-05T10:01:00Z", completed="2026-10-05T10:02:00Z",
+             session=SESSION, origin="entrance", snapshot=None):
+        work.validate_marker_claims(fixture)
+        prompt = work._stage_prompt(fixture, work.Decision(stage, True, "resume", "fixture"),
+                                    branch="terms-change", floor_command="python fixture-check.py")
+        number = len(fixture.term_turns)
+        folder = fixture.record_root / f"turn-{number}"
+        folder.mkdir(parents=True)
+        dispatch = folder / "result.md.dispatch.bin"
+        dispatch.write_bytes(prompt)
+        context = folder / "result.md.context.bin"
+        context.write_bytes(b"One bounded stage.\n")
+        effective_digest = hashlib.sha256(context.read_bytes() + b"\n\n" + prompt).hexdigest()
+        evidence = {"origin": origin, "composed_at": composed,
+                    "dispatch_sha256": hashlib.sha256(prompt).hexdigest(),
+                    "effective_input_sha256": effective_digest}
+        if origin == "entrance":
+            evidence["sources"] = (snapshot if snapshot is not None else
+                                   [work._governing_identity(marker) for marker in work._governing_sources(fixture)])
+        request = {"schema_version": 2, "dispatch_id": f"turn-{number}", "work": "example/product#12",
+                   "stage": stage, "producer_version": work.records.producer_version(),
+                   "root": str(fixture.term_root), "lineage_branch": "terms-change",
+                   "lineage_pull_request": fixture.pr["number"] if fixture.pr else None,
+                   "launched_at": launched, "input": str(dispatch),
+                   "context": {"path": str(context)}, "effective_input_sha256": effective_digest,
+                   "prompt_composition": evidence,
+                   "requested": {"vendor": "codex", "session_id": session, "continuity": "resume"}}
+        run = {"schema_version": 2, "dispatch_id": f"turn-{number}", "actual_vendor": "codex",
+               "completed_at": completed, "outcome": "success", "lifecycle": "completed",
+               "revision_after": SHA,
+               "attempts": [{"launched": True, "elapsed_seconds": 1,
+                             "observed": {"session_id": session}}]}
+        request_path, run_path = folder / "result.md.request.json", folder / "result.md.run.json"
+        fixture.term_turns.append((request_path, run_path, request, run))
+        self.save(fixture)
+        return request, run
+
+    def save(self, fixture):
+        for request_path, run_path, request, run in fixture.term_turns:
+            request_path.write_bytes(work.records.json_bytes(request))
+            run_path.write_bytes(work.records.json_bytes(run))
+
+    def due(self, fixture, comment, *, runnable=True):
+        decision = work.decide(fixture, RULES)
+        assert (decision.stage, decision.dispatch, decision.continuity) == ("build", runnable, "resume")
+        assert decision.status == ("runnable" if runnable else "holder-owned")
+        for value in [str(comment["id"]), comment["html_url"], comment.get("created_at")]:
+            if value:
+                assert value in decision.detail
+        assert "Run build on the resumed builder" in decision.detail
+        return decision
+
+    @pytest.mark.parametrize("carrier", ["brief", "reading", "unchanged-brief", "mechanical"])
+    @pytest.mark.parametrize("downstream", ["floor", "ready-reviewers", "use", "proof", "release-report"])
+    def test_C1_record_precedes_every_downstream_route(self, builder, carrier, downstream):
+        if downstream == "floor":
+            builder.floor_public = None
+        elif downstream == "ready-reviewers":
+            builder.pr["draft"] = True
+        elif downstream == "use":
+            builder.changed_paths = ["lib/runtime.py"]
+        elif downstream == "proof":
+            builder.pr_comments = []
+        comment = self.amendment(builder, carrier)
+        decision = self.due(builder, comment)
+        assert "turn-0" in decision.detail
+
+    @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+    def test_repair_866_owner_row_ruling_overrides_only_its_affirmed_row(self, builder, stage):
+        self.post(builder, _holder_reading("Owner ruling: replace row 1 whole; other rows remain affirmed."))
+        work.validate_marker_claims(builder)
+        prompt = work._stage_prompt(builder, work.Decision(stage, True, "resume", "fixture"),
+                                    floor_command="python fixture-check.py").decode()
+        assert "A holder reading recording the owner's ruling on an affirmed row governs that row" in prompt
+        assert "The affirmed brief otherwise remains binding over the artifact and readings." in prompt
+        assert "The affirmed brief remains binding over both." not in prompt
+        assert builder.issue_comments[0]["body"] in prompt
+        assert builder.issue_comments[-1]["body"] in prompt
+
+    @pytest.mark.parametrize("failure", ["no-bundle", "unavailable", "error", "interrupted"])
+    def test_repair_866_unlaunched_first_builder_stays_fresh(self, builder, monkeypatch, failure):
+        _request, run = self.never_launched(builder)
+        if failure == "no-bundle":
+            for request_path, run_path, *_ in builder.term_turns:
+                request_path.unlink()
+                run_path.unlink()
+            builder.term_turns.clear()
+        else:
+            run["outcome"] = failure
+            self.save(builder)
+        decision = work.decide(builder, RULES)
+        assert (decision.stage, decision.dispatch, decision.continuity) == ("build", True, "fresh")
+        assert work._named_continuity(builder, "build", decision) == "fresh"
+        launches = []
+        monkeypatch.setattr(work, "create_implementation_root", lambda *_a: pytest.fail("created another tree"))
+        monkeypatch.setattr(work, "publish_implementation_branch", lambda *_a: None)
+        def launch(command, **_kwargs):
+            launches.append(command)
+            assert "--resume" not in command
+            assert Path(command[command.index("--root") + 1]) == builder.term_root
+            return subprocess.CompletedProcess(command, 0)
+        monkeypatch.setattr(work, "_recipient_run", launch)
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        assert len(launches) == 1
+
+    @pytest.mark.parametrize("stage", ["floor", "review-disposition"])
+    @pytest.mark.parametrize("outcome", ["completed_no_output", "unavailable"])
+    @pytest.mark.parametrize("current", [False, True])
+    def test_repair_866_completed_failure_neither_delivers_nor_undoes_delivery(
+            self, builder, stage, outcome, current):
+        comment = self.amendment(builder)
+        if current:
+            self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                      completed="2026-10-05T12:02:00Z")
+        request, run = self.turn(builder, stage=stage, composed="2026-10-05T13:00:00Z",
+                                 launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        run["outcome"] = outcome
+        if outcome == "unavailable":
+            request["requested"]["session_id"] = None
+            run["attempts"] = [{"launched": False, "observed": {}}]
+        self.save(builder)
+        if current:
+            builder.floor_public = None
+            assert work.decide(builder, RULES).stage == "floor"
+            builder.floor_public = {"outcome": "ci-met", "head": SHA}
+            assert work._governing_terms_decision(builder) is None
+        else:
+            self.due(builder, comment)
+
+    @pytest.mark.parametrize("unresolved", ["unfinished", "spawn", "cleanup", "schema", "vendor"])
+    def test_repair_866_failed_later_attempt_keeps_recovery_refusals(self, builder, unresolved):
+        request, run = self.turn(builder, stage="floor", launched="2026-10-05T13:01:00Z")
+        run["outcome"] = "completed_no_output"
+        if unresolved == "unfinished":
+            run.pop("completed_at")
+        elif unresolved == "spawn":
+            run["launch_unresolved"] = True
+        elif unresolved == "cleanup":
+            run["cleanup_proven"] = False
+        elif unresolved == "schema":
+            request["schema_version"] = 1
+        else:
+            run["actual_vendor"] = "claude"
+        self.save(builder)
+        comparison = work._governing_terms_decision(builder)
+        assert comparison is not None and not comparison.dispatch
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.status == "holder-owned"
+
+    @pytest.mark.parametrize("current", [False, True])
+    def test_repair_866_successful_floor_after_failed_repair_preserves_build_delivery(self, builder, current):
+        comment = self.amendment(builder)
+        if current:
+            self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                      completed="2026-10-05T12:02:00Z")
+        _request, run = self.turn(builder, stage="review-disposition", composed="2026-10-05T13:00:00Z",
+                                  launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        run["outcome"] = "completed_no_output"
+        self.save(builder)
+        self.turn(builder, stage="floor", composed="2026-10-05T14:00:00Z",
+                  launched="2026-10-05T14:01:00Z", completed="2026-10-05T14:02:00Z")
+        if current:
+            assert work.decide(builder, RULES).stage == "release-report"
+        else:
+            self.due(builder, comment)
+
+    @pytest.mark.parametrize("released", [False, True])
+    @pytest.mark.parametrize("discovery_error", [False, True])
+    def test_repair_866_named_merged_build_is_fresh_and_requires_release(
+            self, builder, monkeypatch, capsys, released, discovery_error):
+        builder.merged_pr = {**builder.pr, "state": "closed", "merged_at": "2026-10-05T14:00:00Z"}
+        builder.pr = None
+        self.post(builder, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->")
+        builder.term_registration["active"] = not released
+        if discovery_error:
+            def broken(*_a):
+                raise work.WorkError("retained discovery unavailable")
+            monkeypatch.setattr(work.work_recovery, "launches", broken)
+        fresh = builder.term_root.parent / "fresh-builder"
+        git(builder.holder_root, "worktree", "add", "-b", "fresh-change", str(fresh))
+        creations, launches = [], []
+        def create(*_a):
+            creations.append(fresh)
+            return fresh, "fresh-change"
+        monkeypatch.setattr(work, "create_implementation_root", create)
+        monkeypatch.setattr(work, "publish_implementation_branch", lambda *_a: None)
+        def launch(command, **_kwargs):
+            launches.append(command)
+            assert "--resume" not in command
+            assert Path(command[command.index("--root") + 1]) == fresh
+            return subprocess.CompletedProcess(command, 0)
+        monkeypatch.setattr(work, "_recipient_run", launch)
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        output = capsys.readouterr().out
+        if released:
+            assert creations == [fresh] and len(launches) == 1
+        else:
+            report = json.loads(output)
+            assert not creations and not launches
+            assert report["reason"] == "fresh-build-requires-released-registration"
+
+    @pytest.mark.parametrize("boundary", ["stopped", "launches"])
+    def test_repair_866_unmerged_named_build_contains_discovery_error(self, builder, monkeypatch, boundary):
+        builder.pr = None
+        def broken(*_a):
+            raise work.WorkError("retained discovery unavailable")
+        monkeypatch.setattr(work.work_recovery, "launches", broken)
+        if boundary == "launches":
+            monkeypatch.setattr(work.work_recovery, "latest_stopped", lambda *_a: None)
+        assert work._named_continuity(builder, "build", work.Decision("waiting", False, None, "fixture")) == "resume"
+
+    def test_repair_866_ambiguous_registrations_need_holder_instalment(self, builder, monkeypatch):
+        own = builder.term_registration
+        own["instalment"] = "A"
+        sibling = {**own, "root": str(builder.term_root.parent / "sibling"), "branch": "sibling-change",
+                   "instalment": "B"}
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [own, sibling]})
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.stage != "build"
+        assert decision.status == "holder-owned" and "--instalment" in decision.detail
+        builder.instalment = "A"
+        assert work.decide(builder, RULES).stage == "release-report"
+
+    def test_repair_866_named_build_reports_unreadable_discovery_without_launch(
+            self, builder, monkeypatch, capsys):
+        def broken(*_a):
+            raise work.WorkError("retained builder discovery unavailable")
+        monkeypatch.setattr(work.work_recovery, "launches", broken)
+        monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched without discovery"))
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        report = json.loads(capsys.readouterr().out)
+        assert not report["dispatch"] and report["reason"] == "resume-bundle-invalid-for-build"
+        assert "retained builder discovery unavailable" in report["detail"]
+        assert builder.issue_comments[0]["html_url"] in report["detail"]
+        assert "Run build on the resumed builder" in report["detail"]
+
+    @pytest.mark.parametrize("bundle", [False, True])
+    def test_repair_866_unreadable_registry_returns_to_holder(self, builder, monkeypatch, bundle):
+        if not bundle:
+            builder.pr = None
+            for request_path, run_path, *_ in builder.term_turns:
+                request_path.unlink()
+                run_path.unlink()
+            builder.term_turns.clear()
+        def broken():
+            raise work.WorkError("registration registry cannot be read: fixture-registry.json")
+        monkeypatch.setattr(work, "read_registry", broken)
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.status == "holder-owned"
+        assert "fixture-registry.json" in decision.detail
+        assert builder.issue_comments[0]["html_url"] in decision.detail
+
+    def test_repair_866_lane_changes_require_affirmed_brief_and_newly_owed_artifact(self, builder):
+        self.post(builder, _holder_reading("Owner row ruling:\nReview risk: ordinary\nReview lane: mechanical"))
+        work.validate_marker_claims(builder)
+        assert work._affirmed_review(builder)[1] == ("ordinary", "connected")
+        assert work._artifact_phase(builder).latest_settlement is not None
+        mechanical = self.post(builder, MECHANICAL, stamp="2026-10-05T12:00:00Z")
+        self.due(builder, mechanical)
+        assert work._affirmed_review(builder)[1] == ("ordinary", "mechanical")
+        self.post(builder, AFFIRMED, stamp="2026-10-05T13:00:00Z")
+        assert work.decide(builder, RULES).stage == "artifact"
+        assert builder.artifact_phase.latest_settlement is None
+
+    @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+    @pytest.mark.parametrize("outcome", ["error", "interrupted"])
+    @pytest.mark.parametrize("current", [False, True])
+    def test_second_look_866_pre_spawn_failure_does_not_change_delivery(self, builder, stage, outcome, current):
+        comment = self.amendment(builder)
+        if current:
+            self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                      completed="2026-10-05T12:02:00Z")
+        _request, run = self.turn(builder, stage=stage, composed="2026-10-05T13:00:00Z",
+                                  launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        run.update(outcome=outcome, attempts=[{"launched": False, "observed": {}}])
+        self.save(builder)
+        if current:
+            builder.floor_public = None
+            decision = work.decide(builder, RULES)
+            assert decision.stage == "floor" and "Run build" not in (decision.detail or "")
+        else:
+            self.due(builder, comment)
+
+    @pytest.mark.parametrize("stage", ["build", "review-disposition"])
+    @pytest.mark.parametrize("current", [False, True])
+    def test_second_look_866_delivery_without_session_is_separate_from_resume(
+            self, builder, monkeypatch, capsys, stage, current):
+        comment = self.amendment(builder)
+        # Retain only this delivery: no older session can mask the missing one.
+        for request_path, run_path, *_ in builder.term_turns:
+            request_path.unlink()
+            run_path.unlink()
+        builder.term_turns.clear()
+        builder.record_root = builder.record_root / "only-delivery"
+        request, run = self.turn(builder, stage=stage, session=None,
+                                 composed="2026-10-05T12:00:00Z" if current else "2026-10-05T10:00:00Z",
+                                 launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
+        run["outcome"] = "success_uncontinuable"
+        self.save(builder)
+        if current:
+            assert work.decide(builder, RULES).stage == "release-report"
+            assert work._governing_terms_decision(builder) is None
+            assert self.endpoint(builder, monkeypatch, "release-report") == 0
+            report = json.loads(capsys.readouterr().out)
+            assert report["stage"] == "release-report" and report["required_gate"]["verdict"] == "green"
+            with pytest.raises(work.WorkError, match="no valid session"):
+                work._resume_source("example/product#12", "build", builder.record_root, state=builder)
+        else:
+            self.due(builder, comment)
+        # Success alone cannot deliver without evidence that the recipient launched.
+        run["attempts"] = []
+        self.save(builder)
+        held = work.decide(builder, RULES)
+        assert held.stage == "build" and not held.dispatch and held.status == "holder-owned"
+
+    def test_second_look_866_floor_without_session_preserves_prior_delivery(self, builder):
+        self.amendment(builder)
+        self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                  completed="2026-10-05T12:02:00Z")
+        _request, run = self.turn(builder, stage="floor", session=None, composed="2026-10-05T13:00:00Z",
+                                 launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        run["outcome"] = "success_uncontinuable"
+        self.save(builder)
+        assert work.decide(builder, RULES).stage == "release-report"
+
+    @pytest.mark.parametrize("problem", ["vendor", "conflicting-identity"])
+    def test_second_look_866_sessionless_delivery_still_needs_attribution(self, builder, problem):
+        request, run = builder.term_turns[0][2:]
+        request["requested"]["session_id"] = None
+        run["outcome"] = "success_uncontinuable"
+        run["attempts"][0]["observed"]["session_id"] = None
+        if problem == "vendor":
+            run["actual_vendor"] = "claude"
+        else:
+            run["session_identity_error"] = "conflicting reported identities"
+        self.save(builder)
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.status == "holder-owned"
+        assert decision.reason == "governing-record-comparison-unproved"
+
+    def test_second_look_866_launched_failure_keeps_recovery_its_own_route(self, builder):
+        comment = self.amendment(builder)
+        _request, run = self.turn(builder, stage="floor", composed="2026-10-05T13:00:00Z",
+                                 launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        run["outcome"] = "interrupted"
+        self.save(builder)
+        work.validate_marker_claims(builder)
+        comparison = work._governing_terms_decision(builder)
+        assert comparison.stage == "floor" and comparison.reason == "stopped-run-resume"
+        assert comment["html_url"] in comparison.detail and "Run build" not in comparison.detail
+        decision = work.decide(builder, RULES)
+        assert decision.reason == "stopped-run-resume" and comment["html_url"] in decision.detail
+        assert "Run build" not in decision.detail
+
+    def test_second_look_866_released_stopped_bundle_does_not_own_successor(self, builder, monkeypatch):
+        builder.pr = None
+        request, run = builder.term_turns[0][2:]
+        request["lineage_pull_request"] = None
+        run["outcome"] = "interrupted"
+        self.save(builder)
+        old = builder.term_registration
+        old["active"] = False
+        fresh = builder.term_root.parent / "active-successor"
+        git(builder.holder_root, "worktree", "add", "-b", "active-change", str(fresh))
+        row = registry_row(fresh, builder.holder_root, "active-change")
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [old, row]})
+        assert work.work_recovery.launches(builder, "build") == []
+        assert work.work_recovery.latest_stopped(builder, "build") is None
+        decision = work.decide(builder, RULES)
+        assert (decision.stage, decision.dispatch, decision.continuity) == ("build", True, "fresh")
+        assert work._named_continuity(builder, "build", decision) == "fresh"
+
+    @pytest.mark.parametrize("marker", [False, True])
+    def test_second_look_866_released_lineage_cannot_prevent_fresh_build(self, builder, monkeypatch, marker):
+        builder.pr = None
+        builder.term_turns[0][2]["lineage_pull_request"] = None
+        self.save(builder)
+        builder.term_registration["active"] = False
+        if marker:
+            self.post(builder, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->")
+        decision = work.decide(builder, RULES)
+        assert work._governing_terms_decision(builder) is None
+        assert work._named_continuity(builder, "build", decision) == "fresh"
+        fresh = builder.term_root.parent / "released-successor"
+        git(builder.holder_root, "worktree", "add", "-b", "successor-change", str(fresh))
+        monkeypatch.setattr(work, "create_implementation_root", lambda *_a: (fresh, "successor-change"))
+        monkeypatch.setattr(work, "publish_implementation_branch", lambda *_a: None)
+        launches = []
+        def launch(command, **_kwargs):
+            launches.append(command)
+            assert "--resume" not in command
+            assert Path(command[command.index("--root") + 1]) == fresh
+            return subprocess.CompletedProcess(command, 0)
+        monkeypatch.setattr(work, "_recipient_run", launch)
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        assert len(launches) == 1
+
+    @pytest.mark.parametrize("stage", ["build", "review-disposition"])
+    def test_fourth_reading_866_released_PR_delivered_terms_retain_handoff(
+            self, builder, monkeypatch, capsys, stage):
+        self.amendment(builder)
+        self.turn(builder, stage=stage, composed="2026-10-05T12:00:00Z",
+                  launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
+        builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched after release"))
+        assert work.work_recovery.launches(builder, "build") == []
+        assert work.decide(builder, RULES).stage == "release-report"
+        request_path, _run_path, request, _run = builder.term_turns[-1]
+        with pytest.raises(work.WorkError, match="expected one active implementation registration"):
+            work.work_recovery.validate_target(builder, "build", request, str(request_path))
+        for endpoint in (None, "release-report"):
+            assert self.endpoint(builder, monkeypatch, endpoint) == 0
+            report = json.loads(capsys.readouterr().out)
+            # The synthetic CLI policy invalidates its abbreviated proof, so
+            # ordinary read-only routing still owes proof publication.
+            expected = "proof" if endpoint is None else "release-report"
+            assert report["stage"] == expected and not report["dispatch"], report
+            assert "adopt" not in (report.get("detail") or "")
+            if endpoint is not None:
+                assert report["required_gate"]["verdict"] == "green"
+                assert not report["path_departures"]["restate"]
+        assert builder.term_registration["active"] is False
+
+    @pytest.mark.parametrize("evidence", ["stale", "unknown", "invalid-attribution", "stopped"])
+    def test_fourth_reading_866_released_PR_unbuilt_terms_require_adopt_before_resume(
+            self, builder, monkeypatch, capsys, evidence):
+        comment = self.amendment(builder)
+        request, run = builder.term_turns[0][2:]
+        if evidence == "unknown":
+            request.update(launched_at="2026-10-05T12:01:00Z")
+            request.pop("prompt_composition")
+            run["completed_at"] = "2026-10-05T12:02:00Z"
+        elif evidence == "invalid-attribution":
+            request, run = self.turn(builder, composed="2026-10-05T12:00:00Z",
+                                     launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
+            run["actual_vendor"] = "claude"
+        elif evidence == "stopped":
+            run["outcome"] = "interrupted"
+        self.save(builder)
+        builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched before adopt"))
+        for endpoint in (None, "release-report"):
+            assert self.endpoint(builder, monkeypatch, endpoint) == 0
+            report = json.loads(capsys.readouterr().out)
+            assert report["stage"] == "build" and not report["dispatch"]
+            assert report["status"] == "holder-owned" and report["continuity"] == "resume"
+            detail = report["detail"]
+            assert comment["html_url"] in detail and str(comment["id"]) in detail
+            assert comment["created_at"] in detail
+            assert "adopt" in detail and "run build on the resumed builder" in detail
+            assert detail.index("adopt") < detail.index("run build on the resumed builder")
+            assert "before continuing downstream" in detail and "opening the pull request" not in detail
+            if endpoint is not None:
+                assert report["required_gate"]["verdict"] == "green" and "path_departures" not in report
+        assert builder.term_registration["active"] is False
+
+    def test_fourth_reading_866_released_PR_without_bundles_retains_handoff(self, builder, monkeypatch, capsys):
+        self.amendment(builder)
+        for request_path, run_path, *_ in builder.term_turns:
+            request_path.unlink()
+            run_path.unlink()
+        builder.term_turns.clear()
+        builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("launched without bundles"))
+        assert work.decide(builder, RULES).stage == "release-report"
+        for endpoint in (None, "release-report"):
+            assert self.endpoint(builder, monkeypatch, endpoint) == 0
+            report = json.loads(capsys.readouterr().out)
+            expected = "proof" if endpoint is None else "release-report"
+            assert report["stage"] == expected and not report["dispatch"], report
+            if endpoint is not None:
+                assert report["required_gate"]["verdict"] == "green"
+                assert not report["path_departures"]["restate"]
+        assert builder.term_registration["active"] is False
+
+    def test_fourth_reading_866_released_PR_does_not_count_a_proved_sibling(self, builder, monkeypatch):
+        self.amendment(builder)
+        self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                  completed="2026-10-05T12:02:00Z")
+        sibling_root = builder.term_root.parent / "released-sibling"
+        git(builder.holder_root, "worktree", "add", "-b", "sibling-change", str(sibling_root))
+        sibling = registry_row(sibling_root, builder.holder_root, "sibling-change")
+        sibling["active"] = builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "read_registry", lambda: {
+            "schema_version": 2, "worktrees": [builder.term_registration, sibling]})
+        request, _run = self.turn(builder, composed="2026-10-05T13:00:00Z", launched="2026-10-05T13:01:00Z",
+                                  completed="2026-10-05T13:02:00Z")
+        request.update(root=str(sibling_root), lineage_branch="sibling-change")
+        self.save(builder)
+        assert work._governing_terms_decision(builder) is None
+        assert work.decide(builder, RULES).stage == "release-report"
+
+    @pytest.mark.parametrize("has_pr", [False, True])
+    def test_second_look_866_detail_names_only_the_pending_step(self, builder, monkeypatch, capsys, has_pr):
+        if not has_pr:
+            builder.pr = None
+            builder.term_turns[0][2]["lineage_pull_request"] = None
+            self.save(builder)
+        comment = self.amendment(builder)
+        decision = self.due(builder, comment)
+        expected = "before continuing downstream" if has_pr else "before opening the pull request"
+        excluded = "opening the pull request" if has_pr else "continuing downstream"
+        assert expected in decision.detail and excluded not in decision.detail
+        if has_pr:
+            assert self.endpoint(builder, monkeypatch, "release-report") == 0
+            detail = json.loads(capsys.readouterr().out)["detail"]
+            assert expected in detail and excluded not in detail
+
+    @pytest.mark.parametrize("composition_after_record", [False, True])
+    def test_C2_request_completion_and_missing_snapshot_cannot_clear_terms(self, builder, composition_after_record):
+        request = builder.term_turns[0][2]
+        snapshot = request["prompt_composition"]["sources"]
+        comment = self.amendment(builder)
+        self.turn(builder, composed="2026-10-05T12:00:00Z" if composition_after_record else "2026-10-05T10:30:00Z",
+                  launched="2026-10-05T12:01:00Z", completed="2026-10-05T13:00:00Z", snapshot=snapshot)
+        self.due(builder, comment)
+        before = git(builder.term_root, "rev-parse", "HEAD").stdout
+        self.turn(builder, composed="2026-10-05T14:00:00Z", launched="2026-10-05T14:01:00Z",
+                  completed="2026-10-05T14:02:00Z")
+        assert work.decide(builder, RULES).stage == "release-report"
+        assert git(builder.term_root, "rev-parse", "HEAD").stdout == before
+
+    @pytest.mark.parametrize("clearing_stage", ["build", "review-disposition"])
+    def test_C2_floor_receives_terms_but_only_build_or_repair_clears(self, builder, clearing_stage):
+        comment = self.amendment(builder)
+        self.turn(builder, stage="floor", composed="2026-10-05T12:00:00Z",
+                  launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
+        self.due(builder, comment)
+        self.turn(builder, stage=clearing_stage, composed="2026-10-05T13:00:00Z",
+                  launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        assert work.decide(builder, RULES).stage == "release-report"
+
+    def endpoint(self, fixture, monkeypatch, stage=None):
+        write_policy(fixture.holder_root)
+        monkeypatch.setattr(work, "read_state", lambda *_a, **_k: fixture)
+        monkeypatch.setattr(work, "prepare_use_evidence", lambda *_a: None)
+        args = (["run", stage] if stage else []) + [
+            "--repo", fixture.repo, "--issue", "12", "--root", str(fixture.holder_root),
+            "--holder-session-id", "holder-session", "--codex", sys.executable]
+        class Transport:
+            def get(self, endpoint, *, paginate=False):
+                if endpoint == "repos/example/product/pulls/7":
+                    return fixture.pr
+                return FakeTransport({}).get(endpoint, paginate=paginate)
+        return work.run(work.parser().parse_args(args), transport=Transport())
+
+    def test_C3_no_PR_named_build_resumes_registered_builder_with_current_prompt(self, builder, monkeypatch, capsys):
+        builder.pr = None
+        builder.term_turns[0][2]["lineage_pull_request"] = None
+        self.save(builder)
+        self.post(builder, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->",
+                  stamp="2026-10-05T10:05:00Z")
+        comment = self.amendment(builder)
+        assert self.endpoint(builder, monkeypatch) == 0
+        assert json.loads(capsys.readouterr().out)["stage"] == "build"
+        launches = []
+        def launch(command, **_kwargs):
+            prompt = Path(command[command.index("--dispatch") + 1]).read_bytes()
+            metadata = json.loads(Path(command[command.index("--lifecycle-input") + 1]).read_bytes())
+            launches.append((command, prompt, metadata))
+            return subprocess.CompletedProcess(command, 0)
+        monkeypatch.setattr(work, "_recipient_run", launch)
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        assert len(launches) == 1
+        command, prompt, metadata = launches[0]
+        assert command[command.index("--resume") + 1] == SESSION
+        assert Path(command[command.index("--root") + 1]) == builder.term_root
+        assert command[command.index("--lineage-branch") + 1] == "terms-change"
+        assert comment["body"].encode() in prompt and comment["html_url"].encode() in prompt
+        assert metadata["prompt_composition"]["origin"] == "entrance"
+        assert metadata["prompt_composition"]["dispatch_sha256"] == hashlib.sha256(prompt).hexdigest()
+        assert work.decide(builder, RULES).stage == "build"  # Launch is not a successful stage return.
+        self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                  completed="2026-10-05T12:02:00Z")
+        assert work.decide(builder, RULES).stage == "open-pull-request"
+
+    def never_launched(self, fixture):
+        fixture.pr = None
+        request, run = fixture.term_turns[-1][2:]
+        request["lineage_pull_request"] = None
+        request["requested"] = {"vendor": "codex", "continuity": "fresh", "session_id": None}
+        run.update(outcome="error", attempts=[{"launched": False, "observed": {}}],
+                   launcher_process={**work.lifecycle.process_identity(), "birth": "previous process"})
+        self.save(fixture)
+        return request, run
+
+    def test_C3_first_attempt_that_launched_nobody_retries_fresh_in_registered_tree(self, builder, monkeypatch):
+        self.never_launched(builder)
+        comment = self.amendment(builder)
+        decision = work.decide(builder, RULES)
+        assert (decision.stage, decision.dispatch, decision.continuity) == ("build", True, "fresh")
+        monkeypatch.setattr(work, "create_implementation_root", lambda *_a: pytest.fail("created another tree"))
+        published = []
+        monkeypatch.setattr(work, "publish_implementation_branch", lambda root, branch: published.append((root, branch)))
+        launches = []
+        def launch(command, **_kwargs):
+            launches.append(command)
+            assert "--resume" not in command
+            assert Path(command[command.index("--root") + 1]) == builder.term_root
+            assert command[command.index("--lineage-branch") + 1] == "terms-change"
+            assert comment["body"].encode() in Path(command[command.index("--dispatch") + 1]).read_bytes()
+            return subprocess.CompletedProcess(command, 0)
+        monkeypatch.setattr(work, "_recipient_run", launch)
+        assert self.endpoint(builder, monkeypatch, "build") == 0
+        assert len(launches) == 1 and published == [(builder.term_root, "terms-change")]
+
+    @pytest.mark.parametrize("uncertainty", ["unfinished", "unresolved-spawn", "launched-without-identity",
+                                           "unproved-cleanup", "missing-launch-flag", "wrong-root", "prior-builder",
+                                           "live-launcher", "unknown-launcher"])
+    def test_C4_first_attempt_retry_requires_proof_that_no_builder_launched(self, builder, uncertainty):
+        if uncertainty == "prior-builder":
+            builder.term_turns[0][2]["lineage_pull_request"] = None
+            self.turn(builder, launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
+        request, run = self.never_launched(builder)
+        if uncertainty == "unfinished":
+            run.pop("completed_at")
+        elif uncertainty == "unresolved-spawn":
+            run["launch_unresolved"] = True
+        elif uncertainty == "launched-without-identity":
+            run["attempts"][0]["launched"] = True
+        elif uncertainty == "unproved-cleanup":
+            run["cleanup_proven"] = False
+        elif uncertainty == "missing-launch-flag":
+            run["attempts"][0].pop("launched")
+        elif uncertainty == "wrong-root":
+            request["root"] = str(builder.holder_root)
+        elif uncertainty == "live-launcher":
+            run["launcher_process"] = work.lifecycle.process_identity()
+        elif uncertainty == "unknown-launcher":
+            run.pop("launcher_process")
+        self.save(builder)
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.continuity != "fresh"
+
+    @pytest.mark.parametrize("problem", ["missing-composition", "invalid-composition", "naive-composition",
+        "missing-timestamp", "naive-timestamp", "missing-bundle", "ambiguous-bundle", "missing-root",
+        "wrong-branch", "wrong-pr", "missing-session", "invalid-schema", "unproved-vendor",
+        "unproved-cleanup", "retained-input-changed", "retained-context-changed", "wrong-effective-digest",
+        "coincident-time", "missing-snapshot", "invalid-launch-time", "invalid-session",
+        "recomputed-input-digest", "wrong-request-digest"])
+    def test_C4_unproved_comparison_names_record_and_owes_resume(self, builder, problem):
+        # A late launcher cannot certify freshness of a legacy or damaged input.
+        request, run = builder.term_turns[0][2:]
+        request["launched_at"] = "2026-10-05T12:00:00Z"
+        run["completed_at"] = "2026-10-05T13:00:00Z"
+        comment = builder.issue_comments[0]
+        if problem == "missing-composition":
+            request.pop("prompt_composition")
+        elif problem == "invalid-composition":
+            request["prompt_composition"]["composed_at"] = "tomorrow"
+        elif problem == "naive-composition":
+            request["prompt_composition"]["composed_at"] = "2026-10-05T10:00:00"
+        elif problem == "coincident-time":
+            request["prompt_composition"]["composed_at"] = comment["created_at"]
+        elif problem == "missing-snapshot":
+            request["prompt_composition"].pop("sources")
+        elif problem == "invalid-launch-time":
+            request["launched_at"] = "not a time"
+        elif problem == "invalid-session":
+            request["requested"]["session_id"] = "invalid"
+            run["attempts"][0]["observed"]["session_id"] = "invalid"
+        elif problem in {"missing-timestamp", "naive-timestamp"}:
+            comment["created_at"] = None if problem == "missing-timestamp" else "2026-10-05T09:00:00"
+        elif problem == "missing-bundle":
+            builder.term_turns[0][0].unlink()
+            builder.term_turns.clear()
+        elif problem == "ambiguous-bundle":
+            self.turn(builder, launched=request["launched_at"], completed="2026-10-05T13:01:00Z")
+        elif problem == "missing-root":
+            request.pop("root")
+        elif problem == "wrong-branch":
+            request["lineage_branch"] = "elsewhere"
+        elif problem == "wrong-pr":
+            request["lineage_pull_request"] = 99
+        elif problem == "missing-session":
+            run["attempts"] = []
+        elif problem == "invalid-schema":
+            request["schema_version"] = 1
+        elif problem == "unproved-vendor":
+            run["actual_vendor"] = "claude"
+        elif problem == "unproved-cleanup":
+            run["cleanup_proven"] = False
+        elif problem in {"retained-input-changed", "recomputed-input-digest"}:
+            Path(request["input"]).write_bytes(b"changed input")
+            if problem == "recomputed-input-digest":
+                context = Path(request["context"]["path"]).read_bytes()
+                digest = hashlib.sha256(context + b"\n\nchanged input").hexdigest()
+                request["effective_input_sha256"] = digest
+                request["prompt_composition"]["effective_input_sha256"] = digest
+        elif problem == "retained-context-changed":
+            Path(request["context"]["path"]).write_bytes(b"changed context")
+        elif problem == "wrong-request-digest":
+            request["effective_input_sha256"] = "wrong"
+        else:
+            request["prompt_composition"]["effective_input_sha256"] = "wrong"
+        self.save(builder)
+        work.validate_marker_claims(builder)
+        decision = work._governing_terms_decision(builder)
+        assert (decision.dispatch, decision.status) == (False, "holder-owned")
+        assert comment["html_url"] in decision.detail
+        if problem == "unproved-cleanup":
+            # Direction 8 keeps an unrelated writer refusal in recovery; it is
+            # not evidence that this delivering prompt lacked the terms.
+            assert decision.reason == "stopped-run-unresolved" and "Run build" not in decision.detail
+        else:
+            assert "Run build on the resumed builder" in decision.detail
+        if problem not in {"missing-bundle", "missing-timestamp", "naive-timestamp"}:
+            assert "turn-0" in decision.detail
+
+    def test_C4_legacy_launch_proves_staleness_but_explicit_resume_replaces_unknown(self, builder, monkeypatch):
+        request = builder.term_turns[0][2]
+        request.pop("prompt_composition")
+        comment = self.amendment(builder)
+        self.save(builder)
+        self.due(builder, comment)
+        request["launched_at"] = "2026-10-05T12:00:00Z"
+        self.save(builder)
+        self.due(builder, comment, runnable=False)
+        assert work._named_continuity(builder, "build", work.decide(builder, RULES)) == "resume"
+        self.turn(builder, composed="2026-10-05T13:00:00Z", launched="2026-10-05T13:01:00Z",
+                  completed="2026-10-05T13:02:00Z")
+        assert work._governing_terms_decision(builder) is None
+
+    def test_C4_marker_and_file_timestamp_do_not_certify_terms_or_create_a_fresh_builder(self, builder):
+        import os
+        request = builder.term_turns[0][2]
+        request.pop("prompt_composition")
+        request["launched_at"] = "2026-10-05T12:00:00Z"
+        builder.term_turns[0][3]["completed_at"] = "2026-10-05T13:00:00Z"
+        self.save(builder)
+        os.utime(request["input"], (2000000000, 2000000000))
+        comment = self.amendment(builder)
+        self.due(builder, comment, runnable=False)
+        builder.pr = None
+        for request_path, run_path, _request, _run in builder.term_turns:
+            request_path.unlink()
+            run_path.unlink()
+        builder.term_turns.clear()
+        self.post(builder, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->",
+                  stamp="2026-10-05T14:00:00Z")
+        self.due(builder, comment, runnable=False)
+
+    def test_C2_holder_dispatch_boundary_retains_its_content_responsibility(self, builder):
+        comment = self.amendment(builder)
+        self.turn(builder, origin="holder", composed="2026-10-05T10:30:00Z",
+                  launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
+        self.due(builder, comment)
+        self.turn(builder, origin="holder", composed="2026-10-05T13:00:00Z",
+                  launched="2026-10-05T13:01:00Z", completed="2026-10-05T13:02:00Z")
+        assert work.decide(builder, RULES).stage == "release-report"
+
+    def test_C4_newer_unfinished_attempt_cannot_hide_behind_older_success(self, builder):
+        comment = self.amendment(builder)
+        self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                  completed="2026-10-05T12:02:00Z")
+        assert work._governing_terms_decision(builder) is None
+        _request, run = self.turn(builder, composed="2026-10-05T13:00:00Z", launched="2026-10-05T13:01:00Z")
+        run.pop("completed_at")
+        self.save(builder)
+        decision = work.decide(builder, RULES)
+        assert not decision.dispatch and decision.reason == "stopped-run-unresolved"
+        assert comment["html_url"] in decision.detail
+
+    @pytest.mark.parametrize("exclusion", ["no-amendment", "quoted", "unauthorized", "invalid", "before-settlement"])
+    def test_C5_excluded_readings_do_not_trigger(self, builder, exclusion):
+        body = _holder_reading("EXCLUDED CALL", "no-amendment" if exclusion == "no-amendment"
+                               else "invalid" if exclusion == "invalid" else "amended")
+        self.post(builder, "> " + body.replace("\n", "\n> ") if exclusion == "quoted" else body,
+                  author="outsider" if exclusion == "unauthorized" else PRODUCER,
+                  stamp="2026-10-05T09:01:30Z" if exclusion == "before-settlement" else "2026-10-05T11:00:00Z")
+        assert work.decide(builder, RULES).stage == "release-report"
+
+    def test_C5_all_amendments_survive_no_amendment_and_later_instalment(self, builder):
+        first = self.amendment(builder)
+        second = self.post(builder, _holder_reading("Later instalment's accepted row."), stamp="2026-10-05T11:01:00Z")
+        self.post(builder, _holder_reading("No further change.", "no-amendment"), stamp="2026-10-05T11:02:00Z")
+        decision = self.due(builder, second)
+        prompt = work._stage_prompt(builder, decision)
+        assert first["body"].encode() in prompt and second["body"].encode() in prompt
+        assert first["html_url"] not in decision.detail
+        self.turn(builder, composed="2026-10-05T12:00:00Z", launched="2026-10-05T12:01:00Z",
+                  completed="2026-10-05T12:02:00Z")
+        assert work.decide(builder, RULES).stage == "release-report"
+
+    def test_C5_mechanical_reading_is_omitted_and_does_not_trigger(self, builder):
+        builder.issue_comments[0]["body"] = MECHANICAL
+        self.turn(builder, composed="2026-10-05T10:10:00Z", launched="2026-10-05T10:11:00Z",
+                  completed="2026-10-05T10:12:00Z")
+        comment = self.amendment(builder)
+        assert work.decide(builder, RULES).stage == "release-report"
+        assert comment["body"].encode() not in work._stage_prompt(builder, work.Decision("build", True, "resume", "fixture"))
+
+    def test_C5_effective_settlement_migration_counts_intervening_amendment(self, builder):
+        builder.issue_comments[2]["body"] = "<!-- tradecraft:artifact:v1 status=settled -->\nOriginal settlement."
+        comment = self.amendment(builder)
+        self.post(builder, _settled("unobtainable"), stamp="2026-10-05T12:00:00Z")
+        decision = self.due(builder, comment)
+        assert builder.artifact_phase.settlement_order[0] == work._aware_time("2026-10-05T09:02:00Z")
+        assert comment["body"].encode() in work._stage_prompt(builder, decision)
+
+    def test_C4_counted_reading_without_timestamp_returns_to_holder(self, builder):
+        comment = self.amendment(builder)
+        for source in builder.issue_comments:
+            source.pop("created_at")
+        decision = self.due(builder, comment, runnable=False)
+        assert "timestamp unavailable" in decision.detail
+
+    def test_C4_proved_sibling_cannot_clear_selected_builder_terms(self, builder, monkeypatch):
+        own = builder.term_registration
+        own["instalment"] = "A"
+        builder.instalment = "A"
+        builder.term_turns[0][2]["instalment"] = "A"
+        self.save(builder)
+        comment = self.amendment(builder)
+        sibling_root = builder.term_root.parent / "sibling"
+        sibling = registry_row(sibling_root, builder.holder_root, "sibling-change")
+        sibling["instalment"] = "B"
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [own, sibling]})
+        request, _run = self.turn(builder, composed="2026-10-05T12:00:00Z",
+                                  launched="2026-10-05T12:01:00Z", completed="2026-10-05T12:02:00Z")
+        request.update(root=str(sibling_root), lineage_branch="sibling-change", instalment="B")
+        self.save(builder)
+        self.due(builder, comment)
+
+    def test_C6_reading_preserves_settlement_while_rebrief_keeps_artifact_prerequisites(self, builder):
+        original = builder.issue_comments[2]["body"]
+        comment = self.amendment(builder)
+        self.due(builder, comment)
+        assert builder.artifact_phase.latest_settlement.body == original
+        self.post(builder, AFFIRMED, stamp="2026-10-05T12:00:00Z")
+        assert work.decide(builder, RULES).stage == "artifact"
+        assert builder.artifact_phase.latest_settlement is None
+
+    @pytest.mark.parametrize("carrier", ["brief", "reading", "unknown"])
+    def test_C7_direct_handoff_blocks_stale_or_unknown_green_head(self, builder, monkeypatch, capsys, carrier):
+        if carrier == "unknown":
+            comment = builder.issue_comments[0]
+            builder.term_turns[0][2].pop("prompt_composition")
+            self.save(builder)
+        else:
+            comment = self.amendment(builder, carrier)
+        monkeypatch.setattr(work, "_recipient_run", lambda *_a, **_k: pytest.fail("release-report launched a recipient"))
+        assert self.endpoint(builder, monkeypatch, "release-report") == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["stage"] == "build" and not report["dispatch"]
+        assert report["status"] == "holder-owned" and report["required_gate"]["verdict"] == "green"
+        assert comment["html_url"] in report["detail"] and "Run build on the resumed builder" in report["detail"]
+        assert "path_departures" not in report and "completed evidence" not in report["detail"]
+
+    @pytest.mark.parametrize("verdict", ["green", "red", "absent", "none"])
+    def test_C7_current_terms_retain_gate_and_departure_contract(self, builder, capsys, verdict):
+        if verdict == "red":
+            builder.checks[0]["conclusion"] = "failure"
+        elif verdict == "absent":
+            builder.checks = []
+        elif verdict == "none":
+            builder.required_gate = {"status": "none", "sources": [], "reason": "no required gate"}
+        assert work.execute_stage(builder, work.Decision("release-report", False, None, "holder-named-stage"),
+                                  builder.holder_root, None) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["stage"] == "release-report" and report["required_gate"]["verdict"] == verdict
+        assert report["path_departures"]["restate"] == (verdict in {"red", "absent"})
+
+
 def git(root, *arguments, check=True):
     return subprocess.run(
         ["git", "-C", str(root), *arguments], stdin=subprocess.DEVNULL,
@@ -705,7 +1631,8 @@ def test_admitted_implementer_prompt_carries_its_governing_sources(
             ) == len(readings)
         else:
             assert b"Holder readings govern where they differ from the settled artifact." in prompt
-            assert b"The affirmed brief remains binding over both." in prompt
+            assert b"A holder reading recording the owner's ruling on an affirmed row governs that row." in prompt
+            assert b"The affirmed brief otherwise remains binding over the artifact and readings." in prompt
     else:
         assert settlement.encode("utf-8") not in prompt
         assert all(reading.encode("utf-8") not in prompt for reading in readings)

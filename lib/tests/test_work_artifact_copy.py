@@ -289,13 +289,14 @@ def test_public_hard_stopped_author_keeps_copy_and_resumes_its_state(entrance):
     assert captured["draft_before"] == b"unfinished draft\n".hex()
 
 
-def test_legacy_session_recovery_never_imports_or_disposes_old_root(entrance, tmp_path, capsys):
+@pytest.mark.parametrize("legacy_version", ["0.185.0", "0.186.0"])
+def test_legacy_session_recovery_never_imports_or_disposes_old_root(entrance, tmp_path, capsys, legacy_version):
     holder, store, commands, setup = entrance
     old = repository(tmp_path, "legacy-author")
     (old / "old-loose-file").write_bytes(b"legacy state stays here")
     store.mkdir()
     request = {"schema_version": 2, "dispatch_id": "legacy", "work": "example/product#12", "stage": "artifact",
-               "producer_version": "0.185.0", "root": str(old), "launched_at": "2026-10-04T10:00:00Z",
+               "producer_version": legacy_version, "root": str(old), "launched_at": "2026-10-04T10:00:00Z",
                "requested": {"vendor": "codex", "session_id": None, "continuity": "fresh"}}
     run = {"schema_version": 2, "dispatch_id": "legacy", "actual_vendor": "codex", "outcome": "invalid_artifact_return",
            "completed_at": "2026-10-04T11:00:00Z", "attempts": [{"observed": {"session_id": SESSION}}]}

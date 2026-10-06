@@ -195,9 +195,12 @@ def test_bounded_removal_failure_names_residue(tmp_path, monkeypatch, failure):
     assert trees.dispose(copy)["state"] == "removed"
 
 
-def test_legacy_provenance_is_distinct_from_corrupt_new_record(tmp_path):
+@pytest.mark.parametrize("legacy_version", ["0.185.0", "0.186.0"])
+def test_legacy_provenance_is_distinct_from_corrupt_new_record(tmp_path, legacy_version):
     bundle = tmp_path / "result.md.run.json"
-    assert trees.provenance({"producer_version": "0.185.0"}, bundle) is None
+    assert trees.provenance({"producer_version": legacy_version}, bundle) is None
+    with pytest.raises(trees.ArtifactTreeError, match="conflicting artifact copy provenance"):
+        trees.provenance({"producer_version": legacy_version, "artifact_copy": {}}, bundle)
     with pytest.raises(trees.ArtifactTreeError, match="lacks artifact provenance"):
         trees.provenance({"producer_version": trees.MECHANISM_VERSION}, bundle)
 

@@ -146,6 +146,39 @@ def test_no_progress_handback_still_supplies_named_resume(stopped_build, stage):
     assert recovery.stopped_source(fixture, stage).session == SESSION
 
 
+@pytest.mark.parametrize("unfinished", [False, True])
+@pytest.mark.parametrize("elapsed", [14000, 14400])
+def test_second_look_866_further_stopped_build_after_merge_resumes_and_keeps_budget(
+        stopped_build, monkeypatch, unfinished, elapsed):
+    import subprocess
+    fixture, root, request, run, save = stopped_build
+    fixture.merged_pr = {"number": 7, "state": "closed", "merged_at": "2026-10-03T09:00:00Z"}
+    (root / "fixture.txt").write_bytes(b"productive further build")
+    run.update(lifecycle="completed", completed_at="2026-10-03T11:00:00Z", outcome="interrupted",
+               interruption_cause="ceiling", attempts=[{"launched": True, "elapsed_seconds": elapsed}])
+    if unfinished:
+        run.pop("completed_at")
+        run["elapsed_checkpoint_seconds"] = elapsed
+        run["recipient_process"] = run["launcher_process"]
+    save()
+    recommendation = work.decide(fixture, {"schema_version": 1, "rules": []})
+    assert work._named_continuity(fixture, "build", recommendation) == "resume"
+    captured = []
+    def launch(command, **_kwargs):
+        metadata = json.loads(Path(command[command.index("--lifecycle-input") + 1]).read_bytes())
+        assert command[command.index("--resume") + 1] == SESSION
+        assert Path(command[command.index("--root") + 1]) == root
+        assert metadata["budget_account_before"]["lower_seconds"] == elapsed
+        assert 0 < metadata["recipient_allocation_seconds"] <= 400
+        captured.append(command)
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(work, "_recipient_run", launch)
+    monkeypatch.setattr(work, "create_implementation_root", lambda *_a: pytest.fail("replaced stopped tree"))
+    assert work.execute_stage(fixture, work.Decision("build", True, "fresh", "holder-named-stage"),
+                              fixture.holder_root, None, "holder-session", codex_path=Path(sys.executable)) == 0
+    assert bool(captured) is (elapsed < 14400)
+
+
 @pytest.mark.parametrize("elapsed", [14400, None])
 def test_progress_does_not_hide_exhausted_or_unknown_build_budget(stopped_build, elapsed):
     fixture, root, request, run, save = stopped_build
@@ -188,12 +221,13 @@ def test_proved_dead_checkpoint_budget_reaches_entrance_recommendation(stopped_b
     assert "both processes proved dead" in stopped["upper_basis"]
 
 
-def test_artifact_stays_in_affirmed_term(stopped_build):
+@pytest.mark.parametrize("legacy_version", ["0.185.0", "0.186.0"])
+def test_artifact_stays_in_affirmed_term(stopped_build, legacy_version):
     fixture, root, request, run, save = stopped_build
     fixture.issue_comments[0]["body"] = AFFIRMED
     fixture.issue_comments[0]["created_at"] = "2026-10-03T09:00:00Z"
     request["stage"] = "artifact"
-    request["producer_version"] = "0.185.0"
+    request["producer_version"] = legacy_version
     request["root"] = str(fixture.holder_root)
     request["lineage_branch"] = None
     save()

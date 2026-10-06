@@ -1,0 +1,46 @@
+# D-871 — The artifact author works in a throwaway copy
+
+**Purpose:** preserve #853's isolation, source, continuation and Git-trust choices and the alternatives they rejected. **Audience:** a future session changing artifact-author roots, recovery or copy disposal. **Success:** it can reconsider those choices from the affirmed brief, the holder's readings and pinned implementation evidence without treating this history as a new rule.
+
+The owner affirmed [#853's implementation brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/853) on 2026-10-05, choosing **A**, isolation in a throwaway copy. The [settled artifact](https://github.com/Grimblaz-and-Friends/tradecraft/issues/853#issuecomment-6008329804), its holder reading and the [holder's source-root ruling](https://github.com/Grimblaz-and-Friends/tradecraft/issues/853#issuecomment-6009364109) govern [pull request #871](https://github.com/Grimblaz-and-Friends/tradecraft/pull/871). This entry records the choices implemented in build commit `5d6e1fdd78326f4fa31b169fa939127dd4c39551`.
+
+## Isolation over detecting writes afterward
+
+The owner chose isolation over detecting author writes in the holder checkout after the turn, or combining detection with isolation. The author returns text but had the builder's write access to a checkout that outlived it. The incidents named in the brief left stray working files there; an author commit or branch switch could also move the commit the next build would start from. The corrected exposure mattered to the purchase: builds already started in fresh worktrees, so the stray files never reached a build. Isolation removes the ordinary stray-file departure and protects the holder's branch state without adding a holder-cleanliness or pre-build detection gate.
+
+The affirmed containment claim is scoped to the vendor: a Codex author's workspace-write sandbox confines writes to its copy; a Claude author starts in the copy with no OS write sandbox. Absolute-path Claude writes remain an accepted exposure. Network and GitHub permissions were outside this purchase.
+
+## An independent clone with history
+
+The holder took a full independent clone over a linked worktree or a history-free archive. The author reads earlier decisions and Git history, which an archive would remove. A linked worktree retains shared repository metadata and branches, defeating the separation the owner bought. Copied objects, dissociation from borrowed objects, detached initial checkout and removal of every remote leave the clone independent of the source's Git storage and branches. A detached start is not a prohibition on the author's own commits or branch changes.
+
+The artifact chose clone-local long-path configuration because its Windows probe required it for a complete checkout. The independent copy imports committed state alone: uncommitted holder notes must instead reach the author in its dispatch or a commit. The holder accepted that cost rather than copying loose working files.
+
+## The holder's committed HEAD, whatever registration is active
+
+The holder retained the affirmed source: the holder checkout's committed HEAD. An active or historical registration selects neither a registered implementation working tree nor that tree's HEAD as the artifact source. Registration lookup is bypassed for artifact selection rather than allowed to migrate or publish a build registration as a side effect.
+
+The [source-root ruling](https://github.com/Grimblaz-and-Friends/tradecraft/issues/853#issuecomment-6009364109) rejects the registered root's committed HEAD. That alternative would amend rows 1 and 2 rather than interpret them. A revising author loses a local checkout of the change as built, but the pull request's diff remains available through the prompt's GET commands, and the artifact under revision and every reading arrive in its prompt. Both source choices keep the author from using a live builder's tree as its working directory. Changing the source during this work would also buy an amendment, re-settlement and rebuild. The holder kept the narrow cost rather than paying that cycle without a demonstrated harm.
+
+The ruling names the refile trigger: **a revised artifact that cites the base tree where the change as built differs, and leads a builder wrong**. A future incident meeting that trigger can reopen the source choice; this entry supplies no standing prohibition on doing so.
+
+## Retain failed drafts; dispose of accepted returns
+
+The holder chose to retain a stopped or failed author's copy for its resume over always recreating the checkout. A draft can live in working files, the index, local branches or commits, so replacing that copy would lose the state needed to continue the same author. Missing or conflicting copy evidence therefore refuses instead of silently replacing it.
+
+After an accepted return, the copy is disposable. The entrance owns allocation and removal, and its external lifecycle authority is tied to the exact dispatch bundle. Acceptance requires validated whole returned text, durable publication and proved recipient termination rather than merely native success. A later artifact repair resumes the same proved session in a fresh copy at the holder's then-current commit, with the returned artifact supplied through the prompt, rather than retaining every successful checkout. The holder's native continuation probes on both vendors supported that call.
+
+A removal failure names its residue and reason without invalidating the accepted artifact. Stopped copies nobody resumes and unremovable successful copies remain manual cleanup tasks; automatic elevation or sweeping unrelated temporary copies was rejected. Legacy sessions recover in a new committed copy without importing, moving or deleting their old root. Build, floor, repair and cold-seat roots retain their existing contracts.
+
+## Command-scoped Git trust
+
+The holder accepted source trust only if the clone actually needs it. The artifact's sandbox-account probe exposed Git's dubious-ownership refusal, while the entrance ordinarily runs as the holder. Retrying that refusal with command-scoped trust for the canonical source and its resolved Git directory answers the compatibility problem without broadening later Git commands. Global trust, wildcard trust and ownership changes were rejected because the author-copy operation needs no lasting trust grant. Inherited Git variables binding storage, worktree or index to another checkout are cleared for artifact operations and its recipient launch; other stages retain their environment contract.
+
+## Pinned implementation evidence
+
+- `lib/artifact_tree.py` at `5d6e1fdd78326f4fa31b169fa939127dd4c39551`: `checkout`, `prove`, `provenance`, `finish` and `dispose` demonstrate allocation, source capture, independent Git storage, scoped trust, retained-state recovery and exact-bundle disposal authority.
+- `lib/work.py` at `5d6e1fdd78326f4fa31b169fa939127dd4c39551`: `_stage_root`, `_artifact_copy_source`, `_launch_plan` and `execute_stage` demonstrate artifact selection before registration, read-only planning and copy-root launch metadata.
+- `lib/dispatch_implementer.py` at `5d6e1fdd78326f4fa31b169fa939127dd4c39551`: `_run_implementer` and `build_command` demonstrate retained copy provenance, vendor roots and the Codex permission route. `lib/work_recovery.py` at `5d6e1fdd78326f4fa31b169fa939127dd4c39551` carries stopped-run scoping and copy-root validation.
+- `lib/tests/test_artifact_tree.py` at `5d6e1fdd78326f4fa31b169fa939127dd4c39551` supplies real-Git committed/history/storage and disposal controls. `lib/tests/test_work_artifact_copy.py` at `5d6e1fdd78326f4fa31b169fa939127dd4c39551` supplies both vendors and dispatch routes, registration bypass, holder snapshots, failed/stopped continuation, accepted repair, residue and legacy-recovery falsifiers. `lib/tests/test_dispatch_implementer.py` at `5d6e1fdd78326f4fa31b169fa939127dd4c39551` checks the native command's copy-root permissions.
+
+The catch-up to `138813c1f361c6b9cf16188dcaa3108111aa8396` retains [D-866](D-866-2026-10-05-governing-terms.md)'s changed-term routing and prompt-composition evidence alongside artifact-copy selection. The resumed build selects plugin version `0.187.0`, the next minor above that main revision. It also takes `0.187.0` as the first copy-capable version rather than the initial candidate's `0.186.0`: `lib/dispatch_implementer.py` at `138813c1f361c6b9cf16188dcaa3108111aa8396` is the provenance-free main launcher whose old author sessions still need legacy recovery. Supplied copy provenance remains subject to validation regardless of producer version. Native consumer use under A6 remains with the holder; this entry supplies no use verdict or later-stage credit.
