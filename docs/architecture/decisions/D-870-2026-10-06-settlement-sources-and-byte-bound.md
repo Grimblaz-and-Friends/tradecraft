@@ -1,0 +1,23 @@
+# D-870 — Settlement sources and the measured artifact bound
+
+**Purpose:** preserve #686's transport, size and compatibility choices. **Audience:** a future session reconsidering artifact carriage or settlement validation. **Success:** it can find the rejected alternatives and measured premise without re-deriving the old limit or extending the design unknowingly.
+
+The owner chose ruling A and affirmed two design turns on 2026-10-06, then amended the size bound that day. The [amended brief](https://github.com/Grimblaz-and-Friends/tradecraft/issues/686#issuecomment-6009256715) records those decisions for [pull request #870](https://github.com/Grimblaz-and-Friends/tradecraft/pull/870).
+
+## Transport and settlement forms
+
+**Artifacts stay in issue comments.** [Ruling A](https://github.com/Grimblaz-and-Friends/tradecraft/issues/686#issuecomment-6008049616) makes a settlement name its draft by comment id and digest, so a short settlement can supply the draft rather than becoming the builder's artifact itself. The owner rejected B, moving artifacts into files or dispatch records, because that loses GitHub readability and dispatch records are machine-local. He rejected C, splitting an artifact across numbered comments, because it adds marker grammar and missing or out-of-order parts. Brief row 1 puts both digest calculations on the whole GitHub-returned body with CRLF and CR replaced by LF: a line-ending change alone must not invalidate the judged text.
+
+**Revised settlements carry one whole text.** In design turn 1 the owner chose whole revised artifacts on `discharge` and `cap` over a pointer plus scattered revisions. The author revises after the verdict on these routes, so the judged draft is no longer the builder's input. Brief row 2 accepts two settlement shapes to give the builder one text it can build from alone.
+
+## Measured bound and instalments
+
+**The bound is 240,000 UTF-8 bytes.** The amended brief records a 2026-10-06 spike through GitHub's REST issue-comments endpoint: 262,144 ASCII characters were accepted, 262,145 rejected with 422, and 131,072 two-byte characters accepted. The measured limit was **262,144 UTF-8 bytes**, not the commonly assumed 65,536 characters. Organizations-of-Verra #523's 96,547-byte artifact had been needlessly condensed on that false premise. The owner chose a byte bound following the measurement over retaining the earlier character bound as a deliberate length rule. Row 3 leaves headroom for the marker, settlement note and whole revised artifact; a return over the bound still has to condense without losing decisions.
+
+**Instalment order lives in the reference, without artifact keys.** In design turn 2 the owner chose that order over keying artifacts to instalments. Brief row 4's reason is one artifact phase per affirmed term: a new draft before the previous pull request merges reopens the phase and displaces the artifact its repairs need. Authoring the next only after that merge accepts the wait. The [holder's consistency correction](https://github.com/Grimblaz-and-Friends/tradecraft/issues/686#issuecomment-6010518368) removes the inherited suggestion that a later-instalment reading could route an earlier open pull request.
+
+## Compatibility and the excluded binding
+
+**The legacy edge is content, not a release date.** Brief row 5 uses `run artifact`'s quoted-brief-and-following-body recognizer because the entrance cannot know a release instant, and a whole-artifact settlement from an older session remains correct. Requiring reposting would stop valid work for no gain. The owner was told before affirming that the recognizer stops a bare pointer, not a determined imitation. The [review disposition](https://github.com/Grimblaz-and-Friends/tradecraft/pull/870#discussion_r4192382293) declines stronger recognition and narrows the claim accordingly.
+
+**Binding to the cold seat's judged digest stays outside this change.** The holder called that comparison an unjudged design: the seat's digest is free text, with no marker-borne value to compare. [#873](https://github.com/Grimblaz-and-Friends/tradecraft/issues/873) records that boundary and the edited-draft case a restated digest could admit. The [holder's interim](https://github.com/Grimblaz-and-Friends/tradecraft/issues/686#issuecomment-6011739984) warns against re-settling on the observed digest. Its [wording correction](https://github.com/Grimblaz-and-Friends/tradecraft/issues/686#issuecomment-6012707820) states only a mismatch, because the entrance cannot distinguish an edited draft from a miscopied digest; it leaves the comparison to #873.
