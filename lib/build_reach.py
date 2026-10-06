@@ -135,11 +135,15 @@ class Git:
     def __init__(self, root, run):
         self.root, self.run = Path(root), run
 
-    def read(self, *args):
+    def read(self, *args, missing_ok=False):
         try:
             result = self.run(["-c", "core.quotePath=true", *args], self.root)
         except (OSError, TimeoutError, subprocess.SubprocessError) as exc:
             raise ReachError("restore local Git read capability and retry: " + str(exc)) from exc
+        # Only quiet revision verification uses status 1 for an absent object.
+        # Fatal Git/read errors still name their evidence repair.
+        if missing_ok and result.returncode == 1:
+            return None
         if result.returncode:
             reason = result.stderr.decode("utf-8", errors="replace").strip()
             raise ReachError("restore required Git objects/read capability and retry: " + reason)
@@ -374,9 +378,11 @@ def diagnostic(bundle):
 def _known_commit(git, revision):
     if not isinstance(revision, str) or not SHA.fullmatch(revision):
         return None
-    if git.read("cat-file", "-t", revision).decode("ascii").strip() != "commit":
+    resolved = git.read("rev-parse", "--verify", "--quiet", revision + "^{commit}", missing_ok=True)
+    if resolved is None:
         return None
-    return git.commit(revision)
+    resolved = resolved.decode("ascii").strip()
+    return resolved if resolved.lower() == revision.lower() else None
 
 
 def _neighbors(entry, entries):

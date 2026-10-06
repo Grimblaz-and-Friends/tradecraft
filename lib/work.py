@@ -2907,12 +2907,13 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
 
 def _evaluate_reach(state: WorkState) -> None:
     """Target attribution admits failed turns; term delivery remains independent."""
-    if state.validated_markers is None:
-        validate_marker_claims(state)
-    head = _head_sha(state)
+    head = None
     lineage = None
     turns = []
     try:
+        head = _head_sha(state)
+        if state.validated_markers is None:
+            validate_marker_claims(state)
         rows = _change_rows(state.repo, state.issue_number, state.instalment, active_only=True)
         if state.holder_root:
             rows = [row for row in rows if _same_path(Path(str(row.get("holder_root") or "")), state.holder_root)]
@@ -2939,12 +2940,14 @@ def _evaluate_reach(state: WorkState) -> None:
                 error = str(exc)
             attributed.append((order, bundle, request, record, error))
         for index, (order, bundle, request, record, error) in enumerate(attributed):
-            # Recovery owns the latest stopped turn. A completed successor in
-            # the same proved lineage bounds an older hard stop's settlement.
-            if not record.get("completed_at") and lifecycle.liveness(record) == "stopped":
+            # Recovery owns the latest unresolved turn and every live writer.
+            # A completed successor bounds older missing/dead/foreign-host
+            # evidence as historical reach, without rewriting its native bundle.
+            if (not record.get("completed_at") and lifecycle.liveness(record) != "active"
+                    and not record.get("launch_unresolved") and record.get("cleanup_proven") is not False):
                 successors = [later for later in attributed[index + 1:] if not later[4]
-                              and _same_path(Path(later[2]["root"]), Path(request["root"]))
-                              and later[2].get("lineage_branch") == request.get("lineage_branch")
+                              and (error or (_same_path(Path(later[2]["root"]), Path(request["root"]))
+                                             and later[2].get("lineage_branch") == request.get("lineage_branch")))
                               and build_reach.moment(later[3].get("completed_at")) is not None
                               and build_reach.moment(later[0]) is not None
                               and build_reach.moment(order) is not None
@@ -2952,7 +2955,7 @@ def _evaluate_reach(state: WorkState) -> None:
                               and any(attempt.get("launched") is True for attempt in (later[3].get("attempts") or [])
                                       if isinstance(attempt, dict))
                               and not lifecycle.stopped(later[3])]
-                if successors and not error and not record.get("launch_unresolved") and record.get("cleanup_proven") is not False:
+                if successors:
                     successor = successors[0]
                     record = {**record, "reach_resolved_at": successor[3]["completed_at"],
                               "reach_resolved_by": successor[2].get("dispatch_id")}
@@ -2963,26 +2966,34 @@ def _evaluate_reach(state: WorkState) -> None:
                 pending = False
             turns.append((order, bundle, request, record, error, pending))
         sessions = [marker for marker in state.issue_markers if marker.name == "builder-session"]
+        # Marker validation is issue-wide. Proved sessions belonging to a
+        # sibling/released lineage must not become this PR's missing turn.
+        inventory = lifecycle.launch_bundles(
+            state.record_root or records.default_record_root(), f"{state.repo}#{state.issue_number}",
+            RESUME_SOURCE_STAGES["build"], include_missing_stage=True) if sessions else []
+        registrations = _change_rows(state.repo, state.issue_number, None, active_only=False) if sessions else []
+        selected_paths = {bundle for _order, bundle, _request, _record in selected}
         for observed in sessions if rows or state.pr else []:
-            matched = False
-            for _order, _bundle, request, record, error in attributed:
-                requested = request.get("requested") or {}
-                vendor = requested.get("vendor") if isinstance(requested, dict) else None
-                native = [attempt.get("observed", {}).get("session_id") for attempt in (record.get("attempts") or [])
-                          if isinstance(attempt, dict) and attempt.get("launched") is True
-                          and isinstance(attempt.get("observed"), dict)]
-                identity = record.get("session_identity")
-                if isinstance(identity, dict):
-                    native.append(identity.get("session_id"))
-                if (not error and build_reach.moment(record.get("completed_at")) is not None
-                        and build_reach.moment(observed.timestamp) is not None
-                        and build_reach.moment(record["completed_at"]) <= build_reach.moment(observed.timestamp)
-                        and vendor in {"codex", "claude"} and vendor == record.get("actual_vendor")
-                        and observed.attributes.get("vendor", vendor) == vendor
-                        and any(isinstance(session, str) and session.casefold() == observed.attributes["session"].casefold()
-                                for session in native)):
-                    matched = True
-                    break
+            matched = any(not error and _reach_session_matches(observed, request, record)
+                          for _order, _bundle, request, record, error in attributed)
+            for _order, bundle, request, record in inventory if not matched else []:
+                if (bundle in selected_paths or record.get("recovery_error")
+                        or not _reach_session_matches(observed, request, record)):
+                    continue
+                root = request.get("root")
+                foreign = [row for row in registrations if isinstance(root, str) and root
+                           and _same_path(Path(root), Path(str(row.get("root") or "")))
+                           and row.get("branch") == request.get("lineage_branch")
+                           and ("instalment" not in request or request["instalment"] == row.get("instalment"))]
+                if (len(foreign) != 1 or request.get("schema_version") != records.SCHEMA_VERSION
+                        or record.get("schema_version") != records.SCHEMA_VERSION
+                        or (state.pr and request.get("lineage_pull_request") == state.pr.get("number")
+                            and request.get("lineage_branch") != (state.pr.get("head") or {}).get("ref"))):
+                    continue
+                # Retained registration/PR identity scopes a historical return;
+                # its released worktree need not still exist at today's path.
+                matched = True
+                break
             if matched:
                 continue
             reference = f"{observed.surface}:{observed.source_id or observed.attributes['session']}"
@@ -2998,10 +3009,30 @@ def _evaluate_reach(state: WorkState) -> None:
         state.reach = build_reach.evaluate(
             turns, [marker for marker in state.markers if marker.name == "reach-reading"],
             head=head, pr=state.pr, run=_git, lineage=lineage, instalment=state.instalment)
-    except (WorkError, OSError, ValueError, subprocess.SubprocessError) as exc:
+    except Exception as exc:
+        # Reach is additive report evidence, including on an executor's error
+        # path. A malformed record or unexpected evaluator failure must never
+        # replace the entrance's original result with a traceback.
         state.reach = {"schema_version": 1, "state": "unmeasurable", "current_head": head,
                        "lineage": lineage, "instalment": state.instalment, "turns": [],
-                       "diagnostics": [{"reason": "reach discovery unproved: " + str(exc)}]}
+                       "diagnostics": [{"reason": f"reach evaluation unproved: {type(exc).__name__}: {exc}"}]}
+
+
+def _reach_session_matches(observed: Marker, request: dict, record: dict) -> bool:
+    requested = request.get("requested") or {}
+    vendor = requested.get("vendor") if isinstance(requested, dict) else None
+    native = [attempt["observed"].get("session_id") for attempt in (record.get("attempts") or [])
+              if isinstance(attempt, dict) and attempt.get("launched") is True
+              and isinstance(attempt.get("observed"), dict)]
+    identity = record.get("session_identity")
+    if isinstance(identity, dict):
+        native.append(identity.get("session_id"))
+    returned, posted = build_reach.moment(record.get("completed_at")), build_reach.moment(observed.timestamp)
+    return bool(returned is not None and posted is not None and returned <= posted
+                and vendor in {"codex", "claude"} and vendor == record.get("actual_vendor")
+                and observed.attributes.get("vendor", vendor) == vendor
+                and any(isinstance(session, str) and session.casefold() == observed.attributes["session"].casefold()
+                        for session in native))
 
 
 def _reach_refusal(state: WorkState, stage: str) -> Decision | None:

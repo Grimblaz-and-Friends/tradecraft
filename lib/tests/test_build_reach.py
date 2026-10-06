@@ -577,3 +577,58 @@ def test_repair_872_missing_return_superset_survives_a_proved_descendant_launch(
     later = turn(repo, returned_head, descendant, identity="build-2", order="2026-10-06T13:00:00Z",
                  returned="2026-10-06T14:00:00Z")
     assert evaluate(repo, [row, later], [reading], base=base)["state"] == "clear"
+
+
+@pytest.mark.parametrize("missing", ["before", "after"])
+def test_repair_872_second_recovery_replaces_an_unavailable_recorded_object(repo, missing):
+    before = commit(repo, {"a": "a\nb\nc\n"})
+    after = commit(repo, {"a": "a\n"})
+    row = turn(repo, before, after)
+    (row[2] if missing == "before" else row[3])["revision_" + missing] = "f" * 40
+    reading = reader(after, recovered=[{"dispatch_id": "build-1", "before": before, "after": after,
+                                       "basis": "Recovered contemporaneous native endpoints."}],
+                     turns=[{"dispatch_id": "build-1", "items": account(measure(repo, before, after))}])
+    report = evaluate(repo, [row], [reading], base=before)
+    assert report["state"] == "clear", report
+    assert report["turns"][0]["basis"] == "recovered-range"
+
+
+def test_repair_872_second_unavailable_neighbors_do_not_poison_recovery(repo):
+    base = commit(repo, {"a": "a\nb\nc\n"})
+    before = commit(repo, {"new": "new\n"})
+    after = commit(repo, {"a": "a\n"})
+    head = commit(repo, {"later": "later\n"})
+    rows = [turn(repo, base, "f" * 40, identity="build-0", order="2026-10-06T09:00:00Z",
+                 returned="2026-10-06T09:30:00Z"), turn(repo, None, after),
+            turn(repo, "e" * 40, head, identity="build-2", order="2026-10-06T11:10:00Z",
+                 returned="2026-10-06T11:30:00Z")]
+    report = evaluate(repo, rows, base=base)
+    settlements = [{**entry["superset"], "turn_reference": entry["turn_reference"],
+                    "reason": entry["uncertainty"], "items": account(entry["superset"]["items"])}
+                   for entry in report["turns"] if entry["dispatch_id"] != "build-1"]
+    reading = reader(head, recovered=[{"dispatch_id": "build-1", "before": before, "after": after,
+                                      "basis": "Recovered native endpoints; neighboring objects are unavailable."}],
+                     turns=[{"dispatch_id": "build-1", "items": account(measure(repo, before, after))}],
+                     supersets=settlements)
+    assert evaluate(repo, rows, [reading], base=base)["state"] == "clear"
+
+
+def test_repair_872_second_unavailable_return_uses_a_retained_successor_bound(repo):
+    base = commit(repo, {"a": "a\nb\nc\n"})
+    after = commit(repo, {"a": "a\n"})
+    row = turn(repo, base, "f" * 40)
+    entry = evaluate(repo, [row], head=after, base=base)["turns"][0]
+    reading = reader(after, supersets=[{**entry["superset"], "turn_reference": "build-1",
+                     "reason": "Recorded return object unavailable.", "items": account(entry["superset"]["items"])}])
+    head = commit(repo, {"new": "new\n"})
+    later = turn(repo, after, head, identity="build-2", order="2026-10-06T13:00:00Z",
+                 returned="2026-10-06T14:00:00Z")
+    report = evaluate(repo, [row, later], [reading], base=base)
+    assert report["state"] == "clear", report
+
+
+def test_repair_872_second_optional_endpoint_does_not_hide_git_read_failure(repo):
+    def failed_read(args, root):
+        return subprocess.CompletedProcess(args, 128, b"", b"planted Git read failure")
+    with pytest.raises(reach.ReachError, match="planted Git read failure"):
+        reach._known_commit(reach.Git(repo, failed_read), "f" * 40)

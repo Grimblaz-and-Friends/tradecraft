@@ -321,6 +321,157 @@ class TestBuildReach:
         assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0"]
         assert builder.reach["state"] == "reading-required"
 
+    @pytest.mark.parametrize("scope", ["sibling", "released", "released-removed"])
+    def test_repair_872_second_sessions_are_scoped_by_their_retained_lineage(self, builder, monkeypatch, scope):
+        builder.instalment = builder.term_registration["instalment"] = "A"
+        builder.term_turns[0][2]["instalment"] = "A"
+        TestGoverningTerms().save(builder)
+        other_root = builder.holder_root.parent / "other-builder"
+        git(builder.holder_root, "worktree", "add", "-b", "other-reach", str(other_root))
+        other = registry_row(other_root, builder.holder_root, "other-reach")
+        other.update(instalment="B", active=scope == "sibling")
+        request = deepcopy(builder.term_turns[0][2])
+        request.update(dispatch_id="other-turn", root=str(other_root), lineage_branch="other-reach",
+                       lineage_pull_request=8, instalment="B", launched_at="2026-10-05T10:03:00Z")
+        request["requested"]["session_id"] = OTHER_SESSION
+        record = deepcopy(builder.term_turns[0][3])
+        record.update(dispatch_id="other-turn", completed_at="2026-10-05T10:04:00Z")
+        record["attempts"][0]["observed"]["session_id"] = OTHER_SESSION
+        folder = builder.record_root / "other-turn"
+        folder.mkdir()
+        (folder / "result.md.request.json").write_bytes(work.records.json_bytes(request))
+        (folder / "result.md.run.json").write_bytes(work.records.json_bytes(record))
+        if scope == "released-removed":
+            git(builder.holder_root, "worktree", "remove", str(other_root))
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2,
+                            "worktrees": [builder.term_registration, other]})
+        builder.issue_comments.append({"id": 170, "user": {"login": PRODUCER},
+            "created_at": "2026-10-05T10:05:00Z",
+            "body": f"<!-- tradecraft:builder-session:v1 session={OTHER_SESSION} vendor=codex -->"})
+        builder.validated_markers = None
+        self.reading(builder)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "clear", builder.reach
+        assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0"]
+        # No retained evidence anywhere still owes its own historical account.
+        builder.issue_comments.append({"id": 171, "user": {"login": PRODUCER},
+            "created_at": "2026-10-05T09:40:00Z",
+            "body": "<!-- tradecraft:builder-session:v1 session=fedcba98-7654-3210-fedc-ba9876543210 vendor=codex -->"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        missing = [entry for entry in builder.reach["turns"] if entry["state"] == "unmeasurable"]
+        assert len(missing) == 1 and missing[0]["turn_reference"].startswith("bundle:"), builder.reach
+
+    @pytest.mark.parametrize("orphan", ["missing-run", "unreadable-run", "foreign-host"])
+    def test_repair_872_second_older_orphan_is_settleable_after_a_return(self, builder, orphan):
+        request, record = builder.term_turns[0][2:]
+        before, after = request["revision_before"], record["revision_after"]
+        record.pop("completed_at")
+        record["launcher_process"] = {"host": "another-host", "pid": 1, "birth": "unknown"}
+        resumed, completed = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+            launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        resumed["lineage_branch"] = "reach-change"
+        resumed["revision_before"] = completed["revision_after"] = after
+        TestGoverningTerms().save(builder)
+        if orphan == "missing-run":
+            builder.term_turns[0][1].unlink()
+        elif orphan == "unreadable-run":
+            builder.term_turns[0][1].write_bytes(b"{")
+        work._evaluate_reach(builder)
+        entry = builder.reach["turns"][0]
+        assert not entry["pending"] and entry["resolved_by"] == "turn-1", builder.reach
+        assert work._reach_refusal(builder, "proof") is not None
+        comment = self.reading(builder, superset=orphan != "foreign-host")
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "clear", builder.reach
+        if orphan != "foreign-host":
+            payload = build_reach.payload(comment["body"])
+            payload["superset_settlements"] = []
+            payload["recovered_ranges"] = [{"dispatch_id": "turn-0", "before": before,
+                "after": after, "basis": "Contemporaneous native revisions recovered by holder."}]
+            payload["turns"] = [{"dispatch_id": "turn-0", "items": [{"path": "README.md",
+                "disposition": "row-or-criterion", "requirement": "Row 1, C1", "basis": "Required shrink."}]}]
+            comment["body"] = f"<!-- tradecraft:reach-reading:v1 head={after} -->\n\n```json\n{json.dumps(payload)}\n```"
+            builder.validated_markers = None
+            work._evaluate_reach(builder)
+            assert builder.reach["state"] == "clear", builder.reach
+
+    @pytest.mark.parametrize("orphan", ["missing-run", "foreign-host"])
+    def test_repair_872_second_latest_orphan_remains_under_recovery(self, builder, orphan):
+        record = builder.term_turns[0][3]
+        record.pop("completed_at")
+        record["launcher_process"] = {"host": "another-host", "pid": 1, "birth": "unknown"}
+        TestGoverningTerms().save(builder)
+        if orphan == "missing-run":
+            builder.term_turns[0][1].unlink()
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "pending" and builder.reach["turns"][0]["pending"]
+        assert work.work_recovery.latest_stopped(builder, "build") is not None
+        assert work._reach_refusal(builder, "proof").reason == "reach-pending"
+
+    @pytest.mark.parametrize("root", ["missing", None, []])
+    def test_repair_872_second_malformed_older_request_is_visible_and_settleable(self, builder, monkeypatch, root):
+        request, record = builder.term_turns[0][2:]
+        if root == "missing":
+            request.pop("root")
+        else:
+            request["root"] = root
+        record.pop("completed_at")
+        monkeypatch.setattr(work.lifecycle, "liveness", lambda _: "stopped")
+        resumed, completed = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+            launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        resumed["lineage_branch"] = "reach-change"
+        resumed["revision_before"] = completed["revision_after"] = builder.pr["head"]["sha"]
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        entry = builder.reach["turns"][0]
+        assert entry["state"] == "unmeasurable" and "recipient root" in entry["uncertainty"], builder.reach
+        self.reading(builder, superset=True)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "clear", builder.reach
+
+    @pytest.mark.parametrize("failure", [KeyError, TypeError, RuntimeError])
+    @pytest.mark.parametrize("location", ["discovery", "measurement", "markers"])
+    def test_repair_872_second_unexpected_reach_failure_is_a_report(self, builder, monkeypatch, capsys, failure, location):
+        def fail(*_args, **_kwargs):
+            raise failure("planted reach failure")
+        owner, name = {"discovery": (work.work_recovery, "launches"),
+                       "measurement": (build_reach, "evaluate"),
+                       "markers": (work, "validate_marker_claims")}[location]
+        monkeypatch.setattr(owner, name, fail)
+        for stage in ["ready-reviewers", "proof", "release-report"]:
+            refusal = work._reach_refusal(builder, stage)
+            assert refusal.reason == "reach-unmeasurable"
+            assert failure.__name__ in refusal.detail and "planted reach failure" in refusal.detail
+        work._emit_report({"status": "read-only-report"}, builder)
+        reported = json.loads(capsys.readouterr().out)
+        assert reported["reach"]["state"] == "unmeasurable"
+        assert reported["reach"]["current_head"] == builder.pr["head"]["sha"]
+
+    def test_repair_872_second_run_error_keeps_original_failure_when_reach_fails(self, builder, monkeypatch, capsys):
+        monkeypatch.setattr(work, "_read_policy_state", lambda *_: builder)
+        monkeypatch.setattr(work, "prepare_use_evidence", lambda *_: None)
+        monkeypatch.setattr(work, "decide", lambda *_: work.Decision("build", True, None, "fixture"))
+        monkeypatch.setattr(work, "_reported_decision", lambda _state, decision: decision)
+        def bad_reach(*_args, **_kwargs):
+            raise TypeError("planted evaluator failure")
+        monkeypatch.setattr(build_reach, "evaluate", bad_reach)
+        def executor(*_args):
+            raise work.WorkError("original builder refusal")
+        arguments = ["run", "build", "--repo", builder.repo, "--issue", str(builder.issue_number),
+                     "--root", str(builder.holder_root)]
+        args = work.parser().parse_args(arguments)
+        with pytest.raises(work.WorkError, match="original builder refusal") as raised:
+            work._run(args, transport=self.transport(builder), executor=executor)
+        assert raised.value.reach["state"] == "unmeasurable"
+        assert "TypeError" in raised.value.reach["diagnostics"][0]["reason"]
+        monkeypatch.setattr(work, "run", lambda _args: work._run(_args, transport=self.transport(builder), executor=executor))
+        assert work.main(arguments) == 1
+        output = capsys.readouterr()
+        report = json.loads(output.out)
+        assert report["reason"] == "original builder refusal" and report["reach"]["state"] == "unmeasurable"
+        assert "Traceback" not in output.err
+
     @pytest.mark.parametrize("settlement", ["recorded", "recovered", "superset"])
     @pytest.mark.parametrize("stage", ["ready-reviewers", "proof", "release-report"])
     def test_repair_872_stopped_turn_is_settleable_after_completed_resume(self, builder, monkeypatch, capsys,
