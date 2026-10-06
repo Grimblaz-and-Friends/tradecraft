@@ -222,19 +222,20 @@ def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
     return False
 
 
-def validate_artifact_return(expected: str, returned: str) -> dict[str, object]:
+def validate_artifact_return(expected: str, returned: str | bytes) -> dict[str, object]:
     """Bound the native final message before comparing its brief and following prose."""
-    count = len(returned.encode("utf-8"))
+    message = returned if isinstance(returned, bytes) else returned.encode("utf-8")
+    count = len(message)
     if count > ARTIFACT_RETURN_MAX_BYTES:
         reason = (
             f"artifact return has {count:,} UTF-8 bytes; maximum is "
             f"{ARTIFACT_RETURN_MAX_BYTES:,} UTF-8 bytes"
         )
-    elif not artifact_opening_carries_brief(expected, returned):
-        reason = (ARTIFACT_RETURN_REQUIREMENT if returned.strip() else
-                  "artifact turn completed without final text; " + ARTIFACT_RETURN_REQUIREMENT)
     else:
-        reason = ""
+        text = message.decode("utf-8", errors="replace")
+        reason = "" if artifact_opening_carries_brief(expected, text) else (
+            ARTIFACT_RETURN_REQUIREMENT if text.strip() else
+            "artifact turn completed without final text; " + ARTIFACT_RETURN_REQUIREMENT)
     return {
         "status": "fail" if reason else "pass", "reason": reason,
         "maximum_bytes": ARTIFACT_RETURN_MAX_BYTES,
@@ -663,7 +664,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     record["outcome"] = "interrupted" if ceiling else "error"
                 if artifact_brief and complete and not reason:
                     validation = validate_artifact_return(
-                        artifact_brief.decode("utf-8"), message.decode("utf-8", errors="replace")
+                        artifact_brief.decode("utf-8"), message
                     )
                     record["result"]["return_validation"] = validation
                     if validation["status"] == "fail" and message.strip():

@@ -156,6 +156,8 @@ def test_cold_digest_normalizes_only_line_endings_and_keeps_inline_bytes(tmp_pat
     assert _artifact_section(prompt, "artifact exact bytes") == original_bytes
     assert f"Artifact byte count: {len(original_bytes)}".encode() in prompt
     assert f"Artifact sha256: {_fixture_digest(body)}".encode() in prompt
+    assert b"Sha256 basis: the whole body with CRLF and CR replaced by LF before UTF-8 encoding." in prompt
+    assert b"The byte count and inlined bytes describe the original body." in prompt
     assert work.artifact_digest(body + " ") != _fixture_digest(body)
     assert work.artifact_digest(body.replace(chr(0xE9), "e" + chr(0x301))) != _fixture_digest(body)
 
@@ -203,6 +205,7 @@ def test_broken_pointer_refuses_ordinary_and_explicit_launch_before_mutation(
     fixture = _broken_source_fixture(route, failure)
     recommendation = work.decide(fixture, RULES)
     assert not recommendation.dispatch and recommendation.reason.startswith("artifact-source-unusable")
+    assert recommendation.as_dict()["status"] == "holder-owned"
     assert SOURCE_FAILURES[failure] in recommendation.detail
     assert "artifact settlement" in recommendation.detail
     if failure == "changed":
@@ -240,10 +243,16 @@ def test_historical_source_failure_does_not_block_replacement(replacement):
             {"id": 1010, "body": HOLDER, "user": {"login": PRODUCER}},
         ])
         expected = "build"
+    elif replacement == "draft":
+        fixture.issue_comments.append({"id": 1000, "body": ARTIFACT, "user": {"login": PRODUCER}})
+        expected = "cold-seat"
     else:
-        fixture.issue_comments.append({"id": 1000, "body": ARTIFACT if replacement == "draft" else AFFIRMED,
-                                       "user": {"login": PRODUCER}})
-        expected = "cold-seat" if replacement == "draft" else "artifact"
+        for index, body in enumerate((AFFIRMED, SOURCE_DRAFT,
+                "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->",
+                _source_settlement("would", draft_id=1010), HOLDER)):
+            fixture.issue_comments.append({"id": 1000 + index * 10, "body": body,
+                                           "user": {"login": PRODUCER}})
+        expected = "build"
     decision = work.decide(fixture, RULES)
     assert decision.stage == expected
     assert any("body changed" in row["reason"] for row in decision.invalid_markers)
@@ -356,15 +365,54 @@ def test_amendment_revision_preserves_selected_source_and_its_readings(
         assert prompt.index(b"--- artifact under revision end ---") < prompt.index(b"FIRST APPLICABLE READING") < prompt.index(b"SECOND APPLICABLE READING")
 
 
-def test_unresolved_prior_pointer_refuses_revision_text_instead_of_carrying_prose():
-    fixture = _broken_source_fixture("would", "changed")
+@pytest.mark.parametrize("failure", ["changed", "missing"])
+def test_unresolved_prior_pointer_refuses_revision_text_instead_of_carrying_prose(
+        tmp_path, monkeypatch, capsys, failure):
+    fixture = _broken_source_fixture("would", failure)
     fixture.issue_comments.extend([
         {"id": 1000, "body": AFFIRMED, "user": {"login": PRODUCER}},
         {"id": 1010, "body": AFFIRMED, "user": {"login": PRODUCER}},
     ])
+    recommendation = work.decide(fixture, RULES)
+    assert recommendation.stage == "artifact-source" and not recommendation.dispatch
+    assert recommendation.as_dict()["status"] == "holder-owned"
+    assert SOURCE_FAILURES[failure] in recommendation.detail
+    decision = work.Decision("artifact", True, "fresh", "holder-named-stage")
+    with pytest.raises(work.WorkError, match=SOURCE_FAILURES[failure]):
+        work._stage_prompt(fixture, decision)
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("mutated before source refusal"))
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "artifact-source-unusable"
+    assert SOURCE_FAILURES[failure] in report["detail"]
+
+
+@pytest.mark.parametrize("failure", ["changed", "missing"])
+def test_holder_artifact_dispatch_recovers_unusable_prior_source_byte_for_byte(
+        tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    root = repository(tmp_path, "author")
+    fixture = _broken_source_fixture("would", failure)
+    fixture.issue_comments.append({"id": 1000, "body": AFFIRMED, "user": {"login": PRODUCER}})
+    fixture.record_root = tmp_path / "dispatches"
     work.decide(fixture, RULES)
-    with pytest.raises(work.WorkError, match="draft comment 20 body changed"):
-        work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
+    assert SOURCE_FAILURES[failure] in work._artifact_source_problem(fixture, "artifact")
+    dispatch = tmp_path / "holder-job.md"
+    supplied = b"Holder supplies the complete replacement design.\r\nKeep exact bytes.\r\n"
+    dispatch.write_bytes(supplied)
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
+    monkeypatch.setattr(work, "_selected_runtime_argument", lambda *_a: [])
+    launches = []
+    def launch(command, **_kwargs):
+        received = Path(command[command.index("--dispatch") + 1])
+        launches.append(received.read_bytes())
+        assert received == dispatch.resolve()
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(work, "_recipient_run", launch)
+    decision = work.Decision("artifact", True, "fresh", "holder-named-stage")
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder", dispatch_path=dispatch) == 0
+    assert launches == [supplied]
+    assert dispatch.read_bytes() == supplied
 
 
 def test_pointer_companion_verdict_settles_without_becoming_artifact_text(tmp_path, monkeypatch):
@@ -389,6 +437,67 @@ def test_migrated_pointer_keeps_effective_readings_for_build_and_amendment(tmp_p
     prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
     assert _artifact_section(prompt, "artifact under revision") == SOURCE_DRAFT.encode()
     assert prompt.index(b"--- artifact under revision end ---") < prompt.index(b"FIRST APPLICABLE READING") < prompt.index(b"SECOND APPLICABLE READING")
+
+
+@pytest.mark.parametrize("route", sorted(work.SETTLEMENT_ROUTES))
+def test_route_only_migration_inherits_whole_artifact_and_readings(tmp_path, monkeypatch, route):
+    fixture = _source_fixture(route)
+    settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
+    original = "<!-- tradecraft:artifact:v1 status=settled -->" + SOURCE_REVISED
+    settlement["body"] = original
+    fixture.issue_comments.append({"id": 1000,
+        "body": f"<!-- tradecraft:artifact:v1 status=settled route={route} -->",
+        "user": {"login": PRODUCER}})
+    assert work.decide(fixture, RULES).stage == "build"
+    _assert_source_consumers(fixture, original, tmp_path, monkeypatch)
+    fixture.issue_comments.append({"id": 1010, "body": AFFIRMED, "user": {"login": PRODUCER}})
+    work.decide(fixture, RULES)
+    prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
+    assert _artifact_section(prompt, "artifact under revision") == original.encode()
+    assert prompt.index(b"FIRST APPLICABLE READING") < prompt.index(b"SECOND APPLICABLE READING")
+
+
+@pytest.mark.parametrize("breaker", ["draft", "verdict", "brief", "spent", "incomplete"])
+def test_route_only_migration_cannot_supply_text_after_its_eligibility_ends(breaker):
+    fixture = _source_fixture("would")
+    settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
+    settlement["body"] = "<!-- tradecraft:artifact:v1 status=settled -->" + (
+        "Retrieve the artifact from comment 20." if breaker == "incomplete" else SOURCE_REVISED)
+    extra = {
+        "draft": [SOURCE_DRAFT],
+        "verdict": ["<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"],
+        "brief": [AFFIRMED, SOURCE_DRAFT],
+        "spent": [_source_settlement("would")],
+        "incomplete": [],
+    }[breaker]
+    for index, body in enumerate(extra + ["<!-- tradecraft:artifact:v1 status=settled route=would -->"]):
+        fixture.issue_comments.append({"id": 1000 + index * 10, "body": body, "user": {"login": PRODUCER}})
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "artifact-source-unusable" and not decision.dispatch
+    assert "settlement names no draft" in decision.detail
+
+
+def test_routeless_migration_cannot_hide_a_broken_named_reference():
+    fixture = _source_fixture("would")
+    settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
+    settlement["body"] = "<!-- tradecraft:artifact:v1 status=settled -->" + SOURCE_REVISED
+    fixture.issue_comments.append({"id": 1000, "body": _source_settlement("would", draft_id=99999),
+                                   "user": {"login": PRODUCER}})
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "artifact-source-unusable" and not decision.dispatch
+    assert "named draft comment 99999 is missing" in decision.detail
+
+
+@pytest.mark.parametrize("route", ["would", "discharge", "cap"])
+def test_settlement_advice_names_reference_and_revised_forms(route):
+    fixture = _source_fixture(route)
+    fixture.issue_comments = [row for row in fixture.issue_comments if "status=settled" not in row["body"]]
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == ("artifact-cap" if route == "cap" else "artifact-settlement")
+    assert f"route={route}" in decision.detail
+    assert "draft_comment" in decision.detail and "draft_sha256" in decision.detail
+    if route in {"discharge", "cap"}:
+        assert "whole revised artifact" in decision.detail
 
 
 @pytest.fixture(autouse=True)
@@ -1731,6 +1840,8 @@ def test_routeless_settlement_requests_one_supported_route_repost():
                   if item["name"] == "artifact")
     assert "re-post it once" in reason
     assert all(f"route={route}" in reason for route in work.SETTLEMENT_ROUTES)
+    assert "draft_comment" in reason and "draft_sha256" in reason
+    assert "whole revised artifact" in reason
 
 
 def test_superseded_routeless_settlement_reports_history_without_repost_guidance():

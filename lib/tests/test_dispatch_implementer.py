@@ -1389,6 +1389,25 @@ def test_artifact_size_refuses_before_completeness_comparison(monkeypatch):
 
 
 @pytest.mark.parametrize("byte_count", [240_000, 240_001])
+def test_codex_artifact_size_counts_retained_invalid_utf8_bytes(job, byte_count):
+    args, _scenario = job
+    args.stage, args.vendor = "artifact", "codex"
+    supply_artifact_brief(args)
+    message = artifact_with_byte_count(byte_count - 1, "plain ").encode("utf-8") + b"\xff"
+    assert len(message.decode("utf-8", errors="replace").encode("utf-8")) == byte_count + 2
+    native = native_artifact_result("codex", "unused final-message carrier")
+    native["last_hex"] = message.hex()
+    configure(job, native)
+    assert implementer.run_implementer(args) == (1 if byte_count > 240_000 else 0)
+    logged = record(args)
+    assert logged["result"]["return_validation"]["observed_bytes"] == byte_count
+    assert logged["result"]["return_validation"]["maximum_bytes"] == 240_000
+    assert logged["outcome"] == ("invalid_artifact_return" if byte_count > 240_000 else "success")
+    assert Path(logged["result"]["source_output"]).read_bytes() == message
+    assert args.output.read_bytes() == message
+
+
+@pytest.mark.parametrize("byte_count", [240_000, 240_001])
 @pytest.mark.parametrize("padding", ["plain ", chr(0x96EA) + " "], ids=["ascii", "multibyte"])
 def test_shared_artifact_validator_counts_complete_boundary_messages(byte_count, padding):
     text = artifact_with_byte_count(byte_count, padding)
