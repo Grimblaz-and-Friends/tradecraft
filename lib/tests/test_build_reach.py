@@ -25,7 +25,7 @@ def revision(root):
     return git(root, "rev-parse", "HEAD").stdout.decode().strip()
 
 
-def commit(root, files):
+def commit(root, files, *, message="fixture"):
     for name, content in files.items():
         path = root / name
         if content is None:
@@ -34,7 +34,7 @@ def commit(root, files):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content if isinstance(content, bytes) else content.encode())
     git(root, "add", "--all")
-    git(root, "commit", "--allow-empty", "-m", "fixture")
+    git(root, "commit", "--allow-empty", "-m", message)
     return revision(root)
 
 
@@ -793,7 +793,11 @@ def test_C2_in_turn_side_branch_reach_excludes_base_and_keeps_net_rules(repo, ch
 
 @pytest.mark.parametrize("remaining", [True, False])
 @pytest.mark.parametrize("claim", ["complete", "partial", "forged"])
-def test_C4_complete_multi_turn_reading_survives_base_path_removal(repo, remaining, claim):
+def test_C4_complete_multi_turn_reading_survives_base_path_removal(repo, remaining, claim, monkeypatch):
+    # Independent commits with the same parent and tree must remain distinct,
+    # even on a fast runner where Git gives them the same second's timestamp.
+    for variable in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"):
+        monkeypatch.setenv(variable, "2026-10-06T09:00:00+00:00")
     base = commit(repo, {"old": "a\nb\nc\n", "kept": "a\nb\nc\n", "second": "a\nb\nc\n"})
     first = commit(repo, {"old": None, "kept": "a\n" if remaining else None})
     second = commit(repo, {"second": "a\n"})
@@ -809,7 +813,10 @@ def test_C4_complete_multi_turn_reading_survives_base_path_removal(repo, remaini
     reading = reader(second, turns=accounts)
     assert evaluate(repo, rows, [reading], base=base)["state"] == ("clear" if claim == "complete" else "reading-required")
     git(repo, "checkout", "-b", "base", base)
-    incoming = commit(repo, {"old": None, **({} if remaining else {"kept": None})})
+    incoming = commit(repo, {"old": None, **({} if remaining else {"kept": None})},
+                      message="independent upstream removal")
+    assert incoming != first
+    assert git(repo, "merge-base", incoming, second).stdout.decode().strip() == base
     git(repo, "checkout", "topic")
     git(repo, "merge", "--no-ff", "base", "-m", "catch up")
     head = revision(repo)
