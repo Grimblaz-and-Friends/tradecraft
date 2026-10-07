@@ -16,6 +16,9 @@ import work
 import launch_settings
 import connected_review
 import raw_output
+import build_reach
+
+REAL_GOVERNING_TERMS = work._governing_terms_decision
 
 
 # Synthetic entrance policy: these fixtures do not load a repository's rules.
@@ -563,6 +566,808 @@ def already_built_terms(monkeypatch):
     # ledger. TestGoverningTerms overrides this prerequisite and exercises the
     # real comparison with attributed, retained bundles and registered trees.
     monkeypatch.setattr(work, "_governing_terms_decision", lambda _state: None)
+
+
+@pytest.fixture(autouse=True)
+def isolated_reach(monkeypatch):
+    # Existing synthetic SHA/launch fixtures isolate their own mechanisms.
+    # TestBuildReach overrides this and uses real objects and attributed turns.
+    monkeypatch.setattr(work, "_evaluate_reach", lambda state: setattr(state, "reach", {
+        "schema_version": 1, "state": "not-due", "turns": [], "current_head": work._head_sha(state)}))
+
+
+class TestBuildReach:
+    @pytest.fixture(autouse=True)
+    def isolated_reach(self):
+        pass
+
+    @pytest.fixture
+    def builder(self, tmp_path, monkeypatch):
+        holder = policy_repository(tmp_path, "reach-holder")
+        git(holder, "config", "core.autocrlf", "false")
+        root = tmp_path / "reach-builder"
+        git(holder, "worktree", "add", "-b", "reach-change", str(root))
+        row = registry_row(root, holder, "reach-change")
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2, "worktrees": [row]})
+        fixture = state(MECHANICAL, pr=True, paths=["README.md"],
+                        config=work.WorkConfig(marker_producers=frozenset({PRODUCER}), reviewer_label="reviewers"))
+        fixture.pr.update(node_id="PR_fixture", changed_files=1)
+        fixture.pr["head"]["ref"] = "reach-change"
+        base = git(root, "rev-parse", "HEAD").stdout.decode().strip()
+        fixture.pr["base"]["sha"] = base
+        fixture.pr["head"]["sha"] = base
+        fixture.synchronization["base"]["sha"] = base
+        fixture.required_gate = {"status": "none", "sources": [], "reason": "fixture no required workflow"}
+        fixture.term_root, fixture.term_registration = root, row
+        fixture.term_turns = []
+        fixture.holder_root = holder
+        fixture.record_root = tmp_path / "reach-dispatches"
+        monkeypatch.setattr(work.records, "default_record_root", lambda: fixture.record_root)
+        monkeypatch.setattr(work, "_collect_synchronization", lambda *_: fixture.synchronization)
+        monkeypatch.setattr(work, "_verify_floor_identity", lambda *_: None)
+        fixture.issue_comments[0].update(id=101, created_at="2026-10-05T09:00:00Z")
+        self.edit(fixture, b"a\nb\nc\n")
+        before = fixture.pr["head"]["sha"]
+        # Reach fixtures remove a file that existed before this PR.
+        fixture.pr["base"]["sha"] = before
+        fixture.synchronization["base"]["sha"] = before
+        self.edit(fixture, b"a\n")
+        after = fixture.pr["head"]["sha"]
+        request, run = TestGoverningTerms().turn(fixture)
+        request["lineage_branch"] = "reach-change"
+        request["revision_before"], run["revision_after"] = before, after
+        TestGoverningTerms().save(fixture)
+        self.floor(fixture)
+        return fixture
+
+    def edit(self, fixture, content):
+        (fixture.term_root / "README.md").write_bytes(content)
+        git(fixture.term_root, "add", "README.md")
+        git(fixture.term_root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "commit", "-m", "reach fixture")
+        fixture.pr["head"]["sha"] = git(fixture.term_root, "rev-parse", "HEAD").stdout.decode().strip()
+
+    def floor(self, fixture):
+        fixture.issue_comments = [c for c in fixture.issue_comments if "tradecraft:floor:" not in c["body"]]
+        fixture.issue_comments.append({"id": 121, "user": {"login": PRODUCER},
+            "body": f"<!-- tradecraft:floor:v1 head={fixture.pr['head']['sha']} status=pass -->"})
+        fixture.validated_markers = None
+        fixture.floor_public = {"outcome": "ci-met", "head": fixture.pr["head"]["sha"],
+                                "policy": {"repository": fixture.repo, "path": POLICY_PATH, "revision": fixture.pr["head"]["sha"],
+                                           "sha256": "2" * 64}, "executions": [], "limitations": []}
+
+    def reading(self, fixture, *, superset=False):
+        work._evaluate_reach(fixture)
+        entry = fixture.reach["turns"][0]
+        items = entry["superset"]["items"] if superset else entry["items"]
+        accounts = [{"path": item["path"], "disposition": "row-or-criterion", "requirement": "Row 1, C1",
+                     "basis": "The fixture's governing criterion requires the removal."} for item in items]
+        payload = {"schema_version": 1, "turns": [], "superset_settlements": []}
+        if superset:
+            payload["superset_settlements"] = [{**entry["superset"], "turn_reference": entry["turn_reference"],
+                                                "reason": entry["uncertainty"], "items": accounts}]
+        else:
+            payload["turns"] = [{"dispatch_id": entry["dispatch_id"], "items": accounts}]
+        body = (f"<!-- tradecraft:reach-reading:v1 head={fixture.pr['head']['sha']} -->\n\n```json\n"
+                + json.dumps(payload) + "\n```\n")
+        comment = {"id": 131 + len(fixture.issue_comments), "body": body, "user": {"login": PRODUCER}, "created_at": "2026-10-05T12:00:00Z"}
+        fixture.issue_comments.append(comment)
+        fixture.validated_markers = None
+        return comment
+
+    def transport(self, fixture):
+        class Transport(ReadyTransport):
+            def get(self, endpoint, *, paginate=False):
+                if "/pulls/7" in endpoint:
+                    return {**deepcopy(fixture.pr), "draft": self.draft, "head": {**fixture.pr["head"], "sha": self.head}}
+                return super().get(endpoint, paginate=paginate)
+        transport = Transport(draft=fixture.pr["draft"])
+        transport.head = fixture.pr["head"]["sha"]
+        return transport
+
+    def endpoint(self, fixture, stage, monkeypatch):
+        effects = []
+        transport = self.transport(fixture)
+        monkeypatch.setattr(work, "prepare_use_evidence", lambda *_: None)
+        monkeypatch.setattr(work, "_publish_proof_comment", lambda *_:
+                            effects.append("proof-comment") or {"action": "created", "id": 1})
+        monkeypatch.setattr(work, "_rerun_gate_evaluations", lambda *_: effects.append("gate-rerun") or [])
+        monkeypatch.setattr(work, "read_state", lambda *_: fixture)
+        if stage == "proof":
+            work._execute_proof(transport, fixture, fixture.holder_root, RULES,
+                               fixture.holder_root / POLICY_PATH, None, None)
+        elif stage == "ready-reviewers":
+            work._execute_ready_reviewers(transport, fixture, RULES, None, None)
+        else:
+            work.execute_stage(fixture, work.Decision(stage, False, None, "holder-named-stage"),
+                               fixture.holder_root, None, transport=transport, rules=RULES)
+        return effects + transport.operations
+
+    @pytest.mark.parametrize("reference", ["turn-0", "turn-2", "foreign", "unknown"])
+    def test_C1_C4_PR_own_history_rename_prune_and_base_line_account(self, builder, reference):
+        root = builder.term_root
+        base = builder.pr["base"]["sha"]
+        def commit_files(files):
+            for name, content in files.items():
+                path = root / name
+                if content is None:
+                    path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content)
+            git(root, "add", "--all")
+            git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+                "commit", "-m", "own-history fixture")
+            builder.pr["head"]["sha"] = git(root, "rev-parse", "HEAD").stdout.decode().strip()
+            return builder.pr["head"]["sha"]
+        added = commit_files({"decisions/D-856.md": b"new decision\n",
+                              "lib/new.py": b"one\ntwo\nthree\n",
+                              "README.md": b"a\nb\nc\nown one\nown two\n"})
+        request, run = builder.term_turns[0][2:]
+        request["revision_before"], run["revision_after"] = base, added
+        renamed = commit_files({"decisions/D-856.md": None, "decisions/D-872.md": b"new decision\n"})
+        request, run = TestGoverningTerms().turn(builder, composed="2026-10-05T10:04:00Z",
+            launched="2026-10-05T10:05:00Z", completed="2026-10-05T10:06:00Z")
+        request.update(lineage_branch="reach-change", revision_before=added)
+        run["revision_after"] = renamed
+        head = commit_files({"lib/new.py": b"one\n", "README.md": b"a\nb\nc\n"})
+        request, run = TestGoverningTerms().turn(builder, composed="2026-10-05T10:09:00Z",
+            launched="2026-10-05T10:10:00Z", completed="2026-10-05T10:11:00Z")
+        request.update(lineage_branch="reach-change", revision_before=renamed)
+        run["revision_after"] = head
+        foreign_request, foreign_run = TestGoverningTerms().turn(builder, composed="2026-10-05T09:30:00Z",
+            launched="2026-10-05T09:31:00Z", completed="2026-10-05T09:32:00Z")
+        foreign_request.update(lineage_branch="another-change", revision_before=base)
+        foreign_run["revision_after"] = added
+        TestGoverningTerms().save(builder)
+        self.floor(builder)
+        work._evaluate_reach(builder)
+        assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0", "turn-1", "turn-2"]
+        assert [entry["state"] for entry in builder.reach["turns"]] == ["clear", "clear", "reading-required"]
+        assert [item["path"] for item in builder.reach["turns"][2]["items"]] == ["README.md"]
+        assert work.decide(builder, RULES).stage == "reach-read"
+        account = {"schema_version": 1, "turns": [{"dispatch_id": "turn-2", "items": [
+            {"path": "README.md", "disposition": "own-turn", "added_by": "turn-3" if reference == "foreign" else reference,
+             "basis": "The removed own lines were added by the first turn."}]}]}
+        body = (f"<!-- tradecraft:reach-reading:v1 head={head} -->\n\n```json\n"
+                + json.dumps(account) + "\n```\n")
+        builder.issue_comments.append({"id": 180, "body": body, "user": {"login": PRODUCER},
+                                       "created_at": "2026-10-05T12:00:00Z"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        if reference == "turn-0":
+            assert builder.reach["state"] == "clear", builder.reach
+            assert work.decide(builder, RULES).stage == "ready-reviewers"
+        else:
+            assert builder.reach["state"] == "reading-required" and builder.reach["diagnostics"], builder.reach
+
+    @pytest.mark.parametrize("lane", ["mechanical", "connected"])
+    @pytest.mark.parametrize("stage", ["ready-reviewers", "proof", "release-report"])
+    @pytest.mark.parametrize("missing_range", [False, True])
+    def test_C3_C5_actual_endpoints_refuse_then_accept_complete_accounts(self, builder, monkeypatch, capsys,
+                                                                       lane, stage, missing_range):
+        if lane == "connected":
+            builder.issue_comments[0]["body"] = AFFIRMED
+            builder.issue_comments[1:1] = [
+                {"body": ARTIFACT, "user": {"login": PRODUCER}},
+                {"body": _settled("unobtainable"), "user": {"login": PRODUCER}},
+                {"body": HOLDER, "user": {"login": PRODUCER}}]
+        if missing_range:
+            builder.term_turns[0][2].pop("revision_before")
+            TestGoverningTerms().save(builder)
+        assert self.endpoint(builder, stage, monkeypatch) == []
+        refused = json.loads(capsys.readouterr().out)
+        assert refused["stage"] == "reach-read" and refused["status"] == "holder-owned"
+        assert "turn-0" in refused["detail"] and builder.pr["head"]["sha"] in refused["detail"]
+        self.reading(builder, superset=missing_range)
+        effects = self.endpoint(builder, stage, monkeypatch)
+        accepted = json.loads(capsys.readouterr().out)
+        assert accepted["reach"]["state"] == "clear", json.dumps(accepted["reach"], indent=2)
+        assert accepted["stage"] == stage, accepted
+        if stage == "proof":
+            assert effects == ["proof-comment", "gate-rerun"]
+        elif stage == "ready-reviewers":
+            assert [effect[0] for effect in effects] == ["label", "ready"]
+        else:
+            assert effects == [] and "path_departures" in accepted
+
+    @pytest.mark.parametrize("stage", ["ready-reviewers", "proof", "release-report"])
+    def test_C5_no_flag_control_and_already_ready_repair(self, builder, stage, monkeypatch, capsys):
+        builder.pr["draft"] = False
+        request, run = builder.term_turns[0][2:]
+        request["revision_before"] = run["revision_after"]
+        TestGoverningTerms().save(builder)
+        self.endpoint(builder, stage, monkeypatch)
+        accepted = json.loads(capsys.readouterr().out)
+        assert accepted["reach"]["state"] == "clear" and accepted["stage"] == stage
+        before = builder.pr["head"]["sha"]
+        self.edit(builder, b"")
+        run["revision_after"], request["revision_before"] = builder.pr["head"]["sha"], before
+        TestGoverningTerms().save(builder)
+        self.floor(builder)
+        assert self.endpoint(builder, stage, monkeypatch) == []
+        assert json.loads(capsys.readouterr().out)["stage"] == "reach-read"
+
+    @pytest.mark.parametrize("draft,next_stage", [(True, "ready-reviewers"), (False, "proof")])
+    def test_C1_C5_routing_flags_on_every_lane_and_clear_control(self, builder, draft, next_stage):
+        builder.pr["draft"] = draft
+        decision = work.decide(builder, RULES)
+        assert decision.stage == "reach-read" and decision.reach["state"] == "reading-required"
+        self.reading(builder)
+        assert work.decide(builder, RULES).stage == next_stage
+
+    @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+    def test_C3_complete_inventory_uses_target_not_successful_delivery(self, builder, stage):
+        request, run = builder.term_turns[0][2:]
+        request["stage"] = stage
+        run["outcome"] = "error"
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "reading-required"
+        assert builder.reach["turns"][0]["stage"] == stage and builder.reach["turns"][0]["items"]
+        decision = work.decide(builder, RULES)
+        assert decision.stage == stage and decision.reason == "stopped-run-resume"
+        run["attempts"] = [{"launched": False}]
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "not-due"
+
+    def test_C3_older_launched_failure_keeps_removals_after_successful_repair(self, builder):
+        builder.term_turns[0][3]["outcome"] = "error"
+        TestGoverningTerms().save(builder)
+        request, run = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+                                                launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        request["lineage_branch"] = "reach-change"
+        request["revision_before"] = run["revision_after"] = builder.pr["head"]["sha"]
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        assert [turn["state"] for turn in builder.reach["turns"]] == ["reading-required", "clear"]
+        self.reading(builder)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "clear"
+
+    def test_C3_attributed_incomplete_stage_stays_visible_and_has_superset_route(self, builder):
+        builder.term_turns[0][2].pop("stage")
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "unmeasurable"
+        assert "stage identity" in builder.reach["turns"][0]["uncertainty"]
+        self.reading(builder, superset=True)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "clear"
+
+    @pytest.mark.parametrize("retained", ["flag-free", "unlaunched", "later-same-session"])
+    def test_repair_872_marker_only_sessions_remain_visible_beside_retained_bundles(self, builder, retained):
+        request, run = builder.term_turns[0][2:]
+        request["revision_before"] = run["revision_after"]
+        if retained == "unlaunched":
+            run["attempts"] = [{"launched": False}]
+        TestGoverningTerms().save(builder)
+        missing_session = SESSION if retained == "later-same-session" else OTHER_SESSION
+        for number, session in enumerate([missing_session, "fedcba98-7654-3210-fedc-ba9876543210"]):
+            builder.issue_comments.append({"id": 170 + number,
+                "body": f"<!-- tradecraft:builder-session:v1 session={session} vendor=codex -->",
+                "user": {"login": PRODUCER}, "created_at": f"2026-10-05T09:4{number}:00Z"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        missing = [entry for entry in builder.reach["turns"] if entry["turn_reference"].startswith("bundle:")]
+        assert len(missing) == 2 and all(entry["state"] == "unmeasurable" for entry in missing), builder.reach
+        for stage in ["ready-reviewers", "proof", "release-report"]:
+            assert work._reach_refusal(builder, stage) is not None
+        accounts = [{**entry["superset"], "turn_reference": entry["turn_reference"],
+                     "reason": entry["uncertainty"], "items": [{"path": item["path"],
+                     "disposition": "generator", "generator": "fixture generator", "basis": "Generated fixture."}
+                     for item in entry["superset"]["items"]]} for entry in missing]
+        payload = {"schema_version": 1, "turns": [], "superset_settlements": accounts}
+        builder.issue_comments.append({"id": 175, "user": {"login": PRODUCER},
+            "created_at": "2026-10-05T12:00:00Z", "body":
+            f"<!-- tradecraft:reach-reading:v1 head={builder.pr['head']['sha']} -->\n\n```json\n{json.dumps(payload)}\n```"})
+        builder.validated_markers = None
+        assert work._reach_refusal(builder, "proof") is None, builder.reach
+
+    def test_repair_872_native_session_match_does_not_invent_a_missing_turn(self, builder):
+        builder.issue_comments.append({"id": 170,
+            "body": f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->",
+            "user": {"login": PRODUCER}, "created_at": "2026-10-05T10:03:00Z"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0"]
+        assert builder.reach["state"] == "reading-required"
+
+    def test_C3_authorized_unmatched_session_after_a_retained_return_is_visible(self, builder):
+        builder.issue_comments.append({"id": 171, "user": {"login": PRODUCER},
+            "created_at": "2026-10-05T10:04:00Z",
+            "body": f"<!-- tradecraft:builder-session:v1 session={OTHER_SESSION} vendor=codex -->"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        assert [entry["state"] for entry in builder.reach["turns"]] == ["reading-required", "unmeasurable"]
+        self.reading(builder)
+        entry = builder.reach["turns"][1]
+        payload = {"schema_version": 1, "turns": [], "superset_settlements": [
+            {**entry["superset"], "turn_reference": entry["turn_reference"], "reason": entry["uncertainty"],
+             "items": [{"path": item["path"], "disposition": "generator", "generator": "fixture",
+                        "basis": "Generated fixture."} for item in entry["superset"]["items"]]}]}
+        builder.issue_comments.append({"id": 172, "user": {"login": PRODUCER},
+            "created_at": "2026-10-05T12:01:00Z", "body":
+            f"<!-- tradecraft:reach-reading:v1 head={builder.pr['head']['sha']} -->\n\n```json\n{json.dumps(payload)}\n```"})
+        builder.validated_markers = None
+        assert work._reach_refusal(builder, "proof") is None, builder.reach
+
+    @pytest.mark.parametrize("missing", [False, True])
+    def test_third_4192950010_adopted_path_keeps_every_PR_turn(self, builder, monkeypatch, missing):
+        old = dict(builder.term_registration, active=False)
+        root = builder.term_root.parent / "adopted-builder"
+        git(builder.holder_root, "worktree", "move", str(builder.term_root), str(root))
+        builder.term_root = root
+        builder.term_registration = registry_row(root, builder.holder_root, "reach-change")
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2,
+                            "worktrees": [old, builder.term_registration]})
+        if missing:
+            builder.term_turns[0][2].pop("revision_before")
+        request, record = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+            launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        request["lineage_branch"] = "reach-change"
+        request["revision_before"] = record["revision_after"] = builder.pr["head"]["sha"]
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0", "turn-1"], builder.reach
+        assert builder.reach["state"] == ("unmeasurable" if missing else "reading-required")
+        self.reading(builder, superset=missing)
+        assert work._reach_refusal(builder, "proof") is None, builder.reach
+
+    def test_third_4192950019_own_session_cannot_hide_an_unselected_bundle(self, builder):
+        builder.term_registration["holder_root"] = str(builder.term_root)
+        builder.issue_comments.append({"id": 170, "user": {"login": PRODUCER},
+            "created_at": "2026-10-05T10:03:00Z",
+            "body": f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0"], builder.reach
+        assert builder.reach["turns"][0]["items"][0]["path"] == "README.md"
+        self.reading(builder)
+        assert work._reach_refusal(builder, "ready-reviewers") is None
+
+    @pytest.mark.parametrize("outcome", ["error", "interrupted"])
+    @pytest.mark.parametrize("missing", [False, True])
+    def test_third_4192950026_returned_failure_is_not_pending(self, builder, monkeypatch, capsys, outcome, missing):
+        builder.term_registration["active"] = False
+        builder.term_turns[0][3]["outcome"] = outcome
+        if missing:
+            builder.term_turns[0][2].pop("revision_before")
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        assert not builder.reach["turns"][0]["pending"], builder.reach
+        assert builder.reach["state"] == ("unmeasurable" if missing else "reading-required")
+        for stage in ["ready-reviewers", "proof", "release-report"]:
+            assert self.endpoint(builder, stage, monkeypatch) == []
+            assert json.loads(capsys.readouterr().out)["stage"] == "reach-read"
+        self.reading(builder, superset=missing)
+        for stage in ["ready-reviewers", "proof", "release-report"]:
+            self.endpoint(builder, stage, monkeypatch)
+            accepted = json.loads(capsys.readouterr().out)
+            assert accepted["stage"] == stage and accepted["reach"]["state"] == "clear", accepted
+
+    def test_third_4192950030_duplicate_registry_rows_do_not_affect_reach(self, builder, monkeypatch):
+        builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2,
+                            "worktrees": [builder.term_registration, dict(builder.term_registration)]})
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "reading-required", builder.reach
+        assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0"]
+        self.reading(builder)
+        assert work._reach_refusal(builder, "release-report") is None
+
+    @pytest.mark.parametrize("missing", [False, True])
+    def test_third_4192950035_removed_recipient_root_uses_holder_objects(self, builder, missing):
+        builder.term_registration["active"] = False
+        if missing:
+            builder.term_turns[0][2].pop("revision_before")
+        TestGoverningTerms().save(builder)
+        git(builder.holder_root, "worktree", "remove", str(builder.term_root))
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == ("unmeasurable" if missing else "reading-required"), builder.reach
+        entry, = builder.reach["turns"]
+        assert (entry["superset"]["items"] if missing else entry["items"])[0]["path"] == "README.md", entry
+        self.reading(builder, superset=missing)
+        assert work._reach_refusal(builder, "proof") is None
+
+    def test_third_4192950042_another_holder_checkout_keeps_PR_reach(self, builder):
+        root = builder.holder_root.parent / "another-holder"
+        git(builder.holder_root, "clone", "--shared", str(builder.holder_root), str(root))
+        builder.holder_root = root
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "reading-required", builder.reach
+        assert builder.reach["turns"][0]["items"][0]["path"] == "README.md"
+        self.reading(builder)
+        assert work._reach_refusal(builder, "ready-reviewers") is None
+
+    @pytest.mark.parametrize("scope", ["sibling", "released", "released-removed"])
+    def test_repair_872_second_sessions_are_scoped_by_their_retained_lineage(self, builder, monkeypatch, scope):
+        builder.instalment = builder.term_registration["instalment"] = "A"
+        builder.term_turns[0][2]["instalment"] = "A"
+        TestGoverningTerms().save(builder)
+        other_root = builder.holder_root.parent / "other-builder"
+        git(builder.holder_root, "worktree", "add", "-b", "other-reach", str(other_root))
+        other = registry_row(other_root, builder.holder_root, "other-reach")
+        other.update(instalment="B", active=scope == "sibling")
+        request = deepcopy(builder.term_turns[0][2])
+        request.update(dispatch_id="other-turn", root=str(other_root), lineage_branch="other-reach",
+                       lineage_pull_request=8, instalment="B", launched_at="2026-10-05T10:03:00Z")
+        request["requested"]["session_id"] = OTHER_SESSION
+        record = deepcopy(builder.term_turns[0][3])
+        record.update(dispatch_id="other-turn", completed_at="2026-10-05T10:04:00Z")
+        record["attempts"][0]["observed"]["session_id"] = OTHER_SESSION
+        folder = builder.record_root / "other-turn"
+        folder.mkdir()
+        (folder / "result.md.request.json").write_bytes(work.records.json_bytes(request))
+        (folder / "result.md.run.json").write_bytes(work.records.json_bytes(record))
+        if scope == "released-removed":
+            git(builder.holder_root, "worktree", "remove", str(other_root))
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2,
+                            "worktrees": [builder.term_registration, other]})
+        builder.issue_comments.append({"id": 170, "user": {"login": PRODUCER},
+            "created_at": "2026-10-05T10:05:00Z",
+            "body": f"<!-- tradecraft:builder-session:v1 session={OTHER_SESSION} vendor=codex -->"})
+        builder.validated_markers = None
+        self.reading(builder)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "clear", builder.reach
+        assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0"]
+        # No retained evidence anywhere still owes its own historical account.
+        builder.issue_comments.append({"id": 171, "user": {"login": PRODUCER},
+            "created_at": "2026-10-05T09:40:00Z",
+            "body": "<!-- tradecraft:builder-session:v1 session=fedcba98-7654-3210-fedc-ba9876543210 vendor=codex -->"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        missing = [entry for entry in builder.reach["turns"] if entry["state"] == "unmeasurable"]
+        assert len(missing) == 1 and missing[0]["turn_reference"].startswith("bundle:"), builder.reach
+
+    @pytest.mark.parametrize("orphan", ["missing-run", "unreadable-run", "foreign-host"])
+    def test_repair_872_second_older_orphan_is_settleable_after_a_return(self, builder, orphan):
+        request, record = builder.term_turns[0][2:]
+        after = record["revision_after"]
+        record.pop("completed_at")
+        record["launcher_process"] = {"host": "another-host", "pid": 1, "birth": "unknown"}
+        resumed, completed = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+            launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        resumed["lineage_branch"] = "reach-change"
+        resumed["revision_before"] = completed["revision_after"] = after
+        TestGoverningTerms().save(builder)
+        if orphan == "missing-run":
+            builder.term_turns[0][1].unlink()
+        elif orphan == "unreadable-run":
+            builder.term_turns[0][1].write_bytes(b"{")
+        work._evaluate_reach(builder)
+        entry = builder.reach["turns"][0]
+        assert not entry["pending"], builder.reach
+        assert work._reach_refusal(builder, "proof") is not None
+        self.reading(builder, superset=orphan != "foreign-host")
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "clear", builder.reach
+
+    @pytest.mark.parametrize("orphan", ["missing-run", "foreign-host"])
+    def test_repair_872_second_latest_orphan_has_a_reach_settlement(self, builder, orphan):
+        record = builder.term_turns[0][3]
+        record.pop("completed_at")
+        record["launcher_process"] = {"host": "another-host", "pid": 1, "birth": "unknown"}
+        TestGoverningTerms().save(builder)
+        if orphan == "missing-run":
+            builder.term_turns[0][1].unlink()
+        work._evaluate_reach(builder)
+        assert not builder.reach["turns"][0]["pending"]
+        assert work.work_recovery.latest_stopped(builder, "build") is not None
+        self.reading(builder, superset=orphan == "missing-run")
+        assert work._reach_refusal(builder, "proof") is None
+
+    @pytest.mark.parametrize("root", ["missing", None, []])
+    def test_repair_872_second_malformed_older_request_is_visible_and_settleable(self, builder, monkeypatch, root):
+        request, record = builder.term_turns[0][2:]
+        if root == "missing":
+            request.pop("root")
+        else:
+            request["root"] = root
+        record.pop("completed_at")
+        monkeypatch.setattr(work.lifecycle, "liveness", lambda _: "stopped")
+        resumed, completed = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+            launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        resumed["lineage_branch"] = "reach-change"
+        resumed["revision_before"] = completed["revision_after"] = builder.pr["head"]["sha"]
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        entry = builder.reach["turns"][0]
+        assert entry["state"] == "reading-required" and entry["items"], builder.reach
+        self.reading(builder)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "clear", builder.reach
+
+    @pytest.mark.parametrize("failure", [KeyError, TypeError, RuntimeError])
+    @pytest.mark.parametrize("location", ["discovery", "measurement", "markers"])
+    def test_repair_872_second_unexpected_reach_failure_is_a_report(self, builder, monkeypatch, capsys, failure, location):
+        def fail(*_args, **_kwargs):
+            raise failure("planted reach failure")
+        owner, name = {"discovery": (work.lifecycle, "launch_bundles"),
+                       "measurement": (build_reach, "evaluate"),
+                       "markers": (work, "validate_marker_claims")}[location]
+        monkeypatch.setattr(owner, name, fail)
+        for stage in ["ready-reviewers", "proof", "release-report"]:
+            refusal = work._reach_refusal(builder, stage)
+            assert refusal.reason == "reach-unmeasurable"
+            assert failure.__name__ in refusal.detail and "planted reach failure" in refusal.detail
+        work._emit_report({"status": "read-only-report"}, builder)
+        reported = json.loads(capsys.readouterr().out)
+        assert reported["reach"]["state"] == "unmeasurable"
+        assert reported["reach"]["current_head"] == builder.pr["head"]["sha"]
+        self.reading(builder, superset=True)
+        assert work._reach_refusal(builder, "proof") is None, builder.reach
+
+    def test_repair_872_second_run_error_keeps_original_failure_when_reach_fails(self, builder, monkeypatch, capsys):
+        monkeypatch.setattr(work, "_read_policy_state", lambda *_: builder)
+        monkeypatch.setattr(work, "prepare_use_evidence", lambda *_: None)
+        monkeypatch.setattr(work, "decide", lambda *_: work.Decision("build", True, None, "fixture"))
+        monkeypatch.setattr(work, "_reported_decision", lambda _state, decision: decision)
+        def bad_reach(*_args, **_kwargs):
+            raise TypeError("planted evaluator failure")
+        monkeypatch.setattr(build_reach, "evaluate", bad_reach)
+        def executor(*_args):
+            raise work.WorkError("original builder refusal")
+        arguments = ["run", "build", "--repo", builder.repo, "--issue", str(builder.issue_number),
+                     "--root", str(builder.holder_root)]
+        args = work.parser().parse_args(arguments)
+        with pytest.raises(work.WorkError, match="original builder refusal") as raised:
+            work._run(args, transport=self.transport(builder), executor=executor)
+        assert raised.value.reach["state"] == "unmeasurable"
+        assert "TypeError" in raised.value.reach["turns"][0]["uncertainty"]
+        monkeypatch.setattr(work, "run", lambda _args: work._run(_args, transport=self.transport(builder), executor=executor))
+        assert work.main(arguments) == 1
+        output = capsys.readouterr()
+        report = json.loads(output.out)
+        assert report["reason"] == "original builder refusal" and report["reach"]["state"] == "unmeasurable"
+        assert "Traceback" not in output.err
+
+    @pytest.mark.parametrize("settlement", ["recorded", "superset"])
+    @pytest.mark.parametrize("stage", ["ready-reviewers", "proof", "release-report"])
+    def test_repair_872_stopped_turn_is_settleable_after_completed_resume(self, builder, monkeypatch, capsys,
+                                                                       settlement, stage):
+        request, run = builder.term_turns[0][2:]
+        after = run["revision_after"]
+        run.pop("completed_at")
+        run["lifecycle"] = "running"
+        dead = work.lifecycle.process_identity()
+        dead["birth"] += "dead"
+        run["launcher_process"] = dead
+        assert work.lifecycle.liveness(run) == "stopped"
+        if settlement != "recorded":
+            request.pop("revision_before")
+        TestGoverningTerms().save(builder)
+        resumed_request, resumed_run = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+            launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        resumed_request["lineage_branch"] = "reach-change"
+        resumed_request["revision_before"] = resumed_run["revision_after"] = after
+        TestGoverningTerms().save(builder)
+        assert work.work_recovery.latest_stopped(builder, "build") is None
+        work._evaluate_reach(builder)
+        assert not builder.reach["turns"][0]["pending"], builder.reach
+        assert self.endpoint(builder, stage, monkeypatch) == []
+        assert json.loads(capsys.readouterr().out)["stage"] == "reach-read"
+        self.reading(builder, superset=settlement == "superset")
+        self.endpoint(builder, stage, monkeypatch)
+        report = json.loads(capsys.readouterr().out)
+        assert report["stage"] == stage and report["reach"]["state"] == "clear", report
+
+    @pytest.mark.parametrize("unresolved", ["active", "spawn", "cleanup", "unlaunched-successor"])
+    def test_repair_872_completed_successor_does_not_discharge_unresolved_recovery(self, builder, monkeypatch, unresolved):
+        run = builder.term_turns[0][3]
+        run.pop("completed_at")
+        run["lifecycle"] = "running"
+        monkeypatch.setattr(work.lifecycle, "liveness", lambda record: "active" if unresolved == "active" else "stopped")
+        if unresolved == "spawn":
+            run["launch_unresolved"] = True
+        elif unresolved == "cleanup":
+            run["cleanup_proven"] = False
+        request, later = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+            launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        request["lineage_branch"] = "reach-change"
+        request["revision_before"] = later["revision_after"] = builder.pr["head"]["sha"]
+        if unresolved == "unlaunched-successor":
+            later["attempts"] = [{"launched": False}]
+        TestGoverningTerms().save(builder)
+        work._evaluate_reach(builder)
+        if unresolved == "active":
+            assert not builder.reach["turns"][0]["pending"] and builder.reach["turns"][1]["pending"]
+        else:
+            assert not builder.reach["turns"][0]["pending"]
+            assert builder.reach["state"] == "reading-required"
+
+    def test_C3_siblings_released_lineage_and_observed_missing_inventory(self, builder, monkeypatch):
+        builder.instalment = "A"
+        builder.term_registration["instalment"] = "A"
+        builder.term_turns[0][2]["instalment"] = "A"
+        TestGoverningTerms().save(builder)
+        sibling = dict(builder.term_turns[0][2])
+        sibling.update(dispatch_id="sibling", root=str(builder.holder_root), lineage_branch="other", instalment="B")
+        folder = builder.record_root / "sibling"
+        folder.mkdir()
+        (folder / "result.md.request.json").write_bytes(work.records.json_bytes(sibling))
+        sibling_record = deepcopy(builder.term_turns[0][3])
+        sibling_record["dispatch_id"] = "sibling"
+        sibling_record["attempts"][0]["observed"]["session_id"] = OTHER_SESSION
+        (folder / "result.md.run.json").write_bytes(work.records.json_bytes(sibling_record))
+        other = registry_row(builder.holder_root, builder.holder_root, "other")
+        other["instalment"] = "B"
+        builder.term_registration["active"] = False
+        monkeypatch.setattr(work, "read_registry", lambda: {"schema_version": 2,
+                                                             "worktrees": [builder.term_registration, other]})
+        work._evaluate_reach(builder)
+        assert [turn["dispatch_id"] for turn in builder.reach["turns"]] == ["turn-0"]
+        for path in builder.term_turns[0][:2]:
+            path.unlink()
+        builder.issue_comments.append({"id": 152, "body": f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->",
+                                        "user": {"login": PRODUCER}, "created_at": "2026-10-05T10:02:00Z"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        entry, = builder.reach["turns"]
+        assert entry["turn_reference"].startswith("bundle:") and entry["superset"]["items"]
+        self.reading(builder, superset=True)
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "clear", builder.reach
+
+    @pytest.mark.parametrize("violation", ["forged", "quoted", "surface", "attributes", "stale"])
+    def test_C4_marker_provenance_and_head_claims(self, builder, violation):
+        comment = self.reading(builder)
+        if violation == "forged":
+            comment["user"]["login"] = "intruder"
+        elif violation == "quoted":
+            comment["body"] = "\n".join("> " + line for line in comment["body"].splitlines())
+        elif violation == "surface":
+            builder.issue_comments.remove(comment)
+            builder.pr_comments.append(comment)
+        elif violation == "attributes":
+            comment["body"] = comment["body"].replace("head=", "unknown=x head=", 1)
+        else:
+            comment["body"] = comment["body"].replace(builder.pr["head"]["sha"], "f" * 40)
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        assert builder.reach["state"] == "reading-required"
+        assert builder.invalid_marker_claims or builder.quotation_claims or builder.reach["diagnostics"]
+
+    def test_C6_reach_never_changes_term_delivery_or_whole_change_reading(self, builder, monkeypatch):
+        monkeypatch.setattr(work, "_governing_terms_decision", REAL_GOVERNING_TERMS)
+        assert work._governing_terms_decision(builder) is None
+        self.reading(builder)
+        work.validate_marker_claims(builder)
+        assert work._governing_terms_decision(builder) is None
+        assert [source.name for source in work._governing_sources(builder)] == ["affirmed-brief"]
+        # A genuine amendment still requires delivery; reach cannot erase it.
+        builder.issue_comments.append({"id": 160, "body": MECHANICAL + "\nNew governing row.",
+                                        "created_at": "2026-10-05T13:00:00Z", "user": {"login": PRODUCER}})
+        builder.validated_markers = None
+        work.validate_marker_claims(builder)
+        assert work._governing_terms_decision(builder).reason == "governing-record-not-built"
+
+    def test_C6_reach_does_not_supply_holder_reading_reopen_artifact_or_erase_amendment(self, builder, monkeypatch):
+        builder.issue_comments[0]["body"] = AFFIRMED
+        builder.issue_comments[1:1] = [
+            {"id": 102, "body": ARTIFACT, "user": {"login": PRODUCER}, "created_at": "2026-10-05T09:01:00Z"},
+            {"id": 103, "body": _settled("unobtainable"), "user": {"login": PRODUCER}, "created_at": "2026-10-05T09:02:00Z"}]
+        builder.validated_markers = None
+        self.reading(builder)
+        assert work.decide(builder, RULES).stage == "holder-read"
+        assert builder.artifact_phase.latest_holder_reading is None
+        assert builder.artifact_phase.latest_settlement is not None
+        builder.issue_comments.append({"id": 104, "body": HOLDER, "user": {"login": PRODUCER},
+                                       "created_at": "2026-10-05T09:03:00Z"})
+        builder.validated_markers = None
+        request, run = TestGoverningTerms().turn(builder, composed="2026-10-05T10:30:00Z",
+                                                launched="2026-10-05T10:31:00Z", completed="2026-10-05T10:32:00Z")
+        request["lineage_branch"] = "reach-change"
+        request["revision_before"] = run["revision_after"] = builder.pr["head"]["sha"]
+        TestGoverningTerms().save(builder)
+        monkeypatch.setattr(work, "_governing_terms_decision", REAL_GOVERNING_TERMS)
+        work.validate_marker_claims(builder)
+        assert work._governing_terms_decision(builder) is None
+        phase = builder.artifact_phase
+        assert [m.name for m in work._governing_sources(builder)] == ["affirmed-brief", "artifact", "holder-reading"]
+        builder.issue_comments.append({"id": 160, "body": _holder_reading("Owner ruling: amended accepted row."),
+                                       "created_at": "2026-10-05T13:00:00Z", "user": {"login": PRODUCER}})
+        builder.validated_markers = None
+        work.validate_marker_claims(builder)
+        assert builder.artifact_phase.latest_settlement == phase.latest_settlement
+        assert work._governing_terms_decision(builder).reason == "governing-record-not-built"
+        newer_reach = self.reading(builder)
+        newer_reach["created_at"] = "2026-10-05T14:00:00Z"
+        builder.validated_markers = None
+        work.validate_marker_claims(builder)
+        assert work._governing_terms_decision(builder).reason == "governing-record-not-built"
+        assert builder.artifact_phase.latest_holder_reading.attributes["result"] == "amended"
+
+    @pytest.mark.parametrize("stage", ["ready-reviewers", "proof", "release-report"])
+    def test_C5_head_movement_before_effects_requires_recollection(self, builder, stage, monkeypatch):
+        self.reading(builder)
+        transport = self.transport(builder)
+        transport.head = "f" * 40
+        effects = []
+        monkeypatch.setattr(work, "read_state", lambda *_: builder)
+        monkeypatch.setattr(work, "prepare_use_evidence", lambda *_: None)
+        monkeypatch.setattr(work, "_publish_proof_comment", lambda *_: effects.append("publication"))
+        monkeypatch.setattr(work, "_rerun_gate_evaluations", lambda *_: effects.append("rerun"))
+        with pytest.raises(work.WorkError, match="head or base changed"):
+            if stage == "ready-reviewers":
+                work._execute_ready_reviewers(transport, builder, RULES, None, None)
+            elif stage == "proof":
+                work._execute_proof(transport, builder, builder.holder_root, RULES,
+                                    builder.holder_root / POLICY_PATH, None, None)
+            else:
+                work.execute_stage(builder, work.Decision(stage, False, None, "holder-named-stage"),
+                                   builder.holder_root, None, transport=transport, rules=RULES)
+        assert effects == [] and transport.operations == []
+
+    def test_C5_new_turn_evidence_before_ready_effect_is_recollected(self, builder, capsys):
+        self.reading(builder)
+        transport = self.transport(builder)
+        original_get = transport.get
+        seen = []
+        def moved(endpoint, *, paginate=False):
+            seen.append(endpoint)
+            if endpoint.endswith("/issues/7"):
+                builder.term_turns[0][2].pop("revision_before")
+                TestGoverningTerms().save(builder)
+            return original_get(endpoint, paginate=paginate)
+        transport.get = moved
+        work._execute_ready_reviewers(transport, builder, RULES, None, None)
+        report = json.loads(capsys.readouterr().out)
+        assert report["stage"] == "reach-read" and report["reach"]["state"] == "unmeasurable"
+        assert transport.operations == []
+
+    def test_C1_report_remains_visible_on_earlier_floor_route(self, builder):
+        builder.floor_public = None
+        decision = work.decide(builder, RULES)
+        assert decision.stage == "floor"
+        assert decision.reach["state"] == "reading-required"
+        assert decision.reach["turns"][0]["items"][0]["path"] == "README.md"
+        builder.term_turns[0][2]["revision_before"] = builder.term_turns[0][3]["revision_after"]
+        TestGoverningTerms().save(builder)
+        assert work.decide(builder, RULES).reach["state"] == "clear"
+
+    def test_C1_exception_report_preserves_reach_without_raw_output(self, builder, monkeypatch, capsys):
+        work._evaluate_reach(builder)
+        def fail(_args):
+            error = work.WorkError("named endpoint evidence unavailable")
+            error.reach, error.stage, error.head = builder.reach, "proof", builder.pr["head"]["sha"]
+            raise error
+        monkeypatch.setattr(work, "run", fail)
+        assert work.main(["run", "proof", "--repo", builder.repo, "--issue", "12",
+                          "--root", str(builder.holder_root)]) == 1
+        report = json.loads(capsys.readouterr().out)
+        assert report["reach"] == builder.reach and report["stage"] == "proof"
+        assert report["raw_output"] is None
+
+    def test_C6_proof_wire_is_identical_before_and_after_reach_account(self, builder):
+        builder.policy_sources = work._capture_policy_snapshot(
+            builder.holder_root, builder.repo, builder.holder_root / POLICY_PATH,
+            enforce_clean=True).sources
+        work.validate_marker_claims(builder)
+        before = work.compose_proof(builder, RULES)
+        self.reading(builder)
+        work.validate_marker_claims(builder)
+        after = work.compose_proof(builder, RULES)
+        assert before == after
+        assert "reach" not in before and "reach" not in before["policy"]
+
+    @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+    @pytest.mark.parametrize("mechanical", [True, False])
+    @pytest.mark.parametrize("artifact_present", [True, False])
+    def test_C7_all_composed_builder_prompts_and_holder_procedure(self, stage, mechanical, artifact_present):
+        fixture = state(MECHANICAL if mechanical else AFFIRMED,
+                        *([ARTIFACT, _settled("unobtainable"), HOLDER] if artifact_present else []))
+        prompt = work._stage_prompt(fixture, work.Decision(stage, True, "resume", "builder-resolved-catch-up"),
+                                    floor_command="python fixture-check.py").decode()
+        assert build_reach.PRESERVATION in prompt
+        assert build_reach.PRESERVATION not in work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture")).decode()
+        for relative in [Path("SKILL.md"), Path("references") / "reach.md"]:
+            prose = (LIB.parent / "skills" / "work" / relative).read_text(encoding="utf-8")
+            assert build_reach.PRESERVATION in prose
+            assert '"should also go" notes alongside the reach report' in prose
+            assert "even when the report flags nothing" in prose
 
 
 class TestGoverningTerms:

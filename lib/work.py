@@ -42,6 +42,7 @@ import vendor_cli
 import use_history
 import version_policy
 import raw_output
+import build_reach
 from winio import utf8_stdio
 from seat_process import run_process, run_inherited_process
 
@@ -114,7 +115,7 @@ SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f-]{27,}\Z", re.I)
 WORK_EVIDENCE_MARKERS = frozenset({
     "affirmed-brief", "artifact", "cold-verdict", "holder-reading", "floor", "use",
     "connected-reviewer", "panel-stage", "product-incident", "implementing-pr",
-    "builder-session", "model-override", "proof",
+    "builder-session", "model-override", "proof", "reach-reading",
 })
 RED_CONCLUSIONS = {
     "action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out",
@@ -195,6 +196,8 @@ MARKER_CONTRACTS: dict[str, dict[str, object]] = {
                      "surfaces": {"issue-comment"}},
     "holder-reading": {"required": {"result"}, "optional": set(),
                        "surfaces": {"issue-comment"}},
+    "reach-reading": {"required": {"head"}, "optional": set(),
+                      "surfaces": {"issue-comment"}},
     "builder-session": {"required": {"session"}, "optional": {"vendor"},
                         "surfaces": {"issue-comment"}},
     "floor": {"required": {"head", "status"}, "optional": set(),
@@ -345,6 +348,7 @@ class WorkState:
     raw_output: dict[str, object] | None = None
     file_inventory_error: str | None = None
     readiness_policy: tuple[Path, bytes] | None = None
+    reach: dict[str, object] | None = None
 
     @property
     def issue_sources(self) -> list[tuple[str, str]]:
@@ -403,6 +407,7 @@ class Decision:
 
     floor: dict[str, object] | None = None
     raw_output: dict[str, object] | None = None
+    reach: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -424,6 +429,7 @@ class Decision:
             "use_application": self.use_application,
             "floor": self.floor,
             "raw_output": self.raw_output,
+            "reach": self.reach,
         }
 
 
@@ -1437,9 +1443,14 @@ def _marker_value_error(marker: Marker) -> str | None:
     if marker.name == "builder-session" and values.get("vendor", "codex") not in {
             "codex", "claude"}:
         return "builder session vendor is invalid"
-    if marker.name in {"floor", "use", "no-use", "proof"} and HEAD_SHA.fullmatch(
+    if marker.name in {"floor", "use", "no-use", "proof", "reach-reading"} and HEAD_SHA.fullmatch(
             values.get("head", "")) is None:
         return "marker head is not a full hexadecimal revision"
+    if marker.name == "reach-reading":
+        try:
+            build_reach.payload(marker.body)
+        except build_reach.ReachError as exc:
+            return str(exc)
     if marker.name == "floor" and values.get("status") != "pass":
         return "floor status is invalid"
     if marker.name == "use":
@@ -3024,6 +3035,8 @@ def _decision_status(decision: Decision) -> str:
 
 
 def _reported_decision(state: WorkState, decision: Decision) -> Decision:
+    if state.reach is None:
+        _evaluate_reach(state)
     try:
         plan = _launch_plan(state, decision)
     except (WorkError, artifact_tree.ArtifactTreeError, setting_resolution.SettingsError, OSError, ValueError) as exc:
@@ -3039,16 +3052,150 @@ def _reported_decision(state: WorkState, decision: Decision) -> Decision:
         latest_checks=tuple(latest_checks(state)),
         launch_settings=plan, synchronization=state.synchronization,
         use_application=state.use_application, floor=floor_evaluation(state),
-        raw_output=state.raw_output,
+        raw_output=state.raw_output, reach=state.reach,
     )
 
 
 def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
                  raw: dict[str, object] | None = None, flush: bool = False) -> None:
+    if state is not None:
+        _evaluate_reach(state)
+        payload = {**payload, "reach": state.reach}
     if payload.get("raw_output") is None:
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True), flush=flush)
+
+
+def _reach_readings(state: WorkState) -> list[Marker]:
+    # Reach has an intrinsic issue-comment contract, independent of bundle and
+    # artifact validation. It must remain readable when another evaluator fails.
+    return [marker for marker in _state_markers(state) if marker.name == "reach-reading"
+            and marker.author.lower() in state.config.marker_producers
+            and marker.surface == "issue-comment"
+            and _attribute_error(marker) is None and _marker_value_error(marker) is None]
+
+
+def _evaluate_reach(state: WorkState) -> None:
+    """PR identity selects reach; registrations continue to own execution only."""
+    head = None
+    lineage = None
+    pr = state.pr or state.merged_pr
+    readings = []
+    try:
+        head = (pr.get("head") or {}).get("sha") if pr else None
+        readings = _reach_readings(state)
+        if state.validated_markers is None:
+            validate_marker_claims(state)
+        branch = (pr.get("head") or {}).get("ref") if pr else None
+        inventory = lifecycle.launch_bundles(
+            state.record_root or records.default_record_root(), f"{state.repo}#{state.issue_number}",
+            RESUME_SOURCE_STAGES["build"], include_missing_stage=True)
+        observed_sessions = [marker for marker in _state_markers(state) if marker.name == "builder-session"
+                             and marker.surface in {"issue", "issue-comment"}
+                             and _public_marker_valid(state, marker)]
+        # Missing PR/Git identity is not missing turn evidence when no builder
+        # has launched or been observed for this change.
+        if not any(not build_reach.never_launched(row[3]) for row in inventory) and not observed_sessions:
+            state.reach = build_reach.evaluate(
+                [], readings, root=state.holder_root, head=head, pr=pr, run=_git,
+                lineage={"branch": branch, "instalment": state.instalment}, instalment=state.instalment)
+            return
+        if pr and (not isinstance(branch, str) or not branch):
+            raise WorkError("implementing PR head branch is unavailable; restore PR identity and retry")
+        if not pr:
+            branches = {row.get("branch") for row in _change_rows(
+                state.repo, state.issue_number, state.instalment, active_only=True) if row.get("branch")}
+            if len(branches) == 1:
+                branch = branches.pop()
+                head = _git_text(["rev-parse", "--verify", "refs/heads/" + branch],
+                                 state.holder_root, "inspect pre-PR reach branch")
+            elif branches:
+                raise WorkError("registered pre-PR branch is ambiguous; open/select the implementing PR")
+        lineage = {"branch": branch, "instalment": state.instalment}
+        selected = []
+        for order, bundle, request, record in inventory:
+            named_branch = request.get("lineage_branch")
+            if branch and isinstance(named_branch, str) and named_branch and named_branch != branch:
+                continue
+            if state.instalment is not None and request.get("instalment") not in {None, state.instalment}:
+                continue
+            if not branch:
+                continue
+            error = None if named_branch == branch else "missing PR branch attribution"
+            if state.instalment is not None and request.get("instalment") is None:
+                error = "missing selected instalment attribution"
+            selected.append((order, bundle, request, record, error))
+        # Only the latest actual turn can remain pending for reach. Historical
+        # dead/incomplete evidence is measured or settled, never kept in recovery.
+        actual = [row for row in selected if not build_reach.never_launched(row[3])]
+        latest = actual[-1][1] if actual else None
+        turns = []
+        for order, bundle, request, record, error in selected:
+            pending = False
+            if bundle == latest:
+                pending = (bool(record.get("launch_unresolved")) or record.get("cleanup_proven") is False
+                           or lifecycle.liveness(record) == "active"
+                           or isinstance(record.get("recipient_process"), dict) and lifecycle.liveness(
+                               {"launcher_process": record["recipient_process"]}) == "active")
+            turns.append((order, bundle, request, record, error, pending))
+        for observed in observed_sessions:
+            # A native bundle on any branch of this issue accounts for its own
+            # session. A truly unmatched authorized session remains uncertainty.
+            if any(_reach_session_matches(observed, request, record)
+                   for _order, _bundle, request, record in inventory):
+                continue
+            if not branch:
+                continue
+            reference = f"{observed.surface}:{observed.source_id or observed.attributes['session']}"
+            turns.append((observed.timestamp or "unknown", reference, {"stage": "build"},
+                          {"completed_at": observed.timestamp},
+                          "observed builder has no retained PR turn/range inventory", False))
+        turns.sort(key=lambda turn: (turn[0], turn[1]))
+        state.reach = build_reach.evaluate(
+            turns, readings, root=state.holder_root, head=head, pr=pr, run=_git,
+            lineage=lineage, instalment=state.instalment)
+    except Exception as exc:
+        reason = f"reach evaluation unproved: {type(exc).__name__}: {exc}"
+        state.reach = build_reach.uncertainty(
+            reason, readings, root=state.holder_root, head=head, pr=pr, run=_git,
+            lineage=lineage, instalment=state.instalment)
+
+
+def _reach_session_matches(observed: Marker, request: dict, record: dict) -> bool:
+    requested = request.get("requested") or {}
+    vendor = requested.get("vendor") if isinstance(requested, dict) else None
+    native = [attempt["observed"].get("session_id") for attempt in (record.get("attempts") or [])
+              if isinstance(attempt, dict) and attempt.get("launched") is True
+              and isinstance(attempt.get("observed"), dict)]
+    identity = record.get("session_identity")
+    if isinstance(identity, dict):
+        native.append(identity.get("session_id"))
+    returned, posted = build_reach.moment(record.get("completed_at")), build_reach.moment(observed.timestamp)
+    return bool(returned is not None and posted is not None and returned <= posted
+                and vendor in {"codex", "claude"} and vendor == record.get("actual_vendor")
+                and observed.attributes.get("vendor", vendor) == vendor
+                and any(isinstance(session, str) and session.casefold() == observed.attributes["session"].casefold()
+                        for session in native))
+
+
+def _reach_refusal(state: WorkState, stage: str) -> Decision | None:
+    _evaluate_reach(state)
+    report = state.reach or {}
+    if report.get("state") in {"not-due", "clear"}:
+        return None
+    owed = [{"turn": turn["turn_reference"], "head": turn["after"],
+             "paths": turn["outstanding_paths"], "uncertainty": turn["uncertainty"],
+             "superset_error": turn.get("superset_error")}
+            for turn in report.get("turns", []) if turn["state"] != "clear"]
+    return Decision(
+        "reach-read", False, None, "reach-" + str(report.get("state")),
+        f"Before {stage} at head {report.get('current_head')}, the holder owes reach-reading coverage "
+        + json.dumps(owed or report.get("diagnostics"), ensure_ascii=True, sort_keys=True)
+        + ". Account for the computed current-head PR superset; restore unavailable "
+        "objects/read capability and retry. Read the builder's returned should-also-go notes alongside "
+        "the report, including flag-free turns. Existing live/stopped recovery remains separate.",
+        status="holder-owned")
 
 
 def _evaluate_raw_output(state: WorkState, rules: dict[str, object], source: str) -> None:
@@ -3470,9 +3617,14 @@ def decide(state: WorkState, rules: dict[str, object]) -> Decision:
 
 def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
     validate_marker_claims(state)
+    state.reach = None
 
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
                detail: str | None = None, status: str | None = None) -> Decision:
+        if stage in {"ready-reviewers", "proof", "release-report"}:
+            refusal = _reach_refusal(state, stage)
+            if refusal is not None:
+                return _reported_decision(state, refusal)
         if stage in {"ready-reviewers", "proof"}:
             refusal = _raw_output_refusal(state, stage)
             if refusal is not None:
@@ -4263,6 +4415,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             "A failed command produces no passing marker line."
         )
     if decision.stage in {"build", "floor", "review-disposition"}:
+        instruction += " " + build_reach.PRESERVATION
         instruction += (
             " At the end of every build or implementation repair (including reviewer disposition, "
             "use findings, or a floor turn changing implementation), map every artifact acceptance "
@@ -5947,6 +6100,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
                 str((state.raw_output or {}).get("policy") or "selected change-proof policy"),
             )
             fresh.record_root = state.record_root
+            fresh.holder_root, fresh.instalment = state.holder_root or holder, state.instalment
             prepare_use_evidence(fresh, transport, rules)
             report["use_application"] = fresh.use_application
             report["next"] = decide(fresh, rules).as_dict()
@@ -5986,6 +6140,7 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     fresh = _read_policy_state(transport, state.repo, state.issue_number, effective_config,
                               effective_rules, str(use_rules_path))
     fresh.record_root = state.record_root
+    fresh.holder_root, fresh.instalment = state.holder_root or root, state.instalment
     fresh.policy_sources = snapshot.sources
     _evaluate_raw_output(fresh, effective_rules, str(use_rules_path))
     refusal = _raw_output_refusal(fresh, "proof")
@@ -6014,6 +6169,10 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     sync = _synchronization_decision(before_state)
     if sync is not None:
         _emit_report(_reported_decision(before_state, sync).as_dict(), before_state)
+        return 0
+    refusal = _reach_refusal(before_state, "proof")
+    if refusal is not None:
+        _emit_report(_reported_decision(before_state, refusal).as_dict(), before_state)
         return 0
     body = proof_document.document(composed, floor_context=floor_evaluation(fresh))
     _verify_policy_snapshot(root, state.repo, use_rules_path, snapshot)
@@ -6096,6 +6255,10 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     if _pull_coordinates(before_effect) != _pull_coordinates(state.pr):
         raise WorkError("pull-request head or base changed before ready effects; recollect and retry")
     _verify_floor_identity(transport, state, before_effect)
+    refusal = _reach_refusal(state, "ready-reviewers")
+    if refusal is not None:
+        _emit_report(_reported_decision(state, refusal).as_dict(), state)
+        return 0
     if state.readiness_policy is not None:
         path, content = state.readiness_policy
         try:
@@ -6441,6 +6604,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                                   "required_gate": _release_gate_status(state, current_head)}, state)
                 return 0
         required_gate = _release_gate_status(state, current_head)
+        refusal = _reach_refusal(state, "release-report")
+        if refusal is not None:
+            _emit_report(_reported_decision(state, refusal).as_dict(), state)
+            return 0
         terms = _governing_terms_decision(state)
         if terms is not None:
             refusal = replace(terms, dispatch=False, status="holder-owned")
@@ -7321,6 +7488,8 @@ def _run(
     except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
         if getattr(exc, "raw_output", None) is None:
             exc.raw_output = state.raw_output
+        _evaluate_reach(state)
+        exc.reach = state.reach
         exc.stage = args.stage
         if getattr(exc, "head", None) is None:
             exc.head = _head_sha(state)
@@ -7332,10 +7501,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run(parser().parse_args(argv))
     except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
-        if getattr(exc, "raw_output", None) is not None:
+        if getattr(exc, "raw_output", None) is not None or getattr(exc, "reach", None) is not None:
             _emit_report({"status": "refused", "reason": str(exc),
-                          "stage": getattr(exc, "stage", None), "head": getattr(exc, "head", None)},
-                         raw=exc.raw_output)
+                          "stage": getattr(exc, "stage", None), "head": getattr(exc, "head", None),
+                          "reach": getattr(exc, "reach", None)},
+                         raw=getattr(exc, "raw_output", None))
         print(f"work: {exc}", file=sys.stderr)
         return 1
 

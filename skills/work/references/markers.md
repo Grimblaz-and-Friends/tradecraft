@@ -87,11 +87,48 @@ A holder reading counts only after the latest effective settlement. A newer draf
 <!-- tradecraft:holder-reading:v1 result=no-amendment -->
 ```
 
+## `reach-reading`
+
+- **Exact form:** `<!-- tradecraft:reach-reading:v1 head=FULL_COMMIT_SHA -->`.
+- **Attributes:** only `head`, a full 40- or 64-digit hexadecimal commit identity.
+- **Producer, surface, moment:** an authorized marker producer acting as holder, in an issue comment after the covered builder returns and before readiness, proof or release reporting. The marker claims the first content line and carries no `holder-reading` companion. It supplies reach evidence only, never whole-change reading, artifact settlement or amended-term delivery.
+- **Payload:** exactly one fenced `json` object with integer `schema_version: 1`, required `turns`, and an optional `superset_settlements` list. Unknown fields and duplicate JSON keys are invalid.
+
+```json
+{
+  "schema_version": 1,
+  "turns": [
+    {
+      "dispatch_id": "the-reported-turn",
+      "items": [
+        {
+          "path": "the/exact/flagged/path",
+          "disposition": "row-or-criterion",
+          "requirement": "Row 1, criterion C2",
+          "basis": "Row 1, criterion C2 requires this move."
+        }
+      ]
+    }
+  ],
+  "superset_settlements": []
+}
+```
+
+Each item has only `path`, `disposition`, nonempty `basis` and the disposition's reference field: `requirement` for `row-or-criterion`, `generator` for `generator`, `restored_by` for `restored`, `ruling_source` for `owner-ruling`, or `added_by` for `own-turn`. String references are nonempty. `restored_by` contains exactly `dispatch_id` and full `head` of a later returned turn in the same selected lineage; the reading follows that restoration too. `added_by` is the dispatch ID of an earlier returned, measured builder turn in this PR's selected lineage that added lines to the exact path, using the same authored measurement. A later, foreign, unknown or unmeasurable turn, or one with no authored additions to that path, is rejected. The holder accounts for which lines were removed; the entrance proves positive path-level additions, not line-level provenance. Every ordinary turn entry covers all its flags. Unknown turns/paths, partial coverage, duplicate paths/turns, unknown dispositions and another disposition's fields are rejected.
+
+Each superset settlement contains exactly `turn_reference`, nonempty `reason`, `basis: "pr-superset"`, positive integer `pull_request`, full `base`, `merge_base` and `head`, and `items`. Each reference names an entrance-reported unmeasurable entry. One reading may explicitly name all such entries, each with complete coverage of the same conservative PR superset. Bounds are computed through the holder checkout from the actual PR base, merge base and account head; `head` matches the marker. The account uses the PR's current head. A first-parent ancestor account survives only with no later unmeasurable return: the entrance checks uncertain returns against the reading's timestamp and requires the entire first-parent suffix after the account head to be covered by later measured turns. Later/undated uncertainty or unexplained intervening commits requires a current-head account. Missing objects never invent a return bound. Paths absent from the PR merge base never become flags or conservative candidates; the holder owes no item account for PR-created files. Every conservative candidate needs a lawful disposition, and an empty proved superset still needs explicit settlement. Superset coverage clears reach while retaining the original uncertainty, without requiring the failed original range or attribution to pass again. There is no `recovered_ranges` field; it is rejected as an unknown field.
+
+Only the latest actual turn with a live launcher or recipient, unresolved spawn or unproved cleanup stays pending under recovery. Other incomplete or failed turns are measured from available recorded endpoints or named unmeasurable. Foreign-host liveness alone does not make reach pending. Registry state and recorded worktree paths do not decide PR reach.
+
+The head binds the covered flags; initial adoption may cover historical turns at the proved current head. Ordinary coverage is checked against the merge-base path set at that reading head. Subsequent descendant progress retains a complete account even when catch-up removes some or all of that turn's current flags; it cannot make an originally partial or forged account valid. Newly flagged turns owe new accounts. A superseding rebase/amendment requires a new current-head account. Quoted, forged, unauthorized, wrong-surface, malformed or stale claims discharge nothing. The procedure, including reading the builder's returned recommendations even without flags and restoring missing superset evidence, is `reach.md`.
+
 ## `builder-session`
 
 - **Exact form:** `<!-- tradecraft:builder-session:v1 session=SESSION [vendor=VENDOR] -->`.
 - **Attributes and lawful values:** `session` is the UUID-shaped session identity printed by the implementer launcher; optional `vendor` is `codex` or `claude`. A matching dispatch bundle proves the vendor and must agree with a present attribute. Without a bundle, a vendor-qualified marker is the recovery route after the holder verifies the original runtime record; a UUID alone proves no vendor.
 - **Producer, surface, moment:** the holder, in a comment on the issue, when the build return and launcher output arrive.
+
+Reach correlates this claim across the issue's retained native records before scoping it to the selected implementation lineage. A proved sibling or other-lineage session is not this PR's missing turn. An authorized session with no retained attribution anywhere remains visible as its own uncertainty; a later return cannot account for an earlier marker.
 
 ```text
 <!-- tradecraft:builder-session:v1 session=01234567-89ab-cdef-0123-456789abcdef -->

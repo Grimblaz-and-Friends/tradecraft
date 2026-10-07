@@ -18,7 +18,7 @@ def _entrance():
     return work
 
 
-def launches(state, stage, *, include_released=False):
+def launches(state, stage, *, include_released=False, include_missing_stage=False):
     work = _entrance()
     term, _lane = work._affirmed_review(state)
     after = term.timestamp if stage == "artifact" and term else None
@@ -26,6 +26,7 @@ def launches(state, stage, *, include_released=False):
         state.record_root or records.default_record_root(),
         f"{state.repo}#{state.issue_number}",
         work.RESUME_SOURCE_STAGES.get(stage, {stage}), after=after,
+        include_missing_stage=include_missing_stage,
     ), include_released=include_released)
 
 
@@ -249,7 +250,7 @@ def info(state, source):
 
 def recommend(state, recommendation):
     work = _entrance()
-    if recommendation.stage not in {"artifact", "build", "floor", "review-disposition", "open-pull-request", "waiting", "ready-reviewers", "use", "proof"}:
+    if recommendation.stage not in {"artifact", "build", "floor", "review-disposition", "open-pull-request", "waiting", "ready-reviewers", "use", "proof", "reach-read"}:
         return recommendation
     stage = "artifact" if recommendation.stage == "artifact" else "build"
     latest = latest_stopped(state, stage)

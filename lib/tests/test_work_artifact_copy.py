@@ -111,7 +111,7 @@ def test_native_recorded_artifact_recovers_proved_session_in_fresh_copy(
     native_request = work.records.sidecar(output, ".request.json")
     native_run = work.records.sidecar(output, ".run.json")
     request = json.loads(native_request.read_bytes())
-    assert request["producer_version"] == trees.MECHANISM_VERSION and "artifact_copy" not in request
+    assert request["producer_version"] == work.records.producer_version() and "artifact_copy" not in request
     assert "actual_vendor" not in json.loads(native_run.read_bytes())
     original_bundle = native_request.read_bytes(), native_run.read_bytes()
     (holder / "current-holder.txt").write_bytes(b"new committed holder state")

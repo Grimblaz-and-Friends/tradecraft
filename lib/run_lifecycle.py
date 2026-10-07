@@ -319,7 +319,7 @@ def runtime_account(bundles, *, root=None, branch=None, lineage=None):
             "runs": rows}
 
 
-def launch_bundles(store, work, stages, *, after=None, exact_work=False):
+def launch_bundles(store, work, stages, *, after=None, exact_work=False, include_missing_stage=False):
     """Discover requests first so an unfinished newest attempt cannot disappear."""
     bundles = {}
     if not Path(store).is_dir():
@@ -331,7 +331,8 @@ def launch_bundles(store, work, stages, *, after=None, exact_work=False):
             continue  # No attribution can be established.
         attributed = (request.get("work") == work if exact_work else
                       str(request.get("work", "")).lower() == work.lower()) if isinstance(request, dict) else False
-        if not attributed or request.get("stage") not in stages:
+        if not attributed or (request.get("stage") not in stages
+                              and not (include_missing_stage and not request.get("stage"))):
             continue
         stamp = request.get("launched_at") or request.get("started_at")
         try:
@@ -351,6 +352,8 @@ def launch_bundles(store, work, stages, *, after=None, exact_work=False):
             run = {"recovery_error": "run record missing or unreadable"}
         if not isinstance(run, dict):
             run = {"recovery_error": "run record is not an object"}
+        if not request.get("stage"):
+            run = {**run, "recovery_error": "attributed launch has no stage identity"}
         if order.startswith("9999-"):
             run = {**run, "recovery_error": "launch order missing or invalid"}
         if request.get("schema_version") != 2 or (run.get("schema_version") != 2 and "recovery_error" not in run):
