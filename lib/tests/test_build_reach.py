@@ -237,7 +237,7 @@ def test_C2_patch_content_resembling_headers_and_unterminated_lines(repo):
     assert (item["added"], item["removed"]) == (1, 4)
 
 
-@pytest.mark.parametrize("disposition", list(reach.REFERENCES))
+@pytest.mark.parametrize("disposition", [name for name in reach.REFERENCES if name != "own-turn"])
 def test_C4_each_lawful_disposition_and_later_restore(repo, disposition):
     before = commit(repo, {"tests/a": "a\nb\nc\n"})
     after = commit(repo, {"tests/a": "a\n"})
@@ -664,3 +664,101 @@ def test_C3_ancestor_account_survives_a_later_measured_removal(repo):
     ordinary = reader(head, stamp="2026-10-06T15:00:00Z",
         turns=[{"dispatch_id": "build-2", "items": account(measure(repo, first, head))}])
     assert evaluate(repo, [original, later], [reading, ordinary], base=base)["state"] == "clear"
+
+
+@pytest.mark.parametrize("change", ["shrink", "delete", "move"])
+def test_C1_PR_created_paths_never_flag_but_merge_base_paths_do(repo, change):
+    base = commit(repo, {"base.md": "a\nb\nc\n"})
+    created = commit(repo, {"tests/new.md": "a\nb\nc\n"})
+    edits = {"base.md": "a\n", "tests/new.md": "a\n" if change == "shrink" else None}
+    if change == "move":
+        edits["tests/moved.md"] = "a\nb\nc\n"
+    head = commit(repo, edits)
+    rows = [turn(repo, base, created, identity="add", order="2026-10-06T09:00:00Z",
+                 returned="2026-10-06T09:30:00Z"), turn(repo, created, head)]
+    report = evaluate(repo, rows, base=base)
+    assert [item["path"] for item in report["turns"][1]["items"]] == ["base.md"]
+    assert report["merge_base"] == base
+    uncertain = turn(repo, None, head)
+    fallback = evaluate(repo, [uncertain], base=base)["superset"]
+    assert [item["path"] for item in fallback["items"]] == ["base.md"]
+    reading = reader(head, supersets=[{**fallback, "turn_reference": "build-1", "reason": "range lost",
+                                      "items": account(fallback["items"])}])
+    assert evaluate(repo, [uncertain], [reading], base=base)["state"] == "clear"
+
+
+def test_C3_merge_base_paths_need_available_PR_evidence_before_flags(repo):
+    base = commit(repo, {"base.md": "a\nb\nc\n"})
+    head = commit(repo, {"base.md": "a\n"})
+    row = turn(repo, base, head)
+    report = evaluate(repo, [row], base="f" * 40)
+    assert report["state"] == "unmeasurable"
+    assert "fetch" in report["superset_error"]
+    assert evaluate(repo, [row], pr=False)["state"] == "unmeasurable"
+    repaired = evaluate(repo, [row], base=base)
+    assert repaired["state"] == "reading-required"
+    assert [item["path"] for item in repaired["turns"][0]["items"]] == ["base.md"]
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_C4_own_turn_accepts_earlier_authored_additions_in_base_file(repo, uncertain):
+    base = commit(repo, {"doc.md": "base\n"})
+    added = commit(repo, {"doc.md": "base\nown one\nown two\n"})
+    head = commit(repo, {"doc.md": "base\n"})
+    rows = [turn(repo, base, added, identity="add", order="2026-10-06T09:00:00Z",
+                 returned="2026-10-06T09:30:00Z"), turn(repo, None if uncertain else added, head)]
+    report = evaluate(repo, rows, base=base)
+    additions = report["turns"][0]["authored_additions"]
+    assert len(additions) == 1 and additions[0]["path"] == "doc.md" and additions[0]["added"] == 2
+    entry = report["turns"][1]
+    items = [{"path": "doc.md", "disposition": "own-turn", "added_by": "add",
+              "basis": "These are the two lines the earlier build added."}]
+    if uncertain:
+        reading = reader(head, supersets=[{**entry["superset"], "turn_reference": "build-1",
+                                          "reason": entry["uncertainty"], "items": items}])
+    else:
+        reading = reader(head, turns=[{"dispatch_id": "build-1", "items": items}])
+    settled = evaluate(repo, rows, [reading], base=base)
+    assert settled["state"] == "clear", settled
+
+
+@pytest.mark.parametrize("invalid", ["no-additions", "other-path", "later", "foreign", "unknown", "unmeasurable"])
+def test_C4_own_turn_rejects_unproved_or_non_earlier_addition(repo, invalid):
+    base = commit(repo, {"doc.md": "a\nb\nc\n"})
+    edits = ({"other.md": "added\n"} if invalid == "other-path" else
+             {} if invalid == "no-additions" else {"doc.md": "a\nb\nc\nown\n"})
+    added = commit(repo, edits)
+    head = commit(repo, {"doc.md": "a\n"})
+    first = turn(repo, base, added, identity="add", order="2026-10-06T09:00:00Z",
+                 returned="2026-10-06T09:30:00Z", error="foreign attribution" if invalid == "foreign" else None)
+    if invalid == "unmeasurable":
+        first[3]["revision_after"] = None
+    rows = [first, turn(repo, added, head)]
+    reference = "unknown" if invalid == "unknown" else "add"
+    if invalid == "later":
+        later = commit(repo, {"doc.md": "a\nlater\n"})
+        rows.append(turn(repo, head, later, identity="later", order="2026-10-06T11:10:00Z",
+                         returned="2026-10-06T11:30:00Z"))
+        head, reference = later, "later"
+    reading = reader(head, turns=[{"dispatch_id": "build-1", "items": [
+        {"path": "doc.md", "disposition": "own-turn", "added_by": reference, "basis": "claimed earlier lines"}]}])
+    report = evaluate(repo, rows, [reading], base=base)
+    assert report["turns"][1]["state"] == "reading-required" and report["diagnostics"], report
+
+
+def test_C2_own_turn_additions_exclude_parent_carried_merge_lines(repo):
+    base = commit(repo, {"doc.md": "base\n", "other": "base\n"})
+    git(repo, "checkout", "-b", "upstream")
+    commit(repo, {"doc.md": "base\ncarried\n"})
+    git(repo, "checkout", "topic")
+    before = commit(repo, {"other": "base\nown\n"})
+    git(repo, "merge", "--no-ff", "upstream", "-m", "clean merge")
+    merged = revision(repo)
+    head = commit(repo, {"doc.md": "base\n"})
+    rows = [turn(repo, before, merged, identity="merge", order="2026-10-06T09:00:00Z",
+                 returned="2026-10-06T09:30:00Z"), turn(repo, merged, head)]
+    reading = reader(head, turns=[{"dispatch_id": "build-1", "items": [
+        {"path": "doc.md", "disposition": "own-turn", "added_by": "merge", "basis": "claimed merge addition"}]}])
+    report = evaluate(repo, rows, [reading], base=base)
+    assert report["turns"][0]["authored_additions"] == []
+    assert report["turns"][1]["state"] == "reading-required" and report["diagnostics"], report

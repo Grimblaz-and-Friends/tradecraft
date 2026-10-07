@@ -15,7 +15,7 @@ PRESERVATION = (
     "keep the rest, and name in your return any additional removal or rewrite you recommend."
 )
 REFERENCES = {"row-or-criterion": "requirement", "generator": "generator",
-              "restored": "restored_by", "owner-ruling": "ruling_source"}
+              "restored": "restored_by", "owner-ruling": "ruling_source", "own-turn": "added_by"}
 
 
 class ReachError(ValueError):
@@ -296,7 +296,7 @@ def _aggregate(items, conservative=False, *, include_all=False):
             item["removed"] is not None and item["removed"] > item["added"])]
 
 
-def measure(git, before, after, *, base=None, conservative=False, observations=None):
+def measure(git, before, after, *, base=None, conservative=False, observations=None, existing_paths=None):
     """Measure first-parent authored stretches, excluding commits carried from base."""
     history = git.path(before, after)
     authored = None
@@ -328,10 +328,11 @@ def measure(git, before, after, *, base=None, conservative=False, observations=N
         items.extend(_ordinary(git, start, end))
     if observations is not None:
         observations.extend(_aggregate(items, include_all=True))
-    return _aggregate(items, conservative)
+    flags = _aggregate(items, conservative)
+    return [item for item in flags if existing_paths is None or item["path"] in existing_paths]
 
 
-def superset(git, pr, *, head=None):
+def _pr_bounds(git, pr, *, head=None):
     if not pr or type(pr.get("number")) is not int:
         raise ReachError("open the draft implementing PR through the holder's existing route before superset settlement")
     resolved = {}
@@ -348,11 +349,27 @@ def superset(git, pr, *, head=None):
     common = git.read("merge-base", "--all", base, head).decode("ascii").splitlines()
     if len(common) != 1:
         raise ReachError("ambiguous PR merge base; resolve PR bounds before superset settlement")
+    return {"pull_request": pr["number"], "base": base, "merge_base": common[0], "head": head,
+            "basis": "pr-superset"}
+
+
+def _existing_paths(git, revision):
+    # NUL-delimited tree names retain empty/binary files and exact case/bytes.
+    names = git.read("ls-tree", "--full-tree", "-r", "--name-only", "-z", revision, "--")
+    if names and not names.endswith(b"\0"):
+        raise ReachError("incomplete merge-base path inventory; restore Git read capability and retry")
+    return {_path(name) for name in names.split(b"\0") if name}
+
+
+def superset(git, pr, *, head=None):
+    bounds = _pr_bounds(git, pr, head=head)
+    existing = _existing_paths(git, bounds["merge_base"])
+    head = bounds["head"]
     # The PR merge base may be a merge's other parent. Unlike a true turn
     # range, this superset traverses every non-base authored contribution,
     # and measures each non-merge against its own parent before taking a union.
     history = git.read("rev-list", "--topo-order", "--reverse", "--parents", head,
-                       "^" + common[0]).decode("ascii").splitlines()
+                       "^" + bounds["merge_base"]).decode("ascii").splitlines()
     items = []
     for row in history:
         revision, *parents = row.split()
@@ -362,8 +379,8 @@ def superset(git, pr, *, head=None):
             items.extend(_ordinary(git, parents[0], revision))
         else:
             raise ReachError("incomplete PR superset ancestry; restore commit objects and retry")
-    return {"pull_request": pr["number"], "base": base, "merge_base": common[0], "head": head,
-            "basis": "pr-superset", "items": _aggregate(items, conservative=True)}
+    return {**bounds, "items": [item for item in _aggregate(items, conservative=True)
+                                if item["path"] in existing]}
 
 
 def diagnostic(bundle):
@@ -382,6 +399,16 @@ def _coverage(items, expected, turns, entry, reading, git, current_head):
     if {item["path"] for item in items} != {item["path"] for item in expected}:
         raise ReachError("missing or extraneous reach path coverage for " + entry["turn_reference"])
     for item in items:
+        if item["disposition"] == "own-turn":
+            earlier = [turn for turn in turns if turn["dispatch_id"] == item["added_by"]]
+            launched = moment(entry["order"])
+            if (len(earlier) != 1 or earlier[0]["pending"] or earlier[0]["uncertainty"]
+                    or not earlier[0]["attribution_proved"] or launched is None
+                    or moment(earlier[0]["order"]) is None or moment(earlier[0]["order"]) >= launched
+                    or moment(earlier[0]["returned"]) is None or moment(earlier[0]["returned"]) > launched
+                    or not any(addition["path"] == item["path"] and addition["added"] > 0
+                               for addition in earlier[0]["authored_additions"])):
+                raise ReachError("own-turn must name an earlier returned builder turn with authored additions to this path")
         if item["disposition"] != "restored":
             continue
         ref = item["restored_by"]
@@ -416,6 +443,7 @@ def _evaluate(turns, readings, *, root, head, pr, run, lineage=None, instalment=
               "lineage": lineage, "instalment": instalment, "turns": [], "diagnostics": []}
     entries = report["turns"]
     orders = [turn[0] for turn in turns]
+    baseline = None
     for order, bundle, request, record, target_error, pending in turns:
         request = request if isinstance(request, dict) else {}
         record = record if isinstance(record, dict) else {"recovery_error": "malformed run record"}
@@ -430,7 +458,7 @@ def _evaluate(turns, readings, *, root, head, pr, run, lineage=None, instalment=
                  "return_basis": "recorded-return" if record.get("completed_at") else "historical-launch",
                  "pending": pending, "basis": "recorded-range",
                  "state": "pending" if pending else "unmeasurable", "items": [],
-                 "binary_modifications": [], "attribution_proved": not target_error and request.get("stage") in {"build", "floor", "review-disposition"},
+                 "binary_modifications": [], "authored_additions": [], "attribution_proved": not target_error and request.get("stage") in {"build", "floor", "review-disposition"},
                  "uncertainty": None, "reading_source": None, "outstanding_paths": []}
         entries.append(entry)
         error = target_error or record.get("recovery_error")
@@ -446,10 +474,17 @@ def _evaluate(turns, readings, *, root, head, pr, run, lineage=None, instalment=
             if error:
                 raise ReachError(str(error))
             git = Git(root, run)
+            if baseline is None:
+                bounds = _pr_bounds(git, pr)
+                baseline = _existing_paths(git, bounds["merge_base"])
+                report["merge_base"] = bounds["merge_base"]
             observations = []
             entry["items"] = measure(git, entry["before"], entry["after"],
                                      base=(pr.get("base") or {}).get("sha") if pr else None,
-                                     observations=observations)
+                                     observations=observations, existing_paths=baseline)
+            entry["authored_additions"] = [{"path": item["path"], "added": item["added"],
+                                            "contributions": item["contributions"]}
+                                           for item in observations if item["added"] is not None and item["added"] > 0]
             entry["binary_modifications"] = [item for item in observations if item["binary"] and not item["deleted"]]
             if head and not git.ancestor(entry["after"], head):
                 raise ReachError("unexpected ancestry: returned head was rebased/amended away from current head")
@@ -457,6 +492,7 @@ def _evaluate(turns, readings, *, root, head, pr, run, lineage=None, instalment=
         except Exception as exc:
             entry["uncertainty"] = f"{type(exc).__name__}: {exc}"
             entry["items"] = []
+            entry["authored_additions"] = []
     # Missing historical evidence is one PR-level obligation. Every diagnostic
     # names its own turn, but all use the same current-head conservative account.
     fallback = None

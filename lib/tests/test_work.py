@@ -608,6 +608,9 @@ class TestBuildReach:
         fixture.issue_comments[0].update(id=101, created_at="2026-10-05T09:00:00Z")
         self.edit(fixture, b"a\nb\nc\n")
         before = fixture.pr["head"]["sha"]
+        # Reach fixtures remove a file that existed before this PR.
+        fixture.pr["base"]["sha"] = before
+        fixture.synchronization["base"]["sha"] = before
         self.edit(fixture, b"a\n")
         after = fixture.pr["head"]["sha"]
         request, run = TestGoverningTerms().turn(fixture)
@@ -679,6 +682,64 @@ class TestBuildReach:
             work.execute_stage(fixture, work.Decision(stage, False, None, "holder-named-stage"),
                                fixture.holder_root, None, transport=transport, rules=RULES)
         return effects + transport.operations
+
+    @pytest.mark.parametrize("reference", ["turn-0", "turn-2", "foreign", "unknown"])
+    def test_C1_C4_PR_own_history_rename_prune_and_base_line_account(self, builder, reference):
+        root = builder.term_root
+        base = builder.pr["base"]["sha"]
+        def commit_files(files):
+            for name, content in files.items():
+                path = root / name
+                if content is None:
+                    path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content)
+            git(root, "add", "--all")
+            git(root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+                "commit", "-m", "own-history fixture")
+            builder.pr["head"]["sha"] = git(root, "rev-parse", "HEAD").stdout.decode().strip()
+            return builder.pr["head"]["sha"]
+        added = commit_files({"decisions/D-856.md": b"new decision\n",
+                              "lib/new.py": b"one\ntwo\nthree\n",
+                              "README.md": b"a\nb\nc\nown one\nown two\n"})
+        request, run = builder.term_turns[0][2:]
+        request["revision_before"], run["revision_after"] = base, added
+        renamed = commit_files({"decisions/D-856.md": None, "decisions/D-872.md": b"new decision\n"})
+        request, run = TestGoverningTerms().turn(builder, composed="2026-10-05T10:04:00Z",
+            launched="2026-10-05T10:05:00Z", completed="2026-10-05T10:06:00Z")
+        request.update(lineage_branch="reach-change", revision_before=added)
+        run["revision_after"] = renamed
+        head = commit_files({"lib/new.py": b"one\n", "README.md": b"a\nb\nc\n"})
+        request, run = TestGoverningTerms().turn(builder, composed="2026-10-05T10:09:00Z",
+            launched="2026-10-05T10:10:00Z", completed="2026-10-05T10:11:00Z")
+        request.update(lineage_branch="reach-change", revision_before=renamed)
+        run["revision_after"] = head
+        foreign_request, foreign_run = TestGoverningTerms().turn(builder, composed="2026-10-05T09:30:00Z",
+            launched="2026-10-05T09:31:00Z", completed="2026-10-05T09:32:00Z")
+        foreign_request.update(lineage_branch="another-change", revision_before=base)
+        foreign_run["revision_after"] = added
+        TestGoverningTerms().save(builder)
+        self.floor(builder)
+        work._evaluate_reach(builder)
+        assert [entry["dispatch_id"] for entry in builder.reach["turns"]] == ["turn-0", "turn-1", "turn-2"]
+        assert [entry["state"] for entry in builder.reach["turns"]] == ["clear", "clear", "reading-required"]
+        assert [item["path"] for item in builder.reach["turns"][2]["items"]] == ["README.md"]
+        assert work.decide(builder, RULES).stage == "reach-read"
+        account = {"schema_version": 1, "turns": [{"dispatch_id": "turn-2", "items": [
+            {"path": "README.md", "disposition": "own-turn", "added_by": "turn-3" if reference == "foreign" else reference,
+             "basis": "The removed own lines were added by the first turn."}]}]}
+        body = (f"<!-- tradecraft:reach-reading:v1 head={head} -->\n\n```json\n"
+                + json.dumps(account) + "\n```\n")
+        builder.issue_comments.append({"id": 180, "body": body, "user": {"login": PRODUCER},
+                                       "created_at": "2026-10-05T12:00:00Z"})
+        builder.validated_markers = None
+        work._evaluate_reach(builder)
+        if reference == "turn-0":
+            assert builder.reach["state"] == "clear", builder.reach
+            assert work.decide(builder, RULES).stage == "ready-reviewers"
+        else:
+            assert builder.reach["state"] == "reading-required" and builder.reach["diagnostics"], builder.reach
 
     @pytest.mark.parametrize("lane", ["mechanical", "connected"])
     @pytest.mark.parametrize("stage", ["ready-reviewers", "proof", "release-report"])
