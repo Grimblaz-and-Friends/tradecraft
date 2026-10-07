@@ -135,7 +135,7 @@ def merge_fixture(root, *, result="title\nchoice: resolved\ncontext\nend\n", del
 
 def test_C2_resolution_only_counts_all_parent_columns(repo):
     _, branch, base, merged = merge_fixture(repo)
-    items = measure(repo, branch, merged)
+    items = measure(repo, branch, merged, base=base)
     assert [item["path"] for item in items] == ["doc.md"]
     assert (items[0]["added"], items[0]["removed"]) == (1, 3)
     assert items[0]["contributions"] == [{"basis": "combined-all-parent-columns", "head": merged,
@@ -143,8 +143,8 @@ def test_C2_resolution_only_counts_all_parent_columns(repo):
 
 
 def test_C2_deletion_relative_to_every_parent(repo):
-    _, branch, _, merged = merge_fixture(repo, deletion=True)
-    items = measure(repo, branch, merged)
+    _, branch, base, merged = merge_fixture(repo, deletion=True)
+    items = measure(repo, branch, merged, base=base)
     assert len(items) == 1 and items[0]["deleted"]
     # The choice lines differ by parent; shared removed lines count once.
     assert (items[0]["added"], items[0]["removed"]) == (0, 6)
@@ -152,19 +152,19 @@ def test_C2_deletion_relative_to_every_parent(repo):
 
 @pytest.mark.parametrize("choice", ["other", "branch"])
 def test_C2_existing_parent_result_has_no_authored_reach(repo, choice):
-    _, branch, _, merged = merge_fixture(repo, result=DOC.replace("common", choice))
-    assert measure(repo, branch, merged) == []
+    _, branch, base, merged = merge_fixture(repo, result=DOC.replace("common", choice))
+    assert measure(repo, branch, merged, base=base) == []
 
 
 def test_C2_clean_merge_excludes_independent_parent_shrink(repo):
     before = commit(repo, {"doc": "a\nb\nc\n", "base": "a\nb\nc\n"})
     git(repo, "checkout", "-b", "base")
-    commit(repo, {"base": "a\n"})
+    base = commit(repo, {"base": "a\n"})
     git(repo, "checkout", "topic")
     branch = commit(repo, {"doc": "a\n"})
     git(repo, "merge", "--no-ff", "base", "-m", "clean")
-    assert measure(repo, branch, revision(repo)) == []
-    assert {item["path"] for item in measure(repo, before, revision(repo))} == {"doc"}
+    assert measure(repo, branch, revision(repo), base=base) == []
+    assert {item["path"] for item in measure(repo, before, revision(repo), base=base)} == {"doc"}
 
 
 @pytest.mark.parametrize("authored", [False, True])
@@ -203,20 +203,21 @@ def test_C2_base_exclusion_does_not_relax_first_parent_range(repo):
     with pytest.raises(reach.ReachError, match="first-parent"):
         measure(repo, base, merged, base=base)
     # The incoming parent is excluded, but the branch's resolution survives.
-    assert measure(repo, branch, merged, base=base) == measure(repo, branch, merged)
+    assert measure(repo, branch, merged, base=base) == reach._merge(
+        reach.Git(repo, lambda args, root: git(root, *args, check=False)), merged, [branch, base])
     assert {item["path"] for item in measure(repo, initial, merged, base=base)} == {"doc.md"}
 
 
 def test_C2_edits_before_and_after_merge_accumulate_without_base_shrink(repo):
     initial = commit(repo, {"doc.md": DOC, "own": "a\nb\nc\nd\n", "incoming": "a\nb\nc\n"})
     git(repo, "checkout", "-b", "base")
-    commit(repo, {"doc.md": DOC.replace("common", "other"), "incoming": "a\n"})
+    base = commit(repo, {"doc.md": DOC.replace("common", "other"), "incoming": "a\n"})
     git(repo, "checkout", "topic")
     first = commit(repo, {"doc.md": DOC.replace("common", "branch"), "own": "a\nb\nc\n"})
     git(repo, "merge", "--no-commit", "base", check=False)
     merged = commit(repo, {"doc.md": "title\nchoice: resolved\ncontext\nend\n"})
     after = commit(repo, {"own": "a\n"})
-    items = {item["path"]: item for item in measure(repo, initial, after)}
+    items = {item["path"]: item for item in measure(repo, initial, after, base=base)}
     assert set(items) == {"doc.md", "own"}
     assert (items["doc.md"]["added"], items["doc.md"]["removed"]) == (2, 4)
     assert (items["own"]["added"], items["own"]["removed"]) == (0, 3)
@@ -228,12 +229,12 @@ def test_C2_patch_content_resembling_headers_and_unterminated_lines(repo):
     content = "title\nchoice: common\ndiff --combined fake\n@@@ -1 -1 +1 @@@\n--- content\n+++ content\nend"
     commit(repo, {"doc": content})
     git(repo, "checkout", "-b", "base")
-    commit(repo, {"doc": content.replace("common", "other")})
+    base = commit(repo, {"doc": content.replace("common", "other")})
     git(repo, "checkout", "topic")
     before = commit(repo, {"doc": content.replace("common", "branch")})
     git(repo, "merge", "--no-commit", "base", check=False)
     after = commit(repo, {"doc": "title\nchoice: resolved\nend"})
-    item, = measure(repo, before, after)
+    item, = measure(repo, before, after, base=base)
     assert (item["added"], item["removed"]) == (1, 4)
 
 
@@ -319,8 +320,8 @@ def test_C3_superset_union_retains_growth_and_restoration_and_excludes_base(repo
     commit(repo, {"a": "a\nb\nc\nd\ne\nf\n"})
     git(repo, "merge", "--no-ff", "base", "-m", "fixture merge")
     after = revision(repo)
-    ordinary = measure(repo, before, after)
-    conservative = measure(repo, before, after, conservative=True)
+    ordinary = measure(repo, before, after, base=base)
+    conservative = measure(repo, before, after, base=base, conservative=True)
     assert ordinary == []
     assert {item["path"] for item in conservative} == {"a"}
     assert {item["path"] for item in measure(repo, before, shrink)} <= {item["path"] for item in conservative}
@@ -422,7 +423,8 @@ def test_C2_octopus_columns_binary_deletion_and_exact_quoted_paths(repo):
     for parent in parents:
         args += ["-p", parent]
     merged = git(repo, *args, input=b"octopus fixture\n").stdout.decode().strip()
-    items = {item["path"]: item for item in measure(repo, parents[0], merged)}
+    items = {item["path"]: item for item in reach._merge(
+        reach.Git(repo, lambda args, root: git(root, *args, check=False)), merged, parents)}
     assert set(items) == {name, "binary"}
     assert items["binary"]["deleted"] and items["binary"]["binary"]
     assert (items[name]["added"], items[name]["removed"]) == (1, 3)
@@ -749,7 +751,7 @@ def test_C4_own_turn_rejects_unproved_or_non_earlier_addition(repo, invalid):
 def test_C2_own_turn_additions_exclude_parent_carried_merge_lines(repo):
     base = commit(repo, {"doc.md": "base\n", "other": "base\n"})
     git(repo, "checkout", "-b", "upstream")
-    commit(repo, {"doc.md": "base\ncarried\n"})
+    base = commit(repo, {"doc.md": "base\ncarried\n"})
     git(repo, "checkout", "topic")
     before = commit(repo, {"other": "base\nown\n"})
     git(repo, "merge", "--no-ff", "upstream", "-m", "clean merge")
@@ -762,3 +764,101 @@ def test_C2_own_turn_additions_exclude_parent_carried_merge_lines(repo):
     report = evaluate(repo, rows, [reading], base=base)
     assert report["turns"][0]["authored_additions"] == []
     assert report["turns"][1]["state"] == "reading-required" and report["diagnostics"], report
+
+
+@pytest.mark.parametrize("change", ["delete", "shrink", "equal", "grow", "restore", "delete-restore"])
+def test_C2_in_turn_side_branch_reach_excludes_base_and_keeps_net_rules(repo, change):
+    base = commit(repo, {"own": "a\nb\nc\n", "incoming": "a\nb\nc\n"})
+    git(repo, "checkout", "-b", "base")
+    incoming = commit(repo, {"incoming": "a\n"})
+    git(repo, "checkout", "topic")
+    before = revision(repo)
+    git(repo, "checkout", "-b", "builder-side")
+    content = {"delete": None, "shrink": "a\n", "equal": "a\nx\ny\n",
+               "grow": "a\nb\nc\nd\n", "restore": "a\n", "delete-restore": None}[change]
+    commit(repo, {"own": content})
+    if change in {"restore", "delete-restore"}:
+        commit(repo, {"own": "a\nb\nc\n"})
+    git(repo, "merge", "--no-ff", "base", "-m", "carry base onto side")
+    git(repo, "checkout", "topic")
+    git(repo, "merge", "--no-ff", "builder-side", "-m", "return side work")
+    head = revision(repo)
+    report = evaluate(repo, [turn(repo, before, head)], base=incoming)
+    entry, = report["turns"]
+    assert entry["uncertainty"] is None, report
+    assert [item["path"] for item in entry["items"]] == (["own"] if change in {"delete", "shrink"} else [])
+    if change == "shrink":
+        assert (entry["items"][0]["added"], entry["items"][0]["removed"]) == (0, 2)
+
+
+@pytest.mark.parametrize("remaining", [True, False])
+@pytest.mark.parametrize("claim", ["complete", "partial", "forged"])
+def test_C4_complete_multi_turn_reading_survives_base_path_removal(repo, remaining, claim):
+    base = commit(repo, {"old": "a\nb\nc\n", "kept": "a\nb\nc\n", "second": "a\nb\nc\n"})
+    first = commit(repo, {"old": None, "kept": "a\n" if remaining else None})
+    second = commit(repo, {"second": "a\n"})
+    rows = [turn(repo, base, first), turn(repo, first, second, identity="build-2",
+            order="2026-10-06T11:05:00Z", returned="2026-10-06T11:30:00Z")]
+    measured = evaluate(repo, rows, base=base)
+    accounts = [{"dispatch_id": entry["dispatch_id"], "items": account(entry["items"])}
+                for entry in measured["turns"]]
+    if claim == "partial":
+        accounts[0]["items"] = [item for item in accounts[0]["items"] if item["path"] != "old"]
+    elif claim == "forged":
+        accounts[0]["items"].append({**accounts[0]["items"][0], "path": "never-removed"})
+    reading = reader(second, turns=accounts)
+    assert evaluate(repo, rows, [reading], base=base)["state"] == ("clear" if claim == "complete" else "reading-required")
+    git(repo, "checkout", "-b", "base", base)
+    incoming = commit(repo, {"old": None, **({} if remaining else {"kept": None})})
+    git(repo, "checkout", "topic")
+    git(repo, "merge", "--no-ff", "base", "-m", "catch up")
+    head = revision(repo)
+    rows.append(turn(repo, second, head, identity="catch-up", order="2026-10-06T13:00:00Z",
+                     returned="2026-10-06T14:00:00Z"))
+    report = evaluate(repo, rows, [reading], base=incoming)
+    assert [item["path"] for item in report["turns"][0]["items"]] == (["kept"] if remaining else [])
+    if claim == "complete":
+        assert report["state"] == "clear" and not report["diagnostics"], report
+        assert all(entry["reading_source"] for entry in report["turns"][:2])
+    else:
+        assert report["state"] == "reading-required" and report["diagnostics"], report
+
+
+@pytest.mark.parametrize("attribute", ["-diff", "binary", "diff=custom", "info"])
+def test_C1_text_counts_ignore_binary_attributes_and_keep_content_binary(repo, attribute):
+    base = commit(repo, {".gitattributes": "*.txt " + ("diff" if attribute == "info" else attribute) + "\n*.bin diff\n",
+                         "marked.txt": "a\nb\nc\nd\n", "true.bin": b"\0a\nb\nc\n",
+                         "deleted.bin": b"\0a\nb\n"})
+    git(repo, "config", "diff.custom.binary", "true")
+    if attribute == "info":
+        (repo / ".git" / "info" / "attributes").write_bytes(b"*.txt -diff\n")
+    head = commit(repo, {"marked.txt": "a\n", "true.bin": b"\0a\n", "deleted.bin": None})
+    report = evaluate(repo, [turn(repo, base, head)], base=base)
+    entry, = report["turns"]
+    assert {item["path"] for item in entry["items"]} == {"marked.txt", "deleted.bin"}, report
+    text = next(item for item in entry["items"] if item["path"] == "marked.txt")
+    assert (text["added"], text["removed"], text["binary"]) == (0, 3, False)
+    binary, = entry["binary_modifications"]
+    assert binary["path"] == "true.bin" and binary["added"] is None and binary["removed"] is None
+
+
+def test_C2_combined_text_counts_ignore_binary_attributes(repo):
+    commit(repo, {".gitattributes": "doc.md -diff\n"})
+    _, branch, base, merged = merge_fixture(repo)
+    report = evaluate(repo, [turn(repo, branch, merged)], base=base)
+    item, = report["turns"][0]["items"]
+    assert item["path"] == "doc.md" and not item["binary"]
+    assert (item["added"], item["removed"]) == (1, 3)
+
+
+def test_C1_attribute_neutral_view_keeps_sha256_objects(tmp_path):
+    root = tmp_path / "sha256"
+    root.mkdir()
+    git(root, "init", "-b", "topic", "--object-format=sha256")
+    for key, value in {"user.name": "fixture", "user.email": "fixture@example.test",
+                       "commit.gpgsign": "false", "core.autocrlf": "false"}.items():
+        git(root, "config", key, value)
+    before = commit(root, {".gitattributes": "doc -diff\n", "doc": "a\nb\nc\n"})
+    after = commit(root, {"doc": "a\n"})
+    item, = measure(root, before, after)
+    assert item["path"] == "doc" and (item["added"], item["removed"]) == (0, 2)

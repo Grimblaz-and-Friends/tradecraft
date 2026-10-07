@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
+import zlib
 
 
 SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
@@ -126,6 +128,7 @@ class Git:
 
     def __init__(self, root, run):
         self.root, self.run = Path(root), run
+        self._binary = {}
 
     def read(self, *args):
         try:
@@ -170,8 +173,42 @@ class Git:
                 return False
             raise
 
+    def binary(self, blob):
+        if blob not in self._binary:
+            self._binary[blob] = b"\0" in self.read("cat-file", "blob", blob.decode("ascii"))[:8000]
+        return self._binary[blob]
 
-DIFF_OPTIONS = ("--no-ext-diff", "--no-textconv", "--no-renames", "--no-color",
+    def text_read(self, *args):
+        # --text does not override binary attributes for numstat or combined
+        # patches. An ephemeral bare view shares only the holder's objects:
+        # no worktree/index/info attributes, and our rule overrides global or
+        # system attributes. No objects or files in the checkout are written.
+        objects = self.read("rev-parse", "--path-format=absolute", "--git-path", "objects").rstrip(b"\r\n")
+        object_format = self.read("rev-parse", "--show-object-format").strip()
+        with tempfile.TemporaryDirectory(prefix="tradecraft-reach-") as directory:
+            view = Path(directory)
+            (view / "objects" / "info").mkdir(parents=True)
+            (view / "refs").mkdir()
+            (view / "HEAD").write_bytes(b"ref: refs/heads/unused\n")
+            (view / "config").write_bytes(b"[core]\nrepositoryformatversion = 1\nbare = true\n"
+                                           b"[extensions]\nobjectformat = " + object_format + b"\n")
+            # Bare diffs can consult the compared tree's .gitattributes too.
+            # Pin the attribute source to an empty tree in this disposable
+            # object store; the holder's shared objects remain untouched.
+            empty = b"tree 0\0"
+            tree = hashlib.new(object_format.decode("ascii"), empty).hexdigest()
+            loose = view / "objects" / tree[:2]
+            loose.mkdir()
+            (loose / tree[2:]).write_bytes(zlib.compress(empty))
+            (view / "objects" / "info" / "alternates").write_bytes(
+                (json.dumps(_path(objects), ensure_ascii=False) + "\n").encode("utf-8"))
+            attributes = view / "attributes"
+            attributes.write_bytes(b"* diff\n")
+            return self.read("--git-dir=" + str(view), "--attr-source=" + tree, "-c", "core.bare=true",
+                             "-c", "core.attributesFile=" + str(attributes), *args)
+
+
+DIFF_OPTIONS = ("--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--text",
                 "--diff-algorithm=myers", "--no-indent-heuristic", "--ignore-submodules=none")
 
 
@@ -185,8 +222,8 @@ def _item(path, deleted, added, removed, portion):
 
 
 def _ordinary(git, before, after):
-    status = git.read("diff", *DIFF_OPTIONS, "--name-status", "-z", before, after, "--").split(b"\0")
-    numbers = git.read("diff", *DIFF_OPTIONS, "--numstat", "-z", before, after, "--").split(b"\0")
+    status = git.read("diff", *DIFF_OPTIONS, "--raw", "--no-abbrev", "-z", before, after, "--").split(b"\0")
+    numbers = git.text_read("diff", *DIFF_OPTIONS, "--numstat", "-z", before, after, "--").split(b"\0")
     if status[-1] != b"" or numbers[-1] != b"" or len(status[:-1]) % 2:
         raise ReachError("unsupported NUL-delimited diff inventory")
     counts = {}
@@ -203,15 +240,28 @@ def _ordinary(git, before, after):
             raise ReachError("unavailable numeric diff counts")
     items = []
     for index in range(0, len(status) - 1, 2):
-        kind, name = status[index:index + 2]
+        metadata, name = status[index:index + 2]
+        fields = metadata.split()
         name = _path(name)
+        if len(fields) != 5 or not fields[0].startswith(b":"):
+            raise ReachError("unsupported raw diff inventory")
+        kind = fields[-1]
         if kind not in {b"A", b"M", b"D", b"T"} or name not in counts:
             raise ReachError("incomplete diff inventory/counts: " + name)
-        items.append(_item(name, kind == b"D", *counts.pop(name),
+        binary = _binary_blobs(git, [fields[0].lstrip(b":"), fields[1]], fields[2:4])
+        numbers = counts.pop(name)
+        items.append(_item(name, kind == b"D", *((None, None) if binary else numbers),
                            {"basis": "non-merge", "before": before, "after": after}))
     if counts:
         raise ReachError("numeric diff contains paths outside inventory")
     return items
+
+
+def _binary_blobs(git, modes, blobs):
+    # Match Git's content heuristic, independently of attributes and drivers.
+    # Gitlinks are commit pointers, rather than blobs to read as file content.
+    return any(git.binary(blob) for mode, blob in zip(modes, blobs)
+               if mode.startswith(b"100") or mode == b"120000")
 
 
 def _combined_counts(section, parents):
@@ -264,15 +314,18 @@ def _merge(git, revision, parents):
                 or len(fields) != 2 * (len(parents) + 1) + 1
                 or len(fields[-1]) != len(parents) or any(c not in b"AMDT" for c in fields[-1])):
             raise ReachError("unsupported combined raw record")
-        inventory.append((_path(name), fields[-1] == b"D" * len(parents)))
-    patch = git.read("show", "--format=", "-c", "--patch", "--unified=3", "--inter-hunk-context=0",
+        width = len(parents) + 1
+        modes = [mode.lstrip(b":") for mode in fields[:width]]
+        inventory.append((_path(name), fields[-1] == b"D" * len(parents),
+                          _binary_blobs(git, modes, fields[width:2 * width])))
+    patch = git.text_read("show", "--format=", "-c", "--patch", "--unified=3", "--inter-hunk-context=0",
                      *DIFF_OPTIONS, revision, "--")
     sections = re.split(rb"(?m)^diff --(?:combined|cc) ", patch)[1:]
     if len(sections) != len(inventory):
         raise ReachError("combined inventory and full patch disagree")
-    return [_item(name, deleted, *_combined_counts(section, len(parents)),
+    return [_item(name, deleted, *((None, None) if binary else _combined_counts(section, len(parents))),
                   {"basis": "combined-all-parent-columns", "head": revision, "parents": parents})
-            for (name, deleted), section in zip(inventory, sections)]
+            for (name, deleted, binary), section in zip(inventory, sections)]
 
 
 def _aggregate(items, conservative=False, *, include_all=False):
@@ -297,35 +350,41 @@ def _aggregate(items, conservative=False, *, include_all=False):
 
 
 def measure(git, before, after, *, base=None, conservative=False, observations=None, existing_paths=None):
-    """Measure first-parent authored stretches, excluding commits carried from base."""
-    history = git.path(before, after)
-    authored = None
+    """Prove the first-parent bounds, then measure every non-base authored branch."""
+    git.path(before, after)
+    arguments = ["rev-list", "--topo-order", "--reverse", "--parents", after, "^" + before]
     if base is not None:
         base = git.commit(base)
-        # Prove the complete turn's first-parent path before excluding base
-        # history. A fast-forward imports base commits just as a merge does.
-        authored = set(git.read("rev-list", "--first-parent", after, "^" + before,
-                                "^" + base).decode("ascii").splitlines())
+        arguments.append("^" + base)
+    history = [row.split() for row in git.read(*arguments).decode("ascii").splitlines()]
+    parents_by_id = {row[0]: row[1:] for row in history}
+    children = {revision: [] for revision in parents_by_id}
+    for revision, *parents in history:
+        for parent in parents:
+            if parent in children:
+                children[parent].append(revision)
     items = []
-    start = end = before
-    for fields in history:
-        revision, *parents = fields
-        if authored is not None and revision not in authored:
-            if start != end:
-                items.extend(_ordinary(git, start, end))
-            start = end = revision
-        elif len(parents) > 1:
-            if start != end:
-                items.extend(_ordinary(git, start, end))
+    measured = set()
+    for revision, *parents in history:
+        if revision in measured:
+            continue
+        measured.add(revision)
+        if len(parents) > 1:
             items.extend(_merge(git, revision, parents))
-            start = end = revision
-        elif conservative:
-            items.extend(_ordinary(git, end, revision))
-            start = end = revision
-        else:
+        elif len(parents) == 1:
             end = revision
-    if start != end:
-        items.extend(_ordinary(git, start, end))
+            # Collapse a linear authored stretch, preserving endpoint net
+            # counts and restoration/equality controls. Forks and merges are
+            # boundaries so a shared contribution is never visited twice.
+            while not conservative and len(children[end]) == 1:
+                child = children[end][0]
+                if len(parents_by_id[child]) != 1:
+                    break
+                measured.add(child)
+                end = child
+            items.extend(_ordinary(git, parents[0], end))
+        else:
+            raise ReachError("incomplete authored turn ancestry; restore commit objects and retry")
     if observations is not None:
         observations.extend(_aggregate(items, include_all=True))
     flags = _aggregate(items, conservative)
@@ -530,11 +589,19 @@ def _evaluate(turns, readings, *, root, head, pr, run, lineage=None, instalment=
                 entry = changes.get(original["turn_reference"], original)
                 if entry["pending"] or entry["uncertainty"]:
                     raise ReachError("ordinary account cannot settle an unmeasurable or pending turn")
-                if not entry["items"]:
-                    raise ReachError("extraneous flag-free ordinary turn account")
                 if not Git(root, run).ancestor(entry["after"], reading_head):
                     raise ReachError("reading head must be a covered flagged head or initial current-head account")
-                _coverage(account["items"], entry["items"], entries, entry, reading, Git(root, run), head)
+                git = Git(root, run)
+                # Reconstruct the baseline at the account's head. Later base
+                # progress can remove current flags, but cannot turn an old
+                # complete account into an extraneous one (or a partial one
+                # into complete coverage).
+                bounds = _pr_bounds(git, pr, head=reading_head)
+                expected = measure(git, entry["before"], entry["after"], base=bounds["merge_base"],
+                                   existing_paths=_existing_paths(git, bounds["merge_base"]))
+                if not expected:
+                    raise ReachError("extraneous flag-free ordinary turn account")
+                _coverage(account["items"], expected, entries, entry, reading, git, head)
                 changes[entry["turn_reference"]] = {**entry, "accepted_items": account["items"]}
             if value["superset_settlements"]:
                 git = Git(root, run)

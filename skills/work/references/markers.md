@@ -120,7 +120,7 @@ Each superset settlement contains exactly `turn_reference`, nonempty `reason`, `
 
 Only the latest actual turn with a live launcher or recipient, unresolved spawn or unproved cleanup stays pending under recovery. Other incomplete or failed turns are measured from available recorded endpoints or named unmeasurable. Foreign-host liveness alone does not make reach pending. Registry state and recorded worktree paths do not decide PR reach.
 
-The head binds the covered flags; initial adoption may cover historical turns at the proved current head. Subsequent descendant progress retains accepted coverage and newly flagged turns owe new accounts. A superseding rebase/amendment requires a new current-head account. Quoted, forged, unauthorized, wrong-surface, malformed or stale claims discharge nothing. The procedure, including reading the builder's returned recommendations even without flags and restoring missing superset evidence, is `reach.md`.
+The head binds the covered flags; initial adoption may cover historical turns at the proved current head. Ordinary coverage is checked against the merge-base path set at that reading head. Subsequent descendant progress retains a complete account even when catch-up removes some or all of that turn's current flags; it cannot make an originally partial or forged account valid. Newly flagged turns owe new accounts. A superseding rebase/amendment requires a new current-head account. Quoted, forged, unauthorized, wrong-surface, malformed or stale claims discharge nothing. The procedure, including reading the builder's returned recommendations even without flags and restoring missing superset evidence, is `reach.md`.
 
 ## `builder-session`
 
