@@ -44,7 +44,8 @@ def _get(endpoint: str) -> object:
         raise BindingError(f"GitHub GET returned invalid JSON for {endpoint}") from exc
 
 
-def resolve_draft(work: str, comment_id: str | None, *, get=None) -> tuple[str, str]:
+def resolve_draft(work: str, comment_id: str | None, *, get=None,
+                  marker_producers: frozenset[str] | None = None) -> tuple[str, str]:
     """Resolve outside the recipient, using the entrance's source-claim grammar."""
     if not isinstance(comment_id, str) or COMMENT_ID.fullmatch(comment_id) is None:
         raise BindingError("cold-seat requires --draft-comment with a positive comment id")
@@ -64,19 +65,24 @@ def resolve_draft(work: str, comment_id: str | None, *, get=None) -> tuple[str, 
         raise BindingError(f"named draft comment {comment_id} has no canonical body")
     user = source.get("user")
     author = user.get("login") if isinstance(user, dict) else None
-    configuration = get(f"repos/{repository}/contents/.tradecraft/work.json")
-    try:
-        if not isinstance(configuration, dict) or configuration.get("encoding") != "base64":
-            raise ValueError()
-        config = json.loads(base64.b64decode(configuration["content"]))
-        producers = config["marker_producers"]
-        if (config.get("schema_version") != 1 or not isinstance(producers, list)
-                or not all(isinstance(value, str) for value in producers)):
-            raise ValueError()
-    except (KeyError, TypeError, UnicodeError, ValueError) as exc:
-        raise BindingError("cold-seat cannot establish authorized draft producers") from exc
+    prerequisite = "the default branch must carry .tradecraft/work.json listing the producer"
+    if marker_producers is None:
+        try:
+            configuration = get(f"repos/{repository}/contents/.tradecraft/work.json")
+            if not isinstance(configuration, dict) or configuration.get("encoding") != "base64":
+                raise ValueError()
+            config = json.loads(base64.b64decode(configuration["content"]))
+            producers = config["marker_producers"]
+            if (config.get("schema_version") != 1 or not isinstance(producers, list)
+                    or not all(isinstance(value, str) for value in producers)):
+                raise ValueError()
+        except (OSError, KeyError, TypeError, UnicodeError, ValueError) as exc:
+            raise BindingError(f"cold-seat cannot establish authorized draft producers; {prerequisite}") from exc
+    else:
+        producers = marker_producers
     if not isinstance(author, str) or author.lower() not in {value.lower() for value in producers}:
-        raise BindingError(f"named draft comment {comment_id} producer is not authorized")
+        remedy = f"; {prerequisite}" if marker_producers is None else ""
+        raise BindingError(f"named draft comment {comment_id} producer is not authorized{remedy}")
     claims = _classify_sources([(body, author, "issue-comment", comment_id)]).claims
     if (len(claims) != 1 or claims[0].name != "artifact"
             or claims[0].attributes != {"status": "draft"}

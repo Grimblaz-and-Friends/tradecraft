@@ -153,13 +153,24 @@ def test_C3_direct_bad_binding_refuses_before_reservation_or_vendor(job, monkeyp
     assert not seat.sidecar(args.output, ".run.json").exists()
 
 
-def test_C3_composed_entrance_launch_binds_its_automatically_selected_draft(job, monkeypatch):
+@pytest.mark.parametrize("default_config", ["missing", "different"])
+def test_C3_composed_entrance_launch_binds_its_automatically_selected_draft(job, monkeypatch, default_config):
     args, _ = job
     fixture = work.WorkState("example/product", 12, {"body": ""}, config=CONFIG, issue_comments=[
         {"id": 10, "body": AFFIRMED, "user": {"login": PRODUCER}},
         {"id": 20, "body": DRAFT, "user": {"login": PRODUCER}},
     ])
-    monkeypatch.setattr(seat.cold_draft, "_get", draft_get)
+    calls = []
+    def get(endpoint):
+        calls.append(endpoint)
+        if endpoint.endswith("/.tradecraft/work.json"):
+            if default_config == "missing": raise seat.cold_draft.BindingError("default branch has no config")
+            return {"encoding": "base64", "content": base64.b64encode(json.dumps({
+                "schema_version": 1, "marker_producers": ["another-holder"]}).encode()).decode()}
+        value = draft_get(endpoint)
+        value["user"]["login"] = PRODUCER
+        return value
+    monkeypatch.setattr(seat.cold_draft, "_get", get)
     monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "fixture artifact author"))
     from contextlib import nullcontext
     monkeypatch.setattr(work, "judging_root", lambda *_: nullcontext(args.root))
@@ -173,6 +184,7 @@ def test_C3_composed_entrance_launch_binds_its_automatically_selected_draft(job,
     assert request["judged_draft"]["comment_id"] == "20"
     assert request["judged_draft"]["sha256"] == seat.cold_draft.artifact_digest(DRAFT)
     assert DRAFT.encode() in Path(request["input"]).read_bytes()
+    assert calls == ["repos/example/product/issues/comments/20"]
 
 
 def test_C3_composed_entrance_still_refuses_a_holder_dispatch_and_wrong_selected_id(job, monkeypatch):
@@ -194,9 +206,10 @@ def test_C3_composed_entrance_still_refuses_a_holder_dispatch_and_wrong_selected
         work.execute_stage(fixture, decision, args.root, None)
 
 
-def test_E1_direct_draft_option_is_cold_specific(job):
+@pytest.mark.parametrize("option", ["draft_comment", "draft_producer"])
+def test_E1_direct_draft_option_is_cold_specific(job, option):
     args, _ = job
-    args.draft_comment = "20"
+    setattr(args, option, "20" if option == "draft_comment" else [PRODUCER])
     with pytest.raises(seat.DispatchError, match="only to cold-seat"): seat.run_dispatch(args)
     assert not seat.sidecar(args.output, ".request.json").exists()
 

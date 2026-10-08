@@ -240,7 +240,7 @@ def test_broken_pointer_refuses_ordinary_and_explicit_launch_before_mutation(
         assert _fixture_digest(fixture.issue_comments[1]["body"]) in recommendation.detail
         if failure == "miscopied-digest":
             assert fixture.issue_comments[1]["body"] == SOURCE_DRAFT
-        remedy = ("preventing distinction between editing and copying" if route == "would"
+        remedy = ("Do not use the observed digest to re-settle" if route == "would"
                   else "Re-settle with the named draft's current digest.")
         assert remedy in recommendation.detail
     dispatch = tmp_path / "custom.md"
@@ -2220,7 +2220,7 @@ class TestGoverningTerms:
     def test_C5_effective_settlement_migration_counts_intervening_amendment(self, builder):
         builder.issue_comments[2]["body"] = "<!-- tradecraft:artifact:v1 status=settled -->\nOriginal settlement."
         comment = self.amendment(builder)
-        self.post(builder, _settled("unobtainable"), stamp="2026-10-05T12:00:00Z")
+        self.post(builder, _source_settlement("unobtainable", draft_id=101, body=ARTIFACT), stamp="2026-10-05T12:00:00Z")
         decision = self.due(builder, comment)
         assert builder.artifact_phase.settlement_order[0] == work._aware_time("2026-10-05T09:02:00Z")
         assert comment["body"].encode() in work._stage_prompt(builder, decision)
@@ -3134,13 +3134,15 @@ def test_artifact_revision_prompt_keeps_migration_readings_and_clears_replacemen
                + WHOLE_ARTIFACT if replacement == "routed-repost" else WOULD)
     newer = ((ARTIFACT if replacement == "draft" else _settled("would"))
              + "\nNEWER ARTIFACT TEXT")
+    if replacement == "routed-repost":
+        newer = _settled("would").replace("\n>", "\nNEWER OUTER TRANSPORT\n>", 1)
     fixture = state(AFFIRMED, ARTIFACT, earlier, first, second, newer, AFFIRMED)
     recommendation = work.decide(fixture, RULES)
     assert recommendation.stage == "artifact"
     prompt = work._stage_prompt(fixture, recommendation)
 
     assert newer.encode("utf-8") in prompt
-    migrated = replacement != "draft"
+    migrated = replacement == "routed-repost"
     assert (first.encode("utf-8") in prompt) == migrated
     assert (second.encode("utf-8") in prompt) == migrated
     assert (b"holder reading made against artifact under revision" in prompt) == migrated
@@ -6677,7 +6679,8 @@ def test_native_ambiguous_successful_completion_remains_refused(tmp_path, monkey
     producer_bundle(fixture.record_root, stage="build" if stage == "use" else "artifact")
     native_bundle(fixture.record_root, monkeypatch, stage=stage, name="first")
     native_bundle(fixture.record_root, monkeypatch, stage=stage, name="second")
-    assert_native_claim(fixture, marker, stage, error="matching dispatch bundle is ambiguous")
+    error = "cold verdict dispatch pairing is ambiguous" if stage == "cold-seat" else "matching dispatch bundle is ambiguous"
+    assert_native_claim(fixture, marker, stage, error=error)
 
 
 def test_historical_native_instance_uses_exact_floor_and_last_pre_marker_request(tmp_path, monkeypatch):

@@ -72,6 +72,9 @@ def test_C1_876_edited_draft_refuses_every_digest_and_every_builder_endpoint(
     decision = work.decide(fixture, RULES)
     assert decision.reason == "artifact-source-unusable" and not decision.dispatch
     assert "was edited after its verdict" in decision.detail
+    assert "verdict " + fixture.issue_comments[2]["html_url"] in decision.detail
+    assert "{'name': 'cold-verdict'" not in decision.detail
+    assert decision.artifact_interpretation["qualifying_verdicts"][0]["verdict_source"] == fixture.issue_comments[2]["html_url"]
     assert "Restore the judged text, or post a new draft for a fresh cold seat" in decision.detail
     assert "miscopied" not in decision.detail
     assert str(tmp_path / "records" / "cold" / "result.md.run.json") in decision.detail
@@ -111,7 +114,7 @@ def test_C1_C4_selected_bundle_is_shared_and_another_seat_cannot_substitute(tmp_
     later = judgment(fixture, tmp_path, body=edited, name="later")
     earlier = tmp_path / "records" / "cold" / "result.md.run.json"
     old = json.loads(earlier.read_bytes())
-    old["completed_at"] = (datetime.fromisoformat(old["completed_at"]) - timedelta(seconds=5)).isoformat()
+    old["completed_at"] = (datetime.fromisoformat(fixture.issue_comments[1]["created_at"]) - timedelta(seconds=1)).isoformat()
     earlier.write_bytes(work.records.json_bytes(old))
     calls = []
     matching = work._matching_bundles
@@ -257,6 +260,7 @@ def test_C4_876_old_mismatch_is_unknown_and_bound_whole_artifact_cannot_bypass_r
     fixture.issue_comments[3]["body"] = _source_settlement("would").replace(cold_draft.artifact_digest(SOURCE_DRAFT), "0" * 64)
     decision = work.decide(fixture, RULES)
     assert "preventing distinction between editing and copying" in decision.detail
+    assert "Do not use the observed digest to re-settle: restore the judged text, or post a new draft for a fresh cold seat." in decision.detail
     assert "was edited" not in decision.detail and "was miscopied" not in decision.detail
     modern = bound_fixture(tmp_path / "modern")
     modern.issue_comments[3]["body"] = _source_settlement("would", reference=False)
@@ -411,3 +415,116 @@ def test_C7_raw_span_keeps_recognition_parity(body, accepted):
         raw = body[span[0]:span[1]]
         assert raw.startswith("> <!-- tradecraft:affirmed-brief:v1 -->")
         assert raw.encode() in body.encode()
+
+
+@pytest.mark.parametrize("route", ["discharge", "cap"])
+def test_C7_882_trailing_note_is_carried_text_with_a_new_position(tmp_path, route):
+    support = [VERDICT.replace("verdict=would", "verdict=not-settleable")]
+    if route == "cap": support = [VERDICT.replace("verdict=would", "verdict=would-not")] * 2
+    original = _source_settlement(route)
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, *support, original, AMENDED + "ORIGINAL DIRECTION"))
+    for index in range(len(support)):
+        judgment(fixture, tmp_path, verdict_index=2 + index, name=f"seat-{index}")
+    original_id = str(fixture.issue_comments[-2]["id"])
+    fixture.issue_comments.append({"body": original.replace("SETTLEMENT EXPLANATION SENTINEL", "NOTE ABOVE ARTIFACT"),
+                                   "user": {"login": PRODUCER}})
+    comments(fixture)
+    assert work.decide(fixture, RULES).stage == "build"
+    assert fixture.artifact_phase.settlement_origin.source_id == original_id
+    trailing = original + "\nRe-posted to correct the digest; text unchanged."
+    fixture.issue_comments.append({"body": trailing, "user": {"login": PRODUCER}})
+    comments(fixture)
+    assert work.decide(fixture, RULES).stage == "holder-read"
+    assert fixture.artifact_phase.settlement_origin is fixture.artifact_phase.latest_settlement
+    assert not fixture.artifact_phase.holder_readings
+    assert fixture.artifact_phase.settled_artifact.body == trailing
+
+
+@pytest.mark.parametrize("route", ["would", "unobtainable"])
+@pytest.mark.parametrize("same_text", [False, True])
+def test_C5_C7_882_compatibility_whole_artifact_uses_its_carried_identity(tmp_path, route, same_text):
+    support = [VERDICT] if route == "would" else []
+    x = SOURCE_REVISED + "\nCOMPATIBILITY TEXT X"
+    y = x if same_text else SOURCE_REVISED + "\nCOMPATIBILITY TEXT Y"
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, *support,
+                             _source_settlement(route, reference=False, revised=x), AMENDED + "READING AGAINST X"))
+    if support: judgment(fixture, tmp_path, version="0.189.0")
+    origin = str(fixture.issue_comments[-2]["id"])
+    fixture.issue_comments.append({"body": _source_settlement(route, reference=False, revised=y),
+                                   "user": {"login": PRODUCER}})
+    comments(fixture)
+    decision = work.decide(fixture, RULES)
+    phase = fixture.artifact_phase
+    assert decision.stage == ("build" if same_text else "holder-read")
+    assert phase.settlement_origin.source_id == (origin if same_text else str(fixture.issue_comments[-1]["id"]))
+    assert bool(phase.holder_readings) is same_text
+    assert phase.settled_artifact.body == fixture.issue_comments[-1]["body"]
+    for stage in ("build", "floor", "review-disposition"):
+        prompt = work._stage_prompt(fixture, work.Decision(stage, True, "fresh", "fixture"), floor_command="fixture-check")
+        assert (b"READING AGAINST X" in prompt) is same_text
+
+
+@pytest.mark.parametrize("route", ["unobtainable", "discharge", "cap"])
+def test_C6_C9_882_artifact_revision_keeps_last_effective_settlement_after_invalid_route(tmp_path, route):
+    fixture = bound_fixture(tmp_path)
+    fixture.issue_comments[4]["body"] = AMENDED + "S1 READING"
+    fixture.issue_comments.extend({"body": body, "user": {"login": PRODUCER}} for body in (
+        _source_settlement(route), AMENDED + "READING AFTER INVALID CLAIM"))
+    comments(fixture)
+    assert work.decide(fixture, RULES).reason == "artifact-source-unusable"
+    fixture.issue_comments.append({"body": AFFIRMED + "\nAMENDED TERM", "user": {"login": PRODUCER}})
+    comments(fixture)
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "artifact" and decision.dispatch
+    phase = fixture.artifact_phase
+    assert phase.prior_artifact.body == SOURCE_DRAFT and phase.prior_artifact_error is None
+    assert [reading.body for reading in phase.prior_holder_readings] == [AMENDED + "S1 READING", AMENDED + "READING AFTER INVALID CLAIM"]
+    assert work._artifact_source_problem(fixture, "artifact") is None
+    prompt = work._stage_prompt(fixture, decision)
+    assert SOURCE_DRAFT.encode() in prompt
+    assert prompt.index(b"S1 READING") < prompt.index(b"READING AFTER INVALID CLAIM")
+
+
+def test_C1_C4_882_two_unreported_seats_cannot_lend_the_second_digest_to_the_first_verdict(tmp_path):
+    fixture = bound_fixture(tmp_path)
+    original = tmp_path / "records" / "cold" / "result.md.run.json"
+    first = json.loads(original.read_bytes())
+    first["completed_at"] = (datetime.fromisoformat(first["completed_at"]) - timedelta(seconds=5)).isoformat()
+    original.write_bytes(work.records.json_bytes(first))
+    edited = SOURCE_DRAFT.replace("original decision", "rejected edit")
+    second = judgment(fixture, tmp_path, body=edited, name="second-would-not")
+    fixture.issue_comments[1]["body"] = edited
+    fixture.issue_comments[3]["body"] = _source_settlement("would").replace(cold_draft.artifact_digest(SOURCE_DRAFT), cold_draft.artifact_digest(edited))
+    decision = work.decide(fixture, RULES)
+    assert not decision.dispatch or decision.stage != "build"
+    refusal = next(row["reason"] for row in decision.invalid_markers if row["name"] == "cold-verdict")
+    assert "ambiguous" in refusal and str(original) in refusal and str(second) in refusal
+    assert "post one verdict per seat, each after its own seat" in refusal
+    assert not decision.artifact_interpretation["qualifying_verdicts"]
+    # A verdict after seat one and before seat two establishes the next window.
+    first_marker = {"id": 25, "created_at": (datetime.fromisoformat(first["completed_at"]) + timedelta(seconds=1)).isoformat(),
+                    "body": VERDICT, "user": {"login": PRODUCER}}
+    fixture.issue_comments.insert(2, first_marker)
+    fixture.issue_comments[3]["body"] = VERDICT.replace("verdict=would", "verdict=would-not")
+    decision = work.decide(fixture, RULES)
+    evidence = decision.artifact_interpretation["qualifying_verdicts"]
+    assert len(evidence) == 2
+    assert [row["bundle"] for row in evidence] == [str(original), str(second)]
+    assert not any("ambiguous" in row["reason"] for row in decision.invalid_markers)
+
+
+def test_C1_C4_882_new_draft_does_not_erase_seats_since_a_previous_qualifying_verdict(tmp_path):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, SOURCE_DRAFT, VERDICT,
+                             _source_settlement("would", draft_id=40), HOLDER))
+    judgment(fixture, tmp_path, name="reported")
+    older = judgment(fixture, tmp_path, verdict_index=3, name="unreported-old-draft")
+    newer = judgment(fixture, tmp_path, verdict_index=4, draft_id="40", name="new-draft")
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "build"
+    reason = next(row["reason"] for row in decision.invalid_markers if row["source_id"] == "50")
+    assert "ambiguous" in reason and str(older) in reason and str(newer) in reason
+    # Report the older seat before the new draft; the later marker then has one seat.
+    completed = datetime.fromisoformat(json.loads(older.read_bytes())["completed_at"])
+    fixture.issue_comments.insert(3, {"id": 35, "created_at": (completed + timedelta(milliseconds=500)).isoformat(),
+                                      "body": VERDICT, "user": {"login": PRODUCER}})
+    assert work.decide(fixture, RULES).stage == "build"

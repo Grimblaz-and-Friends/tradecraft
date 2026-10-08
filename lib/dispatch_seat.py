@@ -499,12 +499,16 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
     judged_draft = None
     if args.stage == "cold-seat":
         try:
-            identity, body = cold_draft.resolve_draft(args.work, getattr(args, "draft_comment", None))
+            producers = getattr(args, "draft_producer", None)
+            identity, body = cold_draft.resolve_draft(
+                args.work, getattr(args, "draft_comment", None),
+                marker_producers=frozenset(producers) if producers is not None else None,
+            )
             judged_draft = cold_draft.freeze(identity, body, prompt)
         except (OSError, ValueError) as exc:
             raise DispatchError(str(exc)) from exc
-    elif getattr(args, "draft_comment", None) is not None:
-        raise DispatchError("--draft-comment applies only to cold-seat")
+    elif getattr(args, "draft_comment", None) is not None or getattr(args, "draft_producer", None) is not None:
+        raise DispatchError("--draft-comment and --draft-producer apply only to cold-seat")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         raise DispatchError("--timeout-seconds must be finite and positive")
     read_holds(hold_file)
@@ -865,6 +869,8 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--work", required=True, help="issue or other work identifier")
     cli.add_argument("--stage", required=True, help="dispatch stage")
     cli.add_argument("--draft-comment", help="required by cold-seat: the draft comment carried in the dispatch")
+    cli.add_argument("--draft-producer", action="append",
+                     help="cold-seat entrance's accepted marker producer; repeat for its complete set")
     cli.add_argument("--role", choices=launch_settings.ROLES,
                      help="bridge role; must agree with judgment classification")
     cli.add_argument("--settings-source", required=True, help="issue comment or named default")

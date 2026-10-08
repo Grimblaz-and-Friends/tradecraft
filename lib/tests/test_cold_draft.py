@@ -197,3 +197,33 @@ def test_C3_binding_representation_is_exact(binding):
     if isinstance(binding, dict): binding.update(cold_draft.freeze("20", DRAFT, DRAFT.encode()))
     with pytest.raises(cold_draft.BindingError, match="missing or malformed"):
         cold_draft.validate(binding, DRAFT.encode())
+
+
+@pytest.mark.parametrize("problem", ["missing", "unauthorized", "malformed"])
+def test_C3_882_direct_and_native_resolution_name_default_branch_prerequisite(problem):
+    def get(endpoint):
+        value = draft_get(endpoint)
+        if "/issues/comments/" in endpoint:
+            if problem == "unauthorized": value["user"]["login"] = "new-holder"
+            return value
+        if problem == "missing": raise cold_draft.BindingError("GitHub GET failed: 404")
+        if problem == "malformed": return {}
+        return value
+    with pytest.raises(cold_draft.BindingError, match=r"default branch must carry \.tradecraft/work\.json listing the producer"):
+        cold_draft.resolve_draft("example/product#12", "20", get=get)
+
+
+def test_C3_882_entrance_producers_are_authoritative_without_default_branch_lookup():
+    calls = []
+    def get(endpoint):
+        calls.append(endpoint)
+        assert "/issues/comments/" in endpoint
+        value = draft_get(endpoint)
+        value["user"]["login"] = "New-Holder"
+        return value
+    assert cold_draft.resolve_draft("example/product#12", "20", get=get,
+                                   marker_producers=frozenset({"new-holder"})) == ("20", DRAFT)
+    assert len(calls) == 1
+    with pytest.raises(cold_draft.BindingError, match="producer is not authorized"):
+        cold_draft.resolve_draft("example/product#12", "20", get=get,
+                                 marker_producers=frozenset({"holder"}))

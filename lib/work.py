@@ -314,6 +314,7 @@ class WorkState:
     quotation_claims: list[dict[str, object]] = field(default_factory=list)
     artifact_phase: ArtifactPhase | None = None
     selected_bundles: dict[tuple[int, int], tuple | None] = field(default_factory=dict)
+    cold_bundle_after: dict[tuple[int, int], str | None] = field(default_factory=dict)
     cold_judgments: dict[tuple[int, int], dict[str, object]] = field(default_factory=dict)
     collection_diagnostics: list[dict[str, object]] = field(default_factory=list)
     connected_review_runs: dict[int, ReviewRunEvidence] = field(default_factory=dict)
@@ -1369,6 +1370,13 @@ def _selected_marker_bundle(state: WorkState, marker: Marker, stages: set[str]) 
             return None
         raise WorkError("no matching successful dispatch bundle")
     completed, _path, _request, _run = matched[-1]
+    if marker.name == "cold-verdict":
+        after = _time(state.cold_bundle_after.get(key))
+        unreported = [row for row in matched if after is None or _time(row[0]) > after]
+        if len(unreported) > 1:
+            bundles = ", ".join(row[1] for row in unreported)
+            raise WorkError(f"cold verdict dispatch pairing is ambiguous: {bundles}; "
+                            "post one verdict per seat, each after its own seat")
     if len(matched) > 1 and matched[-2][0] == completed:
         raise WorkError("matching dispatch bundle is ambiguous")
     state.selected_bundles[key] = matched[-1]
@@ -1389,7 +1397,7 @@ def _cold_judgment(state: WorkState, marker: Marker) -> dict[str, object]:
         except (OSError, ValueError) as exc:
             raise WorkError(f"cold verdict bundle {path}: {exc}") from exc
     evidence = {
-        "verdict": marker.as_dict(), "bundle": path,
+        "verdict": marker.as_dict(), "verdict_source": _marker_setting_source(marker), "bundle": path,
         "comment_id": binding["comment_id"] if binding else None,
         "sha256": binding["sha256"] if binding else None,
         "binding_status": "bound" if binding else "judged digest unrecorded",
@@ -1481,12 +1489,13 @@ def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[st
     invalid: list[dict[str, object]] = []
     state.artifact_phase = None
     state.selected_bundles = {}
+    state.cold_bundle_after = {}
     state.cold_judgments = {}
     classified = _classify_sources(_state_sources(state))
     state.quotation_claims = [
         _quotation_claim(state, marker) for marker in classified.quotations
     ]
-    for marker in classified.claims:
+    for marker in sorted(classified.claims, key=_source_order):
         contract = MARKER_CONTRACTS.get(marker.name)
         if contract is None:
             continue
@@ -1500,6 +1509,20 @@ def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[st
         if error is None:
             error = _marker_value_error(marker)
         if error is None:
+            if marker.name == "cold-verdict":
+                # Only accepted, qualifying records can close the previous seat's window.
+                term = next((earlier for earlier in reversed(lawful)
+                             if earlier.name == "affirmed-brief"), None)
+                term_markers = [earlier for earlier in lawful
+                                if term is None or _source_order(earlier) > _source_order(term)]
+                boundary = next((earlier for earlier in reversed(term_markers)
+                                 if earlier.name == "cold-verdict" and staffing_qualified(earlier)), None)
+                if boundary is None:
+                    boundary = next((earlier for earlier in reversed(term_markers)
+                                     if earlier.name == "artifact" and earlier.attributes.get("status") == "draft"), None)
+                state.cold_bundle_after[(marker.source_order, marker.occurrence_order)] = (
+                    boundary.timestamp if boundary is not None else None
+                )
             error = _bundle_marker_error(state, marker)
         if error is None:
             lawful.append(marker)
@@ -1626,7 +1649,7 @@ def _settlement_artifact(state: WorkState, settlement: Marker, brief: Marker,
                               f"{judgment['comment_id']} in bundle {judgment['bundle']}")
             if observed != judged:
                 return None, (prefix + f"draft comment {reference} was edited after its verdict "
-                              f"{judgment['verdict']} (bundle {judgment['bundle']}); judged sha256 {judged}, "
+                              f"{judgment['verdict_source']} (bundle {judgment['bundle']}); judged sha256 {judged}, "
                               f"observed sha256 {observed}, settlement sha256 {expected}. "
                               "Restore the judged text, or post a new draft for a fresh cold seat.")
             if expected != judged:
@@ -1638,7 +1661,9 @@ def _settlement_artifact(state: WorkState, settlement: Marker, brief: Marker,
                           "draft_sha256; expected sha256 "
                           f"{expected}, observed sha256 {observed}. "
                           + ("The judged digest is unrecorded, preventing distinction between editing and copying; "
-                             "historical compatibility still requires a matching body digest."
+                             "historical compatibility still requires a matching body digest. "
+                             "Do not use the observed digest to re-settle: restore the judged text, "
+                             "or post a new draft for a fresh cold seat."
                              if route == "would" else "Re-settle with the named draft's current digest."))
         return latest_draft, None
     if route == "would" and judgment and judgment.get("sha256") is not None:
@@ -1659,7 +1684,8 @@ def _settlement_identity(state: WorkState, marker: Marker, brief: Marker,
     candidate = replace(marker, attributes={**marker.attributes, "route": route})
     _text, error = _settlement_artifact(state, candidate, brief, draft, judgment)
     span = dispatch_implementer.artifact_carried_span(brief.body, marker.body)
-    if route in {"discharge", "cap"}:
+    if route in {"discharge", "cap"} or (
+            error is None and _text is candidate and "draft_comment" not in marker.attributes):
         if error is not None or span is None:
             return None
         return "carried", marker.body[span[0]:span[1]].encode("utf-8")
@@ -1734,11 +1760,13 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                     for marker, reason in invalid
                 ]
                 if current_artifact_order is not None:
-                    prior_artifact = current_artifact_text
-                    prior_artifact_error = current_artifact_error
+                    # A refusal blocks this term's consumption, not revision of its last settlement.
+                    prior_artifact = settled_artifact or current_artifact_text
+                    prior_artifact_error = None if settled_artifact is not None else current_artifact_error
+                    prior_order = settlement_order if settled_artifact is not None else current_artifact_order
                     prior_holder_readings = tuple(
                         reading for reading in holder_readings
-                        if _source_order(reading) > current_artifact_order
+                        if _source_order(reading) > prior_order
                     )
             active = True
             term_brief = next(marker for marker in group if marker.name == "affirmed-brief")
@@ -6871,6 +6899,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         "--settings-scope", "cold-seat",
                         "--timeout-seconds", timeout_argument,
                     ]
+                    for producer in sorted(state.config.marker_producers):
+                        common.extend(["--draft-producer", producer])
                     command = [sys.executable, str(here / "dispatch_seat.py"), *common,
                                 "--vendor", "claude", "--own-vendor", own_vendor,
                                 "--own-vendor-source", own_vendor_source,
