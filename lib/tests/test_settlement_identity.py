@@ -47,7 +47,7 @@ def judgment(fixture, tmp_path, *, verdict_index=2, body=SOURCE_DRAFT, draft_id=
     run = {"schema_version": 2, "outcome": "success", "completed_at": completed.isoformat(),
            "staffing_status": "qualified", "judged_draft": deepcopy(binding), "attempts": [],
            "result": {"source_output": str(source)}}
-    if version.startswith("0.189"):
+    if version.startswith(("0.189.", "0.190.")):
         request.pop("judged_draft")
         run.pop("judged_draft")
     if malformed == "missing":
@@ -238,13 +238,14 @@ def test_C2_876_miscopy_correction_and_restatement_never_spend_the_anchor(tmp_pa
 
 @pytest.mark.parametrize("route", ["would", "discharge", "cap"])
 @pytest.mark.parametrize("whole", [False, True])
-def test_C4_876_old_referenced_whole_and_adverse_records_keep_visible_warnings(tmp_path, route, whole):
+@pytest.mark.parametrize("version", ["0.189.0", "0.190.0"])
+def test_C4_876_old_referenced_whole_and_adverse_records_keep_visible_warnings(tmp_path, route, whole, version):
     support = [VERDICT] if route == "would" else [VERDICT.replace("verdict=would", "verdict=not-settleable")]
     if route == "cap": support = [VERDICT.replace("verdict=would", "verdict=would-not")] * 2
     fixture = comments(state(AFFIRMED, SOURCE_DRAFT, *support,
                              _source_settlement(route, reference=not whole), HOLDER))
     for index in range(len(support)):
-        judgment(fixture, tmp_path, verdict_index=2 + index, version="0.189.0", name=f"old-{index}")
+        judgment(fixture, tmp_path, verdict_index=2 + index, version=version, name=f"old-{index}")
     decision = work.decide(fixture, RULES)
     assert decision.stage == "build"
     evidence = decision.artifact_interpretation["qualifying_verdicts"]
@@ -504,7 +505,7 @@ def test_C5_C7_882_route_omission_keeps_draft_and_carried_correction_positions(
 
 @pytest.mark.parametrize("failure", ["historical-mismatch", "malformed-reference"])
 def test_C6_C9_882_supported_route_with_broken_source_stays_unusable_for_revision(tmp_path, failure):
-    fixture = bound_fixture(tmp_path, version="0.189.0" if failure == "historical-mismatch" else "0.190.0")
+    fixture = bound_fixture(tmp_path, version="0.190.0" if failure == "historical-mismatch" else "0.191.0")
     if failure == "historical-mismatch":
         fixture.issue_comments[3]["body"] = _source_settlement("would", reference=False)
         fixture.issue_comments[1]["body"] = SOURCE_DRAFT.replace("original decision", "edited decision")
@@ -617,6 +618,31 @@ def test_C1_C3_882_content_pairing_normalizes_lines_and_trailing_whitespace_only
     assert any("post the seat's whole return" in row["reason"] for row in refusal.invalid_markers)
 
 
+@pytest.mark.parametrize("returned_ending,comment_ending", [
+    ("\n", ""), ("", "\n"), ("\n\n", ""), ("", "\n\n"), ("\r\n\r\n", ""), ("\r", ""),
+])
+def test_C1_C3_882_content_pairing_ignores_trailing_newlines(tmp_path, returned_ending, comment_ending):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    returned = "The whole judgment.\nAll reader cells considered."
+    selected = judgment(fixture, tmp_path, returned=returned + returned_ending, post_return=False)
+    fixture.issue_comments[2]["body"] += "\n" + returned + comment_ending
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    evidence = decision.artifact_interpretation["qualifying_verdicts"]
+    assert len(evidence) == 1 and evidence[0]["bundle"] == str(selected)
+    assert evidence[0]["sha256"] == cold_draft.artifact_digest(SOURCE_DRAFT)
+
+
+@pytest.mark.parametrize("returned", ["", "\n\n", " \t", "\r\n \t\r\n"])
+def test_C1_C4_882_content_pairing_refuses_an_empty_normalized_return(tmp_path, returned):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    selected = judgment(fixture, tmp_path, returned=returned)
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "build" and not decision.artifact_interpretation["qualifying_verdicts"]
+    error = next(row["reason"] for row in decision.invalid_markers if row["name"] == "cold-verdict")
+    assert "post the seat's whole return with the marker" in error and str(selected) in error
+
+
 @pytest.mark.parametrize("problem", ["excerpt", "empty", "missing-result", "bad-result", "missing-path", "bad-path", "unreadable", "non-utf8", "oversized", "published-only"])
 def test_C1_C4_882_modern_verdict_requires_the_whole_retained_source_return(tmp_path, monkeypatch, problem):
     fixture = bound_fixture(tmp_path)
@@ -690,14 +716,15 @@ def test_C5_C6_882_bound_form_omission_cannot_anchor_another_judged_text(tmp_pat
     assert decision.stage != "build" and fixture.artifact_phase.settlement_origin is None
 
 
-def test_C4_882_historical_verdict_keeps_latest_time_selection_without_retained_return(tmp_path):
-    fixture = bound_fixture(tmp_path, version="0.189.0")
+@pytest.mark.parametrize("version", ["0.189.0", "0.190.0"])
+def test_C4_882_historical_verdict_keeps_latest_time_selection_without_retained_return(tmp_path, version):
+    fixture = bound_fixture(tmp_path, version=version)
     earlier = tmp_path / "records/cold/result.md.run.json"
     first = json.loads(earlier.read_bytes())
     first["completed_at"] = (datetime.fromisoformat(first["completed_at"]) - timedelta(seconds=5)).isoformat()
     first.pop("result")
     earlier.write_bytes(work.records.json_bytes(first))
-    later = judgment(fixture, tmp_path, version="0.189.0", name="historical-later", post_return=False)
+    later = judgment(fixture, tmp_path, version=version, name="historical-later", post_return=False)
     run = json.loads(later.read_bytes())
     run.pop("result")
     later.write_bytes(work.records.json_bytes(run))
@@ -710,7 +737,7 @@ def test_C4_882_historical_verdict_keeps_latest_time_selection_without_retained_
 
 
 @pytest.mark.parametrize("posted_version,unposted_version", [
-    ("0.189.0", "0.190.0"), ("0.189.0", "0.189.0"), ("0.190.0", "0.189.0"),
+    ("0.190.0", "0.191.0"), ("0.190.0", "0.190.0"), ("0.191.0", "0.190.0"),
 ])
 def test_C1_C4_882_content_pairing_crosses_upgrade_before_historical_time_fallback(
         tmp_path, posted_version, unposted_version):
@@ -729,7 +756,7 @@ def test_C1_C4_882_content_pairing_crosses_upgrade_before_historical_time_fallba
     evidence = decision.artifact_interpretation["qualifying_verdicts"]
     assert len(evidence) == 1 and evidence[0]["bundle"] == str(posted)
     assert not any(row["name"] == "cold-verdict" for row in decision.invalid_markers)
-    if posted_version == "0.189.0":
+    if posted_version == "0.190.0":
         assert evidence[0]["comment_id"] is None and evidence[0]["sha256"] is None
         assert evidence[0]["binding_status"] == "judged digest unrecorded"
         assert json.dumps(decision.as_dict()).count("judged digest unrecorded") == 1

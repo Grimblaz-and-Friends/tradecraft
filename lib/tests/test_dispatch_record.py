@@ -120,16 +120,17 @@ def test_C3_native_completion_refuses_changed_frozen_binding_before_writing_retu
     assert records.sidecar(output, ".native.return.log").stat().st_size == 0
 
 
-def test_C4_native_pending_old_request_finishes_without_inventing_a_digest(tmp_path, monkeypatch):
+@pytest.mark.parametrize("version", ["0.189.0", "0.190.0"])
+def test_C4_native_pending_old_request_finishes_without_inventing_a_digest(tmp_path, monkeypatch, version):
     args = native_begin_args(tmp_path, stage="use")
-    monkeypatch.setattr(records, "producer_version", lambda: "0.189.0")
+    monkeypatch.setattr(records, "producer_version", lambda: version)
     output = records.begin_native(args)
     path = records.sidecar(output, ".request.json")
     request = json.loads(path.read_bytes())
     request["stage"] = "cold-seat"
     path.write_bytes(records.json_bytes(request))
     before = path.read_bytes()
-    monkeypatch.setattr(records, "producer_version", lambda: "0.190.0")
+    monkeypatch.setattr(records, "producer_version", lambda: "0.191.0")
     returned = tmp_path / "return.md"
     returned.write_bytes(b"would")
     run_path = records.finish_native(records.parser().parse_args([

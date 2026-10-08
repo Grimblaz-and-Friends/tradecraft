@@ -1366,11 +1366,10 @@ def _cold_return_in_comment(bundle: tuple, body: str) -> bool:
         returned = cold_draft.read_input(source_path).decode("utf-8")
     except (OSError, ValueError):
         return False
-    if not returned.strip():
-        return False
     def normalized(text: str) -> str:
-        return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
-    return normalized(returned) in normalized(body)
+        return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")).rstrip("\n")
+    returned = normalized(returned)
+    return bool(returned) and returned in normalized(body)
 
 
 def _selected_marker_bundle(state: WorkState, marker: Marker, stages: set[str]) -> tuple | None:

@@ -11,7 +11,7 @@ import subprocess
 import run_lifecycle as lifecycle
 from source_claims import _classify_sources, attribute_error
 
-BINDING_VERSION = "0.190.0"
+BINDING_VERSION = "0.191.0"
 DIGEST_BASIS = "whole-comment-body-lf-utf8"
 MAX_INPUT_BYTES = 16 * 1024 * 1024
 WORK = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)\Z")

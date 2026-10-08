@@ -77,7 +77,8 @@ def test_C3_C4_recomputed_slice_and_request_completion_agreement(tmp_path):
 
 
 @pytest.mark.parametrize("version,old", [("0.189.0", True), ("0.189.9+build", True),
-                                        ("0.190.0", False), ("0.191.0", False)])
+                                        ("0.190.0", True), ("0.190.9+build", True),
+                                        ("0.191.0", False), ("0.192.0", False)])
 def test_C4_actual_introduction_boundary(version, old):
     request = {"producer_version": version}
     if old:
