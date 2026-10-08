@@ -3140,7 +3140,7 @@ def test_artifact_revision_prompt_keeps_migration_readings_and_clears_replacemen
     prompt = work._stage_prompt(fixture, recommendation)
 
     assert newer.encode("utf-8") in prompt
-    migrated = replacement == "routed-repost"
+    migrated = replacement != "draft"
     assert (first.encode("utf-8") in prompt) == migrated
     assert (second.encode("utf-8") in prompt) == migrated
     assert (b"holder reading made against artifact under revision" in prompt) == migrated
@@ -7645,7 +7645,10 @@ def test_truthful_entrance_launches_require_0_154_before_side_effects(
     )
     decision = work.Decision(stage, True, "fresh", "holder-named-stage")
 
-    assert work.execute_stage(state(AFFIRMED), decision, tmp_path, None, "holder", floor_command="python fixture-check.py") == 0
+    fixture = state(AFFIRMED, ARTIFACT) if stage == "cold-seat" else state(AFFIRMED)
+    if stage == "cold-seat":
+        fixture.issue_comments[1]["id"] = 20
+    assert work.execute_stage(fixture, decision, tmp_path, None, "holder", floor_command="python fixture-check.py") == 0
 
     report = json.loads(capsys.readouterr().out)
     assert report["reason"] == f"unsafe-running-version-for-{stage}"
