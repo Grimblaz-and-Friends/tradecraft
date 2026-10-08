@@ -407,7 +407,9 @@ def test_shared_workflow_preserves_security_and_runtime_boundaries():
         assert "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09" in body
         assert "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1" in body
         assert body.index("job.workflow_sha") < body.index("actions/checkout@")
-        assert body.index("Verify trusted reviewer checkout") < body.index("lib/connected_review.py")
+        assert body.index("Verify trusted reviewer checkout") < body.index(
+            "python .connected-review-runtime/lib/connected_review.py"
+        )
         if job != "review":
             assert "runs-on: ubuntu-latest" in body
             assert "secrets." not in body
@@ -556,8 +558,11 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
     assert "`.path`" not in prose
     assert "hosted `prepare` job" in prose and "hosted `report` job" in prose
     assert "permitted non-mechanical second look" in prose
-    assert "`TRADECRAFT_REVIEWER_REF` to a commit on tradecraft's default branch" in prose
-    assert "normally the merge commit of the change that shipped it" in prose
+    assert (
+        "`TRADECRAFT_REVIEWER_REF` to the commit on tradecraft's default branch "
+        "from which you copied this template"
+    ) in prose
+    assert "Moving the ref to a newer release requires copying the template again from that release" in prose
     assert (
         "gh api repos/Grimblaz-and-Friends/tradecraft/compare/<sha>...main "
         "--jq .status"
