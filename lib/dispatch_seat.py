@@ -30,6 +30,7 @@ import tomllib
 import uuid
 
 import dispatch_record as records
+import cold_draft
 from dispatch_lifecycle import claude_terminal
 import launch_settings
 import run_lifecycle as lifecycle
@@ -489,9 +490,25 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
     ):
         raise DispatchError(capability_refusal(args.vendor, args.requires))
     records.require_output_outside_root(output, root)
-    prompt = dispatch.read_bytes()
+    try:
+        prompt = cold_draft.read_input(dispatch) if args.stage == "cold-seat" else dispatch.read_bytes()
+    except cold_draft.BindingError as exc:
+        raise DispatchError(str(exc)) from exc
     if not prompt.decode("utf-8").strip():
         raise DispatchError(f"Dispatch is empty: {dispatch}")
+    judged_draft = None
+    if args.stage == "cold-seat":
+        try:
+            producers = getattr(args, "draft_producer", None)
+            identity, body = cold_draft.resolve_draft(
+                args.work, getattr(args, "draft_comment", None),
+                marker_producers=frozenset(producers) if producers is not None else None,
+            )
+            judged_draft = cold_draft.freeze(identity, body, prompt)
+        except (OSError, ValueError) as exc:
+            raise DispatchError(str(exc)) from exc
+    elif getattr(args, "draft_comment", None) is not None or getattr(args, "draft_producer", None) is not None:
+        raise DispatchError("--draft-comment and --draft-producer apply only to cold-seat")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         raise DispatchError("--timeout-seconds must be finite and positive")
     read_holds(hold_file)
@@ -548,6 +565,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
         request["recipient_allocation_seconds"] = deadline.remaining()
         request["revision_before"] = records.git_revision(root)
         request["input"] = str(input_path)
+        if judged_draft is not None:
+            request["judged_draft"] = judged_draft
         streams[request_path].write(records.json_bytes(request))
         streams[request_path].flush()
         streams[input_path].write(prompt)
@@ -569,6 +588,8 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                              "published_output_unavailable_reason": "no successful final source return",
                              "assessment": "unassessed"}}
         pending_logs = {}
+        if judged_draft is not None:
+            record["judged_draft"] = judged_draft
         record["launched_at"] = request["launched_at"]
         growing = records.GrowingRun(record_path, record, streams)
         verdict = None
@@ -847,6 +868,9 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--own-vendor-source", help="bundle or record proving the implementer vendor")
     cli.add_argument("--work", required=True, help="issue or other work identifier")
     cli.add_argument("--stage", required=True, help="dispatch stage")
+    cli.add_argument("--draft-comment", help="required by cold-seat: the draft comment carried in the dispatch")
+    cli.add_argument("--draft-producer", action="append",
+                     help="cold-seat entrance's accepted marker producer; repeat for its complete set")
     cli.add_argument("--role", choices=launch_settings.ROLES,
                      help="bridge role; must agree with judgment classification")
     cli.add_argument("--settings-source", required=True, help="issue comment or named default")

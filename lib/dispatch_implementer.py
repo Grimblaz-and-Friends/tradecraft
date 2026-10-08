@@ -196,12 +196,28 @@ def _artifact_body_present(tail: str) -> bool:
     return len(re.findall(r"[^\W\d_]{2,}", "\n".join(prose))) >= ARTIFACT_BODY_WORDS
 
 
-def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
-    """Recognize a brief and following body anywhere, leaving fidelity and quality to the holder."""
-    def normalize(text: str) -> str:
-        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        unquoted = "\n".join(re.sub(r"^\s*(?:>\s*)+", "", line) for line in lines)
-        return re.sub(r"<!--.*?-->", "", unquoted, flags=re.DOTALL)
+def artifact_carried_span(expected: str, returned: str) -> tuple[int, int] | None:
+    """Recognize the existing brief/body form and expose its original carried span."""
+    def normalize(text: str) -> tuple[str, list[int]]:
+        characters, origins = [], []
+        offset = 0
+        for match in re.finditer(r"[^\r\n]*(?:\r\n|\r|\n|$)", text):
+            raw_line = match.group()
+            line = raw_line.rstrip("\r\n")
+            prefix = re.match(r"^\s*(?:>\s*)+", line)
+            start = prefix.end() if prefix else 0
+            characters.extend(line[start:])
+            origins.extend(range(offset + start, offset + len(line)))
+            if len(raw_line) > len(line):
+                characters.append("\n")
+                origins.append(offset + len(line))
+            offset += len(raw_line)
+        unquoted = "".join(characters)
+        excluded = set()
+        for match in re.finditer(r"<!--.*?-->", unquoted, flags=re.DOTALL):
+            excluded.update(range(match.start(), match.end()))
+        return ("".join(char for index, char in enumerate(characters) if index not in excluded),
+                [origin for index, origin in enumerate(origins) if index not in excluded])
 
     def close(left: str, right: str) -> bool:
         comparison = SequenceMatcher(None, left, right, autojunk=False)
@@ -211,10 +227,10 @@ def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
                     in comparison.get_opcodes() if tag != "equal")
         return edits <= 4
 
-    words = normalize(expected).split()
+    words = normalize(expected)[0].split()
     if not words:
-        return False
-    text = normalize(returned)
+        return None
+    text, origins = normalize(returned)
     tokens = list(re.finditer(r"\S+", text))
     brief = " ".join(words)
     anchor_size = min(8, len(words))
@@ -224,8 +240,22 @@ def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
         if close(anchor, " ".join(candidate[:anchor_size])) and close(brief, " ".join(candidate)):
             tail = text[tokens[start + len(words) - 1].end():]
             if _artifact_body_present(tail):
-                return True
-    return False
+                raw_start = origins[tokens[start].start()]
+                # Include the full first brief line, preserving its quote prefix.
+                raw_start = max(returned.rfind("\n", 0, raw_start), returned.rfind("\r", 0, raw_start)) + 1
+                before = returned[:raw_start].splitlines(keepends=True)
+                while before and re.fullmatch(r"\s*(?:>\s*)*", before[-1]):
+                    before.pop()
+                if before and re.fullmatch(
+                        r"\s*(?:>\s*)*<!--\s*tradecraft:affirmed-brief:v1\s*-->\s*", before[-1]):
+                    raw_start = sum(len(line) for line in before[:-1])
+                return raw_start, len(returned)
+    return None
+
+
+def artifact_opening_carries_brief(expected: str, returned: str) -> bool:
+    """Keep the completeness recognizer's boolean calling contract."""
+    return artifact_carried_span(expected, returned) is not None
 
 
 def validate_artifact_return(expected: str, returned: str | bytes) -> dict[str, object]:

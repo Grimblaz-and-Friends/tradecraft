@@ -28,6 +28,7 @@ from winio import utf8_stdio
 from dispatch_lifecycle import GrowingRun, claude_terminal
 from seat_process import run_process
 import run_lifecycle as lifecycle
+import cold_draft
 
 SCHEMA_VERSION = 2
 CONTINUITIES = ("fresh", "resume")
@@ -645,7 +646,22 @@ def begin_native(args: argparse.Namespace) -> Path:
         raise RecordError("name exactly one of input file or input unavailable reason")
     if input_unavailable_reason is not None and not input_unavailable_reason.strip():
         raise RecordError("input unavailable reason must be nonempty")
-    input_content = input_file.expanduser().resolve().read_bytes() if input_file else None
+    try:
+        source = input_file.expanduser().resolve() if input_file else None
+        input_content = (cold_draft.read_input(source) if args.stage == "cold-seat" else source.read_bytes()) if source else None
+    except cold_draft.BindingError as exc:
+        raise RecordError(str(exc)) from exc
+    judged_draft = None
+    if args.stage == "cold-seat":
+        if input_content is None:
+            raise RecordError("cold-seat requires --input-file with exact draft input")
+        try:
+            identity, body = cold_draft.resolve_draft(args.work, getattr(args, "draft_comment", None))
+            judged_draft = cold_draft.freeze(identity, body, input_content)
+        except (OSError, ValueError) as exc:
+            raise RecordError(str(exc)) from exc
+    elif getattr(args, "draft_comment", None) is not None:
+        raise RecordError("--draft-comment applies only to cold-seat")
     output.parent.mkdir(parents=True, exist_ok=True)
     source_names = (
         "vendor", "model", "effort", "classification", "continuity", "permission_boundary"
@@ -701,6 +717,8 @@ def begin_native(args: argparse.Namespace) -> Path:
     if any(path.exists() or path.is_symlink() for path in future):
         raise RecordError(f"refusing existing dispatch output: {output}")
     request["input"] = str(input_path) if input_content is not None else None
+    if judged_draft is not None:
+        request["judged_draft"] = judged_draft
     request["input_unavailable_reason"] = input_unavailable_reason
     request["reserved_source_output"] = str(source_path)
     with reserve_bundle(future, output) as streams:
@@ -734,6 +752,13 @@ def finish_native(args: argparse.Namespace) -> Path:
         not path.is_file() or path.stat().st_size for path in (raw_path, run_path, source_path)
     ):
         raise RecordError(f"refusing completed or colliding dispatch output: {output}")
+    request = json.loads(request_path.read_bytes())
+    judged_draft = None
+    if request.get("stage") == "cold-seat":
+        try:
+            judged_draft = cold_draft.request_binding(request)
+        except (OSError, ValueError) as exc:
+            raise RecordError(str(exc)) from exc
     _fill_reservation(raw_path, returned)
     succeeded = args.outcome == "success"
     final = (
@@ -741,7 +766,6 @@ def finish_native(args: argparse.Namespace) -> Path:
     ) if succeeded else None
     if final is not None:
         _fill_reservation(source_path, final)
-    request = json.loads(request_path.read_bytes())
     completed = datetime.now(timezone.utc)
     launched = args.outcome != "unavailable"
     elapsed = getattr(args, "elapsed_seconds", None) if launched else None
@@ -785,6 +809,8 @@ def finish_native(args: argparse.Namespace) -> Path:
     }
     if request.get("stage") in {"use", "cold-seat"} and launched:
         run["actual_vendor"] = args.vendor
+    if judged_draft is not None:
+        run["judged_draft"] = judged_draft
     add_usage_record(
         attempt, request, completed_at=run["completed_at"],
         staffing_status="unknown",
@@ -837,6 +863,7 @@ def parser() -> argparse.ArgumentParser:
     begin = commands.add_parser("begin", help="write the immutable launch request")
     begin.add_argument("--work", required=True)
     begin.add_argument("--stage", required=True)
+    begin.add_argument("--draft-comment", help="required by cold-seat: the draft comment carried in exact input")
     begin.add_argument("--settings-source", required=True, help="summary source for this request")
     begin.add_argument("--settings-scope", required=True, help="scope governed by the summary source")
     begin.add_argument("--vendor", required=True)

@@ -14,6 +14,9 @@ import pytest
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import dispatch_seat as seat
+import work
+from test_cold_draft import DRAFT, draft_get
+from test_work import AFFIRMED, CONFIG, PRODUCER
 from vendor_cli import CliNotFound
 
 NOW = datetime(2026, 9, 12, 12, tzinfo=timezone.utc)
@@ -96,6 +99,128 @@ def record(args):
 
 def seen(args, vendor):
     return json.loads((args.root / f"seen-{vendor}.json").read_bytes())
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_C3_direct_cold_launch_and_fallback_share_exact_frozen_binding(job, monkeypatch, ending, fallback):
+    args, _ = job
+    args.work, args.stage, args.classification, args.draft_comment = "example/product#12", "cold-seat", "cold", "20"
+    body = DRAFT.replace("\n", ending)
+    original = b"Judge only this artifact.\n" + body.encode() + b"\nReturn your verdict.\n"
+    args.dispatch.write_bytes(original)
+    calls = []
+    def get(endpoint):
+        calls.append(endpoint)
+        value = draft_get(endpoint)
+        if "/issues/comments/" in endpoint: value["body"] = body
+        return value
+    monkeypatch.setattr(seat.cold_draft, "_get", get)
+    if fallback: configure(job, {"claude": {"message": "Not logged in"}})
+    assert seat.run_dispatch(args) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    run = record(args)
+    binding = request["judged_draft"]
+    assert run["judged_draft"] == binding
+    assert binding["comment_id"] == "20" and binding["sha256"] == seat.cold_draft.artifact_digest(DRAFT)
+    assert Path(request["input"]).read_bytes() == original
+    assert original[binding["body_offset"]:binding["body_offset"] + binding["body_bytes"]] == body.encode()
+    assert len(calls) == 2
+    assert args.dispatch.read_bytes() == original
+    assert base64.b64decode(seen(args, "codex" if fallback else "claude")["stdin"]) == original
+    assert seat.cold_draft.completed_binding(request, run) == binding
+
+
+@pytest.mark.parametrize("problem", ["missing-id", "wrong-id", "excerpt", "normalized", "wrong-issue", "unavailable"])
+def test_C3_direct_bad_binding_refuses_before_reservation_or_vendor(job, monkeypatch, problem):
+    args, _ = job
+    args.work, args.stage, args.classification, args.draft_comment = "example/product#12", "cold-seat", "cold", "20"
+    args.dispatch.write_bytes(DRAFT.encode())
+    def get(endpoint):
+        if problem == "unavailable": raise seat.cold_draft.BindingError("GET unavailable")
+        value = draft_get(endpoint)
+        if problem == "wrong-issue" and "/issues/comments/" in endpoint:
+            value["issue_url"] = value["issue_url"].replace("/12", "/13")
+        return value
+    monkeypatch.setattr(seat.cold_draft, "_get", get)
+    monkeypatch.setattr(seat, "run_process", lambda *_a, **_k: pytest.fail("vendor launched"))
+    if problem == "missing-id": args.draft_comment = None
+    if problem == "wrong-id": args.draft_comment = "21"
+    if problem == "excerpt": args.dispatch.write_bytes(b"Whole draft")
+    if problem == "normalized": args.dispatch.write_bytes(DRAFT.replace("  ", " ").encode())
+    with pytest.raises(seat.DispatchError): seat.run_dispatch(args)
+    assert not seat.sidecar(args.output, ".request.json").exists()
+    assert not seat.sidecar(args.output, ".run.json").exists()
+
+
+@pytest.mark.parametrize("default_config", ["missing", "different"])
+def test_C3_composed_entrance_launch_binds_its_automatically_selected_draft(job, monkeypatch, default_config):
+    args, _ = job
+    fixture = work.WorkState("example/product", 12, {"body": ""}, config=CONFIG, issue_comments=[
+        {"id": 10, "body": AFFIRMED, "user": {"login": PRODUCER}},
+        {"id": 20, "body": DRAFT, "user": {"login": PRODUCER}},
+    ])
+    calls = []
+    def get(endpoint):
+        calls.append(endpoint)
+        if endpoint.endswith("/.tradecraft/work.json"):
+            if default_config == "missing": raise seat.cold_draft.BindingError("default branch has no config")
+            return {"encoding": "base64", "content": base64.b64encode(json.dumps({
+                "schema_version": 1, "marker_producers": ["another-holder"]}).encode()).decode()}
+        value = draft_get(endpoint)
+        value["user"]["login"] = PRODUCER
+        return value
+    monkeypatch.setattr(seat.cold_draft, "_get", get)
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "fixture artifact author"))
+    from contextlib import nullcontext
+    monkeypatch.setattr(work, "judging_root", lambda *_: nullcontext(args.root))
+    monkeypatch.setattr(seat.records, "default_output_path", lambda *_: args.output)
+    def invoke(command, _deadline):
+        return seat.run_dispatch(seat.parser().parse_args(command[2:] + ["--hold-file", str(args.hold_file)]))
+    monkeypatch.setattr(work, "_invoke_recipient", invoke)
+    assert work.execute_stage(fixture, work.Decision("cold-seat", True, "fresh", "fixture"), args.root, None,
+                              claude_path=Path(sys.executable), codex_path=Path(sys.executable)) == 0
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    assert request["judged_draft"]["comment_id"] == "20"
+    assert request["judged_draft"]["sha256"] == seat.cold_draft.artifact_digest(DRAFT)
+    assert DRAFT.encode() in Path(request["input"]).read_bytes()
+    assert calls == ["repos/example/product/issues/comments/20"]
+
+
+def test_C3_composed_entrance_still_refuses_a_holder_dispatch_and_wrong_selected_id(job, monkeypatch):
+    args, _ = job
+    fixture = work.WorkState("example/product", 12, {"body": ""}, config=CONFIG, issue_comments=[
+        {"id": 10, "body": AFFIRMED, "user": {"login": PRODUCER}},
+        {"id": 20, "body": DRAFT, "user": {"login": PRODUCER}},
+    ])
+    decision = work.Decision("cold-seat", True, "fresh", "fixture")
+    monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "fixture artifact author"))
+    monkeypatch.setattr(work, "_invoke_recipient", lambda *_: pytest.fail("vendor launched"))
+    with pytest.raises(work.WorkError, match="exact bounded artifact-and-brief prompt"):
+        work.execute_stage(fixture, decision, args.root, None, dispatch_path=args.dispatch)
+    with pytest.raises(work.WorkError, match="latest lawful draft"):
+        work.execute_stage(fixture, decision, args.root, None, draft_comment="99")
+    fixture.issue_comments[1].pop("id")
+    fixture.validated_markers = None
+    with pytest.raises(work.WorkError, match="latest lawful draft comment id"):
+        work.execute_stage(fixture, decision, args.root, None)
+
+
+@pytest.mark.parametrize("option", ["draft_comment", "draft_producer"])
+def test_E1_direct_draft_option_is_cold_specific(job, option):
+    args, _ = job
+    setattr(args, option, "20" if option == "draft_comment" else [PRODUCER])
+    with pytest.raises(seat.DispatchError, match="only to cold-seat"): seat.run_dispatch(args)
+    assert not seat.sidecar(args.output, ".request.json").exists()
+
+
+def test_E1_work_draft_option_requires_the_named_cold_stage(tmp_path):
+    args = work.parser().parse_args(["--repo", "example/product", "--issue", "12", "--root", str(tmp_path),
+                                     "--draft-comment", "20"])
+    with pytest.raises(work.WorkError, match="requires run cold-seat"): work.run(args)
+    with pytest.raises(work.WorkError, match="only to cold-seat"):
+        work._execute_stage(work.WorkState("example/product", 12, {"body": ""}),
+                            work.Decision("build", True, "fresh", "fixture"), tmp_path, None, draft_comment="20")
 
 
 @pytest.mark.parametrize("fallback", [False, True])

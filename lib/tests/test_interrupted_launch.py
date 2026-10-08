@@ -411,7 +411,10 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
     snapshot_path.write_bytes(json.dumps(snapshot).encode())
     monkeypatch.setattr(lifecycle, "content_snapshot", lambda *_a, **_k: dict(snapshot))
     dispatch = tmp_path / "dispatch"
-    dispatch.write_bytes(b"Perform this stage and return.\n")
+    prompt = b"Perform this stage and return.\n"
+    if kind == "seat":
+        prompt = b"<!-- tradecraft:artifact:v1 status=draft -->\n" + prompt
+    dispatch.write_bytes(prompt)
     store = tmp_path / "vendor-state"
     store.mkdir()
     (store / "nonce").write_bytes(b"retained-before-hard-kill")
@@ -437,7 +440,8 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
     if kind == "implementer":
         command.extend(["--lineage-branch", branch, "--holder-session-id", "holder-session"])
     if kind == "seat":
-        command.extend(["--classification", "cold", "--requires", "read", "--own-vendor", "claude" if vendor == "codex" else "codex"])
+        command.extend(["--classification", "cold", "--requires", "read", "--draft-comment", "20",
+                        "--own-vendor", "claude" if vendor == "codex" else "codex"])
     measured_exit = exit_clock()
     started = time.monotonic()
     command.extend(["--invocation-started-monotonic", str(started)])
@@ -477,6 +481,10 @@ def test_hard_killed_real_launcher_keeps_session_and_output(tmp_path, monkeypatc
             record_property("production_reserve", production_ceiling)
             assert elapsed < caller_limit, f"whole invocation took {elapsed:.3f}s against the declared {caller_limit}s limit"
         saved = json.loads(run_path.read_bytes())
+        if kind == "seat":
+            request = json.loads(Path(str(output) + ".request.json").read_bytes())
+            assert saved["judged_draft"] == request["judged_draft"]
+            assert saved["judged_draft"]["comment_id"] == "20"
         assert saved["session_identity"]["session_id"] == "0199a213-81c0-7800-8aa1-bbab2a035a53"
         if termination == "hard-kill":
             assert not saved.get("completed_at")
