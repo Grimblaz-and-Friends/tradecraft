@@ -6413,6 +6413,8 @@ def native_marker_state(tmp_path, *, stage="use", staffing="qualified", reason=N
     if reason is not None:
         attributes += f" same_vendor_reason={reason}"
     fixture = state(AFFIRMED, f"<!-- tradecraft:{marker_name}:v1 {attributes} -->", pr=True)
+    if stage == "cold-seat":
+        fixture.issue_comments[-1]["body"] += '\n{"type":"turn.completed"}\n'
     fixture.issue_comments[-1]["created_at"] = "2026-09-20T11:00:00Z"
     fixture.record_root = tmp_path / "dispatches"
     fixture.pr["head"]["sha"] = head
@@ -6494,6 +6496,9 @@ def test_native_staffing_uses_recorded_at_when_launch_is_unavailable(tmp_path, m
 
 def test_native_cold_would_not_verdicts_keep_the_two_round_cap_after_author_switch(tmp_path, monkeypatch):
     fixture = state(AFFIRMED, ARTIFACT, WOULD_NOT, ARTIFACT, WOULD_NOT, _settled("cap"), HOLDER)
+    for comment in fixture.issue_comments:
+        if comment["body"] == WOULD_NOT:
+            comment["body"] += '\n{"type":"turn.completed"}\n'
     for comment, at in zip(fixture.issue_comments, ("07:00", "08:30", "10:00", "11:00", "12:00", "13:00", "14:00")):
         comment["created_at"] = f"2026-09-20T{at}:00Z"
     fixture.record_root = tmp_path / "dispatches"
@@ -6679,8 +6684,7 @@ def test_native_ambiguous_successful_completion_remains_refused(tmp_path, monkey
     producer_bundle(fixture.record_root, stage="build" if stage == "use" else "artifact")
     native_bundle(fixture.record_root, monkeypatch, stage=stage, name="first")
     native_bundle(fixture.record_root, monkeypatch, stage=stage, name="second")
-    error = "cold verdict dispatch pairing is ambiguous" if stage == "cold-seat" else "matching dispatch bundle is ambiguous"
-    assert_native_claim(fixture, marker, stage, error=error)
+    assert_native_claim(fixture, marker, stage, error="matching dispatch bundle is ambiguous")
 
 
 def test_historical_native_instance_uses_exact_floor_and_last_pre_marker_request(tmp_path, monkeypatch):

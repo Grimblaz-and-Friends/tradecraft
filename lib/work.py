@@ -314,7 +314,6 @@ class WorkState:
     quotation_claims: list[dict[str, object]] = field(default_factory=list)
     artifact_phase: ArtifactPhase | None = None
     selected_bundles: dict[tuple[int, int], tuple | None] = field(default_factory=dict)
-    cold_bundle_after: dict[tuple[int, int], str | None] = field(default_factory=dict)
     cold_judgments: dict[tuple[int, int], dict[str, object]] = field(default_factory=dict)
     collection_diagnostics: list[dict[str, object]] = field(default_factory=list)
     connected_review_runs: dict[int, ReviewRunEvidence] = field(default_factory=dict)
@@ -1353,6 +1352,27 @@ def _native_staffing(state: WorkState, marker: Marker,
     }
 
 
+def _cold_return_in_comment(bundle: tuple, body: str) -> bool:
+    """Compare the retained source return, never the published copy or verdict prose."""
+    _completed, path, _request, run = bundle
+    result = run.get("result")
+    source = result.get("source_output") if isinstance(result, dict) else None
+    if not isinstance(source, str) or not source:
+        return False
+    source_path = Path(source)
+    if not source_path.is_absolute():
+        source_path = Path(path).parent / source_path
+    try:
+        returned = cold_draft.read_input(source_path).decode("utf-8")
+    except (OSError, ValueError):
+        return False
+    if not returned.strip():
+        return False
+    def normalized(text: str) -> str:
+        return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+    return normalized(returned) in normalized(body)
+
+
 def _selected_marker_bundle(state: WorkState, marker: Marker, stages: set[str]) -> tuple | None:
     key = (marker.source_order, marker.occurrence_order)
     if key in state.selected_bundles:
@@ -1369,14 +1389,26 @@ def _selected_marker_bundle(state: WorkState, marker: Marker, stages: set[str]) 
             state.selected_bundles[key] = None
             return None
         raise WorkError("no matching successful dispatch bundle")
-    completed, _path, _request, _run = matched[-1]
     if marker.name == "cold-verdict":
-        after = _time(state.cold_bundle_after.get(key))
-        unreported = [row for row in matched if after is None or _time(row[0]) > after]
-        if len(unreported) > 1:
-            bundles = ", ".join(row[1] for row in unreported)
-            raise WorkError(f"cold verdict dispatch pairing is ambiguous: {bundles}; "
-                            "post one verdict per seat, each after its own seat")
+        latest = matched[-1]
+        try:
+            historical = cold_draft._historical(latest[2].get("producer_version"))
+        except ValueError as exc:
+            raise WorkError(f"cold verdict bundle {latest[1]}: {exc}") from exc
+        if not historical:
+            paired = []
+            for bundle in matched:
+                try:
+                    old = cold_draft._historical(bundle[2].get("producer_version"))
+                except ValueError:
+                    continue
+                if not old and _cold_return_in_comment(bundle, marker.body):
+                    paired.append(bundle)
+            if not paired:
+                raise WorkError(f"cold verdict has no matching retained source return; "
+                                f"post the seat's whole return with the marker; latest candidate bundle: {latest[1]}")
+            matched = paired
+    completed, _path, _request, _run = matched[-1]
     if len(matched) > 1 and matched[-2][0] == completed:
         raise WorkError("matching dispatch bundle is ambiguous")
     state.selected_bundles[key] = matched[-1]
@@ -1489,7 +1521,6 @@ def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[st
     invalid: list[dict[str, object]] = []
     state.artifact_phase = None
     state.selected_bundles = {}
-    state.cold_bundle_after = {}
     state.cold_judgments = {}
     classified = _classify_sources(_state_sources(state))
     state.quotation_claims = [
@@ -1509,20 +1540,6 @@ def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[st
         if error is None:
             error = _marker_value_error(marker)
         if error is None:
-            if marker.name == "cold-verdict":
-                # Only accepted, qualifying records can close the previous seat's window.
-                term = next((earlier for earlier in reversed(lawful)
-                             if earlier.name == "affirmed-brief"), None)
-                term_markers = [earlier for earlier in lawful
-                                if term is None or _source_order(earlier) > _source_order(term)]
-                boundary = next((earlier for earlier in reversed(term_markers)
-                                 if earlier.name == "cold-verdict" and staffing_qualified(earlier)), None)
-                if boundary is None:
-                    boundary = next((earlier for earlier in reversed(term_markers)
-                                     if earlier.name == "artifact" and earlier.attributes.get("status") == "draft"), None)
-                state.cold_bundle_after[(marker.source_order, marker.occurrence_order)] = (
-                    boundary.timestamp if boundary is not None else None
-                )
             error = _bundle_marker_error(state, marker)
         if error is None:
             lawful.append(marker)
@@ -1693,7 +1710,9 @@ def _settlement_identity(state: WorkState, marker: Marker, brief: Marker,
         return "carried", marker.body[span[0]:span[1]].encode("utf-8")
     # The caller admits draft routes only when their route support has a draft.
     if error is not None:
-        form_omission = "draft_comment" not in marker.attributes and span is None
+        form_omission = "draft_comment" not in marker.attributes and (
+            span is None or route == "would" and "bound would judgment requires draft_comment and draft_sha256" in error
+        )
         miscopy = "settlement digest was miscopied" in error
         if not form_omission and not miscopy:
             return None
