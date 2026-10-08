@@ -1,5 +1,6 @@
 """Start the real launcher with deterministic vendor executable resolution."""
 from pathlib import Path
+import base64
 import json
 import sys
 import time
@@ -15,6 +16,17 @@ module.resolve_command = lambda *_a, **_k: [sys.executable, str(Path(__file__).w
 module.records.runtime_version = lambda *_a, **_k: "deterministic fixture 1.0"
 dispatch_seat.windows_codex_sandbox = lambda: dispatch_seat.WindowsSandboxSelection("unelevated", "fixture", None)
 arguments = sys.argv[4:]
+if kind == "seat":
+    # Resolve the fixture's canonical comment locally while exercising the real
+    # launcher's source grammar and frozen binding before the interrupted run.
+    canonical = Path(arguments[arguments.index("--dispatch") + 1]).read_bytes().decode("utf-8")
+    def fixture_get(endpoint):
+        if endpoint.endswith("/.tradecraft/work.json"):
+            config = {"schema_version": 1, "marker_producers": ["fixture"]}
+            return {"encoding": "base64", "content": base64.b64encode(json.dumps(config).encode()).decode()}
+        return {"id": 20, "body": canonical, "user": {"login": "fixture"},
+                "issue_url": "https://api.github.com/repos/example/product/issues/12"}
+    dispatch_seat.cold_draft._get = fixture_get
 if "--snapshot-fixture" in arguments:
     index = arguments.index("--snapshot-fixture")
     snapshot = json.loads(Path(arguments[index + 1]).read_bytes())

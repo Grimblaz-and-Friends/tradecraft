@@ -25,6 +25,28 @@ import urllib.parse
 import uuid
 
 from brief import LANES, review_lane
+from source_claims import (
+    attribute_error,
+    DISPOSITIONS,
+    MARKER,
+    ATTRIBUTE,
+    SETTLEMENT_ROUTES,
+    TRAVELS_WITH,
+    POSITIVE_INTEGER,
+    Marker,
+    SourceClassification,
+    _mask_markdown_quotations,
+    _first_content_span,
+    _first_content_line,
+    _block_quoted_line,
+    _marker_from_match,
+    _classify_sources,
+    markers,
+    _strip_opening_word_formatting,
+    _strip_balanced_markdown_wrapper,
+    _disposition,
+)
+import cold_draft
 from connected_review import is_review_job
 import dispatch_record as records
 import artifact_tree
@@ -92,16 +114,6 @@ MIGRATION_NOTICE = (
     "enforced on this run"
 )
 BRANCH_PLACEHOLDER = "__TRADECRAFT_IMPLEMENTATION_BRANCH__"
-DISPOSITIONS = (
-    "fixed", "fixed - nothing else found it", "fixed in #", "yours - in the release report",
-    "declined -", "duplicate of ", "lapsed -",
-)
-MARKER = re.compile(r"<!--\s*tradecraft:([a-z-]+):v1(?:\s+([^>]*?))?\s*-->", re.I)
-ATTRIBUTE = re.compile(r"([a-z_][a-z_0-9]*)=([^\s]+)", re.I)
-SETTLEMENT_ROUTES = frozenset({"would", "cap", "discharge", "unobtainable"})
-TRAVELS_WITH = {
-    "implementing-pr": frozenset({"builder-session"}),
-}
 CLOSING_REFERENCE = re.compile(
     r"(?im)^\s*(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\s*$"
 )
@@ -140,7 +152,6 @@ REVIEW_NOTICE_PATTERNS = (
     )),
 )
 HEAD_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.I)
-POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
 ACTIONS_REVIEWER = "github-actions[bot]"
 CONNECTED_REVIEW_PATH = "/".join((".github", "workflows", "connected-review.yml"))
 CONNECTED_REVIEW_RUN = re.compile(r"<!-- connected-review-attempt:([1-9][0-9]*) -->")
@@ -267,37 +278,6 @@ class _LaunchRootError(WorkError):
 
 
 @dataclass(frozen=True)
-class Marker:
-    name: str
-    attributes: dict[str, str]
-    body: str
-    author: str
-    surface: str = "unknown"
-    source_id: str | None = None
-    timestamp: str | None = None
-    url: str | None = None
-    raw_attributes: str = ""
-    source_order: int = 0
-    occurrence_order: int = 0
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "name": self.name,
-            "attributes": self.attributes,
-            "surface": self.surface,
-            "source_id": self.source_id,
-            "timestamp": self.timestamp,
-            "url": self.url,
-        }
-
-
-@dataclass(frozen=True)
-class SourceClassification:
-    claims: tuple[Marker, ...]
-    quotations: tuple[Marker, ...]
-
-
-@dataclass(frozen=True)
 class WorkConfig:
     product_repositories: frozenset[str] = frozenset()
     connected_reviewers: frozenset[str] = frozenset()
@@ -333,6 +313,8 @@ class WorkState:
     invalid_marker_claims: list[dict[str, object]] = field(default_factory=list)
     quotation_claims: list[dict[str, object]] = field(default_factory=list)
     artifact_phase: ArtifactPhase | None = None
+    selected_bundles: dict[tuple[int, int], tuple | None] = field(default_factory=dict)
+    cold_judgments: dict[tuple[int, int], dict[str, object]] = field(default_factory=dict)
     collection_diagnostics: list[dict[str, object]] = field(default_factory=list)
     connected_review_runs: dict[int, ReviewRunEvidence] = field(default_factory=dict)
     required_gate: dict[str, object] | None = None
@@ -408,6 +390,7 @@ class Decision:
     floor: dict[str, object] | None = None
     raw_output: dict[str, object] | None = None
     reach: dict[str, object] | None = None
+    artifact_interpretation: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -430,6 +413,7 @@ class Decision:
             "floor": self.floor,
             "raw_output": self.raw_output,
             "reach": self.reach,
+            "artifact_interpretation": self.artifact_interpretation,
         }
 
 
@@ -1149,147 +1133,6 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     return state
 
 
-def _mask_markdown_quotations(text: str) -> str:
-    """Blank Markdown quotation regions while retaining offsets and newlines."""
-    masked = list(text)
-    offset = 0
-    fence: tuple[str, int] | None = None
-    for line_with_end in text.splitlines(keepends=True):
-        line = line_with_end.rstrip("\r\n")
-        quoted = False
-        fence_match = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-        if fence is not None:
-            quoted = True
-            closing = re.match(rf"^ {{0,3}}{re.escape(fence[0])}{{{fence[1]},}}\s*$", line)
-            if closing is not None:
-                fence = None
-        elif fence_match is not None:
-            token = fence_match.group(1)
-            fence = (token[0], len(token))
-            quoted = True
-        elif re.match(r"^ {0,3}>", line) is not None or re.match(r"^(?: {4}|\t)", line):
-            quoted = True
-        if quoted:
-            for index in range(offset, offset + len(line)):
-                masked[index] = " "
-        offset += len(line_with_end)
-    candidate = "".join(masked)
-    opener_pattern = re.compile(r"`+")
-    cursor = 0
-    while cursor < len(candidate):
-        opener = opener_pattern.search(candidate, cursor)
-        if opener is None:
-            break
-        start = opener.start()
-        ticks = opener.group(0)
-        closing = re.compile(
-            rf"(?<!`){re.escape(ticks)}(?!`)"
-        ).search(
-            candidate, start + len(ticks)
-        )
-        if closing is None:
-            cursor = start + len(ticks)
-            continue
-        close = closing.start()
-        for index in range(start, close + len(ticks)):
-            if masked[index] not in "\r\n":
-                masked[index] = " "
-        cursor = close + len(ticks)
-    return "".join(masked)
-
-
-def _first_content_span(text: str) -> tuple[int, int] | None:
-    offset = 0
-    for line_with_end in text.splitlines(keepends=True):
-        line = line_with_end.rstrip("\r\n")
-        if line.strip():
-            leading = len(line) - len(line.lstrip())
-            trailing = len(line.rstrip())
-            return offset + leading, offset + trailing
-        offset += len(line_with_end)
-    if text.strip():
-        leading = len(text) - len(text.lstrip())
-        return leading, len(text.rstrip())
-    return None
-
-
-def _first_content_line(text: str) -> str:
-    return next((line for line in text.splitlines() if line.strip()), "")
-
-
-def _block_quoted_line(line: str) -> bool:
-    return bool(
-        re.match(r"^ {0,3}>", line)
-        or re.match(r"^(?: {4}|\t)", line)
-        or re.match(r"^ {0,3}(?:`{3,}|~{3,})", line)
-    )
-
-
-def _marker_from_match(match: re.Match[str], text: str, author: str, surface: str,
-                       source_id: str | None, timestamp: str | None, url: str | None,
-                       source_order: int, occurrence_order: int) -> Marker:
-    attributes = {
-        key.lower(): value for key, value in ATTRIBUTE.findall(match.group(2) or "")
-    }
-    return Marker(
-        match.group(1).lower(), attributes, text, author, surface,
-        source_id, timestamp, url, match.group(2) or "", source_order, occurrence_order,
-    )
-
-
-def _classify_sources(sources: list[tuple]) -> SourceClassification:
-    claims: list[Marker] = []
-    quotations: list[Marker] = []
-    for source_order, source in enumerate(sources):
-        text, author = source[:2]
-        surface = source[2] if len(source) > 2 else "unknown"
-        source_id = source[3] if len(source) > 3 else None
-        timestamp = source[4] if len(source) > 4 else None
-        url = source[5] if len(source) > 5 else None
-        reviewer_reply = bool(source[6]) if len(source) > 6 else False
-        masked = _mask_markdown_quotations(text)
-        unquoted_spans = {(match.start(), match.end()) for match in MARKER.finditer(masked)}
-        occurrences: list[tuple[re.Match[str], Marker]] = []
-        for occurrence_order, match in enumerate(MARKER.finditer(text)):
-            occurrences.append((match, _marker_from_match(
-                match, text, author, surface, source_id, timestamp, url,
-                source_order, occurrence_order,
-            )))
-        first_span = _first_content_span(text)
-        opener_index = None
-        if first_span is not None:
-            for index, (match, _marker) in enumerate(occurrences):
-                if (match.start(), match.end()) == first_span and first_span in unquoted_spans:
-                    opener_index = index
-                    break
-        companion_names: frozenset[str] = frozenset()
-        asserted_indexes: set[int] = set()
-        if opener_index is not None:
-            opener = occurrences[opener_index][1]
-            if opener.name != "connected-reviewer":
-                asserted_indexes.add(opener_index)
-                if opener.name == "artifact" and opener.attributes.get("status") == "settled":
-                    companion_names = frozenset({"cold-verdict"})
-                else:
-                    companion_names = TRAVELS_WITH.get(opener.name, frozenset())
-        elif reviewer_reply and first_span is not None:
-            first_line = _first_content_line(text)
-            if not _block_quoted_line(first_line) and _disposition(first_line):
-                companion_names = frozenset({"connected-reviewer"})
-        for index, (match, marker) in enumerate(occurrences):
-            if index in asserted_indexes:
-                claims.append(marker)
-            elif (match.start(), match.end()) in unquoted_spans and marker.name in companion_names:
-                claims.append(marker)
-            else:
-                quotations.append(marker)
-    return SourceClassification(tuple(claims), tuple(quotations))
-
-
-def markers(sources: list[tuple]) -> list[Marker]:
-    return list(_classify_sources(sources).claims)
-
-
 def _work_config(value: object, source: str) -> WorkConfig:
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise WorkError(f"work configuration must be a schema-version-1 object: {source}")
@@ -1379,30 +1222,7 @@ def staffing_qualified(marker: Marker) -> bool:
 
 
 def _attribute_error(marker: Marker) -> str | None:
-    contract = MARKER_CONTRACTS.get(marker.name)
-    if contract is None:
-        return None
-    tokens = marker.raw_attributes.split()
-    parsed: dict[str, str] = {}
-    for token in tokens:
-        match = ATTRIBUTE.fullmatch(token)
-        if match is None:
-            return "malformed marker attribute"
-        key = match.group(1).lower()
-        if key in parsed:
-            return f"duplicate marker attribute: {key}"
-        parsed[key] = match.group(2)
-    required = contract["required"]
-    optional = contract["optional"]
-    missing = sorted(required - parsed.keys())
-    unknown = sorted(parsed.keys() - required - optional)
-    if missing:
-        return "missing marker attributes: " + ",".join(missing)
-    if unknown:
-        return "unknown marker attributes: " + ",".join(unknown)
-    if parsed != marker.attributes:
-        return "marker attributes could not be parsed exactly"
-    return None
+    return attribute_error(marker, MARKER_CONTRACTS.get(marker.name))
 
 
 def _marker_value_error(marker: Marker) -> str | None:
@@ -1532,6 +1352,52 @@ def _native_staffing(state: WorkState, marker: Marker,
     }
 
 
+def _selected_marker_bundle(state: WorkState, marker: Marker, stages: set[str]) -> tuple | None:
+    key = (marker.source_order, marker.occurrence_order)
+    if key in state.selected_bundles:
+        return state.selected_bundles[key]
+    if state.record_root is None:
+        state.selected_bundles[key] = None
+        return None
+    matched = _matching_bundles(
+        f"{state.repo}#{state.issue_number}", stages, state.record_root,
+        completed_no_later_than=marker.timestamp,
+    )
+    if not matched:
+        if marker.name == "builder-session" and marker.attributes.get("vendor") in {"codex", "claude"}:
+            state.selected_bundles[key] = None
+            return None
+        raise WorkError("no matching successful dispatch bundle")
+    completed, _path, _request, _run = matched[-1]
+    if len(matched) > 1 and matched[-2][0] == completed:
+        raise WorkError("matching dispatch bundle is ambiguous")
+    state.selected_bundles[key] = matched[-1]
+    return matched[-1]
+
+
+def _cold_judgment(state: WorkState, marker: Marker) -> dict[str, object]:
+    key = (marker.source_order, marker.occurrence_order)
+    if key in state.cold_judgments:
+        return state.cold_judgments[key]
+    selected = _selected_marker_bundle(state, marker, {"cold-seat"})
+    binding = None
+    path = None
+    if selected is not None:
+        _completed, path, request, run = selected
+        try:
+            binding = cold_draft.completed_binding(request, run)
+        except (OSError, ValueError) as exc:
+            raise WorkError(f"cold verdict bundle {path}: {exc}") from exc
+    evidence = {
+        "verdict": marker.as_dict(), "bundle": path,
+        "comment_id": binding["comment_id"] if binding else None,
+        "sha256": binding["sha256"] if binding else None,
+        "binding_status": "bound" if binding else "judged digest unrecorded",
+    }
+    state.cold_judgments[key] = evidence
+    return evidence
+
+
 def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
     if state.record_root is None:
         return None
@@ -1563,20 +1429,17 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
     if stages is None:
         return None
     try:
-        matched = _matching_bundles(
-            f"{state.repo}#{state.issue_number}", stages, state.record_root,
-            completed_no_later_than=marker.timestamp,
-        )
+        selected = _selected_marker_bundle(state, marker, stages)
     except WorkError as exc:
         return str(exc)
-    if not matched:
-        if marker.name == "builder-session" and marker.attributes.get("vendor") in {
-                "codex", "claude"}:
-            return None
-        return "no matching successful dispatch bundle"
-    completed, path, request, run = matched[-1]
-    if len(matched) > 1 and matched[-2][0] == completed:
-        return "matching dispatch bundle is ambiguous"
+    if selected is None:
+        return None
+    _completed, path, request, run = selected
+    if marker.name == "cold-verdict":
+        try:
+            _cold_judgment(state, marker)
+        except WorkError as exc:
+            return str(exc)
     if marker.name == "builder-session":
         sessions = []
         for attempt in run.get("attempts", []):
@@ -1617,6 +1480,8 @@ def validate_marker_claims(state: WorkState) -> tuple[list[Marker], list[dict[st
     lawful: list[Marker] = []
     invalid: list[dict[str, object]] = []
     state.artifact_phase = None
+    state.selected_bundles = {}
+    state.cold_judgments = {}
     classified = _classify_sources(_state_sources(state))
     state.quotation_claims = [
         _quotation_claim(state, marker) for marker in classified.quotations
@@ -1681,6 +1546,8 @@ class ArtifactPhase:
     current_verdicts: tuple[Marker, ...]
     would_not_count: int
     invalid_settlements: tuple[tuple[Marker, str], ...]
+    settlement_origin: Marker | None = None
+    judgments: tuple[dict[str, object], ...] = ()
 
 
 def _source_order(marker: Marker) -> tuple[datetime, int, int]:
@@ -1732,11 +1599,12 @@ def _settlement_error(route: str | None, current_verdicts: list[Marker],
 
 def artifact_digest(body: str) -> str:
     """Hash the GitHub comment body on the cold seat and settlement's shared LF basis."""
-    return hashlib.sha256(body.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")).hexdigest()
+    return cold_draft.artifact_digest(body)
 
 
 def _settlement_artifact(state: WorkState, settlement: Marker, brief: Marker,
-                         latest_draft: Marker | None) -> tuple[Marker | None, str | None]:
+                         latest_draft: Marker | None,
+                         judgment: dict[str, object] | None = None) -> tuple[Marker | None, str | None]:
     """Select text independently of route support; reject bare pointers lacking the quoted brief."""
     reference = settlement.attributes.get("draft_comment")
     route = settlement.attributes.get("route")
@@ -1751,13 +1619,30 @@ def _settlement_artifact(state: WorkState, settlement: Marker, brief: Marker,
             return None, prefix + f"named comment {reference} is not the latest lawful draft in the settlement's term"
         expected = settlement.attributes["draft_sha256"]
         observed = artifact_digest(latest_draft.body)
+        judged = judgment.get("sha256") if route == "would" and judgment else None
+        if judged is not None:
+            if judgment["comment_id"] != reference:
+                return None, (prefix + f"named draft {reference} differs from the judgment's draft "
+                              f"{judgment['comment_id']} in bundle {judgment['bundle']}")
+            if observed != judged:
+                return None, (prefix + f"draft comment {reference} was edited after its verdict "
+                              f"{judgment['verdict']} (bundle {judgment['bundle']}); judged sha256 {judged}, "
+                              f"observed sha256 {observed}, settlement sha256 {expected}. "
+                              "Restore the judged text, or post a new draft for a fresh cold seat.")
+            if expected != judged:
+                return None, (prefix + f"settlement digest was miscopied while draft comment {reference} "
+                              f"is unchanged; judged sha256 {judged} (bundle {judgment['bundle']}). "
+                              f"Re-settle with the judged digest {judged}; a new cold seat is unnecessary.")
         if expected != observed:
             return None, (prefix + f"draft comment {reference} body does not match the settlement's "
                           "draft_sha256; expected sha256 "
                           f"{expected}, observed sha256 {observed}. "
-                          "Do not use the observed digest to re-settle: restore the judged text, "
-                          "or post a new draft for a fresh cold seat.")
+                          + ("The judged digest is unrecorded, preventing distinction between editing and copying; "
+                             "historical compatibility still requires a matching body digest."
+                             if route == "would" else "Re-settle with the named draft's current digest."))
         return latest_draft, None
+    if route == "would" and judgment and judgment.get("sha256") is not None:
+        return None, prefix + "bound would judgment requires draft_comment and draft_sha256 to name its judged draft"
     if dispatch_implementer.artifact_opening_carries_brief(brief.body, settlement.body):
         return settlement, None
     if reference is not None:
@@ -1765,6 +1650,31 @@ def _settlement_artifact(state: WorkState, settlement: Marker, brief: Marker,
     return None, (prefix + "settlement names no draft and does not carry a complete artifact; "
                   "supply draft_comment and draft_sha256 to name the draft. "
                   + _settlement_posting_guidance(route))
+
+
+def _settlement_identity(state: WorkState, marker: Marker, brief: Marker,
+                         draft: Marker | None, route: str,
+                         judgment: dict[str, object] | None) -> tuple | None:
+    """Admit only supported text, the named form omissions, or a bound miscopy."""
+    candidate = replace(marker, attributes={**marker.attributes, "route": route})
+    _text, error = _settlement_artifact(state, candidate, brief, draft, judgment)
+    span = dispatch_implementer.artifact_carried_span(brief.body, marker.body)
+    if route in {"discharge", "cap"}:
+        if error is not None or span is None:
+            return None
+        return "carried", marker.body[span[0]:span[1]].encode("utf-8")
+    # The caller admits draft routes only when their route support has a draft.
+    if error is not None:
+        form_omission = "draft_comment" not in marker.attributes and span is None
+        miscopy = "settlement digest was miscopied" in error
+        if not form_omission and not miscopy:
+            return None
+    observed = artifact_digest(draft.body)
+    judged = judgment.get("sha256") if route == "would" and judgment else None
+    if judged is not None and (judgment["comment_id"] != draft.source_id or observed != judged):
+        return None
+    identity = draft.source_id or (draft.source_order, draft.occurrence_order)
+    return "draft", identity, judged or observed
 
 
 def _artifact_phase(state: WorkState) -> ArtifactPhase:
@@ -1804,8 +1714,8 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
     holder_readings: list[Marker] = []
     verdicts: list[tuple[Marker, tuple[int, int] | None]] = []
     invalid: list[tuple[Marker, str]] = []
-    migration_candidate: tuple[Marker, tuple[datetime, int, int], int] | None = None
-    migration_generation = 0
+    anchors: dict[tuple, tuple[Marker, tuple[datetime, int, int]]] = {}
+    settlement_origin: Marker | None = None
 
     for group in ordered_groups:
         if any(marker.name == "affirmed-brief" for marker in group):
@@ -1845,8 +1755,8 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
             holder_reading_order = None
             holder_readings = []
             verdicts = []
-            migration_candidate = None
-            migration_generation = 0
+            anchors = {}
+            settlement_origin = None
             continue
         if not active:
             continue
@@ -1869,13 +1779,12 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                 settled_artifact = None
                 source_error = None
                 settlement_order = None
-                migration_candidate = None
-                migration_generation += 1
+                anchors = {}
+                settlement_origin = None
             elif marker.name == "cold-verdict" and staffing_qualified(marker):
                 if latest_draft is not None:
                     verdicts.append((marker, latest_draft_identity))
-                migration_candidate = None
-                migration_generation += 1
+                    anchors = {}
             elif marker.name == "artifact" and marker.attributes.get("status") == "settled":
                 syntax_error = _attribute_error(marker) or _marker_value_error(marker)
                 if syntax_error:
@@ -1884,10 +1793,6 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                     current_artifact_error = f"artifact settlement {_marker_setting_source(marker)}: {syntax_error}"
                     source_error = current_artifact_error
                     continue
-                current_artifact_text, current_artifact_error = _settlement_artifact(
-                    state, marker, term_brief, latest_draft,
-                )
-                current_artifact_order = order
                 current = [
                     verdict for verdict, draft_identity in verdicts
                     if draft_identity == latest_draft_identity and latest_draft is not None
@@ -1897,37 +1802,43 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                     for verdict, _draft_identity in verdicts
                 )
                 route = marker.attributes.get("route")
+                judgment = _cold_judgment(state, current[-1]) if current else None
+                current_artifact_text, current_artifact_error = _settlement_artifact(
+                    state, marker, term_brief, latest_draft, judgment,
+                )
+                current_artifact_order = order
                 error = _settlement_error(
                     route, current, would_not_count, latest_draft is not None,
                 )
-                inherits_position = (migration_candidate is not None
-                                     and migration_candidate[2] == migration_generation)
-                if (error is None and current_artifact_error is not None and inherits_position
-                        and "draft_comment" not in marker.attributes):
-                    migrated_text, migrated_error = _settlement_artifact(
-                        state, migration_candidate[0], term_brief, latest_draft,
-                    )
-                    if migrated_error is None:
-                        current_artifact_text, current_artifact_error = migrated_text, None
+                identity = None
+                # A missing route earns only positions supported at this event,
+                # rather than borrowing a judgment from a later settlement.
+                for candidate_route in sorted(SETTLEMENT_ROUTES) if route is None else [route]:
+                    if _settlement_error(candidate_route, current, would_not_count, latest_draft is not None) is None:
+                        candidate_identity = _settlement_identity(
+                            state, marker, term_brief, latest_draft, candidate_route, judgment,
+                        )
+                        if candidate_identity is not None:
+                            anchors.setdefault(candidate_identity, (marker, order))
+                            if route == candidate_route:
+                                identity = candidate_identity
                 if current_artifact_error is not None:
                     source_error = current_artifact_error
                     invalid.append((marker, current_artifact_error))
                 if error is not None:
                     invalid.append((marker, error))
-                    if route is None and latest_draft is not None:
-                        migration_candidate = (marker, order, migration_generation)
                     continue
                 if current_artifact_error is not None:
                     continue
                 effective_order = order
-                if inherits_position:
-                    effective_order = migration_candidate[1]
+                settlement_origin = marker
+                if identity is not None:
+                    settlement_origin, effective_order = anchors[identity]
                 latest_settlement = marker
                 settled_artifact = current_artifact_text
                 source_error = None
                 settlement_order = effective_order
                 current_artifact_order = effective_order
-                migration_candidate = None
             elif marker.name == "holder-reading":
                 latest_holder_reading = marker
                 holder_reading_order = order
@@ -1959,6 +1870,8 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
         current_verdicts=current_verdicts,
         would_not_count=would_not_count,
         invalid_settlements=tuple(invalid),
+        settlement_origin=settlement_origin,
+        judgments=tuple(_cold_judgment(state, verdict) for verdict, _identity in verdicts),
     )
 
 
@@ -3053,7 +2966,17 @@ def _reported_decision(state: WorkState, decision: Decision) -> Decision:
         launch_settings=plan, synchronization=state.synchronization,
         use_application=state.use_application, floor=floor_evaluation(state),
         raw_output=state.raw_output, reach=state.reach,
+        artifact_interpretation=_artifact_interpretation(state),
     )
+
+
+def _artifact_interpretation(state: WorkState) -> dict[str, object]:
+    phase = state.artifact_phase or _artifact_phase(state)
+    return {
+        "settlement": phase.latest_settlement.as_dict() if phase.latest_settlement else None,
+        "effective_origin": phase.settlement_origin.as_dict() if phase.settlement_origin else None,
+        "qualifying_verdicts": list(phase.judgments),
+    }
 
 
 def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
@@ -3444,54 +3367,6 @@ def _reviewer_receipts(state: WorkState) -> list[dict[str, object]]:
 
 def _reviewer_ran(state: WorkState) -> bool:
     return all(item["result"] == "present" for item in _reviewer_receipts(state))
-
-
-def _strip_balanced_markdown_wrapper(value: str) -> str:
-    stripped = value.strip()
-    if not stripped or stripped[0] not in "`*_":
-        return stripped
-    marker = stripped[0]
-    opening = len(stripped) - len(stripped.lstrip(marker))
-    closing = len(stripped) - len(stripped.rstrip(marker))
-    wrapper = marker * opening
-    if wrapper not in {"`", "*", "**", "_", "__"} or closing != opening:
-        return stripped
-    return stripped[opening:-closing].strip()
-
-
-def _strip_opening_word_formatting(value: str) -> str:
-    stripped = _strip_balanced_markdown_wrapper(value)
-    for wrapper in ("**", "__", "*", "_", "`"):
-        if not stripped.startswith(wrapper):
-            continue
-        close = stripped.find(wrapper, len(wrapper))
-        if close < 0:
-            continue
-        word = stripped[len(wrapper):close]
-        if re.fullmatch(r"[A-Za-z]+", word) is None:
-            continue
-        following = stripped[close + len(wrapper):]
-        if following and (following[0].isalnum() or following[0] == "_"):
-            continue
-        return word + following
-    return stripped
-
-
-def _disposition(body: str) -> bool:
-    first_line = next((line for line in body.splitlines() if line.strip()), "")
-    normalized = (
-        _strip_opening_word_formatting(first_line)
-        .lower().replace(chr(0x2014), "-").strip()
-    )
-    for prefix in DISPOSITIONS:
-        if not normalized.startswith(prefix):
-            continue
-        if not prefix[-1].isalnum() or len(normalized) == len(prefix):
-            return True
-        following = normalized[len(prefix)]
-        if not (following.isalnum() or following == "_"):
-            return True
-    return False
 
 
 def _undisposed_threads(state: WorkState) -> tuple[list[int], list[str]]:
@@ -4460,7 +4335,9 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         "artifact_source": _marker_setting_source(artifact) if artifact else None,
         "artifact_settlement": (
             {"source": _marker_setting_source(phase.latest_settlement),
-             "route": phase.latest_settlement.attributes["route"]}
+             "route": phase.latest_settlement.attributes["route"],
+             "effective_origin": _marker_setting_source(phase.settlement_origin)
+             if phase.settlement_origin else None}
             if phase.latest_settlement and not explicit_artifact and not mechanical else None
         ),
         "review_risk": lane_pair[0] if lane_pair else None,
@@ -6401,6 +6278,7 @@ def _artifact_copy_source(state, source):
 
 def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment: str | None,
                   holder_session_id: str | None = None, *, dispatch_path: Path | None = None,
+                  draft_comment: str | None = None,
                   tree_metadata: Path | None = None,
                   timeout_seconds: float | None = None,
                   transport: GitHubREST | None = None,
@@ -6416,6 +6294,14 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
         _evaluate_raw_output(state, rules, str(use_rules_path or "selected change-proof policy"))
     if state.validated_markers is None:
         validate_marker_claims(state)
+    if draft_comment is not None and decision.stage != "cold-seat":
+        raise WorkError("--draft-comment applies only to cold-seat")
+    if decision.stage == "cold-seat" and dispatch_path is None:
+        draft = state.artifact_phase.latest_draft
+        if draft is None or not draft.source_id or POSITIVE_INTEGER.fullmatch(draft.source_id) is None:
+            raise WorkError("cold-seat requires the current term's latest lawful draft comment id")
+        if draft_comment is not None and draft_comment != draft.source_id:
+            raise WorkError("--draft-comment must name the current term's latest lawful draft")
     source_problem = (None if decision.stage == "artifact" and dispatch_path is not None else
                       _artifact_source_problem(state, decision.stage))
     if source_problem:
@@ -6976,6 +6862,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     common = [
                         "--dispatch", str(dispatch), "--root", str(recipient),
                         "--work", f"{state.repo}#{state.issue_number}", "--stage", decision.stage,
+                        "--draft-comment", draft.source_id,
                         "--settings-source", "work entrance cold-seat route",
                         "--settings-scope", "cold-seat",
                         "--timeout-seconds", timeout_argument,
@@ -7190,6 +7077,7 @@ def parser() -> argparse.ArgumentParser:
     )
     cli.add_argument("--dispatch", type=Path,
                      help="holder-authored dispatch file outside the implementation root")
+    cli.add_argument("--draft-comment", help="cold-seat only: must agree with the automatically selected draft")
     cli.add_argument("--floor-command", help="exact repository command for a composed run floor dispatch")
     cli.add_argument("--tree-metadata", type=Path,
                      help="adjacent metadata from tree; required by run use")
@@ -7320,6 +7208,8 @@ def run(
     args: argparse.Namespace, *, transport: GitHubREST | None = None,
     executor: Callable[..., int] = execute_stage,
 ) -> int:
+    if getattr(args, "draft_comment", None) is not None and (args.command != "run" or args.stage != "cold-seat"):
+        raise WorkError("--draft-comment requires run cold-seat")
     reason = getattr(args, "budget_override_reason", None)
     if reason is not None and (args.command != "run" or args.stage != "build" or not reason.strip()):
         raise WorkError("--budget-override-reason requires a named build and nonempty reason")
@@ -7477,6 +7367,7 @@ def _run(
             return executor(
                 state, decision, root, args.instalment, args.holder_session_id,
                 dispatch_path=args.dispatch, tree_metadata=args.tree_metadata,
+                draft_comment=args.draft_comment,
                 timeout_seconds=args.timeout_seconds, transport=github,
                 budget_override_reason=args.budget_override_reason,
                 restart_unresolved_reason=args.restart_unresolved_reason,

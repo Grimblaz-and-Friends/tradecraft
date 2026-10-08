@@ -17,6 +17,7 @@ import launch_settings
 import connected_review
 import raw_output
 import build_reach
+import cold_draft
 
 REAL_GOVERNING_TERMS = work._governing_terms_decision
 
@@ -239,10 +240,8 @@ def test_broken_pointer_refuses_ordinary_and_explicit_launch_before_mutation(
         assert _fixture_digest(fixture.issue_comments[1]["body"]) in recommendation.detail
         if failure == "miscopied-digest":
             assert fixture.issue_comments[1]["body"] == SOURCE_DRAFT
-        remedy = (
-            "Do not use the observed digest to re-settle: restore the judged text, "
-            "or post a new draft for a fresh cold seat."
-        )
+        remedy = ("preventing distinction between editing and copying" if route == "would"
+                  else "Re-settle with the named draft's current digest.")
         assert remedy in recommendation.detail
     dispatch = tmp_path / "custom.md"
     supplied = b"Holder dispatch must not erase the source failure.\r\n"
@@ -490,25 +489,27 @@ def test_migrated_pointer_keeps_effective_readings_for_build_and_amendment(tmp_p
 
 
 @pytest.mark.parametrize("route", sorted(work.SETTLEMENT_ROUTES))
-def test_route_only_migration_inherits_whole_artifact_and_readings(tmp_path, monkeypatch, route):
+def test_form_restatement_keeps_readings_but_current_source_supplies_text(tmp_path, monkeypatch, route):
     fixture = _source_fixture(route)
     settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
     original = "<!-- tradecraft:artifact:v1 status=settled -->" + SOURCE_REVISED
     settlement["body"] = original
+    corrected = _source_settlement(route)
+    expected = SOURCE_DRAFT if route in {"would", "unobtainable"} else corrected
     fixture.issue_comments.append({"id": 1000,
-        "body": f"<!-- tradecraft:artifact:v1 status=settled route={route} -->",
+        "body": corrected,
         "user": {"login": PRODUCER}})
     assert work.decide(fixture, RULES).stage == "build"
-    _assert_source_consumers(fixture, original, tmp_path, monkeypatch)
+    _assert_source_consumers(fixture, expected, tmp_path, monkeypatch)
     fixture.issue_comments.append({"id": 1010, "body": AFFIRMED, "user": {"login": PRODUCER}})
     work.decide(fixture, RULES)
     prompt = work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
-    assert _artifact_section(prompt, "artifact under revision") == original.encode()
+    assert _artifact_section(prompt, "artifact under revision") == expected.encode()
     assert prompt.index(b"FIRST APPLICABLE READING") < prompt.index(b"SECOND APPLICABLE READING")
 
 
 @pytest.mark.parametrize("breaker", ["draft", "verdict", "brief", "spent", "incomplete"])
-def test_route_only_migration_cannot_supply_text_after_its_eligibility_ends(breaker):
+def test_settlement_anchor_never_substitutes_missing_current_text(breaker):
     fixture = _source_fixture("would")
     settlement = next(row for row in fixture.issue_comments if "status=settled" in row["body"])
     settlement["body"] = "<!-- tradecraft:artifact:v1 status=settled -->" + (
@@ -2224,6 +2225,43 @@ class TestGoverningTerms:
         assert builder.artifact_phase.settlement_order[0] == work._aware_time("2026-10-05T09:02:00Z")
         assert comment["body"].encode() in work._stage_prompt(builder, decision)
 
+    def test_C9_876_repeated_reference_corrections_feed_actual_delivery_comparison(self, builder, monkeypatch):
+        # This class restores the real governing-term function and retains actual
+        # prompt bytes, source snapshots and registered build lineage.
+        assert work._governing_terms_decision is REAL_GOVERNING_TERMS
+        builder.issue_comments[2]["body"] = "<!-- tradecraft:artifact:v1 status=settled route=unobtainable -->\nPointer only."
+        first = self.amendment(builder)
+        self.post(builder, _source_settlement("unobtainable", draft_id=101, body=ARTIFACT),
+                  stamp="2026-10-05T12:00:00Z")
+        self.post(builder, _source_settlement("unobtainable", draft_id=101, body=ARTIFACT),
+                  stamp="2026-10-05T12:01:00Z")
+        self.due(builder, first)
+        phase = builder.artifact_phase
+        assert phase.settlement_origin.source_id == "102"
+        assert first["body"] in [reading.body for reading in phase.holder_readings]
+        prompt = work._stage_prompt(builder, work.Decision("build", True, "resume", "fixture"))
+        assert first["body"].encode() in prompt
+        original_base = builder.pr["base"]["sha"]
+        builder.pr["base"]["sha"] = git(builder.term_root, "rev-parse", "HEAD").stdout.decode().strip()
+        context = work._handover_context(builder, work.ResumeSource("", "bundle", {"stage": "build"}, {}, SESSION),
+                                         builder.term_root, "terms-change")
+        builder.pr["base"]["sha"] = original_base
+        handover = json.loads(context.split(b"\n", 1)[1])
+        assert first["body"] in [row["text"] for row in handover["holder_readings"]]
+        self.turn(builder, composed="2026-10-05T13:00:00Z", launched="2026-10-05T13:01:00Z",
+                  completed="2026-10-05T13:02:00Z")
+        assert work._governing_terms_decision(builder) is None
+        duplicate = self.post(builder, first["body"], stamp="2026-10-05T14:00:00Z")
+        self.due(builder, duplicate)
+        self.turn(builder, composed="2026-10-05T15:00:00Z", launched="2026-10-05T15:01:00Z",
+                  completed="2026-10-05T15:02:00Z")
+        assert work._governing_terms_decision(builder) is None
+        self.post(builder, AFFIRMED, stamp="2026-10-05T16:00:00Z")
+        work.validate_marker_claims(builder)
+        assert [row.body for row in builder.artifact_phase.prior_holder_readings][-2:] == [first["body"], duplicate["body"]]
+        revision = work._stage_prompt(builder, work.Decision("artifact", True, "fresh", "fixture"))
+        assert revision.count(first["body"].encode()) == 2
+
     def test_C4_counted_reading_without_timestamp_returns_to_holder(self, builder):
         comment = self.amendment(builder)
         for source in builder.issue_comments:
@@ -2797,7 +2835,7 @@ def test_routed_repost_inherits_routeless_order_across_a_holder_reading():
     assert len(routed) == 1
 
 
-def test_routeless_migration_position_is_spent_after_one_routed_settlement():
+def test_routeless_position_survives_repeated_supported_same_text_settlements():
     routeless = (
         "<!-- tradecraft:artifact:v1 status=settled -->\n"
         "<!-- tradecraft:cold-verdict:v1 verdict=would staffing_status=qualified -->"
@@ -2807,7 +2845,8 @@ def test_routeless_migration_position_is_spent_after_one_routed_settlement():
         _settled("would"), _settled("would"),
     )
 
-    assert work.decide(fixture, RULES).stage == "holder-read"
+    assert work.decide(fixture, RULES).stage == "build"
+    assert [reading.body for reading in fixture.artifact_phase.holder_readings] == [HOLDER]
 
 
 @pytest.mark.parametrize("breaker", ["draft", "verdict", "brief"])
@@ -2965,7 +3004,7 @@ def test_implementer_readings_follow_the_final_effective_settlement(stage, bound
     elif boundary == "spent-repost":
         comments = [AFFIRMED, ARTIFACT, routeless, old, _settled("would"),
                     _settled("would"), current]
-        expected, excluded, recommendation = [current], [old], "build"
+        expected, excluded, recommendation = [old, current], [], "build"
     else:
         comments = [AFFIRMED, ARTIFACT, old, current]
         expected, excluded, recommendation = [], [old, current], "cold-seat"
@@ -3248,7 +3287,7 @@ def test_governing_references_carry_route_disposition_and_optional_reviewer_rule
     assert "route=would|cap|discharge|unobtainable" in markers_reference
     assert "Every settlement requires a draft in its current term" in markers_reference
     assert "no re-post is needed" in markers_reference
-    assert "That inherited position is spent" in markers_reference
+    assert "Repeated corrections never spend the anchor" in markers_reference
     assert "permitted inline formatting around the opening word" in markers_reference
     for text in (release_reference, reviewer_reference):
         assert "installed repository apps" in text
@@ -6204,6 +6243,7 @@ def test_execute_cold_seat_uses_the_bounded_prompt(tmp_path, monkeypatch):
     artifact = ARTIFACT + "\nArtifact body.\n"
     override = "<!-- tradecraft:model-override:v1 cold_seat=claude:cold-owner:max -->"
     fixture = state(AFFIRMED, "OTHER COMMENT MUST STAY OUT", artifact, override)
+    fixture.issue_comments[2]["id"] = 20
     captured = []
     monkeypatch.setattr(work, "judging_root", lambda _root: nullcontext(tmp_path))
     monkeypatch.setattr(work, "_producer_vendor", lambda *_a, **_k: ("codex", "artifact bundle"))
@@ -6222,6 +6262,7 @@ def test_execute_cold_seat_uses_the_bounded_prompt(tmp_path, monkeypatch):
         fixture, decision, tmp_path, None, claude_path=runtime, codex_path=runtime,
      floor_command="python fixture-check.py") == 0
     command, prompt = captured[0]
+    assert command[command.index("--draft-comment") + 1] == "20"
     assert artifact.encode("utf-8") in prompt
     assert AFFIRMED.encode("utf-8") in prompt
     assert b"OTHER COMMENT MUST STAY OUT" not in prompt
@@ -6238,7 +6279,8 @@ def dispatch_bundle(record_root, *, work_value="example/product#12", stage="buil
                     name="result.md", producer_version=None,
                     request_schema=2, run_schema=2, outcome="success"):
     if producer_version is None:
-        producer_version = "0.185.0" if stage == "artifact" else work.records.producer_version()
+        producer_version = ("0.185.0" if stage == "artifact" else
+                            "0.189.0" if stage == "cold-seat" else work.records.producer_version())
     bundle = record_root / stage
     bundle.mkdir(parents=True, exist_ok=True)
     request = bundle / f"{name}.request.json"
@@ -6279,6 +6321,9 @@ def native_bundle(record_root, monkeypatch, *, stage="use", vendor="claude",
     ]
     if reason is not None:
         arguments.extend(["--same-vendor-reason", reason])
+    if stage == "cold-seat":
+        dispatch.write_bytes(ARTIFACT.encode())
+        arguments.extend(["--draft-comment", "20"])
     if launched_at is not None:
         arguments.extend(["--launched-at", launched_at])
     if launched_at_unavailable_reason is not None:
@@ -6292,6 +6337,7 @@ def native_bundle(record_root, monkeypatch, *, stage="use", vendor="claude",
             return moment
     with monkeypatch.context() as clock:
         clock.setattr(work.records, "datetime", FixedTime)
+        clock.setattr(work.records.cold_draft, "resolve_draft", lambda *_: ("20", ARTIFACT))
         work.records.begin_native(work.records.parser().parse_args(arguments))
         moment = datetime.fromisoformat(completed_at)
         work.records.finish_native(work.records.parser().parse_args([
@@ -6866,7 +6912,7 @@ def test_bundle_backed_builder_marker_must_match_the_observed_session(tmp_path):
     cold.mkdir(parents=True)
     (cold / "result.md.request.json").write_bytes(json.dumps({
         "schema_version": 2, "work": "example/product#12", "stage": "cold-seat",
-        "producer_version": work.records.producer_version(),
+        "producer_version": "0.189.0",
     }).encode())
     (cold / "result.md.run.json").write_bytes(json.dumps({
         "schema_version": 2, "outcome": "success",
@@ -10008,6 +10054,7 @@ def test_post_build_stages_keep_registered_root_while_artifact_uses_holder_copy(
     monkeypatch.setattr(work, "_recipient_run", run)
     monkeypatch.setattr(work, "resume_session", lambda *_args, **_kwargs: SESSION)
     fixture = state(AFFIRMED, ARTIFACT, pr=True)
+    fixture.issue_comments[1]["id"] = 20
     fixture.record_root = tmp_path / "dispatches"
     dispatch_bundle(fixture.record_root, stage="build")
     dispatch_bundle(fixture.record_root, stage="artifact")

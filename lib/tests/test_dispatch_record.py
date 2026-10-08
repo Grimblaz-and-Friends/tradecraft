@@ -9,6 +9,12 @@ import pytest
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import dispatch_record as records
+from test_cold_draft import DRAFT, draft_get
+
+
+@pytest.fixture(autouse=True)
+def cold_source_get(monkeypatch):
+    monkeypatch.setattr(records.cold_draft, "_get", draft_get)
 
 
 NATIVE_SOURCES = {
@@ -48,7 +54,97 @@ def native_begin_args(tmp_path, *, stage="use", reason=None):
     ]
     if reason is not None:
         arguments.append(f"--same-vendor-reason={reason}")
+    if stage == "cold-seat":
+        input_file.write_bytes(DRAFT.encode())
+        arguments.extend(["--draft-comment", "20"])
     return records.parser().parse_args(arguments)
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+def test_C3_native_begin_freezes_exact_binding_and_finish_never_refetches(tmp_path, monkeypatch, ending):
+    args = native_begin_args(tmp_path, stage="cold-seat")
+    body = DRAFT.replace("\n", ending)
+    args.input_file.write_bytes(b"Native dispatch\n" + body.encode() + b"\nReturn.\n")
+    monkeypatch.setattr(records.cold_draft, "_get", lambda endpoint: {
+        **draft_get(endpoint), "body": body} if "/issues/comments/" in endpoint else draft_get(endpoint))
+    original = args.input_file.read_bytes()
+    output = records.begin_native(args)
+    request_path = records.sidecar(output, ".request.json")
+    request_bytes = request_path.read_bytes()
+    request = json.loads(request_bytes)
+    binding = request["judged_draft"]
+    assert Path(request["input"]).read_bytes() == original
+    assert binding["sha256"] == records.cold_draft.artifact_digest(DRAFT)
+    assert original[binding["body_offset"]:binding["body_offset"] + binding["body_bytes"]] == body.encode()
+    monkeypatch.setattr(records.cold_draft, "_get", lambda *_: pytest.fail("finish fetched edited issue"))
+    returned = tmp_path / "return.md"
+    returned.write_bytes(b"would\n")
+    run_path = records.finish_native(records.parser().parse_args([
+        "finish", "--output", str(output), "--vendor", "claude", "--return-file", str(returned), "--outcome", "success",
+    ]))
+    run = json.loads(run_path.read_bytes())
+    assert run["judged_draft"] == binding
+    assert request_path.read_bytes() == request_bytes
+    assert records.cold_draft.completed_binding(request, run) == binding
+
+
+@pytest.mark.parametrize("problem", ["missing-id", "excerpt", "normalized", "unavailable-input", "failed-get"])
+def test_C3_native_bad_input_refuses_before_reserving(tmp_path, monkeypatch, problem):
+    args = native_begin_args(tmp_path, stage="cold-seat")
+    if problem == "missing-id": args.draft_comment = None
+    if problem == "excerpt": args.input_file.write_bytes(b"Whole draft with Unicode")
+    if problem == "normalized": args.input_file.write_bytes(DRAFT.replace("  ", " ").encode())
+    if problem == "unavailable-input":
+        args.input_file = None
+        args.input_unavailable_reason = "native tool exposes no input"
+    if problem == "failed-get":
+        monkeypatch.setattr(records.cold_draft, "_get", lambda *_: (_ for _ in ()).throw(records.cold_draft.BindingError("GET unavailable")))
+    with pytest.raises(records.RecordError): records.begin_native(args)
+    assert not records.sidecar(args.output, ".request.json").exists()
+    assert not records.sidecar(args.output, ".run.json").exists()
+
+
+def test_C3_native_completion_refuses_changed_frozen_binding_before_writing_return(tmp_path):
+    args = native_begin_args(tmp_path, stage="cold-seat")
+    output = records.begin_native(args)
+    request_path = records.sidecar(output, ".request.json")
+    request = json.loads(request_path.read_bytes())
+    request["judged_draft"]["sha256"] = "0" * 64
+    request_path.write_bytes(records.json_bytes(request))
+    returned = tmp_path / "return.md"
+    returned.write_bytes(b"would")
+    with pytest.raises(records.RecordError, match="digest disagrees"):
+        records.finish_native(records.parser().parse_args([
+            "finish", "--output", str(output), "--vendor", "claude", "--return-file", str(returned), "--outcome", "success",
+        ]))
+    assert records.sidecar(output, ".native.return.log").stat().st_size == 0
+
+
+def test_C4_native_pending_old_request_finishes_without_inventing_a_digest(tmp_path, monkeypatch):
+    args = native_begin_args(tmp_path, stage="use")
+    monkeypatch.setattr(records, "producer_version", lambda: "0.189.0")
+    output = records.begin_native(args)
+    path = records.sidecar(output, ".request.json")
+    request = json.loads(path.read_bytes())
+    request["stage"] = "cold-seat"
+    path.write_bytes(records.json_bytes(request))
+    before = path.read_bytes()
+    monkeypatch.setattr(records, "producer_version", lambda: "0.190.0")
+    returned = tmp_path / "return.md"
+    returned.write_bytes(b"would")
+    run_path = records.finish_native(records.parser().parse_args([
+        "finish", "--output", str(output), "--vendor", "claude", "--return-file", str(returned), "--outcome", "success",
+    ]))
+    run = json.loads(run_path.read_bytes())
+    assert path.read_bytes() == before and "judged_draft" not in run
+    assert records.cold_draft.completed_binding(request, run) is None
+
+
+def test_E1_native_draft_option_is_cold_specific(tmp_path):
+    args = native_begin_args(tmp_path, stage="use")
+    args.draft_comment = "20"
+    with pytest.raises(records.RecordError, match="only to cold-seat"): records.begin_native(args)
+    assert not records.sidecar(args.output, ".request.json").exists()
 
 
 @pytest.mark.parametrize("stage", ["use", "cold-seat", "artifact", "build"])
