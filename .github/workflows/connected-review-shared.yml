@@ -56,6 +56,12 @@ jobs:
           ref: ${{ steps.identity.outputs.reviewer_sha }}
           path: .connected-review-runtime
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            lib/connected_review.py
+            lib/vendor_cli.py
+            lib/winio.py
+            skills/connected-review/references/finder.md
       - name: Verify trusted reviewer checkout
         shell: python
         env:
@@ -137,6 +143,12 @@ jobs:
           ref: ${{ needs.prepare.outputs.reviewer_sha }}
           path: .connected-review-runtime
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            lib/connected_review.py
+            lib/vendor_cli.py
+            lib/winio.py
+            skills/connected-review/references/finder.md
       - name: Verify trusted reviewer checkout
         shell: python
         env:
@@ -221,6 +233,12 @@ jobs:
           ref: ${{ steps.identity.outputs.reviewer_sha }}
           path: .connected-review-runtime
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            lib/connected_review.py
+            lib/vendor_cli.py
+            lib/winio.py
+            skills/connected-review/references/finder.md
       - name: Verify trusted reviewer checkout
         shell: python
         env:

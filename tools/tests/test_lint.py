@@ -456,6 +456,56 @@ def test_lib_may_not_reference_a_skill(tmp_path):
     assert len(findings) == 1 and "sideways-dep" in findings[0] and "from lib/" in findings[0]
 
 
+@pytest.mark.parametrize("first", ["name: Fetch reviewer\n        uses:", "uses:"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_sideways_dep_allows_fenced_checkout_sparse_paths_only(tmp_path, first, newline):
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    workflow = (
+        "```yaml\n"
+        f"      - {first} actions/checkout@pinned\n"
+        "        with:\n"
+        "          repository: example/source\n"
+        "          sparse-checkout-cone-mode: false\n"
+        "          sparse-checkout: |\n"
+        "            skills/example-skill/references/detail.md\n"
+        "```\n"
+    )
+    _write_cell(other, workflow)
+    path = other / "SKILL.md"
+    path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", newline.encode()))
+    assert lint.check_sideways_deps(tmp_path) == []
+    # The same file remains an unlawful installed-cell path outside the list.
+    _write_cell(other, workflow + "Load skills/example-skill/references/detail.md.\n")
+    findings = lint.check_sideways_deps(tmp_path)
+    assert len(findings) == 1 and "references skill 'example-skill'" in findings[0]
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda text: text.replace("```yaml", "```text"),
+    lambda text: text.replace("actions/checkout@pinned", "example/action@pinned"),
+    lambda text: text.replace("        with:\n", "        env:\n"),
+    lambda text: text.replace("sparse-checkout: |", "run: |"),
+    lambda text: text.replace("            skills/", "            Load skills/"),
+])
+def test_sideways_dep_keeps_other_fenced_paths_checked(tmp_path, mutation):
+    make_clean_tree(tmp_path)
+    other = tmp_path / "skills" / "other-skill"
+    other.mkdir(parents=True)
+    workflow = (
+        "```yaml\n"
+        "      - uses: actions/checkout@pinned\n"
+        "        with:\n"
+        "          sparse-checkout: |\n"
+        "            skills/example-skill/references/detail.md\n"
+        "```\n"
+    )
+    _write_cell(other, mutation(workflow))
+    findings = lint.check_sideways_deps(tmp_path)
+    assert len(findings) == 1 and "references skill 'example-skill'" in findings[0]
+
+
 # --- the charter, which costs nothing to point at ---------------------------
 
 def test_the_charter_may_reference_any_cell(tmp_path):

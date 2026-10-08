@@ -125,6 +125,12 @@ jobs:
           ref: ${{ env.TRADECRAFT_REVIEWER_REF }}
           path: .connected-review-runtime
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            lib/connected_review.py
+            lib/vendor_cli.py
+            lib/winio.py
+            skills/connected-review/references/finder.md
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
@@ -158,6 +164,12 @@ jobs:
           ref: ${{ env.TRADECRAFT_REVIEWER_REF }}
           path: .connected-review-runtime
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            lib/connected_review.py
+            lib/vendor_cli.py
+            lib/winio.py
+            skills/connected-review/references/finder.md
       - name: Set up hosted Python
         if: needs.prepare.outputs.visibility == 'public'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -195,6 +207,12 @@ jobs:
           ref: ${{ env.TRADECRAFT_REVIEWER_REF }}
           path: .connected-review-runtime
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            lib/connected_review.py
+            lib/vendor_cli.py
+            lib/winio.py
+            skills/connected-review/references/finder.md
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:

@@ -825,6 +825,28 @@ def pointer_cycle_findings(graph: dict[str, list[PointerEdge]]) -> list[str]:
     return sorted(findings)
 
 
+def _checkout_sparse_lines(text: str) -> set[int]:
+    """Sparse paths name files in a fetched repository, not installed cells."""
+    text = text.replace("\r\n", "\n")
+    allowed = set()
+    for fence in re.finditer(r"(?ms)^```yaml\n(.*?)^```", text):
+        for step in re.finditer(r"(?ms)^      - .*?(?=^      - |\Z)", fence[1]):
+            if not re.search(r"(?m)^      - uses: actions/checkout@\S+$|^        uses: actions/checkout@\S+$", step[0]):
+                continue
+            inputs = re.search(r"(?m)^        with:\n((?:^          .*\n)+)", step[0])
+            if not inputs:
+                continue
+            sparse = re.search(r"(?m)^          sparse-checkout: \|\n((?:^            [^\n]+\n)+)", inputs[1])
+            if not sparse:
+                continue
+            offset = fence.start(1) + step.start() + inputs.start(1) + sparse.start(1)
+            first_line = text.count("\n", 0, offset) + 1
+            for index, line in enumerate(sparse[1].splitlines()):
+                if re.fullmatch(r"            skills/[A-Za-z0-9_./-]+", line):
+                    allowed.add(first_line + index)
+    return allowed
+
+
 def check_sideways_deps(root: Path) -> list[str]:
     findings = []
     skills = root / SHIPPED_CELLS
@@ -877,6 +899,7 @@ def check_sideways_deps(root: Path) -> list[str]:
             if text is None:
                 continue
             rel_file = path.relative_to(root).as_posix()
+            sparse_lines = _checkout_sparse_lines(text) if path.suffix == ".md" else set()
             # **Every path form below is read fenced or not**, which is the
             # split `_cell_name_refs` states from the other side. A path
             # inside a fence is not display: this repo's fenced blocks are
@@ -920,6 +943,10 @@ def check_sideways_deps(root: Path) -> list[str]:
                         f"installed"
                     )
                 for match in ROOTED_SKILL.finditer(line):
+                    # A literal sparse list in a fenced checkout selects the
+                    # fetched tree. Other fenced paths still name contracts.
+                    if lineno in sparse_lines:
+                        continue
                     # Same lawful-case guards as the zone wall's rooted branch:
                     # web URLs resolve for consumers, relative forms belong to
                     # the resolution check, and a longer path or hyphenated

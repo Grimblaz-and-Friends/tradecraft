@@ -407,7 +407,9 @@ def test_shared_workflow_preserves_security_and_runtime_boundaries():
         assert "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09" in body
         assert "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1" in body
         assert body.index("job.workflow_sha") < body.index("actions/checkout@")
-        assert body.index("Verify trusted reviewer checkout") < body.index("lib/connected_review.py")
+        assert body.index("Verify trusted reviewer checkout") < body.index(
+            "python .connected-review-runtime/lib/connected_review.py"
+        )
         if job != "review":
             assert "runs-on: ubuntu-latest" in body
             assert "secrets." not in body
