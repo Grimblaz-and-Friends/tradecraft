@@ -1368,7 +1368,7 @@ def _cold_return_match_length(bundle: tuple, body: str) -> int:
         return 0
     def normalized(text: str) -> str:
         return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")).rstrip("\n")
-    returned = normalized(returned)
+    returned = normalized(MARKER.sub("", returned))
     comment = normalized(MARKER.sub("", body))
     if returned and "\n" + returned + "\n" in "\n" + comment + "\n":
         return len(returned)

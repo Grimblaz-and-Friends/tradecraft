@@ -643,6 +643,112 @@ def test_C1_C4_882_marker_comments_cannot_supply_a_seat_return(tmp_path, returne
     assert "post the seat's whole return with the marker" in reason and str(selected) in reason
 
 
+@pytest.mark.parametrize("version", ["0.190.0", cold_draft.BINDING_VERSION])
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+def test_C1_C3_C4_882_marker_opening_return_posted_verbatim_pairs(tmp_path, version, ending):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    returned = (VERDICT + "\nThe whole judgment for the caf" + chr(0xE9)
+                + " fixture.  \nAll reader cells considered.\t\n").replace("\n", ending)
+    selected = judgment(fixture, tmp_path, returned=returned, version=version, post_return=False)
+    fixture.issue_comments[2]["body"] = returned
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    evidence = decision.artifact_interpretation["qualifying_verdicts"]
+    assert len(evidence) == 1 and evidence[0]["bundle"] == str(selected)
+    assert evidence[0]["sha256"] == (None if version == "0.190.0" else cold_draft.artifact_digest(SOURCE_DRAFT))
+    assert evidence[0]["binding_status"] == ("judged digest unrecorded" if version == "0.190.0" else "bound")
+    assert not any(row["name"] == "cold-verdict" for row in decision.invalid_markers)
+    assert fixture.issue_comments[2]["body"] == returned
+    assert (selected.parent / "result.md.source.md").read_bytes() == returned.encode("utf-8")
+
+
+@pytest.mark.parametrize("quoted_opener", [
+    "> <!-- tradecraft:artifact:v1 status=draft -->",
+    "```text\n<!-- tradecraft:artifact:v1 status=draft -->\n```",
+    "`<!-- tradecraft:artifact:v1 status=draft -->`",
+])
+def test_C1_C3_882_return_quoting_artifact_opener_pairs(tmp_path, quoted_opener):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    returned = "Judged this draft opener:\n" + quoted_opener + "\nThe reader can build every decision.\n"
+    selected = judgment(fixture, tmp_path, returned=returned)
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    evidence = decision.artifact_interpretation["qualifying_verdicts"]
+    assert len(evidence) == 1 and evidence[0]["bundle"] == str(selected)
+    assert evidence[0]["sha256"] == cold_draft.artifact_digest(SOURCE_DRAFT)
+    assert not any(row["name"] == "cold-verdict" for row in decision.invalid_markers)
+    assert (selected.parent / "result.md.source.md").read_bytes() == returned.encode("utf-8")
+
+
+@pytest.mark.parametrize("returned", [
+    VERDICT + "\n",
+    VERDICT + "\n \t\n<!-- tradecraft:artifact:v1 status=draft -->\n",
+    VERDICT + "\r\n<!-- tradecraft:other:v1 note=would -->\r\n\t\r\n",
+])
+def test_C1_C4_882_marker_only_return_posted_verbatim_still_refuses(tmp_path, returned):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    selected = judgment(fixture, tmp_path, returned=returned, post_return=False)
+    fixture.issue_comments[2]["body"] = returned
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "build" and not decision.artifact_interpretation["qualifying_verdicts"]
+    reason = next(row["reason"] for row in decision.invalid_markers if row["name"] == "cold-verdict")
+    assert "post the seat's whole return with the marker" in reason and str(selected) in reason
+
+
+def test_C1_C4_882_marker_bearing_adverse_returns_still_support_cap(tmp_path):
+    marker = VERDICT.replace("verdict=would", "verdict=would-not")
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, marker, marker, _source_settlement("cap"), HOLDER))
+    bundles = []
+    for index, name in enumerate(("first-adverse", "second-adverse"), start=2):
+        returned = marker + "\nSeat " + name + ": the reader would not build these decisions.\n"
+        bundles.append(judgment(fixture, tmp_path, verdict_index=index, name=name,
+                                returned=returned, post_return=False))
+        fixture.issue_comments[index]["body"] = returned
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    evidence = decision.artifact_interpretation["qualifying_verdicts"]
+    assert [row["bundle"] for row in evidence] == [str(path) for path in bundles]
+    assert all(row["binding_status"] == "bound" for row in evidence)
+    assert not any(row["name"] == "cold-verdict" for row in decision.invalid_markers)
+
+
+def test_C1_C4_882_longest_match_uses_text_after_marker_removal(tmp_path):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    returned = VERDICT + "\nThe whole accepted judgment.\nwould\nAll reader cells considered.\n"
+    accepted = judgment(fixture, tmp_path, name="accepted-marked", returned=returned, post_return=False)
+    fixture.issue_comments[2]["body"] = returned
+    run = json.loads(accepted.read_bytes())
+    run["completed_at"] = (datetime.fromisoformat(run["completed_at"]) - timedelta(seconds=5)).isoformat()
+    accepted.write_bytes(work.records.json_bytes(run))
+    short_return = "<!-- tradecraft:artifact:v1 status=draft -->" * 20 + "would\n"
+    assert len(short_return) > len(returned)
+    judgment(fixture, tmp_path, name="unposted-marker-heavy", returned=short_return, post_return=False,
+             body=SOURCE_DRAFT.replace("original decision", "unaccepted decision"))
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    evidence = decision.artifact_interpretation["qualifying_verdicts"]
+    assert len(evidence) == 1 and evidence[0]["bundle"] == str(accepted)
+    assert evidence[0]["sha256"] == cold_draft.artifact_digest(SOURCE_DRAFT)
+
+
+def test_C1_C4_882_marker_differences_do_not_break_a_conflicting_longest_tie(tmp_path):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    prose = "\nThe whole marked judgment.\nAll reader cells considered.\n"
+    first = judgment(fixture, tmp_path, name="first-marked-tie", returned=VERDICT + prose, post_return=False)
+    fixture.issue_comments[2]["body"] = VERDICT + prose
+    run = json.loads(first.read_bytes())
+    run["completed_at"] = (datetime.fromisoformat(run["completed_at"]) - timedelta(seconds=5)).isoformat()
+    first.write_bytes(work.records.json_bytes(run))
+    second = judgment(fixture, tmp_path, name="second-marked-tie", post_return=False,
+                      returned=VERDICT.replace("verdict=would", "verdict=would-not") + prose,
+                      body=SOURCE_DRAFT.replace("original decision", "different judgment"))
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "build" and not decision.artifact_interpretation["qualifying_verdicts"]
+    reason = next(row["reason"] for row in decision.invalid_markers if row["name"] == "cold-verdict")
+    assert "ambiguous" in reason and "different bindings" in reason
+    assert str(first) in reason and str(second) in reason
+
+
 @pytest.mark.parametrize("prefix,suffix", [("Before ", ""), ("", " after"), ("Before ", " after")])
 @pytest.mark.parametrize("returned", ["A complete judgment.", "A complete judgment.\nSecond line."])
 def test_C1_C4_882_mid_line_partial_return_cannot_pair(tmp_path, prefix, suffix, returned):
