@@ -709,6 +709,35 @@ def test_C4_882_historical_verdict_keeps_latest_time_selection_without_retained_
     assert evidence["binding_status"] == "judged digest unrecorded"
 
 
+@pytest.mark.parametrize("posted_version,unposted_version", [
+    ("0.189.0", "0.190.0"), ("0.189.0", "0.189.0"), ("0.190.0", "0.189.0"),
+])
+def test_C1_C4_882_content_pairing_crosses_upgrade_before_historical_time_fallback(
+        tmp_path, posted_version, unposted_version):
+    fixture = bound_fixture(tmp_path, version=posted_version)
+    posted = tmp_path / "records/cold/result.md.run.json"
+    run = json.loads(posted.read_bytes())
+    run["completed_at"] = (datetime.fromisoformat(run["completed_at"]) - timedelta(seconds=5)).isoformat()
+    posted.write_bytes(work.records.json_bytes(run))
+    unposted = judgment(fixture, tmp_path, version=unposted_version, name="unposted-after-upgrade",
+                        body=SOURCE_DRAFT.replace("original decision", "unaccepted decision"), post_return=False)
+    rejected = json.loads(unposted.read_bytes())
+    rejected["staffing_status"] = "degraded"
+    unposted.write_bytes(work.records.json_bytes(rejected))
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    evidence = decision.artifact_interpretation["qualifying_verdicts"]
+    assert len(evidence) == 1 and evidence[0]["bundle"] == str(posted)
+    assert not any(row["name"] == "cold-verdict" for row in decision.invalid_markers)
+    if posted_version == "0.189.0":
+        assert evidence[0]["comment_id"] is None and evidence[0]["sha256"] is None
+        assert evidence[0]["binding_status"] == "judged digest unrecorded"
+        assert json.dumps(decision.as_dict()).count("judged digest unrecorded") == 1
+    else:
+        assert evidence[0]["comment_id"] == "20"
+        assert evidence[0]["sha256"] == cold_draft.artifact_digest(SOURCE_DRAFT)
+
+
 @pytest.mark.parametrize("version", [None, "unknown"])
 def test_C4_882_unproved_latest_producer_version_cannot_pair_as_historical(tmp_path, version):
     fixture = bound_fixture(tmp_path)

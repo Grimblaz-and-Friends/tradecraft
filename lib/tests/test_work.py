@@ -240,8 +240,9 @@ def test_broken_pointer_refuses_ordinary_and_explicit_launch_before_mutation(
         assert _fixture_digest(fixture.issue_comments[1]["body"]) in recommendation.detail
         if failure == "miscopied-digest":
             assert fixture.issue_comments[1]["body"] == SOURCE_DRAFT
-        remedy = ("Do not use the observed digest to re-settle" if route == "would"
-                  else "Re-settle with the named draft's current digest.")
+        remedy = ("Do not use the observed digest to re-settle: restore the judged text, "
+                  "or post a new draft for a fresh cold seat." if route == "would" else
+                  "Do not use the observed digest to re-settle: restore the settled text, or post a new draft.")
         assert remedy in recommendation.detail
     dispatch = tmp_path / "custom.md"
     supplied = b"Holder dispatch must not erase the source failure.\r\n"

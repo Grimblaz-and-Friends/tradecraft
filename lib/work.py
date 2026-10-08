@@ -1391,23 +1391,24 @@ def _selected_marker_bundle(state: WorkState, marker: Marker, stages: set[str]) 
         raise WorkError("no matching successful dispatch bundle")
     if marker.name == "cold-verdict":
         latest = matched[-1]
-        try:
-            historical = cold_draft._historical(latest[2].get("producer_version"))
-        except ValueError as exc:
-            raise WorkError(f"cold verdict bundle {latest[1]}: {exc}") from exc
-        if not historical:
-            paired = []
-            for bundle in matched:
-                try:
-                    old = cold_draft._historical(bundle[2].get("producer_version"))
-                except ValueError:
-                    continue
-                if not old and _cold_return_in_comment(bundle, marker.body):
-                    paired.append(bundle)
-            if not paired:
+        paired = []
+        for bundle in matched:
+            try:
+                cold_draft._historical(bundle[2].get("producer_version"))
+            except ValueError:
+                continue
+            if _cold_return_in_comment(bundle, marker.body):
+                paired.append(bundle)
+        if paired:
+            matched = paired
+        else:
+            try:
+                historical = cold_draft._historical(latest[2].get("producer_version"))
+            except ValueError as exc:
+                raise WorkError(f"cold verdict bundle {latest[1]}: {exc}") from exc
+            if not historical:
                 raise WorkError(f"cold verdict has no matching retained source return; "
                                 f"post the seat's whole return with the marker; latest candidate bundle: {latest[1]}")
-            matched = paired
     completed, _path, _request, _run = matched[-1]
     if len(matched) > 1 and matched[-2][0] == completed:
         raise WorkError("matching dispatch bundle is ambiguous")
@@ -1681,7 +1682,8 @@ def _settlement_artifact(state: WorkState, settlement: Marker, brief: Marker,
                              "historical compatibility still requires a matching body digest. "
                              "Do not use the observed digest to re-settle: restore the judged text, "
                              "or post a new draft for a fresh cold seat."
-                             if route == "would" else "Re-settle with the named draft's current digest."))
+                             if route == "would" else "Do not use the observed digest to re-settle: "
+                             "restore the settled text, or post a new draft."))
         return latest_draft, None
     if route == "would" and judgment and judgment.get("sha256") is not None:
         return None, prefix + "bound would judgment requires draft_comment and draft_sha256 to name its judged draft"
