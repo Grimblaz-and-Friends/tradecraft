@@ -1827,6 +1827,10 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                     invalid.append((marker, current_artifact_error))
                 if error is not None:
                     invalid.append((marker, error))
+                    if route is not None and latest_settlement is not None:
+                        source_error = current_artifact_error or f"artifact settlement {_marker_setting_source(marker)}: {error}"
+                        current_artifact_text = None
+                        current_artifact_error = source_error
                     continue
                 if current_artifact_error is not None:
                     continue

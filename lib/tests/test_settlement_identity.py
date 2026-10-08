@@ -178,6 +178,28 @@ def test_C6_876_malformed_current_reference_cannot_fall_back_to_an_older_settlem
     assert any(row["source_id"] == "60" for row in decision.invalid_markers)
 
 
+@pytest.mark.parametrize("route", ["cap", "discharge", "unobtainable"])
+def test_C6_876_unlawful_current_route_cannot_fall_back_to_an_older_settlement(
+        tmp_path, monkeypatch, capsys, route):
+    fixture = bound_fixture(tmp_path)
+    fixture.issue_comments.append({
+        "body": _source_settlement(route), "user": {"login": PRODUCER},
+    })
+    comments(fixture)
+    decision = work.decide(fixture, RULES)
+    assert not decision.dispatch and decision.reason == "artifact-source-unusable"
+    assert "artifact settlement" in decision.detail and "route=" + route in decision.detail
+    monkeypatch.setattr(work, "_invoke_recipient", lambda *_: pytest.fail("older settlement launched"))
+    for stage in ("build", "floor", "review-disposition"):
+        work._execute_stage(fixture, work.Decision(stage, True, "fresh", "fixture"), tmp_path, None)
+        report = json.loads(capsys.readouterr().out)
+        assert not report["dispatch"] and "route=" + route in report["detail"]
+    fixture.issue_comments[-1]["body"] = _source_settlement("would")
+    assert work.decide(fixture, RULES).stage == "build"
+    assert fixture.artifact_phase.settlement_origin.source_id == "40"
+    assert [row.source_id for row in fixture.artifact_phase.holder_readings] == ["50"]
+
+
 def test_C2_876_miscopy_correction_and_restatement_never_spend_the_anchor(tmp_path):
     fixture = bound_fixture(tmp_path)
     good = _source_settlement("would")
