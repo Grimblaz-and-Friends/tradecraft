@@ -1352,24 +1352,27 @@ def _native_staffing(state: WorkState, marker: Marker,
     }
 
 
-def _cold_return_in_comment(bundle: tuple, body: str) -> bool:
-    """Compare the retained source return, never the published copy or verdict prose."""
+def _cold_return_match_length(bundle: tuple, body: str) -> int:
+    """Measure a whole-line source return match outside tradecraft marker comments."""
     _completed, path, _request, run = bundle
     result = run.get("result")
     source = result.get("source_output") if isinstance(result, dict) else None
     if not isinstance(source, str) or not source:
-        return False
+        return 0
     source_path = Path(source)
     if not source_path.is_absolute():
         source_path = Path(path).parent / source_path
     try:
         returned = cold_draft.read_input(source_path).decode("utf-8")
     except (OSError, ValueError):
-        return False
+        return 0
     def normalized(text: str) -> str:
         return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")).rstrip("\n")
     returned = normalized(returned)
-    return bool(returned) and returned in normalized(body)
+    comment = normalized(MARKER.sub("", body))
+    if returned and "\n" + returned + "\n" in "\n" + comment + "\n":
+        return len(returned)
+    return 0
 
 
 def _selected_marker_bundle(state: WorkState, marker: Marker, stages: set[str]) -> tuple | None:
@@ -1396,10 +1399,23 @@ def _selected_marker_bundle(state: WorkState, marker: Marker, stages: set[str]) 
                 cold_draft._historical(bundle[2].get("producer_version"))
             except ValueError:
                 continue
-            if _cold_return_in_comment(bundle, marker.body):
-                paired.append(bundle)
+            length = _cold_return_match_length(bundle, marker.body)
+            if length:
+                paired.append((length, bundle))
         if paired:
-            matched = paired
+            longest = max(length for length, _bundle in paired)
+            matched = [bundle for length, bundle in paired if length == longest]
+            if len(matched) > 1:
+                bindings = []
+                for _completed, path, request, run in matched:
+                    try:
+                        bindings.append(cold_draft.completed_binding(request, run))
+                    except (OSError, ValueError) as exc:
+                        raise WorkError(f"cold verdict bundle {path}: {exc}") from exc
+                if any(binding != bindings[0] for binding in bindings[1:]):
+                    paths = ", ".join(bundle[1] for bundle in matched)
+                    raise WorkError(f"cold verdict matching returns are ambiguous: equally long returns "
+                                    f"have different bindings; bundles: {paths}")
         else:
             try:
                 historical = cold_draft._historical(latest[2].get("producer_version"))

@@ -605,6 +605,110 @@ def test_C1_C3_882_rejected_degraded_seat_does_not_deadlock_qualified_rerun(tmp_
     assert not any(row["name"] == "cold-verdict" for row in decision.invalid_markers)
 
 
+@pytest.mark.parametrize("short_on_own_line", [False, True])
+def test_C1_C4_882_posted_long_return_beats_later_unposted_short_return(tmp_path, short_on_own_line):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    returned = "The whole accepted judgment.\n" + (
+        "would\n" if short_on_own_line else "The reader would follow every decision.\n") + "All reader cells considered.\n"
+    accepted = judgment(fixture, tmp_path, name="accepted-long", returned=returned)
+    run = json.loads(accepted.read_bytes())
+    run["completed_at"] = (datetime.fromisoformat(run["completed_at"]) - timedelta(seconds=5)).isoformat()
+    accepted.write_bytes(work.records.json_bytes(run))
+    short_return = "would" + (" \t" * len(returned) if short_on_own_line else "") + "\n\n"
+    rejected = judgment(fixture, tmp_path, name="unposted-short", returned=short_return, post_return=False,
+                        body=SOURCE_DRAFT.replace("original decision", "unaccepted decision"))
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    evidence = decision.artifact_interpretation["qualifying_verdicts"]
+    assert len(evidence) == 1 and evidence[0]["bundle"] == str(accepted)
+    assert evidence[0]["sha256"] == cold_draft.artifact_digest(SOURCE_DRAFT)
+    assert all(row["bundle"] != str(rejected) for row in evidence)
+    assert not any(row["name"] == "cold-verdict" for row in decision.invalid_markers)
+
+
+@pytest.mark.parametrize("returned,extra_marker", [
+    ("would\n", ""),
+    (VERDICT + "\n", ""),
+    ("<!-- tradecraft:holder-reading:v1 result=amended -->\n",
+     "\n<!-- tradecraft:holder-reading:v1 result=amended -->\n"),
+    ("<!-- tradecraft:other:v1 note=would -->\n",
+     "\n<!-- tradecraft:other:v1 note=would -->\n"),
+])
+def test_C1_C4_882_marker_comments_cannot_supply_a_seat_return(tmp_path, returned, extra_marker):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT + extra_marker, _source_settlement("would"), HOLDER))
+    selected = judgment(fixture, tmp_path, returned=returned, post_return=False)
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "build" and not decision.artifact_interpretation["qualifying_verdicts"]
+    reason = next(row["reason"] for row in decision.invalid_markers if row["name"] == "cold-verdict")
+    assert "post the seat's whole return with the marker" in reason and str(selected) in reason
+
+
+@pytest.mark.parametrize("prefix,suffix", [("Before ", ""), ("", " after"), ("Before ", " after")])
+@pytest.mark.parametrize("returned", ["A complete judgment.", "A complete judgment.\nSecond line."])
+def test_C1_C4_882_mid_line_partial_return_cannot_pair(tmp_path, prefix, suffix, returned):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    selected = judgment(fixture, tmp_path, returned=returned + "\n", post_return=False)
+    fixture.issue_comments[2]["body"] += "\n" + prefix + returned + suffix + "\n"
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "build" and not decision.artifact_interpretation["qualifying_verdicts"]
+    reason = next(row["reason"] for row in decision.invalid_markers if row["name"] == "cold-verdict")
+    assert "post the seat's whole return with the marker" in reason and str(selected) in reason
+
+
+@pytest.mark.parametrize("difference", ["digest", "comment-id", "historical"])
+def test_C1_C4_882_longest_return_tie_with_different_bindings_refuses(tmp_path, difference):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    first = judgment(fixture, tmp_path, name="first-tied", returned="The first complete judgment.\n")
+    run = json.loads(first.read_bytes())
+    run["completed_at"] = (datetime.fromisoformat(run["completed_at"]) - timedelta(seconds=5)).isoformat()
+    first.write_bytes(work.records.json_bytes(run))
+    second = judgment(fixture, tmp_path, name="second-tied", returned="The other complete judgment.\n",
+                      body=SOURCE_DRAFT.replace("original decision", "other decision") if difference == "digest" else SOURCE_DRAFT,
+                      draft_id="99" if difference == "comment-id" else "20",
+                      version="0.190.0" if difference == "historical" else cold_draft.BINDING_VERSION)
+    # Different returns of the same normalized length are both carried whole.
+    assert len("The first complete judgment.") == len("The other complete judgment.")
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "build" and not decision.artifact_interpretation["qualifying_verdicts"]
+    reason = next(row["reason"] for row in decision.invalid_markers if row["name"] == "cold-verdict")
+    assert "ambiguous" in reason and "different bindings" in reason
+    assert str(first) in reason and str(second) in reason
+
+
+def test_C1_C4_882_longest_return_tie_with_same_binding_selects_latest(tmp_path):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    returned = "The whole accepted judgment.\nAll reader cells considered.\n"
+    first = judgment(fixture, tmp_path, name="first-same-binding", returned=returned)
+    run = json.loads(first.read_bytes())
+    run["completed_at"] = (datetime.fromisoformat(run["completed_at"]) - timedelta(seconds=5)).isoformat()
+    first.write_bytes(work.records.json_bytes(run))
+    second = judgment(fixture, tmp_path, name="second-same-binding", returned=returned + "\n", post_return=False)
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "build"
+    evidence = decision.artifact_interpretation["qualifying_verdicts"]
+    assert len(evidence) == 1 and evidence[0]["bundle"] == str(second)
+    assert evidence[0]["sha256"] == cold_draft.artifact_digest(SOURCE_DRAFT)
+
+
+@pytest.mark.parametrize("problem", ["fields", "missing-input"])
+def test_C1_C4_882_longest_return_tie_with_invalid_binding_is_a_named_refusal(tmp_path, problem):
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
+    returned = "The whole judgment.\nAll reader cells considered.\n"
+    first = judgment(fixture, tmp_path, name="valid-tied", returned=returned)
+    run = json.loads(first.read_bytes())
+    run["completed_at"] = (datetime.fromisoformat(run["completed_at"]) - timedelta(seconds=5)).isoformat()
+    first.write_bytes(work.records.json_bytes(run))
+    invalid = judgment(fixture, tmp_path, name="invalid-tied", returned=returned, post_return=False,
+                       malformed="fields" if problem == "fields" else None)
+    if problem == "missing-input": (invalid.parent / "result.md.dispatch.bin").unlink()
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "build" and not decision.artifact_interpretation["qualifying_verdicts"]
+    reason = next(row["reason"] for row in decision.invalid_markers if row["name"] == "cold-verdict")
+    assert "cold verdict bundle " + str(invalid) in reason
+    if problem == "fields": assert "disagrees with its frozen request" in reason
+    else: assert "result.md.dispatch.bin" in reason
+
+
 @pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
 def test_C1_C3_882_content_pairing_normalizes_lines_and_trailing_whitespace_only(tmp_path, ending):
     fixture = comments(state(AFFIRMED, SOURCE_DRAFT, VERDICT, _source_settlement("would"), HOLDER))
