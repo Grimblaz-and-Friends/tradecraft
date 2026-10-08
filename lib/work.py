@@ -1679,13 +1679,15 @@ def _settlement_artifact(state: WorkState, settlement: Marker, brief: Marker,
 
 def _settlement_identity(state: WorkState, marker: Marker, brief: Marker,
                          draft: Marker | None, route: str,
-                         judgment: dict[str, object] | None) -> tuple | None:
+                         judgment: dict[str, object] | None, *,
+                         infer_draft: bool = False) -> tuple | None:
     """Admit only supported text, the named form omissions, or a bound miscopy."""
     candidate = replace(marker, attributes={**marker.attributes, "route": route})
     _text, error = _settlement_artifact(state, candidate, brief, draft, judgment)
     span = dispatch_implementer.artifact_carried_span(brief.body, marker.body)
     if route in {"discharge", "cap"} or (
-            error is None and _text is candidate and "draft_comment" not in marker.attributes):
+            not infer_draft and error is None and _text is candidate
+            and "draft_comment" not in marker.attributes):
         if error is not None or span is None:
             return None
         return "carried", marker.body[span[0]:span[1]].encode("utf-8")
@@ -1760,13 +1762,11 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                     for marker, reason in invalid
                 ]
                 if current_artifact_order is not None:
-                    # A refusal blocks this term's consumption, not revision of its last settlement.
-                    prior_artifact = settled_artifact or current_artifact_text
-                    prior_artifact_error = None if settled_artifact is not None else current_artifact_error
-                    prior_order = settlement_order if settled_artifact is not None else current_artifact_order
+                    prior_artifact = current_artifact_text
+                    prior_artifact_error = current_artifact_error
                     prior_holder_readings = tuple(
                         reading for reading in holder_readings
-                        if _source_order(reading) > prior_order
+                        if _source_order(reading) > current_artifact_order
                     )
             active = True
             term_brief = next(marker for marker in group if marker.name == "affirmed-brief")
@@ -1843,13 +1843,18 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                 # rather than borrowing a judgment from a later settlement.
                 for candidate_route in sorted(SETTLEMENT_ROUTES) if route is None else [route]:
                     if _settlement_error(candidate_route, current, would_not_count, latest_draft is not None) is None:
-                        candidate_identity = _settlement_identity(
-                            state, marker, term_brief, latest_draft, candidate_route, judgment,
-                        )
-                        if candidate_identity is not None:
-                            anchors.setdefault(candidate_identity, (marker, order))
-                            if route == candidate_route:
-                                identity = candidate_identity
+                        # A route omission selects no consumable text yet. It can
+                        # anchor the applicable draft as well as whole carried text.
+                        infer_options = (False, True) if route is None and candidate_route in {"would", "unobtainable"} else (False,)
+                        for infer_draft in infer_options:
+                            candidate_identity = _settlement_identity(
+                                state, marker, term_brief, latest_draft, candidate_route, judgment,
+                                infer_draft=infer_draft,
+                            )
+                            if candidate_identity is not None:
+                                anchors.setdefault(candidate_identity, (marker, order))
+                                if route == candidate_route:
+                                    identity = candidate_identity
                 if current_artifact_error is not None:
                     source_error = current_artifact_error
                     invalid.append((marker, current_artifact_error))
@@ -1857,8 +1862,11 @@ def _artifact_phase(state: WorkState) -> ArtifactPhase:
                     invalid.append((marker, error))
                     if route is not None and latest_settlement is not None:
                         source_error = current_artifact_error or f"artifact settlement {_marker_setting_source(marker)}: {error}"
-                        current_artifact_text = None
-                        current_artifact_error = source_error
+                        # This claim never settled the term. Keep its last effective
+                        # text for revision, while source_error blocks consumption.
+                        current_artifact_text = settled_artifact
+                        current_artifact_error = None
+                        current_artifact_order = settlement_order
                     continue
                 if current_artifact_error is not None:
                     continue

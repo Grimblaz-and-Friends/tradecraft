@@ -464,6 +464,60 @@ def test_C5_C7_882_compatibility_whole_artifact_uses_its_carried_identity(tmp_pa
         assert (b"READING AGAINST X" in prompt) is same_text
 
 
+@pytest.mark.parametrize("route", ["would", "unobtainable"])
+@pytest.mark.parametrize("carried", [False, True])
+@pytest.mark.parametrize("reference", [False, True])
+def test_C5_C7_882_route_omission_keeps_draft_and_carried_correction_positions(
+        tmp_path, route, carried, reference):
+    support = [VERDICT] if route == "would" else []
+    original = "<!-- tradecraft:artifact:v1 status=settled -->" + (
+        SOURCE_REVISED if carried else "\nSee the judged draft.")
+    corrected = _source_settlement(route, reference=reference)
+    fixture = comments(state(AFFIRMED, SOURCE_DRAFT, *support, original,
+                             AMENDED + "RETAIN THIS DIRECTION", corrected))
+    if support:
+        judgment(fixture, tmp_path, version="0.189.0")
+    decision = work.decide(fixture, RULES)
+    # A bare pointer establishes only the applicable draft, never carried text.
+    inherited = reference or carried
+    assert decision.stage == ("build" if inherited else "holder-read")
+    phase = fixture.artifact_phase
+    assert bool(phase.holder_readings) is inherited
+    assert phase.settlement_origin.source_id == str(fixture.issue_comments[-3 if inherited else -1]["id"])
+    assert any("route is missing" in row["reason"] for row in decision.invalid_markers)
+    expected = SOURCE_DRAFT if reference else corrected
+    assert phase.settled_artifact.body == expected
+    for stage in ("build", "floor", "review-disposition"):
+        prompt = work._stage_prompt(fixture, work.Decision(stage, True, "fresh", "fixture"),
+                                    floor_command="fixture-check")
+        assert (b"RETAIN THIS DIRECTION" in prompt) is inherited
+        assert expected.encode() in prompt
+
+
+@pytest.mark.parametrize("failure", ["historical-mismatch", "malformed-reference"])
+def test_C6_C9_882_supported_route_with_broken_source_stays_unusable_for_revision(tmp_path, failure):
+    fixture = bound_fixture(tmp_path, version="0.189.0" if failure == "historical-mismatch" else "0.190.0")
+    if failure == "historical-mismatch":
+        fixture.issue_comments[3]["body"] = _source_settlement("would", reference=False)
+        fixture.issue_comments[1]["body"] = SOURCE_DRAFT.replace("original decision", "edited decision")
+        broken = _source_settlement("would")
+        diagnostic = "body does not match"
+    else:
+        broken = _source_settlement("would").replace(
+            " draft_sha256=" + cold_draft.artifact_digest(SOURCE_DRAFT), "")
+        diagnostic = "draft_sha256"
+    fixture.issue_comments.extend({"body": body, "user": {"login": PRODUCER}}
+                                 for body in (broken, AFFIRMED, AFFIRMED))
+    comments(fixture)
+    decision = work.decide(fixture, RULES)
+    assert decision.stage == "artifact-source" and not decision.dispatch
+    assert diagnostic in decision.detail
+    assert fixture.artifact_phase.prior_artifact is None
+    assert diagnostic in fixture.artifact_phase.prior_artifact_error
+    with pytest.raises(work.WorkError, match=diagnostic):
+        work._stage_prompt(fixture, work.Decision("artifact", True, "fresh", "fixture"))
+
+
 @pytest.mark.parametrize("route", ["unobtainable", "discharge", "cap"])
 def test_C6_C9_882_artifact_revision_keeps_last_effective_settlement_after_invalid_route(tmp_path, route):
     fixture = bound_fixture(tmp_path)
