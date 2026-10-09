@@ -571,6 +571,13 @@ def already_built_terms(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def synthetic_merge_context(monkeypatch):
+    # This module's synthetic API SHAs isolate routing and source delivery.
+    # test_merge_obligation exercises composition against real Git and REST facts.
+    monkeypatch.setattr(work, "_compose_merge_obligation", lambda *_a, **_k: None)
+
+
+@pytest.fixture(autouse=True)
 def isolated_reach(monkeypatch):
     # Existing synthetic SHA/launch fixtures isolate their own mechanisms.
     # TestBuildReach overrides this and uses real objects and attributed turns.
