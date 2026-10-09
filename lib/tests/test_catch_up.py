@@ -576,14 +576,22 @@ def test_C7_catch_up_keeps_unsupported_or_residual_version_conflicts(registered,
         git(implementation, "commit", "-m", "fixture deletion")
     else:
         own = 'not JSON\n' if kind == "invalid-json" else '{"version":"1.3.0","name":"own"}\n'
+        if kind == "mode":
+            own = '{"version":"1.3.0","name":"fixture"}\n'
         commit(implementation, "version.json", own)
         if kind == "mode":
+            # Match the working file to the index on executable-bit filesystems.
+            target = implementation / "version.json"
+            target.chmod(target.stat().st_mode | 0o111)
             git(implementation, "update-index", "--chmod=+x", "version.json")
             git(implementation, "commit", "-m", "fixture mode change")
+            assert git(implementation, "ls-files", "--stage", "version.json").split()[0] == "100755"
     git(implementation, "push")
-    commit(root, "version.json", '{"version":"1.4.0","name":"base"}\n')
+    base_name = "fixture" if kind == "mode" else "base"
+    commit(root, "version.json", f'{{"version":"1.4.0","name":"{base_name}"}}\n')
     git(root, "push", "origin", "main")
     start = git(implementation, "rev-parse", "HEAD")
+    assert git(implementation, "status", "--porcelain") == ""
     work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
     result = json.loads(capsys.readouterr().out)
     assert result["reason"] == "builder-required"
