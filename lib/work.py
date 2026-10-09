@@ -5960,7 +5960,7 @@ def _version_conflict_content(root: Path, spec: dict,
     try:
         return version_policy.replace_field(merged.stdout, spec, str(base_version))
     except ValueError as exc:
-        raise WorkError(f"invalid resolved version content: {exc}") from exc
+        raise _VersionConflict(f"invalid resolved version content: {exc}") from exc
 
 
 def _catch_up_version_conflict(root: Path, spec: dict, base_version: str | None) -> None:

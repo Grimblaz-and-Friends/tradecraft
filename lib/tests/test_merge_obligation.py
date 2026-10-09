@@ -13,6 +13,7 @@ LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import work
 from test_catch_up import SPEC, RULES, graph, registered, git, commit
+from test_catch_up import duplicate_member_conflict, invalid_version_stage, INVALID_VERSION_STAGES, masked_merge_results
 from test_work import AFFIRMED, ARTIFACT, WOULD, HOLDER, SESSION, state, dispatch_bundle
 
 
@@ -472,6 +473,29 @@ def test_C7_unsupported_version_shape_stays_in_composed_paths(launch, kind):
     record = compose()
     expected = ["version.json", f"version.json~{pinned}"] if kind == "symlink" else ["version.json"]
     assert_obligation(record, pinned, expected)
+
+
+@pytest.mark.parametrize("stage", ["build", "review-disposition"])
+def test_C7_clean_masked_merge_with_duplicate_member_is_in_actual_prompt(
+        launch, masked_merge_results, capsys, stage):
+    registered, fixture, inputs, compose = launch
+    pinned = duplicate_member_conflict(registered)
+    before = snapshot(registered[1]), snapshot(registered[0])
+    record = compose(stage)
+    assert record is not None, capsys.readouterr().out
+    assert len(masked_merge_results) == 1
+    assert masked_merge_results[0].returncode == 0
+    assert masked_merge_results[0].stdout.count(b'"homepage"') == 2
+    assert_obligation(record, pinned, ["version.json"])
+    assert (snapshot(registered[1]), snapshot(registered[0])) == before
+
+
+@pytest.mark.parametrize("stage", ["build", "review-disposition"])
+@pytest.mark.parametrize("content", INVALID_VERSION_STAGES)
+def test_C7_invalid_stage_document_is_in_actual_prompt(launch, stage, content):
+    registered, fixture, inputs, compose = launch
+    pinned = invalid_version_stage(registered, content)
+    assert_obligation(compose(stage), pinned, ["version.json"])
 
 
 def test_C7_spaces_and_unicode_paths_are_exact(launch, capsys):

@@ -38,6 +38,60 @@ def commit(root, path, content, message="fixture change"):
     return git(root, "rev-parse", "HEAD")
 
 
+def duplicate_member_conflict(registered):
+    root, implementation, branch, remote, transport, state = registered
+    ancestor = ('{\n  "version": "1.2.3",\n  "name": "fixture",\n'
+                '  "description": "fixture",\n  "license": "MIT",\n'
+                '  "author": "fixture",\n  "keywords": [],\n'
+                '  "repository": "fixture",\n  "private": false\n}\n')
+    common = commit(implementation, "version.json", ancestor)
+    git(root, "merge", "--ff-only", common)
+    own = ancestor.replace('"1.2.3"', '"1.3.0"').replace(
+        '  "name": "fixture",\n', '  "name": "fixture",\n  "homepage": "own",\n')
+    base = ancestor.replace('"1.2.3"', '"1.4.0"').replace(
+        '  "private": false\n', '  "homepage": "base",\n  "private": false\n')
+    for content in (ancestor, own, base):
+        version_policy.document(content.encode("utf-8"), SPEC)
+    commit(implementation, "version.json", own)
+    pinned = commit(root, "version.json", base)
+    git(implementation, "push")
+    git(root, "push", "origin", "main")
+    return pinned
+
+
+def invalid_version_stage(registered, content):
+    root, implementation, branch, remote, transport, state = registered
+    (implementation / "version.json").write_bytes(content)
+    git(implementation, "add", "--", "version.json")
+    git(implementation, "commit", "-m", "fixture invalid version document")
+    pinned = commit(root, "version.json", '{"version":"1.4.0","name":"fixture"}\n')
+    git(implementation, "push")
+    git(root, "push", "origin", "main")
+    return pinned
+
+
+INVALID_VERSION_STAGES = [
+    pytest.param(b'{"version":"1.3.0","homepage":"own","homepage":"other"}\n', id="duplicate-member"),
+    pytest.param(b'{"version":false}\n', id="invalid-version"),
+    pytest.param(b'[]\n', id="non-object"),
+    pytest.param(b'{"version":"1.3.0","other":NaN}\n', id="invalid-constant"),
+    pytest.param(b'\xff\n', id="non-utf8"),
+]
+
+
+@pytest.fixture
+def masked_merge_results(monkeypatch):
+    original = work._git
+    results = []
+    def observe(arguments, root):
+        result = original(arguments, root)
+        if arguments[:2] == ["merge-file", "--stdout"]:
+            results.append(result)
+        return result
+    monkeypatch.setattr(work, "_git", observe)
+    return results
+
+
 class PublicGit:
     """Present public REST graph/blob facts derived from actual Git objects."""
     def __init__(self, root):
@@ -621,6 +675,42 @@ def test_C7_operational_classification_failure_aborts_without_builder_guess(
     with pytest.raises(work.WorkError, match="fixture unavailable"):
         work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
     assert capsys.readouterr().out == ""
+    assert git(implementation, "rev-parse", "HEAD") == start
+    assert git(implementation, "status", "--porcelain") == ""
+
+
+def test_C7_clean_masked_merge_with_duplicate_member_returns_builder(
+        registered, masked_merge_results, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    pinned = duplicate_member_conflict(registered)
+    start = git(implementation, "rev-parse", "HEAD")
+    work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
+    result = json.loads(capsys.readouterr().out)
+    assert len(masked_merge_results) == 1
+    assert masked_merge_results[0].returncode == 0
+    assert masked_merge_results[0].stdout.count(b'"homepage"') == 2
+    with pytest.raises(ValueError, match="duplicate member"):
+        version_policy.document(masked_merge_results[0].stdout, SPEC)
+    assert result["reason"] == "builder-required"
+    assert result["conflicts"] == ["version.json"]
+    assert "duplicate member" in result["detail"]
+    assert result["pinned_base"] == pinned
+    assert result["next"] == {"stage": "build", "continuity": "resume"}
+    assert git(implementation, "rev-parse", "HEAD") == start
+    assert git(implementation, "status", "--porcelain") == ""
+    assert git(implementation, "ls-files", "-u") == ""
+    assert git(root, "ls-remote", "--heads", str(remote), f"refs/heads/{branch}").split()[0] == start
+
+
+@pytest.mark.parametrize("content", INVALID_VERSION_STAGES)
+def test_C7_invalid_stage_document_returns_builder(registered, capsys, content):
+    root, implementation, branch, remote, transport, state = registered
+    invalid_version_stage(registered, content)
+    start = git(implementation, "rev-parse", "HEAD")
+    work._execute_catch_up(transport, state, root, None, "holder-id", RULES)
+    result = json.loads(capsys.readouterr().out)
+    assert result["reason"] == "builder-required"
+    assert result["conflicts"] == ["version.json"]
     assert git(implementation, "rev-parse", "HEAD") == start
     assert git(implementation, "status", "--porcelain") == ""
 
