@@ -4075,7 +4075,8 @@ def _validate_implementation_row(row: dict[str, object], holder_root: Path, *,
 
 
 def resolve_implementation_root(holder_root: Path, repo: str, issue: int,
-                                instalment: str | None) -> tuple[Path, str, bool] | None:
+                                instalment: str | None, *,
+                                migrate: bool = True) -> tuple[Path, str, bool] | None:
     current = read_registry()
     matches = [row for row in current["worktrees"] if (
         row.get("active") is True and _row_matches_change(row, repo, issue, instalment)
@@ -4121,11 +4122,12 @@ def resolve_implementation_root(holder_root: Path, repo: str, issue: int,
         resolved_root, resolved_branch = _validate_implementation_row(
             migrated, holder, enforce_recorded_holder=False
         )
-        row.update({"holder_root": str(holder), "branch": branch})
-        try:
-            write_registry(current)
-        except OSError as exc:
-            raise WorkError("cannot persist migrated implementation registration") from exc
+        if migrate:
+            row.update({"holder_root": str(holder), "branch": branch})
+            try:
+                write_registry(current)
+            except OSError as exc:
+                raise WorkError("cannot persist migrated implementation registration") from exc
         return resolved_root, resolved_branch, True
     implementation_root, branch = _validate_implementation_row(row, holder)
     return implementation_root, branch, False
@@ -4326,7 +4328,8 @@ def sweep_registry(transport: GitHubREST) -> None:
 
 
 def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None,
-                  branch: str | None = None, *, floor_command: str | None = None) -> bytes:
+                  branch: str | None = None, *, floor_command: str | None = None,
+                  merge_obligation: MergeObligation | None = None) -> bytes:
     if decision.stage == "use":
         raise WorkError("the entrance does not dispatch the use stage; return it to the holder")
     if decision.stage == "cold-seat":
@@ -4442,6 +4445,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         "--- affirmed implementation brief begin ---\n" + brief.body
         + "\n--- affirmed implementation brief end ---",
     ]
+    if merge_obligation is not None:
+        sections.insert(0, merge_obligation.prompt())
     if artifact is not None:
         artifact_label = "artifact under revision" if explicit_artifact else "settled artifact"
         draft_explanation = _settled_draft_explanation(phase) if not explicit_artifact else None
@@ -5895,31 +5900,237 @@ def _rerun_gate_evaluations(transport: GitHubREST, state: WorkState,
     return results
 
 
-def _catch_up_version_conflict(root: Path, spec: dict, base_version: str) -> None:
-    path = spec["path"]
-    entries = _git_text(["ls-files", "-u", "--", f":(literal){path}"], root,
-                        "read version conflict stages").splitlines()
-    modes = {line.split()[0] for line in entries}
-    if len(entries) != 3 or len(modes) != 1 or not modes <= {"100644", "100755"}:
-        raise WorkError("version conflict includes a replacement or mode change")
+class _VersionConflict(WorkError):
+    """A supported probe established residual or unsupported content conflict."""
+
+
+def _conflict_stages(content: bytes) -> dict[str, dict[int, tuple[str, str]]]:
+    """Parse Git's NUL-delimited stage records, never its conflict prose."""
+    if content and not content.endswith(b"\0"):
+        raise WorkError("invalid conflict stages: missing NUL terminator")
+    paths: dict[str, dict[int, tuple[str, str]]] = {}
+    for entry in content.split(b"\0")[:-1]:
+        identity, separator, raw_path = entry.partition(b"\t")
+        fields = identity.split(b" ")
+        if (not separator or len(fields) != 3 or not raw_path
+                or re.fullmatch(rb"[0-7]{6}", fields[0]) is None
+                or re.fullmatch(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})", fields[1]) is None
+                or fields[2] not in {b"1", b"2", b"3"}):
+            raise WorkError("invalid conflict stage record")
+        try:
+            path = raw_path.decode("utf-8")
+        except UnicodeError as exc:
+            raise WorkError("conflict path is not UTF-8") from exc
+        stage = int(fields[2])
+        stages = paths.setdefault(path, {})
+        if stage in stages:
+            raise WorkError("invalid conflict stages: duplicate path and stage")
+        stages[stage] = (fields[0].decode("ascii"), fields[1].decode("ascii"))
+    return paths
+
+
+def _version_conflict_content(root: Path, spec: dict,
+                              stages: dict[int, tuple[str, str]],
+                              base_version: str | None) -> bytes:
+    modes = {mode for mode, _oid in stages.values()}
+    if set(stages) != {1, 2, 3} or len(modes) != 1 or not modes <= {"100644", "100755"}:
+        raise _VersionConflict("version conflict includes a replacement or mode change")
     contents = []
     for stage in (1, 2, 3):
-        result = _git(["show", f":{stage}:{path}"], root)
+        result = _git(["cat-file", "blob", stages[stage][1]], root)
         if result.returncode:
-            raise WorkError("version conflict has incomplete stages")
-        contents.append(version_policy.replace_field(result.stdout, spec, "0.0.0"))
+            raise WorkError(f"cannot read version conflict blob: {_git_failure(result)}")
+        try:
+            if stage == 2 and base_version is None:
+                base_version = version_policy.document(result.stdout, spec)[spec["field"]]
+            contents.append(version_policy.replace_field(result.stdout, spec, "0.0.0"))
+        except ValueError as exc:
+            raise _VersionConflict(f"version conflict has unsupported JSON: {exc}") from exc
     with tempfile.TemporaryDirectory(prefix="tradecraft-version-") as directory:
         paths = [Path(directory) / name for name in ("base", "ours", "theirs")]
         for target, content in zip(paths, contents):
             target.write_bytes(content)
         merged = _git(["merge-file", "--stdout", str(paths[1]), str(paths[0]), str(paths[2])], root)
+    if 0 < merged.returncode <= 127:
+        if not merged.stdout:
+            raise WorkError(f"cannot classify version conflict: {_git_failure(merged)}")
+        raise _VersionConflict("version file conflicts outside the declared field")
     if merged.returncode:
-        raise WorkError("version file conflicts outside the declared field")
+        raise WorkError(f"cannot classify version conflict: {_git_failure(merged)}")
+    try:
+        return version_policy.replace_field(merged.stdout, spec, str(base_version))
+    except ValueError as exc:
+        raise WorkError(f"invalid resolved version content: {exc}") from exc
+
+
+def _catch_up_version_conflict(root: Path, spec: dict, base_version: str | None) -> None:
+    path = spec["path"]
+    listed = _git(["ls-files", "-u", "-z", "--", f":(literal){path}"], root)
+    if listed.returncode:
+        raise WorkError(f"cannot read version conflict stages: {_git_failure(listed)}")
+    stages = _conflict_stages(listed.stdout).get(path, {})
+    content = _version_conflict_content(root, spec, stages, base_version)
     target = root / path
     if target.is_symlink() or not _path_inside(target, root):
         raise WorkError("version file resolves outside the implementation root")
-    target.write_bytes(version_policy.replace_field(merged.stdout, spec, base_version))
+    target.write_bytes(content)
     _git_text(["add", "--", f":(literal){path}"], root, "stage resolved version field")
+
+
+def _pin_merge_base(transport: GitHubREST, base: dict, root: Path,
+                     purpose: str) -> tuple[str, str]:
+    encoded = urllib.parse.quote(str(base["ref"]), safe="")
+    endpoint = f"repos/{base['repository']}/git/ref/heads/{encoded}"
+    record = _dict(transport.get(endpoint), endpoint)
+    pinned = _dict(record.get("object"), endpoint).get("sha")
+    if not isinstance(pinned, str) or HEAD_SHA.fullmatch(pinned) is None:
+        raise WorkError(f"{purpose} base has no full revision")
+    remote = _selected_remote(root, f"select {purpose} remote")
+    fetched = _git(["fetch", "--no-tags", remote, f"refs/heads/{base['ref']}"], root)
+    if fetched.returncode:
+        raise WorkError(f"cannot fetch {purpose} base: {_git_failure(fetched)}")
+    if _git_text(["rev-parse", "FETCH_HEAD"], root, "verify fetched base") != pinned:
+        raise WorkError(f"{purpose} base moved during fetch; reread and retry")
+    return pinned, endpoint
+
+
+def _merge_version_adjustment(root: Path, start: str, pinned: str,
+                               spec: dict | None) -> str | None:
+    if spec is None:
+        return None
+    common = _git_text(["merge-base", start, pinned], root, "read merge base")
+    changed = _git_text(
+        ["diff", "--no-renames", "--name-only", "-z", common, pinned,
+         "--", f":(literal){spec['path']}"], root, "read base-side version changes")
+    if not changed:
+        return None
+    content = _policy_blob(root, pinned, spec["path"])
+    if content is None:
+        raise WorkError("declared base version file is unavailable")
+    return version_policy.increment(content, spec)
+
+
+@dataclass(frozen=True)
+class MergeObligation:
+    head: str
+    repository: str
+    ref: str
+    pinned: str
+    conflicts: tuple[str, ...]
+    version_adjustment: dict | None
+
+    def prompt(self) -> str:
+        lines = [
+            "Merge obligation: do this before the implementation or reviewer repairs in this turn.",
+            "",
+            f"Merge the pinned base commit {self.pinned} from {self.repository}:{self.ref}",
+            "into the supplied implementation branch. Do not rebase.",
+            f"Run: git merge --no-commit --no-ff {self.pinned}",
+            "",
+            "Files requiring builder conflict resolution:",
+        ]
+        lines.extend(json.dumps(path, ensure_ascii=True) for path in self.conflicts)
+        if not self.conflicts:
+            lines.append("None: no conflicts outside the declared field.")
+        if self.version_adjustment is not None:
+            spec = self.version_adjustment
+            lines.extend(("", "Declared version adjustment:",
+                f"Set {json.dumps(spec['path'])}'s top-level JSON field "
+                f"{json.dumps(spec['field'])} to {json.dumps(spec['value'])} in this merge."))
+        lines.extend(("", "Resolve the conflicts, validate the merged result, and land it through",
+                      "persist-changes on the supplied branch before returning to the holder."))
+        return "\n".join(lines)
+
+
+def _compose_merge_obligation(state: WorkState, decision: Decision, holder: Path,
+                               instalment: str | None, source: ResumeSource | None,
+                               transport: GitHubREST | None,
+                               rules: dict | None) -> MergeObligation | None:
+    try:
+        resolved = resolve_implementation_root(
+            holder, state.repo, state.issue_number, instalment, migrate=False)
+        prospective = resolved is None
+        if prospective:
+            if decision.stage != "build" or decision.continuity != "fresh":
+                raise WorkError(f"no active implementation registration matches {state.repo}#{state.issue_number}")
+            root, branch = canonical_holder_root(holder), None
+        else:
+            root, branch, _legacy = resolved
+        if source is not None:
+            prior_root = source.request.get("root")
+            prior_branch = source.request.get("lineage_branch")
+            prior_pr = source.request.get("lineage_pull_request")
+            if isinstance(prior_root, str) and prior_root and not _same_path(Path(prior_root), root):
+                raise WorkError("resume bundle belongs to a different implementation root")
+            if prior_branch and branch and prior_branch != branch:
+                raise WorkError("resume bundle belongs to a different implementation branch")
+            if prior_pr is not None and prior_pr != state.pr.get("number"):
+                raise WorkError("resume bundle belongs to a different implementing pull request")
+    except WorkError as exc:
+        raise _LaunchRootError(str(exc)) from exc
+    try:
+        if transport is None or rules is None:
+            raise WorkError("merge obligation requires the entrance GitHub and policy context")
+        number = state.pr.get("number")
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise WorkError("merge obligation requires one implementing pull request")
+        endpoint = f"repos/{state.repo}/pulls/{number}"
+        current = _dict(transport.get(endpoint), endpoint)
+        if (current.get("number") != number or current.get("state") != "open"
+                or current.get("merged_at") or current.get("merged") is True):
+            raise WorkError("merge obligation requires the still-open implementing pull request")
+        base = _pull_coordinates(current)["base"]
+        head = _dict(current.get("head"), endpoint)
+        if not prospective:
+            head_repository = _dict(head.get("repo"), endpoint)
+            if head.get("ref") != branch or head_repository.get("full_name") != state.repo:
+                raise WorkError("merge obligation pull request does not name the registered repository and branch")
+        start = _git_text(["rev-parse", "--verify", "HEAD^{commit}"], root,
+                          "read merge-obligation implementation head")
+        pinned, _endpoint = _pin_merge_base(transport, base, root, "merge obligation")
+        spec = version_policy.declaration(rules)
+        # A new worktree receives the committed destination attributes, not loose holder edits.
+        command = ([f"--attr-source={start}"] if prospective else []) + [
+            "merge-tree", "--write-tree", "--no-messages", "-z", start, pinned]
+        merged = _git(command, root)
+        if merged.returncode not in {0, 1}:
+            raise WorkError(f"merge-obligation dry run failed: {_git_failure(merged)}")
+        tree, separator, stages = merged.stdout.partition(b"\0")
+        if not separator or re.fullmatch(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})", tree) is None:
+            raise WorkError("invalid merge-obligation dry-run tree result")
+        checked_tree = _git(["cat-file", "-e", tree.decode("ascii") + "^{tree}"], root)
+        if checked_tree.returncode:
+            raise WorkError(f"cannot read merge-obligation result tree: {_git_failure(checked_tree)}")
+        conflicts = _conflict_stages(stages)
+        if merged.returncode == 0:
+            if conflicts:
+                raise WorkError("invalid clean merge-obligation result has conflict stages")
+            return None
+        if not conflicts:
+            raise WorkError("invalid conflicted merge-obligation result has no affected paths")
+        value = _merge_version_adjustment(root, start, pinned, spec)
+        if spec and spec["path"] in conflicts:
+            try:
+                _version_conflict_content(root, spec, conflicts[spec["path"]], value)
+            except _VersionConflict:
+                pass
+            else:
+                del conflicts[spec["path"]]
+        adjustment = {**spec, "value": value} if value is not None else None
+        return MergeObligation(start, str(base["repository"]), str(base["ref"]), pinned,
+                               tuple(sorted(conflicts)), adjustment)
+    except (KeyError, OSError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
+        raise WorkError(f"cannot derive merge obligation: {exc}") from exc
+
+
+def _catch_up_conflicts(root: Path) -> list[str]:
+    result = _git(["diff", "--name-only", "--diff-filter=U", "-z"], root)
+    if result.returncode:
+        raise WorkError(f"cannot read catch-up conflicts: {_git_failure(result)}")
+    try:
+        return [path.decode("utf-8") for path in result.stdout.split(b"\0") if path]
+    except UnicodeError as exc:
+        raise WorkError("catch-up conflict path is not UTF-8") from exc
 
 
 def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
@@ -5968,19 +6179,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
             return 0
         raise WorkError("catch-up local, remote and pull-request heads differ")
     base = expected["base"]
-    encoded = urllib.parse.quote(str(base["ref"]), safe="")
-    base_endpoint = f"repos/{base['repository']}/git/ref/heads/{encoded}"
-    base_record = _dict(transport.get(base_endpoint), base_endpoint)
-    pinned = _dict(base_record.get("object"), base_endpoint).get("sha")
-    if not isinstance(pinned, str) or HEAD_SHA.fullmatch(pinned) is None:
-        raise WorkError("catch-up base has no full revision")
-    # Keep the selected remote's transport and verify its base object against the API pin.
-    fetched = _git(["fetch", "--no-tags", remote,
-                    f"refs/heads/{base['ref']}"], root)
-    if fetched.returncode:
-        raise WorkError(f"cannot fetch catch-up base: {_git_failure(fetched)}")
-    if _git_text(["rev-parse", "FETCH_HEAD"], root, "verify fetched base") != pinned:
-        raise WorkError("catch-up base moved during fetch; reread and retry")
+    pinned, base_endpoint = _pin_merge_base(transport, base, root, "catch-up")
     reachable = _git(["merge-base", "--is-ancestor", pinned, start], root)
     if reachable.returncode == 0:
         _emit_report({"stage": "catch-up", "dispatch": False, "status": "holder-owned",
@@ -5990,17 +6189,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
     if reachable.returncode != 1:
         raise WorkError("catch-up cannot prove base reachability")
     spec = version_policy.declaration(rules)
-    new_version = None
-    if spec:
-        common = _git_text(["merge-base", start, pinned], root, "read catch-up merge base")
-        version_changed = _git_text(
-            ["diff", "--no-renames", "--name-only", "-z", common, pinned,
-             "--", f":(literal){spec['path']}"], root, "read base-side version changes")
-        if version_changed:
-            base_content = _policy_blob(root, pinned, spec["path"])
-            if base_content is None:
-                raise WorkError("declared base version file is unavailable")
-            new_version = version_policy.increment(base_content, spec)
+    new_version = _merge_version_adjustment(root, start, pinned, spec)
     attempt_path.parent.mkdir(parents=True, exist_ok=True)
     attempt = {"start": start, "base": pinned, "branch": branch, "result": None}
     attempt_path.write_bytes((json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8"))
@@ -6008,19 +6197,22 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
     if not merge_path.exists():
         raise WorkError(f"catch-up merge was not prepared: {_git_failure(prepared)}")
     try:
-        conflicts = _git_text(["diff", "--name-only", "--diff-filter=U", "-z"], root,
-                              "read catch-up conflicts").split("\0")
-        conflicts = [path for path in conflicts if path]
-        if conflicts:
-            if spec is None or conflicts != [spec["path"]]:
-                raise WorkError("builder-required: conflicts outside the declared field: " + ", ".join(conflicts))
+        conflicts = _catch_up_conflicts(root)
+        had_conflicts = bool(conflicts)
+        residual = None
+        if spec and spec["path"] in conflicts:
             try:
-                _catch_up_version_conflict(root, spec, str(new_version))
-            except (ValueError, WorkError) as exc:
-                raise WorkError(f"builder-required: {exc}") from exc
-        elif prepared.returncode:
+                _catch_up_version_conflict(root, spec, new_version)
+            except _VersionConflict as exc:
+                residual = str(exc)
+            conflicts = _catch_up_conflicts(root)
+        if conflicts:
+            detail = "builder-required: conflicts outside the declared field: " + ", ".join(
+                json.dumps(path, ensure_ascii=True) for path in conflicts)
+            raise WorkError(detail + (f"; {residual}" if residual else ""))
+        if prepared.returncode and not had_conflicts:
             raise WorkError(f"catch-up merge failed: {_git_failure(prepared)}")
-        if spec and new_version is not None and not conflicts:
+        if spec and new_version is not None and not had_conflicts:
             target = root / spec["path"]
             if target.is_symlink() or not _path_inside(target, root):
                 raise WorkError("declared version file is not an in-root regular file")
@@ -6763,8 +6955,12 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 if artifact_brief is None:
                     raise WorkError("artifact dispatch requires an authorized affirmed brief")
             if dispatch_path is None:
+                obligation = (_compose_merge_obligation(
+                    state, decision, root, instalment, resume_source, transport, rules)
+                    if decision.stage in {"build", "review-disposition"} and state.pr is not None else None)
                 prepared_prompt = _stage_prompt(
-                    state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command
+                    state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
+                    merge_obligation=obligation,
                 )
                 if decision.stage in {"build", "floor", "review-disposition"}:
                     prompt_composition = _prompt_composition(state)
@@ -6780,6 +6976,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     raise WorkError(
                         "dispatch file must be outside the registered implementation root"
                     )
+        except _LaunchRootError as exc:
+            refused = _implementation_root_decision(state, decision, str(exc))
+            _emit_report(_reported_decision(state, refused).as_dict(), state)
+            return 0
         except WorkError as exc:
             refused = _reported_decision(state, Decision(
                 decision.stage, False, None,
@@ -6919,9 +7119,19 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 decision.reason, detail,
             )
             if prepared_prompt is not None:
-                prepared_prompt = _stage_prompt(
-                    state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command
-                )
+                try:
+                    obligation = (_compose_merge_obligation(
+                        state, decision, root, instalment, resume_source, transport, rules)
+                        if decision.stage in {"build", "review-disposition"} and state.pr is not None else None)
+                    prepared_prompt = _stage_prompt(
+                        state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
+                        merge_obligation=obligation,
+                    )
+                except WorkError as exc:
+                    refused = Decision(decision.stage, False, None,
+                        f"stage-input-invalid-for-{decision.stage}", str(exc), status="refused")
+                    _emit_report(_reported_decision(state, refused).as_dict(), state)
+                    return 0
                 if decision.stage in {"build", "floor", "review-disposition"}:
                     prompt_composition = _prompt_composition(state)
             _emit_report(_reported_decision(state, decision).as_dict(), state)
