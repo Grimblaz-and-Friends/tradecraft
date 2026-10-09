@@ -4446,7 +4446,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         + "\n--- affirmed implementation brief end ---",
     ]
     if merge_obligation is not None:
-        sections.insert(0, merge_obligation.prompt())
+        sections.insert(0, merge_obligation.prompt(branch or BRANCH_PLACEHOLDER))
     if artifact is not None:
         artifact_label = "artifact under revision" if explicit_artifact else "settled artifact"
         draft_explanation = _settled_draft_explanation(phase) if not explicit_artifact else None
@@ -6019,9 +6019,12 @@ class MergeObligation:
     conflicts: tuple[str, ...]
     version_adjustment: dict | None
 
-    def prompt(self) -> str:
+    def prompt(self, branch: str) -> str:
+        script = Path(__file__).resolve().parents[1] / "skills" / "persist-changes" / "scripts" / "persist.py"
         lines = [
             "Merge obligation: do this before the implementation or reviewer repairs in this turn.",
+            "When nothing else in this dispatch asks for implementation or repairs, "
+            "the merge is this turn's whole work.",
             "",
             f"Merge the pinned base commit {self.pinned} from {self.repository}:{self.ref}",
             "into the supplied implementation branch. Do not rebase.",
@@ -6038,7 +6041,11 @@ class MergeObligation:
                 f"Set {json.dumps(spec['path'])}'s top-level JSON field "
                 f"{json.dumps(spec['field'])} to {json.dumps(spec['value'])} in this merge."))
         lines.extend(("", "Resolve the conflicts, validate the merged result, and land it through",
-                      "persist-changes on the supplied branch before returning to the holder."))
+                      "persist-changes on the supplied branch before returning to the holder.",
+                      f"Persist-changes script (absolute path): {json.dumps(script.as_posix())}",
+                      f"Required argument: --expect-branch {json.dumps(branch)}",
+                      "Run that script with Python from the implementation root, with "
+                      "-m followed by your merge commit message."))
         return "\n".join(lines)
 
 

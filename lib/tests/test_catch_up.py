@@ -166,10 +166,17 @@ def apply(transport, repo, ancestor, head, base, rules, buys):
 
 
 @pytest.fixture
-def graph(tmp_path):
+def graph(tmp_path, monkeypatch, request):
+    if hasattr(request, "param"):
+        config = tmp_path / "inherited-gitconfig"
+        config.write_bytes(f"[core]\n\tautocrlf = {request.param}\n".encode("utf-8"))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     root = tmp_path / "holder"
     root.mkdir()
     git(root, "init", "-b", "main")
+    # Fix checkout policy before creating either index or the linked worktree.
+    git(root, "config", "core.autocrlf", "false")
     git(root, "config", "user.name", "Fixture")
     git(root, "config", "user.email", "fixture@example.test")
     commit(root, "version.json", '{"version":"1.2.3","name":"fixture"}\n')

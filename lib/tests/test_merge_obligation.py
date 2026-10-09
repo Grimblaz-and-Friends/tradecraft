@@ -72,6 +72,21 @@ def outside_paths(prompt):
     return [] if section.startswith("None:") else [json.loads(line) for line in section.splitlines()]
 
 
+MERGE_ONLY = (b"When nothing else in this dispatch asks for implementation or repairs, "
+              b"the merge is this turn's whole work.")
+
+
+def persist_instruction(prompt):
+    text = prompt.decode("utf-8")
+    script = json.loads(re.search(r'^Persist-changes script \(absolute path\): (.+)$', text, re.M)[1])
+    branch = json.loads(re.search(r'^Required argument: --expect-branch (.+)$', text, re.M)[1])
+    assert Path(script).is_absolute() and Path(script).is_file()
+    assert Path(script) == LIB.parent / "skills" / "persist-changes" / "scripts" / "persist.py"
+    assert b"Run that script with Python from the implementation root" in prompt
+    assert b"-m followed by your merge commit message" in prompt
+    return script, branch
+
+
 def follow_merge_input(registered, prompt, *, resolutions=None):
     """Fixture builder takes its target, paths and version from the actual input."""
     holder, implementation, branch, remote, transport, fixture = registered
@@ -90,8 +105,9 @@ def follow_merge_input(registered, prompt, *, resolutions=None):
         content[field] = value
         (implementation / path).write_bytes((json.dumps(content) + "\n").encode("utf-8"))
         git(implementation, "add", "--", path)
-    script = LIB.parent / "skills" / "persist-changes" / "scripts" / "persist.py"
-    result = subprocess.run([sys.executable, str(script), "--expect-branch", branch,
+    script, expected_branch = persist_instruction(prompt)
+    assert expected_branch == branch
+    result = subprocess.run([sys.executable, script, "--expect-branch", expected_branch,
         "-m", "Resolve the composed pinned merge before fixture repairs"], cwd=implementation,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -120,6 +136,10 @@ def assert_obligation(record, pinned, paths, value="1.5.0"):
     assert prompt.startswith(b"Merge obligation: do this before the implementation or reviewer repairs")
     assert f"Run: git merge --no-commit --no-ff {pinned}".encode() in prompt
     assert b"Do not rebase." in prompt
+    assert MERGE_ONLY in prompt
+    _script, branch = persist_instruction(prompt)
+    assert branch == record["command"][record["command"].index("--lineage-branch") + 1]
+    assert work.BRANCH_PLACEHOLDER.encode("ascii") not in prompt
     assert outside_paths(prompt) == paths
     assert (f'to "{value}" in this merge.'.encode() in prompt) if value else b"Declared version adjustment:" not in prompt
     assert record["metadata"]["prompt_composition"]["dispatch_sha256"] == hashlib.sha256(prompt).hexdigest()
@@ -218,7 +238,8 @@ def test_C4_clean_and_version_only_actual_inputs(launch, stage, case):
         assert_obligation(record, pinned, [])
         assert b"None: no conflicts outside the declared field." in record["prompt"]
     else:
-        for absent in (b"Merge obligation:", b"git merge --no-commit", b"Declared version adjustment:"):
+        for absent in (b"Merge obligation:", b"git merge --no-commit", b"Declared version adjustment:",
+                       b"Persist-changes script (absolute path):", MERGE_ONLY):
             assert absent not in record["prompt"]
     assert (snapshot(implementation), snapshot(holder)) == before
 
@@ -498,6 +519,7 @@ def test_C7_invalid_stage_document_is_in_actual_prompt(launch, stage, content):
     assert_obligation(compose(stage), pinned, ["version.json"])
 
 
+@pytest.mark.parametrize("graph", ["false", "true"], indirect=True)
 def test_C7_spaces_and_unicode_paths_are_exact(launch, capsys):
     registered, fixture, inputs, compose = launch
     holder, implementation, branch, remote, transport, catch_state = registered
@@ -506,6 +528,10 @@ def test_C7_spaces_and_unicode_paths_are_exact(launch, capsys):
     git(holder, "mv", "version.json", path)
     git(holder, "commit", "-m", "fixture version path")
     commit(holder, source_path, "common\n")
+    # Recheck bytes instead of letting a cached stat hide a checkout-policy mismatch.
+    git(implementation, "update-index", "--refresh")
+    assert git(implementation, "status", "--porcelain") == ""
+    assert b"\r\n" not in (implementation / "version.json").read_bytes()
     git(implementation, "merge", "--no-ff", "-m", "fixture version path", "main")
     commit(implementation, source_path, "ours\n")
     commit(holder, source_path, "theirs\n")
