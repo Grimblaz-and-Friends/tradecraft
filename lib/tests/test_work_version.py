@@ -44,6 +44,152 @@ def test_C3_named_endpoints_refuse_every_lane_before_effects(stage, draft, risk,
 
 
 @pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+@pytest.mark.parametrize("content", [b'not JSON', b'{}', b'{"release":7}',
+    b'{"release":"2.10"}', b'{"release":"2.10.0","release":"3.0.0"}'])
+def test_C3_C5_head_content_fault_returns_builder_repair(stage, content, tmp_path, capsys):
+    state, transport = fixture_state()
+    transport.version = content
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    assert named(stage, state, transport, root) == 0
+    report = json.loads(capsys.readouterr().out)
+    assessment = report["version_obligation"]
+    assert assessment["status"] == "unverifiable" and assessment["owed"] is True
+    assert assessment["base"]["value"] == "2.9.9" and assessment["target"] == "2.10.0"
+    assert "head version" in report["detail"]
+    assert "Return this repair to the builder with run build" in report["detail"]
+    assert "recollect" not in report["detail"].lower()
+    assert "builder" in assessment["message"] and not transport.effects
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+@pytest.mark.parametrize("side,fault", [("base", "content"), ("base", "missing"),
+    ("head", "transport"), ("head", "missing")])
+def test_C3_C5_head_missing_file_and_collection_failure_have_distinct_remedies(stage, side, fault, tmp_path, capsys):
+    state, transport = fixture_state()
+    if fault == "content":
+        transport.base_version = b'{"release":"2.10"}'
+    else:
+        error = work.WorkError("Not Found (HTTP 404)" if fault == "missing" else "connection timed out")
+        if fault == "missing":
+            error.http_status = 404
+            transport.overrides[f"repos/{REPO}/git/trees/{HEAD}"] = {"truncated": False, "tree": []}
+        sha = BASE if side == "base" else HEAD
+        transport.overrides[f"repos/{REPO}/contents/package.json?ref={sha}"] = error
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    assert named(stage, state, transport, root) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["version_obligation"]["status"] == "unverifiable"
+    if side == "head" and fault == "missing":
+        assert "head version" in report["detail"] and "missing" in report["detail"]
+        assert "Return this repair to the builder with run build" in report["detail"]
+        assert "recollect" not in report["detail"].lower()
+    else:
+        assert "Recollect version evidence" in report["detail"]
+        assert "Return this repair to the builder" not in report["detail"]
+    assert not transport.effects
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+def test_C3_refusal_names_version_context_once(stage, tmp_path, capsys):
+    state, transport = fixture_state()
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    assert named(stage, state, transport, root) == 0
+    detail = json.loads(capsys.readouterr().out)["detail"]
+    assert detail.count("package.json field release: base 2.9.9, head 2.9.9, target 2.10.0") == 1
+    assert detail.count("package.json") == detail.count("field release") == 1
+    assert not transport.effects
+
+
+def test_C5_version_missing_file_recognizes_the_production_transport_status(monkeypatch):
+    response = subprocess.CompletedProcess([], 1, b'', b'gh: Not Found (HTTP 404)')
+    monkeypatch.setattr(work, "_run_probe", lambda *a, **kw: response)
+    with pytest.raises(work.WorkError) as failure:
+        work.GitHubREST().get(f"repos/{REPO}/contents/package.json?ref={HEAD}")
+    assert failure.value.http_status == 404
+
+
+@pytest.mark.parametrize("version,expected", [("2.9.9", "build"), ("2.10", "build"), ("2.10.0", "use")])
+def test_C3_C5_ready_use_recommends_required_version_repair_first(version, expected, tmp_path, capsys):
+    state, transport = fixture_state(version=version, draft=False, lane="connected")
+    draft = state.issue_comments[1]
+    state.issue_comments[2]["body"] = (
+        "<!-- tradecraft:artifact:v1 status=settled route=unobtainable "
+        f"draft_comment={draft['id']} draft_sha256={work.artifact_digest(draft['body'])} -->")
+    state.issue_comments = [item for item in state.issue_comments if "tradecraft:use:" not in item["body"]]
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    args = work.parser().parse_args(["--repo", REPO, "--issue", "12", "--root", str(root)])
+    assert work.run(args, transport=transport) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["stage"] == expected
+    if expected == "build":
+        assert report["dispatch"] is True and report["continuity"] == "resume"
+        assert report["reason"].startswith("version-obligation-")
+        assert "builder" in report["detail"]
+    else:
+        assert report["reason"].startswith("current-head-use-absent")
+    assert not transport.effects
+    # Named authority still reaches use's existing job/tree preflight at a bad head.
+    assert named("use", state, transport, root) == 0
+    named_report = json.loads(capsys.readouterr().out)
+    assert (named_report["stage"], named_report["reason"]) == ("use", "use-requires-holder-job-and-tree")
+    assert not transport.effects
+
+
+def test_C5_head_content_fault_does_not_hide_a_moving_base():
+    state, transport = fixture_state()
+    transport.version = b'{"release":"2.10"}'
+    def move(endpoint):
+        if endpoint == f"repos/{REPO}/contents/package.json?ref={HEAD}":
+            transport.base_sha = ADVANCED
+    transport.before_get = move
+    report = assess(state, transport)
+    assert report["status"] == "unverifiable" and report["owed"] is True
+    assert "base tip moved" in report["message"]
+    assert "recollect" in report["message"] and "builder" not in report["message"]
+
+
+@pytest.mark.parametrize("tree", [
+    {"truncated": False, "tree": [{"path": "package.json", "type": "blob", "sha": "e" * 40}]},
+    {"truncated": True, "tree": []},
+    {"truncated": False, "tree": [{}]},
+    {"truncated": False, "tree": [{"path": "other"}, {"path": "other"}]},
+    work.WorkError("tree permissions unavailable"),
+])
+def test_C5_content_404_is_not_a_head_file_fault_without_confirmed_absence(tree):
+    state, transport = fixture_state()
+    error = work.WorkError("Not Found (HTTP 404)")
+    error.http_status = 404
+    transport.overrides[f"repos/{REPO}/contents/package.json?ref={HEAD}"] = error
+    transport.overrides[f"repos/{REPO}/git/trees/{HEAD}"] = tree
+    report = assess(state, transport)
+    assert report["status"] == "unverifiable" and report["owed"] is True
+    assert "recollect" in report["message"] and "builder" not in report["message"]
+    assert not transport.effects
+
+
+def test_C5_missing_nested_head_version_file_uses_the_pinned_tree():
+    state, transport = fixture_state()
+    spec = {**SPEC, "path": "releases/package.json"}
+    error = work.WorkError("Not Found (HTTP 404)")
+    error.http_status = 404
+    transport.overrides[f"repos/{REPO}/contents/{spec['path']}?ref={HEAD}"] = error
+    tree_sha = "e" * 40
+    transport.overrides[f"repos/{REPO}/git/trees/{HEAD}"] = {
+        "truncated": False, "tree": [{"path": "releases", "type": "tree", "sha": tree_sha}]}
+    transport.overrides[f"repos/{REPO}/git/trees/{tree_sha}"] = {"truncated": False, "tree": []}
+    report = assess(state, transport, {**RULES, "version": spec})
+    assert report["status"] == "unverifiable" and report["owed"] is True
+    assert report["base"]["sha"] == BASE and report["target"] == "2.10.0"
+    assert "builder" in report["message"] and "recollect" not in report["message"]
+    assert ("GET", f"repos/{REPO}/git/trees/{tree_sha}", False) in transport.calls
+    assert not transport.effects
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
 @pytest.mark.parametrize("version,files,declared,status", [
     ("2.10.0", [{"filename": "runtime/code.py", "status": "modified"}], True, "satisfied"),
     ("3.0.0", [{"filename": "runtime/code.py", "status": "modified"}], True, "satisfied"),
@@ -306,7 +452,8 @@ def test_C5_freshness_preserves_each_policy_view_without_composing_blocked_proof
     args = work.parser().parse_args(["--repo", REPO, "--issue", "12", "--root", str(root)])
     assert work.run(args, transport=transport) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["stage"] == "proof" and "version-obligation-blocked" in report["reason"]
+    assert report["stage"] == "build" and "version-obligation-blocked" in report["reason"]
+    assert ("Committed proof policy: " in report["detail"]) is (declared_view == "committed")
     assert report["version_obligation"]["status"] == ("blocked" if declared_view == "checkout" else "undeclared")
     assert report["proof_version_obligation"]["status"] == ("blocked" if declared_view == "committed" else "undeclared")
     assert report["version_obligation"]["policy_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
@@ -510,7 +657,8 @@ def test_C3_read_only_routing_refuses_owed_unmet_version(tmp_path, capsys):
     args = work.parser().parse_args(["--repo", REPO, "--issue", "12", "--root", str(root)])
     assert work.run(args, transport=transport) == 0
     report = json.loads(capsys.readouterr().out)
-    assert (report["stage"], report["reason"]) == ("ready-reviewers", "version-obligation-blocked")
+    assert (report["stage"], report["reason"]) == ("build", "version-obligation-blocked")
+    assert report["dispatch"] is True and report["continuity"] == "resume"
     assert not transport.effects
 
 

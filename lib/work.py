@@ -469,7 +469,10 @@ class GitHubREST:
         )
         if result.returncode:
             diagnostic = result.stderr.decode("utf-8", errors="backslashreplace").strip()
-            raise WorkError(f"GitHub GET failed for {endpoint}: {diagnostic or result.returncode}")
+            error = WorkError(f"GitHub GET failed for {endpoint}: {diagnostic or result.returncode}")
+            status = re.search(r"\(HTTP ([0-9]{3})\)", diagnostic)
+            error.http_status = int(status[1]) if status else None
+            raise error
         try:
             value = json.loads(result.stdout.decode("utf-8"))
         except (UnicodeError, ValueError) as exc:
@@ -3237,10 +3240,19 @@ def _version_report(rules: dict, source: str, *, view: str = "selected") -> dict
     return result
 
 
-def _version_unknown(report: dict, reason: str) -> dict:
+def _version_unknown(report: dict, reason: str, *, builder_repair: bool = False) -> dict:
     report.update(status="unverifiable", met=None, error=reason,
-                  message=reason + "; restore the named evidence, recollect and retry.")
+                  remedy="builder-repair" if builder_repair else "recollect",
+                  message=reason + ("; return the head-file repair to the builder with run build."
+                                    if builder_repair else
+                                    "; restore the named evidence, recollect and retry."))
     return report
+
+
+def _version_needs_builder(report: dict | None) -> bool:
+    report = report or {}
+    return (report.get("status") == "blocked"
+            or (report.get("status") == "unverifiable" and report.get("remedy") == "builder-repair"))
 
 
 def _version_inventory(state: WorkState, rules: dict) -> tuple[list[str], str | None]:
@@ -3290,10 +3302,46 @@ def _version_coordinates(pr: dict, *, require_head_repository: bool = True) -> d
     return {**coordinates, "head_repository": repository}
 
 
-def _version_blob(transport: GitHubREST, repository: str, sha: str, spec: dict) -> bytes:
+class _VersionContentError(WorkError):
+    """Pinned version-file content needs a change, rather than another collection."""
+
+
+def _version_path_absent(transport: GitHubREST, repository: str, sha: str, path: str) -> bool:
+    segments = path.split("/")
+    for index, segment in enumerate(segments):
+        endpoint = f"repos/{repository}/git/trees/{sha}"
+        tree = _dict(transport.get(endpoint), endpoint)
+        if tree.get("truncated") is not False:
+            raise WorkError("version file absence cannot be proved by an incomplete tree")
+        entries = _list(tree.get("tree"), endpoint)
+        names = [entry.get("path") for entry in entries]
+        if (any(not isinstance(name, str) or not name or "/" in name for name in names)
+                or len(set(names)) != len(names)):
+            raise WorkError("version file absence has malformed or duplicate tree paths")
+        entry = next((entry for entry in entries if entry["path"] == segment), None)
+        if entry is None:
+            return True
+        if index == len(segments) - 1:
+            return False
+        if entry.get("type") in {"blob", "commit"}:
+            return True
+        sha = entry.get("sha")
+        if entry.get("type") != "tree" or not isinstance(sha, str) or HEAD_SHA.fullmatch(sha) is None:
+            raise WorkError("version file absence has an unreadable tree identity")
+    return False
+
+
+def _version_blob(transport: GitHubREST, repository: str, sha: str, spec: dict, *,
+                  confirm_absence: bool = False) -> bytes:
     path = urllib.parse.quote(spec["path"], safe="/")
     endpoint = f"repos/{repository}/contents/{path}?ref={sha}"
-    value = _dict(transport.get(endpoint), endpoint)
+    try:
+        value = _dict(transport.get(endpoint), endpoint)
+    except WorkError as exc:
+        if (confirm_absence and getattr(exc, "http_status", None) == 404
+                and _version_path_absent(transport, repository, sha, spec["path"])):
+            raise _VersionContentError("declared version file is missing at the pinned revision") from exc
+        raise
     if value.get("type") != "file" or value.get("encoding") != "base64":
         raise WorkError(f"declared version file is not a readable blob: {endpoint}")
     content = value.get("content")
@@ -3361,12 +3409,20 @@ def _assess_version(state: WorkState, rules: dict, source: str,
             report["target"] = version_policy.increment(content, spec)
         except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
             raise WorkError(f"base version evidence for {spec['path']} field {spec['field']}: {exc}") from exc
+        head_problem = None
         if not composition:
             try:
-                content = _version_blob(transport, expected["head_repository"], expected["head"], spec)
-                report["head"]["value"] = version_policy.document(content, spec)[spec["field"]]
+                content = _version_blob(transport, expected["head_repository"], expected["head"], spec,
+                                        confirm_absence=True)
+            except _VersionContentError as exc:
+                head_problem = str(exc)
             except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
                 raise WorkError(f"head version evidence for {spec['path']} field {spec['field']}: {exc}") from exc
+            else:
+                try:
+                    report["head"]["value"] = version_policy.document(content, spec)[spec["field"]]
+                except (UnicodeError, ValueError) as exc:
+                    head_problem = str(exc)
         confirmed = _dict(transport.get(base_endpoint), base_endpoint)
         if _dict(confirmed.get("object"), base_endpoint).get("sha") != base["sha"]:
             raise WorkError("version base tip moved during collection")
@@ -3376,6 +3432,10 @@ def _assess_version(state: WorkState, rules: dict, source: str,
                 raise WorkError("version PR identity moved during collection")
         if composition:
             return report
+        if head_problem is not None:
+            return _version_unknown(
+                report, f"head version evidence for {spec['path']} field {spec['field']}: {head_problem}",
+                builder_repair=True)
         met = version_policy.parts(report["head"]["value"]) >= version_policy.parts(report["target"])
         report.update(status="satisfied" if met else "blocked", met=met,
                       message=f"{spec['path']} field {spec['field']}: base {report['base']['value']}, "
@@ -3395,10 +3455,19 @@ def _version_obligation_refusal(state: WorkState, stage: str) -> Decision | None
     context = (f"{spec.get('path')} field {spec.get('field')}: "
                f"base {(report.get('base') or {}).get('value')}, "
                f"head {(report.get('head') or {}).get('value')}, target {report.get('target')}.")
+    if report["status"] == "blocked":
+        problem = "owed version is below target."
+    else:
+        problem = report.get("error") or report["message"]
+        for side in ("base", "head"):
+            prefix = f"{side} version evidence for {spec.get('path')} field {spec.get('field')}: "
+            if problem.startswith(prefix):
+                problem = f"{side} version evidence: " + problem[len(prefix):]
+                break
     remedy = (f"Return this repair to the builder with run build, then retry {stage}."
-              if report["status"] == "blocked" else f"Recollect version evidence and retry {stage}.")
+              if _version_needs_builder(report) else f"Recollect version evidence and retry {stage}.")
     return Decision(stage, False, None, "version-obligation-" + report["status"],
-                    f"{stage}: {context} {report['message']} {remedy}", status="holder-owned")
+                    f"{stage}: {context} {problem} {remedy}", status="holder-owned")
 
 
 def _verify_version_identity(transport: GitHubREST, state: WorkState, pr: dict, *,
@@ -3847,6 +3916,13 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
 
     def result(stage: str, dispatch: bool, continuity: str | None, reason: str,
                detail: str | None = None, status: str | None = None) -> Decision:
+        if stage in {"ready-reviewers", "panel", "use", "proof", "release-report"}:
+            for assessment in (state.version_obligation, state.proof_version_obligation):
+                if _version_needs_builder(assessment):
+                    refusal = _version_obligation_refusal(replace(state, version_obligation=assessment), stage)
+                    prefix = "Committed proof policy: " if assessment is state.proof_version_obligation else ""
+                    return _reported_decision(state, Decision(
+                        "build", True, "resume", refusal.reason, prefix + refusal.detail))
         if stage in {"ready-reviewers", "proof", "release-report"}:
             refusal = _reach_refusal(state, stage)
             if refusal is not None:
