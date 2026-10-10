@@ -49,6 +49,14 @@ def document(content: bytes, spec: dict) -> dict:
     return value
 
 
+def parts(version: str) -> tuple[int, int, int]:
+    """Compare the declared grammar numerically, including multi-digit parts."""
+    if not isinstance(version, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+        raise ValueError("declared version must be a string with three integer parts")
+    major, minor, patch = map(int, version.split("."))
+    return major, minor, patch
+
+
 def json_equal(left, right) -> bool:
     if isinstance(left, bool) or isinstance(right, bool):
         return type(left) is type(right) and left == right

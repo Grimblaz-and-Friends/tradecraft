@@ -1110,7 +1110,10 @@ class TestBuildReach:
         assert work._reach_refusal(builder, "proof") is None, builder.reach
 
     def test_repair_872_second_run_error_keeps_original_failure_when_reach_fails(self, builder, monkeypatch, capsys):
-        monkeypatch.setattr(work, "_read_policy_state", lambda *_: builder)
+        def collected(*_args, **_kwargs):
+            builder.version_obligation = work._version_report({}, "fixture undeclared policy")
+            return builder
+        monkeypatch.setattr(work, "_read_policy_state", collected)
         monkeypatch.setattr(work, "prepare_use_evidence", lambda *_: None)
         monkeypatch.setattr(work, "decide", lambda *_: work.Decision("build", True, None, "fixture"))
         monkeypatch.setattr(work, "_reported_decision", lambda _state, decision: decision)
@@ -9074,6 +9077,47 @@ class ReadyTransport:
         self.operations.append(("ready", query, variables))
         self.draft = False
         return {"data": {"markPullRequestReadyForReview": {"pullRequest": {"isDraft": False}}}}
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+@pytest.mark.parametrize("risk,lane", work.LANES)
+def test_C7_accounting_subject_uses_the_lawful_affirmed_pair(stage, risk, lane):
+    brief = AFFIRMED.replace("ordinary", risk).replace("connected", lane)
+    fixture = state(brief, ARTIFACT, _settled("would", "would", brief=brief), HOLDER)
+    prompt = work._stage_prompt(fixture, work.Decision(stage, True, "resume", "fixture"),
+                                floor_command="python check.py").decode()
+    mechanical = (risk, lane) == ("ordinary", "mechanical")
+    assert ("map each affirmed brief row" in prompt) is mechanical
+    assert ("map every artifact acceptance criterion" in prompt) is not mechanical
+    assert build_reach.PRESERVATION in prompt
+    for value in ("committed test carried by CI", "command or procedure", "tested revision",
+                  "result and limitation", "do not launch or judge", "already-ready pull request"):
+        assert value in prompt
+    if mechanical:
+        assert "exact affirmed row text" in prompt and "--- settled artifact begin ---" not in prompt
+        assert "required capability and needed inputs" in prompt
+    else:
+        assert "--- settled artifact begin ---" in prompt
+        account = prompt.split(" At the end of every build or implementation repair", 1)[1].split("\n\n", 1)[0]
+        assert "criterion's ID and exact artifact text" in account
+        assert "required capability" not in account and "needed inputs" not in account
+
+
+@pytest.mark.parametrize("kind", ["unauthorized", "crossed", "duplicated"])
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+def test_C7_invalid_claim_cannot_select_mechanical_accounting(kind, stage):
+    text = MECHANICAL
+    if kind == "crossed":
+        text = text.replace("ordinary", "high")
+    elif kind == "duplicated":
+        text += "Review lane: connected\n"
+    fixture = state(AFFIRMED, ARTIFACT, _settled("would", "would"), HOLDER, text)
+    if kind == "unauthorized":
+        fixture.issue_comments[-1]["user"]["login"] = "untrusted"
+    prompt = work._stage_prompt(fixture, work.Decision(stage, True, "resume", "fixture"),
+                                floor_command="python check.py").decode()
+    assert "map each affirmed brief row" not in prompt
+    assert "map every artifact acceptance criterion" in prompt
 
 
 RAW_RULES = {**RULES, "raw_output_patterns": ["run-output/**"]}

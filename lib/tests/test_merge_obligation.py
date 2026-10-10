@@ -46,8 +46,23 @@ def launch(registered, tmp_path, monkeypatch):
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(work, "_recipient_run", capture)
+    public_get = transport.get
 
     def compose(stage="build", *, rules=RULES, dispatch=None, continuity="resume"):
+        # Test commits advance the public head after fixture creation. Supply
+        # the head-bound inventory an actual entrance collection would read.
+        collected_base = fixture.pr["base"]
+        fixture.pr = public_get("repos/example/product/pulls/7")
+        base = fixture.pr["base"]["sha"]
+        # Preserve the collected base identity, including a selected-transport
+        # override, and its historical SHA. Only the live ref supplies the
+        # version/merge basis; inventory uses the actual current base.
+        fixture.pr["base"] = collected_base
+        head = fixture.pr["head"]["sha"]
+        fixture.files = public_get(f"repos/example/product/compare/{base}...{head}")["files"]
+        fixture.pr["changed_files"] = len(fixture.files)
+        fixture.changed_paths = sorted({item[key] for item in fixture.files
+                                       for key in ("filename", "previous_filename") if key in item})
         decision = work.Decision(stage, True, continuity, "holder-named-stage")
         assert work.execute_stage(fixture, decision, holder, None, "holder-id",
             transport=transport, rules=rules, dispatch_path=dispatch,
@@ -436,7 +451,11 @@ def test_C3_base_ref_encoding_and_selected_transport(launch, monkeypatch):
         return original_git(arguments, cwd)
     monkeypatch.setattr(transport, "get", get)
     monkeypatch.setattr(work, "_git", probe)
-    assert_obligation(compose(), pinned, ["src/own"])
+    fixture.pr = transport.get("repos/example/product/pulls/7")
+    record = compose()
+    assert_obligation(record, pinned, ["src/own"])
+    assert f"actual PR base tip example/product:{ref} at {pinned}" in record["prompt"].decode("utf-8")
+    assert b"target 1.5.0" in record["prompt"]
     assert seen == [["fetch", "--no-tags", "shipping", f"refs/heads/{ref}"]]
     assert "repos/example/product/git/ref/heads/release%2F%C3%A9" in endpoints
 
@@ -549,18 +568,57 @@ def test_C7_spaces_and_unicode_paths_are_exact(launch, capsys):
 @pytest.mark.parametrize("stage", ["build", "review-disposition", "floor"])
 def test_C10_custom_dispatch_bytes_and_floor_skip_probe(launch, tmp_path, monkeypatch, stage):
     registered, fixture, inputs, compose = launch
-    mixed(registered)
+    pinned = mixed(registered)
     monkeypatch.setattr(work, "_compose_merge_obligation", lambda *_a, **_k: pytest.fail("excluded route probed merge"))
+    original_get = registered[4].get
     monkeypatch.setattr(registered[4], "get", lambda *_a, **_k: pytest.fail("unavailable base consulted"))
     dispatch = tmp_path / "holder-dispatch.txt"
     supplied = ('  Holder merge obligation: merge my pinned commit.\r\n\r\n' + chr(0x96EA) + '  \r\n').encode("utf-8")
     dispatch.write_bytes(supplied)
     assert compose(stage, dispatch=dispatch)["prompt"] == supplied
     if stage == "floor":
+        reads = []
+        def get(endpoint, paginate=False):
+            reads.append(endpoint)
+            return original_get(endpoint, paginate)
+        monkeypatch.setattr(registered[4], "get", get)
         prompt = compose(stage)["prompt"]
         assert b"python exact-fixture-floor.py" in prompt
         assert b"READING SENTINEL" in prompt and b"AFFIRMED SENTINEL" in prompt
         assert b"Merge obligation:" not in prompt
+        assert f"actual PR base tip example/product:main at {pinned}".encode() in prompt
+        assert b"target 1.5.0" in prompt
+        assert "repos/example/product/git/ref/heads/main" in reads
+        assert f"repos/example/product/contents/version.json?ref={pinned}" in reads
+
+
+def test_C10_declared_floor_refuses_unreadable_target_before_launch(launch, monkeypatch, capsys):
+    registered, fixture, inputs, compose = launch
+    pinned = mixed(registered)
+    original_get = registered[4].get
+    def get(endpoint, paginate=False):
+        if endpoint == f"repos/example/product/contents/version.json?ref={pinned}":
+            raise work.WorkError("fixture base version unavailable")
+        return original_get(endpoint, paginate)
+    monkeypatch.setattr(registered[4], "get", get)
+    monkeypatch.setattr(work, "_compose_merge_obligation", lambda *_a, **_k: pytest.fail("floor probed merge"))
+    assert compose("floor") is None
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "stage-input-invalid-for-floor" and report["dispatch"] is False
+    assert "fixture base version unavailable" in report["detail"]
+    assert report["version_obligation"]["status"] == "unverifiable"
+    assert report["version_obligation"]["base"]["sha"] == pinned
+    assert report["version_obligation"]["target"] is None
+    assert inputs == []
+
+
+def test_C10_undeclared_floor_keeps_no_base_prerequisite(launch, monkeypatch):
+    registered, fixture, inputs, compose = launch
+    monkeypatch.setattr(work, "_compose_merge_obligation", lambda *_a, **_k: pytest.fail("floor probed merge"))
+    monkeypatch.setattr(registered[4], "get", lambda *_a, **_k: pytest.fail("undeclared floor consulted base"))
+    prompt = compose("floor", rules={key: value for key, value in RULES.items() if key != "version"})["prompt"]
+    assert b"python exact-fixture-floor.py" in prompt
+    assert b"Conditional version obligation:" not in prompt and b"Merge obligation:" not in prompt
 
 
 def test_C11_legacy_recomposition_retains_final_obligation_and_sources(launch, monkeypatch):
