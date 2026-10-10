@@ -3280,11 +3280,11 @@ def _version_inventory(state: WorkState, rules: dict) -> tuple[list[str], str | 
     return sorted(matched), "; ".join(problems) or None
 
 
-def _version_coordinates(pr: dict) -> dict:
+def _version_coordinates(pr: dict, *, require_head_repository: bool = True) -> dict:
     coordinates = _pull_coordinates(pr)
     head = pr.get("head") or {}
     repository = (head.get("repo") or {}).get("full_name")
-    if (not isinstance(repository, str) or not repository
+    if ((require_head_repository and (not isinstance(repository, str) or not repository))
             or HEAD_SHA.fullmatch(str(coordinates["head"])) is None):
         raise WorkError("version head repository or full SHA is unavailable")
     return {**coordinates, "head_repository": repository}
@@ -3329,11 +3329,12 @@ def _assess_version(state: WorkState, rules: dict, source: str,
         if transport is None:
             raise WorkError("version evidence needs the entrance's read-only GitHub transport")
         if state.pr is not None:
-            expected = _version_coordinates(state.pr)
+            require_head_repository = composition or report["owed"] is not False
+            expected = _version_coordinates(state.pr, require_head_repository=require_head_repository)
             # Confirm inventory identity even when no path matches.
             pull_endpoint = f"repos/{state.repo}/pulls/{state.pr['number']}"
             current = _dict(transport.get(pull_endpoint), pull_endpoint)
-            if _version_coordinates(current) != expected:
+            if _version_coordinates(current, require_head_repository=require_head_repository) != expected:
                 raise WorkError("version PR identity moved after inventory collection")
             if not report["owed"] and not composition:
                 report.update(status="not-required", message=(
@@ -3406,7 +3407,7 @@ def _verify_version_identity(transport: GitHubREST, state: WorkState, pr: dict, 
     if report.get("declaration") is None:
         return
     try:
-        coordinates = _version_coordinates(pr)
+        coordinates = _version_coordinates(pr, require_head_repository=report.get("owed") is not False)
         head, basis = report.get("head") or {}, report.get("base") or {}
         if (coordinates["head"] != head.get("sha")
                 or coordinates["head_repository"] != head.get("repository")
@@ -3442,13 +3443,17 @@ def _compose_version_instruction(state: WorkState, transport: GitHubREST | None,
         raise error
     spec, base = report["declaration"], report["base"]
     groups = [{"include": rule["include"], "exclude": rule["exclude"]} for rule in rules["rules"]]
+    action = (f"the merge obligation's prescribed version value {obligation.version_adjustment['value']} "
+              "governs this turn; set the field as that obligation directs. "
+              if obligation is not None and obligation.version_adjustment is not None else
+              "set that field to the target; retain a valid value already "
+              "at least that target and do not downgrade it. ")
     return (f" Conditional version obligation: JSON file {json.dumps(spec['path'])}, top-level field "
             f"{json.dumps(spec['field'])}; {base['basis']} {base['repository']}:{base['ref']} "
             f"at {base['sha']} carries {base['value']}; target {report['target']} "
             f"({spec['increment']} increment, lower parts reset). "
             "If the final PR diff touches a path matched by these use-rule groups, including removals "
-            "and both names of a rename, set that field to the target; retain a valid value already "
-            "at least that target and do not downgrade it. An installed copy keyed on an unmoved "
+            "and both names of a rename, " + action + "An installed copy keyed on an unmoved "
             "version misses the shipped change. Excludes apply within their own group only: "
             + json.dumps(groups, ensure_ascii=True, sort_keys=True)
             + ". Current matching paths: " + json.dumps(report["paths"], ensure_ascii=True) + ".")
@@ -5999,15 +6004,19 @@ def _capture_policy_snapshot(root: Path, repo: str, use_rules_path: Path, *,
     for name, path in requested.items():
         relative = _policy_relative_path(root, path)
         paths[name] = relative
-        dirty = _policy_status(root, relative)
-        if dirty:
-            problem = f"policy {relative} has uncommitted changes; commit or revert it before proof"
-            if enforce_clean:
-                raise WorkError(problem)
-            problems.append(problem)
-        blob = _policy_blob(root, revision, relative)
-        if blob is None and name != "work_configuration":
-            raise WorkError(f"policy {relative} has no committed blob at revision {revision}")
+        try:
+            dirty = _policy_status(root, relative)
+            if dirty:
+                problem = f"policy {relative} has uncommitted changes; commit or revert it before proof"
+                if enforce_clean:
+                    raise WorkError(problem)
+                problems.append(problem)
+            blob = _policy_blob(root, revision, relative)
+            if blob is None and name != "work_configuration":
+                raise WorkError(f"policy {relative} has no committed blob at revision {revision}")
+        except WorkError as exc:
+            exc.policy_input = name
+            raise
         blobs[name] = blob
         sources[name] = {
             "repository": repo, "path": relative, "revision": revision,
@@ -6025,25 +6034,27 @@ def _verify_policy_snapshot(root: Path, repo: str, use_rules_path: Path,
         )
     except WorkError as exc:
         if posted:
-            raise WorkError(
+            error = WorkError(
                 "the proof document was posted for the earlier policy state and completion "
                 f"is not current: {exc}"
-            ) from exc
+            )
+            error.policy_input = getattr(exc, "policy_input", None)
+            raise error from exc
         raise
     if current.revision != expected.revision:
-        if posted:
-            raise WorkError(
-                "the proof document was posted for the earlier policy revision and completion "
-                "is not current"
-            )
-        raise WorkError("policy checkout HEAD changed before publication; recompose and retry")
+        error = WorkError("the proof document was posted for the earlier policy revision and completion "
+                          "is not current" if posted else
+                          "policy checkout HEAD changed before publication; recompose and retry")
+        if current.blobs["use_rules"] != expected.blobs["use_rules"]:
+            error.policy_input = "use_rules"
+        raise error
     if current.sources != expected.sources or current.blobs != expected.blobs:
-        if posted:
-            raise WorkError(
-                "the proof document was posted for the earlier policy state and completion "
-                "is not current"
-            )
-        raise WorkError("policy snapshot changed before publication; recompose and retry")
+        error = WorkError("the proof document was posted for the earlier policy state and completion "
+                          "is not current" if posted else
+                          "policy snapshot changed before publication; recompose and retry")
+        if current.blobs["use_rules"] != expected.blobs["use_rules"]:
+            error.policy_input = "use_rules"
+        raise error
 
 
 def _transport_mutation(transport: GitHubREST, name: str, *args) -> object:
@@ -6534,6 +6545,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
                   "version_adjustment": {**spec, "value": new_version} if new_version is not None else None,
                   "landing": landed.stdout.decode("utf-8", errors="backslashreplace").strip(),
                   "landing_error": landed.stderr.decode("utf-8", errors="backslashreplace").strip()}
+        report_state = state
         if landed.returncode == 0:
             row["revision_before"], row["status_before"] = _git_snapshot(root)
             write_registry(registry)
@@ -6547,7 +6559,8 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
             report["use_application"] = fresh.use_application
             report["next"] = decide(fresh, rules).as_dict()
             report["raw_output"] = fresh.raw_output
-        _emit_report(report, state)
+            report_state = fresh
+        _emit_report(report, report_state)
         return 0
     except WorkError as exc:
         if str(exc).startswith("builder-required:"):
@@ -6588,7 +6601,8 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
     try:
         return _publish_current_proof(transport, fresh, root, effective_rules, use_rules_path, snapshot)
     except (OSError, UnicodeError, ValueError, WorkError) as exc:
-        if (fresh.version_obligation or {}).get("declaration") is not None:
+        if (getattr(exc, "policy_input", None) == "use_rules"
+                and (fresh.version_obligation or {}).get("declaration") is not None):
             if getattr(exc, "version_obligation", None) is None:
                 exc.version_obligation = _version_unknown(dict(fresh.version_obligation), str(exc))
         raise

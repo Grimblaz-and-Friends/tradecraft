@@ -129,6 +129,9 @@ def test_C2_C7_every_composed_stage_gets_conditional_target_and_correct_subject(
     else:
         assert "map every artifact acceptance criterion" in prompt
         assert "--- settled artifact begin ---" in prompt
+        account = prompt.split(" At the end of every build or implementation repair", 1)[1].split("\n\n", 1)[0]
+        assert "criterion's ID and exact artifact text" in account
+        assert "required capability" not in account and "needed inputs" not in account
     assert any(f"repos/{REPO}/contents/package.json?ref={BASE}" == call[1] for call in transport.calls)
     assert not transport.effects
 
@@ -336,6 +339,97 @@ def test_C2_merge_and_version_instructions_share_pinned_basis():
     obligation = work.MergeObligation(HEAD, REPO, "main", ADVANCED, (), None)
     with pytest.raises(work.WorkError, match="differs from the pinned merge obligation"):
         work._compose_version_instruction(state, transport, RULES, "fixture", obligation)
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+@pytest.mark.parametrize("matching", [False, True])
+def test_C4_deleted_fork_needs_head_repository_only_when_version_is_owed(stage, matching, tmp_path, capsys):
+    files = [{"filename": "runtime/code.py" if matching else "README.md", "status": "modified"}]
+    state, transport = fixture_state(version="2.10.0", files=files)
+    state.pr["head"]["repo"] = None
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    assert named(stage, state, transport, root) == 0
+    report = json.loads(capsys.readouterr().out)
+    version = report["version_obligation"]
+    assert version["head"] == {"repository": None, "sha": HEAD, "value": None}
+    assert version["status"] == ("unverifiable" if matching else "not-required")
+    assert version["owed"] is matching and version["met"] is None
+    if matching:
+        assert "head repository" in version["error"] and not transport.effects
+    else:
+        assert transport.effects
+        assert not any("/contents/package.json" in call[1] for call in transport.calls)
+        if stage == "ready-reviewers":
+            assert report["ready"] is True
+        else:
+            assert report["comment"]["action"] == "created"
+
+
+@pytest.mark.parametrize("stage", ["build", "review-disposition"])
+@pytest.mark.parametrize("prescribed", [False, True])
+def test_C2_prescribed_merge_version_governs_coexisting_instruction(stage, prescribed):
+    state, transport = fixture_state(version="3.0.0", base_version="2.10.0")
+    adjustment = {**SPEC, "value": "2.11.0"} if prescribed else None
+    obligation = work.MergeObligation(HEAD, REPO, "main", BASE, (), adjustment)
+    instruction = work._compose_version_instruction(state, transport, RULES, "fixture", obligation)
+    prompt = work._stage_prompt(state, work.Decision(stage, True, "resume", "fixture"),
+                                merge_obligation=obligation, version_instruction=instruction).decode()
+    assert prompt.startswith("Merge obligation:") and "target 2.11.0" in instruction
+    if prescribed:
+        assert 'to "2.11.0" in this merge' in prompt
+        assert "merge obligation's prescribed version value 2.11.0 governs this turn" in instruction
+        assert "do not downgrade" not in instruction and "retain a valid value" not in instruction
+    else:
+        assert "retain a valid value already at least that target and do not downgrade it" in instruction
+
+
+@pytest.mark.parametrize("step", ["rerun", "floor-identity", "work-policy"])
+def test_C5_nonversion_proof_failure_keeps_satisfied_version_assessment(step, tmp_path, monkeypatch):
+    state, transport = fixture_state(version="2.10.0", draft=False)
+    root = tmp_path / "adopter"
+    path = adopted_repository(root)
+    reason = {"rerun": "fixture gate rerun POST failed", "floor-identity": "fixture floor identity failed",
+              "work-policy": "work.json has uncommitted changes"}[step]
+    if step == "rerun":
+        original_post = transport.post
+        def post(endpoint, payload):
+            if endpoint.endswith("/rerun"):
+                transport.effects.append(("POST", endpoint, payload))
+                raise work.WorkError(reason)
+            return original_post(endpoint, payload)
+        monkeypatch.setattr(transport, "post", post)
+        monkeypatch.setattr(work, "_rerun_gate_evaluations",
+                            lambda github, fresh, head: github.post(f"repos/{REPO}/actions/runs/999/rerun", {}))
+    elif step == "floor-identity":
+        def fail(*args):
+            raise work.WorkError(reason)
+        monkeypatch.setattr(work, "_verify_floor_identity", fail)
+    else:
+        original_prepare = work.prepare_use_evidence
+        def prepare(*args):
+            original_prepare(*args)
+            path = root / ".tradecraft" / "work.json"
+            value = json.loads(path.read_bytes())
+            value["reviewer_label"] = "changed-label"
+            path.write_bytes(json.dumps(value).encode("utf-8") + b"\n")
+        monkeypatch.setattr(work, "prepare_use_evidence", prepare)
+    with pytest.raises(work.WorkError, match=reason) as error:
+        if step == "work-policy":
+            work._execute_proof(transport, state, root, RULES, path, None, None)
+        else:
+            named("proof", state, transport, root)
+    if step == "work-policy":
+        assert getattr(error.value, "version_obligation", None) is None
+        assert error.value.policy_input == "work_configuration"
+    else:
+        assert error.value.version_obligation["status"] == "satisfied"
+        assert error.value.version_obligation["met"] is True
+    assert "recollect" not in str(error.value)
+    if step == "rerun":
+        assert transport.comments and transport.effects[-1][1].endswith("/rerun")
+    else:
+        assert not transport.effects
 
 
 @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])

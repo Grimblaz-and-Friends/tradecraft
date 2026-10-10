@@ -9095,8 +9095,12 @@ def test_C7_accounting_subject_uses_the_lawful_affirmed_pair(stage, risk, lane):
         assert value in prompt
     if mechanical:
         assert "exact affirmed row text" in prompt and "--- settled artifact begin ---" not in prompt
+        assert "required capability and needed inputs" in prompt
     else:
         assert "--- settled artifact begin ---" in prompt
+        account = prompt.split(" At the end of every build or implementation repair", 1)[1].split("\n\n", 1)[0]
+        assert "criterion's ID and exact artifact text" in account
+        assert "required capability" not in account and "needed inputs" not in account
 
 
 @pytest.mark.parametrize("kind", ["unauthorized", "crossed", "duplicated"])

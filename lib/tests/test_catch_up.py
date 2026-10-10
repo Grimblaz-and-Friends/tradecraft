@@ -549,6 +549,39 @@ def test_catch_up_adjusts_only_base_changed_version_and_carries_use(registered, 
         assert "version.json" not in carry["merge_commits"][0]["own_paths"]
 
 
+def test_C5_catch_up_report_uses_landed_version_assessments(registered, monkeypatch, capsys):
+    root, implementation, branch, remote, transport, state = registered
+    commit(implementation, "version.json", '{"version":"1.3.0","name":"fixture"}\n')
+    git(implementation, "push")
+    commit(root, "version.json", '{"version":"1.4.0","name":"fixture"}\n')
+    git(root, "push", "origin", "main")
+    original_read = work.read_state
+    def collected(*args):
+        fresh = original_read(*args)
+        fresh.files = transport.get(
+            f"repos/example/product/compare/{fresh.pr['base']['sha']}...{fresh.pr['head']['sha']}")["files"]
+        fresh.pr["changed_files"] = len(fresh.files)
+        fresh.changed_paths = [item["filename"] for item in fresh.files]
+        return fresh
+    monkeypatch.setattr(work, "read_state", collected)
+    state = work._read_policy_state(transport, "example/product", 12, state.config, RULES, "fixture policy")
+    old_head = state.pr["head"]["sha"]
+    assert state.version_obligation["status"] == "blocked"
+    state.proof_version_obligation = deepcopy(state.version_obligation)
+    assert work._execute_catch_up(transport, state, root, None, "holder-id", RULES) == 0
+    report = json.loads(capsys.readouterr().out)
+    landed = git(implementation, "rev-parse", "HEAD")
+    assert landed != old_head and report["head"] == landed
+    assert report["version_obligation"] == report["next"]["version_obligation"]
+    assert report["version_obligation"]["status"] == "satisfied"
+    assert report["version_obligation"]["head"]["sha"] == landed
+    assert report["version_obligation"]["head"]["value"] == "1.5.0"
+    # The fresh catch-up collection has no committed proof assessment yet;
+    # it must not retain the earlier head's blocked proof view.
+    assert report["proof_version_obligation"] is None
+    assert report["proof_version_obligation"] == report["next"]["proof_version_obligation"]
+
+
 def test_catch_up_fetch_uses_selected_remote_and_refuses_a_moved_pin(registered, monkeypatch):
     root, implementation, branch, remote, transport, state = registered
     commit(root, "src/other", "incoming\n")
