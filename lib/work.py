@@ -329,6 +329,8 @@ class WorkState:
     floor_policy_bytes: bytes | None = None
     raw_output: dict[str, object] | None = None
     file_inventory_error: str | None = None
+    version_obligation: dict[str, object] | None = None
+    proof_version_obligation: dict[str, object] | None = None
     readiness_policy: tuple[Path, bytes] | None = None
     reach: dict[str, object] | None = None
 
@@ -390,6 +392,8 @@ class Decision:
     floor: dict[str, object] | None = None
     raw_output: dict[str, object] | None = None
     reach: dict[str, object] | None = None
+    version_obligation: dict[str, object] | None = None
+    proof_version_obligation: dict[str, object] | None = None
     artifact_interpretation: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
@@ -412,6 +416,8 @@ class Decision:
             "use_application": self.use_application,
             "floor": self.floor,
             "raw_output": self.raw_output,
+            "version_obligation": self.version_obligation,
+            "proof_version_obligation": self.proof_version_obligation,
             "reach": self.reach,
             "artifact_interpretation": self.artifact_interpretation,
         }
@@ -1052,6 +1058,7 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
         error = WorkError(f"Cannot collect PR file inventory: {exc}")
         error.file_inventory_error = str(error)
         error.head = _head_sha(state)
+        error.version_pr = state.pr
         raise error from exc
     state.files = files
     paths: list[str] = []
@@ -1123,11 +1130,15 @@ def read_state(transport: GitHubREST, repo: str, issue_number: int,
     live_pr = _dict(transport.get(pr_endpoint), pr_endpoint)
     state.synchronization = _collect_synchronization(transport, live_pr)
     try:
-        if _pull_coordinates(live_pr) != _pull_coordinates(state.pr):
+        old_head_repo = ((state.pr.get("head") or {}).get("repo") or {}).get("full_name")
+        new_head_repo = ((live_pr.get("head") or {}).get("repo") or {}).get("full_name")
+        if (_pull_coordinates(live_pr) != _pull_coordinates(state.pr)
+                or old_head_repo != new_head_repo):
             state.synchronization["uncertainties"].append("pull-request identity moved during collection; reread")
             state.file_inventory_error = "Pull-request identity moved during file collection"
     except WorkError as exc:
         state.synchronization["uncertainties"].append(str(exc))
+        state.file_inventory_error = str(exc)
     state.pr = live_pr
     collect_floor(state, transport)
     return state
@@ -3042,6 +3053,8 @@ def _reported_decision(state: WorkState, decision: Decision) -> Decision:
         launch_settings=plan, synchronization=state.synchronization,
         use_application=state.use_application, floor=floor_evaluation(state),
         raw_output=state.raw_output, reach=state.reach,
+        version_obligation=state.version_obligation,
+        proof_version_obligation=state.proof_version_obligation,
         artifact_interpretation=_artifact_interpretation(state),
     )
 
@@ -3059,7 +3072,9 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
                  raw: dict[str, object] | None = None, flush: bool = False) -> None:
     if state is not None:
         _evaluate_reach(state)
-        payload = {**payload, "reach": state.reach}
+        payload = {**payload, "reach": state.reach,
+                   "version_obligation": state.version_obligation,
+                   "proof_version_obligation": state.proof_version_obligation}
     if payload.get("raw_output") is None:
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
@@ -3204,12 +3219,252 @@ def _evaluate_raw_output(state: WorkState, rules: dict[str, object], source: str
     )
 
 
+VERSION_REFUSALS = frozenset({"blocked", "unverifiable"})
+
+
+def _version_report(rules: dict, source: str, *, view: str = "selected") -> dict:
+    result = {"policy": source, "policy_view": view,
+              "policy_sha256": None,
+              "declaration": rules.get("version"), "paths": [], "base": None, "head": None,
+              "target": None, "owed": None, "met": None,
+              "status": "not-evaluated", "message": "No implementing PR inventory to evaluate."}
+    try:
+        result["declaration"] = version_policy.declaration(rules)
+    except ValueError as exc:
+        return _version_unknown(result, str(exc))
+    if result["declaration"] is None:
+        result.update(status="undeclared", owed=False, message="No version is declared.")
+    return result
+
+
+def _version_unknown(report: dict, reason: str) -> dict:
+    report.update(status="unverifiable", met=None, error=reason,
+                  message=reason + "; restore the named evidence, recollect and retry.")
+    return report
+
+
+def _version_inventory(state: WorkState, rules: dict) -> tuple[list[str], str | None]:
+    """Use the existing matcher, with removals and both rename names retained."""
+    matched = set()
+    seen = set()
+    problems = []
+    if state.file_inventory_error:
+        problems.append(state.file_inventory_error)
+    count = state.pr.get("changed_files")
+    if type(count) is not int or count < 0:
+        problems.append("PR changed_files is missing or invalid")
+    elif len(state.files) != count:
+        problems.append(f"PR reports {count} changed files; retrieved {len(state.files)}")
+    for item in state.files:
+        if not isinstance(item, dict):
+            problems.append("PR file record is not an object")
+            continue
+        name = raw_output._path(item.get("filename"))
+        if name is None:
+            problems.append("PR file record has no usable filename")
+            continue
+        if name in seen:
+            problems.append(f"Duplicate PR filename: {name}")
+        seen.add(name)
+        names = [name]
+        status = item.get("status")
+        if not isinstance(status, str) or status not in raw_output.STATUSES:
+            problems.append(f"Missing or unknown PR file status for {name}")
+        if status == "renamed":
+            previous = raw_output._path(item.get("previous_filename"))
+            if previous is None:
+                problems.append(f"Renamed PR file has no previous_filename: {name}")
+            else:
+                names.append(previous)
+        matched.update(path for path in names if use_required([path], rules))
+    return sorted(matched), "; ".join(problems) or None
+
+
+def _version_coordinates(pr: dict) -> dict:
+    coordinates = _pull_coordinates(pr)
+    head = pr.get("head") or {}
+    repository = (head.get("repo") or {}).get("full_name")
+    if (not isinstance(repository, str) or not repository
+            or HEAD_SHA.fullmatch(str(coordinates["head"])) is None):
+        raise WorkError("version head repository or full SHA is unavailable")
+    return {**coordinates, "head_repository": repository}
+
+
+def _version_blob(transport: GitHubREST, repository: str, sha: str, spec: dict) -> bytes:
+    path = urllib.parse.quote(spec["path"], safe="/")
+    endpoint = f"repos/{repository}/contents/{path}?ref={sha}"
+    value = _dict(transport.get(endpoint), endpoint)
+    if value.get("type") != "file" or value.get("encoding") != "base64":
+        raise WorkError(f"declared version file is not a readable blob: {endpoint}")
+    content = value.get("content")
+    if not isinstance(content, str):
+        raise WorkError(f"declared version file has no bytes: {endpoint}")
+    return base64.b64decode("".join(content.split()), validate=True)
+
+
+def _assess_version(state: WorkState, rules: dict, source: str,
+                    transport: GitHubREST | None, *, view: str = "selected",
+                    composition: bool = False, pinned_base: str | None = None,
+                    policy_bytes: bytes | None = None) -> dict:
+    report = _version_report(rules, source, view=view)
+    if policy_bytes is not None:
+        report["policy_sha256"] = hashlib.sha256(policy_bytes).hexdigest()
+    spec = report["declaration"]
+    if spec is None or report["status"] == "unverifiable":
+        return report
+    if state.pr is None and not composition:
+        return report
+    problem = None
+    if state.pr is not None:
+        paths, problem = _version_inventory(state, rules)
+        report.update(paths=paths, owed=True if paths else None if problem else False)
+        head = state.pr.get("head") or {}
+        report["head"] = {"repository": (head.get("repo") or {}).get("full_name"),
+                          "sha": head.get("sha"), "value": None}
+        base, _ = _gate_base(state.pr)
+        report["base"] = {**base, "sha": None, "value": None} if base else None
+        if problem and not composition:
+            return _version_unknown(report, problem)
+    try:
+        if transport is None:
+            raise WorkError("version evidence needs the entrance's read-only GitHub transport")
+        if state.pr is not None:
+            expected = _version_coordinates(state.pr)
+            # Confirm inventory identity even when no path matches.
+            pull_endpoint = f"repos/{state.repo}/pulls/{state.pr['number']}"
+            current = _dict(transport.get(pull_endpoint), pull_endpoint)
+            if _version_coordinates(current) != expected:
+                raise WorkError("version PR identity moved after inventory collection")
+            if not report["owed"] and not composition:
+                report.update(status="not-required", message=(
+                    "Complete PR inventory matches no use-rule path; no version bump is owed. "
+                    "Base/head version values were not needed or read."))
+                return report
+            base, base_endpoint = _floor_base_tip(transport, state.pr)
+            basis = "actual PR base tip"
+        else:
+            repository_endpoint = f"repos/{state.repo}"
+            repository = _dict(transport.get(repository_endpoint), repository_endpoint)
+            ref = repository.get("default_branch")
+            if not isinstance(ref, str) or not ref:
+                raise WorkError("repository default branch is unavailable before first build")
+            base, base_endpoint = _floor_base_tip(transport, {
+                "base": {"ref": ref, "repo": {"full_name": state.repo, "id": repository.get("id")}}})
+            basis = "default-branch tip before a PR exists"
+        report["base"] = {**base, "basis": basis, "value": None}
+        if pinned_base is not None and base["sha"] != pinned_base:
+            raise WorkError("version base tip differs from the pinned merge obligation; retry composition")
+        try:
+            content = _version_blob(transport, base["repository"], base["sha"], spec)
+            report["base"]["value"] = version_policy.document(content, spec)[spec["field"]]
+            report["target"] = version_policy.increment(content, spec)
+        except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+            raise WorkError(f"base version evidence for {spec['path']} field {spec['field']}: {exc}") from exc
+        if not composition:
+            try:
+                content = _version_blob(transport, expected["head_repository"], expected["head"], spec)
+                report["head"]["value"] = version_policy.document(content, spec)[spec["field"]]
+            except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+                raise WorkError(f"head version evidence for {spec['path']} field {spec['field']}: {exc}") from exc
+        confirmed = _dict(transport.get(base_endpoint), base_endpoint)
+        if _dict(confirmed.get("object"), base_endpoint).get("sha") != base["sha"]:
+            raise WorkError("version base tip moved during collection")
+        if state.pr is not None:
+            confirmed_pull = _dict(transport.get(pull_endpoint), pull_endpoint)
+            if _version_coordinates(confirmed_pull) != expected:
+                raise WorkError("version PR identity moved during collection")
+        if composition:
+            return report
+        met = version_policy.parts(report["head"]["value"]) >= version_policy.parts(report["target"])
+        report.update(status="satisfied" if met else "blocked", met=met,
+                      message=f"{spec['path']} field {spec['field']}: base {report['base']['value']}, "
+                              f"head {report['head']['value']}, target {report['target']}; "
+                              + ("owed version is met." if met else "owed version is below target."))
+    except (AttributeError, KeyError, OSError, TypeError, UnicodeError, ValueError, WorkError) as exc:
+        return _version_unknown(report, str(exc) or type(exc).__name__)
+    return report
+
+
+def _version_obligation_refusal(state: WorkState, stage: str) -> Decision | None:
+    report = state.version_obligation or {}
+    if report.get("status") not in VERSION_REFUSALS:
+        return None
+    spec = report.get("declaration")
+    spec = spec if isinstance(spec, dict) else {}
+    context = (f"{spec.get('path')} field {spec.get('field')}: "
+               f"base {(report.get('base') or {}).get('value')}, "
+               f"head {(report.get('head') or {}).get('value')}, target {report.get('target')}.")
+    remedy = (f"Return this repair to the builder with run build, then retry {stage}."
+              if report["status"] == "blocked" else f"Recollect version evidence and retry {stage}.")
+    return Decision(stage, False, None, "version-obligation-" + report["status"],
+                    f"{stage}: {context} {report['message']} {remedy}", status="holder-owned")
+
+
+def _verify_version_identity(transport: GitHubREST, state: WorkState, pr: dict, *,
+                             performed: str = "") -> None:
+    report = state.version_obligation or {}
+    if report.get("declaration") is None:
+        return
+    try:
+        coordinates = _version_coordinates(pr)
+        head, basis = report.get("head") or {}, report.get("base") or {}
+        if (coordinates["head"] != head.get("sha")
+                or coordinates["head_repository"] != head.get("repository")
+                or any(coordinates["base"].get(key) != basis.get(key)
+                       for key in ("repository", "repository_id", "ref"))):
+            raise WorkError("version head repository, head or base identity moved")
+        if report.get("owed"):
+            base, _ = _floor_base_tip(transport, pr)
+            expected = report.get("base") or {}
+            if any(base.get(key) != expected.get(key) for key in ("repository", "repository_id", "ref", "sha")):
+                raise WorkError("version base tip moved")
+    except (AttributeError, KeyError, TypeError, ValueError, WorkError) as exc:
+        state.version_obligation = _version_unknown(dict(report), str(exc))
+        error = WorkError(str(exc) + ("; " + performed if performed else "")
+                          + "; recollect version evidence and retry before completion")
+        error.version_obligation = state.version_obligation
+        raise error from exc
+
+
+def _compose_version_instruction(state: WorkState, transport: GitHubREST | None,
+                                 rules: dict | None, source: str,
+                                 obligation: MergeObligation | None = None) -> str:
+    if rules is None:
+        return ""
+    report = _assess_version(state, rules, source, transport, composition=True,
+                             pinned_base=obligation.pinned if obligation else None,
+                             policy_bytes=state.readiness_policy[1] if state.readiness_policy else None)
+    if report["status"] == "undeclared":
+        return ""
+    if report["status"] == "unverifiable" or report["target"] is None:
+        error = WorkError("Cannot compose the conditional version instruction: " + report["message"])
+        error.version_obligation = report
+        raise error
+    spec, base = report["declaration"], report["base"]
+    groups = [{"include": rule["include"], "exclude": rule["exclude"]} for rule in rules["rules"]]
+    return (f" Conditional version obligation: JSON file {json.dumps(spec['path'])}, top-level field "
+            f"{json.dumps(spec['field'])}; {base['basis']} {base['repository']}:{base['ref']} "
+            f"at {base['sha']} carries {base['value']}; target {report['target']} "
+            f"({spec['increment']} increment, lower parts reset). "
+            "If the final PR diff touches a path matched by these use-rule groups, including removals "
+            "and both names of a rename, set that field to the target; retain a valid value already "
+            "at least that target and do not downgrade it. An installed copy keyed on an unmoved "
+            "version misses the shipped change. Excludes apply within their own group only: "
+            + json.dumps(groups, ensure_ascii=True, sort_keys=True)
+            + ". Current matching paths: " + json.dumps(report["paths"], ensure_ascii=True) + ".")
+
+
 def _read_policy_state(transport: GitHubREST, repo: str, issue_number: int,
                        config: WorkConfig, rules: dict[str, object] | None,
-                       source: str) -> WorkState:
+                       source: str, *, view: str = "selected",
+                       policy_bytes: bytes | None = None) -> WorkState:
     """Add report context to collection errors without returning partial state."""
     try:
-        return read_state(transport, repo, issue_number, config)
+        state = read_state(transport, repo, issue_number, config)
+        if rules is not None:
+            state.version_obligation = _assess_version(state, rules, source, transport,
+                                                       view=view, policy_bytes=policy_bytes)
+        return state
     except (OSError, UnicodeError, ValueError, WorkError) as exc:
         declaration = raw_output.evaluate(rules or {}, source)
         failure = getattr(exc, "file_inventory_error", None)
@@ -3221,6 +3476,19 @@ def _read_policy_state(transport: GitHubREST, repo: str, issue_number: int,
             )
         else:
             exc.raw_output = declaration
+        report = _version_report(rules or {}, source, view=view)
+        if policy_bytes is not None:
+            report["policy_sha256"] = hashlib.sha256(policy_bytes).hexdigest()
+        partial = getattr(exc, "version_pr", None)
+        if isinstance(partial, dict):
+            head = partial.get("head") or {}
+            report["head"] = {"repository": (head.get("repo") or {}).get("full_name"),
+                              "sha": head.get("sha"), "value": None}
+            base, _ = _gate_base(partial)
+            report["base"] = {**base, "sha": None, "value": None} if base else None
+        if report["status"] != "undeclared":
+            report = _version_unknown(report, str(exc))
+        exc.version_obligation = report
         raise
 
 
@@ -3542,6 +3810,8 @@ def _ignored_product_incident_suffix(state: WorkState) -> str:
 
 def decide(state: WorkState, rules: dict[str, object]) -> Decision:
     _evaluate_raw_output(state, rules, str((state.raw_output or {}).get("policy") or "selected change-proof policy"))
+    if state.version_obligation is None:
+        state.version_obligation = _assess_version(state, rules, "selected change-proof policy", None)
     decision = _decide(state, rules)
     if decision.reason.startswith(("stopped-run-", "stopped-handover-")):
         return decision  # Recovery already selected its route before the terms comparison.
@@ -3577,7 +3847,7 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
             if refusal is not None:
                 return _reported_decision(state, refusal)
         if stage in {"ready-reviewers", "proof"}:
-            refusal = _raw_output_refusal(state, stage)
+            refusal = _version_obligation_refusal(state, stage) or _raw_output_refusal(state, stage)
             if refusal is not None:
                 return _reported_decision(state, refusal)
         suffix = (_ignored_marker_suffix(state) + _ignored_disposition_suffix(state)
@@ -3693,7 +3963,8 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
     if bool(state.pr.get("draft")):
         return result("ready-reviewers", False, None, "floor-complete-pr-draft",
-                      "Before authorizing ready-reviewers, account for every criterion in the latest "
+                      "Before authorizing ready-reviewers, account for every "
+                      + ("affirmed brief row" if policy.mechanical else "artifact criterion") + " in the latest "
                       "build or repair return and record all owed non-CI results and holder-launched "
                       "fresh-reader returns; green CI does not discharge them.")
     reviewers = state.config.connected_reviewers
@@ -3727,7 +3998,14 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         return result("use", False, None, "current-head-use-absent", USE_HOLDER_DETAIL)
     current_proof = _current_marker(state, "proof", head=sha)
     if (current_proof is None or state.proof_current is False
-            or (state.raw_output or {}).get("status") in raw_output.REFUSALS):
+            or (state.raw_output or {}).get("status") in raw_output.REFUSALS
+            or (state.version_obligation or {}).get("status") in VERSION_REFUSALS
+            or (state.proof_version_obligation or {}).get("status") in VERSION_REFUSALS):
+        if (state.proof_version_obligation or {}).get("status") in VERSION_REFUSALS:
+            failed = replace(state, version_obligation=state.proof_version_obligation)
+            refusal = _version_obligation_refusal(failed, "proof")
+            return result("proof", False, None, refusal.reason,
+                          "Committed proof policy: " + refusal.detail)
         return result("proof", False, "fresh", "current-head-proof-absent-or-outdated")
     gate = _release_gate_status(state, sha)
     verdict = gate["verdict"]
@@ -4329,13 +4607,18 @@ def sweep_registry(transport: GitHubREST) -> None:
 
 def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None,
                   branch: str | None = None, *, floor_command: str | None = None,
-                  merge_obligation: MergeObligation | None = None) -> bytes:
+                  merge_obligation: MergeObligation | None = None,
+                  version_instruction: str = "") -> bytes:
     if decision.stage == "use":
         raise WorkError("the entrance does not dispatch the use stage; return it to the holder")
     if decision.stage == "cold-seat":
         if root is None:
             raise WorkError("cold-seat dispatch requires its isolated working root")
         return _cold_stage_prompt(state, root)
+    if state.validated_markers is None:
+        validate_marker_claims(state)
+    brief, lane_pair = _affirmed_review(state)
+    mechanical = lane_pair == ("ordinary", "mechanical")
     instruction = (
         "Perform exactly the stage named in this dispatch and return to the holder. "
         "Do not start or dispatch a later stage."
@@ -4370,7 +4653,17 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
         )
     if decision.stage in {"build", "floor", "review-disposition"}:
         instruction += " " + build_reach.PRESERVATION
+        instruction += version_instruction
         instruction += (
+            " At the end of every build or implementation repair (including reviewer disposition, "
+            "use findings, or a floor turn changing implementation), map each affirmed brief row "
+            "to a committed test carried by CI, a check you can run, or an owed fresh reader. "
+            "Commit executable obligations as tests where feasible. Run each remaining builder-executable "
+            "row and return its row number, command or procedure, tested revision, result and limitation. "
+            "Return each owed fresh-reader row's number and exact affirmed row text, required capability "
+            "and needed inputs for a separate holder-launched recorded seat; do not launch or judge that reader. "
+            "Repairs renew this duty even on an already-ready pull request."
+        ) if mechanical else (
             " At the end of every build or implementation repair (including reviewer disposition, "
             "use findings, or a floor turn changing implementation), map every artifact acceptance "
             "criterion to a committed test carried by CI, a check you can run, or an owed fresh reader. "
@@ -4380,11 +4673,7 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             "text for a separate holder-launched recorded seat; do not launch or judge that reader. "
             "Repairs renew this duty even on an already-ready pull request."
         )
-    brief, lane_pair = _affirmed_review(state)
-    mechanical = lane_pair == ("ordinary", "mechanical")
     explicit_artifact = decision.stage == "artifact"
-    if state.validated_markers is None:
-        validate_marker_claims(state)
     phase = state.artifact_phase or _artifact_phase(state)
     problem = _artifact_source_problem(state, decision.stage)
     if problem:
@@ -5728,10 +6017,11 @@ def _capture_policy_snapshot(root: Path, repo: str, use_rules_path: Path, *,
 
 
 def _verify_policy_snapshot(root: Path, repo: str, use_rules_path: Path,
-                            expected: PolicySnapshot, *, posted: bool = False) -> None:
+                            expected: PolicySnapshot, *, posted: bool = False,
+                            enforce_clean: bool = True) -> None:
     try:
         current = _capture_policy_snapshot(
-            root, repo, use_rules_path, enforce_clean=True
+            root, repo, use_rules_path, enforce_clean=enforce_clean
         )
     except WorkError as exc:
         if posted:
@@ -6290,12 +6580,24 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
         raise WorkError("committed use policy is unavailable")
     effective_rules = _use_rules_bytes(use_blob, snapshot.paths["use_rules"])
     fresh = _read_policy_state(transport, state.repo, state.issue_number, effective_config,
-                              effective_rules, str(use_rules_path))
+                              effective_rules, str(use_rules_path), view="committed", policy_bytes=use_blob)
     fresh.record_root = state.record_root
     fresh.holder_root, fresh.instalment = state.holder_root or root, state.instalment
     fresh.policy_sources = snapshot.sources
     _evaluate_raw_output(fresh, effective_rules, str(use_rules_path))
-    refusal = _raw_output_refusal(fresh, "proof")
+    try:
+        return _publish_current_proof(transport, fresh, root, effective_rules, use_rules_path, snapshot)
+    except (OSError, UnicodeError, ValueError, WorkError) as exc:
+        if (fresh.version_obligation or {}).get("declaration") is not None:
+            if getattr(exc, "version_obligation", None) is None:
+                exc.version_obligation = _version_unknown(dict(fresh.version_obligation), str(exc))
+        raise
+
+
+def _publish_current_proof(transport: GitHubREST, fresh: WorkState, root: Path,
+                           effective_rules: dict, use_rules_path: Path,
+                           snapshot: PolicySnapshot) -> int:
+    refusal = _version_obligation_refusal(fresh, "proof") or _raw_output_refusal(fresh, "proof")
     if refusal is not None:
         _emit_report(_reported_decision(fresh, refusal).as_dict(), fresh)
         return 0
@@ -6304,14 +6606,19 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
         _emit_report(_reported_decision(fresh, sync).as_dict(), fresh)
         return 0
     prepare_use_evidence(fresh, transport, effective_rules)
+    if fresh.pr is not None and (fresh.version_obligation or {}).get("declaration") is not None:
+        endpoint = f"repos/{fresh.repo}/pulls/{fresh.pr['number']}"
+        _verify_version_identity(transport, fresh, _dict(transport.get(endpoint), endpoint))
+        _verify_policy_snapshot(root, fresh.repo, use_rules_path, snapshot)
     composed = compose_proof(fresh, effective_rules)
     head = str(composed["identity"]["head"])
     pull_number = int(composed["identity"]["pull_request"])
     if fresh.pr is None:
         raise WorkError("proof requires one implementing pull request")
     expected_pull = _pull_coordinates(fresh.pr)
-    pull_endpoint = f"repos/{state.repo}/pulls/{pull_number}"
+    pull_endpoint = f"repos/{fresh.repo}/pulls/{pull_number}"
     before = _dict(transport.get(pull_endpoint), pull_endpoint)
+    _verify_version_identity(transport, fresh, before)
     if _pull_coordinates(before) != expected_pull:
         raise WorkError(
             "pull-request head or base changed before proof publication; recompose and retry"
@@ -6327,9 +6634,13 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
         _emit_report(_reported_decision(before_state, refusal).as_dict(), before_state)
         return 0
     body = proof_document.document(composed, floor_context=floor_evaluation(fresh))
-    _verify_policy_snapshot(root, state.repo, use_rules_path, snapshot)
+    _verify_policy_snapshot(root, fresh.repo, use_rules_path, snapshot)
+    if (fresh.version_obligation or {}).get("declaration") is not None:
+        _verify_version_identity(transport, fresh, _dict(transport.get(pull_endpoint), pull_endpoint))
     publication = _publish_proof_comment(transport, fresh, body, head)
     after = _dict(transport.get(pull_endpoint), pull_endpoint)
+    _verify_version_identity(transport, fresh, after,
+        performed=f"proof comment {publication.get('url') or publication.get('id')} was published and is preserved")
     if _pull_coordinates(after) != expected_pull:
         raise WorkError(
             "pull-request head or base changed during proof publication; the posted document is "
@@ -6337,7 +6648,7 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
         )
     _verify_floor_identity(transport, fresh, after)
     _verify_policy_snapshot(
-        root, state.repo, use_rules_path, snapshot, posted=True
+        root, fresh.repo, use_rules_path, snapshot, posted=True
     )
     after_state = replace(fresh, pr=after, synchronization=_collect_synchronization(transport, after))
     sync = _synchronization_decision(after_state)
@@ -6346,7 +6657,7 @@ def _execute_proof(transport: GitHubREST, state: WorkState, root: Path,
         return 0
     reruns = _rerun_gate_evaluations(transport, fresh, head)
     _emit_report({
-        "schema_version": 1, "work": f"{state.repo}#{state.issue_number}",
+        "schema_version": 1, "work": f"{fresh.repo}#{fresh.issue_number}",
         "producer_version": records.producer_version(), "stage": "proof",
         "status": "holder-owned", "head": head, "comment": publication,
         "gate_reruns": reruns,
@@ -6372,7 +6683,9 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
         raise WorkError("run ready-reviewers accepts no dispatch or consumer tree")
     source = str(state.readiness_policy[0]) if state.readiness_policy else "selected change-proof policy"
     _evaluate_raw_output(state, rules, source)
-    refusal = _raw_output_refusal(state, "ready-reviewers")
+    state.version_obligation = _assess_version(state, rules, source, transport,
+        policy_bytes=state.readiness_policy[1] if state.readiness_policy else None)
+    refusal = _version_obligation_refusal(state, "ready-reviewers") or _raw_output_refusal(state, "ready-reviewers")
     if refusal is not None:
         _emit_report(_reported_decision(state, refusal).as_dict(), state)
         return 0
@@ -6385,6 +6698,7 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     number = int(state.pr["number"])
     endpoint = f"repos/{state.repo}/pulls/{number}"
     live_pr = _dict(transport.get(endpoint), endpoint)
+    _verify_version_identity(transport, state, live_pr)
     if _pull_coordinates(live_pr) != _pull_coordinates(state.pr):
         raise WorkError("pull-request head or base changed before ready evidence validation")
     _verify_floor_identity(transport, state, live_pr)
@@ -6404,6 +6718,7 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
     # The inventory belongs to the validated head. Recheck it after all reads
     # that precede the first readiness effect, including policy-byte stability.
     before_effect = _dict(transport.get(endpoint), endpoint)
+    _verify_version_identity(transport, state, before_effect)
     if _pull_coordinates(before_effect) != _pull_coordinates(state.pr):
         raise WorkError("pull-request head or base changed before ready effects; recollect and retry")
     _verify_floor_identity(transport, state, before_effect)
@@ -6418,6 +6733,9 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
         except OSError:
             unchanged = False
         if not unchanged:
+            if (state.version_obligation or {}).get("declaration") is not None:
+                state.version_obligation = _version_unknown(dict(state.version_obligation),
+                    "Selected policy bytes changed before ready effects")
             state.raw_output = raw_output.report(
                 "unverifiable", "Selected policy bytes changed or became unreadable; recollect and retry.", str(path))
             retry = Decision("ready-reviewers", False, None, "readiness-policy-changed",
@@ -6425,6 +6743,9 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
                              status="holder-owned")
             _emit_report(_reported_decision(state, retry).as_dict(), state)
             return 0
+    # Reach and policy reads can outlive the earlier basis check.
+    if (state.version_obligation or {}).get("declaration") is not None:
+        _verify_version_identity(transport, state, _dict(transport.get(endpoint), endpoint))
     if label is not None and label not in labels:
         _transport_mutation(
             transport, "post", f"{issue_endpoint}/labels", {"labels": [label]}
@@ -6439,6 +6760,8 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
         raise WorkError("reviewer label write returned without the configured label being present")
     pull_endpoint = f"repos/{state.repo}/pulls/{number}"
     current_pull = _dict(transport.get(pull_endpoint), pull_endpoint)
+    _verify_version_identity(transport, state, current_pull,
+        performed="reviewer label was applied; ready transition is unconfirmed" if label_applied else "")
     current_head = current_pull.get("head")
     current_sha = current_head.get("sha") if isinstance(current_head, dict) else None
     if current_sha != validated_head:
@@ -6456,6 +6779,9 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
             except OSError:
                 unchanged = False
             if not unchanged:
+                if (state.version_obligation or {}).get("declaration") is not None:
+                    state.version_obligation = _version_unknown(dict(state.version_obligation),
+                        "Selected policy bytes changed before ready transition")
                 state.raw_output = raw_output.report(
                     "unverifiable", "Selected policy changed before ready transition; recollect and retry.", str(path))
                 raise WorkError("selected policy changed before ready transition; recollect and retry")
@@ -6467,9 +6793,15 @@ def _execute_ready_reviewers(transport: GitHubREST, state: WorkState,
             "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id})"
             "{pullRequest{isDraft}}}"
         )
+        if (state.version_obligation or {}).get("declaration") is not None:
+            _verify_version_identity(transport, state, _dict(transport.get(pull_endpoint), pull_endpoint),
+                performed="reviewer label was applied; ready transition is unconfirmed" if label_applied else "")
         _transport_mutation(transport, "graphql", query, {"id": node_id})
         ready_changed = True
     verified_pull = _dict(transport.get(pull_endpoint), pull_endpoint)
+    _verify_version_identity(transport, state, verified_pull,
+        performed="ready transition was requested; completion is unconfirmed" if ready_changed else
+                  "reviewer label was applied; completion is unconfirmed" if label_applied else "")
     verified_head = verified_pull.get("head")
     verified_sha = verified_head.get("sha") if isinstance(verified_head, dict) else None
     if verified_sha != validated_head:
@@ -6952,6 +7284,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             _emit_report(_reported_decision(state, refused).as_dict(), state)
             return 0
     prepared_prompt: bytes | None = None
+    version_instruction = ""
     prepared_dispatch: Path | None = None
     prompt_composition: dict[str, object] | None = None
     artifact_brief: Marker | None = None
@@ -6965,9 +7298,13 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 obligation = (_compose_merge_obligation(
                     state, decision, root, instalment, resume_source, transport, rules)
                     if decision.stage in {"build", "review-disposition"} and state.pr is not None else None)
+                if decision.stage in {"build", "floor", "review-disposition"}:
+                    version_instruction = _compose_version_instruction(
+                        state, transport, rules, str(use_rules_path or "selected change-proof policy"), obligation)
                 prepared_prompt = _stage_prompt(
                     state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                     merge_obligation=obligation,
+                    version_instruction=version_instruction,
                 )
                 if decision.stage in {"build", "floor", "review-disposition"}:
                     prompt_composition = _prompt_composition(state)
@@ -6988,6 +7325,8 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             _emit_report(_reported_decision(state, refused).as_dict(), state)
             return 0
         except WorkError as exc:
+            if getattr(exc, "version_obligation", None) is not None:
+                state.version_obligation = exc.version_obligation
             refused = _reported_decision(state, Decision(
                 decision.stage, False, None,
                 f"stage-input-invalid-for-{decision.stage}", str(exc), status="refused",
@@ -7130,11 +7469,17 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     obligation = (_compose_merge_obligation(
                         state, decision, root, instalment, resume_source, transport, rules)
                         if decision.stage in {"build", "review-disposition"} and state.pr is not None else None)
+                    if decision.stage in {"build", "floor", "review-disposition"}:
+                        version_instruction = _compose_version_instruction(
+                            state, transport, rules, str(use_rules_path or "selected change-proof policy"), obligation)
                     prepared_prompt = _stage_prompt(
                         state, decision, branch=BRANCH_PLACEHOLDER, floor_command=floor_command,
                         merge_obligation=obligation,
+                        version_instruction=version_instruction,
                     )
                 except WorkError as exc:
+                    if getattr(exc, "version_obligation", None) is not None:
+                        state.version_obligation = exc.version_obligation
                     refused = Decision(decision.stage, False, None,
                         f"stage-input-invalid-for-{decision.stage}", str(exc), status="refused")
                     _emit_report(_reported_decision(state, refused).as_dict(), state)
@@ -7586,6 +7931,13 @@ def _run(
     except (OSError, WorkError) as exc:
         error = WorkError(f"cannot read use rules: {use_rules_path}" if isinstance(exc, OSError) else str(exc))
         error.raw_output = raw_output.report("unverifiable", str(error), str(use_rules_path))
+        try:
+            invalid_policy = json.loads(selected_policy_bytes)
+        except (NameError, UnicodeError, ValueError):
+            invalid_policy = {}
+        error.version_obligation = _version_unknown(
+            _version_report(invalid_policy if isinstance(invalid_policy, dict) else {}, str(use_rules_path)),
+            str(error))
         raise error from exc
     policy_snapshot = proof_preflight
     policy_problem: str | None = None
@@ -7597,7 +7949,8 @@ def _run(
         except WorkError as exc:
             policy_problem = str(exc)
     try:
-        state = _read_policy_state(github, args.repo, args.issue, config, rules, str(use_rules_path))
+        state = _read_policy_state(github, args.repo, args.issue, config, rules, str(use_rules_path),
+                                   policy_bytes=selected_policy_bytes)
     except (OSError, UnicodeError, ValueError, WorkError) as exc:
         exc.stage = args.stage
         raise
@@ -7605,6 +7958,7 @@ def _run(
     state.holder_root = root
     state.instalment = args.instalment
     state.readiness_policy = (use_rules_path, selected_policy_bytes)
+    state.version_obligation["policy_sha256"] = hashlib.sha256(selected_policy_bytes).hexdigest()
     _evaluate_raw_output(state, rules, str(use_rules_path))
     policy_diagnostics: list[dict[str, object]] = []
     if policy_snapshot is not None:
@@ -7635,13 +7989,44 @@ def _run(
             )
             prepare_use_evidence(freshness_state, github, freshness_rules)
     prepare_use_evidence(state, github, rules)
+    if has_freshness_context and policy_snapshot is not None:
+        state.proof_version_obligation = _assess_version(
+            freshness_state, freshness_rules, str(use_rules_path), github, view="committed",
+            policy_bytes=policy_snapshot.blobs["use_rules"])
+        if state.version_obligation.get("declaration") is not None:
+            try:
+                if use_rules_path.read_bytes() != selected_policy_bytes:
+                    raise WorkError("Selected policy bytes changed before proof freshness")
+            except (OSError, WorkError) as exc:
+                state.version_obligation = _version_unknown(dict(state.version_obligation), str(exc))
+        if state.proof_version_obligation.get("declaration") is not None:
+            try:
+                # Dirty selected bytes may legitimately differ from the committed
+                # view. Confirm the pinned snapshot without imposing clean proof.
+                _verify_policy_snapshot(root, args.repo, use_rules_path, policy_snapshot,
+                                        enforce_clean=False)
+            except WorkError as exc:
+                state.proof_version_obligation = _version_unknown(
+                    dict(state.proof_version_obligation), str(exc))
     if (has_freshness_context and state.raw_output["status"] not in raw_output.REFUSALS
+            and state.version_obligation["status"] not in VERSION_REFUSALS
+            and (state.proof_version_obligation or {}).get("status") not in VERSION_REFUSALS
             and raw_output.evaluate(
             freshness_rules, str(use_rules_path), pr=freshness_state.pr,
             files=freshness_state.files,
             inventory_error=freshness_state.file_inventory_error)["status"] not in raw_output.REFUSALS):
-        expected_proof = compose_proof(freshness_state, freshness_rules)
-        set_proof_freshness(state, expected_proof)
+        version_state = replace(freshness_state, version_obligation=state.proof_version_obligation)
+        try:
+            if (version_state.pr is not None
+                    and (version_state.version_obligation or {}).get("declaration") is not None):
+                endpoint = f"repos/{state.repo}/pulls/{version_state.pr['number']}"
+                _verify_version_identity(github, version_state, _dict(github.get(endpoint), endpoint))
+        except WorkError:
+            state.proof_version_obligation = version_state.version_obligation
+            state.proof_current = False
+        else:
+            expected_proof = compose_proof(freshness_state, freshness_rules)
+            set_proof_freshness(state, expected_proof)
     elif state.pr is not None and _head_sha(state) is not None:
         state.proof_current = False
     state.collection_diagnostics.extend(policy_diagnostics)
@@ -7674,6 +8059,9 @@ def _run(
     except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
         if getattr(exc, "raw_output", None) is None:
             exc.raw_output = state.raw_output
+        if getattr(exc, "version_obligation", None) is None:
+            exc.version_obligation = state.version_obligation
+        exc.proof_version_obligation = state.proof_version_obligation
         _evaluate_reach(state)
         exc.reach = state.reach
         exc.stage = args.stage
@@ -7687,9 +8075,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run(parser().parse_args(argv))
     except (OSError, UnicodeError, ValueError, WorkError, subprocess.TimeoutExpired) as exc:
-        if getattr(exc, "raw_output", None) is not None or getattr(exc, "reach", None) is not None:
+        if (getattr(exc, "raw_output", None) is not None or getattr(exc, "reach", None) is not None
+                or getattr(exc, "version_obligation", None) is not None):
             _emit_report({"status": "refused", "reason": str(exc),
                           "stage": getattr(exc, "stage", None), "head": getattr(exc, "head", None),
+                          "version_obligation": getattr(exc, "version_obligation", None),
+                          "proof_version_obligation": getattr(exc, "proof_version_obligation", None),
                           "reach": getattr(exc, "reach", None)},
                          raw=getattr(exc, "raw_output", None))
         print(f"work: {exc}", file=sys.stderr)

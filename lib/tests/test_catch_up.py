@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import urllib.parse
 
 import pytest
 
@@ -131,11 +132,12 @@ class PublicGit:
             return {"parents": [{"sha": sha} for sha in parents], "files": files}
         if suffix.startswith("contents/"):
             path, revision = suffix.removeprefix("contents/").split("?ref=")
+            path = urllib.parse.unquote(path)
             raw = subprocess.run(["git", "-C", str(self.root), "show", f"{revision}:{path}"],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if raw.returncode:
                 raise ValueError("declared contents unavailable")
-            return {"encoding": "base64", "content": base64.b64encode(raw.stdout).decode()}
+            return {"type": "file", "encoding": "base64", "content": base64.b64encode(raw.stdout).decode()}
         if suffix.startswith("git/trees/"):
             revision = suffix.split("git/trees/", 1)[1].split("?")[0]
             entries = []

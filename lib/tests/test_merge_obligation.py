@@ -46,8 +46,22 @@ def launch(registered, tmp_path, monkeypatch):
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(work, "_recipient_run", capture)
+    public_get = transport.get
 
     def compose(stage="build", *, rules=RULES, dispatch=None, continuity="resume"):
+        # Test commits advance the public head after fixture creation. Supply
+        # the head-bound inventory an actual entrance collection would read.
+        historical_base = fixture.pr["base"].get("sha")
+        fixture.pr = public_get("repos/example/product/pulls/7")
+        base = fixture.pr["base"]["sha"]
+        # Keep the planted historical base SHA: only the live ref supplies the
+        # version/merge basis, while inventory uses the actual current base.
+        fixture.pr["base"]["sha"] = historical_base
+        head = fixture.pr["head"]["sha"]
+        fixture.files = public_get(f"repos/example/product/compare/{base}...{head}")["files"]
+        fixture.pr["changed_files"] = len(fixture.files)
+        fixture.changed_paths = sorted({item[key] for item in fixture.files
+                                       for key in ("filename", "previous_filename") if key in item})
         decision = work.Decision(stage, True, continuity, "holder-named-stage")
         assert work.execute_stage(fixture, decision, holder, None, "holder-id",
             transport=transport, rules=rules, dispatch_path=dispatch,
