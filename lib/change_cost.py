@@ -737,12 +737,22 @@ def _agent_contributions(holder, items, prices):
             marker = {"dispatch_id": attempt.bundle_id, "attempt_index": attempt.position}
             proof = exact and start is not None and end is not None and attempt.usage.get("scope") == "invocation"
             required = transcripts.aggregate(selected)["models"]
+            extra_required = transcripts.additional_counts(selected)
+            missing_extras = []
             for model, counts in required.items():
                 normalized = _counts(matching_models[model], _CLAUDE_NAMES,
                                      ("input", "output", "cache_read", "cache_creation"), [], model)
                 if any(normalized.get(name, Decimal(-1)) < count for name, count in counts.items()
                        if name in {"input", "output", "cache_read", "cache_creation"}):
                     proof = False
+                available = _mapping(_mapping(attempt.usage.get("additional_native_classes")).get(model))
+                for name, count in extra_required.get(model, {}).items():
+                    observed_count = _number(available.get(name))
+                    if (type(count) is not int or count < 0 or observed_count is None or observed_count < count):
+                        proof = False
+                        missing_extras.append(name)
+            if missing_extras:
+                marker["uncovered_native_classes"] = sorted(set(missing_extras))
             for reply in selected:
                 if proof:
                     covered[reply["id"]] = marker
@@ -753,9 +763,12 @@ def _agent_contributions(holder, items, prices):
             if identity in covered:
                 decisions[identity] = {"status": "excluded", "agent_id": agent, **covered[identity]}
             elif identity in unresolved:
+                extra_names = sorted({name for candidate in unresolved[identity]
+                                      for name in candidate.get("uncovered_native_classes", [])})
                 decisions[identity] = {"status": "unresolved", "agent_id": agent,
                                        "candidate_dispatches": unresolved[identity],
-                                       "reason": f"subagent {agent} has unresolved priced native overlap"}
+                                       "reason": f"subagent {agent} has unresolved priced native overlap"
+                                       + ("; additional native counts not covered: " + ",".join(extra_names) if extra_names else "")}
             else:
                 decisions[identity] = {"status": "included", "agent_id": agent,
                                        "observations": observations}
@@ -813,8 +826,20 @@ def _transcript_price(item, rates, agent_decisions=None):
             reasons.extend(price_reasons)
             continue
         extras = reply.get("additional_native_classes")
-        if extras:
-            reasons.append(f"reply {reply.get('id')} has unmapped billable native counts: {','.join(extras)}")
+        for name, count in extras.items():
+            if type(count) is not int or count < 0:
+                reasons.append(f"reply {reply['id']} has unmapped or invalid billable native count: {name}")
+            elif count:
+                if name in required:
+                    reasons.append(f"reply {reply['id']} native count {name} overlaps a canonical token population")
+                    continue
+                extra_reasons = []
+                extra_amount = _class_price({name: Decimal(count)}, rate, model, extra_reasons)
+                if extra_reasons:
+                    reasons.append(f"reply {reply['id']} has unmapped billable native count: {name}")
+                    reasons.extend(extra_reasons)
+                else:
+                    amount += extra_amount
         computable = True
         total += amount
         slices.append({"reply_id": reply["id"], "model": model, "timestamp": reply["timestamp"],

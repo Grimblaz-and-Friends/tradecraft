@@ -402,3 +402,68 @@ def test_contradiction_of_only_committed_reply_is_unknown_not_positive_floor(inp
     assert value["status"] == "unknown" and "amount" not in value
     assert value["unresolved_reply_ids"] == ["main"] and value["late_recording_receipts"]
     assert value["window"] == first["holder"]["window"]
+
+
+@pytest.mark.parametrize("case", ["nested-uncovered", "nested-scalar-dispatch", "flat-uncovered", "flat-partial",
+                                  "flat-covered", "retained-negative"])
+def test_subagent_exclusion_requires_priced_coverage_of_additional_native_counts(inputs, transcript, case):
+    count = {"server_tool_use": {"web_search_requests": 1}} if case.startswith("nested") else {"billable_extra_tokens": 2}
+    record = reply("child-reply", second=2, agent="child")
+    record["message"]["usage"].update(count)
+    write_lines(transcript[2], [record])
+    rates = card()
+    rates["classes"]["billable_extra_tokens"] = 5
+    rates["classes"]["server_tool_use"] = 5
+    inputs["rates_path"].write_bytes(json.dumps({"schema_version": 1, "rates": [rates]}).encode())
+    folder = bundle(inputs)
+    if case in {"flat-partial", "flat-covered", "retained-negative", "nested-scalar-dispatch"}:
+        path = folder / "answer.run.json"
+        run = json.loads(path.read_bytes())
+        run["attempts"][0]["usage"]["additional_native_classes"] = {"claude-opus-5-5": {
+            "server_tool_use": 1} if case == "nested-scalar-dispatch" else {
+                "billable_extra_tokens": 1 if case == "flat-partial" else 2}}
+        path.write_bytes(json.dumps(run).encode())
+    row = close(inputs, transcript)
+    if case == "retained-negative":
+        Path(row["holder"]["journal"]).unlink()
+        next(r for r in row["holder"]["replies"] if r["agent_id"])["additional_native_classes"]["billable_extra_tokens"] = -1
+        write_lines(inputs["holder_path"], [row])
+    result = report(inputs)
+    value = holder_price(result)
+    assert Decimal(value["amount"]) == Decimal(".073")
+    if case == "flat-covered":
+        assert not value["floor"] and value["dispatch_exclusions"]
+        assert Decimal(result["total"]["known_amount"]) == Decimal(".188")
+    else:
+        assert value["floor"] and not value["dispatch_exclusions"]
+        assert result["total"]["floor"] and any("additional native counts not covered" in r for r in value["floor_reasons"])
+        assert value["effective_agent_inclusion"][0]["status"] == "unresolved"
+
+
+@pytest.mark.parametrize("covered", [False, True])
+def test_dated_card_can_price_additional_flat_native_counts_without_pricing_aggregate_writes_twice(inputs, transcript, covered):
+    transcript[2].unlink()
+    record = reply("main")
+    record["message"]["usage"]["billable_extra_tokens"] = 2
+    write_lines(transcript[1], [record])
+    if covered:
+        rates = card()
+        rates["classes"]["billable_extra_tokens"] = 5
+        inputs["rates_path"].write_bytes(json.dumps({"schema_version": 1, "rates": [rates]}).encode())
+    close(inputs, transcript)
+    value = holder_price(report(inputs))
+    assert Decimal(value["amount"]) == Decimal(".083" if covered else ".073")
+    assert value["floor"] is not covered
+
+
+@pytest.mark.parametrize("name,count", [("billable_extra_tokens", -1), ("billable_extra_tokens", True),
+                                      ("input", 10), ("input", 0), ("unpriced_tokens", 0)])
+def test_retained_native_extra_counts_cannot_reduce_or_duplicate_observed_token_price(inputs, transcript, name, count):
+    transcript[2].unlink()
+    row = close(inputs, transcript)
+    row["holder"]["replies"][0]["additional_native_classes"] = {name: count}
+    rates = card()
+    rates["classes"]["billable_extra_tokens"] = 5
+    value = cost.rate_card_equivalent(row, [rates])
+    assert Decimal(value["amount"]) == Decimal(".073")
+    assert value["floor"] is (count != 0)
