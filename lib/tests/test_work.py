@@ -8277,14 +8277,24 @@ def test_vendor_qualified_builder_marker_recovers_without_a_bundle(tmp_path):
     assert not any(marker.name == "builder-session" for marker in legacy.issue_markers)
 
 
-def test_marker_only_codex_session_cannot_handover_without_its_record(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("machine_vendor", "override_vendor"), [
+    ("claude", None),
+    ("codex", "claude"),
+])
+def test_marker_only_codex_session_cannot_handover_without_its_record(
+        tmp_path, monkeypatch, machine_vendor, override_vendor):
     home = tmp_path / "home"
     (home / ".tradecraft").mkdir(parents=True)
-    (home / ".tradecraft" / "implementer-vendor").write_bytes(b"claude\n")
+    (home / ".tradecraft" / "implementer-vendor").write_bytes(
+        (machine_vendor + "\n").encode()
+    )
     monkeypatch.setattr(Path, "home", lambda: home)
     store = tmp_path / "dispatches"
     store.mkdir()
-    fixture = state(AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->")
+    texts = [AFFIRMED, f"<!-- tradecraft:builder-session:v1 session={SESSION} vendor=codex -->"]
+    if override_vendor is not None:
+        texts.append(f"<!-- tradecraft:model-override:v1 implementer={override_vendor}:chosen:high -->")
+    fixture = state(*texts)
     fixture.record_root = store
     monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: pytest.fail("no root mutation"))
     with pytest.raises(work.WorkError, match="requires the predecessor dispatch bundle"):
