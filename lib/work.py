@@ -5784,7 +5784,7 @@ def _launch_plan(state: WorkState, decision: Decision, *, root: Path | None = No
                     raise WorkError(f"{vendor_source} selects {vendor}, but the recorded handover "
                                     "has a pinned Claude session; the override cannot change its vendor")
                 raise WorkError("model override conflicts with pinned Codex session; a per-issue "
-                                "entry alone cannot hand over. Set ~/.tradecraft/implementer-vendor "
+                                "entry alone cannot hand over. Ask the owner to set ~/.tradecraft/implementer-vendor "
                                 "to claude for a machine switch, then rerun")
             plan["continuity"] = "handover"
             plan["predecessor"] = plan.pop("session")
@@ -7138,7 +7138,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 if role_overridden and machine_vendor != "claude":
                     raise WorkError(
                         "model override conflicts with pinned Codex session; a per-issue "
-                        "entry alone cannot hand over. Set ~/.tradecraft/implementer-vendor "
+                        "entry alone cannot hand over. Ask the owner to set ~/.tradecraft/implementer-vendor "
                         "to claude for a machine switch, then rerun"
                     )
                 raise WorkError(
@@ -7501,7 +7501,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     )
                 raise WorkError(
                     "model override conflicts with pinned Codex session; a per-issue "
-                    "entry alone cannot hand over. Set ~/.tradecraft/implementer-vendor "
+                    "entry alone cannot hand over. Ask the owner to set ~/.tradecraft/implementer-vendor "
                     "to claude for a machine switch, then rerun"
                 )
             handover = machine_handover
