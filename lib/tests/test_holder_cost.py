@@ -299,7 +299,7 @@ def test_late_compaction_evidence_marks_original_window_once(inputs, transcript,
     assert len(values[first["dispatch"]["id"]]["late_recording_receipts"]) == 1
 
 
-@pytest.mark.parametrize("damage", ["gap-null", "reply-null", "duplicate-reply", "bad-time"])
+@pytest.mark.parametrize("damage", ["gap-null", "reply-null", "duplicate-reply", "bad-time", "bad-gap-reply-id"])
 def test_malformed_selected_transcript_ledger_is_unknown_in_successful_report(inputs, transcript, damage):
     row = close(inputs, transcript)
     Path(row["holder"]["journal"]).unlink()
@@ -309,8 +309,10 @@ def test_malformed_selected_transcript_ledger_is_unknown_in_successful_report(in
         row["holder"]["replies"] = [None]
     elif damage == "duplicate-reply":
         row["holder"]["replies"].append(deepcopy(row["holder"]["replies"][0]))
-    else:
+    elif damage == "bad-time":
         row["holder"]["replies"][0]["timestamp"] = "invalid"
+    else:
+        row["holder"]["gaps"] = [{"source": "fixture", "timestamp": None, "reason": "conflict", "reply_id": []}]
     write_lines(inputs["holder_path"], [row])
     result = report(inputs)
     assert holder_price(result)["status"] == "unknown" and result["total"]["unknown_dispatches"] == 1
@@ -350,3 +352,53 @@ def test_readable_native_counters_with_unknown_price_cannot_exclude_child(inputs
     value = holder_price(result)
     assert Decimal(value["amount"]) == Decimal(".146") and not value["floor"]
     assert value["effective_agent_inclusion"][0]["status"] == "included"
+
+
+@pytest.mark.parametrize("case", ["later-replay", "original-time-replay", "rewritten-usage",
+                                  "earlier-timestamp", "malformed-replay", "late-recovered-reply"])
+def test_later_contradiction_unprices_only_affected_reply_in_its_original_close(inputs, transcript, tmp_path, case):
+    transcript[2].unlink()
+    bad = reply("contradicted", second=3, input=900)
+    good = reply("independent", second=2)
+    write_lines(transcript[1], [good] if case == "late-recovered-reply" else [good, bad])
+    first = close(inputs, transcript)
+    if case == "late-recovered-reply":
+        write_lines(transcript[1], [bad], append=True)
+        close(inputs, transcript, second=15)
+    replacement = reply("contradicted", second=18 if case in {"later-replay", "late-recovered-reply"} else 3, input=10)
+    if case == "earlier-timestamp":
+        replacement = reply("contradicted", second=1, input=900)
+    elif case == "malformed-replay":
+        replacement["message"]["usage"]["output_tokens"] = -1
+    write_lines(transcript[1], [good, replacement] if case == "rewritten-usage" else [replacement],
+                append=case != "rewritten-usage")
+    second = cost.holder_close("acme/other", 99, "claude", None, None, None, tmp_path / "other",
+                               now=at(20), session_id="holder", claude_projects=transcript[0])
+    assert second["holder"]["recovered_closes"][0]["close_id"] == first["dispatch"]["id"]
+    assert not second["holder"]["gaps"]
+    def original_price(result):
+        return next(row["value"] for row in result["dated_rate_card_equivalent"]
+                    if row["dispatch_id"] == first["dispatch"]["id"])
+    result = report(inputs)
+    value = original_price(result)
+    assert value["status"] == "known" and value["floor"]
+    assert Decimal(value["amount"]) == Decimal(".073")
+    assert value["unresolved_reply_ids"] == ["contradicted"]
+    assert [row["reply_id"] for row in value["rate_sources"]] == ["independent"]
+    original = next(row for row in result["raw_usage"] if row["dispatch"]["id"] == first["dispatch"]["id"])
+    assert {row["id"] for row in original["holder"]["replies"]} == {"independent", "contradicted"}
+    assert original["holder"]["window"] == first["holder"]["window"]
+    assert close(inputs, transcript, second=30)["holder"]["recovered_closes"] == []
+    assert original_price(report(inputs))["amount"] == value["amount"]
+
+
+def test_contradiction_of_only_committed_reply_is_unknown_not_positive_floor(inputs, transcript):
+    transcript[2].unlink()
+    first = close(inputs, transcript)
+    write_lines(transcript[1], [reply("main", second=15, input=1)], append=True)
+    close(inputs, transcript, second=20)
+    value = next(row["value"] for row in report(inputs)["dated_rate_card_equivalent"]
+                 if row["dispatch_id"] == first["dispatch"]["id"])
+    assert value["status"] == "unknown" and "amount" not in value
+    assert value["unresolved_reply_ids"] == ["main"] and value["late_recording_receipts"]
+    assert value["window"] == first["holder"]["window"]

@@ -152,6 +152,7 @@ def ledger_problem(holder):
     for gap in holder["gaps"]:
         if (not isinstance(gap, dict) or not isinstance(gap.get("source"), str)
                 or not isinstance(gap.get("reason"), str)
+                or (gap.get("reply_id") is not None and not isinstance(gap["reply_id"], str))
                 or (gap.get("timestamp") is not None and timestamp(gap["timestamp"]) is None)):
             return "holder transcript ledger has malformed gap evidence"
     return None
@@ -320,7 +321,8 @@ def snapshot(projects, session):
             except TranscriptError as exc:
                 if isinstance(identity, str) and identity:
                     invalid_ids.add(identity)
-                gaps.append({"source": location, "timestamp": record.get("timestamp") if when else None, "reason": str(exc)})
+                gaps.append({"source": location, "timestamp": record.get("timestamp") if when else None,
+                             "reason": str(exc), "reply_id": identity if isinstance(identity, str) else None})
     for identity in invalid_ids:
         replies.pop(identity, None)
     observed_agents = {item["agent_id"] for item in sources if item["agent_id"] is not None}
@@ -443,10 +445,12 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
             except (OSError, TranscriptError) as exc:
                 failure = str(exc)
             seen = {}
+            origins = {}
             seen_gaps = set()
             for entry in entries:
                 for reply in entry["row"].get("holder", {}).get("replies", []):
                     seen[reply["id"]] = reply
+                    origins[reply["id"]] = entry["id"] if entry["kind"] == "close" else entry["original_close_id"]
                 for gap in entry["row"]["holder"].get("gaps", []):
                     seen_gaps.add(_gap_identity(gap))
             selected = []
@@ -456,9 +460,11 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
                 if reply["id"] in seen:
                     if _fingerprint(reply) != _fingerprint(seen[reply["id"]]):
                         gaps.append({"source": reply["sources"][0], "timestamp": None,
+                                     "reply_id": reply["id"],
                                      "reason": f"committed reply {reply['id']} now has conflicting usage"})
                     elif timestamp(reply["timestamp"]) != timestamp(seen[reply["id"]]["timestamp"]):
                         gaps.append({"source": reply["sources"][0], "timestamp": None,
+                                     "reply_id": reply["id"],
                                      "reason": f"committed reply {reply['id']} now has an earlier attribution timestamp"})
                     continue
                 if _in_window(when, lower, captured):
@@ -469,15 +475,21 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
                         timestamp(entry["row"]["holder"]["window"]["closed_at"]))), None)
                     if original is not None and original["row"]["holder"]["source_kind"] == "transcript":
                         late.setdefault(original["id"], {"replies": [], "gaps": []})["replies"].append(reply)
+            current_gaps = []
             for gap in gaps:
                 when = timestamp(gap["timestamp"])
-                if lower is None or when is None or when > lower or _gap_identity(gap) in seen_gaps:
-                    continue
-                original = next((entry for entry in history if _in_window(
-                    when, timestamp(entry["row"]["holder"]["window"].get("previous_close_at")),
-                    timestamp(entry["row"]["holder"]["window"]["closed_at"]))), None)
+                # Contradictory evidence belongs to the close that retained the
+                # reply, even when the replay was written in a later interval.
+                original = next((entry for entry in history if entry["id"] == origins.get(gap.get("reply_id"))), None)
+                if original is None and lower is not None and when is not None and when <= lower:
+                    original = next((entry for entry in history if _in_window(
+                        when, timestamp(entry["row"]["holder"]["window"].get("previous_close_at")),
+                        timestamp(entry["row"]["holder"]["window"]["closed_at"]))), None)
                 if original is not None and original["row"]["holder"]["source_kind"] == "transcript":
-                    late.setdefault(original["id"], {"replies": [], "gaps": []})["gaps"].append(gap)
+                    if _gap_identity(gap) not in seen_gaps:
+                        late.setdefault(original["id"], {"replies": [], "gaps": []})["gaps"].append(gap)
+                elif when is None or _in_window(when, lower, captured):
+                    current_gaps.append(gap)
             for original_id, recovered_evidence in late.items():
                 original = next(entry for entry in history if entry["id"] == original_id)
                 receipt_id = "late-replies-" + uuid.uuid4().hex
@@ -493,7 +505,7 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
                 locator = _publish(directory, receipt)
                 recovered.append({"close_id": original_id, "receipt_id": receipt_id,
                                   "journal": str(locator), "destination": original["destination"]})
-            gaps = [gap for gap in gaps if gap["timestamp"] is None or _in_window(timestamp(gap["timestamp"]), lower, captured)]
+            gaps = current_gaps
             row = _row(repo, issue, model, identity, session, root, root_source, destination,
                        window, source, selected, gaps, sources, failure)
         else:
@@ -520,7 +532,7 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
 
 
 def _gap_identity(gap):
-    return gap.get("source"), gap.get("timestamp"), gap.get("reason")
+    return gap.get("source"), gap.get("timestamp"), gap.get("reason"), gap.get("reply_id")
 
 
 def holder_rows(destination, *, state_root=None):

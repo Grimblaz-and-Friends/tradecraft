@@ -774,12 +774,15 @@ def _transcript_price(item, rates, agent_decisions=None):
     if not isinstance(replies, list):
         return _unknown_price(["transcript row has no retained reply ledger"])
     gaps = [str(gap.get("reason")) for gap in holder.get("gaps", [])]
+    unresolved_replies = {gap["reply_id"] for gap in holder["gaps"] if gap.get("reply_id") is not None}
     if usage.get("tokens_unknown_reason"):
         gaps.append(str(usage["tokens_unknown_reason"]))
     decisions = agent_decisions or {}
     total, slices, exclusions, effective, reasons = Decimal(0), [], [], [], list(gaps)
     computable = False
     for reply in replies:
+        if reply["id"] in unresolved_replies:
+            continue
         decision = decisions.get(reply.get("id"), {"status": "included"})
         if reply.get("agent_id"):
             effective.append({"reply_id": reply.get("id"), **decision})
@@ -828,6 +831,7 @@ def _transcript_price(item, rates, agent_decisions=None):
     value.update(timestamp_basis="reply time", attribution="attributed by time",
                  window=holder.get("window"), session_id=holder.get("session_id"),
                  dispatch_exclusions=exclusions, effective_agent_inclusion=effective,
+                 unresolved_reply_ids=sorted(unresolved_replies),
                  late_recording_receipts=holder.get("late_recording_receipts", []))
     return value
 
