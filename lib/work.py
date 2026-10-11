@@ -7135,12 +7135,6 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
             vendor_source = f"pinned Claude session from {resume_source.path if resume_source else 'builder-session marker'}"
         elif pinned_vendor == "codex" and selected_vendor == "claude":
             if resume_source is None:
-                if role_overridden and machine_vendor != "claude":
-                    raise WorkError(
-                        "model override conflicts with pinned Codex session; a per-issue "
-                        "entry alone cannot hand over. Ask the owner to set ~/.tradecraft/implementer-vendor "
-                        "to claude for a machine switch, then rerun"
-                    )
                 raise WorkError(
                     "Codex-to-Claude handover requires the predecessor dispatch bundle; "
                     "a vendor-qualified marker alone does not carry its record"
