@@ -204,17 +204,20 @@ class DuplexInput:
         self.queue = queue.Queue(maxsize=32)
         self.limit = limit
         self.closed = False
+        self._lock = threading.Lock()
 
     def send(self, data):
-        if self.closed or len(data) > self.limit:
-            raise OSError("duplex input closed or message exceeds bound")
-        try:
-            self.queue.put_nowait(data)
-        except queue.Full as exc:
-            raise OSError("duplex input queue exceeds bound") from exc
+        with self._lock:
+            if self.closed or len(data) > self.limit:
+                raise OSError("duplex input closed or message exceeds bound")
+            try:
+                self.queue.put_nowait(data)
+            except queue.Full as exc:
+                raise OSError("duplex input queue exceeds bound") from exc
 
     def close(self):
-        self.closed = True
+        with self._lock:
+            self.closed = True
 
     def chunks(self):
         while not self.closed or not self.queue.empty():

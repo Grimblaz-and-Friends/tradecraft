@@ -116,6 +116,10 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
                 if isinstance(value, dict) and isinstance(value.get("name"), str):
                     ids.add(value["name"] + "@inline")
                     paths.append(path)
+    # The verified launcher root is always supplied explicitly. Discovery or
+    # inherited origins may name that same inline identity; disabling it would
+    # also disable the launcher's own tradecraft skills.
+    ids.discard("tradecraft@inline")
     override = Path(temporary) / "claude-settings.json"
     data = (json.dumps({"enabledPlugins": {identity: False for identity in sorted(ids)}},
                        ensure_ascii=True) + "\n").encode("utf-8")

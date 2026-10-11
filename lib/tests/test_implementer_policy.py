@@ -126,3 +126,32 @@ def test_preparation_failure_retains_cause_without_unrestricted_substitute(tmp_p
     monkeypatch.setattr(policy, "discover", broken)
     with pytest.raises(policy.PreparationError, match="native discovery denied"):
         policy.claude_prepare([], tmp_path, None, tmp_path, root)
+
+
+@pytest.mark.parametrize("source", ["parent", "user-settings"])
+@pytest.mark.parametrize("key", ["CLAUDE_CODE_PLUGIN_DIR", "CLAUDE_CODE_PLUGIN_DIRS"])
+def test_inherited_inline_tradecraft_never_disables_launchers_plugin(tmp_path, monkeypatch, source, key):
+    root = plugin(tmp_path / "tradecraft")
+    foreign = plugin(tmp_path / "foreign", "foreign")
+    config = tmp_path / "native"
+    config.mkdir()
+    supplied = os.pathsep.join(map(str, (root, foreign)))
+    settings = {"enabledPlugins": {"tradecraft@inline": True}}
+    child = {"CLAUDE_CONFIG_DIR": str(config)}
+    if source == "parent":
+        child[key] = supplied
+    else:
+        settings["env"] = {key: supplied}
+    path = config / "settings.json"
+    path.write_bytes(json.dumps(settings).encode())
+    before = path.read_bytes()
+    monkeypatch.setattr(policy, "discover", lambda *_a, **_k: [
+        {"id": "tradecraft@inline", "installPath": str(root)},
+        {"id": "foreign@inline", "installPath": str(foreign)}])
+    intent, effective = policy.claude_prepare([], tmp_path, None, tmp_path, root, env=child)
+    override = json.loads(Path(intent["settings_path"]).read_bytes())
+    assert "tradecraft@inline" not in override["enabledPlugins"]
+    assert intent["disabled_plugin_ids"] == ["foreign@inline"]
+    assert {"id": "tradecraft@inline", "path": str(root)} in intent["allowed_plugins"]
+    assert path.read_bytes() == before and child.get(key) == (supplied if source == "parent" else None)
+    assert key not in effective

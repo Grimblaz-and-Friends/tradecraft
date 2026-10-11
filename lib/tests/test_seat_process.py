@@ -556,3 +556,43 @@ def test_duplex_producer_is_bounded_and_close_is_nonblocking():
         source.send(b"ok")
     source.close()
     assert source.closed
+
+
+def test_duplex_send_and_close_are_one_ordered_transition(monkeypatch):
+    import threading
+    source = process.DuplexInput()
+    entered, release, closing, closed = (threading.Event() for _ in range(4))
+    order, errors = [], []
+    put = source.queue.put_nowait
+    def paused_put(data):
+        entered.set()
+        assert release.wait(5)
+        put(data)
+        order.append("enqueued")
+    monkeypatch.setattr(source.queue, "put_nowait", paused_put)
+    def send():
+        try:
+            source.send(b"accepted")
+        except OSError as exc:
+            errors.append(exc)
+    def close():
+        closing.set()
+        source.close()
+        order.append("closed")
+        closed.set()
+    sender, closer = threading.Thread(target=send), threading.Thread(target=close)
+    sender.start()
+    assert entered.wait(5)
+    closer.start()
+    try:
+        assert closing.wait(5)
+        closed.wait(0.1)
+    finally:
+        release.set()
+        sender.join(5)
+        closer.join(5)
+    assert not sender.is_alive() and not closer.is_alive()
+    assert not errors and order == ["enqueued", "closed"]
+    assert list(source.chunks()) == [b"accepted"]
+    with pytest.raises(OSError, match="closed"):
+        source.send(b"after close")

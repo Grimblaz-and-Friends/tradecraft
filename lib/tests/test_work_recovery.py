@@ -82,6 +82,49 @@ def test_artifact_resume_candidates_skip_unlaunched_resumable_outcome(stopped_bu
     assert source.path == str(store / "stopped.run.json") and source.session == SESSION
 
 
+@pytest.mark.parametrize("probe", ["plugins", "config"])
+def test_expired_real_discovery_probe_publishes_nothing_and_preserves_stopped_build(stopped_build, monkeypatch, probe):
+    import subprocess
+    import dispatch_implementer as implementer
+    fixture, root, request, run, save = stopped_build
+    run.update(outcome="interrupted", lifecycle="completed", interruption_cause="ceiling",
+               completed_at="2026-10-03T11:00:00+00:00", cleanup_proven=True,
+               attempts=[{"launched": True, "elapsed_seconds": 20}])
+    save()
+    before = {p: p.read_bytes() for p in fixture.record_root.iterdir() if p.is_file()}
+    dispatch = root.parent / "dispatch.md"
+    dispatch.write_bytes(b"Resume only this build.\n")
+    args = implementer.parser().parse_args([
+        "--dispatch", str(dispatch), "--root", str(root), "--work", "example/product#12",
+        "--stage", "build", "--vendor", "codex", "--model", "model", "--effort", "low",
+        "--settings-source", "fixture", "--settings-scope", "this build",
+        "--output", str(fixture.record_root / "new.md"), "--timeout-seconds", "60"])
+    deadline = lifecycle.Deadline(5 if probe == "plugins" else 60)
+    if probe == "config":
+        original_probe = deadline.probe
+        calls = []
+        def expire_second_probe(*a, **kwargs):
+            calls.append(True)
+            if len(calls) == 2:
+                deadline.end = deadline.started
+            return original_probe(*a, **kwargs)
+        monkeypatch.setattr(deadline, "probe", expire_second_probe)
+    monkeypatch.setattr(implementer.lifecycle, "stage_deadline", lambda *_a, **_k: deadline)
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_a: [sys.executable])
+    monkeypatch.setattr(implementer.records, "runtime_version", lambda *_a: "fixture")
+    # Both discovery functions and Deadline.probe/remaining run for real. The
+    # process stand-in is reached only by the first, still-useful plugin probe.
+    monkeypatch.setattr(implementer.policy, "run_process", lambda command, **_k:
+                        subprocess.CompletedProcess(command, 0, b'{"installed":[]}', b""))
+    monkeypatch.setattr(implementer.native_codex, "run_process", lambda *_a, **_k:
+                        pytest.fail("config process launched after its window expired"))
+    with pytest.raises(TimeoutError, match="no useful launch window"):
+        implementer.run_implementer(args)
+    assert {p: p.read_bytes() for p in fixture.record_root.iterdir() if p.is_file()} == before
+    assert recovery.latest_stopped(fixture, "build")[1] == str(fixture.record_root / "stopped.run.json")
+    assert recovery.stopped_source(fixture, "build").session == SESSION
+
+
 @pytest.mark.parametrize("configuration", ["repository-session", "adopter"])
 @pytest.mark.parametrize("has_pr", [False, True])
 @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])

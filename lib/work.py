@@ -7819,10 +7819,9 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 setting_resolution.print_plan(launch_plan, label="work")
                 if artifact_run:
                     invoked["value"] = True
-                try:
-                    return _invoke_recipient(command, deadline)
-                finally:
-                    _emit_report({"stage": decision.stage, "implementer_returned": True}, state, flush=True)
+                result = _invoke_recipient(command, deadline)
+                _emit_report({"stage": decision.stage, "implementer_returned": True}, state, flush=True)
+                return result
 
 
 def parser() -> argparse.ArgumentParser:

@@ -463,6 +463,11 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         intent["thread_config"] = policy.restriction_config(config, intent)
                         intent["discovery_sources"].append("Codex native config/read for recipient cwd")
                     intent["status"] = "prepared"
+                except TimeoutError:
+                    # No useful launch window is not a prepared failed attempt.
+                    # Keep the reservation unpublished so prior stopped work
+                    # remains the latest resumable invocation.
+                    raise
                 except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError, UnicodeError) as exc:
                     preparation_error = "implementer preparation failed: " + str(exc)
                     intent["status"] = "failed"
@@ -632,7 +637,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             if args.vendor == "codex":
                 native = native_codex.NativeTurn(args=args, prompt=effective_prompt, intent=intent,
                     environment=attempt["environment"], stdout_path=stdout_path,
-                    observe=growing.observe, transcript=streams[protocol_path])
+                    observe=growing.observe, transcript=streams[protocol_path], cwd=root)
             pending_environment = b""
             environment_line = 0
             def capture(name, chunk):

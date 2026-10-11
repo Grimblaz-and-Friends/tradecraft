@@ -16,6 +16,40 @@ SESSION = "0199a213-81c0-7800-8aa1-bbab2a035a53"
 TURN = "0199a214-81c0-7800-8aa1-bbab2a035a53"
 
 
+@pytest.mark.parametrize("resume", [None, SESSION])
+@pytest.mark.parametrize("spelling", ["relative", "home", "symlink"])
+def test_native_cwd_and_log_attribution_use_same_resolved_root(tmp_path, monkeypatch, resume, spelling):
+    root = tmp_path / "recipient"
+    root.mkdir()
+    if spelling == "relative":
+        monkeypatch.chdir(root)
+        supplied = Path(".")
+    elif spelling == "home":
+        monkeypatch.setattr(Path, "home", lambda: root)
+        monkeypatch.setenv("USERPROFILE", str(root))
+        monkeypatch.setenv("HOME", str(root))
+        supplied = Path("~")
+    else:
+        supplied = tmp_path / "alias"
+        try:
+            supplied.symlink_to(root, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlink unavailable: {exc}")
+    transcript = io.BytesIO()
+    instance = native.NativeTurn(args=Namespace(root=supplied, resume=resume, model="model", effort="low"),
+        prompt=b"One turn.", intent={"thread_config": {}, "disabled_plugin_ids": [], "allowed_plugins": []},
+        environment=env.unknown("unobserved"), stdout_path=tmp_path / "stdout", transcript=transcript)
+    instance.output("stdout", native.encode({"id": 1, "result": {}}))
+    start = [json.loads(line) for line in transcript.getvalue().splitlines()][2]
+    assert start["params"]["cwd"] == str(root.resolve())
+    assert start["method"] == ("thread/resume" if resume else "thread/start")
+    instance.session, instance.turn, instance.log = SESSION, TURN, tmp_path / "session.jsonl"
+    observed = []
+    monkeypatch.setattr(env, "codex_log", lambda *_a, **kwargs: observed.append(kwargs["cwd"]))
+    instance.refresh(force=True)
+    assert observed == [root.resolve()]
+
+
 def turn(tmp_path, resume=None, *, acknowledge_turn=True):
     observed = []
     transcript = io.BytesIO()

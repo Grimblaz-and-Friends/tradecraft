@@ -71,8 +71,9 @@ def read_config(argv, cwd, deadline, *, env=None):
 
 class NativeTurn:
     def __init__(self, *, args, prompt, intent, environment, stdout_path, observe=None,
-                 transcript=None):
+                 transcript=None, cwd=None):
         self.args, self.prompt, self.intent = args, prompt, intent
+        self.cwd = Path(args.root if cwd is None else cwd).expanduser().resolve()
         self.environment, self.path = environment, stdout_path
         self.observe, self.transcript = observe, transcript
         self.input = DuplexInput()
@@ -156,7 +157,7 @@ class NativeTurn:
                 return
             if requested == "initialize":
                 self.send({"method": "initialized", "params": {}})
-                params = {"cwd": str(self.args.root.resolve()), "model": self.args.model,
+                params = {"cwd": str(self.cwd), "model": self.args.model,
                     "approvalPolicy": "on-request", "approvalsReviewer": "auto_review",
                     "sandbox": "workspace-write", "config": self.intent["thread_config"]}
                 if self.args.resume:
@@ -247,7 +248,7 @@ class NativeTurn:
         path = self.log or environments.log_path(self.session)
         if path:
             environments.codex_log(self.environment, path, session=self.session, turn=self.turn,
-                cwd=self.args.root, boundary=self.boundary,
+                cwd=self.cwd, boundary=self.boundary,
                 allowed=[v["id"] for v in self.intent["allowed_plugins"]],
                 instruction_sources=self.instruction_sources)
         else:
