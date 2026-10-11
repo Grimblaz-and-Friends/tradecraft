@@ -27,6 +27,8 @@ In this repository, `<plugin-root>` is the repository checkout root. For an adop
 
 Without `--use-rules`, the entrance reads that change-proof policy and refuses if it is absent. Use `--use-rules PATH` to select another rules file for that run, including during repository setup. A relative path resolves against `--root`; an absolute path selects that path, subject to the command's existing policy checks.
 
+The entrance's `implementer_environments` reports the just-run artifact, build or repair and scoped retained attempts, including failed, unfinished and historical unknown evidence. Read coverage, source coordinates and excess together: none observed is not a certificate of absence. The engagement cell owns the observed-record contract; excess changes no stage routing.
+
 ## Decide, then run on the holder's word
 
 The ordinary entrance performs GitHub GETs plus, when an open pull request has Actions checks, the fixed read-only workflow-provenance GraphQL query sent as a POST; it performs no GitHub mutation. It reads local state but does not sweep or write the registry, create an implementation directory or worktree, publish a branch, write a dispatch file or invoke a launcher. Reach counting uses a temporary attribute-neutral Git view of the holder's objects, discarded after each read, without writing the checkout or registry. Its JSON report carries the schema version, `work`, `producer_version`, next stage, continuity, reason, detail, holder/runnable/waiting/terminal status, lawful and invalid marker claims, and the latest run selected for every exact check name and producer workflow. For checks, `started_at` and then numeric check id choose a genuine workflow's latest run; two workflows sharing a display name remain separate.

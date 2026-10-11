@@ -3078,10 +3078,53 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
         payload = {**payload, "reach": state.reach,
                    "version_obligation": state.version_obligation,
                    "proof_version_obligation": state.proof_version_obligation}
+        payload = {**payload, "implementer_environments": _implementer_environments(state)}
     if payload.get("raw_output") is None:
         payload = {**payload, "raw_output": raw if raw is not None else
                    state.raw_output if state is not None else None}
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True), flush=flush)
+
+
+def _implementer_environments(state):
+    """Read existing scoped attempts, without runtime/account discovery or mutation."""
+    import implementer_environment as environment
+    try:
+        rows = lifecycle.launch_bundles(state.record_root or records.default_record_root(),
+            f"{state.repo}#{state.issue_number}",
+            frozenset({"artifact", "build", "floor", "review-disposition"}))
+        rows = work_recovery.scoped(state, rows, include_released=True)
+    except (OSError, ValueError, WorkError) as exc:
+        return {"status": "unknown", "reason": str(exc), "attempts": []}
+    values = []
+    for _order, bundle, request, run in rows:
+        attempts = run.get("attempts")
+        if not isinstance(attempts, list) or not attempts:
+            attempts = [{}]
+        for index, attempt in enumerate(attempts):
+            if not isinstance(attempt, dict):
+                attempt = {}
+            observed = attempt.get("environment")
+            categories = observed.get("categories") if isinstance(observed, dict) else None
+            malformed = (isinstance(observed, dict) and observed.get("schema_version") == 1
+                and (not isinstance(categories, dict) or any(
+                    not environment.valid_category(categories.get(name))
+                    for name in environment.CATEGORIES)))
+            if not isinstance(observed, dict) or observed.get("schema_version") != 1 or malformed:
+                observed = environment.unknown(
+                    "malformed observed launch environment" if malformed else
+                    "producer did not record an observed launch environment",
+                    vendor=attempt.get("vendor") or run.get("actual_vendor"))
+            values.append({"bundle": bundle, "dispatch_id": request.get("dispatch_id"),
+                "stage": request.get("stage"), "attempt": index,
+                "vendor": attempt.get("vendor") or run.get("actual_vendor"),
+                "session_id": (attempt.get("observed") or {}).get("session_id")
+                    if isinstance(attempt.get("observed"), dict) else observed.get("session_id"),
+                "turn_id": observed.get("turn_id"),
+                "lifecycle": run.get("lifecycle") or "unknown",
+                "outcome": attempt.get("outcome") or run.get("outcome") or "unknown",
+                "record_error": run.get("recovery_error"),
+                "environment": observed})
+    return {"status": "known", "attempts": values}
 
 
 def _reach_readings(state: WorkState) -> list[Marker]:
@@ -7721,7 +7764,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         "and applicable ancestor and nested instructions before editing. "
                         f"The shipped tradecraft plugin is at {here.parent}. "
                         "Project and local Claude settings are omitted so the holder hook does not "
-                        "run in this child; retain user and managed policy.\n"
+                        "run in this child. User sources retain global instructions, native memory "
+                        "and permission settings. Strict MCP, no Chrome and targeted plugin overrides "
+                        "request no account/browser/desktop capabilities and only tradecraft plus "
+                        "runtime built-ins. Actual holdings, unknowns and excess are recorded separately.\n"
                     ).encode("utf-8") if selected_vendor == "claude" else b"")
                     window = (work_recovery.instruction(recovery_info, metadata["recipient_allocation_seconds"])
                               if recovery_info else
@@ -7771,7 +7817,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 setting_resolution.print_plan(launch_plan, label="work")
                 if artifact_run:
                     invoked["value"] = True
-                return _invoke_recipient(command, deadline)
+                try:
+                    return _invoke_recipient(command, deadline)
+                finally:
+                    _emit_report({"stage": decision.stage, "implementer_returned": True}, state, flush=True)
 
 
 def parser() -> argparse.ArgumentParser:

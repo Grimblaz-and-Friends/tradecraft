@@ -10,9 +10,50 @@ import time
 vendor, scenario_path = sys.argv[1:3]
 flags = sys.argv[3:]
 scenario = json.loads(Path(scenario_path).read_bytes()).get(vendor, {})
-prompt = sys.stdin.buffer.read()
+native = vendor == "codex" and flags[:1] == ["app-server"]
+if flags[:3] == ["plugin", "list", "--json"]:
+    print(json.dumps(scenario.get("plugin_list", [] if vendor == "claude" else {"installed": []})))
+    sys.exit(scenario.get("discovery_exit", 0))
+requests = []
+session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+turn = "0199a214-81c0-7800-8aa1-bbab2a035a53"
+if native:
+    try:
+        old_events = [json.loads(line) for line in scenario.get("stdout", "").splitlines() if line.strip()]
+    except ValueError:
+        old_events = []
+    ids = [e["thread_id"] for e in old_events if e.get("type") == "thread.started"]
+    if ids:
+        session = ids[-1]
+    else:
+        import re
+        header = re.search(r"session id:\s*([0-9a-f-]{36})", scenario.get("stderr", ""))
+        if header:
+            session = header[1]
+    def emit(value):
+        print(json.dumps(value), flush=True)
+    for line in sys.stdin.buffer:
+        request = json.loads(line)
+        requests.append(request)
+        method = request.get("method")
+        if method == "initialize":
+            emit({"id": request["id"], "result": {"userAgent": "fixture"}})
+        elif method == "config/read":
+            emit({"id": request["id"], "result": {"config": scenario.get("effective_config", {})}})
+        elif method in ("thread/start", "thread/resume"):
+            emit({"id": request["id"], "result": {"thread": {} if scenario.get("missing_identity") else {"id": session}, "instructionSources": []}})
+        elif method == "turn/start":
+            emit({"id": request["id"], "result": {"turn": {"id": turn, "status": "inProgress"}}})
+            prompt = request["params"]["input"][0]["text"].encode("utf-8")
+            break
+    else:
+        sys.exit(0)
+else:
+    prompt = sys.stdin.buffer.read()
 capture = {"argv": flags, "cwd": str(Path.cwd()), "stdin": base64.b64encode(prompt).decode()}
 capture["pytest_addopts"] = os.environ.get("PYTEST_ADDOPTS")
+if native:
+    capture["requests"] = requests
 if scenario.get("author_writes"):
     def git(*args):
         result = subprocess.run(["git", *args], stdin=subprocess.DEVNULL,
@@ -43,6 +84,38 @@ if scenario.get("sleep"):
     time.sleep(scenario["sleep"])
 message = scenario.get("message", "would not\nA concrete problem in the submitted artifact.")
 if vendor == "codex":
+    if native:
+        if "native_stdout" in scenario:
+            sys.stdout.buffer.write(scenario["native_stdout"].encode("utf-8"))
+        else:
+            def notify(method, **params):
+                emit({"method": method, "params": {"threadId": session, "turnId": turn, **params}})
+            for event in old_events:
+                if event.get("type") == "error":
+                    notify("error", error=event)
+            completed = [e for e in old_events if e.get("type") == "turn.completed"]
+            failed = any(e.get("type") == "turn.failed" for e in old_events)
+            finals = [e.get("item", {}).get("text") for e in old_events
+                      if e.get("type") == "item.completed" and e.get("item", {}).get("type") == "agent_message"]
+            final = message if message else finals[-1] if finals else None
+            if "last_hex" in scenario:
+                final = bytes.fromhex(scenario["last_hex"]).decode("utf-8")
+            if final is not None:
+                notify("item/completed", item={"type": "agentMessage", "text": final})
+            if completed:
+                usage = completed[-1].get("usage", {})
+                mapping = {"input_tokens": "inputTokens", "cached_input_tokens": "cachedInputTokens",
+                           "output_tokens": "outputTokens", "reasoning_output_tokens": "reasoningOutputTokens"}
+                notify("thread/tokenUsage/updated", tokenUsage={"total": {
+                    mapping.get(k, k): v for k, v in usage.items()}, "last": {"inputTokens": 1}})
+                notify("turn/completed", turn={"id": turn, "status": "failed" if failed else "completed"})
+            elif failed:
+                notify("turn/completed", turn={"id": turn, "status": "failed"})
+            elif scenario.get("stdout"):
+                sys.stdout.buffer.write(scenario["stdout"].encode("utf-8"))
+        sys.stdout.buffer.flush()
+        sys.stderr.buffer.write(scenario.get("stderr", "").encode("utf-8"))
+        sys.exit(scenario.get("exit", 0))
     if message is not None:
         last = bytes.fromhex(scenario["last_hex"]) if "last_hex" in scenario else message.encode("utf-8")
         Path(flags[flags.index("--output-last-message") + 1]).write_bytes(last)
