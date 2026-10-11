@@ -3920,6 +3920,182 @@ def test_release_report_refuses_when_base_moves_after_collection(tmp_path):
          floor_command="python fixture-check.py")
 
 
+def _holder_capture_source(tmp_path, monkeypatch):
+    from test_holder_transcript import reply, write_lines, at
+    import holder_transcript as ht
+    config = tmp_path / "claude-profile"
+    source = config / "projects" / "actual-slug" / "actual-holder.jsonl"
+    write_lines(source, [reply("first", session="actual-holder")])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "actual-holder")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    class Clock(datetime):
+        current = at(10)
+        @classmethod
+        def now(cls, zone):
+            return cls.current
+    monkeypatch.setattr(ht, "datetime", Clock)
+    return source, Clock
+
+
+def _release_for_holder(tmp_path, capsys, **kwargs):
+    fixture = state(pr=True)
+    assert work.execute_stage(fixture, work.Decision("release-report", False, None, "holder-named-stage"),
+                              tmp_path, None, **kwargs) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    return fixture, json.loads(captured.out)
+
+
+def test_release_report_holder_capture_durable_row_second_window_and_real_report(tmp_path, monkeypatch, capsys):
+    from test_holder_transcript import reply, write_lines, at
+    import change_cost as cost
+    source, clock = _holder_capture_source(tmp_path, monkeypatch)
+    fixture, first = _release_for_holder(tmp_path, capsys, holder_session_id="registry-holder-token")
+    capture = first["holder_close"]
+    assert capture["recorded"] and capture["status"] == "recorded"
+    assert capture["session_id"] == "actual-holder" and capture["source"] == str(source)
+    assert capture["projects_root_source"] == "CLAUDE_CONFIG_DIR"
+    assert Path(capture["journal"]).is_file() and Path(capture["destination"]).is_file()
+    write_lines(source, [reply("repair", 12, session="actual-holder")], append=True)
+    clock.current = at(20)
+    _, second = _release_for_holder(tmp_path, capsys)
+    current = second["holder_close"]
+    assert current["close_id"] != capture["close_id"]
+    assert current["window"]["previous_close_id"] == capture["close_id"]
+    result = cost.report(fixture.repo, fixture.issue_number, tmp_path / "dispatches", LIB / "rates.json",
+                         tmp_path / "terms", tmp_path / "gauges", Path(capture["destination"]))
+    assert len(result["raw_usage"]) == 2
+    assert [row["tokens"]["models"]["claude-opus-5-5"]["input"] for row in result["raw_usage"]] == [10, 10]
+    assert {row["holder"]["replies"][0]["id"] for row in result["raw_usage"]} == {"first", "repair"}
+    assert "Include this recorded" in current["instruction"]
+
+
+@pytest.mark.parametrize("problem", ["missing", "unreadable"])
+def test_release_report_holder_source_failure_records_unknown_and_keeps_handoff(tmp_path, monkeypatch, capsys, problem):
+    source, _ = _holder_capture_source(tmp_path, monkeypatch)
+    if problem == "missing":
+        source.unlink()
+    else:
+        original = Path.read_bytes
+        def unreadable(path):
+            if path == source:
+                raise PermissionError("test source denied")
+            return original(path)
+        monkeypatch.setattr(Path, "read_bytes", unreadable)
+    _, result = _release_for_holder(tmp_path, capsys)
+    capture = result["holder_close"]
+    assert capture["recorded"] and capture["status"] == "unknown"
+    assert capture["unknown_reason"] and Path(capture["journal"]).is_file()
+    assert "required_gate" in result and "path_departures" in result
+
+
+@pytest.mark.parametrize("failure", ["storage", "lock"])
+def test_release_report_holder_recording_failure_never_invents_row(tmp_path, monkeypatch, capsys, failure):
+    import holder_transcript as ht
+    _holder_capture_source(tmp_path, monkeypatch)
+    def unavailable(*args):
+        if failure == "storage":
+            raise OSError("journal storage denied")
+        raise ht.TranscriptError("holder session lock timed out")
+    monkeypatch.setattr(ht, "_publish", unavailable)
+    _, result = _release_for_holder(tmp_path, capsys)
+    capture = result["holder_close"]
+    assert capture["status"] == "not-recorded" and not capture["recorded"]
+    assert "close_id" not in capture and "owed by hand" in capture["instruction"]
+    assert not list(ht.default_state_root().rglob("*.json"))
+
+
+@pytest.mark.parametrize("failure", ["damaged", "lock"])
+def test_release_report_manual_followup_command_records_despite_unusable_journal(tmp_path, monkeypatch, capsys, failure):
+    from contextlib import nullcontext
+    import holder_transcript as ht
+    _holder_capture_source(tmp_path, monkeypatch)
+    _, first = _release_for_holder(tmp_path, capsys)
+    journal = Path(first["holder_close"]["journal"])
+    if failure == "damaged":
+        journal.write_bytes(b"{}")
+    with ht.session_lock(journal.parent) if failure == "lock" else nullcontext():
+        # Use a real competing process for the lock failure: locks in the same
+        # POSIX process would not represent an independently running holder.
+        if failure == "lock":
+            def busy(*args, **kwargs):
+                raise ht.TranscriptError("holder session lock timed out; no close recorded")
+            monkeypatch.setattr(ht, "session_lock", busy)
+        _, handoff = _release_for_holder(tmp_path, capsys)
+        capture = handoff["holder_close"]
+        assert capture["status"] == "not-recorded" and not capture["recorded"]
+        assert "close_id" not in capture
+        command = capture["manual_close_command"]
+        completed = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    row = json.loads(completed.stdout)
+    assert row["change"] == {"repository": state(pr=True).repo, "issue": state(pr=True).issue_number, "unknown_reason": None}
+    assert not row["holder"]["window"]["boundary_registered"]
+    assert row["holder"]["window"]["boundary_unknown_reason"]
+    assert capture["reason"] in row["tokens_unknown_reason"]
+    rows = [json.loads(line) for line in Path(first["holder_close"]["destination"]).read_bytes().splitlines() if line.strip()]
+    assert rows[-1] == row
+
+
+def test_release_report_outside_claude_is_manual_even_with_registry_identity(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "readable-profile"))
+    monkeypatch.setenv("CLAUDE_CODE_HOST_SESSION_ID", "host-does-not-activate-capture")
+    before = set((Path.home() / ".tradecraft").rglob("*"))
+    _, result = _release_for_holder(tmp_path, capsys, holder_session_id="registry-identity")
+    assert result["holder_close"]["status"] == "manual-owed"
+    assert "--tokens-file FILE or --unknown-reason TEXT" in result["holder_close"]["instruction"]
+    assert set((Path.home() / ".tradecraft").rglob("*")) == before
+
+
+@pytest.mark.parametrize("refusal", ["dispatch", "moved-pr", "sync", "reach", "terms"])
+def test_release_report_earlier_refusals_never_capture_holder(tmp_path, monkeypatch, capsys, refusal):
+    import holder_transcript as ht
+    _holder_capture_source(tmp_path, monkeypatch)
+    fixture = state(pr=True)
+    decision = work.Decision("release-report", False, None, "holder-named-stage")
+    kwargs = {}
+    if refusal == "dispatch":
+        kwargs["dispatch_path"] = tmp_path / "job"
+    elif refusal in {"moved-pr", "sync"}:
+        class Transport:
+            def get(self, endpoint, *, paginate=False):
+                value = deepcopy(fixture.pr)
+                if refusal == "moved-pr":
+                    value["base"]["ref"] = "other"
+                return value
+        kwargs["transport"] = Transport()
+        if refusal == "sync":
+            monkeypatch.setattr(work, "_collect_synchronization", lambda *args: fixture.synchronization)
+            monkeypatch.setattr(work, "_synchronization_decision", lambda *args: work.Decision("catch-up", False, None, "needs-sync"))
+    elif refusal == "reach":
+        monkeypatch.setattr(work, "_reach_refusal", lambda *args: work.Decision("holder", False, None, "needs-reach"))
+    elif refusal == "terms":
+        monkeypatch.setattr(work, "_governing_terms_decision", lambda *args: work.Decision("build", False, None, "needs-terms"))
+    if refusal in {"dispatch", "moved-pr"}:
+        with pytest.raises(work.WorkError):
+            work.execute_stage(fixture, decision, tmp_path, None, **kwargs)
+    else:
+        assert work.execute_stage(fixture, decision, tmp_path, None, **kwargs) == 0
+        assert "holder_close" not in json.loads(capsys.readouterr().out)
+    assert not ht.default_state_root().exists()
+    assert not work.change_cost.default_holder_usage(fixture.repo, fixture.issue_number).exists()
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "use", "review-disposition", "proof", "ready-reviewers", "catch-up"])
+def test_other_stages_and_read_only_decision_never_capture_holder(tmp_path, monkeypatch, capsys, stage):
+    import holder_transcript as ht
+    _holder_capture_source(tmp_path, monkeypatch)
+    fixture = state(pr=True)
+    def forbidden(*args):
+        pytest.fail("stage reached automatic holder capture")
+    monkeypatch.setattr(work, "_release_holder_close", forbidden)
+    work.decide(fixture, RULES)
+    # Stop at an actual preflight refusal, without launching an unrelated stage.
+    monkeypatch.setattr(work, "_artifact_source_problem", lambda *args: "test preflight refusal")
+    assert work.execute_stage(fixture, work.Decision(stage, False, None, "holder-named-stage"), tmp_path, None) == 0
+    assert not ht.default_state_root().exists()
+
+
 def test_pull_coordinates_ignore_an_advancing_base_revision():
     fixture = state(pr=True)
     moved = json.loads(json.dumps(fixture.pr))

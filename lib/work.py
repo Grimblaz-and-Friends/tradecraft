@@ -65,6 +65,8 @@ import use_history
 import version_policy
 import raw_output
 import build_reach
+import change_cost
+import holder_transcript
 from winio import utf8_stdio
 from seat_process import run_process, run_inherited_process
 
@@ -6983,6 +6985,37 @@ def _invoke_recipient(command, deadline):
         raise WorkError("launcher exceeded its bounded recording allowance; retained bundle may be unfinished") from None
 
 
+def _release_holder_close(state):
+    manual = (
+        "Holder close is still owed by hand: python <plugin-root>/lib/change_cost.py "
+        f"holder-close --repo {state.repo} --issue {state.issue_number} --vendor VENDOR "
+        "with --tokens-file FILE or --unknown-reason TEXT; include its row in the release report."
+    )
+    if not os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip():
+        return {"status": "manual-owed", "recorded": False, "instruction": manual}
+    destination = change_cost.default_holder_usage(state.repo, state.issue_number)
+    try:
+        row = change_cost.holder_close(state.repo, state.issue_number, "claude", None,
+                                       None, None, destination)
+    except (OSError, ValueError, change_cost.CostError, holder_transcript.TranscriptError) as exc:
+        command = [sys.executable, str(Path(change_cost.__file__).resolve()), "holder-close",
+                   "--repo", state.repo, "--issue", str(state.issue_number), "--vendor", "claude",
+                   "--unknown-reason", f"Automatic transcript close could not be recorded: {exc}"]
+        return {"status": "not-recorded", "recorded": False, "reason": str(exc),
+                "manual_close_command": command,
+                "instruction": manual + " The manual_close_command records this failure explicitly even if the session boundary cannot be registered."}
+    holder = row["holder"]
+    return {"status": holder["status"], "recorded": True, "close_id": row["dispatch"]["id"],
+            "destination": str(destination), "journal": holder.get("journal"),
+            "session_id": holder.get("session_id"), "window": holder.get("window"),
+            "source": row.get("raw_source"), "projects_root": holder["projects_root"],
+            "projects_root_source": holder["projects_root_source"],
+            "unknown_reason": row.get("tokens_unknown_reason"), "gaps": holder.get("gaps", []),
+            "recovered_closes": holder.get("recovered_closes", []),
+            "materialization_error": row.get("materialization_error"),
+            "instruction": "Include this recorded holder-close row and any recovered earlier close in the release report."}
+
+
 def execute_stage(state, decision, *args, **kwargs):
     if decision.stage == "artifact":
         with artifact_tree.isolated_git_environment():
@@ -7314,6 +7347,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
         payload.update({
             "required_gate": required_gate,
             "path_departures": path_departures,
+            "holder_close": _release_holder_close(state),
         })
         _emit_report(payload, state)
         return 0
