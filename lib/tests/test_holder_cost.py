@@ -519,3 +519,217 @@ def test_retained_native_extra_counts_cannot_reduce_or_duplicate_observed_token_
     value = cost.rate_card_equivalent(row, [rates])
     assert Decimal(value["amount"]) == Decimal(".073")
     assert value["floor"] is (count != 0)
+
+
+@pytest.mark.parametrize("fault", ["torn", "non-object", "naive-time", "unreadable-child"])
+def test_untimed_gap_is_attributed_once_and_later_empty_close_is_known_zero(inputs, transcript, tmp_path, monkeypatch, fault):
+    if fault == "unreadable-child":
+        read_bytes = Path.read_bytes
+        def unreadable(path):
+            if path == transcript[2]:
+                raise PermissionError("child inaccessible")
+            return read_bytes(path)
+        monkeypatch.setattr(Path, "read_bytes", unreadable)
+    else:
+        transcript[2].unlink()
+        if fault == "torn":
+            with transcript[1].open("ab") as stream:
+                stream.write(b'{"partial":')
+        elif fault == "non-object":
+            write_lines(transcript[1], [None], append=True)
+        else:
+            broken = reply("naive")
+            broken["timestamp"] = "2026-10-10T12:00:02"
+            write_lines(transcript[1], [broken], append=True)
+    first = close(inputs, transcript)
+    assert first["holder"]["gaps"] and holder_price(report(inputs))["floor"]
+    later = {**inputs, "issue": 13, "holder_path": tmp_path / "later.jsonl"}
+    for second in (20, 30):
+        row = close(later, transcript, second=second)
+        assert row["holder"]["observed_empty"] and not row["holder"]["gaps"]
+        assert row["holder"]["recovered_closes"] == []
+    result = report(later)
+    assert result["total"]["known_amount"] == "0" and not result["total"]["floor"]
+    assert all(price["value"]["status"] == "known" for price in result["dated_rate_card_equivalent"])
+    assert holder_price(report(inputs))["floor"]
+
+
+@pytest.mark.parametrize("damage", ["history", "branched", "lock", "invalid-identity"])
+@pytest.mark.parametrize("supplied", ["tokens", "unknown"])
+def test_explicit_claude_cli_records_when_boundary_registration_is_unavailable(inputs, transcript, tmp_path, monkeypatch, damage, supplied):
+    from contextlib import nullcontext
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "holder")
+    original = close(inputs, transcript)
+    journal = Path(original["holder"]["journal"])
+    if damage == "history":
+        journal.write_bytes(b"{}")
+    elif damage == "branched":
+        entry = json.loads(journal.read_bytes())
+        entry["id"] = entry["row"]["dispatch"]["id"] = "holder-close-branch"
+        (journal.parent / (entry["id"] + ".json")).write_bytes(json.dumps(entry).encode())
+    elif damage == "invalid-identity":
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "../holder")
+    before = {str(path): path.read_bytes() for path in ht.default_state_root().rglob("*.json")}
+    destination = tmp_path / "manual.jsonl"
+    command = [sys.executable, str(LIB / "change_cost.py"), "holder-close", "--repo", inputs["repo"],
+               "--issue", "12", "--vendor", "claude", "--output", str(destination)]
+    if supplied == "tokens":
+        attachment = tmp_path / "tokens.json"
+        attachment.write_bytes(json.dumps({"tokens": {"models": {"claude-opus-5-5": {
+            "input": 10, "output": 3, "cache_read": 4, "cache_creation": 7}}}, "scope": "invocation"}).encode())
+        command.extend(["--tokens-file", str(attachment)])
+    else:
+        command.extend(["--unknown-reason", "explicit caller reason"])
+    with ht.session_lock(journal.parent) if damage == "lock" else nullcontext():
+        completed = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    row = json.loads(completed.stdout)
+    assert completed.stdout.isascii() and completed.stderr == b""
+    assert row["holder"]["source_kind"] == "supplied"
+    assert not row["holder"]["window"]["boundary_registered"]
+    assert row["holder"]["window"]["boundary_unknown_reason"]
+    assert "journal" not in row["holder"]
+    assert [json.loads(line) for line in destination.read_bytes().splitlines() if line.strip()] == [row]
+    assert before == {str(path): path.read_bytes() for path in ht.default_state_root().rglob("*.json")}
+    value = holder_price(report({**inputs, "holder_path": destination}))
+    if supplied == "tokens":
+        assert Decimal(value["amount"]) == Decimal(".105")
+    else:
+        assert value["status"] == "unknown" and "explicit caller reason" in value["reason"]
+
+
+@pytest.mark.parametrize("agent", [False, True])
+@pytest.mark.parametrize("count", ["bad", None, [], {}, True, -1, 1.5])
+def test_malformed_retained_token_count_is_unknown_even_with_priced_child_coverage(inputs, transcript, agent, count):
+    bundle(inputs)
+    original = close(inputs, transcript)
+    assert not holder_price(report(inputs))["floor"]
+    Path(original["holder"]["journal"]).unlink()
+    selected = next(reply for reply in original["holder"]["replies"] if bool(reply["agent_id"]) == agent)
+    selected["tokens"]["input"] = count
+    write_lines(inputs["holder_path"], [original])
+    result = report(inputs)
+    value = holder_price(result)
+    assert value["status"] == "unknown" and "invalid duration/token" in value["reason"]
+    assert result["total"]["unknown_dispatches"] == 1 and result["total"]["floor"]
+
+
+@pytest.mark.parametrize("fault", ["damaged", "unreadable"])
+def test_unattributed_journal_problem_warns_once_without_flooring_unrelated_change(inputs, transcript, tmp_path, monkeypatch, fault):
+    original = close(inputs, transcript)
+    unrelated = {**inputs, "repo": "elsewhere/product", "issue": 99, "holder_path": tmp_path / "unrelated.jsonl"}
+    other_main = transcript[1].parent / "other.jsonl"
+    write_lines(other_main, [reply("other-reply", session="other")])
+    cost.holder_close(unrelated["repo"], unrelated["issue"], "claude", None, None, None, unrelated["holder_path"],
+                      now=at(10), session_id="other", claude_projects=transcript[0])
+    journal = Path(original["holder"]["journal"])
+    if fault == "damaged":
+        journal.write_bytes(b"{}")
+    else:
+        read_bytes = Path.read_bytes
+        def unreadable(path):
+            if path == journal:
+                raise PermissionError("unreadable session journal")
+            return read_bytes(path)
+        monkeypatch.setattr(Path, "read_bytes", unreadable)
+    result = report(unrelated)
+    assert Decimal(result["total"]["known_amount"]) == Decimal(".073")
+    assert not result["total"]["floor"] and result["skipped_records"] == []
+    assert len(result["warnings"]) == 1 and result["warnings"][0]["path"] == str(journal.parent)
+    # The original destination is identifiable from its materialized close.
+    selected = report(inputs)
+    assert selected["total"]["floor"] and selected["skipped_records"]
+
+
+@pytest.mark.parametrize("input_count,extra", [(0, None), (1, None), (0, 1)])
+def test_unrated_synthetic_reply_needs_a_rate_only_for_positive_billable_counts(inputs, transcript, input_count, extra):
+    transcript[2].unlink()
+    synthetic = reply("synthetic", model="<synthetic>", input=input_count, output=0, read=0, five=0, hour=0)
+    if extra is not None:
+        synthetic["message"]["usage"]["billable_extra_tokens"] = extra
+    write_lines(transcript[1], [synthetic])
+    close(inputs, transcript)
+    result = report(inputs)
+    value = holder_price(result)
+    if input_count or extra:
+        assert value["status"] == "unknown" and "no dated rate" in value["reason"]
+        assert result["total"]["floor"]
+    else:
+        assert value["status"] == "known" and value["amount"] == "0" and not value["floor"]
+        assert not result["total"]["floor"]
+
+
+@pytest.mark.parametrize("optional", [None, {}, {"web_search_requests": 0}])
+def test_null_optional_server_tool_usage_keeps_the_reply_price(inputs, transcript, optional):
+    transcript[2].unlink()
+    record = reply("main")
+    record["message"]["usage"]["server_tool_use"] = optional
+    write_lines(transcript[1], [record])
+    row = close(inputs, transcript)
+    value = holder_price(report(inputs))
+    assert {reply["id"] for reply in row["holder"]["replies"]} == {"main"}
+    assert not row["holder"]["gaps"]
+    assert Decimal(value["amount"]) == Decimal(".073") and not value["floor"]
+
+
+def test_unregistered_supplied_boundary_is_visible_if_automatic_capture_later_succeeds(inputs, transcript, tmp_path, monkeypatch):
+    transcript[2].unlink()
+    attachment = tmp_path / "supplied.json"
+    attachment.write_bytes(json.dumps({"tokens": {"models": {"claude-opus-5-5": {
+        "input": 10, "output": 3, "cache_read": 4, "cache_creation": 7}}}, "scope": "invocation"}).encode())
+    def unavailable(*args, **kwargs):
+        raise ht.TranscriptError("holder session lock timed out; no close recorded")
+    with monkeypatch.context() as patch:
+        patch.setattr(ht, "session_lock", unavailable)
+        manual = cost.holder_close(inputs["repo"], 12, "claude", None, attachment, None,
+                                   inputs["holder_path"], session_id="holder", now=at(10))
+    automatic = close(inputs, transcript, second=20)
+    assert automatic["holder"]["window"]["previous_close_id"] is None
+    values = {row["dispatch_id"]: row["value"] for row in report(inputs)["dated_rate_card_equivalent"]}
+    assert values[automatic["dispatch"]["id"]]["overlap_warnings"] == [{
+        "reason": "supplied Claude counters have no registered session boundary; overlap with transcript usage cannot be established",
+        "holder_close_ids": [manual["dispatch"]["id"]]}]
+
+
+def test_documented_supplied_source_command_selects_codex_vendor_and_prices_its_counters(inputs, tmp_path):
+    import re
+    import shlex
+    text = (LIB.parent / "skills" / "engagement" / "references" / "dispatch-records.md").read_text(encoding="utf-8")
+    commands = re.findall(r"`(python <plugin-root>/lib/change_cost.py holder-close [^`]+)`", text)
+    manual = next((command for command in commands if "--tokens-file FILE" in command), None)
+    assert manual is not None, "The supplied-source procedure needs its own command and vendor."
+    attachment = tmp_path / "codex-tokens.json"
+    attachment.write_bytes(json.dumps({"model": "gpt-6.1-sol", "tokens": {
+        "input_tokens": 20, "cached_input_tokens": 10, "cache_write_input_tokens": 0, "output_tokens": 4,
+        "reasoning_output_tokens": 1}, "scope": "invocation"}).encode())
+    replacements = {"python": sys.executable, "<plugin-root>/lib/change_cost.py": str(LIB / "change_cost.py"),
+                    "OWNER/REPO": inputs["repo"], "N": "12", "VENDOR": "codex", "MODEL": "gpt-6.1-sol", "FILE": str(attachment)}
+    command = [replacements.get(part, part) for part in shlex.split(manual)]
+    command.extend(["--output", str(inputs["holder_path"])])
+    completed = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    row = json.loads(completed.stdout)
+    assert row["dispatch"]["actual_vendor"] == "codex"
+    value = cost.rate_card_equivalent(row, cost.load_rates(LIB / "rates.json"))
+    assert value["status"] == "known", value
+
+
+@pytest.mark.parametrize("extra", [None, False, "", [], {}])
+def test_zero_reply_does_not_assume_malformed_retained_native_counts_are_free(inputs, transcript, extra):
+    transcript[2].unlink()
+    write_lines(transcript[1], [reply("zero", model="<synthetic>", input=0, output=0, read=0, five=0, hour=0)])
+    row = close(inputs, transcript)
+    row["holder"]["replies"][0]["additional_native_classes"] = {"billable_extra_tokens": extra}
+    value = cost.rate_card_equivalent(row, [card()])
+    assert value["status"] == "unknown"
+
+
+def test_zero_child_has_no_monetary_overlap_to_resolve(inputs, transcript):
+    write_lines(transcript[2], [reply("child-reply", second=2, agent="child", input=0, output=0, read=0, five=0, hour=0)])
+    bundle(inputs, identity=None)
+    close(inputs, transcript)
+    result = report(inputs)
+    value = holder_price(result)
+    assert Decimal(value["amount"]) == Decimal(".073") and not value["floor"]
+    assert value["effective_agent_inclusion"][0]["status"] == "included"
+    assert not result["total"]["floor"]

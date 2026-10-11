@@ -4001,6 +4001,38 @@ def test_release_report_holder_recording_failure_never_invents_row(tmp_path, mon
     assert not list(ht.default_state_root().rglob("*.json"))
 
 
+@pytest.mark.parametrize("failure", ["damaged", "lock"])
+def test_release_report_manual_followup_command_records_despite_unusable_journal(tmp_path, monkeypatch, capsys, failure):
+    from contextlib import nullcontext
+    import holder_transcript as ht
+    _holder_capture_source(tmp_path, monkeypatch)
+    _, first = _release_for_holder(tmp_path, capsys)
+    journal = Path(first["holder_close"]["journal"])
+    if failure == "damaged":
+        journal.write_bytes(b"{}")
+    with ht.session_lock(journal.parent) if failure == "lock" else nullcontext():
+        # Use a real competing process for the lock failure: locks in the same
+        # POSIX process would not represent an independently running holder.
+        if failure == "lock":
+            def busy(*args, **kwargs):
+                raise ht.TranscriptError("holder session lock timed out; no close recorded")
+            monkeypatch.setattr(ht, "session_lock", busy)
+        _, handoff = _release_for_holder(tmp_path, capsys)
+        capture = handoff["holder_close"]
+        assert capture["status"] == "not-recorded" and not capture["recorded"]
+        assert "close_id" not in capture
+        command = capture["manual_close_command"]
+        completed = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    row = json.loads(completed.stdout)
+    assert row["change"] == {"repository": state(pr=True).repo, "issue": state(pr=True).issue_number, "unknown_reason": None}
+    assert not row["holder"]["window"]["boundary_registered"]
+    assert row["holder"]["window"]["boundary_unknown_reason"]
+    assert capture["reason"] in row["tokens_unknown_reason"]
+    rows = [json.loads(line) for line in Path(first["holder_close"]["destination"]).read_bytes().splitlines() if line.strip()]
+    assert rows[-1] == row
+
+
 def test_release_report_outside_claude_is_manual_even_with_registry_identity(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "readable-profile"))
     monkeypatch.setenv("CLAUDE_CODE_HOST_SESSION_ID", "host-does-not-activate-capture")

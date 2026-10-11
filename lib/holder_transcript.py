@@ -1,7 +1,7 @@
 """Token-only Claude transcript snapshots and serialized holder close evidence."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 import time
 import uuid
+
+
+TOKEN_CLASSES = frozenset({"input", "output", "cache_read", "cache_creation", "cache_write_5m", "cache_write_1h"})
 
 
 class TranscriptError(RuntimeError):
@@ -149,6 +152,11 @@ def ledger_problem(holder):
                 or not (reply.get("agent_id") is None or isinstance(reply.get("agent_id"), str))):
             return "holder transcript ledger has malformed or duplicate reply evidence"
         identities.add(reply["id"])
+        counts = reply["tokens"]
+        if (set(counts) != TOKEN_CLASSES
+                or any(type(count) is not int or count < 0 for count in counts.values())
+                or counts["cache_write_5m"] + counts["cache_write_1h"] != counts["cache_creation"]):
+            return f"holder transcript ledger reply {reply['id']} has invalid duration/token populations"
     for gap in holder["gaps"]:
         if (not isinstance(gap, dict) or not isinstance(gap.get("source"), str)
                 or not isinstance(gap.get("reason"), str)
@@ -207,6 +215,8 @@ def _population(usage):
     extras = {}
     for name, value in usage.items():
         if name in ignored or _money_name(name):
+            continue
+        if name == "server_tool_use" and value is None:
             continue
         if name == "server_tool_use" and not isinstance(value, dict):
             raise TranscriptError("server_tool_use billable counters are not an object")
@@ -399,6 +409,22 @@ def _materialize(destination, row):
         os.fsync(stream.fileno())
 
 
+def _supplied_without_boundary(row, destination, session, requested_session, session_source, root, root_source, reason):
+    """Keep caller evidence usable without pretending its boundary was registered."""
+    row["holder"] = {
+        "schema_version": 1, "source_kind": "supplied", "session_id": session,
+        "requested_session_id": requested_session, "session_id_source": session_source,
+        "projects_root": str(root), "projects_root_source": root_source,
+        "destination": str(destination), "replies": [], "gaps": [],
+        "attribution": "supplied counters; declared scope",
+        "window": {"previous_close_id": None, "previous_close_at": None,
+                   "closed_at": row["dispatch"]["completed_at"], "boundary_registered": False,
+                   "boundary_unknown_reason": reason},
+    }
+    _materialize(destination, row)
+    return row
+
+
 def close(repo, issue, destination, *, model=None, session_id=None, projects=None,
           state_root=None, now=None, supplied_row=None, lock_timeout=10):
     root, root_source = projects_directory(projects)
@@ -413,8 +439,9 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
     state_root = Path(state_root) if state_root is not None else default_state_root()
     if session is None:
         if supplied_row is not None:
-            _materialize(destination, supplied_row)
-            return supplied_row
+            return _supplied_without_boundary(supplied_row, destination, session, requested_session,
+                                              session_source, root, root_source,
+                                              identity_error or "Claude session identity is unavailable")
         captured = now or datetime.now(timezone.utc)
         window = {"previous_close_id": None, "previous_close_at": None, "closed_at": captured.isoformat(),
                   "lower_exclusive": True, "upper_inclusive": True, "boundary_registered": False}
@@ -425,9 +452,16 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
         _materialize(destination, row)
         return row
     directory = state_root / hashlib.sha256(session.encode("utf-8")).hexdigest()
-    with session_lock(directory, lock_timeout):
-        entries = _entries(directory, session)
-        history = _history(entries)
+    with ExitStack() as locks:
+        try:
+            locks.enter_context(session_lock(directory, lock_timeout))
+            entries = _entries(directory, session)
+            history = _history(entries)
+        except (OSError, TranscriptError) as exc:
+            if supplied_row is None:
+                raise
+            return _supplied_without_boundary(supplied_row, destination, session, requested_session,
+                                              session_source, root, root_source, str(exc))
         previous = history[-1] if history else None
         lower = timestamp(previous["row"]["holder"]["window"]["closed_at"]) if previous else None
         captured = now or datetime.now(timezone.utc)
@@ -488,6 +522,8 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
                         late.setdefault(original["id"], {"replies": [], "gaps": []})["replies"].append(reply)
             current_gaps = []
             for gap in gaps:
+                if _gap_identity(gap) in seen_gaps:
+                    continue
                 when = timestamp(gap["timestamp"])
                 # Contradictory evidence belongs to the close that retained the
                 # reply, even when the replay was written in a later interval.
@@ -497,8 +533,7 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
                         when, timestamp(entry["row"]["holder"]["window"].get("previous_close_at")),
                         timestamp(entry["row"]["holder"]["window"]["closed_at"]))), None)
                 if original is not None and original["row"]["holder"]["source_kind"] == "transcript":
-                    if _gap_identity(gap) not in seen_gaps:
-                        late.setdefault(original["id"], {"replies": [], "gaps": []})["gaps"].append(gap)
+                    late.setdefault(original["id"], {"replies": [], "gaps": []})["gaps"].append(gap)
                 elif when is None or _in_window(when, lower, captured):
                     current_gaps.append(gap)
             for original_id, recovered_evidence in late.items():
@@ -551,14 +586,15 @@ def holder_rows(destination, *, state_root=None):
     destination = Path(destination).resolve()
     root = Path(state_root) if state_root is not None else default_state_root()
     rows, problems, skipped, receipts = {}, {}, [], {}
+    journal_problems = []
     for directory in sorted(root.glob("*")):
         if not directory.is_dir():
             continue
         try:
             entries = _entries(directory)
             _history(entries)
-        except TranscriptError as exc:
-            skipped.append({"path": str(directory), "reason": str(exc)})
+        except (OSError, TranscriptError) as exc:
+            journal_problems.append({"path": str(directory), "reason": str(exc)})
             continue
         for entry in entries:
             if Path(entry["destination"]).resolve() != destination:
@@ -596,6 +632,16 @@ def holder_rows(destination, *, state_root=None):
                 problems.setdefault(identity, []).append(f"conflicting holder usage for dispatch {identity}")
             else:
                 rows[identity] = row
+    for problem in journal_problems:
+        directory = Path(problem["path"])
+        # A materialized close can establish the selected destination's session
+        # even when its authoritative journal cannot be read. Otherwise the
+        # directory is an unattributed warning, not this change's missing spend.
+        related = any(isinstance(row.get("holder"), dict)
+                      and isinstance(row["holder"].get("session_id"), str)
+                      and hashlib.sha256(row["holder"]["session_id"].encode("utf-8")).hexdigest() == directory.name
+                      for row in rows.values())
+        skipped.append(problem if related else {**problem, "report_warning": True})
     for receipt in receipts.values():
         identity = receipt["original_close_id"]
         if identity not in rows:

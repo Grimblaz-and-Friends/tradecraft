@@ -6947,7 +6947,12 @@ def _release_holder_close(state):
         row = change_cost.holder_close(state.repo, state.issue_number, "claude", None,
                                        None, None, destination)
     except (OSError, ValueError, change_cost.CostError, holder_transcript.TranscriptError) as exc:
-        return {"status": "not-recorded", "recorded": False, "reason": str(exc), "instruction": manual}
+        command = [sys.executable, str(Path(change_cost.__file__).resolve()), "holder-close",
+                   "--repo", state.repo, "--issue", str(state.issue_number), "--vendor", "claude",
+                   "--unknown-reason", f"Automatic transcript close could not be recorded: {exc}"]
+        return {"status": "not-recorded", "recorded": False, "reason": str(exc),
+                "manual_close_command": command,
+                "instruction": manual + " The manual_close_command records this failure explicitly even if the session boundary cannot be registered."}
     holder = row["holder"]
     return {"status": holder["status"], "recorded": True, "close_id": row["dispatch"]["id"],
             "destination": str(destination), "journal": holder.get("journal"),

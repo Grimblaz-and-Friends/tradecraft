@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -796,7 +797,12 @@ def _transcript_price(item, rates, agent_decisions=None):
     for reply in replies:
         if reply["id"] in unresolved_replies:
             continue
+        counts = reply["tokens"]
+        extras = reply["additional_native_classes"]
+        zero_billable = not any(counts.values()) and all(type(count) is int and count == 0 for count in extras.values())
         decision = decisions.get(reply.get("id"), {"status": "included"})
+        if zero_billable and decision["status"] == "unresolved":
+            decision = {**decision, "status": "included", "reason": "zero billable populations; no monetary overlap"}
         if reply.get("agent_id"):
             effective.append({"reply_id": reply.get("id"), **decision})
         if decision["status"] == "excluded":
@@ -806,17 +812,16 @@ def _transcript_price(item, rates, agent_decisions=None):
             reasons.append(decision["reason"])
             continue
         when, model = _timestamp(reply.get("timestamp")), reply.get("model")
+        if zero_billable:
+            computable = True
+            slices.append({"reply_id": reply["id"], "model": model, "timestamp": reply["timestamp"],
+                           "amount": "0", "basis": "zero billable populations; no rate required"})
+            continue
         rate = _rate_for(rates, "claude", model, when) if when else None
         if rate is None:
             reasons.append(f"reply {reply.get('id')} has no dated rate for claude {model}")
             continue
-        counts = reply.get("tokens")
-        required = {"input", "output", "cache_read", "cache_creation", "cache_write_5m", "cache_write_1h"}
-        if (not isinstance(counts, dict) or set(counts) != required
-                or any(type(count) is not int or count < 0 for count in counts.values())
-                or counts["cache_write_5m"] + counts["cache_write_1h"] != counts["cache_creation"]):
-            reasons.append(f"reply {reply.get('id')} has invalid duration/token populations")
-            continue
+        required = transcripts.TOKEN_CLASSES
         classes = {name: Decimal(count) for name, count in counts.items() if name != "cache_creation"}
         price_reasons = []
         amount = _class_price(classes, rate, model, price_reasons)
@@ -825,7 +830,6 @@ def _transcript_price(item, rates, agent_decisions=None):
         if price_reasons:
             reasons.extend(price_reasons)
             continue
-        extras = reply.get("additional_native_classes")
         for name, count in extras.items():
             if type(count) is not int or count < 0:
                 reasons.append(f"reply {reply['id']} has unmapped or invalid billable native count: {name}")
@@ -962,6 +966,9 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
     foreign_requests: list[dict] = []
     items = _contexts(dispatch_root, repo, issue, holder_path, skipped_records,
                       foreign_requests=foreign_requests)
+    warnings = [{key: value for key, value in entry.items() if key != "report_warning"}
+                for entry in skipped_records if entry.get("report_warning")]
+    skipped_records = [entry for entry in skipped_records if not entry.get("report_warning")]
     rows = [item.usage for item in items]
     rates = load_rates(rates_path)
     _session_shares(items, foreign_requests)
@@ -986,6 +993,16 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
                 price["value"]["overlap_warnings"] = [{
                     "reason": "historical supplied Claude counters lack session identity; overlap with transcript usage cannot be established",
                     "holder_close_ids": historical}]
+            unregistered = [candidate.bundle_id for candidate in items
+                            if _mapping(candidate.usage.get("dispatch")).get("stage") == "holder-close"
+                            and _mapping(candidate.usage.get("dispatch")).get("actual_vendor") == "claude"
+                            and candidate.usage.get("tokens") is not None
+                            and _mapping(candidate.usage.get("holder")).get("session_id")
+                            and _mapping(_mapping(candidate.usage.get("holder")).get("window")).get("boundary_registered") is False]
+            if unregistered:
+                price["value"].setdefault("overlap_warnings", []).append({
+                    "reason": "supplied Claude counters have no registered session boundary; overlap with transcript usage cannot be established",
+                    "holder_close_ids": unregistered})
     summaries = {}
     floor_reasons = []
     for item, price in zip(items, prices):
@@ -1032,6 +1049,7 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
         "raw_usage": rows,
         "runtime_lineages": runtime_report(repo, issue, dispatch_root),
         "skipped_records": skipped_records,
+        "warnings": warnings,
         "dated_rate_card_equivalent": prices,
         "dispatch_totals": list(summaries.values()),
         "total": {
@@ -1111,7 +1129,7 @@ def holder_close(repo: str, issue: int, vendor: str, model: str | None,
         "runtime_version": None,
         "runtime_version_unknown_reason": "holder host supplied no runtime version",
     }
-    if vendor == "claude" and transcripts.session_identity(session_id):
+    if vendor == "claude" and (session_id is not None or os.environ.get("CLAUDE_CODE_SESSION_ID")):
         return transcripts.close(repo, issue, destination, model=model, session_id=session_id,
                                  projects=claude_projects, state_root=state_root, now=now, supplied_row=row)
     _append_jsonl(destination, row)
