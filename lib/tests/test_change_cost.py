@@ -370,7 +370,7 @@ def test_unknown_dispatch_alone_does_not_create_bill_plan_vendor(report_inputs):
 
 @pytest.mark.parametrize("input_key,diagnostic", [
     ("rates_path", "cannot read rate card"), ("terms_path", "cannot read plan terms"),
-    ("holder_path", "cannot read JSON lines"), ("gauges_path", "cannot read JSON lines"),
+    ("gauges_path", "cannot read JSON lines"),
 ])
 def test_invalid_non_dispatch_inputs_still_fail_cli(report_inputs, input_key, diagnostic):
     write_bundle(report_inputs, "target")

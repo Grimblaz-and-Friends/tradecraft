@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -14,6 +15,8 @@ import sys
 import threading
 import time
 import uuid
+
+import holder_transcript as transcripts
 
 from winio import utf8_stdio
 from vendor_cli import CliError, resolve_command
@@ -271,12 +274,12 @@ def _contexts(dispatch_root: Path, repo: str, issue: int, holder_path: Path,
             skipped.append({"path": str(path), "reason": reason})
     result = [item for items, _, _ in bundles.values() for item in items]
     holders: dict[str, _Attempt] = {}
-    for number, usage in enumerate(_read_jsonl(holder_path)):
+    holder_evidence, holder_skipped = transcripts.holder_rows(holder_path)
+    skipped.extend(holder_skipped)
+    for key, usage, problems in holder_evidence:
         if not _belongs(usage, repo, issue):
             continue
-        identity = _mapping(usage.get("dispatch")).get("id")
-        key = str(identity) if identity else f"unidentified-holder:{number}"
-        item = _Attempt(usage, bundle_id=key)
+        item = _Attempt(usage, bundle_id=key, problems=problems)
         if key in holders:
             if _signature([item]) != _signature([holders[key]]):
                 holders[key].problems.append(f"conflicting holder usage for dispatch {key}")
@@ -544,6 +547,8 @@ def _runtime_prices(item: _Attempt, models: dict) -> dict[str, Decimal]:
 
 
 def _price(item: _Attempt, rates: list[dict]) -> dict:
+    if _mapping(item.usage.get("holder")).get("source_kind") == "transcript":
+        return _transcript_price(item, rates)
     if _not_launched(item):
         return {"status": "not-launched", "reason": "attempt did not reach a runtime", "reasons": []}
     usage = item.usage
@@ -693,6 +698,173 @@ def _price(item: _Attempt, rates: list[dict]) -> dict:
     return value
 
 
+def _agent_contributions(holder, items, prices):
+    """Use exact native identity and priced invocation coverage, never resemblance."""
+    decisions = {}
+    replies = holder.get("replies", [])
+    for agent in sorted({reply.get("agent_id") for reply in replies if reply.get("agent_id")}):
+        children = [reply for reply in replies if reply.get("agent_id") == agent]
+        covered, unresolved, observations = {}, {}, []
+        for attempt, price in zip(items, prices):
+            dispatch = _mapping(attempt.usage.get("dispatch"))
+            if dispatch.get("stage") == "holder-close" or dispatch.get("actual_vendor") != "claude":
+                continue
+            # Unknown and not-launched prices carry no currency. This single
+            # check also keeps non-USD contributions out of a USD exclusion.
+            if price.get("currency") != "USD":
+                if agent in _session_ids(attempt):
+                    observations.append({"dispatch_id": attempt.bundle_id, "attempt_index": attempt.position,
+                                         "status": "not already priced", "reason": price.get("reason")})
+                continue
+            observed = _mapping(attempt.evidence.get("observed"))
+            threads = observed.get("thread_ids")
+            native_ids = {value for value in [observed.get("session_id"),
+                          *(threads if isinstance(threads, list) else [])] if isinstance(value, str) and value}
+            recorded_ids = _session_ids(attempt)
+            ids = recorded_ids - {holder.get("session_id")}
+            exact = agent in native_ids and recorded_ids == {agent}
+            # begin_native records this field; CLI launches have a separate
+            # native session and cannot be a parent session's transcript child.
+            potential_native = "recorded_at" in attempt.request and (not ids or agent in ids)
+            if not exact and not potential_native:
+                continue
+            start, end = _timestamp(dispatch.get("launched_at")), _timestamp(dispatch.get("completed_at"))
+            matching_models = _mapping(_mapping(attempt.usage.get("tokens")).get("models"))
+            selected = [reply for reply in children if (start is None or end is None or
+                        start <= _timestamp(reply["timestamp"]) <= end)
+                        and reply["model"] in matching_models]
+            if not selected:
+                continue
+            marker = {"dispatch_id": attempt.bundle_id, "attempt_index": attempt.position}
+            proof = exact and start is not None and end is not None and attempt.usage.get("scope") == "invocation"
+            required = transcripts.aggregate(selected)["models"]
+            extra_required = transcripts.additional_counts(selected)
+            missing_extras = []
+            for model, counts in required.items():
+                normalized = _counts(matching_models[model], _CLAUDE_NAMES,
+                                     ("input", "output", "cache_read", "cache_creation"), [], model)
+                if any(normalized.get(name, Decimal(-1)) < count for name, count in counts.items()
+                       if name in {"input", "output", "cache_read", "cache_creation"}):
+                    proof = False
+                available = _mapping(_mapping(attempt.usage.get("additional_native_classes")).get(model))
+                for name, count in extra_required.get(model, {}).items():
+                    observed_count = _number(available.get(name))
+                    if (type(count) is not int or count < 0 or observed_count is None or observed_count < count):
+                        proof = False
+                        missing_extras.append(name)
+            if missing_extras:
+                marker["uncovered_native_classes"] = sorted(set(missing_extras))
+            for reply in selected:
+                if proof:
+                    covered[reply["id"]] = marker
+                else:
+                    unresolved.setdefault(reply["id"], []).append(marker)
+        for reply in children:
+            identity = reply["id"]
+            if identity in covered:
+                decisions[identity] = {"status": "excluded", "agent_id": agent, **covered[identity]}
+            elif identity in unresolved:
+                extra_names = sorted({name for candidate in unresolved[identity]
+                                      for name in candidate.get("uncovered_native_classes", [])})
+                decisions[identity] = {"status": "unresolved", "agent_id": agent,
+                                       "candidate_dispatches": unresolved[identity],
+                                       "reason": f"subagent {agent} has unresolved priced native overlap"
+                                       + ("; additional native counts not covered: " + ",".join(extra_names) if extra_names else "")}
+            else:
+                decisions[identity] = {"status": "included", "agent_id": agent,
+                                       "observations": observations}
+    return decisions
+
+
+def _transcript_price(item, rates, agent_decisions=None):
+    usage = item.usage
+    holder = _mapping(usage.get("holder"))
+    if item.problems:
+        return _unknown_price(item.problems)
+    problem = transcripts.ledger_problem(holder)
+    if problem:
+        return _unknown_price([problem])
+    replies = holder.get("replies")
+    if not isinstance(replies, list):
+        return _unknown_price(["transcript row has no retained reply ledger"])
+    gaps = [str(gap.get("reason")) for gap in holder.get("gaps", [])]
+    unresolved_replies = {gap["reply_id"] for gap in holder["gaps"] if gap.get("reply_id") is not None}
+    if usage.get("tokens_unknown_reason"):
+        gaps.append(str(usage["tokens_unknown_reason"]))
+    decisions = agent_decisions or {}
+    total, slices, exclusions, effective, reasons = Decimal(0), [], [], [], list(gaps)
+    computable = False
+    for reply in replies:
+        if reply["id"] in unresolved_replies:
+            continue
+        counts = reply["tokens"]
+        extras = reply["additional_native_classes"]
+        zero_billable = not any(counts.values()) and all(type(count) is int and count == 0 for count in extras.values())
+        decision = decisions.get(reply.get("id"), {"status": "included"})
+        if zero_billable and decision["status"] == "unresolved":
+            decision = {**decision, "status": "included", "reason": "zero billable populations; no monetary overlap"}
+        if reply.get("agent_id"):
+            effective.append({"reply_id": reply.get("id"), **decision})
+        if decision["status"] == "excluded":
+            exclusions.append({"reply_id": reply["id"], **decision})
+            continue
+        if decision["status"] == "unresolved":
+            reasons.append(decision["reason"])
+            continue
+        when, model = _timestamp(reply.get("timestamp")), reply.get("model")
+        if zero_billable:
+            computable = True
+            slices.append({"reply_id": reply["id"], "model": model, "timestamp": reply["timestamp"],
+                           "amount": "0", "basis": "zero billable populations; no rate required"})
+            continue
+        rate = _rate_for(rates, "claude", model, when) if when else None
+        if rate is None:
+            reasons.append(f"reply {reply.get('id')} has no dated rate for claude {model}")
+            continue
+        required = transcripts.TOKEN_CLASSES
+        classes = {name: Decimal(count) for name, count in counts.items() if name != "cache_creation"}
+        price_reasons = []
+        amount = _class_price(classes, rate, model, price_reasons)
+        if rate.get("currency") != "USD":
+            price_reasons.append(f"reply {reply.get('id')} rate currency is not USD")
+        if price_reasons:
+            reasons.extend(price_reasons)
+            continue
+        for name, count in extras.items():
+            if type(count) is not int or count < 0:
+                reasons.append(f"reply {reply['id']} has unmapped or invalid billable native count: {name}")
+            elif count:
+                if name in required:
+                    reasons.append(f"reply {reply['id']} native count {name} overlaps a canonical token population")
+                    continue
+                extra_reasons = []
+                extra_amount = _class_price({name: Decimal(count)}, rate, model, extra_reasons)
+                if extra_reasons:
+                    reasons.append(f"reply {reply['id']} has unmapped billable native count: {name}")
+                    reasons.extend(extra_reasons)
+                else:
+                    amount += extra_amount
+        computable = True
+        total += amount
+        slices.append({"reply_id": reply["id"], "model": model, "timestamp": reply["timestamp"],
+                       "amount": format(amount, "f"), "source_url": rate.get("source_url"),
+                       "retrieved_at": rate.get("retrieved_at"), "effective_from": rate.get("effective_from"),
+                       "duration_rates_retrieved_at": rate.get("duration_rates_retrieved_at")})
+    reasons = list(dict.fromkeys(reasons))
+    if reasons and not computable:
+        value = _unknown_price(reasons)
+    else:
+        value = {"status": "known", "currency": "USD", "amount": format(total, "f"),
+                 "basis": "API list-price equivalence", "source": "rate-card",
+                 "floor": bool(reasons), "floor_reasons": reasons, "reasons": [], "rate_sources": slices}
+    value.update(timestamp_basis="reply time", attribution="attributed by time",
+                 window=holder.get("window"), session_id=holder.get("session_id"),
+                 dispatch_exclusions=exclusions, effective_agent_inclusion=effective,
+                 unresolved_reply_ids=sorted(unresolved_replies),
+                 late_recording_receipts=holder.get("late_recording_receipts", []))
+    return value
+
+
 def rate_card_equivalent(usage: dict[str, object], rates: list[dict[str, object]]) -> dict[str, object]:
     return _price(_Attempt(usage), rates)
 
@@ -794,6 +966,9 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
     foreign_requests: list[dict] = []
     items = _contexts(dispatch_root, repo, issue, holder_path, skipped_records,
                       foreign_requests=foreign_requests)
+    warnings = [{key: value for key, value in entry.items() if key != "report_warning"}
+                for entry in skipped_records if entry.get("report_warning")]
+    skipped_records = [entry for entry in skipped_records if not entry.get("report_warning")]
     rows = [item.usage for item in items]
     rates = load_rates(rates_path)
     _session_shares(items, foreign_requests)
@@ -802,6 +977,32 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
         "attempt_index": item.position,
         "value": _price(item, rates),
     } for item in items]
+    for item, price in zip(items, prices):
+        holder = _mapping(item.usage.get("holder"))
+        if holder.get("source_kind") == "transcript":
+            decisions = (_agent_contributions(holder, items, [row["value"] for row in prices])
+                         if not item.problems and transcripts.ledger_problem(holder) is None else {})
+            price["value"] = _transcript_price(item, rates, decisions)
+            historical = [candidate.bundle_id for candidate in items
+                          if _mapping(candidate.usage.get("dispatch")).get("stage") == "holder-close"
+                          and _mapping(candidate.usage.get("dispatch")).get("actual_vendor") == "claude"
+                          and candidate.usage.get("tokens") is not None
+                          and not _mapping(candidate.usage.get("holder")).get("session_id")
+                          and _mapping(candidate.usage.get("holder")).get("source_kind") != "transcript"]
+            if historical:
+                price["value"]["overlap_warnings"] = [{
+                    "reason": "historical supplied Claude counters lack session identity; overlap with transcript usage cannot be established",
+                    "holder_close_ids": historical}]
+            unregistered = [candidate.bundle_id for candidate in items
+                            if _mapping(candidate.usage.get("dispatch")).get("stage") == "holder-close"
+                            and _mapping(candidate.usage.get("dispatch")).get("actual_vendor") == "claude"
+                            and candidate.usage.get("tokens") is not None
+                            and _mapping(candidate.usage.get("holder")).get("session_id")
+                            and _mapping(_mapping(candidate.usage.get("holder")).get("window")).get("boundary_registered") is False]
+            if unregistered:
+                price["value"].setdefault("overlap_warnings", []).append({
+                    "reason": "supplied Claude counters have no registered session boundary; overlap with transcript usage cannot be established",
+                    "holder_close_ids": unregistered})
     summaries = {}
     floor_reasons = []
     for item, price in zip(items, prices):
@@ -848,6 +1049,7 @@ def report(repo: str, issue: int, dispatch_root: Path, rates_path: Path,
         "raw_usage": rows,
         "runtime_lineages": runtime_report(repo, issue, dispatch_root),
         "skipped_records": skipped_records,
+        "warnings": warnings,
         "dated_rate_card_equivalent": prices,
         "dispatch_totals": list(summaries.values()),
         "total": {
@@ -878,9 +1080,15 @@ def _contains_money_key(value: object) -> bool:
 
 def holder_close(repo: str, issue: int, vendor: str, model: str | None,
                  tokens_file: Path | None, unknown_reason: str | None,
-                 destination: Path, now: datetime | None = None) -> dict[str, object]:
-    if (tokens_file is None) == (unknown_reason is None):
-        raise CostError("holder close names exactly one of tokens file or unknown reason")
+                 destination: Path, now: datetime | None = None, *, session_id=None,
+                 claude_projects=None, state_root=None) -> dict[str, object]:
+    if tokens_file is not None and unknown_reason is not None:
+        raise CostError("holder close accepts only one of tokens file or unknown reason")
+    if tokens_file is None and unknown_reason is None:
+        if vendor != "claude":
+            raise CostError("automatic holder close requires --vendor claude; supply --tokens-file or --unknown-reason")
+        return transcripts.close(repo, issue, destination, model=model, session_id=session_id,
+                                 projects=claude_projects, state_root=state_root, now=now)
     captured = now or datetime.now(timezone.utc)
     tokens = None
     scope = "unknown"
@@ -921,6 +1129,9 @@ def holder_close(repo: str, issue: int, vendor: str, model: str | None,
         "runtime_version": None,
         "runtime_version_unknown_reason": "holder host supplied no runtime version",
     }
+    if vendor == "claude" and (session_id is not None or os.environ.get("CLAUDE_CODE_SESSION_ID")):
+        return transcripts.close(repo, issue, destination, model=model, session_id=session_id,
+                                 projects=claude_projects, state_root=state_root, now=now, supplied_row=row)
     _append_jsonl(destination, row)
     return row
 
@@ -1065,10 +1276,12 @@ def parser() -> argparse.ArgumentParser:
     close.add_argument("--issue", required=True, type=int)
     close.add_argument("--vendor", required=True)
     close.add_argument("--model")
-    source = close.add_mutually_exclusive_group(required=True)
+    source = close.add_mutually_exclusive_group()
     source.add_argument("--tokens-file", type=Path)
     source.add_argument("--unknown-reason")
     close.add_argument("--output", type=Path)
+    close.add_argument("--session-id", help="actual Claude transcript session, instead of the current environment identity")
+    close.add_argument("--claude-projects", type=Path, help="projects directory; overrides CLAUDE_CONFIG_DIR/projects and home")
     gauge = commands.add_parser("capture-gauge", help="append a vendor plan-window snapshot")
     gauge.add_argument("--repo", required=True)
     gauge.add_argument("--issue", required=True, type=int)
@@ -1093,6 +1306,7 @@ def main(argv: list[str] | None = None) -> int:
             value = holder_close(
                 args.repo, args.issue, args.vendor, args.model, args.tokens_file,
                 args.unknown_reason, args.output or default_holder_usage(args.repo, args.issue),
+                session_id=args.session_id, claude_projects=args.claude_projects,
             )
         else:
             value = capture_gauge(
@@ -1101,7 +1315,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(json.dumps(value, ensure_ascii=True, indent=2))
         return 0
-    except (OSError, UnicodeError, ValueError, CliError, CostError) as exc:
+    except (OSError, UnicodeError, ValueError, CliError, CostError, transcripts.TranscriptError) as exc:
         print(f"change-cost: {exc}", file=sys.stderr)
         return 1
 
