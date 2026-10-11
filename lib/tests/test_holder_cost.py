@@ -150,6 +150,58 @@ def test_agent_running_across_windows_only_excludes_priced_coverage(inputs, tran
     assert values[second["dispatch"]["id"]]["effective_agent_inclusion"][0]["status"] == "included"
 
 
+@pytest.mark.parametrize("recovered_first", [False, True])
+@pytest.mark.parametrize("reverse_entries", [False, True])
+def test_late_child_identity_refines_original_reply_without_another_charge(
+        inputs, transcript, tmp_path, monkeypatch, recovered_first, reverse_entries):
+    child_record = reply("child-reply", second=2)
+    transcript[2].unlink()
+    write_lines(transcript[1], [reply("main"), *([] if recovered_first else [child_record])])
+    original = close(inputs, transcript)
+    later = {**inputs, "issue": 13, "holder_path": tmp_path / "later-usage.jsonl"}
+    if recovered_first:
+        write_lines(transcript[1], [child_record], append=True)
+        close(later, transcript, second=15)
+    write_lines(transcript[2], [reply("child-reply", second=2, agent="child")])
+    if reverse_entries:
+        entries = ht._entries
+        monkeypatch.setattr(ht, "_entries", lambda *args: list(reversed(entries(*args))))
+    refined = close(later, transcript, second=20)
+    assert refined["holder"]["recovered_closes"][0]["close_id"] == original["dispatch"]["id"]
+    bundle(inputs)
+    result = report(inputs)
+    value = holder_price(result)
+    assert Decimal(value["amount"]) == Decimal(".073") and not value["floor"]
+    assert value["dispatch_exclusions"][0]["reply_id"] == "child-reply"
+    assert Decimal(result["total"]["known_amount"]) == Decimal(".178")
+    raw = next(row for row in result["raw_usage"] if row["dispatch"]["id"] == original["dispatch"]["id"])
+    assert len(raw["holder"]["replies"]) == 2
+    assert original["holder"]["replies"][-1]["agent_id"] is None
+    repeated = close(later, transcript, second=30)
+    assert repeated["holder"]["recovered_closes"] == []
+    assert Decimal(report(later)["total"]["known_amount"]) == 0
+
+    transcript[2].unlink()
+    disappeared = close(later, transcript, second=35)
+    assert disappeared["holder"]["recovered_closes"] == []
+    assert not holder_price(report(inputs))["floor"]
+    other = transcript[2].with_name("agent-other.jsonl")
+    write_lines(other, [reply("child-reply", second=2, agent="other")])
+    close(later, transcript, second=40)
+    conflicted = holder_price(report(inputs))
+    assert Decimal(conflicted["amount"]) == Decimal(".073") and conflicted["floor"]
+    assert any("conflicting" in reason for reason in conflicted["floor_reasons"])
+
+    receipt_path = Path(refined["holder"]["recovered_closes"][0]["journal"])
+    incompatible = json.loads(receipt_path.read_bytes())
+    incompatible["id"] = "late-replies-incompatible-agent"
+    incompatible["row"]["dispatch"]["id"] = incompatible["id"]
+    incompatible["row"]["holder"]["replies"][0]["agent_id"] = "other"
+    ht._publish(receipt_path.parent, incompatible)
+    assert holder_price(report(inputs))["status"] == "unknown"
+    assert "conflicting late reply" in holder_price(report(inputs))["reason"]
+
+
 def test_asymmetric_decimal_duration_prices_and_reply_date_selection(inputs, transcript):
     transcript[2].unlink()
     records = [reply("old", 1), reply("new", 12)]

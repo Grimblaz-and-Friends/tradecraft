@@ -449,7 +449,11 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
             seen_gaps = set()
             for entry in entries:
                 for reply in entry["row"].get("holder", {}).get("replies", []):
-                    seen[reply["id"]] = reply
+                    old = seen.get(reply["id"])
+                    # A later child snapshot can establish the identity of a
+                    # reply first observed in the main file. Journal filename
+                    # order must not erase that corroborated identity.
+                    seen[reply["id"]] = old if old is not None and old["agent_id"] else reply
                     origins[reply["id"]] = entry["id"] if entry["kind"] == "close" else entry["original_close_id"]
                 for gap in entry["row"]["holder"].get("gaps", []):
                     seen_gaps.add(_gap_identity(gap))
@@ -458,14 +462,21 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
             for reply in replies:
                 when = timestamp(reply["timestamp"])
                 if reply["id"] in seen:
-                    if _fingerprint(reply) != _fingerprint(seen[reply["id"]]):
+                    old = seen[reply["id"]]
+                    if (_fingerprint(reply) != _fingerprint(old)
+                            or (old["agent_id"] and reply["agent_id"] and old["agent_id"] != reply["agent_id"])):
                         gaps.append({"source": reply["sources"][0], "timestamp": None,
                                      "reply_id": reply["id"],
-                                     "reason": f"committed reply {reply['id']} now has conflicting usage"})
-                    elif timestamp(reply["timestamp"]) != timestamp(seen[reply["id"]]["timestamp"]):
+                                     "reason": f"committed reply {reply['id']} now has conflicting usage or agent identity"})
+                    elif timestamp(reply["timestamp"]) != timestamp(old["timestamp"]):
                         gaps.append({"source": reply["sources"][0], "timestamp": None,
                                      "reply_id": reply["id"],
                                      "reason": f"committed reply {reply['id']} now has an earlier attribution timestamp"})
+                    elif old["agent_id"] is None and reply["agent_id"] is not None:
+                        # Retain the existing charge once, with enough newly
+                        # observed identity to reconsider dispatch coverage.
+                        original_id = origins[reply["id"]]
+                        late.setdefault(original_id, {"replies": [], "gaps": []})["replies"].append(reply)
                     continue
                 if _in_window(when, lower, captured):
                     selected.append(reply)
@@ -595,10 +606,12 @@ def holder_rows(destination, *, state_root=None):
         holder = row["holder"]
         seen = {reply["id"]: reply for reply in holder["replies"]}
         for reply in receipt["row"]["holder"]["replies"]:
-            if reply["id"] in seen and _fingerprint(reply) != _fingerprint(seen[reply["id"]]):
+            old = seen.get(reply["id"])
+            if old is not None and (_fingerprint(reply) != _fingerprint(old)
+                    or (old["agent_id"] and reply["agent_id"] and old["agent_id"] != reply["agent_id"])):
                 problems.setdefault(identity, []).append(f"conflicting late reply {reply['id']}")
             else:
-                seen[reply["id"]] = reply
+                seen[reply["id"]] = old if old is not None and old["agent_id"] else reply
         holder["replies"] = list(seen.values())
         gaps = {_gap_identity(gap): gap for gap in holder["gaps"]}
         gaps.update({_gap_identity(gap): gap for gap in receipt["row"]["holder"]["gaps"]})
