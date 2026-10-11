@@ -11,6 +11,7 @@ from seat_process import run_process
 TRADECRAFT_ID = "tradecraft@tradecraft"
 HOMEPAGE = "https://github.com/Grimblaz-and-Friends/tradecraft"
 FEATURES = ("apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser")
+FUNCTION_HOOKS = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"
 
 
 class PreparationError(OSError):
@@ -70,6 +71,10 @@ def foreign_ids(entries, vendor):
 
 def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=None):
     child = dict(os.environ if env is None else env)
+    # An explicit process value wins over the user settings' env block. Set it
+    # before discovery and retain it for the child; a settings-only override
+    # cannot turn off a value inherited from the parent process.
+    child[FUNCTION_HOOKS] = "0"
     if not verified_root(plugin_root):
         raise PreparationError("explicit tradecraft plugin directory failed identity verification")
     entries = discover("claude", executable, cwd, deadline, env=child)
@@ -121,6 +126,7 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
         *allowed, {"id": "tradecraft@inline", "path": str(plugin_root)}],
         "discovery_sources": ["claude plugin list --json", *map(str, paths)],
         "override_sha256": hashlib.sha256(data).hexdigest(),
+        "function_hooks_requested": "disabled by child process environment override",
         "settings_path": str(override)}, child
 
 

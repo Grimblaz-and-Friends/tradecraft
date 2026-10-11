@@ -1106,6 +1106,10 @@ class TestBuildReach:
         reported = json.loads(capsys.readouterr().out)
         assert reported["reach"]["state"] == "unmeasurable"
         assert reported["reach"]["current_head"] == builder.pr["head"]["sha"]
+        if location == "discovery":
+            environments = reported["implementer_environments"]
+            assert environments["status"] == "unknown" and environments["attempts"] == []
+            assert failure.__name__ in environments["reason"] and "planted reach failure" in environments["reason"]
         self.reading(builder, superset=True)
         assert work._reach_refusal(builder, "proof") is None, builder.reach
 

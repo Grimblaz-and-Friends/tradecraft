@@ -356,6 +356,86 @@ def claude_origins(base, root):
         "limitation": "isolated config has no model authentication; startup catalog evidence only"}), flush=True)
 
 
+def claude_mods(base, root):
+    """Function-module controls use an isolated native root, never owner installs."""
+    config = base / "mod-config"
+    module = config / "skills/tc886-mod-control"
+    (module / ".claude-plugin").mkdir(parents=True)
+    (module / ".claude-plugin/plugin.json").write_bytes(
+        b'{"name":"tc886-mod-control","version":"0.0.0"}')
+    (module / "hooks").mkdir()
+    (module / "hooks/hooks.json").write_bytes(b'{"modules":["./register.ts"]}')
+    # A register-time exception is an observable execution marker without any
+    # file access or tool call by the module. Source discovery cannot emit it.
+    marker = "TC886_MOD_REGISTER_EXECUTED_28f7e08d"
+    (module / "hooks/register.ts").write_bytes(
+        ('export function register(on) { throw new Error("' + marker + '"); }\n').encode())
+    executable = resolve_command("claude", None)
+    args = Namespace(vendor="claude", root=root, model="claude-opus-5-5", effort="low",
+                     resume=None, session_id=None)
+    def arm(name, *, parent=False, setting=False, gate=False, full=False):
+        user = {"env": {"TC886_UNRELATED_ENV": "retained"}}
+        if setting:
+            user["env"][policy.FUNCTION_HOOKS] = "1"
+        settings = config / "settings.json"
+        settings.write_bytes(json.dumps(user).encode())
+        before = settings.read_bytes()
+        child = dict(os.environ, CLAUDE_CONFIG_DIR=str(config))
+        child.pop(policy.FUNCTION_HOOKS, None)
+        if parent:
+            child[policy.FUNCTION_HOOKS] = "1"
+        initial = dict(child)
+        args.launch_settings_path = None
+        if gate or full:
+            deadline = lifecycle.stage_deadline("build", 180)
+            with lifecycle.deadline_scope(deadline):
+                intent, child = policy.claude_prepare(executable, root, deadline, base, ROOT, env=child)
+            args.launch_settings_path = intent["settings_path"]
+            if gate:
+                # Isolate the gate from per-ID exclusions: keep the planted
+                # foreign plugin enabled, changing only its module gate.
+                Path(intent["settings_path"]).write_bytes(json.dumps(
+                    {} if gate == "parent-only" else {"env": {policy.FUNCTION_HOOKS: "0"}}).encode())
+                if gate == "settings-only":
+                    child = initial
+        debug = base / (name + ".debug")
+        argv = [*launcher.build_command(args, executable, base / "unused"), "--debug-file", str(debug)]
+        captured = run_process(argv, input=b"Reply OK. No tools, agents or writes.", cwd=root,
+                               timeout=120, env=child)
+        evidence = captured.stderr + (debug.read_bytes() if debug.exists() else b"")
+        loaded = marker.encode() in evidence
+        if not loaded and not (gate or full):
+            print(json.dumps({"control_diagnostics": [line for line in evidence.decode("utf-8", "replace").splitlines()
+                if "module" in line.lower() or "tc886-mod" in line.lower()][:18]}), flush=True)
+        init = next((json.loads(line) for line in captured.stdout.splitlines()
+                     if json.loads(line).get("subtype") == "init"), {})
+        print(json.dumps({"check": name, "exit": captured.returncode, "session": init.get("session_id"),
+            "module_executed": loaded, "tradecraft_charter_present": "tradecraft:charter" in init.get("skills", []),
+            "parent_switch": "1" if parent else "absent", "user_setting_switch": "1" if setting else "absent",
+            "limitation": "isolated root has no model authentication; startup execution evidence"}), flush=True)
+        assert settings.read_bytes() == before
+        if debug.exists():
+            data = debug.read_bytes()
+            print(json.dumps({"raw_file": str(debug), "size_bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(), "command": "python tools/verify_implementer_launches.py claude-mods"}), flush=True)
+            debug.unlink()
+        if "tradecraft:charter" not in init.get("skills", []):
+            raise RuntimeError("mod arm did not retain tradecraft")
+        return loaded
+    for source in ("parent", "setting"):
+        inputs = {source: True}
+        if not arm("mods-control-" + source, **inputs):
+            raise RuntimeError("mod execution positive control did not load: " + source)
+        if arm("mods-gate-" + source, gate="parent-only", **inputs):
+            raise RuntimeError("function-hook gate did not exclude the planted mod: " + source)
+        if arm("mods-policy-" + source, full=True, **inputs):
+            raise RuntimeError("new launch loaded the planted mod: " + source)
+    if arm("mods-parent-only-with-user-setting", setting=True, gate="parent-only"):
+        raise RuntimeError("child process gate did not override the user env setting")
+    if not arm("mods-settings-only-with-parent", parent=True, gate="settings-only"):
+        raise RuntimeError("settings-only deletion control no longer distinguishes the inherited process value")
+
+
 def legacy_resume(base, root):
     executable = resolve_command("codex", None)
     argv = [*executable, "exec", "--approve-for-me", "--json", "--color", "never",
@@ -376,7 +456,7 @@ def legacy_resume(base, root):
 def main():
     utf8_stdio()
     parser = argparse.ArgumentParser(description="Run opt-in native launch acceptance checks without dispatching a pipeline stage.")
-    parser.add_argument("check", choices=("operations", "claude-context", "inventory", "canaries", "claude-origins", "legacy-resume"))
+    parser.add_argument("check", choices=("operations", "claude-context", "inventory", "canaries", "claude-origins", "claude-mods", "legacy-resume"))
     parser.add_argument("--base", type=Path)
     args = parser.parse_args()
     base = args.base or Path(tempfile.mkdtemp(prefix="tc886-build-check-"))
@@ -391,6 +471,8 @@ def main():
         canaries(base, root)
     elif args.check == "claude-origins":
         claude_origins(base, root)
+    elif args.check == "claude-mods":
+        claude_mods(base, root)
     elif args.check == "legacy-resume":
         legacy_resume(base, root)
     else:

@@ -30,6 +30,8 @@ if native:
         header = re.search(r"session id:\s*([0-9a-f-]{36})", scenario.get("stderr", ""))
         if header:
             session = header[1]
+    if "native_session" in scenario:
+        session = scenario["native_session"]
     def emit(value):
         print(json.dumps(value), flush=True)
     for line in sys.stdin.buffer:

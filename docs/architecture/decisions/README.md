@@ -31,7 +31,7 @@ Entries D-53 through D-69 were written under the pre-reset statute's fixed skele
 
 | Entry | Decision |
 | --- | --- |
-| [Pending #886](pending-886-2026-10-10-builder-launch-environments.md) | Author/builder launches exclude account channels and foreign plugins while retaining operating settings; actual observations, unknowns and excess reach the entrance. Pending the holder's PR-number filename. |
+| [D-900](D-900-2026-10-10-builder-launch-environments.md) | Author/builder launches exclude account channels and foreign plugins while retaining operating settings; actual observations, unknowns and excess reach the entrance. |
 | [D-53](D-53-2026-08-18-log-and-statute.md) | Split the constitution into a decision log and a statute; freeze the nine ADRs |
 | [D-59](D-59-2026-08-18-work-prose.md) | `artifact` gains `work-prose` in the ledger vocabulary |
 | [D-61](D-61-2026-08-18-decision-surfacing-and-the-attended-seam.md) | Decisions put to the owner carry argued options; the opening seam's question becomes attended-only |

@@ -3093,8 +3093,8 @@ def _implementer_environments(state):
             f"{state.repo}#{state.issue_number}",
             frozenset({"artifact", "build", "floor", "review-disposition"}))
         rows = work_recovery.scoped(state, rows, include_released=True)
-    except (OSError, ValueError, WorkError) as exc:
-        return {"status": "unknown", "reason": str(exc), "attempts": []}
+    except Exception as exc:
+        return {"status": "unknown", "reason": type(exc).__name__ + ": " + str(exc), "attempts": []}
     values = []
     for _order, bundle, request, run in rows:
         attempts = run.get("attempts")

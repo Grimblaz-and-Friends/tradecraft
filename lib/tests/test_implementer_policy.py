@@ -55,6 +55,32 @@ def test_claude_user_context_permissions_and_sync_are_not_overridden(tmp_path, m
     assert str(synced / ".claude-plugin/plugin.json") in intent["discovery_sources"]
 
 
+@pytest.mark.parametrize("parent,setting", [("1", None), (None, "1"), ("1", "1")])
+def test_function_hook_gate_covers_parent_and_user_settings_without_replacing_env(tmp_path, monkeypatch, parent, setting):
+    config = tmp_path / "native"
+    config.mkdir()
+    user = {"env": {"RETAIN_OWNER_ENV": "retained"}, "autoMode": {"instructions": "owner policy"}}
+    if setting is not None:
+        user["env"][policy.FUNCTION_HOOKS] = setting
+    settings = config / "settings.json"
+    settings.write_bytes(json.dumps(user).encode())
+    before = settings.read_bytes()
+    inherited = {"CLAUDE_CONFIG_DIR": str(config), "RETAIN_PARENT_ENV": "retained"}
+    if parent is not None:
+        inherited[policy.FUNCTION_HOOKS] = parent
+    def discovery(*_a, **kwargs):
+        assert kwargs["env"][policy.FUNCTION_HOOKS] == "0"
+        return []
+    monkeypatch.setattr(policy, "discover", discovery)
+    intent, child = policy.claude_prepare([], tmp_path, None, tmp_path, plugin(tmp_path / "tradecraft"), env=inherited)
+    override = json.loads(Path(intent["settings_path"]).read_bytes())
+    assert child[policy.FUNCTION_HOOKS] == "0" and child["RETAIN_PARENT_ENV"] == "retained"
+    assert "env" not in override
+    assert "autoMode" not in override and "permissions" not in override
+    assert settings.read_bytes() == before
+    assert inherited.get(policy.FUNCTION_HOOKS) == parent
+
+
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
 def test_every_invocation_rediscovers_new_foreign_plugin(tmp_path, monkeypatch, vendor):
     calls = []
