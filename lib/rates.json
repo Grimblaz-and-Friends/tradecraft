@@ -12,12 +12,17 @@
         "input": 10,
         "cache_read": 0.25,
         "cache_creation": 20,
-        "output": 50
+        "output": 50,
+        "cache_write_5m": 12.5,
+        "cache_write_1h": 20
       },
       "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
       "retrieved_at": "2026-10-01T16:30:32Z",
-      "processing": "standard; one-hour cache writes",
-      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval"
+      "processing": "standard; duration-specific cache writes; legacy cache_creation retains one-hour interpretation",
+      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval",
+      "duration_rates_retrieved_at": "2026-10-11T02:06:03.701359+00:00",
+      "duration_rates_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "duration_counters_source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
     },
     {
       "vendor": "claude",
@@ -30,12 +35,17 @@
         "input": 5,
         "cache_read": 0.5,
         "cache_creation": 10,
-        "output": 25
+        "output": 25,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10
       },
       "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
       "retrieved_at": "2026-10-01T16:30:32Z",
-      "processing": "standard; one-hour cache writes",
-      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval"
+      "processing": "standard; duration-specific cache writes; legacy cache_creation retains one-hour interpretation",
+      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval",
+      "duration_rates_retrieved_at": "2026-10-11T02:06:03.701376+00:00",
+      "duration_rates_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "duration_counters_source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
     },
     {
       "vendor": "claude",
@@ -48,12 +58,17 @@
         "input": 4,
         "cache_read": 0.2,
         "cache_creation": 8,
-        "output": 20
+        "output": 20,
+        "cache_write_5m": 5,
+        "cache_write_1h": 8
       },
       "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
       "retrieved_at": "2026-10-01T16:30:32Z",
-      "processing": "standard; one-hour cache writes",
-      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval"
+      "processing": "standard; duration-specific cache writes; legacy cache_creation retains one-hour interpretation",
+      "applicability_basis": "backfilled list-price equivalence; applicability is separate from retrieval",
+      "duration_rates_retrieved_at": "2026-10-11T02:06:03.701379+00:00",
+      "duration_rates_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "duration_counters_source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
     },
     {
       "vendor": "codex",
