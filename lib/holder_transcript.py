@@ -18,6 +18,12 @@ class TranscriptError(RuntimeError):
     """Evidence or its durable close history cannot support an exact window."""
 
 
+class _PublicationError(OSError):
+    def __init__(self, reason, published):
+        super().__init__(reason)
+        self.published = published
+
+
 def timestamp(value):
     if not isinstance(value, str):
         return None
@@ -95,18 +101,22 @@ def session_lock(directory, timeout=10):
 def _publish(directory, entry):
     destination = directory / (entry["id"] + ".json")
     temporary = directory / (entry["id"] + ".tmp")
+    published = False
     try:
         with temporary.open("xb") as stream:
             stream.write(_bytes(entry))
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, destination)
+        published = True
         if os.name != "nt":
             descriptor = os.open(directory, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+    except OSError as exc:
+        raise _PublicationError(str(exc), published) from exc
     finally:
         temporary.unlink(missing_ok=True)
     return destination
@@ -567,7 +577,15 @@ def close(repo, issue, destination, *, model=None, session_id=None, projects=Non
         row["holder"]["journal"] = str(directory / (identity + ".json"))
         entry = {"schema_version": 1, "kind": "close", "id": identity, "session_id": session,
                  "destination": str(destination), "row": row}
-        _publish(directory, entry)
+        try:
+            _publish(directory, entry)
+        except _PublicationError as exc:
+            # An atomic rename already performed remains an authoritative row;
+            # never replace it with a contradictory unregistered materialization.
+            if supplied_row is None or exc.published:
+                raise
+            return _supplied_without_boundary(supplied_row, destination, session, requested_session,
+                                              session_source, root, root_source, str(exc))
         try:
             _materialize(destination, row)
         except OSError as exc:

@@ -733,3 +733,83 @@ def test_zero_child_has_no_monetary_overlap_to_resolve(inputs, transcript):
     assert Decimal(value["amount"]) == Decimal(".073") and not value["floor"]
     assert value["effective_agent_inclusion"][0]["status"] == "included"
     assert not result["total"]["floor"]
+
+
+@pytest.mark.parametrize("supplied", ["tokens", "unknown"])
+def test_explicit_close_survives_failure_before_journal_publication(inputs, transcript, tmp_path, monkeypatch, capsys, supplied):
+    attachment = tmp_path / "tokens.json"
+    attachment.write_bytes(json.dumps({"tokens": {"models": {"claude-opus-5-5": {
+        "input": 10, "output": 3, "cache_read": 4, "cache_creation": 7}}}, "scope": "invocation"}).encode())
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "holder")
+    def denied(*args):
+        raise PermissionError("journal publication denied")
+    with monkeypatch.context() as patch:
+        patch.setattr(ht.os, "replace", denied)
+        arguments = ["holder-close", "--repo", inputs["repo"], "--issue", "12", "--vendor", "claude",
+                     "--output", str(inputs["holder_path"]),
+                     *( ["--tokens-file", str(attachment)] if supplied == "tokens" else ["--unknown-reason", "caller reason"])]
+        assert cost.main(arguments) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    row = json.loads(captured.out)
+    assert not row["holder"]["window"]["boundary_registered"]
+    assert "publication denied" in row["holder"]["window"]["boundary_unknown_reason"]
+    assert not list(ht.default_state_root().rglob("*.json"))
+    assert not list(ht.default_state_root().rglob("*.tmp"))
+    assert [json.loads(line) for line in inputs["holder_path"].read_bytes().splitlines() if line.strip()] == [row]
+    automatic = close(inputs, transcript)
+    assert automatic["holder"]["window"]["previous_close_id"] is None
+
+
+def test_error_after_supplied_journal_publication_keeps_one_authoritative_boundary(inputs, transcript, monkeypatch):
+    publish = ht._publish
+    def published_then_failed(*args):
+        publish(*args)
+        raise ht._PublicationError("injected error after publication", True)
+    with monkeypatch.context() as patch:
+        patch.setattr(ht, "_publish", published_then_failed)
+        with pytest.raises(OSError, match="after publication"):
+            cost.holder_close(inputs["repo"], 12, "claude", None, None, "caller reason", inputs["holder_path"],
+                              session_id="holder", now=at(10))
+    assert not inputs["holder_path"].exists()
+    rows, skipped = ht.holder_rows(inputs["holder_path"])
+    assert not skipped and len(rows) == 1
+    committed = rows[0][1]
+    assert committed["holder"]["window"]["boundary_registered"]
+    assert committed["tokens_unknown_reason"] == "caller reason"
+    automatic = close(inputs, transcript, second=20)
+    assert automatic["holder"]["window"]["previous_close_id"] == committed["dispatch"]["id"]
+    assert automatic["holder"]["observed_empty"] and not automatic["holder"]["recovered_closes"]
+
+
+@pytest.mark.skipif(ht.os.name == "nt", reason="directory fsync applies on POSIX")
+def test_supplied_directory_sync_failure_preserves_published_boundary(inputs, monkeypatch):
+    sync = ht.os.fsync
+    calls = 0
+    def fail_directory(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise PermissionError("directory sync denied after publication")
+        return sync(descriptor)
+    with monkeypatch.context() as patch:
+        patch.setattr(ht.os, "fsync", fail_directory)
+        with pytest.raises(OSError, match="after publication"):
+            cost.holder_close(inputs["repo"], 12, "claude", None, None, "caller reason", inputs["holder_path"],
+                              session_id="holder", now=at(10))
+    assert not inputs["holder_path"].exists()
+    rows, skipped = ht.holder_rows(inputs["holder_path"])
+    assert not skipped and len(rows) == 1 and rows[0][1]["holder"]["window"]["boundary_registered"]
+
+
+def test_automatic_close_refuses_unpublished_journal_without_advancing_boundary(inputs, transcript, monkeypatch):
+    def denied(*args):
+        raise PermissionError("journal publication denied")
+    with monkeypatch.context() as patch:
+        patch.setattr(ht.os, "replace", denied)
+        with pytest.raises(OSError, match="publication denied"):
+            close(inputs, transcript)
+    assert not inputs["holder_path"].exists() and not list(ht.default_state_root().rglob("*.json"))
+    recovered = close(inputs, transcript)
+    assert recovered["holder"]["window"]["previous_close_id"] is None
+    assert {reply["id"] for reply in recovered["holder"]["replies"]} == {"main", "child-reply"}
