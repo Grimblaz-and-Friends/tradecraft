@@ -1390,6 +1390,24 @@ def test_malformed_bridge_implementer_refuses_before_bundle(job):
     assert not args.output.parent.exists()
 
 
+def test_malformed_claude_observation_does_not_stop_valid_return(job, monkeypatch):
+    args, scenario = job
+    args.vendor = "claude"
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_:
+        [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    init = {"type": "system", "subtype": "init", "session_id": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+        "tools": [{"id": {"unsupported": True}}, "mcp__desktop__click"], "instruction_files": [{}]}
+    terminal = native_artifact_result("claude", "built")
+    terminal["stdout"] = json.dumps(init) + "\n" + terminal["stdout"]
+    scenario.write_bytes(json.dumps({"claude": terminal}).encode())
+    assert implementer.run_implementer(args) == 0
+    attempt = record(args)["attempts"][0]
+    assert attempt["environment"]["categories"]["tools"]["status"] == "partial"
+    assert attempt["environment"]["categories"]["instructions"]["status"] == "partial"
+    assert attempt["environment"]["excess"][0]["identity"] == "mcp__desktop__click"
+    assert args.output.read_bytes() == b"built"
+
+
 
 def test_unavailable_bridged_request_retains_provenance_without_observation(job):
     args, _ = job

@@ -32,7 +32,7 @@ def valid_category(value):
         return False
     if not isinstance(value.get("values"), list) or not isinstance(value.get("sources"), list):
         return False
-    if value["status"] == "known" and not value["sources"]:
+    if (value["status"] == "known" or value["values"]) and not value["sources"]:
         return False
     if value["status"] != "known" and not isinstance(value.get("reason"), str):
         return False
@@ -43,22 +43,23 @@ def valid_category(value):
 
 def _identity(value):
     if isinstance(value, str):
-        return value
+        return value or None
     if isinstance(value, dict):
         source = value.get("source")
-        return (source if isinstance(source, str) and "@" in source else
-                value.get("id") or value.get("name") or value.get("path"))
+        candidates = [source] if isinstance(source, str) and "@" in source else []
+        candidates.extend(value.get(key) for key in ("id", "name", "path"))
+        return next((identity for identity in candidates if isinstance(identity, str) and identity), None)
     return None
 
 
 def inventory_value(value):
     """Normalize inventory identities/provenance, never runtime configuration."""
     if not isinstance(value, dict):
-        return value
+        return value if isinstance(value, str) else None
     keys = ("id", "name", "path", "source", "version", "status", "type", "kind",
             "plugin_id", "server", "classification")
-    result = {key: value[key] for key in keys if key in value}
-    if isinstance(result.get("source"), dict):
+    result = {key: value[key] for key in keys if isinstance(value.get(key), str)}
+    if isinstance(value.get("source"), dict):
         result["source"] = {key: value["source"][key] for key in ("id", "name", "path", "source")
             if isinstance(value["source"].get(key), str)}
     return result
@@ -130,7 +131,10 @@ def claude_init(environment, event, *, path, line, allowed=()):
             coordinate(path, line, "permissionMode" if "permissionMode" in event else "permission_mode"))
     files = event.get("instruction_files")
     if isinstance(files, list):
-        cats["instructions"] = category("known", [inventory_value(v) for v in files], None,
+        files = [inventory_value(v) for v in files]
+        incomplete = any(not _identity(v) for v in files)
+        cats["instructions"] = category("partial" if incomplete else "known", files,
+            "runtime instruction inventory contains entries without identities" if incomplete else None,
             coordinate(path, line, "instruction_files"))
     environment["unclassified"] = [v for v in cats["tools"]["values"]
         if isinstance(v, str) and not v.startswith(("mcp__", "mcp_", "cua_"))]

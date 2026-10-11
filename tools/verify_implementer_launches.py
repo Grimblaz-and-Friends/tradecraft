@@ -298,6 +298,9 @@ def canaries(base, root):
     deadline = lifecycle.stage_deadline("build", 600)
     with lifecycle.deadline_scope(deadline):
         config = native.read_config(argv, root, deadline)
+        if any((root / (k + ".marker")).exists() for k in servers):
+            raise RuntimeError("Codex configuration discovery started a supplied canary server")
+        print(json.dumps({"check": "codex-config-discovery", "started_canary_servers": []}), flush=True)
         intent = policy.codex_prepare(executable, root, deadline)
         # Control permits the fixture servers and all actual installed plugins.
         control_intent = {**intent, "disabled_plugin_ids": [], "thread_config": {}}
@@ -311,6 +314,46 @@ def canaries(base, root):
         native_arm(base, root, argv, intent, name="codex-restricted-resume", resume=restricted.session)
         if any((root / (k + ".marker")).exists() for k in servers):
             raise RuntimeError("Codex restricted fresh/resume started a canary")
+
+
+def claude_origins(base, root):
+    """Native startup catalogs from isolated user folders/settings environment."""
+    config = base / "origin-config"
+    folder = config / "skills/tc886-origin-skills"
+    inline = base / "origin-inline"
+    for path, name in ((folder, "tc886-origin-skills"), (inline, "tc886-origin-env")):
+        (path / ".claude-plugin").mkdir(parents=True)
+        (path / ".claude-plugin/plugin.json").write_bytes(json.dumps({"name": name, "version": "0.0.0"}).encode())
+        (path / "skills/canary").mkdir(parents=True)
+        (path / "skills/canary/SKILL.md").write_bytes(b"---\nname: canary\ndescription: TC886_ORIGIN_CANARY\n---\nHarmless catalog canary.\n")
+    (config / "settings.json").write_bytes(json.dumps({"env": {"CLAUDE_CODE_PLUGIN_DIRS": str(inline)}}).encode())
+    child = dict(os.environ, CLAUDE_CONFIG_DIR=str(config))
+    executable = resolve_command("claude", None)
+    args = Namespace(vendor="claude", root=root, model="claude-opus-5-5", effort="low", resume=None, session_id=None)
+    argv = launcher.build_command(args, executable, base / "unused")
+    prompt = b"Reply OK. Use no tools or agents and write nothing."
+    def snapshot(command, env):
+        captured = run_process(command, input=prompt, cwd=root, timeout=240, env=env)
+        init = next(json.loads(line) for line in captured.stdout.splitlines()
+                    if json.loads(line).get("subtype") == "init")
+        return captured.returncode, init
+    code, control = snapshot(argv, child)
+    canaries = {"tc886-origin-skills:canary", "tc886-origin-env:canary"}
+    if not canaries.issubset(control.get("skills", [])):
+        raise RuntimeError("supplemental origin control was invalid")
+    deadline = lifecycle.stage_deadline("build", 600)
+    with lifecycle.deadline_scope(deadline):
+        intent, child = policy.claude_prepare(executable, root, deadline, base, ROOT, env=child)
+    args.launch_settings_path = intent["settings_path"]
+    restricted_code, restricted = snapshot(launcher.build_command(args, executable, base / "unused"), child)
+    if canaries.intersection(restricted.get("skills", [])) or "tradecraft:charter" not in restricted.get("skills", []):
+        raise RuntimeError("supplemental origin restrictions did not retain only the allowed plugin material")
+    print(json.dumps({"check": "claude-origins", "control_session": control.get("session_id"),
+        "restricted_session": restricted.get("session_id"), "control_exit": code,
+        "restricted_exit": restricted_code, "control_present": sorted(canaries),
+        "restricted_present": [], "tradecraft_charter_present": True,
+        "disabled_ids": intent["disabled_plugin_ids"],
+        "limitation": "isolated config has no model authentication; startup catalog evidence only"}), flush=True)
 
 
 def legacy_resume(base, root):
@@ -333,7 +376,7 @@ def legacy_resume(base, root):
 def main():
     utf8_stdio()
     parser = argparse.ArgumentParser(description="Run opt-in native launch acceptance checks without dispatching a pipeline stage.")
-    parser.add_argument("check", choices=("operations", "claude-context", "inventory", "canaries", "legacy-resume"))
+    parser.add_argument("check", choices=("operations", "claude-context", "inventory", "canaries", "claude-origins", "legacy-resume"))
     parser.add_argument("--base", type=Path)
     args = parser.parse_args()
     base = args.base or Path(tempfile.mkdtemp(prefix="tc886-build-check-"))
@@ -346,6 +389,8 @@ def main():
         claude_context(base, root)
     elif args.check == "canaries":
         canaries(base, root)
+    elif args.check == "claude-origins":
+        claude_origins(base, root)
     elif args.check == "legacy-resume":
         legacy_resume(base, root)
     else:

@@ -16,7 +16,7 @@ SESSION = "0199a213-81c0-7800-8aa1-bbab2a035a53"
 TURN = "0199a214-81c0-7800-8aa1-bbab2a035a53"
 
 
-def turn(tmp_path, resume=None):
+def turn(tmp_path, resume=None, *, acknowledge_turn=True):
     observed = []
     transcript = io.BytesIO()
     instance = native.NativeTurn(args=Namespace(root=tmp_path, resume=resume, model="model", effort="high"),
@@ -24,9 +24,11 @@ def turn(tmp_path, resume=None):
             "disabled_plugin_ids": ["foreign@market"], "allowed_plugins": []},
         environment=env.unknown("not observed"), stdout_path=tmp_path / "stdout",
         observe=lambda *v: observed.append(v), transcript=transcript)
-    for value in ({"id": 1, "result": {}}, {"id": 2, "result": {
-            "thread": {"id": SESSION}, "instructionSources": ["/owner/AGENTS.md"]}},
-            {"id": 3, "result": {"turn": {"id": TURN}}}):
+    responses = [{"id": 1, "result": {}}, {"id": 2, "result": {
+        "thread": {"id": SESSION}, "instructionSources": ["/owner/AGENTS.md"]}}]
+    if acknowledge_turn:
+        responses.append({"id": 3, "result": {"turn": {"id": TURN}}})
+    for value in responses:
         instance.output("stdout", native.encode(value))
     return instance, observed, transcript
 
@@ -83,6 +85,35 @@ def test_malformed_partial_eof_keeps_observed_identity(tmp_path):
     instance.finish()
     assert not instance.valid and not instance.completed
     assert instance.session == SESSION and observed
+    assert instance.environment["categories"]["instructions"]["values"] == [{"path": "/owner/AGENTS.md"}]
+
+
+@pytest.mark.parametrize("resume", [None, SESSION])
+def test_startup_instructions_survive_failure_before_current_turn_acknowledgement(tmp_path, resume):
+    instance, _, _ = turn(tmp_path, resume, acknowledge_turn=False)
+    instance.output("stdout", native.encode({"id": 3, "error": {"message": "failed turn startup"}}))
+    instance.finish()
+    assert not instance.valid and instance.session == SESSION and instance.turn is None
+    instructions = instance.environment["categories"]["instructions"]
+    assert instructions["status"] == "partial"
+    assert instructions["values"] == [{"path": "/owner/AGENTS.md"}]
+    assert instructions["sources"] == [{"path": str(tmp_path / "stdout"), "line": 2,
+        "field": "result.instructionSources"}]
+
+
+@pytest.mark.parametrize("sources", [None, {"unsupported": True}, True, [None]])
+def test_optional_startup_observation_shape_does_not_refuse_a_valid_turn(tmp_path, sources):
+    instance = native.NativeTurn(args=Namespace(root=tmp_path, resume=None, model="model", effort="low"),
+        prompt=b"One stage", intent={"thread_config": {}, "disabled_plugin_ids": [], "allowed_plugins": []},
+        environment=env.unknown("not reported"), stdout_path=tmp_path / "stdout")
+    for value in ({"id": 1, "result": {}}, {"id": 2, "result": {
+            "thread": {"id": SESSION, "path": {"unsupported": True}}, "instructionSources": sources}},
+            {"id": 3, "result": {"turn": {"id": TURN}}}):
+        instance.output("stdout", native.encode(value))
+    event(instance, "item/completed", item={"type": "agentMessage", "text": "valid return"})
+    event(instance, "turn/completed", turn={"id": TURN, "status": "completed"})
+    assert instance.valid and instance.completed and instance.final_message == "valid return"
+    assert instance.environment["categories"]["instructions"]["status"] == "unknown"
 
 
 def test_unsupported_person_request_returns_error_never_approval(tmp_path):

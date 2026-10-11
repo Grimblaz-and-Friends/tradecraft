@@ -3104,16 +3104,24 @@ def _implementer_environments(state):
             if not isinstance(attempt, dict):
                 attempt = {}
             observed = attempt.get("environment")
-            categories = observed.get("categories") if isinstance(observed, dict) else None
-            malformed = (isinstance(observed, dict) and observed.get("schema_version") == 1
-                and (not isinstance(categories, dict) or any(
-                    not environment.valid_category(categories.get(name))
-                    for name in environment.CATEGORIES)))
-            if not isinstance(observed, dict) or observed.get("schema_version") != 1 or malformed:
+            if not isinstance(observed, dict) or observed.get("schema_version") != 1:
                 observed = environment.unknown(
-                    "malformed observed launch environment" if malformed else
                     "producer did not record an observed launch environment",
                     vendor=attempt.get("vendor") or run.get("actual_vendor"))
+            else:
+                categories = observed.get("categories")
+                categories = categories if isinstance(categories, dict) else {}
+                malformed = {name for name in environment.CATEGORIES
+                    if not environment.valid_category(categories.get(name))}
+                if malformed:
+                    excess = observed.get("excess")
+                    excess = excess if isinstance(excess, list) else []
+                    observed = {**observed, "categories": {name: (
+                        environment.category(reason="malformed observed launch environment")
+                        if name in malformed else categories[name]) for name in environment.CATEGORIES},
+                        "observation_error": "malformed environment categories: " + ", ".join(sorted(malformed)),
+                        "excess": [value for value in excess
+                            if isinstance(value, dict) and value.get("category") not in malformed]}
             values.append({"bundle": bundle, "dispatch_id": request.get("dispatch_id"),
                 "stage": request.get("stage"), "attempt": index,
                 "vendor": attempt.get("vendor") or run.get("actual_vendor"),

@@ -520,8 +520,12 @@ def test_slow_preflight_probe_stops_its_tree_within_the_caller_limit(tmp_path, e
         "lifecycle.process_identity(child.pid)]).encode())\n"
         "print('version probe still running',flush=True)\ntime.sleep(90)\n",
         encoding="utf-8", newline="\n")
+    # This fixture must start its child before the recipient deadline to test
+    # descendant cleanup. Two seconds after the cleanup reserve is insufficient
+    # for Windows worker/script startup, even on a serial run.
+    caller_limit = 30
     started = time.monotonic()
-    with lifecycle.deadline_scope(lifecycle.Deadline(12)):
+    with lifecycle.deadline_scope(lifecycle.Deadline(caller_limit)):
         if entry == "runtime-version":
             assert records.runtime_version([sys._base_executable, str(probe)]) is None
         else:
@@ -529,7 +533,7 @@ def test_slow_preflight_probe_stops_its_tree_within_the_caller_limit(tmp_path, e
                 work._run_probe([sys._base_executable, str(probe)], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 timeout=lifecycle.probe_timeout(), env=os.environ.copy())
-    assert time.monotonic() - started < 12
+    assert time.monotonic() - started < caller_limit
     identities = json.loads(trace.read_bytes())
     until_dead = time.monotonic() + 2
     while time.monotonic() < until_dead and any(

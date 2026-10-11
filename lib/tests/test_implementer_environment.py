@@ -59,12 +59,36 @@ def test_normalized_inventory_does_not_copy_credentials_or_full_settings():
     assert result["categories"]["plugins"]["values"][0]["source"] == "foreign@market"
 
 
+@pytest.mark.parametrize("field", ["id", "name", "path", "version", "status", "type", "kind",
+                                  "plugin_id", "server", "classification", "source"])
+def test_unsupported_identity_payload_cannot_smuggle_configuration_into_inventory(field):
+    result = env.unknown("missing")
+    env.claude_init(result, {"type": "system", "subtype": "init", "tools": [
+        {field: {"credentials": "private-token", "settings": {"secret": "hidden"}}},
+        [{"credentials": "private-token"}], "mcp__desktop__click"]}, path="native", line=1)
+    text = json.dumps(result)
+    assert "private-token" not in text and "hidden" not in text
+    assert result["categories"]["tools"]["status"] == "partial"
+    assert result["excess"][0]["identity"] == "mcp__desktop__click"
+
+
 def test_unsupported_inventory_entries_and_memory_shape_cannot_certify_empty():
     result = env.unknown("missing")
     env.claude_init(result, {"type": "system", "subtype": "init", "plugins": [{}],
         "memory_paths": {"auto": {"unsupported": True}}}, path="native", line=1)
     assert result["categories"]["plugins"]["status"] == "partial"
     assert result["categories"]["memory"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("identity", [None, True, 7, [], {"unsupported": True}, ""])
+def test_malformed_tool_identity_is_partial_observation_without_a_callback_error(identity):
+    result = env.unknown("not reported")
+    env.claude_init(result, {"type": "system", "subtype": "init",
+        "tools": [{"id": identity}, "mcp__desktop__click"],
+        "instruction_files": [{}]}, path="native.stdout", line=1)
+    assert result["categories"]["tools"]["status"] == "partial"
+    assert result["categories"]["instructions"]["status"] == "partial"
+    assert result["excess"][0]["identity"] == "mcp__desktop__click"
 
 
 def log(tmp_path, *, full=True, turn=TURN, cwd=None, extra=()):

@@ -115,3 +115,31 @@ def test_explicit_empty_inventory_with_runtime_coordinates_remains_known(tmp_pat
     reported = work._implementer_environments(state)["attempts"][0]["environment"]
     assert reported["categories"]["plugins"]["status"] == "known"
     assert reported["categories"]["plugins"]["values"] == []
+
+
+def test_damaged_memory_category_preserves_valid_plugin_excess_and_record_bytes(tmp_path, monkeypatch):
+    observed = environment.unknown("not reported", vendor="claude")
+    environment.claude_init(observed, {"type": "system", "subtype": "init",
+        "plugins": [{"name": "foreign@market"}]}, path="native.stdout", line=1)
+    observed["categories"]["memory"] = {"status": "known", "values": [], "sources": []}
+    request = bundle(tmp_path, "current", env=observed)
+    run = request.with_name("current.run.json")
+    before = run.read_bytes()
+    state = work.WorkState("owner/repo", 886, {}, record_root=tmp_path)
+    monkeypatch.setattr(work, "_change_rows", lambda *_a, **_k: [])
+    attempt = work._implementer_environments(state)["attempts"][0]
+    assert attempt["outcome"] == "success"
+    assert attempt["environment"]["categories"]["memory"]["status"] == "unknown"
+    assert attempt["environment"]["categories"]["plugins"]["status"] == "known"
+    assert attempt["environment"]["excess"][0]["identity"] == "foreign@market"
+    assert run.read_bytes() == before
+
+
+def test_partial_positive_inventory_without_source_stays_unknown(tmp_path, monkeypatch):
+    observed = environment.unknown("not reported", vendor="claude")
+    observed["categories"]["plugins"] = environment.category("partial", ["foreign@market"], "partial catalog")
+    bundle(tmp_path, "damaged", env=observed)
+    state = work.WorkState("owner/repo", 886, {}, record_root=tmp_path)
+    monkeypatch.setattr(work, "_change_rows", lambda *_a, **_k: [])
+    reported = work._implementer_environments(state)["attempts"][0]["environment"]
+    assert reported["categories"]["plugins"]["status"] == "unknown"

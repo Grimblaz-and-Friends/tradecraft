@@ -175,15 +175,28 @@ class NativeTurn:
                     self.fail("native resume returned a different session")
                     return
                 self.environment["session_id"] = session
-                self.log = environments.log_path(session, thread.get("path"))
+                reported_path = thread.get("path")
+                self.log = environments.log_path(session,
+                    reported_path if isinstance(reported_path, str) else None)
                 if self.args.resume and self.log:
                     try:
                         self.boundary = self.log.stat().st_size
                     except OSError:
                         self.boundary = 0
-                self.instruction_sources = [{"path": p} for p in result.get("instructionSources", []) if isinstance(p, str)]
+                sources = result.get("instructionSources")
+                self.instruction_sources = ([{"path": p} for p in sources if isinstance(p, str)]
+                    if isinstance(sources, list) else None)
                 self.environment["instruction_sources_coordinate"] = environments.coordinate(
                     self.path, self.line, "result.instructionSources")
+                if self.instruction_sources:
+                    self.environment["categories"]["instructions"] = environments.category(
+                        "partial", self.instruction_sources,
+                        "native startup instructionSources; log file inventory unavailable",
+                        self.environment["instruction_sources_coordinate"])
+                elif sources is not None and not isinstance(sources, list):
+                    self.environment["categories"]["instructions"] = environments.category(
+                        reason="native startup instructionSources has an unsupported format",
+                        source=self.environment["instruction_sources_coordinate"])
                 self.request("turn/start", {"threadId": session,
                     "input": [{"type": "text", "text": self.prompt.decode("utf-8"), "text_elements": []}],
                     "effort": self.args.effort, "disabledPluginIds": self.intent["disabled_plugin_ids"]})
