@@ -58,6 +58,18 @@ else:
     prompt = sys.stdin.buffer.read()
 capture = {"argv": flags, "cwd": str(Path.cwd()), "stdin": base64.b64encode(prompt).decode()}
 capture["pytest_addopts"] = os.environ.get("PYTEST_ADDOPTS")
+if vendor == "claude":
+    capture["additional_claude_md"] = os.environ.get("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD")
+    capture["add_dirs"] = {flags[i + 1]: (Path(flags[i + 1], "CLAUDE.md").read_text(encoding="utf-8")
+        if Path(flags[i + 1], "CLAUDE.md").is_file() else None)
+        for i, flag in enumerate(flags) if flag == "--add-dir"}
+    transcript = scenario.get("transcript")
+    if transcript:
+        # The runtime appends its session transcript; resumes extend the same file.
+        Path(transcript["path"]).parent.mkdir(parents=True, exist_ok=True)
+        with Path(transcript["path"]).open("ab") as stream:
+            for line in transcript["lines"]:
+                stream.write((json.dumps(line) + "\n").encode("utf-8"))
 if native:
     capture["requests"] = requests
 if scenario.get("author_writes"):

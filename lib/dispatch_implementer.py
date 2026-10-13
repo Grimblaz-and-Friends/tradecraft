@@ -14,6 +14,7 @@ Every invocation is a separate record. ``--resume`` is explicit; ``--last`` and
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import hashlib
@@ -22,6 +23,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -82,6 +84,70 @@ def read_machine_vendor(setting_path: Path | None = None) -> tuple[str, str]:
     return vendor, f"machine file {path}: {vendor}"
 
 
+INSTRUCTION_SHIM_PREFIX = "tradecraft-instructions-"
+
+
+def _import_path(path: str) -> str:
+    """A Claude ``@`` import ends at an unescaped space; a backslash keeps it whole."""
+    return path.replace(" ", "\\ ")
+
+
+def instruction_shim_plan(tree: Path, git_dir: Path | None) -> list[tuple[Path | None, str]]:
+    """Where an AGENTS.md-only tree's one-line CLAUDE.md shim may live, in order.
+
+    The runtime loads a tree's own CLAUDE.md through ``--add-dir``; a tree whose
+    rules live only in AGENTS.md gets a shim importing it (#893 R2). The first
+    placement is the tree's git directory with a relative import; the second is
+    the invocation's temporary directory (``None``) with an absolute import. An
+    import containing ``#`` did not deliver in any spiked form, so it is never
+    offered. A tree that needs a shim and has no placement refuses the launch.
+    """
+    if (tree / "CLAUDE.md").exists() or (tree / ".claude" / "CLAUDE.md").exists():
+        return []
+    target = tree / "AGENTS.md"
+    if not target.exists():
+        return []
+    candidates: list[tuple[Path | None, str]] = []
+    if git_dir is not None:
+        try:
+            relative = os.path.relpath(target, git_dir / (INSTRUCTION_SHIM_PREFIX + "x"))
+        except ValueError:
+            relative = None  # another drive has no relative path
+        if relative is not None and "#" not in relative:
+            candidates.append((git_dir, "@" + _import_path(relative.replace("\\", "/"))))
+    if "#" not in target.as_posix():
+        candidates.append((None, "@" + _import_path(target.as_posix())))
+    if not candidates:
+        raise ImplementerError(
+            f"refusing the Claude launch: tree {tree} has AGENTS.md and no CLAUDE.md, and neither "
+            "shim placement can import AGENTS.md without '#' in the import path, which the runtime "
+            "does not load; relaunch on Codex or move the tree")
+    return candidates
+
+
+@contextmanager
+def instruction_shim(candidates: list[tuple[Path | None, str]], temporary: Path, dispatch_id: str):
+    """Write the shim for this invocation only and remove it when it ends."""
+    if not candidates:
+        yield None
+        return
+    errors = []
+    for parent, line in candidates:
+        directory = (parent or temporary) / (INSTRUCTION_SHIM_PREFIX + dispatch_id)
+        try:
+            directory.mkdir()
+        except OSError as exc:
+            errors.append(f"{directory}: {exc}")
+            continue
+        try:
+            (directory / "CLAUDE.md").write_bytes((line + "\n").encode("utf-8"))
+            yield directory
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+        return
+    raise ImplementerError("cannot write the AGENTS.md instruction shim: " + "; ".join(errors))
+
+
 def build_command(args: argparse.Namespace, executable: list[str], last_message: Path) -> list[str]:
     if args.vendor == "claude":
         command = [
@@ -90,7 +156,12 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
             "--setting-sources", "user", "--plugin-dir",
             str(Path(__file__).resolve().parent.parent),
             "--strict-mcp-config", "--no-chrome",
+            # With the child's ADDITIONAL_CLAUDE_MD, the runtime loads this
+            # tree's own root instructions and imports; nothing above it.
+            "--add-dir", str(Path(args.root).expanduser().resolve()),
         ]
+        if getattr(args, "instruction_shim", None):
+            command.extend(("--add-dir", str(args.instruction_shim)))
         if getattr(args, "launch_settings_path", None):
             command.extend(("--settings", args.launch_settings_path))
         if args.resume:
@@ -436,10 +507,14 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             raise ImplementerError(f"output destination is also an input: {path}")
         if path.exists() or path.is_symlink():
             raise ImplementerError(f"refusing existing output: {path}")
+    shim_plan = instruction_shim_plan(root, records.git_directory(root)) if args.vendor == "claude" else []
+    dispatch_id = uuid.uuid4().hex
     output.parent.mkdir(parents=True, exist_ok=True)
     continuity = "resume" if args.resume else "fresh"
     with records.reserve_bundle(destinations, output) as streams:
-        with tempfile.TemporaryDirectory(prefix="tradecraft-implementer-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="tradecraft-implementer-") as temporary, \
+                instruction_shim(shim_plan, Path(temporary), dispatch_id) as shim:
+            args.instruction_shim = shim
             last_message = Path(temporary) / "last.txt"
             executable = explicit_executable
             if executable is None and unavailable_reason is None:
@@ -481,7 +556,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 if executable is not None else None
             )
             request = records.request_record(
-                dispatch_id=uuid.uuid4().hex, work=args.work, stage=args.stage,
+                dispatch_id=dispatch_id, work=args.work, stage=args.stage,
                 settings_source=args.settings_source, settings_scope=args.settings_scope,
                 vendor=args.vendor, model=args.model,
                 effort=args.effort, continuity=continuity,
@@ -648,6 +723,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 native = native_codex.NativeTurn(args=args, prompt=effective_prompt, intent=intent,
                     environment=attempt["environment"], stdout_path=stdout_path,
                     observe=growing.observe, transcript=streams[protocol_path], cwd=root)
+            if args.vendor == "claude":
+                projects = environments.claude_projects(child_env)
+                known = args.resume or args.session_id
+                offset = environments.transcript_size(projects, known) if known else 0
+                if offset is None and not args.resume:
+                    offset = 0
             pending_environment = b""
             environment_line = 0
             def capture(name, chunk):
@@ -777,6 +858,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         vendor=args.vendor, version=request["runtime_version"])
                 attempt["observed"]["session_id"] = session_id
                 attempt["observed"]["session_id_source"] = session_source or None
+                if args.vendor == "claude" and attempt["launched"]:
+                    environments.claude_instructions(attempt["environment"], projects=projects,
+                        session=session_id, offset=offset, resumed=bool(args.resume), shim=shim)
                 if args.resume and session_id and session_id != args.resume:
                     reason = f"returned session id {session_id} does not match requested resume {args.resume}"
                 if args.session_id and session_id and session_id != args.session_id:

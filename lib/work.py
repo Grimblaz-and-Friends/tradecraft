@@ -3087,6 +3087,43 @@ def _emit_report(payload: dict[str, object], state: WorkState | None = None, *,
     print(json.dumps(payload, ensure_ascii=True, sort_keys=True), flush=flush)
 
 
+def implementer_preamble(vendor: str, plugin_root: Path) -> bytes:
+    """The launcher context ahead of a Claude implementer's dispatch; Codex has none.
+
+    The tree's root instructions arrive natively (#893), so the builder is sent
+    only to nested instruction files inside its tree, never to an ancestor
+    checkout's copy from another commit.
+    """
+    if vendor != "claude":
+        return b""
+    return (
+        "You are the implementer for this stage. Your tree's root instructions (its CLAUDE.md "
+        "and the files it imports, or its AGENTS.md where it has no CLAUDE.md) are already "
+        "loaded. Before editing a file, read any CLAUDE.md or AGENTS.md inside this tree that "
+        "applies to it. Do not read instruction files in directories above this tree; they "
+        "belong to another checkout. "
+        f"The shipped tradecraft plugin is at {plugin_root}. "
+        "Project and local Claude settings are omitted so the holder hook does not "
+        "run in this child; the tree's root instructions are loaded without them. User sources "
+        "retain global instructions, native memory "
+        "and permission settings. Strict MCP, no Chrome and targeted plugin overrides "
+        "request no MCP servers, connectors, browser or desktop control, and only "
+        "tradecraft plus runtime built-in plugins. claude.ai account skills may still "
+        "appear; they are not excluded and are recorded as excess. Actual holdings, "
+        "unknowns and excess are recorded separately.\n"
+    ).encode("utf-8")
+
+
+def _instruction_report(observed):
+    """Each instruction file a launch recorded, without its content."""
+    categories = observed.get("categories") if isinstance(observed.get("categories"), dict) else {}
+    value = categories.get("instructions") if isinstance(categories.get("instructions"), dict) else {}
+    return {"status": value.get("status", "unknown"), "reason": value.get("reason"),
+            "files": [{key: entry.get(key) for key in
+                       ("path", "runtime_type", "sha256", "delivered", "launcher_shim")}
+                      for entry in value.get("values") or [] if isinstance(entry, dict)]}
+
+
 def _implementer_environments(state):
     """Read existing scoped attempts, without runtime/account discovery or mutation."""
     import implementer_environment as environment
@@ -3133,6 +3170,7 @@ def _implementer_environments(state):
                 "lifecycle": run.get("lifecycle") or "unknown",
                 "outcome": attempt.get("outcome") or run.get("outcome") or "unknown",
                 "record_error": run.get("recovery_error"),
+                "instructions": _instruction_report(observed),
                 "environment": observed})
     return {"status": "known", "attempts": values}
 
@@ -7795,18 +7833,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     command.extend(("--retry-of", handover_retry_of))
                 if selected_vendor in {"claude", "codex"}:
                     context = Path(temporary) / "context.txt"
-                    preamble = ((
-                        "You are the implementer for this stage. Read the repository root instructions "
-                        "and applicable ancestor and nested instructions before editing. "
-                        f"The shipped tradecraft plugin is at {here.parent}. "
-                        "Project and local Claude settings are omitted so the holder hook does not "
-                        "run in this child. User sources retain global instructions, native memory "
-                        "and permission settings. Strict MCP, no Chrome and targeted plugin overrides "
-                        "request no MCP servers, connectors, browser or desktop control, and only "
-                        "tradecraft plus runtime built-in plugins. claude.ai account skills may still "
-                        "appear; they are not excluded and are recorded as excess. Actual holdings, "
-                        "unknowns and excess are recorded separately.\n"
-                    ).encode("utf-8") if selected_vendor == "claude" else b"")
+                    preamble = implementer_preamble(selected_vendor, here.parent)
                     window = (work_recovery.instruction(recovery_info, metadata["recipient_allocation_seconds"])
                               if recovery_info else
                               f"Available recipient time is at most {metadata['recipient_allocation_seconds']:g} seconds. Leave useful work in the tree if the window ends. Perform only the named stage.\n".encode("utf-8"))
