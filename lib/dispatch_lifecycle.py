@@ -156,7 +156,8 @@ class GrowingRun:
     def event(self, name, line):
         if name == "stderr":
             match = HEADER.search(line.decode("utf-8", "replace"))
-            if self.vendor == "codex" and match:
+            if (self.vendor == "codex" and self.attempt.get("source_format") != "codex-app-server-v2"
+                    and match):
                 self.observe(match.group(1), "codex stderr session id header")
             return
         try:
@@ -165,7 +166,8 @@ class GrowingRun:
             return
         if not isinstance(event, dict):
             return
-        if self.vendor == "codex" and event.get("type") == "thread.started":
+        if (self.vendor == "codex" and self.attempt.get("source_format") != "codex-app-server-v2"
+                and event.get("type") == "thread.started"):
             self.observe(event.get("thread_id"), "codex JSONL thread.started.thread_id")
         elif self.vendor == "claude":
             if event.get("type") == "system" and event.get("subtype") == "init":

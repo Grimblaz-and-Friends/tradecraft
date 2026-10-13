@@ -343,7 +343,9 @@ def _number(value: object) -> Decimal | None:
 
 _CODEX_NAMES = {"input_tokens": "input", "cached_input_tokens": "cached_input",
                 "cache_write_input_tokens": "cache_write_input", "output_tokens": "output",
-                "reasoning_output_tokens": "reasoning_output"}
+                "reasoning_output_tokens": "reasoning_output", "inputTokens": "input",
+                "cachedInputTokens": "cached_input", "outputTokens": "output",
+                "reasoningOutputTokens": "reasoning_output", "totalTokens": "total_tokens"}
 _CLAUDE_NAMES = {"inputTokens": "input", "input_tokens": "input",
                  "cacheReadInputTokens": "cache_read", "cache_read_input_tokens": "cache_read",
                  "cacheCreationInputTokens": "cache_creation", "cache_creation_input_tokens": "cache_creation",
@@ -380,6 +382,9 @@ def _codex_counts(item: _Attempt, reasons: list[str]) -> dict | None:
     native = observed.get("raw")
     if isinstance(native, list) and native and isinstance(native[-1], dict):
         classes = dict(native[-1])
+    elif (observed.get("source") == "Codex native thread/tokenUsage/updated.params.tokenUsage.total"
+            and isinstance(native, dict) and isinstance(native.get("total"), dict)):
+        classes = dict(native["total"])
     else:
         classes = item.usage.get("tokens")
         if not isinstance(classes, dict):

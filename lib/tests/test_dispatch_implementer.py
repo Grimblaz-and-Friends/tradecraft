@@ -13,6 +13,8 @@ import pytest
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import dispatch_implementer as implementer
+# Captured before the job fixture replaces discovery with an instant stand-in.
+REAL_DISCOVER = implementer.policy.discover
 import vendor_cli
 
 
@@ -79,6 +81,9 @@ def native_artifact_result(vendor, text, session="0199a213-81c0-7800-8aa1-bbab2a
 
 
 def supply_artifact_brief(args):
+    # These assertions exercise return/provenance behavior. Copy preparation on
+    # a loaded Windows worker is not the deadline behavior tested separately.
+    args.timeout_seconds = max(args.timeout_seconds, 180)
     args.artifact_brief = args.dispatch.with_name("brief.md")
     args.artifact_brief.write_bytes(ARTIFACT_BRIEF.encode("utf-8"))
     args.artifact_brief_source = "issue-comment:affirmed"
@@ -120,6 +125,11 @@ def job(tmp_path, monkeypatch):
         lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "codex", str(scenario)],
     )
     monkeypatch.setattr(implementer.records, "runtime_version", lambda *_: "codex-cli test")
+    # Preparation has its own native/config tests; these fixtures exercise the
+    # one-turn launcher, publication and continuity rather than repeating setup.
+    monkeypatch.setattr(implementer.policy, "discover", lambda vendor, *_a, **_k:
+        json.loads(scenario.read_bytes()).get(vendor, {}).get("plugin_list", []))
+    monkeypatch.setattr(implementer.native_codex, "read_config", lambda *_a, **_k: {})
     with ExitStack() as stack:
         args.artifact_stack = stack
         yield args, scenario
@@ -237,15 +247,14 @@ def test_artifact_codex_permissions_select_only_copy_without_broad_temp_roots(jo
     args.stage, args.resume = "artifact", resume
     args.model, args.effort = implementer.PROFILES["artifact_author"]["codex"]
     command = implementer.build_command(args, ["codex"], args.output)
-    assert command[command.index("--cd") + 1] == str(args.root.resolve())
+    assert command[:2] == ["codex", "app-server"]
     assert "--add-dir" not in command
-    assert "--approve-for-me" in command
+    assert "--stdio" in command
     assert 'sandbox_mode="workspace-write"' in command
     assert "sandbox_workspace_write.writable_roots=[]" in command
     assert "sandbox_workspace_write.exclude_slash_tmp=true" in command
     assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in command
-    if resume:
-        assert command[-3:] == ["resume", resume, "-"]
+    assert "resume" not in command
     args.stage = "build"
     builder = implementer.build_command(args, ["codex"], args.output)
     assert not any(value.startswith("sandbox_") for value in builder)
@@ -260,6 +269,19 @@ def test_caller_limit_with_no_launch_window_starts_no_implementer(job, monkeypat
         implementer.run_implementer(args)
     assert not args.output.exists()
     assert not (args.root / "seen-codex.json").exists()
+
+
+def native_success_events(message="built\n", session_id="0199a213-81c0-7800-8aa1-bbab2a035a53"):
+    turn = "0199a214-81c0-7800-8aa1-bbab2a035a53"
+    return b"".join(implementer.native_codex.encode(e) for e in (
+        {"id": 1, "result": {}},
+        {"id": 2, "result": {"thread": {"id": session_id}}},
+        {"id": 3, "result": {"turn": {"id": turn}}},
+        {"method": "item/completed", "params": {"threadId": session_id, "turnId": turn,
+            "item": {"type": "agentMessage", "text": message}}},
+        {"method": "turn/completed", "params": {"threadId": session_id,
+            "turn": {"id": turn, "status": "completed"}}},
+    ))
 
 
 def success_events(session_id="0199a213-81c0-7800-8aa1-bbab2a035a53"):
@@ -293,11 +315,10 @@ def test_codex_launch_and_resume_supply_pytest_policy(job, monkeypatch, resume, 
               if value.startswith("shell_environment_policy.")]
     expected = f"{inherited} -p no:cacheprovider" if inherited else "-p no:cacheprovider"
     assert policy == [{"set": {"PYTEST_ADDOPTS": expected}}]
+    startup = next(r for r in seen(args)["requests"] if r["method"] in {"thread/start", "thread/resume"})
+    assert startup["method"] == ("thread/resume" if resume else "thread/start")
     if resume:
-        assert flags[-3:] == ["resume", args.resume, "-"]
-    else:
-        assert "resume" not in flags
-        assert flags[-1] == "-"
+        assert startup["params"]["threadId"] == args.resume
     # On Windows this empty Python environment entry is absent in the child.
     child_value = None if os.name == "nt" and inherited == "" else inherited
     assert seen(args)["pytest_addopts"] == child_value
@@ -435,6 +456,7 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
         "-p", "--model", "claude-opus-5-5", "--effort", "high",
         "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
         "--setting-sources", "user", "--plugin-dir", str(LIB.parent),
+        "--strict-mcp-config", "--no-chrome", "--settings", args.launch_settings_path,
     ]
     if resume:
         expected.extend(("--resume", session))
@@ -448,14 +470,16 @@ def test_fresh_launch_is_recorded_and_resumable(job):
     configure(job, {"stdout": success_events(), "message": "built\n"})
     assert implementer.run_implementer(args) == 0
     flags = seen(args)["argv"]
-    assert flags[:3] == ["exec", "--approve-for-me", "--json"]
+    assert flags[:2] == ["app-server", "--stdio"]
     assert "--ephemeral" not in flags
     assert "--sandbox" not in flags
     assert "--last" not in flags
     assert "resume" not in flags
-    assert flags[-1] == "-"
-    assert flags[flags.index("--model") + 1] == "gpt-6.1-sol"
-    assert 'model_reasoning_effort="xhigh"' in flags
+    startup = next(r for r in seen(args)["requests"] if r["method"] == "thread/start")
+    turn = next(r for r in seen(args)["requests"] if r["method"] == "turn/start")
+    assert startup["params"]["model"] == "gpt-6.1-sol"
+    assert startup["params"]["approvalsReviewer"] == "auto_review"
+    assert turn["params"]["effort"] == "xhigh"
     logged = record(args)
     attempt = logged["attempts"][0]
     assert logged["outcome"] == "success"
@@ -486,8 +510,8 @@ def test_elapsed_accounting_does_not_clip_a_measured_overrun(job, monkeypatch):
     monkeypatch.setattr(implementer.lifecycle, "content_snapshot", lambda *a, **k: {"digest": "fixture"})
     def returned(command, **kwargs):
         clock[0] += kwargs["timeout"] + 0.1
-        Path(command[command.index("--output-last-message") + 1]).write_bytes(b"built\n")
-        return subprocess.CompletedProcess(command, 0, success_events().encode(), b"")
+        raw = native_success_events(message="built\n")
+        return subprocess.CompletedProcess(command, 0, raw, b"")
     monkeypatch.setattr(implementer, "run_process", returned)
     assert implementer.run_implementer(args) == 0
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
@@ -650,8 +674,13 @@ def test_implementer_runs_the_shared_automatic_resolution_result(tmp_path, monke
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("do not bypass shared resolution")),
     )
     monkeypatch.setattr(implementer.records, "runtime_version", lambda *_: "codex-cli test")
+    # Preparation has its own native/config tests; these fixtures exercise the
+    # one-turn launcher, publication and continuity rather than repeating setup.
+    monkeypatch.setattr(implementer.policy, "discover", lambda vendor, *_a, **_k:
+        json.loads(scenario.read_bytes()).get(vendor, {}).get("plugin_list", []))
+    monkeypatch.setattr(implementer.native_codex, "read_config", lambda *_a, **_k: {})
     assert implementer.run_implementer(args) == 0
-    assert seen(args)["argv"][:3] == ["exec", "--approve-for-me", "--json"]
+    assert seen(args)["argv"][:2] == ["app-server", "--stdio"]
     assert output.read_bytes() == b"built\n"
 
 
@@ -679,6 +708,86 @@ def test_explicit_unavailable_reason_records_an_unavailable_attempt(job, monkeyp
     assert not args.output.exists()
 
 
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_malformed_preparation_is_recorded_unlaunched_without_fallback(job, monkeypatch, vendor):
+    args, _ = job
+    args.vendor = vendor
+    def malformed(*_a, **_k):
+        raise TypeError("unsupported native discovery shape")
+    monkeypatch.setattr(implementer.policy, vendor + "_prepare", malformed)
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    attempt = logged["attempts"][0]
+    assert logged["outcome"] == "error" and not attempt["launched"]
+    assert "unsupported native discovery shape" in attempt["reason"]
+    assert all(value["status"] == "unknown" for value in attempt["environment"]["categories"].values())
+    assert not args.output.exists()
+
+
+def test_slow_cold_cache_discovery_completes_and_launches(job, monkeypatch):
+    # Reading 6: a cold Codex plugin cache took 24 s, beyond the 20 s git/version
+    # probe default. Real discovery runs a child slower than 20 s; it must finish
+    # inside the discovery allowance and the turn must still launch.
+    args, _ = job
+    args.timeout_seconds = 90
+    monkeypatch.setattr(implementer.policy, "discover", REAL_DISCOVER)
+    configure(job, {"stdout": success_events(), "message": "built", "discovery_sleep": 21})
+    assert implementer.run_implementer(args) == 0
+    logged = record(args)
+    assert logged["outcome"] == "success" and logged["attempts"][0]["launched"]
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert request["environment_request"]["status"] == "prepared"
+
+
+def test_discovery_and_config_reads_use_their_allowance_capped_by_the_window():
+    class Recorder:
+        def __init__(self, remaining):
+            self.remaining_value, self.defaults = remaining, []
+        def probe(self, default=20, *, cleanup=False):
+            self.defaults.append(default)
+            return min(default, self.remaining_value)
+        cleanup_end = None
+    captured = []
+    def fake_run(command, **kwargs):
+        captured.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+    original = (implementer.policy.run_process, implementer.native_codex.run_process)
+    implementer.policy.run_process = implementer.native_codex.run_process = fake_run
+    try:
+        for remaining in (500, 30):
+            deadline = Recorder(remaining)
+            with pytest.raises(subprocess.TimeoutExpired):
+                REAL_DISCOVER("codex", ["codex"], Path.cwd(), deadline)
+            with pytest.raises(subprocess.TimeoutExpired):
+                implementer.native_codex.read_config(["codex"], Path.cwd(), deadline)
+            assert deadline.defaults == [implementer.policy.DISCOVERY_PROBE_SECONDS] * 2
+        assert captured == [120, 120, 30, 30]
+    finally:
+        implementer.policy.run_process, implementer.native_codex.run_process = original
+    # Git and version probes keep the unchanged 20 s default.
+    assert implementer.lifecycle.Deadline(3600).probe() == 20
+
+
+def test_failed_native_resume_keeps_inherited_identity_source(job):
+    # An id this invocation's runtime never returned must not carry the native
+    # startup label; it keeps its retained predecessor provenance.
+    args, _ = job
+    session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    args.resume, args.vendor = session, "codex"
+    args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+    args.lifecycle_input.write_bytes(json.dumps({"retained_session_id": session,
+        "retained_session_source": "predecessor.run.json"}).encode())
+    configure(job, {"stdout": success_events(session), "message": "unused",
+                    "fail_method": "thread/resume"})
+    assert implementer.run_implementer(args) == 1
+    attempt = record(args)["attempts"][0]
+    assert attempt["outcome"] == "error" and "thread/resume" in attempt["reason"]
+    assert attempt["observed"]["session_id"] == session
+    assert attempt["observed"]["session_id_source"] == "proved predecessor"
+    assert record(args)["session_identity"]["reported_session_id"] is None
+    assert not args.output.exists()
+
+
 def test_resume_names_exact_session_and_keeps_usage_scope_unknown(job):
     args, _ = job
     session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
@@ -688,8 +797,9 @@ def test_resume_names_exact_session_and_keeps_usage_scope_unknown(job):
     configure(job, {"stdout": success_events(session), "message": "fixed\n"})
     assert implementer.run_implementer(args) == 0
     flags = seen(args)["argv"]
-    assert flags[-3:] == ["resume", session, "-"]
-    assert flags[flags.index("--model") + 1] == "gpt-6-astra"
+    startup = next(r for r in seen(args)["requests"] if r["method"] == "thread/resume")
+    assert startup["params"]["threadId"] == session
+    assert startup["params"]["model"] == "gpt-6-astra"
     observed = record(args)["attempts"][0]["observed"]
     assert observed["raw"]
     assert observed["normalized"] is None
@@ -730,13 +840,14 @@ def test_fresh_runtime_returning_holder_identity_is_not_published(job):
     assert not args.output.exists()
 
 
-def test_completed_turn_without_identity_retains_result_but_is_not_resumable(job):
+def test_native_startup_without_identity_stops_before_turn_and_is_not_resumable(job):
     args, _ = job
     stdout = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}})
-    configure(job, {"stdout": stdout, "message": "useful result\n"})
+    configure(job, {"stdout": stdout, "message": "useful result\n", "missing_identity": True})
     assert implementer.run_implementer(args) == 1
-    assert record(args)["outcome"] == "success_uncontinuable"
-    assert args.output.read_bytes() == b"useful result\n"
+    assert record(args)["outcome"] == "error"
+    assert "startup lacks session identity" in record(args)["attempts"][0]["reason"]
+    assert not args.output.exists()
 
 
 def test_output_inside_recipient_root_is_rejected_before_launch(job):
@@ -799,7 +910,7 @@ def test_stderr_session_header_is_retained_when_jsonl_has_no_thread_event(job):
     assert implementer.run_implementer(args) == 0
     observed = record(args)["attempts"][0]["observed"]
     assert observed["session_id"] == session
-    assert observed["session_id_source"] == "codex stderr session id header"
+    assert observed["session_id_source"] == "Codex native startup response.thread.id"
 
 
 def test_setting_sources_distinguish_defaults_from_explicit_values(job):
@@ -1045,11 +1156,20 @@ def test_direct_ruling_launch_prints_before_process_and_retains_source(job, monk
         plan = json.loads(next(line.split("launch_settings ", 1)[1] for line in output.splitlines()
                                if line.startswith("implementer: launch_settings ")))
         primary = plan["primary"]
-        assert primary["model"] == command[command.index("--model") + 1] == "direct-ruled"
+        assert primary["model"] == "direct-ruled"
+        if vendor == "claude":
+            assert command[command.index("--model") + 1] == "direct-ruled"
+        else:
+            assert args.model == "direct-ruled"
         assert primary["effort"] == "direct-effort"
         assert json.loads(primary["sources"]["model"].removeprefix("model ruling ")) == {
             "path": str(path.resolve()), **entry}
-        return original(command, **kwargs)
+        result = original(command, **kwargs)
+        if vendor == "codex":
+            requests = seen(args)["requests"]
+            assert next(r for r in requests if r["method"] in {"thread/start", "thread/resume"})["params"]["model"] == "direct-ruled"
+            assert next(r for r in requests if r["method"] == "turn/start")["params"]["effort"] == "direct-effort"
+        return result
     monkeypatch.setattr(implementer, "run_process", launch)
     # Fixture runtime returns Codex-shaped output for either command; the request is the boundary tested.
     implementer.run_implementer(args)
@@ -1256,9 +1376,11 @@ def test_failed_artifact_without_native_identity_reports_unavailable(job, monkey
     scenario.write_bytes(json.dumps({vendor: native_artifact_result(vendor, text, None)}).encode())
     assert implementer.run_implementer(args) == 1
     logged = record(args)
-    assert logged["outcome"] == ("invalid_artifact_return" if text else "completed_no_output")
+    assert logged["outcome"] == ("error" if vendor == "codex" else
+        "invalid_artifact_return" if text else "completed_no_output")
     assert logged["attempts"][0]["observed"]["session_id"] is None
-    assert "author session unavailable" in capsys.readouterr().err
+    diagnostic = capsys.readouterr().err
+    assert ("native startup lacks session identity" if vendor == "codex" else "author session unavailable") in diagnostic
 
 
 @pytest.mark.parametrize("text", ["/tmp/private/artifact.md", ""])
@@ -1332,6 +1454,24 @@ def test_malformed_bridge_implementer_refuses_before_bundle(job):
     with pytest.raises(implementer.launch_settings.SettingsError):
         implementer.run_implementer(args)
     assert not args.output.parent.exists()
+
+
+def test_malformed_claude_observation_does_not_stop_valid_return(job, monkeypatch):
+    args, scenario = job
+    args.vendor = "claude"
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_:
+        [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    init = {"type": "system", "subtype": "init", "session_id": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+        "tools": [{"id": {"unsupported": True}}, "mcp__desktop__click"], "instruction_files": [{}]}
+    terminal = native_artifact_result("claude", "built")
+    terminal["stdout"] = json.dumps(init) + "\n" + terminal["stdout"]
+    scenario.write_bytes(json.dumps({"claude": terminal}).encode())
+    assert implementer.run_implementer(args) == 0
+    attempt = record(args)["attempts"][0]
+    assert attempt["environment"]["categories"]["tools"]["status"] == "partial"
+    assert attempt["environment"]["categories"]["instructions"]["status"] == "partial"
+    assert attempt["environment"]["excess"][0]["identity"] == "mcp__desktop__click"
+    assert args.output.read_bytes() == b"built"
 
 
 
@@ -1459,22 +1599,16 @@ def test_artifact_size_refuses_before_completeness_comparison(monkeypatch):
 
 
 @pytest.mark.parametrize("byte_count", [240_000, 240_001])
-def test_codex_artifact_size_counts_retained_invalid_utf8_bytes(job, byte_count):
-    args, _scenario = job
-    args.stage, args.vendor = "artifact", "codex"
-    supply_artifact_brief(args)
+def test_artifact_validator_keeps_legacy_binary_source_byte_bound(byte_count):
+    # Native app-server messages are Unicode; old source-file carriers can hold
+    # invalid bytes. The shared validator must keep that historical byte bound.
     message = artifact_with_byte_count(byte_count - 1, "plain ").encode("utf-8") + b"\xff"
     assert len(message.decode("utf-8", errors="replace").encode("utf-8")) == byte_count + 2
-    native = native_artifact_result("codex", "unused final-message carrier")
-    native["last_hex"] = message.hex()
-    configure(job, native)
-    assert implementer.run_implementer(args) == (1 if byte_count > 240_000 else 0)
-    logged = record(args)
-    assert logged["result"]["return_validation"]["observed_bytes"] == byte_count
-    assert logged["result"]["return_validation"]["maximum_bytes"] == 240_000
-    assert logged["outcome"] == ("invalid_artifact_return" if byte_count > 240_000 else "success")
-    assert Path(logged["result"]["source_output"]).read_bytes() == message
-    assert args.output.read_bytes() == message
+    result = implementer.validate_artifact_return(ARTIFACT_BRIEF, message)
+    assert result["observed_bytes"] == byte_count
+    assert result["maximum_bytes"] == 240_000
+    assert result["status"] == ("fail" if byte_count > 240_000 else "pass")
+
 
 
 @pytest.mark.parametrize("byte_count", [240_000, 240_001])
@@ -1485,3 +1619,29 @@ def test_shared_artifact_validator_counts_complete_boundary_messages(byte_count,
     assert result["status"] == ("pass" if byte_count == 240_000 else "fail")
     assert result["observed_bytes"] == byte_count
     assert result["maximum_bytes"] == 240_000
+
+
+@pytest.mark.parametrize("resume", [None, "0199a213-81c0-7800-8aa1-bbab2a035a53"])
+def test_claude_account_skills_are_reported_as_excess_fresh_and_resumed(job, monkeypatch, resume):
+    # Reading 7: claude.ai account skills arrive as anthropic-skills:* with no
+    # reported owning plugin. Both a fresh launch and a resume name them as
+    # excess and still publish the valid return.
+    args, scenario = job
+    args.vendor, args.resume = "claude", resume
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_:
+        [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    init = {"type": "system", "subtype": "init", "session_id": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+        "plugins": [{"name": "tradecraft@inline"}, {"name": "agents-md@builtin"}],
+        "skills": ["tradecraft:charter", "agents-md:write", "anthropic-skills:google-workspace",
+                   "anthropic-skills:computer-use", "update-config"]}
+    terminal = native_artifact_result("claude", "built")
+    terminal["stdout"] = json.dumps(init) + "\n" + terminal["stdout"]
+    scenario.write_bytes(json.dumps({"claude": terminal}).encode())
+    assert implementer.run_implementer(args) == 0
+    observed = record(args)["attempts"][0]["environment"]
+    account = [v for v in observed["excess"] if v["category"] == "skills"]
+    assert [v["identity"] for v in account] == ["anthropic-skills:google-workspace", "anthropic-skills:computer-use"]
+    assert {v["provenance"] for v in account} == {"claude.ai account skill"}
+    assert [v["name"] for v in observed["unclassified"] if isinstance(v, dict)] == ["update-config"]
+    assert "not checked" in observed["unclassified_note"]
+    assert args.output.read_bytes() == b"built"

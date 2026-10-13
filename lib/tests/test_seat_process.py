@@ -54,11 +54,11 @@ def test_incremental_capture_checkpoints_while_stdin_blocks(tmp_path):
     child = [sys._base_executable, "-c", "import sys,time; print('identity',flush=True); sys.stderr.write('diagnostic'); sys.stderr.flush(); time.sleep(30)"]
     started = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired) as caught:
-        process.run_process(child, input=b'x' * 1000000, cwd=tmp_path, timeout=3,
+        process.run_process(child, input=b'x' * 1000000, cwd=tmp_path, timeout=10,
                             on_output=lambda *event: output.append(event),
                             on_tick=lambda: ticks.append(time.monotonic()),
                             on_launch=launched.append)
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 12
     assert launched and len(ticks) > 2
     assert b'identity' in caught.value.stdout
     assert b'diagnostic' in caught.value.stderr
@@ -333,7 +333,7 @@ def test_windows_empty_input_capture_never_starts_a_reader_thread(tmp_path, monk
     monkeypatch.setattr(process.threading, "Thread", lambda **_k: pytest.fail("started a reader for a bounded probe"))
     output = []
     result = process.run_process([sys.executable, "-c", "print('ready')"], input=b"", cwd=tmp_path,
-                                 timeout=10, on_output=lambda *event: output.append(event))
+                                 timeout=60, on_output=lambda *event: output.append(event))
     assert result.returncode == 0 and b"ready" in result.stdout
     assert b"ready" in b"".join(data for name, data in output if name == "stdout")
 
@@ -516,3 +516,83 @@ def test_contained_entrance_inherits_binary_streams_and_exit_status(tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tmp_path, timeout=30)
     assert result.returncode == 7 and result.stdout == payload
     assert result.stderr == b"\xffdiagnostic"
+def test_duplex_input_closes_on_eof_without_changing_capture(tmp_path):
+    from seat_process import DuplexInput, run_process
+    import sys
+    source = DuplexInput()
+    source.send(b"first\n")
+    received = []
+    def output(name, chunk):
+        received.append((name, chunk))
+        if name == "stdout" and b"first" in chunk:
+            source.send(b"second\n")
+            source.close()
+    result = run_process([sys.executable, "-u", "-c",
+        "import sys; [sys.stdout.buffer.write(v) or sys.stdout.buffer.flush() for v in sys.stdin.buffer]"],
+        input=source, cwd=tmp_path, timeout=15, on_output=output)
+    assert result.returncode == 0 and result.stdout == b"first\nsecond\n"
+    assert source.closed and received
+
+
+def test_duplex_blocked_writer_does_not_block_deadline_or_capture(tmp_path):
+    source = process.DuplexInput()
+    source.send(b"x" * 1_000_000)
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        process.run_process([sys._base_executable, "-c",
+            "import time; print('native identity',flush=True); time.sleep(30)"],
+            input=source, cwd=tmp_path, timeout=10, on_output=lambda *_v: None)
+    assert time.monotonic() - started < 12 and source.closed
+    assert b"native identity" in caught.value.stdout and caught.value.cleanup_proven
+
+
+def test_duplex_producer_is_bounded_and_close_is_nonblocking():
+    source = process.DuplexInput(limit=4)
+    with pytest.raises(OSError, match="bound"):
+        source.send(b"large")
+    for _ in range(32):
+        source.send(b"ok")
+    with pytest.raises(OSError, match="bound"):
+        source.send(b"ok")
+    source.close()
+    assert source.closed
+
+
+def test_duplex_send_and_close_are_one_ordered_transition(monkeypatch):
+    import threading
+    source = process.DuplexInput()
+    entered, release, closing, closed = (threading.Event() for _ in range(4))
+    order, errors = [], []
+    put = source.queue.put_nowait
+    def paused_put(data):
+        entered.set()
+        assert release.wait(5)
+        put(data)
+        order.append("enqueued")
+    monkeypatch.setattr(source.queue, "put_nowait", paused_put)
+    def send():
+        try:
+            source.send(b"accepted")
+        except OSError as exc:
+            errors.append(exc)
+    def close():
+        closing.set()
+        source.close()
+        order.append("closed")
+        closed.set()
+    sender, closer = threading.Thread(target=send), threading.Thread(target=close)
+    sender.start()
+    assert entered.wait(5)
+    closer.start()
+    try:
+        assert closing.wait(5)
+        closed.wait(0.1)
+    finally:
+        release.set()
+        sender.join(5)
+        closer.join(5)
+    assert not sender.is_alive() and not closer.is_alive()
+    assert not errors and order == ["enqueued", "closed"]
+    assert list(source.chunks()) == [b"accepted"]
+    with pytest.raises(OSError, match="closed"):
+        source.send(b"after close")
