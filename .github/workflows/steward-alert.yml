@@ -1,0 +1,46 @@
+name: steward-alert
+
+# The Steward's cover (#890): an hourly local check dispatches this job when lab
+# work has waited unanswered, so the owner is mentioned by the bot rather than by
+# his own account, which would not notify him. It carries item ids and public
+# links only. It is no check on any pull request.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "alert issue number"
+        required: true
+        type: string
+      items:
+        description: "comma list of intake:N, read:N or probe:N"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: steward-alert
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+      - name: Mention the owner on the alert issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue }}
+          ITEMS: ${{ inputs.items }}
+          STATE_DIR: ${{ runner.temp }}/steward-lab-state
+        run: python tools/steward_watch.py post-alert --issue "$ISSUE" --items "$ITEMS" --state-dir "$STATE_DIR"
