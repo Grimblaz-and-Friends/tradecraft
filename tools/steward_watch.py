@@ -545,8 +545,11 @@ def handover_check(state_dir: Path, handover_id: str, since: str) -> dict:
         if header.group("id") != handover_id:
             problems.append(f"header id {header.group('id')} is not this handover's {handover_id}")
         try:
-            if parse_time(written) <= parse_time(since):
-                problems.append(f"written={written} is not after the request at {since}")
+            # The unique id carries freshness (the previous file is moved aside
+            # at each request), so a write stamped at the request's own second
+            # passes; only one stamped before the request is stale.
+            if parse_time(written) < parse_time(since):
+                problems.append(f"written={written} is before the request at {since}")
         except ValueError:
             problems.append(f"written={written} is not a time")
     headings = {line.strip().lstrip("#").strip()
@@ -566,7 +569,8 @@ def request_text(state_dir: Path, handover_id: str, old_session: str, threshold:
         f"so this session hands over now ({CELL}, 'The handover'). Write {path} and then "
         "end your turn without starting anything else. Its first line is exactly:\n"
         f"<!-- lab:steward-handover:v1 id={handover_id} old_session={old_session} "
-        "written=<the UTC time you write it, YYYY-MM-DDTHH:MM:SSZ> -->\n"
+        "written=<the current UTC time as you write it, YYYY-MM-DDTHH:MM:SSZ, for example "
+        "from `date -u +%Y-%m-%dT%H:%M:%SZ`> -->\n"
         f"followed by these four headings:\n{headings}\n"
         f"Under each, put only what {FOUR_RECORDS} do not already carry -- work in progress, "
         "promises with their deadlines, any running task with its output path, and the "

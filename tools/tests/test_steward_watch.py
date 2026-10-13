@@ -776,3 +776,26 @@ def test_cover_entry_point_runs_windowless_children(monkeypatch, tmp_path):
     assert seen["stdin"] is subprocess.DEVNULL
     if sys.platform == "win32":
         assert seen["creationflags"] & subprocess.CREATE_NO_WINDOW
+
+
+MOD = Path(__file__).resolve().parents[1] / "steward-wake" / "hooks" / "register.js"
+
+
+def test_mod_calls_no_model_writes_nothing_and_passes_the_state_dir():
+    """C7 and C27: the mod never calls a model, the store or the file system, and
+    hands every script call the probe's state directory when one is set."""
+    text = MOD.read_bytes().decode("utf-8")
+    for forbidden in ("$.model", "$.store", "$.fs", "writeFile", "require("):
+        assert forbidden not in text
+    assert "if (state.stateDir) argv.push('--state-dir', state.stateDir)" in text
+    assert "STEWARD_LAB_STATE_DIR: await $.env.get('STEWARD_LAB_STATE_DIR')" in text
+    for name in sw.PROBE_ENV:
+        assert f"'{name}'" in text
+
+
+def test_handover_check_accepts_a_write_stamped_at_the_request_second(tmp_path):
+    """C11's boundary: the unique id carries freshness, so the request's own second passes."""
+    write_state_file(tmp_path, "H1", sw.iso(NOW))
+    assert sw.handover_check(tmp_path, "H1", sw.iso(NOW))["ok"] is True
+    write_state_file(tmp_path, "H1", sw.iso(NOW - timedelta(seconds=1)))
+    assert sw.handover_check(tmp_path, "H1", sw.iso(NOW))["ok"] is False

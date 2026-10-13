@@ -182,10 +182,27 @@ async function wake() {
       }
     }
   }
+  // A prompt the mod submits does not pass through `prompt.submit`, so the
+  // notes that hook adds to other prompts ride in the wake turn's own text.
   for (const trigger of found.triggers || []) {
-    await state.host.submit(trigger.text)
+    const notes = await pendingNotes()
+    await state.host.submit([trigger.text, ...notes].join('\n\n'))
     await script(['mark-woken', trigger.key])
   }
+}
+
+// The notes every turn carries now: the awaiting-clear update note while a
+// handover waits on the owner, and a stale cover's note once per episode.
+async function pendingNotes() {
+  const notes = []
+  const step = await script(['handover-step', '--event', 'prompt'])
+  if (step.action === 'note') notes.push(step.text)
+  if (state.coverNote) {
+    notes.push(state.coverNote.text)
+    await script(['mark-woken', state.coverNote.key])
+    state.coverNote = null
+  }
+  return notes
 }
 
 async function guarded(fn) {
@@ -273,13 +290,7 @@ export function register(on) {
       const kind = (e.origin && e.origin.kind) || 'unclassified'
       const verdict = await script(['origin-is-owner', kind, '--record'])
       if (verdict.owner) state.ownerAt = Date.now()
-      const step = await script(['handover-step', '--event', 'prompt'])
-      if (step.action === 'note') context.push(step.text)
-      if (state.coverNote) {
-        context.push(state.coverNote.text)
-        await script(['mark-woken', state.coverNote.key])
-        state.coverNote = null
-      }
+      context.push(...(await pendingNotes()))
     })
     return next({ ...e, context })
   })
