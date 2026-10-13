@@ -12,6 +12,11 @@ TRADECRAFT_ID = "tradecraft@tradecraft"
 HOMEPAGE = "https://github.com/Grimblaz-and-Friends/tradecraft"
 FEATURES = ("apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser")
 FUNCTION_HOOKS = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"
+# A cold plugin cache made `codex plugin list --json` take 24 s once on the
+# owner's machine (#886 reading 6). Discovery and config reads get their own
+# allowance, still capped by the caller's remaining window; the 20 s default
+# stays for git and version probes.
+DISCOVERY_PROBE_SECONDS = 120
 
 
 class PreparationError(OSError):
@@ -39,7 +44,8 @@ def verified_root(root):
 
 def discover(vendor, executable, cwd, deadline, *, env=None):
     result = run_process([*executable, "plugin", "list", "--json"], input=b"", cwd=cwd,
-                         timeout=deadline.probe(), env=env, cleanup_deadline=deadline.cleanup_end)
+                         timeout=deadline.probe(DISCOVERY_PROBE_SECONDS), env=env,
+                         cleanup_deadline=deadline.cleanup_end)
     if result.returncode:
         raise PreparationError(f"{vendor} plugin discovery exited {result.returncode}: " + result.stderr.decode("utf-8", "replace")[:1000])
     try:

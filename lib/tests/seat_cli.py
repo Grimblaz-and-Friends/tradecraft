@@ -12,6 +12,7 @@ flags = sys.argv[3:]
 scenario = json.loads(Path(scenario_path).read_bytes()).get(vendor, {})
 native = vendor == "codex" and flags[:1] == ["app-server"]
 if flags[:3] == ["plugin", "list", "--json"]:
+    time.sleep(scenario.get("discovery_sleep", 0))
     print(json.dumps(scenario.get("plugin_list", [] if vendor == "claude" else {"installed": []})))
     sys.exit(scenario.get("discovery_exit", 0))
 requests = []

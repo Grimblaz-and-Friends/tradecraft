@@ -7,7 +7,7 @@ import time
 
 from seat_process import DuplexInput, run_process
 import implementer_environment as environments
-from implementer_policy import FEATURES, PreparationError, restriction_config
+from implementer_policy import DISCOVERY_PROBE_SECONDS, FEATURES, PreparationError, restriction_config
 
 
 def command(executable, pytest_overrides, *, artifact=False):
@@ -62,7 +62,7 @@ def read_config(argv, cwd, deadline, *, env=None):
                 found = event.get("result", {}).get("config")
                 error = str(event["error"]) if "error" in event else error
                 source.close()
-    result = run_process(argv, input=source, cwd=cwd, timeout=deadline.probe(), env=env,
+    result = run_process(argv, input=source, cwd=cwd, timeout=deadline.probe(DISCOVERY_PROBE_SECONDS), env=env,
                          on_output=output, cleanup_deadline=deadline.cleanup_end)
     if result.returncode or error or not isinstance(found, dict):
         raise PreparationError("Codex effective config discovery failed: " + str(error or result.stderr.decode("utf-8", "replace")[:500]))

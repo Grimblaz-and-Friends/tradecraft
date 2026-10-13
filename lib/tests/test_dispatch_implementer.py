@@ -13,6 +13,8 @@ import pytest
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import dispatch_implementer as implementer
+# Captured before the job fixture replaces discovery with an instant stand-in.
+REAL_DISCOVER = implementer.policy.discover
 import vendor_cli
 
 
@@ -720,6 +722,50 @@ def test_malformed_preparation_is_recorded_unlaunched_without_fallback(job, monk
     assert "unsupported native discovery shape" in attempt["reason"]
     assert all(value["status"] == "unknown" for value in attempt["environment"]["categories"].values())
     assert not args.output.exists()
+
+
+def test_slow_cold_cache_discovery_completes_and_launches(job, monkeypatch):
+    # Reading 6: a cold Codex plugin cache took 24 s, beyond the 20 s git/version
+    # probe default. Real discovery runs a child slower than 20 s; it must finish
+    # inside the discovery allowance and the turn must still launch.
+    args, _ = job
+    args.timeout_seconds = 90
+    monkeypatch.setattr(implementer.policy, "discover", REAL_DISCOVER)
+    configure(job, {"stdout": success_events(), "message": "built", "discovery_sleep": 21})
+    assert implementer.run_implementer(args) == 0
+    logged = record(args)
+    assert logged["outcome"] == "success" and logged["attempts"][0]["launched"]
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert request["environment_request"]["status"] == "prepared"
+
+
+def test_discovery_and_config_reads_use_their_allowance_capped_by_the_window():
+    class Recorder:
+        def __init__(self, remaining):
+            self.remaining_value, self.defaults = remaining, []
+        def probe(self, default=20, *, cleanup=False):
+            self.defaults.append(default)
+            return min(default, self.remaining_value)
+        cleanup_end = None
+    captured = []
+    def fake_run(command, **kwargs):
+        captured.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+    original = (implementer.policy.run_process, implementer.native_codex.run_process)
+    implementer.policy.run_process = implementer.native_codex.run_process = fake_run
+    try:
+        for remaining in (500, 30):
+            deadline = Recorder(remaining)
+            with pytest.raises(subprocess.TimeoutExpired):
+                REAL_DISCOVER("codex", ["codex"], Path.cwd(), deadline)
+            with pytest.raises(subprocess.TimeoutExpired):
+                implementer.native_codex.read_config(["codex"], Path.cwd(), deadline)
+            assert deadline.defaults == [implementer.policy.DISCOVERY_PROBE_SECONDS] * 2
+        assert captured == [120, 120, 30, 30]
+    finally:
+        implementer.policy.run_process, implementer.native_codex.run_process = original
+    # Git and version probes keep the unchanged 20 s default.
+    assert implementer.lifecycle.Deadline(3600).probe() == 20
 
 
 def test_failed_native_resume_keeps_inherited_identity_source(job):
