@@ -535,23 +535,104 @@ def test_c5_2_entrance_reported_stall(home):
     assert tick(home, T0 + 60)["view"]["running"]["stalled"] is True
 
 
-def test_c5_3_every_waiting_reason_the_entrance_emits_is_mapped():
+def _text(node):
+    """A string expression as ("exact", text), ("prefix", leading text) or ("dynamic", "")."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return "exact", node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        kind, text = _text(node.left)
+        return ("prefix", text) if kind != "dynamic" else ("dynamic", "")
+    if isinstance(node, ast.JoinedStr):
+        lead = ""
+        for part in node.values:
+            if isinstance(part, ast.Constant):
+                lead += str(part.value)
+            else:
+                return ("prefix", lead) if lead else ("dynamic", "")
+        return "exact", lead
+    return "dynamic", ""
+
+
+def _entrance_holder_stages(tree):
+    function = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.FunctionDef) and node.name == "_decision_status")
+    found = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Set) and all(isinstance(item, ast.Constant) for item in node.elts):
+            found |= {item.value for item in node.elts}
+    assert "release-report" in found
+    return found
+
+
+def waiting_decisions():
+    """Every Decision/result whose status derives to waiting by `_decision_status`'s rule."""
     tree = ast.parse((REPO / "lib" / "work.py").read_text(encoding="utf-8"))
-    reasons = set()
+    holder_stages = _entrance_holder_stages(tree)
+    found = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = getattr(node.func, "id", getattr(node.func, "attr", None))
         if name not in ("Decision", "result") or len(node.args) < 4:
             continue
-        stage, reason = node.args[0], node.args[3]
-        if isinstance(stage, ast.Constant) and stage.value == "waiting" and isinstance(
-                reason, ast.Constant) and isinstance(reason.value, str):
-            reasons.add(reason.value)
-    assert reasons, "the entrance's waiting decisions were not found"
-    unmapped = sorted(reason for reason in reasons if core.classify(
-        {"stage": "waiting", "status": "waiting", "reason": reason})["waiting_on"] == "unknown")
+        dispatch = node.args[1]
+        if not (isinstance(dispatch, ast.Constant) and dispatch.value is False):
+            continue
+        status = next((keyword.value for keyword in node.keywords if keyword.arg == "status"),
+                      None)
+        position = 5 if name == "result" else 7
+        if status is None and len(node.args) > position:
+            status = node.args[position]
+        if status is not None and not (isinstance(status, ast.Constant) and status.value is None):
+            if isinstance(status, ast.Constant) and status.value != "waiting":
+                continue
+            if not isinstance(status, ast.Constant):
+                continue
+        stage_kind, stage = _text(node.args[0])
+        reason_kind, reason = _text(node.args[3])
+        if reason_kind == "dynamic":
+            continue
+        if stage_kind == "exact" and (stage in holder_stages or stage == "terminal"):
+            continue
+        if any(word in reason for word in ("version", "refused", "unproved")):
+            continue
+        sample_stage = stage if stage_kind == "exact" else (stage + "x" if stage else "build")
+        sample_reason = reason if reason_kind == "exact" else reason + "x"
+        found.add((sample_stage, sample_reason))
+    return found
+
+
+def test_c5_3_every_waiting_decision_the_entrance_emits_is_mapped():
+    decisions = waiting_decisions()
+    assert ("convergence", "affirmed-brief-marker-absent") in decisions
+    assert ("waiting", "latest-check-run-pending") in decisions
+    unmapped = sorted(pair for pair in decisions if core.classify(
+        {"stage": pair[0], "status": "waiting", "reason": pair[1]})["waiting_on"] == "unknown")
     assert unmapped == []
+
+
+@pytest.mark.parametrize("stage,reason,status,party", [
+    ("convergence", "affirmed-brief-marker-absent", "waiting", "owner"),
+    ("artifact-source", "artifact-source-unusable", "holder-owned", "holder"),
+    ("build", "build-budget-holder-owned", "holder-owned", "holder"),
+    ("implementation-scope", "implementation-instalment-required", "holder-owned", "holder"),
+    ("build", "fresh-build-requires-released-registration", "refused", "holder"),
+])
+def test_c5_3_stage_level_decisions_name_their_party(stage, reason, status, party):
+    answer = core.classify({"stage": stage, "status": status, "reason": reason})
+    assert answer["waiting_on"] == party
+    assert answer["next_step"] not in ("", reason)
+    view = {"issue": 888, "stage": stage, "waiting_on": party, "final": None, "running": None}
+    assert core._label(view) == ("waiting on you" if party == "owner" else f"holder: {stage}")
+
+
+@pytest.mark.parametrize("reason", ["holder-session-id-required-for-build",
+                                    "resume-session-identifies-holder-for-build"])
+def test_c5_3_reasons_passed_through_a_parameter_are_mapped(reason):
+    # `_holder_identity_decision(state, decision, reason)` builds these from an argument,
+    # which the ast walk above cannot follow; their status derives to waiting.
+    assert core.classify({"stage": "build", "status": "waiting", "reason": reason})[
+        "waiting_on"] == "holder"
 
 
 def test_c5_3_classifier_order():

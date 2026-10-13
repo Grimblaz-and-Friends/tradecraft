@@ -11,6 +11,8 @@ const GET = 'mcp__ccd_session_mgmt__get_session'
 const SET = 'mcp__ccd_session_mgmt__set_session_title'
 const RUN = 'python launch_stage.py b1 -- run build --repo Grimblaz-and-Friends/tradecraft --issue 888 --root D:/r'
 
+const TURN = { answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as const
+
 const VIEW = {
   issue: 888, stage: 'build', label: 'build running', waiting_on: 'builder',
   next_step: 'wait for the build run', gate: 'not reached',
@@ -24,14 +26,15 @@ type World = {
   checks?: Record<string, 'allow' | 'ask' | 'deny'>
   bound?: boolean
   block?: string | null
+  lateReadMs?: number
 }
 
 function world(on: On, w: World) {
-  const seen = { core: [] as string[], calls: [] as string[], opened: 0, statuses: [] as Array<string | undefined> }
+  const seen = { core: [] as string[], calls: [] as string[], opened: 0, statuses: [] as Array<string | undefined>, readsStarted: 0, readsDone: 0 }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.complete', ($, e) => ({ text: '' }) as any)
   on('classic.Stop', () => ({}) as any)
-  mock.clock(on, { now: 1_800_000_000_000 })
+  const clock = mock.clock(on, { now: 1_800_000_000_000 })
   on('command.register', ($, e) => ({ value: { command: e.name } }) as any)
   on('session.id', () => ({ value: 'sid-1' }))
   on('session.root', () => ({ value: 'D:/root' }))
@@ -54,9 +57,15 @@ function world(on: On, w: World) {
     seen.statuses.push(e.text)
     return { value: undefined } as any
   })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     const command = String(e.argv[2])
     seen.core.push(command)
+    if (command === 'read' && w.lateReadMs) {
+      // The entrance read answers late: only once the test moves the clock past it.
+      seen.readsStarted += 1
+      await clock.sleep(w.lateReadMs)
+      seen.readsDone += 1
+    }
     const answers: Record<string, unknown> = {
       recover: { candidate: null },
       observe: w.bound === false || (w.title ?? '').toLowerCase() === 'steward' ? { bound: false } : { bound: true },
@@ -67,13 +76,13 @@ function world(on: On, w: World) {
     }
     return { value: { exitCode: 0, stdout: JSON.stringify(answers[command] ?? {}), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return seen
+  return Object.assign(seen, { clock })
 }
 
 test('a session holding no change draws, renames and reads nothing', async ($, on) => {
   const seen = world(on, { bound: false })
   await $.session.start({ cwd: 'D:/root', surface: null } as any)
-  await $.turn.complete({ reason: 'answer', text: '' } as any)
+  await $.turn.complete(TURN)
   await $.classic.Stop({ stop_hook_active: false } as any)
   await $.tool.call({ tool: 'Bash', command: 'git status' } as any)
   expect(seen.opened).toBe(0)
@@ -135,4 +144,25 @@ test('the pane shows every field on terminal and desktop', async ($, on) => {
     }
     await ui.unmount()
   }
+})
+
+test('turn ends and timer ticks never wait for the entrance read', async ($, on) => {
+  const seen = world(on, { lateReadMs: 300_000 })
+  await $.session.start({ cwd: 'D:/root', surface: null } as any)
+  await $.tool.call({ tool: 'Bash', command: RUN } as any)
+  await seen.clock.settle()
+  expect(seen.readsStarted).toBeGreaterThan(0)
+  const started = seen.readsStarted
+  await $.turn.complete(TURN)
+  expect(seen.readsDone).toBe(0)
+  await seen.clock.settle()
+  // The turn end asked for a read of its own: the hook ran, and returned before it.
+  expect(seen.readsStarted).toBeGreaterThan(started)
+  expect(seen.readsDone).toBe(0)
+  const ticks = seen.core.filter(command => command === 'tick').length
+  await seen.clock.advance(60_000)
+  expect(seen.core.filter(command => command === 'tick').length).toBeGreaterThan(ticks)
+  expect(seen.readsDone).toBe(0)
+  await seen.clock.advance(300_000)
+  expect(seen.readsDone).toBeGreaterThan(0)
 })

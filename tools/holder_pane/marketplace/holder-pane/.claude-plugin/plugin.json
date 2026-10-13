@@ -1,6 +1,6 @@
 {
   "name": "holder-pane",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lab-only: shows a holder session where its change stands in the tradecraft flow, and reminds the holder of its own next step.",
   "author": { "name": "Grimblaz-and-Friends" },
   "types": "./types/index.d.ts"

@@ -70,6 +70,26 @@ CI_REASON_PREFIXES = ("latest-check-run-", "declared-floor-")
 GATE_REASON_MARKERS = ("gate-evaluation", "required-gate-")
 REVIEWER_REASONS = frozenset({"required-connected-reviewer-has-not-run"})
 HOLDER_WAITING_REASONS = frozenset({"base-synchronization-unavailable"})
+# Decisions that stop the flow under a stage of their own, matched by stage ahead
+# of the status-level rules. A `build` stage is also a runnable stage, so its two
+# are matched with their reason.
+STAGE_PARTIES: dict[str, tuple[str, str]] = {
+    "convergence": ("owner", "affirm the brief"),
+    "artifact-source": ("holder", "repair the artifact source"),
+    "implementation-scope": ("holder", "run the entrance with --instalment"),
+}
+STAGE_REASON_PARTIES: dict[tuple[str, str], tuple[str, str]] = {
+    ("build", "build-budget-holder-owned"): ("holder", "resolve the build budget"),
+    ("build", "fresh-build-requires-released-registration"):
+        ("holder", "run release for this work before a fresh build"),
+}
+# Waiting reasons built from a prefix in the entrance: each asks the holder for something.
+HOLDER_WAITING_PREFIXES: dict[str, str] = {
+    "reach-": "read the owed reach coverage",
+    "resume-session-missing-for-": "supply the dispatch bundle or builder-session marker",
+    "holder-session-id-required-for-": "pass --holder-session-id",
+    "resume-session-identifies-holder-for-": "pass the builder's session, not the holder's",
+}
 FINAL_STAGES = frozenset({"terminal", "merged-pull-request"})
 
 STEWARD = "steward"
@@ -302,6 +322,9 @@ def classify(decision: dict[str, Any]) -> dict[str, str]:
     reason = str(decision.get("reason") or "")
     if stage in OWNER_DECISIONS or reason in OWNER_REASONS:
         return {"waiting_on": "owner", "next_step": f"owner: {reason or stage}"}
+    party = STAGE_REASON_PARTIES.get((stage, reason)) or STAGE_PARTIES.get(stage)
+    if party is not None:
+        return {"waiting_on": party[0], "next_step": party[1]}
     if status == "waiting":
         if reason.startswith(CI_REASON_PREFIXES):
             return {"waiting_on": "ci", "next_step": f"wait for CI ({reason})"}
@@ -309,6 +332,9 @@ def classify(decision: dict[str, Any]) -> dict[str, str]:
             return {"waiting_on": "reviewer", "next_step": f"wait for review ({reason})"}
         if reason in HOLDER_WAITING_REASONS:
             return {"waiting_on": "holder", "next_step": f"resolve: {reason}"}
+        for prefix, step in HOLDER_WAITING_PREFIXES.items():
+            if reason.startswith(prefix):
+                return {"waiting_on": "holder", "next_step": step}
     if status in ("runnable", "holder-owned"):
         if stage in FINAL_STAGES:
             return {"waiting_on": "none", "next_step": "none"}
