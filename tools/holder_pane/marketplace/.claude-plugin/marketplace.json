@@ -1,0 +1,5 @@
+{
+  "name": "tradecraft-lab",
+  "owner": { "name": "Grimblaz-and-Friends" },
+  "plugins": [{ "name": "holder-pane", "source": "./holder-pane" }]
+}
