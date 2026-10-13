@@ -198,6 +198,35 @@ def _windows_pipe_reader(process, ended):
     return read_event
 
 
+class DuplexInput:
+    """Bounded nonblocking producer, independently drained by the owned writer."""
+    def __init__(self, *, limit=2_000_000):
+        self.queue = queue.Queue(maxsize=32)
+        self.limit = limit
+        self.closed = False
+        self._lock = threading.Lock()
+
+    def send(self, data):
+        with self._lock:
+            if self.closed or len(data) > self.limit:
+                raise OSError("duplex input closed or message exceeds bound")
+            try:
+                self.queue.put_nowait(data)
+            except queue.Full as exc:
+                raise OSError("duplex input queue exceeds bound") from exc
+
+    def close(self):
+        with self._lock:
+            self.closed = True
+
+    def chunks(self):
+        while not self.closed or not self.queue.empty():
+            try:
+                yield self.queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+
+
 def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                 on_launch=None, env=None, cleanup_deadline=None):
     """Drain both pipes while input is supplied independently of the deadline.
@@ -205,7 +234,8 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
     Callbacks run serially on the calling thread. A blocked stdin or silent
     descendant therefore cannot prevent capture or elapsed checkpoints.
     """
-    if on_output is None and on_tick is None and on_launch is None and cleanup_deadline is None:
+    if (not isinstance(input, DuplexInput) and on_output is None and on_tick is None
+            and on_launch is None and cleanup_deadline is None):
         return _buffered_process(command, input=input, cwd=cwd, timeout=timeout, env=env)
     deadline = time.monotonic() + timeout
     with tempfile.TemporaryDirectory(prefix="tradecraft-launch-") as temporary:
@@ -237,10 +267,12 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
 
         def supply():
             try:
-                view = memoryview(input)
-                while view:
-                    written = process.stdin.write(view)
-                    view = view[written:]
+                chunks = input.chunks() if isinstance(input, DuplexInput) else (input,)
+                for chunk in chunks:
+                    view = memoryview(chunk)
+                    while view:
+                        written = process.stdin.write(view)
+                        view = view[written:]
             except (BrokenPipeError, OSError, ValueError):
                 pass
             finally:
@@ -361,6 +393,8 @@ def run_process(command, *, input, cwd, timeout, on_output=None, on_tick=None,
                     if on_output:
                         notify(on_output, name, chunk)
         finally:
+            if isinstance(input, DuplexInput):
+                input.close()
             stop_tree()
             # Draining and waiting share one allowance, rather than adding a
             # fresh wait after the drain or after the caller's cleanup deadline.

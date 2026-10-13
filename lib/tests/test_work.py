@@ -1106,6 +1106,10 @@ class TestBuildReach:
         reported = json.loads(capsys.readouterr().out)
         assert reported["reach"]["state"] == "unmeasurable"
         assert reported["reach"]["current_head"] == builder.pr["head"]["sha"]
+        if location == "discovery":
+            environments = reported["implementer_environments"]
+            assert environments["status"] == "unknown" and environments["attempts"] == []
+            assert failure.__name__ in environments["reason"] and "planted reach failure" in environments["reason"]
         self.reading(builder, superset=True)
         assert work._reach_refusal(builder, "proof") is None, builder.reach
 
@@ -11158,6 +11162,30 @@ def test_named_run_plan_is_snapshot_and_agrees_with_command(tmp_path, monkeypatc
     monkeypatch.setattr(work, "_recipient_run", launch)
     assert work.execute_stage(fixture, work.Decision("build", True, "fresh", "holder-named-stage"),
                               tmp_path, None, "holder", floor_command="python fixture-check.py") == 0
+
+
+@pytest.mark.parametrize("returncode", [0, 1, None])
+def test_implementer_return_report_requires_launcher_return(tmp_path, monkeypatch, returncode):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    fixture = state(AFFIRMED)
+    root = tmp_path / "implementation"
+    root.mkdir()
+    monkeypatch.setattr(work, "_dispatch_root", lambda *_a, **_k: (root, None, False))
+    monkeypatch.setattr(work, "_runtime_argument", lambda vendor, explicit=None: [f"--{vendor}", "fixture"])
+    reports = []
+    monkeypatch.setattr(work, "_emit_report", lambda value, *_a, **_k: reports.append(value))
+    def launch(command, **_kwargs):
+        if returncode is None:
+            raise subprocess.TimeoutExpired(command, 1)
+        return subprocess.CompletedProcess(command, returncode)
+    monkeypatch.setattr(work, "_recipient_run", launch)
+    decision = work.Decision("build", True, "fresh", "holder-named-stage")
+    if returncode is None:
+        with pytest.raises(work.WorkError, match="bounded recording allowance"):
+            work.execute_stage(fixture, decision, tmp_path, None, "holder", floor_command="python fixture-check.py")
+    else:
+        assert work.execute_stage(fixture, decision, tmp_path, None, "holder", floor_command="python fixture-check.py") == returncode
+    assert sum(value.get("implementer_returned") is True for value in reports) == (0 if returncode is None else 1)
 
 
 @pytest.mark.parametrize("root_fields", [{}, {"root": None}, {"root": ""},

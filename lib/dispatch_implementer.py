@@ -35,6 +35,9 @@ import launch_settings
 import run_lifecycle as lifecycle
 from codex_pytest import implementer_pytest_overrides
 from seat_process import run_process
+import implementer_environment as environments
+import implementer_policy as policy
+import codex_implementer as native_codex
 from vendor_cli import CliError, resolve_command
 from winio import utf8_stdio
 
@@ -86,29 +89,17 @@ def build_command(args: argparse.Namespace, executable: list[str], last_message:
             "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
             "--setting-sources", "user", "--plugin-dir",
             str(Path(__file__).resolve().parent.parent),
+            "--strict-mcp-config", "--no-chrome",
         ]
+        if getattr(args, "launch_settings_path", None):
+            command.extend(("--settings", args.launch_settings_path))
         if args.resume:
             command.extend(("--resume", args.resume))
         elif args.session_id:
             command.extend(("--session-id", args.session_id))
         return command
-    command = [
-        *executable, "exec", "--approve-for-me", "--json", "--color", "never",
-        "--model", args.model, "-c", f'model_reasoning_effort="{args.effort}"',
-    ]
-    for override in implementer_pytest_overrides():
-        command.extend(("-c", override))
-    if getattr(args, "stage", None) == "artifact":
-        command.extend(("-c", 'sandbox_mode="workspace-write"',
-                        "-c", "sandbox_workspace_write.writable_roots=[]",
-                        "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
-                        "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"))
-    command.extend(("--cd", str(args.root.resolve()), "--output-last-message", str(last_message)))
-    if args.resume:
-        command.extend(("resume", args.resume, "-"))
-    else:
-        command.append("-")
-    return command
+    return native_codex.command(executable, implementer_pytest_overrides(),
+                                artifact=getattr(args, "stage", None) == "artifact")
 
 
 def _claude_result(raw: bytes) -> tuple[bool, bytes, str | None, str]:
@@ -427,6 +418,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
     stderr_path = records.sidecar(output, f".{args.vendor}.stderr.log")
     context_path = records.sidecar(output, ".context.bin") if context else None
     brief_path = records.sidecar(output, ".artifact-brief.bin") if artifact_brief else None
+    protocol_path = records.sidecar(output, ".codex.stdin.jsonl") if args.vendor == "codex" else None
     destinations = [
         output, request_path, record_path, input_path, source_path, stdout_path, stderr_path
     ]
@@ -434,6 +426,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
         destinations.append(context_path)
     if brief_path:
         destinations.append(brief_path)
+    if protocol_path:
+        destinations.append(protocol_path)
     inputs = {dispatch}
     if brief_path:
         inputs.add(args.artifact_brief.resolve())
@@ -453,6 +447,35 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     executable = resolve_command(args.vendor, None)
                 except CliError as exc:
                     unavailable_reason = str(exc)
+            child_env = artifact_tree.environment() if args.stage == "artifact" else None
+            intent = {"status": "unprepared", "disabled_plugin_ids": [], "allowed_plugins": []}
+            preparation_error = None
+            if executable is not None and unavailable_reason is None:
+                try:
+                    if args.vendor == "claude":
+                        intent, child_env = policy.claude_prepare(executable, root, deadline, temporary,
+                            Path(__file__).resolve().parent.parent, env=child_env)
+                        args.launch_settings_path = intent["settings_path"]
+                    else:
+                        intent = policy.codex_prepare(executable, root, deadline, env=child_env)
+                        config = native_codex.read_config(build_command(args, executable, last_message),
+                                                         root, deadline, env=child_env)
+                        intent["thread_config"] = policy.restriction_config(config, intent)
+                        intent["discovery_sources"].append("Codex native config/read for recipient cwd")
+                    intent["status"] = "prepared"
+                except TimeoutError:
+                    # No useful launch window is not a prepared failed attempt.
+                    # Keep the reservation unpublished so prior stopped work
+                    # remains the latest resumable invocation.
+                    raise
+                except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError, UnicodeError) as exc:
+                    # A probe stopped at the edge of the caller's window is the
+                    # same missing launch window; only a failure leaving a
+                    # useful window is an ordinary recorded preparation failure.
+                    deadline.remaining()
+                    preparation_error = "implementer preparation failed: " + str(exc)
+                    intent["status"] = "failed"
+                    intent["reason"] = preparation_error
             command = (
                 build_command(args, executable, last_message)
                 if executable is not None else None
@@ -463,7 +486,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 vendor=args.vendor, model=args.model,
                 effort=args.effort, continuity=continuity,
                 permission_boundary=(
-                    "workspace-write with automatic approval review (--approve-for-me)"
+                    "workspace-write with native on-request/auto_review"
                     if args.vendor == "codex" else
                     "Claude auto permission mode; user settings only; no OS write sandbox"
                 ),
@@ -479,6 +502,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 },
             )
             request["implementer_role"] = role
+            request["environment_request"] = intent
+            request["transport"] = "codex-app-server-v2" if args.vendor == "codex" else "claude-stream-json"
             request["lineage_branch"] = args.lineage_branch
             request["lineage_pull_request"] = args.lineage_pull_request
             request.update({key: metadata[key] for key in (
@@ -491,7 +516,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             request["caller_limit_seconds"] = args.timeout_seconds
             request["stage_ceiling_seconds"] = (
                 lifecycle.DEFAULT_STAGE_TIMEOUT_SECONDS if args.stage in lifecycle.REPAIR_STAGES else None)
-            allocation = deadline.remaining()
+            allocation = 0 if preparation_error else deadline.remaining()
             supplied = metadata.get("recipient_allocation_seconds")
             if supplied is not None:
                 if not isinstance(supplied, (int, float)) or not math.isfinite(supplied) or supplied <= 0:
@@ -502,7 +527,12 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             if args.stage != "artifact":
                 request.setdefault("budget_lineage", hashlib.sha256(
                     (args.work + str(root) + str(args.lineage_branch)).encode("utf-8")).hexdigest())
-                request["launch_snapshot"] = lifecycle.content_snapshot(root, timeout=deadline.probe())
+                snapshot_timeout = deadline.probe()
+                try:
+                    request["launch_snapshot"] = lifecycle.content_snapshot(root, timeout=snapshot_timeout)
+                except TimeoutError as exc:
+                    deadline.remaining()  # A slow snapshot is recorded; an exhausted window is not.
+                    request["launch_snapshot"] = {"digest": None, "unavailable_reason": str(exc)}
                 request.setdefault("progress_baseline", request["launch_snapshot"])
             request["context"] = (
                 {"path": str(context_path), "sha256": hashlib.sha256(context).hexdigest()}
@@ -551,12 +581,19 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             if brief_path:
                 streams[brief_path].write(artifact_brief)
                 streams[brief_path].flush()
+            # Version and revision probes swallow their own timeouts. Recheck
+            # the window before publishing, so an exhausted caller limit leaves
+            # no bundle that would displace an earlier stopped, resumable run.
+            deadline.remaining()
             streams.mark_ready()
             print(f"implementer: dispatch {request['dispatch_id']} -> {output}")
             attempt: dict[str, object] = {
                 "vendor": args.vendor, "launched": False, "exit_code": None,
                 "outcome": "error", "reason": "",
                 "stdout": str(stdout_path), "stderr": str(stderr_path),
+                "source_format": request["transport"],
+                "environment": environments.unknown("runtime not yet observed", vendor=args.vendor,
+                                                       version=request["runtime_version"]),
             }
             record: dict[str, object] = {
                 "schema_version": records.SCHEMA_VERSION,
@@ -576,10 +613,14 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 retained=request.get("retained_session_id"),
                 retained_source=request.get("retained_session_source"))
             growing.begin_attempt(attempt, args.vendor, stdout_path, stderr_path)
-            if unavailable_reason is not None:
-                attempt.update(outcome="unavailable", reason=unavailable_reason)
-                records.add_unobserved(attempt, unavailable_reason)
-                record["outcome"] = "unavailable"
+            if unavailable_reason is not None or preparation_error:
+                failure = preparation_error or unavailable_reason
+                outcome = "error" if preparation_error else "unavailable"
+                attempt.update(outcome=outcome, reason=failure)
+                attempt["environment"] = environments.unknown("unlaunched: " + failure,
+                    vendor=args.vendor, version=request["runtime_version"])
+                records.add_unobserved(attempt, failure)
+                record["outcome"] = outcome
                 record["completed_at"] = datetime.now(timezone.utc).isoformat()
                 record["revision_after"] = records.git_revision(root)
                 records.add_usage_record(
@@ -592,7 +633,7 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 growing.finish()
                 print(
                     f"implementer: {args.vendor} (source {args.vendor_source}) unavailable: "
-                    f"{unavailable_reason}", file=sys.stderr,
+                    f"{failure}", file=sys.stderr,
                 )
                 return 1
             verdict: bytes | None = None
@@ -602,6 +643,35 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             return_code = 1
             started = time.monotonic()
             ceiling = False
+            native = None
+            if args.vendor == "codex":
+                native = native_codex.NativeTurn(args=args, prompt=effective_prompt, intent=intent,
+                    environment=attempt["environment"], stdout_path=stdout_path,
+                    observe=growing.observe, transcript=streams[protocol_path], cwd=root)
+            pending_environment = b""
+            environment_line = 0
+            def capture(name, chunk):
+                nonlocal pending_environment, environment_line
+                if native:
+                    native.output(name, chunk)
+                elif name == "stdout":
+                    pending_environment += chunk
+                    while b"\n" in pending_environment:
+                        line, pending_environment = pending_environment.split(b"\n", 1)
+                        environment_line += 1
+                        try:
+                            event = json.loads(line)
+                        except (UnicodeError, ValueError):
+                            continue
+                        if isinstance(event, dict) and environments.claude_init(attempt["environment"], event,
+                                path=stdout_path, line=environment_line,
+                                allowed=[v["id"] for v in intent["allowed_plugins"]]):
+                            growing.identity_changed = True
+                growing.output(name, chunk)
+            def checkpoint():
+                if native:
+                    native.refresh()
+                growing.tick()
             try:
                 try:
                     if args.handover_state:
@@ -610,9 +680,9 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         )
                     allocation = min(allocation, deadline.remaining())
                     attempt["allocation_seconds"] = allocation
-                    result = run_process(command, input=effective_prompt, cwd=root, timeout=allocation,
-                                         env=artifact_tree.environment() if args.stage == "artifact" else None,
-                                         on_output=growing.output, on_tick=growing.tick,
+                    result = run_process(command, input=native.input if native else effective_prompt, cwd=root, timeout=allocation,
+                                         env=child_env,
+                                         on_output=capture, on_tick=checkpoint,
                                          on_launch=growing.launched,
                                          cleanup_deadline=deadline.cleanup_end)
                 except subprocess.TimeoutExpired as exc:
@@ -645,8 +715,19 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     attempt["launched"] = True
                 for name, path in (("stdout", stdout_path), ("stderr", stderr_path)):
                     if streams[path].tell() == 0 and getattr(result, name):
-                        growing.output(name, getattr(result, name))
+                        capture(name, getattr(result, name))
                 growing.finish_attempt()
+                if native:
+                    native.finish()
+                elif pending_environment.strip():
+                    try:
+                        event = json.loads(pending_environment)
+                    except (UnicodeError, ValueError):
+                        event = None
+                    if isinstance(event, dict):
+                        environments.claude_init(attempt["environment"], event, path=stdout_path,
+                            line=environment_line + 1,
+                            allowed=[v["id"] for v in intent["allowed_plugins"]])
                 elapsed = time.monotonic() - started
                 if ceiling:
                     reason = lifecycle.ceiling_reason(args.vendor, caller_limit=args.timeout_seconds,
@@ -659,42 +740,41 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                         complete = False
                         failure_reason = f"claude exited {result.returncode}: {failure_reason}"
                 else:
-                    stream = records.codex_stream_result(result.stdout)
-                    events = list(stream.events)
-                    if stream.valid and stream.completed and not stream.failed_events and not ceiling:
+                    if native.valid and native.completed and not ceiling:
                         # Completion is owned by the stream; process status remains evidence.
                         reason = ""
-                    session_id, session_source = _thread_id(events, result.stderr)
-                    message = last_message.read_bytes() if last_message.is_file() else b""
-                    if not message.strip() and stream.final_message is not None:
-                        message = stream.final_message.encode("utf-8")
-                    complete = stream.valid and stream.completed and not stream.failed_events
-                    if not stream.valid:
-                        failure_reason = "codex returned invalid JSONL"
-                    elif stream.failed_events:
-                        failure_reason = "codex stream reported turn.failed"
-                    elif not stream.completed:
-                        failure_reason = "codex stream returned no turn.completed"
-                    else:
-                        failure_reason = f"codex turn could not be accepted (exit {result.returncode})"
+                    # Only a session this invocation's runtime returned carries
+                    # the native label; an inherited id keeps its own source.
+                    session_id = native.session
+                    session_source = "Codex native startup response.thread.id" if session_id else ""
+                    message = (native.final_message or "").encode("utf-8")
+                    complete = native.valid and native.completed
+                    failure_reason = native.error or "Codex native stream returned no completed current turn"
                 retained = record.get("session_identity", {})
-                session_id = session_id or retained.get("session_id")
-                session_source = session_source or retained.get("source") or ""
+                if not session_id:
+                    session_id = retained.get("session_id")
+                    session_source = (retained.get("source") or "") if session_id else ""
                 reason = record.get("session_identity_error") or reason
                 if args.holder_session_id and session_id == args.holder_session_id:
                     reason = "runtime returned the holder session as the builder session"
                     session_id = None
                     session_source = ""
                 if attempt["launched"]:
-                    records.add_runtime_evidence(attempt, args.vendor, result.stdout, continuity, elapsed)
+                    if native:
+                        attempt["observed"] = native.evidence(continuity)
+                        attempt["elapsed_seconds"] = elapsed
+                    else:
+                        records.add_runtime_evidence(attempt, args.vendor, result.stdout, continuity, elapsed)
                     if args.vendor == "claude":
-                        native = claude_terminal(result.stdout)
-                        if isinstance(native, dict):
-                            attempt["permission_denials"] = native.get("permission_denials")
-                            attempt["model_usage"] = native.get("modelUsage")
-                            attempt["native_cost"] = native.get("total_cost_usd")
+                        terminal = claude_terminal(result.stdout)
+                        if isinstance(terminal, dict):
+                            attempt["permission_denials"] = terminal.get("permission_denials")
+                            attempt["model_usage"] = terminal.get("modelUsage")
+                            attempt["native_cost"] = terminal.get("total_cost_usd")
                 else:
                     records.add_unobserved(attempt, reason)
+                    attempt["environment"] = environments.unknown("unlaunched: " + reason,
+                        vendor=args.vendor, version=request["runtime_version"])
                 attempt["observed"]["session_id"] = session_id
                 attempt["observed"]["session_id_source"] = session_source or None
                 if args.resume and session_id and session_id != args.resume:
@@ -820,7 +900,7 @@ def parser() -> argparse.ArgumentParser:
         epilog=(
             "A fresh direct launch reads ~/.tradecraft/implementer-vendor unless --vendor is "
             "supplied; a named resume requires --vendor from its recorded session. Codex uses "
-            "--approve-for-me and JSONL; Claude uses auto mode and stream-json. Neither route "
+            "native app-server with automatic approval review; Claude uses auto mode and stream-json. Neither route "
             "uses --ephemeral, --last, a read-only sandbox, or vendor fallback. Outputs default "
             "to the machine-local .tradecraft dispatch store and must be new. A successful turn "
             "without a returned session id publishes its result but exits nonzero because it "

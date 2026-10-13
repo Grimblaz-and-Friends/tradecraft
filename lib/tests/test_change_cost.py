@@ -48,6 +48,24 @@ def rate(model="gpt-fixture"):
     }
 
 
+def test_native_app_server_cost_uses_cumulative_total_and_retains_unknown_classes():
+    row = usage()
+    observed = {"source": "Codex native thread/tokenUsage/updated.params.tokenUsage.total",
+        "raw": {"total": {"inputTokens": 100, "cachedInputTokens": 20, "outputTokens": 10,
+            "reasoningOutputTokens": 5, "totalTokens": 110}, "last": {"inputTokens": 1}}}
+    attempt = cost._Attempt(row, evidence={"observed": observed})
+    reasons = []
+    counts = cost._codex_counts(attempt, reasons)
+    assert counts["input"] == 100 and counts["cached_input"] == 20 and counts["output"] == 10
+    assert not reasons and "total_tokens" not in counts
+    observed["raw"]["total"]["unfamiliarTokens"] = 3
+    assert cost._codex_counts(attempt, [])["unfamiliarTokens"] == 3
+    observed["raw"]["total"]["inputTokens"] = -1
+    reasons = []
+    cost._codex_counts(attempt, reasons)
+    assert reasons  # Invalid native counts cannot disappear in normalization.
+
+
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes((json.dumps(value) + "\n").encode())
