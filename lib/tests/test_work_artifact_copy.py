@@ -55,6 +55,10 @@ def entrance(tmp_path, monkeypatch):
         capture = tmp_path / ("capture-" + str(len(commands)) + ".json")
         native = native_artifact_result(vendor, artifact_text("combined") if returned is None else returned, identity)
         native.update(author_writes=True, capture_path=str(capture), resume_probe_only=probe)
+        if vendor == "codex" and identity is None:
+            # A correlated native turn can finish without a usable persistent
+            # identity. Distinguish that from an unsupported startup response.
+            native["native_session"] = ""
         if fail == "runtime":
             native["exit"] = 1
             native["stdout"] = (json.dumps({"type": "thread.started", "thread_id": SESSION}) + "\n" +
@@ -609,7 +613,16 @@ def test_public_author_edits_only_its_copy_for_both_routes_and_vendors(entrance,
         assert Path(request["input"]).read_bytes() == dispatch.read_bytes()
     native_command = request["requested"]["command"]
     if vendor == "codex":
-        assert native_command[native_command.index("--cd") + 1] == copy["root"]
+        assert "app-server" in native_command and "--stdio" in native_command
+        startup = next(value["params"] for value in captured["requests"]
+                       if value.get("method") == "thread/start")
+        assert startup["cwd"] == copy["root"]
+        assert startup["sandbox"] == "workspace-write"
+        assert startup["approvalPolicy"] == "on-request" and startup["approvalsReviewer"] == "auto_review"
+        turn = next(value["params"] for value in captured["requests"]
+                    if value.get("method") == "turn/start")
+        assert turn["input"][0]["text"].encode("utf-8") == base64.b64decode(captured["stdin"])
+        assert "disabledPluginIds" in turn
         assert "--add-dir" not in native_command
         assert 'sandbox_mode="workspace-write"' in native_command
         assert "sandbox_workspace_write.writable_roots=[]" in native_command

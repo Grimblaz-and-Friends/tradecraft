@@ -301,8 +301,12 @@ class CodexStreamResult:
     final_message: str | None
 
 
-def codex_stream_result(raw: bytes) -> CodexStreamResult:
+def codex_stream_result(raw: bytes, *, source_format: str = "exec") -> CodexStreamResult:
     """Parse a Codex JSONL stream once without treating recovered errors as failure."""
+    if source_format in {"app-server", "codex-app-server-v2"}:
+        return _codex_native_stream_result(raw)
+    if source_format != "exec":
+        return CodexStreamResult(False, (), False, (), (), None)
     try:
         values = [json.loads(line) for line in raw.decode("utf-8").splitlines()
                   if line.strip()]
@@ -324,6 +328,30 @@ def codex_stream_result(raw: bytes) -> CodexStreamResult:
     return CodexStreamResult(
         True, events, completed, failed, errors, messages[-1] if messages else None,
     )
+
+
+def _codex_native_stream_result(raw):
+    """Replay the builder transport's fixed correlated RPC sequence explicitly."""
+    from argparse import Namespace
+    from codex_implementer import NativeTurn
+    import implementer_environment as environment
+    instance = NativeTurn(args=Namespace(root=Path.cwd(), resume=None, model="", effort=""),
+        prompt=b"", intent={"thread_config": {}, "disabled_plugin_ids": [], "allowed_plugins": []},
+        environment=environment.unknown("not requested"), stdout_path="native stdout")
+    instance.output("stdout", raw)
+    if instance.pending.strip():
+        instance.event(instance.pending)
+    events = tuple(instance.events)
+    def failed(event):
+        params = event.get("params")
+        terminal = params.get("turn") if isinstance(params, dict) else None
+        return (event.get("method") == "turn/completed" and isinstance(terminal, dict)
+            and params.get("threadId") == instance.session and terminal.get("id") == instance.turn
+            and terminal.get("status") != "completed")
+    failures = tuple(e for e in events if failed(e))
+    errors = tuple(e for e in events if e.get("method") == "error")
+    return CodexStreamResult(instance.valid, events, instance.completed, failures,
+                             errors, instance.final_message)
 
 
 def _number(value: object) -> int | float | None:
