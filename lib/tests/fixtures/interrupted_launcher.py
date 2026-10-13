@@ -73,7 +73,8 @@ if "--slow-final-probe" in arguments:
 
     def slow_final_probe(command, **kwargs):
         global revision_calls
-        if command[0] == "git":
+        # Only the revision probe; the Claude shim's git-directory probe is not one.
+        if command[0] == "git" and command[-2:] == ["rev-parse", "HEAD"]:
             revision_calls += 1
             if revision_calls > 1:
                 if fast_ceiling:
