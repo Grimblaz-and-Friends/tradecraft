@@ -9,6 +9,7 @@ Criterion ids (C1 ...) are the settled artifact's on #890.
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
@@ -163,7 +164,7 @@ def test_cover_cli_exits_non_zero_on_a_bad_watermark(tmp_path, monkeypatch):
     real = sw.GitHub
     monkeypatch.setattr(sw, "GitHub", lambda deadline=None: real(runner=lab))
     assert sw.main(["cover", "--state-dir", str(tmp_path)]) == 1
-    assert sw.main(["wake", "--state-dir", str(tmp_path)]) == 2
+    assert sw.main(["wake", "--state-dir", str(tmp_path)]) == 1
 
 
 def test_handled_refuses_lower_and_foreign_ids_and_lists_what_it_covers(tmp_path):
@@ -264,8 +265,8 @@ def test_wake_texts_name_their_trigger_and_never_a_title(tmp_path):
 def test_a_failed_repository_read_wakes_nothing_and_prunes_nothing(tmp_path):
     lab = FakeLab(merges=merges(5, 6), failing_repos={REPOS[4]})
     sw.mark_woken(tmp_path, PAGE, "read:29")
-    with pytest.raises(sw.WatchError, match="merge read failed"):
-        sw.wake(lab.github(), tmp_path, PAGE, NOW, REPOS)
+    found = sw.wake(lab.github(), tmp_path, PAGE, NOW, REPOS)
+    assert found["triggers"] == [] and "merge read failed" in found["error"]
     assert sw.woken_keys(tmp_path) == [sw.page_scope(PAGE) + "read:29"]
 
 
@@ -383,6 +384,9 @@ def test_handover_check_refuses_each_defect(tmp_path, problem):
     assert sw.handover_check(tmp_path, "H1", since)["ok"] is True
 
 
+QUIET = {"turn_running": False, "since_turn_complete": 61}
+
+
 def request(state_dir: Path, now: datetime = NOW) -> str:
     step = sw.handover_step(state_dir, "gate-yes", now, session="sess-old")
     assert step["action"] == "submit" and step["state"] == "active"
@@ -394,7 +398,7 @@ def test_clear_only_after_a_passing_check(tmp_path):
     hid = request(tmp_path)
     assert sw.handover_step(tmp_path, "turn-settled", NOW + timedelta(minutes=1))["action"] == "none"
     write_state_file(tmp_path, hid, sw.iso(NOW + timedelta(minutes=2)))
-    assert sw.handover_step(tmp_path, "turn-settled", NOW + timedelta(minutes=3))["action"] == "clear"
+    assert sw.handover_step(tmp_path, "turn-settled", NOW + timedelta(minutes=3), **QUIET)["action"] == "clear"
 
 
 def test_bad_state_file_abandons_and_holds_for_an_hour(tmp_path):
@@ -484,7 +488,7 @@ def test_refused_clear_waits_on_the_owner_and_the_wake_keeps_running(tmp_path, e
 def test_clear_timeout_arrives_through_tick(tmp_path):
     hid = request(tmp_path)
     write_state_file(tmp_path, hid, sw.iso(NOW + timedelta(minutes=1)))
-    assert sw.handover_step(tmp_path, "turn-settled", NOW + timedelta(minutes=2))["action"] == "clear"
+    assert sw.handover_step(tmp_path, "turn-settled", NOW + timedelta(minutes=2), **QUIET)["action"] == "clear"
     assert sw.handover_step(tmp_path, "tick", NOW + timedelta(minutes=3))["state"] == "active"
     assert sw.handover_step(tmp_path, "tick", NOW + timedelta(minutes=5))["state"] == "awaiting-clear"
 
@@ -708,6 +712,19 @@ def test_probe_task_must_carry_a_state_dir(tmp_path):
 # ---------------------------------------------------------------- call 14: the state directory
 
 
+@pytest.fixture
+def fake_default(tmp_path, monkeypatch):
+    """The default state directory under a temporary home, never the real one.
+
+    The production install creates the real ~/.tradecraft-lab/steward, so a test
+    that read it would fail on the Steward's own machine.
+    """
+    home = tmp_path / "home" / ".tradecraft-lab" / "steward"
+    monkeypatch.setattr(sw, "default_state_dir", lambda: home)
+    monkeypatch.delenv(sw.STATE_ENV, raising=False)
+    return home
+
+
 def test_state_dir_resolution_order(tmp_path):
     assert sw.resolve_state_dir(str(tmp_path / "a"), {sw.STATE_ENV: str(tmp_path / "b")}) == tmp_path / "a"
     assert sw.resolve_state_dir(None, {sw.STATE_ENV: str(tmp_path / "b")}) == tmp_path / "b"
@@ -715,14 +732,13 @@ def test_state_dir_resolution_order(tmp_path):
 
 
 @pytest.mark.parametrize("name", sw.PROBE_ENV)
-def test_every_probe_env_setting_is_refused_against_the_default(name, monkeypatch):
+def test_every_probe_env_setting_is_refused_against_the_default(name, fake_default):
     """C27: each STEWARD_WAKE_* override is refused when the state directory is the default."""
-    monkeypatch.delenv(sw.STATE_ENV, raising=False)
     with pytest.raises(sw.WatchError, match="refused against the default"):
         sw.config(sw.default_state_dir(), PAGE, {name: "1"})
 
 
-def test_probe_env_settings_are_accepted_in_a_probe_directory(tmp_path):
+def test_probe_env_settings_are_accepted_in_a_probe_directory(tmp_path, fake_default):
     settings = sw.config(tmp_path, PAGE, {"STEWARD_WAKE_TICK_SECONDS": "30",
                                           "STEWARD_WAKE_PAGE": "9001",
                                           "STEWARD_WAKE_SIMULATE_CLEAR_REFUSED": "1"})
@@ -745,14 +761,13 @@ def test_probe_env_settings_are_accepted_in_a_probe_directory(tmp_path):
     ["handover-step", "--event", "gate-yes", "--handover-tokens", "10"],
     ["cover-task", "--xml", "--name", "probe", "--args=--state-dir x"],
 ])
-def test_every_probe_flag_is_refused_against_the_default(argv, monkeypatch):
+def test_every_probe_flag_is_refused_against_the_default(argv, fake_default):
     """C27: probe-only flags never touch the default state directory."""
-    monkeypatch.delenv(sw.STATE_ENV, raising=False)
     lab = FakeLab()
     with pytest.raises(sw.WatchError, match="refused against the default"):
         run_cli(argv, lab)
     assert lab.calls == []
-    assert not sw.default_state_dir().exists()
+    assert not fake_default.exists()
 
 
 def test_cli_output_is_ascii_json(tmp_path, capsys):
@@ -799,3 +814,155 @@ def test_handover_check_accepts_a_write_stamped_at_the_request_second(tmp_path):
     assert sw.handover_check(tmp_path, "H1", sw.iso(NOW))["ok"] is True
     write_state_file(tmp_path, "H1", sw.iso(NOW - timedelta(seconds=1)))
     assert sw.handover_check(tmp_path, "H1", sw.iso(NOW))["ok"] is False
+
+
+# ---------------------------------------------------------------- review repairs (PR #909)
+
+
+def test_a_marker_from_another_account_is_intake_and_never_a_watermark(tmp_path):
+    """Row 1: tradecraft is public, so only the owner's account can mark a comment.
+
+    A forged kind=post is intake, a forged kind=watermark neither hides itself nor
+    creates a second watermark; the owner's marked and unmarked comments are the
+    controls."""
+    forged_post = comment(301, "<!-- lab:steward:v1 kind=post -->\nhidden?", login="someone")
+    forged_mark = comment(302, sw.watermark_body(999, 99, CUTOFF, 1), login="someone")
+    owner_post = comment(303, "<!-- lab:steward:v1 kind=post -->\nthe Steward")
+    owner_intake = comment(304, "a holder's intake under the owner's token")
+    page = sw.Page(REPO, PAGE, [watermark(handled=100), forged_post, forged_mark,
+                                owner_post, owner_intake])
+    _, mark = page.watermark()
+    assert mark["comment_id"] == 100
+    assert [int(c["id"]) for c in page.intake(mark["handled"])] == [301, 302, 304]
+    forged_note = comment(305, "<!-- lab:steward:v1 kind=read-note read=29 -->", login="someone")
+    assert sw.Page(REPO, PAGE, [watermark(), forged_note]).read_note_exists(29) is False
+    lab = FakeLab(page_comments=[forged_mark, comment(306, "x")])
+    found = sw.wake(lab.github(), tmp_path, PAGE, NOW, REPOS)
+    assert "0 watermark comments" in found["error"]
+
+
+def test_a_failed_wake_still_reports_a_stale_cover(tmp_path, monkeypatch):
+    """Row 4: an expired gh login fails the wake's reads; the stale cover still reaches the mod."""
+    sw.write_json_atomic(tmp_path / "cover-last-success.json",
+                         {"at": sw.iso(NOW - timedelta(hours=3))})
+    lab = FakeLab(merges=merges(5, 6), failing_repos=set(REPOS))
+    found = sw.wake(lab.github(), tmp_path, PAGE, NOW, REPOS)
+    assert found["error"] and found["cover"]["stale"] and not found["cover"].get("noted")
+    sw.write_json_atomic(tmp_path / "cover-last-success.json",
+                         {"at": sw.iso(sw.now_utc() - timedelta(hours=3))})
+    monkeypatch.setattr(sw, "GH_COMMAND", [sys.executable, "-c", "import sys; sys.exit(4)"])
+    out = io.StringIO()
+    monkeypatch.setattr(sw.sys, "stdout", out)
+    assert sw.main(["wake", "--state-dir", str(tmp_path)]) == 1
+    reported = json.loads(out.getvalue())
+    assert reported["error"] and reported["cover"]["stale"] is True
+    assert reported["cover"]["key"].startswith("cover-stale:")
+
+
+def test_the_stale_note_is_noted_once_across_an_active_handover(tmp_path):
+    """Row 4: each stale episode is noted once, on the paused path too."""
+    sw.write_json_atomic(tmp_path / "cover-last-success.json",
+                         {"at": sw.iso(NOW - timedelta(hours=3))})
+    request(tmp_path)
+    lab = FakeLab()
+    first = sw.wake(lab.github(), tmp_path, PAGE, NOW, REPOS)
+    assert first["paused"] and first["cover"]["stale"] and not first["cover"].get("noted")
+    sw.mark_woken(tmp_path, PAGE, first["cover"]["key"])
+    for _ in range(3):
+        again = sw.wake(lab.github(), tmp_path, PAGE, NOW, REPOS)
+        assert again["paused"] and again["cover"]["noted"] is True
+    failing = FakeLab(failing_repos=set(REPOS))
+    sw.handover_step(tmp_path, "load", NOW)  # abandon: the wake reads again, and fails
+    assert sw.wake(failing.github(), tmp_path, PAGE, NOW, REPOS)["cover"]["noted"] is True
+
+
+@pytest.mark.parametrize("event", ["tick", "turn-settled"])
+@pytest.mark.parametrize("facts,clears", [
+    ({"turn_running": True, "since_turn_complete": 600}, False),   # a turn is running
+    ({"turn_running": False, "since_turn_complete": 30}, False),   # inside the settle window
+    ({"turn_running": False, "since_turn_complete": None}, False),  # unknown: not quiet
+    ({"turn_running": False, "since_turn_complete": 61}, True),
+])
+def test_clear_only_at_a_quiet_moment_on_every_event(tmp_path, event, facts, clears):
+    """Row 3: no /clear while a turn runs or inside the settle window, a tick included."""
+    hid = request(tmp_path)
+    write_state_file(tmp_path, hid, sw.iso(NOW + timedelta(minutes=1)))
+    step = sw.handover_step(tmp_path, event, NOW + timedelta(minutes=2), **facts)
+    assert (step["action"] == "clear") is clears
+    assert step["state"] == "active"
+
+
+def test_no_quiet_moment_within_fifteen_minutes_abandons(tmp_path):
+    hid = request(tmp_path)
+    write_state_file(tmp_path, hid, sw.iso(NOW + timedelta(minutes=1)))
+    step = sw.handover_step(tmp_path, "tick", NOW + timedelta(minutes=16), turn_running=True,
+                            since_turn_complete=900)
+    assert step["state"] == "idle" and "quiet moment" in step["status"]
+
+
+def test_handover_step_cli_takes_the_turn_facts(tmp_path):
+    hid = request(tmp_path)
+    write_state_file(tmp_path, hid, sw.iso(NOW + timedelta(minutes=1)))
+    base = ["handover-step", "--event", "tick", "--state-dir", str(tmp_path)]
+    lab = FakeLab()
+    later = NOW + timedelta(minutes=2)
+    assert run_cli(base, lab, later)["action"] == "none"
+    assert run_cli(base + ["--turn-running", "1", "--since-turn-complete", "90"], lab, later)["action"] == "none"
+    assert run_cli(base + ["--since-turn-complete", "90"], lab, later)["action"] == "clear"
+
+
+def test_a_fresh_install_is_not_stale_until_the_cover_has_had_its_chance(tmp_path):
+    """Row 4: no records -> not stale; registered but never run -> stale after two hours."""
+    assert sw.cover_state(tmp_path, NOW) == {"last_success": None, "registered": None,
+                                             "stale": False, "key": None}
+    sw.write_json_atomic(tmp_path / "cover-registered.json", {"at": sw.iso(NOW - timedelta(hours=1))})
+    assert sw.cover_state(tmp_path, NOW)["stale"] is False
+    sw.write_json_atomic(tmp_path / "cover-registered.json", {"at": sw.iso(NOW - timedelta(hours=2, seconds=1))})
+    late = sw.cover_state(tmp_path, NOW)
+    assert late["stale"] is True and late["key"] == "cover-stale:none"
+
+
+def test_staleness_runs_from_the_later_of_registration_and_success(tmp_path):
+    sw.write_json_atomic(tmp_path / "cover-last-success.json", {"at": sw.iso(NOW - timedelta(days=3))})
+    sw.write_json_atomic(tmp_path / "cover-registered.json", {"at": sw.iso(NOW - timedelta(minutes=10))})
+    assert sw.cover_state(tmp_path, NOW)["stale"] is False
+    sw.write_json_atomic(tmp_path / "cover-last-success.json", {"at": sw.iso(NOW - timedelta(minutes=5))})
+    sw.write_json_atomic(tmp_path / "cover-registered.json", {"at": sw.iso(NOW - timedelta(days=3))})
+    assert sw.cover_state(tmp_path, NOW)["stale"] is False
+
+
+def test_register_records_its_time_and_unregister_removes_it(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(sw, "schtasks", lambda args: calls.append(args) or "SUCCESS")
+    lab = FakeLab()
+    run_cli(["cover-task", "--register", "--state-dir", str(tmp_path)], lab)
+    record = json.loads((tmp_path / "cover-registered.json").read_bytes())
+    assert record["at"] == sw.iso(NOW) and record["task"] == sw.TASK_NAME
+    assert calls[0][:3] == ["/Create", "/TN", sw.TASK_NAME]
+    run_cli(["cover-task", "--unregister", "--state-dir", str(tmp_path)], lab)
+    assert not (tmp_path / "cover-registered.json").exists()
+
+
+def test_install_registers_the_cover_before_the_mod_loads():
+    """Row 4: the install order registers the cover first, so the mod's first wake is not stale."""
+    depth = (Path(__file__).resolve().parents[2] / "docs" / "cells" / "steward" / "references"
+             / "wake-and-cover.md").read_bytes().decode("utf-8")
+    install = depth.split("## Install", 1)[1].split("## Undo", 1)[0]
+    assert install.index("cover-task --register") < install.index("claude plugin install")
+
+
+def test_resume_names_where_an_unconfirmed_item_is_recorded(tmp_path):
+    """C26 gap 9: the resume says where an item it cannot confirm goes."""
+    text = sw.resume_text(tmp_path, "H1", "old", None)
+    assert "on #683 with `tools/steward_watch.py post`, naming handover H1" in text
+    assert "also goes on the owner board" in text
+
+
+def test_mod_reads_a_failed_wake_and_gives_every_step_the_turn_facts():
+    """Items 2 and 3 in the mod: a failed wake's JSON is still read, and every
+    handover step carries whether a turn runs and how long since the last one ended."""
+    text = MOD.read_bytes().decode("utf-8")
+    assert "await script(['wake'], true)" in text
+    assert "(allowError && value.schema_version)" in text
+    assert "'--turn-running', state.turnRunning ? '1' : '0'," in text
+    assert "'--since-turn-complete', String((Date.now() - state.lastTurnComplete) / 1000)," in text

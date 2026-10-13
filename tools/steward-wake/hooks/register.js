@@ -74,7 +74,7 @@ function message(err) {
   return String((err && err.message) || err)
 }
 
-async function script(args) {
+async function script(args, allowError = false) {
   const argv = [state.python, state.root + '/' + SCRIPT, ...args]
   if (state.stateDir) argv.push('--state-dir', state.stateDir)
   if (state.cfg && state.cfg.page !== 683) argv.push('--page', String(state.cfg.page))
@@ -85,7 +85,7 @@ async function script(args) {
   } catch (err) {
     value = null
   }
-  if (result.exitCode !== 0 || value === null) {
+  if (value === null || (result.exitCode !== 0 && !(allowError && value.schema_version))) {
     const why = (value && value.error) || String(result.stderr || '').trim().split('\n').pop() || 'no output'
     throw new Error(args[0] + ': ' + why)
   }
@@ -121,8 +121,15 @@ async function act(step) {
   return step
 }
 
+// Every step carries the turn facts, so the script returns a clear only at a
+// quiet moment: no turn running and the settle period passed.
 async function handoverStep(event, extra = []) {
-  return act(await script(['handover-step', '--event', event, '--session', String(await state.host.sessionId()), ...extra]))
+  const facts = [
+    '--turn-running', state.turnRunning ? '1' : '0',
+    '--since-turn-complete', String((Date.now() - state.lastTurnComplete) / 1000),
+  ]
+  if (state.cfg.settle_seconds !== PRODUCTION.settle_seconds) facts.push('--settle-seconds', String(state.cfg.settle_seconds))
+  return act(await script(['handover-step', '--event', event, '--session', String(await state.host.sessionId()), ...facts, ...extra]))
 }
 
 // Called only from timer callbacks, never from a hook a turn is waiting on.
@@ -169,8 +176,11 @@ async function considerHandover(event) {
   }
 }
 
+// The wake reports the cover's state even when its own reads fail (an
+// expired gh login silences both), so the stale note still reaches the Steward.
 async function wake() {
-  const found = await script(['wake'])
+  const found = await script(['wake'], true)
+  if (found.error) status(String(found.error).slice(0, 200))
   const cover = found.cover || {}
   if (cover.stale) {
     status('the cover\'s last success is ' + (cover.last_success || 'missing') + ' (more than two hours old)')

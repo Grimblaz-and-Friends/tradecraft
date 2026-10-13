@@ -336,6 +336,17 @@ def watermark_body(handled: int, read: int, cutoff: str, alerts: int) -> str:
                        alerts=alerts) + "\n" + WATERMARK_PROSE + "\n"
 
 
+def classify_comment(comment: dict) -> dict | None:
+    """The Steward marker on a comment, honoured only from the owner's account.
+
+    tradecraft is public, so anyone can copy the marker. A copied marker from any
+    other account is intake like any other comment, and never a watermark.
+    """
+    if (comment.get("user") or {}).get("login") != OWNER_LOGIN:
+        return None
+    return classify(comment.get("body"))
+
+
 class Page:
     """One standing page's comments, read once and classified."""
 
@@ -343,7 +354,7 @@ class Page:
         self.repo = repo
         self.number = number
         self.comments = sorted(comments, key=lambda c: int(c["id"]))
-        self.marks = {int(c["id"]): classify(c.get("body")) for c in self.comments}
+        self.marks = {int(c["id"]): classify_comment(c) for c in self.comments}
 
     def watermark(self) -> tuple[dict, dict]:
         found = [c for c in self.comments
@@ -419,12 +430,33 @@ def save_woken(state_dir: Path, keys: list[str]) -> None:
     write_json_atomic(state_dir / "woken.json", {"schema_version": 1, "keys": sorted(set(keys))})
 
 
+def _recorded_at(path: Path) -> str | None:
+    record = read_json(path, None)
+    return record.get("at") if isinstance(record, dict) else None
+
+
 def cover_state(state_dir: Path, now: datetime) -> dict:
-    record = read_json(state_dir / "cover-last-success.json", None)
-    last = record.get("at") if isinstance(record, dict) else None
-    stale = last is None or (now - parse_time(last)).total_seconds() > COVER_STALE_SECONDS
-    return {"last_success": last, "stale": stale,
+    """Whether the cover has gone quiet, measured from its later of registration and success.
+
+    Before the cover is registered there is nothing to go stale, so a fresh
+    install reports no stale cover until the cover has had its first chance to
+    run. A cover registered but never successful still goes stale after the bound.
+    """
+    last = _recorded_at(state_dir / "cover-last-success.json")
+    registered = _recorded_at(state_dir / "cover-registered.json")
+    if registered is None and last is None:
+        return {"last_success": None, "registered": None, "stale": False, "key": None}
+    basis = max((t for t in (last, registered) if t), key=parse_time)
+    stale = (now - parse_time(basis)).total_seconds() > COVER_STALE_SECONDS
+    return {"last_success": last, "registered": registered, "stale": stale,
             "key": f"cover-stale:{last or 'none'}" if stale else None}
+
+
+def noted(cover: dict, stored: list[str], scope: str) -> dict:
+    """Mark the cover's stale key noted when this page's record already holds it."""
+    if cover.get("key") and scope + cover["key"] in stored:
+        return {**cover, "noted": True}
+    return cover
 
 
 def handover_state(state_dir: Path) -> dict:
@@ -453,30 +485,36 @@ def compute_triggers(page: Page, mark: dict, merges: list[dict]) -> list[dict]:
 
 def wake(github: GitHub, state_dir: Path, page_number: int, now: datetime,
          repos: list[str] | None = None) -> dict:
-    cover = cover_state(state_dir, now)
+    # The cover's state is reported on every path, a failed read included: an
+    # expired gh login silences the cover and this wake alike, and the stale
+    # note is then the only sign the owner gets.
+    scope = page_scope(page_number)
+    stored = woken_keys(state_dir)
+    cover = noted(cover_state(state_dir, now), stored, scope)
     if handover_state(state_dir).get("state") == "active":
         return {"schema_version": 1, "paused": "handover active", "triggers": [],
                 "cover": cover, "error": None}
-    page = load_page(github, page_number)
-    _, mark = page.watermark()
-    merges, reach = read_merges(github, mark["cutoff"], repos or lab_repos())
-    failed = sorted(repo for repo, result in reach.items() if not result.startswith("ok"))
-    if failed:
-        raise WatchError("merge read failed for " + ", ".join(failed)
-                         + "; nothing woken and nothing pruned")
+    try:
+        page = load_page(github, page_number)
+        _, mark = page.watermark()
+        merges, reach = read_merges(github, mark["cutoff"], repos or lab_repos())
+        failed = sorted(repo for repo, result in reach.items() if not result.startswith("ok"))
+        if failed:
+            raise WatchError("merge read failed for " + ", ".join(failed)
+                             + "; nothing woken and nothing pruned")
+    except WatchError as exc:
+        return {"schema_version": 1, "paused": None, "triggers": [], "cover": cover,
+                "error": str(exc)}
     triggers = compute_triggers(page, mark, merges)
-    scope = page_scope(page_number)
     present = {scope + t["key"] for t in triggers}
     if cover["key"]:
         present.add(scope + cover["key"])
-    stored = woken_keys(state_dir)
     kept = [key for key in stored if not key.startswith(scope) or key in present]
     if kept != stored:
         save_woken(state_dir, kept)
     fresh = [t for t in triggers if scope + t["key"] not in kept]
-    if cover["key"] and scope + cover["key"] in kept:
-        cover = {**cover, "noted": True}
-    return {"schema_version": 1, "paused": None, "triggers": fresh, "cover": cover, "error": None}
+    return {"schema_version": 1, "paused": None, "triggers": fresh,
+            "cover": noted(cover, kept, scope), "error": None}
 
 
 def mark_woken(state_dir: Path, page_number: int, key: str) -> None:
@@ -586,8 +624,10 @@ def resume_text(state_dir: Path, handover_id: str, old_session: str | None,
     lines = [
         f"steward-wake: resume from handover {handover_id}. This session was cleared to keep "
         f"the Steward's context small. Read {CELL}, then read the state file {path}.",
-        f"Confirm each item in it against {FOUR_RECORDS}, and record anything you cannot "
-        "confirm. Then take up keeping the owner board current.",
+        f"Confirm each item in it against {FOUR_RECORDS}. Record an item you cannot confirm "
+        f"on #683 with `tools/steward_watch.py post`, naming handover {handover_id}; one that "
+        "needs the owner also goes on the owner board. Then take up keeping the owner board "
+        "current.",
         f"The old conversation is {old_session or 'unknown'}; \"Resume previous session\" "
         "retrieves it.",
     ]
@@ -617,8 +657,15 @@ UPDATE_NOTE = (
 
 def handover_step(state_dir: Path, event: str, now: datetime, *, session: str = "unknown",
                   reason: str = "", last_turn_start: str | None = None,
-                  threshold: int = HANDOVER_TOKENS) -> dict:
-    """Advance the handover's state machine by one event and name the mod's action."""
+                  threshold: int = HANDOVER_TOKENS, turn_running: bool = False,
+                  since_turn_complete: float | None = None,
+                  settle: float = SETTLE_SECONDS) -> dict:
+    """Advance the handover's state machine by one event and name the mod's action.
+
+    A clear is returned only at a quiet moment -- no turn running and the settle
+    period passed since the last turn ended -- on every event, a tick included.
+    An unknown time since the last turn counts as not quiet.
+    """
     path = state_dir / "handover-state.json"
     state = handover_state(state_dir)
     current = state.get("state", "idle")
@@ -664,6 +711,12 @@ def handover_step(state_dir: Path, event: str, now: datetime, *, session: str = 
                 return handover_step(state_dir, "clear-timeout", now, session=session)
             return result("none")
         check = handover_check(state_dir, state["id"], state["requested_at"])
+        quiet = (not turn_running and since_turn_complete is not None
+                 and since_turn_complete >= settle)
+        if check["ok"] and not quiet:
+            if (now - requested).total_seconds() > STATE_FILE_WAIT_SECONDS:
+                return abandon("no quiet moment to clear within 15 minutes")
+            return result("none", status=f"handover {state['id']}: waiting for a quiet moment")
         if check["ok"]:
             state["clear_at"] = iso(now)
             write_json_atomic(path, state)
@@ -1100,6 +1153,10 @@ def build_parser() -> argparse.ArgumentParser:
     one.add_argument("--reason", default="")
     one.add_argument("--last-turn-start")
     one.add_argument("--handover-tokens", type=int)
+    one.add_argument("--turn-running", type=int, choices=(0, 1), default=0)
+    one.add_argument("--since-turn-complete", type=float,
+                     help="seconds since the last main-thread turn ended; absent means not quiet")
+    one.add_argument("--settle-seconds", type=int)
     one = command("handover-check", "check the state file for one handover")
     one.add_argument("--id", required=True)
     one.add_argument("--since", required=True)
@@ -1193,7 +1250,11 @@ def run(args: argparse.Namespace, github: GitHub | None = None,
     if args.command == "handover-step":
         return handover_step(state_dir, args.event, now, session=args.session,
                              reason=args.reason, last_turn_start=args.last_turn_start,
-                             threshold=args.handover_tokens or HANDOVER_TOKENS)
+                             threshold=args.handover_tokens or HANDOVER_TOKENS,
+                             turn_running=bool(args.turn_running),
+                             since_turn_complete=args.since_turn_complete,
+                             settle=(args.settle_seconds if args.settle_seconds is not None
+                                     else SETTLE_SECONDS))
     if args.command == "handover-check":
         return handover_check(state_dir, args.id, args.since)
     if args.command == "resume-text":
@@ -1213,8 +1274,14 @@ def run(args: argparse.Namespace, github: GitHub | None = None,
 def cover_task(args: argparse.Namespace, state_dir: Path, now: datetime) -> dict:
     if args.name != TASK_NAME and "--state-dir" not in args.args:
         raise WatchError("a probe task's --args must carry --state-dir")
+    registration = state_dir / "cover-registered.json"
     if args.unregister:
-        return {"unregistered": args.name, "output": schtasks(["/Delete", "/TN", args.name, "/F"])}
+        output = schtasks(["/Delete", "/TN", args.name, "/F"])
+        try:
+            os.unlink(registration)
+        except FileNotFoundError:
+            pass
+        return {"unregistered": args.name, "output": output}
     local_start = datetime.now().replace(microsecond=0) + timedelta(minutes=1)
     end = local_start + timedelta(minutes=args.expire_minutes) if args.expire_minutes else None
     xml = task_xml(args.interpreter or windowless_interpreter(), str(Path(__file__).resolve()),
@@ -1229,6 +1296,9 @@ def cover_task(args: argparse.Namespace, state_dir: Path, now: datetime) -> dict
         output = schtasks(["/Create", "/TN", args.name, "/XML", temp, "/F"])
     finally:
         os.unlink(temp)
+    # Staleness is measured from the later of this and the last success, so a
+    # fresh install is not reported stale before the cover's first run.
+    write_json_atomic(registration, {"schema_version": 1, "at": iso(now), "task": args.name})
     return {"registered": args.name, "output": output}
 
 
