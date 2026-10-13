@@ -8,6 +8,11 @@ from pathlib import Path
 import re
 
 CATEGORIES = ("plugins", "integrations", "tools", "skills", "instructions", "memory", "permissions")
+# claude.ai account skills reach Claude sessions under this namespace without
+# any reported plugin owning it.
+ACCOUNT_SKILL_NAMESPACE = "anthropic-skills"
+UNCLASSIFIED_NOTE = ("unclassified means not checked, not clean: the runtime did not report "
+                     "these entries' origin, so they are not counted as excess")
 
 
 def category(status="unknown", values=None, reason="runtime did not report this inventory", source=None):
@@ -19,7 +24,7 @@ def unknown(reason, *, vendor=None, version=None):
     return {"schema_version": 1, "vendor": vendor, "runtime_version": version,
             "session_id": None, "turn_id": None, "boundary": "unobserved",
             "categories": {name: category(reason=reason) for name in CATEGORIES},
-            "facts": {}, "excess": [], "unclassified": []}
+            "facts": {}, "excess": [], "unclassified": [], "unclassified_note": UNCLASSIFIED_NOTE}
 
 
 def coordinate(path, line, field):
@@ -81,8 +86,25 @@ def _excess(environment, allowed):
             elif name == "tools":
                 foreign = foreign or identity.startswith(("mcp__", "mcp_", "cua_"))
             if foreign:
-                environment["excess"].append({"category": name, "identity": identity,
-                    "sources": environment["categories"][name]["sources"]})
+                entry = {"category": name, "identity": identity,
+                    "sources": environment["categories"][name]["sources"]}
+                if isinstance(value, dict) and isinstance(value.get("provenance"), str):
+                    entry["provenance"] = value["provenance"]
+                environment["excess"].append(entry)
+
+
+def _skill(name, owners):
+    if ":" not in name:
+        return {"name": name, "classification": "unclassified"}
+    namespace = name.split(":", 1)[0]
+    if namespace in owners:
+        value = {"name": name, "classification": owners[namespace]}
+        if owners[namespace] == "foreign":
+            value["provenance"] = f"reported foreign plugin namespace {namespace}"
+        return value
+    return {"name": name, "classification": "foreign", "provenance": (
+        "claude.ai account skill" if namespace == ACCOUNT_SKILL_NAMESPACE
+        else f"namespace {namespace} not reported by any runtime plugin")}
 
 
 def claude_init(environment, event, *, path, line, allowed=()):
@@ -110,13 +132,16 @@ def claude_init(environment, event, *, path, line, allowed=()):
             "runtime inventory contains entries without identities" if incomplete else None,
             coordinate(path, line, field))
     # A reported plugin namespace supplies ownership for its reported skills.
-    # Other namespaces stay unclassified; a familiar-looking name is no proof
-    # that the runtime owns it.
+    # A namespaced skill that neither tradecraft nor a reported built-in owns
+    # is foreign: claude.ai account skills arrive this way. Only bare names,
+    # whose origin the runtime does not report, stay unclassified.
     owners = {_identity(v).split("@", 1)[0]: v.get("classification")
         for v in cats["plugins"]["values"]
         if isinstance(v, dict) and isinstance(_identity(v), str)}
-    cats["skills"]["values"] = [{"name": v, "classification": owners.get(v.split(":", 1)[0], "unclassified")}
-        if isinstance(v, str) else v for v in cats["skills"]["values"]]
+    for identity in allowed:
+        owners.setdefault(str(identity).split("@", 1)[0], "tradecraft")
+    cats["skills"]["values"] = [_skill(v, owners) if isinstance(v, str) else v
+        for v in cats["skills"]["values"]]
     memory = event.get("memory_paths")
     if isinstance(memory, dict):
         paths = [{"kind": k, "path": v} for k, v in memory.items() if isinstance(v, str)]

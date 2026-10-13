@@ -1619,3 +1619,29 @@ def test_shared_artifact_validator_counts_complete_boundary_messages(byte_count,
     assert result["status"] == ("pass" if byte_count == 240_000 else "fail")
     assert result["observed_bytes"] == byte_count
     assert result["maximum_bytes"] == 240_000
+
+
+@pytest.mark.parametrize("resume", [None, "0199a213-81c0-7800-8aa1-bbab2a035a53"])
+def test_claude_account_skills_are_reported_as_excess_fresh_and_resumed(job, monkeypatch, resume):
+    # Reading 7: claude.ai account skills arrive as anthropic-skills:* with no
+    # reported owning plugin. Both a fresh launch and a resume name them as
+    # excess and still publish the valid return.
+    args, scenario = job
+    args.vendor, args.resume = "claude", resume
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_:
+        [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    init = {"type": "system", "subtype": "init", "session_id": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+        "plugins": [{"name": "tradecraft@inline"}, {"name": "agents-md@builtin"}],
+        "skills": ["tradecraft:charter", "agents-md:write", "anthropic-skills:google-workspace",
+                   "anthropic-skills:computer-use", "update-config"]}
+    terminal = native_artifact_result("claude", "built")
+    terminal["stdout"] = json.dumps(init) + "\n" + terminal["stdout"]
+    scenario.write_bytes(json.dumps({"claude": terminal}).encode())
+    assert implementer.run_implementer(args) == 0
+    observed = record(args)["attempts"][0]["environment"]
+    account = [v for v in observed["excess"] if v["category"] == "skills"]
+    assert [v["identity"] for v in account] == ["anthropic-skills:google-workspace", "anthropic-skills:computer-use"]
+    assert {v["provenance"] for v in account} == {"claude.ai account skill"}
+    assert [v["name"] for v in observed["unclassified"] if isinstance(v, dict)] == ["update-config"]
+    assert "not checked" in observed["unclassified_note"]
+    assert args.output.read_bytes() == b"built"

@@ -7802,8 +7802,10 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                         "Project and local Claude settings are omitted so the holder hook does not "
                         "run in this child. User sources retain global instructions, native memory "
                         "and permission settings. Strict MCP, no Chrome and targeted plugin overrides "
-                        "request no account/browser/desktop capabilities and only tradecraft plus "
-                        "runtime built-ins. Actual holdings, unknowns and excess are recorded separately.\n"
+                        "request no MCP servers, connectors, browser or desktop control, and only "
+                        "tradecraft plus runtime built-in plugins. claude.ai account skills may still "
+                        "appear; they are not excluded and are recorded as excess. Actual holdings, "
+                        "unknowns and excess are recorded separately.\n"
                     ).encode("utf-8") if selected_vendor == "claude" else b"")
                     window = (work_recovery.instruction(recovery_info, metadata["recipient_allocation_seconds"])
                               if recovery_info else

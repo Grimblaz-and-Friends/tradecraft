@@ -162,3 +162,24 @@ The [holder's amended reading 6138003111](https://github.com/Grimblaz-and-Friend
 Plugin discovery (`implementer_policy.discover`, both vendors) and Codex `config/read` (`codex_implementer.read_config`) now pass `DISCOVERY_PROBE_SECONDS = 120` to `deadline.probe()`. `Deadline.probe()` still caps that at the caller's remaining window, so reading 5's rule holds: a probe stopped at the window's edge publishes no bundle and raises. The 20-second default for git and version probes is unchanged.
 
 `test_slow_cold_cache_discovery_completes_and_launches` runs the real discovery against a fixture child that sleeps 21 s, then checks that the turn launches and succeeds. `test_discovery_and_config_reads_use_their_allowance_capped_by_the_window` checks the 120 s allowance and its cap at a 30 s window for both calls, and that the 20 s default is unchanged. Both failed against the pre-repair production files; the first reproduced the holder's message, "timed out after 20 seconds". Reading 5's window-edge tests (`test_probe_stopped_by_deadline_in_real_process_publishes_nothing`, `test_expired_real_discovery_probe_publishes_nothing_and_preserves_stopped_build`) pass unchanged. No native procedure was re-run.
+
+## Holder reading 7: claude.ai account skills
+
+The [holder's amended reading 6138478578](https://github.com/Grimblaz-and-Friends/tradecraft/issues/886#issuecomment-6138478578) relays the use run at `33568a6bf2c0e68554e0c579c35ec2bb6634e508`. Claude's `system.init` listed claude.ai account skills such as `anthropic-skills:google-workspace` and `anthropic-skills:computer-use` as `unclassified`, with empty `excess`.
+
+**No launch control is applied.** Claude Code 2.1.280's own setting description names one candidate: `syncClaudeAiSkills: false`. In user settings it moves the owner's synced skills to `~/.claude/skills/.trash`, which the reading forbids. Supplied through `--settings`, the description says it hides synced skills for that invocation only and moves nothing. Two probe attempts failed to establish it:
+- **Throwaway root:** a skill planted in a throwaway `CLAUDE_CONFIG_DIR` under `skills/synced/<account>` did not load even in the control arm. Synced skills are account-gated, and the throwaway root has no account, so the control is invalid. The planted tree was byte-identical afterwards.
+- **Owner's real configuration:** the confirming probe used `--settings` only and hashed the synced tree before and after. The session's automatic permission review refused it, and the refusal was not routed around.
+
+The control remains unproved, so the launch does not apply it. The holder can probe that one candidate on the owner's machine.
+
+**Recording now names them.** `implementer_environment.claude_init` classifies a namespaced skill that neither tradecraft nor a reported runtime built-in owns as foreign, so it reaches `excess` with a provenance:
+- `claude.ai account skill` for `anthropic-skills:`;
+- `reported foreign plugin namespace <name>` for a reported foreign plugin's namespace;
+- `namespace <name> not reported by any runtime plugin` otherwise.
+
+The allowed tradecraft identity owns its namespace even when init omits the plugin. Bare skill names and unfamiliar tools stay `unclassified`. Every environment carries `unclassified_note`, which says this means not checked, not clean. Excess still refuses nothing.
+
+**Texts corrected:** `implementer-environments.md`, the matching sentence in `dispatch-records.md`, the stretch's vendor paragraph and the Claude preamble in `lib/work.py`. Each now says what the launch requests (no MCP servers, connectors, browser or desktop control), that account skills are not excluded, and that the record names them as excess.
+
+**Tests:** `test_unowned_namespaced_skills_are_excess_and_bare_names_stay_unclassified`, `test_allowed_identity_owns_its_namespace_when_init_omits_the_plugin`, and `test_claude_account_skills_are_reported_as_excess_fresh_and_resumed` (fresh and resume through the real launcher). All four cases failed against the pre-repair observer and pass after it.

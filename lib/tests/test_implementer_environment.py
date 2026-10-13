@@ -169,3 +169,30 @@ def test_log_selection_never_chooses_neighboring_latest(tmp_path):
     assert env.log_path(SESSION, home=tmp_path) == own
     (folder / ("other-" + SESSION + ".jsonl")).touch()
     assert env.log_path(SESSION, home=tmp_path) is None
+
+
+def test_unowned_namespaced_skills_are_excess_and_bare_names_stay_unclassified():
+    result = env.unknown("not reported", vendor="claude")
+    init = {"type": "system", "subtype": "init",
+        "plugins": [{"name": "tradecraft@inline"}, {"name": "agents-md@builtin"}, {"name": "foreign@market"}],
+        "skills": ["tradecraft:charter", "agents-md:write", "foreign:send", "anthropic-skills:import-memory",
+                   "other-origin:tool", "dataviz"]}
+    env.claude_init(result, init, path="stdout.log", line=3, allowed=["tradecraft@inline"])
+    skills = {v["name"]: v for v in result["categories"]["skills"]["values"]}
+    assert skills["tradecraft:charter"]["classification"] == "tradecraft"
+    assert skills["agents-md:write"]["classification"] == "builtin"
+    assert skills["dataviz"]["classification"] == "unclassified"
+    excess = {v["identity"]: v.get("provenance") for v in result["excess"] if v["category"] == "skills"}
+    assert excess == {"foreign:send": "reported foreign plugin namespace foreign",
+        "anthropic-skills:import-memory": "claude.ai account skill",
+        "other-origin:tool": "namespace other-origin not reported by any runtime plugin"}
+    assert [v["name"] for v in result["unclassified"] if isinstance(v, dict)] == ["dataviz"]
+    assert result["unclassified_note"] == env.UNCLASSIFIED_NOTE and "not clean" in env.UNCLASSIFIED_NOTE
+
+
+def test_allowed_identity_owns_its_namespace_when_init_omits_the_plugin():
+    result = env.unknown("not reported", vendor="claude")
+    env.claude_init(result, {"type": "system", "subtype": "init", "plugins": [],
+        "skills": ["tradecraft:charter"]}, path="stdout.log", line=1, allowed=["tradecraft@inline"])
+    assert result["excess"] == []
+    assert result["categories"]["skills"]["values"][0]["classification"] == "tradecraft"
