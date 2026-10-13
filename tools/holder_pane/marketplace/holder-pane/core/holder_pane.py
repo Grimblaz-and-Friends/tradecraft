@@ -1177,7 +1177,8 @@ def read(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
             decision = last_json_object(stdout or "")
         except (OSError, subprocess.SubprocessError):
             decision = None
-        pr = lookup_pull_request(ctx, binding["repository"], int(binding["issue"]), deadline)
+        pr = lookup_pull_request(ctx, binding["repository"], int(binding["issue"]), deadline,
+                                 marker_producers(binding.get("root")))
         change = load_change(ctx, key)
         if pr is not None:
             change["pull_request"] = pr
@@ -1218,14 +1219,30 @@ def _gh_json(ctx: Ctx, argv: list[str], deadline: float | None) -> Any:
         return None
 
 
+def marker_producers(root: Any) -> frozenset[str]:
+    """The logins `.tradecraft/work.json` trusts to write markers, read locally from the root.
+
+    The entrance honours a marker only from these authors; a missing or
+    unreadable file trusts no one, so every marker is ignored.
+    """
+    if not root:
+        return frozenset()
+    config = _read_json(Path(str(root)) / ".tradecraft" / "work.json")
+    names = config.get("marker_producers") if isinstance(config, dict) else None
+    if not isinstance(names, list):
+        return frozenset()
+    return frozenset(name.lower() for name in names if isinstance(name, str) and name)
+
+
 def lookup_pull_request(ctx: Ctx, repository: str, issue: int,
-                        deadline: float | None = None) -> dict[str, Any] | None:
+                        deadline: float | None = None,
+                        producers: frozenset[str] = frozenset()) -> dict[str, Any] | None:
     """The change's implementing PR, found as the entrance finds it, inside the floored read.
 
     The read-only report carries no PR number. One `gh pr list` finds PRs whose
     body closes the issue with the entrance's own whole-line CLOSING_REFERENCE.
     Only when none does, the issue's comments are read for an `implementing-pr`
-    marker, and that PR's state is read (two more calls). An open PR wins, else
+    marker written by one of `producers`, and that PR's state is read (two more calls). An open PR wins, else
     the newest merged, else the newest closed. None when nothing is found.
     """
     rows = _gh_json(ctx, ["gh", "pr", "list", "--repo", repository, "--state", "all",
@@ -1241,7 +1258,8 @@ def lookup_pull_request(ctx: Ctx, repository: str, issue: int,
         texts = [str(comment.get("body") or "")
                  for page in (pages if isinstance(pages, list) else [])
                  for comment in (page if isinstance(page, list) else [])
-                 if isinstance(comment, dict)]
+                 if isinstance(comment, dict) and isinstance(comment.get("user"), dict)
+                 and str(comment["user"].get("login") or "").lower() in producers]
         numbers = [int(match.group(1)) for text in texts
                    for match in IMPLEMENTING_PR_MARKER.finditer(text)]
         if numbers:

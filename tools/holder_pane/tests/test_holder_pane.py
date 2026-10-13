@@ -59,7 +59,9 @@ class Entrance:
         if argv[0] == "gh":
             self.gh_calls.append(list(argv))
             if argv[1] == "api":
-                answer = [[{"body": body} for body in self.comments]]
+                answer = [[comment if isinstance(comment, dict)
+                           else {"body": comment, "user": {"login": "Grimblaz"}}
+                           for comment in self.comments]]
             elif argv[1:3] == ["pr", "view"]:
                 answer = self.pr_view
             else:
@@ -947,9 +949,28 @@ def test_lookup_honours_the_implementing_pr_marker_when_no_body_closes(home):
                   "<!-- tradecraft:implementing-pr:v1 number=905 -->"],
         pr_view={"number": 905, "state": "MERGED", "mergedAt": "2026-10-13T00:00:00Z"})
     ctx = core.Ctx(home=Path("."), now=T0, runner=runner, environ={})
-    assert core.lookup_pull_request(ctx, REPO_NAME, 888) == {"number": 905, "state": "MERGED",
-                                                             "merged": True}
+    assert core.lookup_pull_request(ctx, REPO_NAME, 888,
+                                    producers=frozenset({"grimblaz"})) == {
+        "number": 905, "state": "MERGED", "merged": True}
     assert [argv[:2] for argv in runner.gh_calls] == [["gh", "pr"], ["gh", "api"], ["gh", "pr"]]
+
+
+def test_lookup_ignores_a_marker_from_an_author_who_is_no_producer(tmp_path):
+    # The entrance honours a marker only from `.tradecraft/work.json`'s marker_producers.
+    root = tmp_path / "checkout"
+    (root / ".tradecraft").mkdir(parents=True)
+    (root / ".tradecraft" / "work.json").write_text(
+        json.dumps({"schema_version": 1, "marker_producers": ["Grimblaz"]}), encoding="utf-8")
+    producers = core.marker_producers(str(root))
+    assert producers == frozenset({"grimblaz"})
+    runner = Entrance(
+        comments=[{"body": "<!-- tradecraft:implementing-pr:v1 number=777 -->",
+                   "user": {"login": "someone-else"}}],
+        pr_view={"number": 777, "state": "OPEN", "mergedAt": None})
+    ctx = core.Ctx(home=Path("."), now=T0, runner=runner, environ={})
+    assert core.lookup_pull_request(ctx, REPO_NAME, 888, producers=producers) is None
+    assert [argv[:2] for argv in runner.gh_calls] == [["gh", "pr"], ["gh", "api"]]
+    assert core.marker_producers(str(tmp_path / "missing")) == frozenset()
 
 
 def test_read_budget_fits_inside_the_shims_timeout():
