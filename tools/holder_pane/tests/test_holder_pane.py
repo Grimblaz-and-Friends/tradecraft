@@ -44,10 +44,13 @@ T0 = 1_800_000_000.0
 class Entrance:
     """A fake entrance: logs each run and answers a fixed decision."""
 
-    def __init__(self, decision: dict | None = None, prs: list | None = None):
+    def __init__(self, decision: dict | None = None, prs: list | None = None,
+                 comments: list | None = None, pr_view: dict | None = None):
         self.calls: list[list[str]] = []
         self.gh_calls: list[list[str]] = []
         self.prs = prs or []
+        self.comments = comments or []
+        self.pr_view = pr_view
         self.decision = decision or {"stage": "waiting", "status": "waiting",
                                      "reason": "latest-check-run-pending", "floor": None}
 
@@ -55,7 +58,13 @@ class Entrance:
         assert kwargs.get("stdin") is subprocess.DEVNULL and kwargs.get("capture_output") is True
         if argv[0] == "gh":
             self.gh_calls.append(list(argv))
-            return SimpleNamespace(returncode=0, stdout=json.dumps(self.prs), stderr="")
+            if argv[1] == "api":
+                answer = [[{"body": body} for body in self.comments]]
+            elif argv[1:3] == ["pr", "view"]:
+                answer = self.pr_view
+            else:
+                answer = self.prs
+            return SimpleNamespace(returncode=0, stdout=json.dumps(answer), stderr="")
         self.calls.append(list(argv))
         return SimpleNamespace(returncode=0, stdout=json.dumps(self.decision), stderr="")
 
@@ -354,10 +363,12 @@ def test_c3_2_only_subprocess_is_the_entrance(home, tmp_path, monkeypatch):
     core.read(ctx, {"session_id": SID})
     tick(home, T0 + 1)
     remind(home, T0 + 2)
-    # The entrance, then the one PR lookup inside the same floored read; nothing else.
-    assert len(seen) == 2 and seen[0][2:] == ["--repo", REPO_NAME, "--issue", "888",
+    # The entrance, then the PR lookup inside the same floored read: the body search,
+    # and, finding no PR there, the issue's comments for a marker. Nothing else.
+    assert len(seen) == 3 and seen[0][2:] == ["--repo", REPO_NAME, "--issue", "888",
                                                "--root", "D:/root"]
     assert seen[1][:3] == ["gh", "pr", "list"] and "--state" in seen[1]
+    assert seen[2][:3] == ["gh", "api", f"repos/{REPO_NAME}/issues/888/comments"]
 
 
 def test_c3_3_read_returns_at_once_when_refused(home, tmp_path):
@@ -366,7 +377,7 @@ def test_c3_3_read_returns_at_once_when_refused(home, tmp_path):
     core.read(ctx_at(home, T0, runner), {"session_id": SID})
     assert core.read(ctx_at(home, T0 + 1, runner), {"session_id": SID}) == {
         "ran": False, "why": "floor"}
-    assert len(runner.calls) == 1 and len(runner.gh_calls) == 1
+    assert len(runner.calls) == 1 and len(runner.gh_calls) == 2
 
 
 def decision_dict(stage, status, reason, *, dispatch=False, detail=None, **extra):
@@ -860,6 +871,120 @@ def test_worktree_copy_requires_the_enabled_plugin_entry(checkout, tmp_path):
     with pytest.raises(installer.Refused):
         installer.install_worktree(worktree, checkout, FakeTools())
     assert not (worktree / ".claude" / "settings.local.json").exists()
+
+
+# --- the second review round ------------------------------------------------------------
+
+@pytest.mark.parametrize("stage", ["release-report", "proof", "ready-reviewers", "catch-up"])
+def test_a_failed_holder_only_stage_is_no_return(home, stage):
+    # Thread 4255672027: a failed `work.py` run prints only `work: <error>` on stderr
+    # and exits 1, so the call's text carries no report.
+    bind(home, output=json.dumps(decision_dict("waiting", "waiting",
+                                               "latest-check-run-pending")),
+         command=f"python lib/work.py run build --repo {REPO_NAME} --issue 888 --root D:/r")
+    before = tick(home, T0 + 1)["view"]
+    command = f"python lib/work.py run {stage} --repo {REPO_NAME} --issue 888 --root D:/r"
+    core.observe(ctx_at(home, T0 + 10), {
+        "session_id": SID, "command": command, "started_at": T0 + 9, "ended_at": T0 + 10,
+        "output": "work: GitHub request failed: 502\n", "title": allow_title("Start 888", "auto")})
+    view = tick(home, T0 + 11)["view"]
+    assert (view["stage"], view["waiting_on"], view["next_step"]) == (
+        before["stage"], before["waiting_on"], before["next_step"])
+    assert view["failure"].startswith(f"{stage} failed")
+    assert remind(home, T0 + 12) is None
+
+
+class Clock:
+    def __init__(self, now):
+        self.value = now
+
+    def __call__(self):
+        return self.value
+
+
+def test_a_stage_return_during_a_read_stays_newer(home, tmp_path):
+    # Thread 4255672038: the entrance reading is stamped with the read's start.
+    bound_for_reads(home, tmp_path)
+    clock = Clock(T0)
+    command = f"python lib/work.py run release-report --repo {REPO_NAME} --issue 888 --root D:/r"
+    old = decision_dict("release-report", "holder-owned",
+                        "all-evidence-complete-release-report-ready")
+
+    class Overlapping(Entrance):
+        def __call__(self, argv, **kwargs):
+            if argv[0] != "gh":
+                clock.value = T0 + 20
+                core.observe(ctx_at(home, T0 + 20), {
+                    "session_id": SID, "command": command, "started_at": T0 + 19,
+                    "ended_at": T0 + 20, "output": RELEASE_REPORT_OUTPUT})
+                clock.value = T0 + 40
+            return super().__call__(argv, **kwargs)
+
+    ctx = core.Ctx(home=home, runner=Overlapping(decision=old), environ={},
+                   liveness=lambda identity: "unresolved")
+    ctx.now = clock
+    assert core.read(ctx, {"session_id": SID})["ok"] is True
+    view = tick(home, T0 + 41)["view"]
+    assert view["source"] == "stage-return" and view["next_step"] == "post the release report"
+
+
+def test_lookup_uses_the_entrances_whole_line_closing_reference():
+    # Thread 4255672051: an inline mention is not a closing reference.
+    runner = Entrance(prs=[
+        {"number": 905, "state": "OPEN", "mergedAt": None, "body": "Builds it.\n\nCloses #888\n"},
+        {"number": 950, "state": "OPEN", "mergedAt": None,
+         "body": "This records evidence and mentions closes #888 inline."}])
+    ctx = core.Ctx(home=Path("."), now=T0, runner=runner, environ={})
+    assert core.lookup_pull_request(ctx, REPO_NAME, 888)["number"] == 905
+    assert len(runner.gh_calls) == 1
+
+
+def test_lookup_honours_the_implementing_pr_marker_when_no_body_closes(home):
+    runner = Entrance(
+        prs=[{"number": 950, "state": "OPEN", "mergedAt": None,
+              "body": "mentions closes #888 inline."}],
+        comments=["plain comment",
+                  "<!-- tradecraft:implementing-pr:v1 number=905 -->"],
+        pr_view={"number": 905, "state": "MERGED", "mergedAt": "2026-10-13T00:00:00Z"})
+    ctx = core.Ctx(home=Path("."), now=T0, runner=runner, environ={})
+    assert core.lookup_pull_request(ctx, REPO_NAME, 888) == {"number": 905, "state": "MERGED",
+                                                             "merged": True}
+    assert [argv[:2] for argv in runner.gh_calls] == [["gh", "pr"], ["gh", "api"], ["gh", "pr"]]
+
+
+def test_read_budget_fits_inside_the_shims_timeout():
+    # Thread 4255672080: the entrance plus every gh call, with margin, under the kill.
+    source = REGISTER.read_text(encoding="utf-8")
+    shim_ms = int(re.search(r"READ_TIMEOUT_MS = ([0-9_]+)", source).group(1).replace("_", ""))
+    assert shim_ms == core.SHIM_READ_TIMEOUT_SECONDS * 1000
+    worst = core.ENTRANCE_TIMEOUT_SECONDS + 3 * core.GH_TIMEOUT_SECONDS
+    assert worst <= core.READ_BUDGET_SECONDS <= core.SHIM_READ_TIMEOUT_SECONDS - 30
+    assert core.STALE_LOCK_SECONDS <= core.SHIM_READ_TIMEOUT_SECONDS
+
+
+def test_a_killed_read_shows_read_failed_and_leaves_no_blocking_lock(home, tmp_path):
+    bound_for_reads(home, tmp_path)
+    key = core.change_key(REPO_NAME, 888)
+    seen = {}
+
+    class Killed(Entrance):
+        def __call__(self, argv, **kwargs):
+            # What is on disk at the step the shim's timeout can kill.
+            seen["change"] = core.load_change(ctx_at(home, T0), key)
+            raise KeyboardInterrupt  # stands for the kill: nothing after this runs
+
+    with pytest.raises(KeyboardInterrupt):
+        core.read(ctx_at(home, T0, Killed()), {"session_id": SID})
+    assert seen["change"]["read_open"] == T0
+    assert tick(home, T0 + 100)["view"]["read_failed_at"] is None
+    assert tick(home, T0 + core.READ_BUDGET_SECONDS + 1)["view"]["read_failed_at"] == T0
+    # A lock whose owner is gone does not block the next read once the floor allows.
+    core.lock_path(ctx_at(home, T0), key).write_text(
+        json.dumps({"pid": 4, "host": "h", "birth": "1", "started_at": T0 + 2200}),
+        encoding="utf-8")
+    later = core.Ctx(home=home, now=T0 + 2201, runner=Entrance(), environ={},
+                     liveness=lambda identity: "stopped")
+    assert core.read(later, {"session_id": SID})["ran"] is True
 
 
 # --- row 6: the reminder ------------------------------------------------------------------------------

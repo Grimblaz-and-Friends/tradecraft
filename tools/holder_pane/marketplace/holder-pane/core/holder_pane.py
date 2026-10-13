@@ -61,9 +61,14 @@ RETURN_TABLE: dict[str, tuple[str, str]] = {
 
 # The read floor (row 3): one entrance read per change per 35 minutes.
 FLOOR_SECONDS = 2100
-ENTRANCE_TIMEOUT_SECONDS = 540
-GH_TIMEOUT_SECONDS = 60
-STALE_LOCK_SECONDS = 660
+# The shim kills `core read` at 600 s ($.process.run's ceiling). The core's whole
+# worst case stays inside that with margin: the entrance, then at most three gh
+# calls, each bounded by what is left of READ_BUDGET_SECONDS.
+SHIM_READ_TIMEOUT_SECONDS = 600
+READ_BUDGET_SECONDS = 540
+ENTRANCE_TIMEOUT_SECONDS = 450
+GH_TIMEOUT_SECONDS = 25
+STALE_LOCK_SECONDS = SHIM_READ_TIMEOUT_SECONDS
 PENDING_RECORD_SECONDS = 600
 BUNDLE_MATCH_SLACK_SECONDS = 5
 
@@ -452,14 +457,15 @@ def no_launch_reading(stage: str, report: dict[str, Any] | None, output: str, no
     A report carrying the entrance's `next` decision (catch-up) reads as that
     decision; a report for another stage, or one refused, waiting or terminal,
     reads through the classifier; the stage's own success reads through the
-    return table. No output at all keeps the previous reading.
+    return table. A call that printed no report (a failed run prints only
+    `work: <error>` and exits 1) is no return: it keeps the previous reading.
     """
     if isinstance(report, dict) and _is_decision(report.get("next")):
         return reading_from_decision(report["next"], "stage-return", now, pr)
     if _is_decision(report) and (report["stage"] != stage or report["status"] in (
             "refused", "waiting", "terminal")):
         return reading_from_decision(report, "stage-return", now, pr)
-    if report is not None or output.strip():
+    if report is not None:
         return reading_from_return(stage, report, now, pr=pr)
     return None
 
@@ -835,6 +841,10 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
             reading = no_launch_reading(stage, last_json_object(output), output, ended, pr)
             if reading is not None:
                 state["reading"] = reading
+                state.pop("failure", None)
+            else:
+                # The stage never ran to a report: keep the reading and show the failure.
+                state["failure"] = {"stage": stage, "at": ended}
             state.pop("pending", None)
             state.pop("tracked", None)
             state.pop("release_report_posted", None)
@@ -942,12 +952,22 @@ def compute_view(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any]) -> di
                 state["reading"] = reading_from_return(
                     bundle["stage"], None, now, bundle.get("dispatch_id"))
     reading = _newer(state.get("reading"), change.get("reading"))
+    failure = state.get("failure")
+    if isinstance(failure, dict) and isinstance(reading, dict) and float(
+            reading.get("read_at") or 0) > float(failure.get("at") or 0):
+        state.pop("failure", None)
+        failure = None
+    read_open = change.get("read_open")
+    killed_read = isinstance(read_open, (int, float)) and now - float(read_open) > READ_BUDGET_SECONDS
     view: dict[str, Any] = {
         "repository": binding["repository"], "issue": int(binding["issue"]),
         "stage": "", "status": "", "waiting_on": "unknown", "next_step": "no reading yet",
         "gate": "-", "floor": {"outcome": None, "satisfied": None}, "source": None,
         "read_at": None, "dispatch_id": None, "head": None, "running": None,
-        "record_pending": False, "final": None, "read_failed_at": change.get("read_failed_at"),
+        "record_pending": False, "final": None,
+        "read_failed_at": float(read_open) if killed_read else change.get("read_failed_at"),
+        "failure": (f"{failure['stage']} failed {local_hhmm(float(failure['at']))}"
+                    if isinstance(failure, dict) else None),
     }
     if isinstance(reading, dict):
         for field in ("stage", "status", "waiting_on", "next_step", "gate", "floor", "source",
@@ -1078,10 +1098,19 @@ def renamed(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
 
 # --- the entrance read (row 3) ----------------------------------------------------
 
+def _own_identity() -> dict[str, Any]:
+    try:
+        birth = _process_birth(os.getpid())
+    except (OSError, ValueError, IndexError):
+        birth = None
+    return {"pid": os.getpid(), "host": socket.gethostname(), "birth": birth}
+
+
 def _take_lock(ctx: Ctx, key: str) -> bool:
+    """Exclusive per change. A lock is stale past the shim's kill, or once its owner is gone."""
     path = lock_path(ctx, key)
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = json.dumps({"pid": os.getpid(), "started_at": ctx.now()}).encode("utf-8")
+    body = json.dumps({**_own_identity(), "started_at": ctx.now()}).encode("utf-8")
     for _attempt in range(2):
         try:
             handle = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -1093,7 +1122,8 @@ def _take_lock(ctx: Ctx, key: str) -> bool:
                     started = path.stat().st_mtime
                 except OSError:
                     continue
-            if ctx.now() - float(started) <= STALE_LOCK_SECONDS:
+            owner_gone = isinstance(held, dict) and ctx.liveness(held) == "stopped"
+            if ctx.now() - float(started) <= STALE_LOCK_SECONDS and not owner_gone:
                 return False
             _remove(path)
             continue
@@ -1125,7 +1155,12 @@ def read(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
     if not _take_lock(ctx, key):
         return {"ran": False, "why": "locked"}
     try:
-        change["last_read_started"] = ctx.now()
+        started_at = ctx.now()
+        deadline = started_at + READ_BUDGET_SECONDS
+        change["last_read_started"] = started_at
+        # Recorded before any step the shim's timeout can kill: a read that never
+        # returns still shows `read failed` once its budget has passed.
+        change["read_open"] = started_at
         _write_json(change_path(ctx, key), change)
         argv = [sys.executable, str(entrance), "--repo", binding["repository"],
                 "--issue", str(binding["issue"]), "--root", str(binding["root"])]
@@ -1134,54 +1169,88 @@ def read(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
         decision = None
         try:
             completed = ctx.runner(argv, stdin=subprocess.DEVNULL, capture_output=True,
-                                   timeout=ENTRANCE_TIMEOUT_SECONDS)
+                                   timeout=min(ENTRANCE_TIMEOUT_SECONDS,
+                                               max(1.0, deadline - ctx.now())))
             stdout = completed.stdout
             if isinstance(stdout, bytes):
                 stdout = stdout.decode("utf-8", errors="replace")
             decision = last_json_object(stdout or "")
         except (OSError, subprocess.SubprocessError):
             decision = None
+        pr = lookup_pull_request(ctx, binding["repository"], int(binding["issue"]), deadline)
         change = load_change(ctx, key)
-        pr = lookup_pull_request(ctx, binding["repository"], int(binding["issue"]))
         if pr is not None:
             change["pull_request"] = pr
         if _is_decision(decision):
-            change["reading"] = reading_from_decision(decision, "entrance", ctx.now(),
+            # Stamped with the read's start: the state it reports was collected then,
+            # so a stage return observed while it ran stays the newer reading.
+            change["reading"] = reading_from_decision(decision, "entrance", started_at,
                                                       change.get("pull_request"))
             change.pop("read_failed_at", None)
         else:
             change["read_failed_at"] = ctx.now()
+        change.pop("read_open", None)
         _write_json(change_path(ctx, key), change)
         return {"ran": True, "ok": _is_decision(decision)}
     finally:
         _remove(lock_path(ctx, key))
 
 
-def lookup_pull_request(ctx: Ctx, repository: str, issue: int) -> dict[str, Any] | None:
-    """The change's implementing PR: one `gh pr list` read, inside the floored read.
+CLOSING_REFERENCE = re.compile(
+    r"(?im)^\s*(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\s*$"
+)
+IMPLEMENTING_PR_MARKER = re.compile(r"<!--\s*tradecraft:implementing-pr:v1\b[^>]*?\bnumber=([1-9][0-9]*)")
 
-    The read-only report carries no PR number, so the pane finds the PR whose
-    body closes the issue: an open one first, else the newest merged, else the
-    newest closed. Returns None when none is found or gh fails.
-    """
-    argv = ["gh", "pr", "list", "--repo", repository, "--state", "all",
-            "--search", f"{issue} in:body", "--json", "number,state,mergedAt,body",
-            "--limit", "30"]
+
+def _gh_json(ctx: Ctx, argv: list[str], deadline: float | None) -> Any:
+    remaining = GH_TIMEOUT_SECONDS if deadline is None else min(GH_TIMEOUT_SECONDS,
+                                                                deadline - ctx.now())
+    if remaining < 1:
+        return None
     try:
         completed = ctx.runner(argv, stdin=subprocess.DEVNULL, capture_output=True,
-                               timeout=GH_TIMEOUT_SECONDS)
+                               timeout=remaining)
         stdout = completed.stdout
         if isinstance(stdout, bytes):
             stdout = stdout.decode("utf-8", errors="replace")
-        rows = json.loads(stdout or "[]")
+        return json.loads(stdout or "null")
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
-    if not isinstance(rows, list):
-        return None
-    closes = re.compile(rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#{issue}\b",
-                        re.IGNORECASE)
+
+
+def lookup_pull_request(ctx: Ctx, repository: str, issue: int,
+                        deadline: float | None = None) -> dict[str, Any] | None:
+    """The change's implementing PR, found as the entrance finds it, inside the floored read.
+
+    The read-only report carries no PR number. One `gh pr list` finds PRs whose
+    body closes the issue with the entrance's own whole-line CLOSING_REFERENCE.
+    Only when none does, the issue's comments are read for an `implementing-pr`
+    marker, and that PR's state is read (two more calls). An open PR wins, else
+    the newest merged, else the newest closed. None when nothing is found.
+    """
+    rows = _gh_json(ctx, ["gh", "pr", "list", "--repo", repository, "--state", "all",
+                          "--search", f"{issue} in:body", "--json",
+                          "number,state,mergedAt,body", "--limit", "30"], deadline)
+    rows = rows if isinstance(rows, list) else []
     found = [row for row in rows if isinstance(row, dict) and isinstance(row.get("number"), int)
-             and closes.search(str(row.get("body") or ""))]
+             and any(int(match.group(1)) == issue
+                     for match in CLOSING_REFERENCE.finditer(str(row.get("body") or "")))]
+    if not found:
+        pages = _gh_json(ctx, ["gh", "api", f"repos/{repository}/issues/{issue}/comments",
+                               "--paginate", "--slurp"], deadline)
+        texts = [str(comment.get("body") or "")
+                 for page in (pages if isinstance(pages, list) else [])
+                 for comment in (page if isinstance(page, list) else [])
+                 if isinstance(comment, dict)]
+        numbers = [int(match.group(1)) for text in texts
+                   for match in IMPLEMENTING_PR_MARKER.finditer(text)]
+        if numbers:
+            known = {row.get("number"): row for row in rows if isinstance(row, dict)}
+            row = known.get(numbers[-1]) or _gh_json(
+                ctx, ["gh", "pr", "view", str(numbers[-1]), "--repo", repository, "--json",
+                      "number,state,mergedAt"], deadline)
+            if isinstance(row, dict) and isinstance(row.get("number"), int):
+                found = [row]
     for wanted in ("OPEN", "MERGED", "CLOSED"):
         matches = sorted((row for row in found if str(row.get("state")).upper() == wanted),
                          key=lambda row: row["number"])

@@ -166,3 +166,11 @@ test('turn ends and timer ticks never wait for the entrance read', async ($, on)
   await seen.clock.advance(300_000)
   expect(seen.readsDone).toBeGreaterThan(0)
 })
+
+test('a run binds with its options in any order', async ($, on) => {
+  const seen = world(on, {})
+  await $.session.start({ cwd: 'D:/root', surface: null } as any)
+  await $.tool.call({ tool: 'Bash', command: 'python lib/work.py run build --issue 888 --repo Grimblaz-and-Friends/tradecraft --root D:/x' } as any)
+  expect(seen.core).toContain('observe')
+  expect(seen.opened).toBe(1)
+})

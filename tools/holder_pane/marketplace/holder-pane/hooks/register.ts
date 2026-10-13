@@ -19,8 +19,14 @@ const TICK_MS = 60_000
 const CORE_TIMEOUT_MS = 30_000
 const READ_TIMEOUT_MS = 600_000
 const SHELLS = new Set(['Bash', 'PowerShell'])
-// Mirrors the core's parse: `run <stage>` or `adopt` with --repo and --issue.
-const BINDS = /(?:^|\s)(?:run\s+(?:artifact|cold-seat|build|floor|use|review-disposition|proof|ready-reviewers|release-report|catch-up)|adopt)(?=\s|$)[\s\S]*--repo[\s=][\s\S]*--issue[\s=]/
+// Mirrors the core's parse_entrance_call: `run <stage>` or `adopt`, and both
+// --repo and --issue, the options in any order (argparse takes them so).
+const VERB = /(?:^|\s)(?:run\s+(?:artifact|cold-seat|build|floor|use|review-disposition|proof|ready-reviewers|release-report|catch-up)|adopt)(?=\s|$)/
+const REPO = /(?:^|\s)--repo[\s=]/
+const ISSUE = /(?:^|\s)--issue[\s=]/
+export function binds(command: string): boolean {
+  return VERB.test(command) && REPO.test(command) && ISSUE.test(command)
+}
 const RELEVANT = /(?:^|\s)(?:run|adopt)(?=\s|$)|(?:^|[\s;&|(])gh\s+(?:pr|api)\s/
 const view = atom({ plugin: 'holder-pane', key: 'view' } as const, null)
 
@@ -100,6 +106,7 @@ export function statusLine(v: View): string {
   parts.push(`gate ${v.gate}`)
   parts.push(`floor ${floorText(v.floor)}`)
   parts.push(`read ${v.read_at_local ?? '—'}`)
+  if (v.failure) parts.push(v.failure)
   if (v.read_failed_local) parts.push(`read failed ${v.read_failed_local}`)
   return parts.join(SEP)
 }
@@ -119,6 +126,7 @@ export function paneRows(v: View): Array<[string, string]> {
   }
   rows.push(['read', `${v.read_at_local ?? '—'} (${v.source ?? '—'})`])
   if (v.rename_note) rows.push(['name', v.rename_note])
+  if (v.failure) rows.push(['failed', v.failure])
   if (v.read_failed_local) rows.push(['read failed', v.read_failed_local])
   return rows
 }
@@ -222,14 +230,14 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
     const command = SHELLS.has(tool) ? String((e as any).command ?? '') : ''
-    const binds = command !== '' && BINDS.test(command)
-    if (!binds && !(bound && command !== '' && RELEVANT.test(command))) return next(e)
+    const binding = command !== '' && binds(command)
+    if (!binding && !(bound && command !== '' && RELEVANT.test(command))) return next(e)
     const startedAt = (await $.clock.now()) / 1000
     const ran = await next(e)
     try {
       await initialize($)
       const sessionId = await $.session.id()
-      const title = binds ? await readTitle($) : undefined
+      const title = binding ? await readTitle($) : undefined
       const output = typeof (ran as any).text === 'string' ? (ran as any).text : ''
       const answer = await core($, 'observe', {
         session_id: sessionId,

@@ -20,6 +20,7 @@ export type HolderPaneView = {
   read_at_local: string | null
   read_failed_local?: string
   rename_note?: string | null
+  failure?: string | null
   record_pending: boolean
   final: string | null
 }
