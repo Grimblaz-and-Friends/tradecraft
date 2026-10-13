@@ -1,0 +1,13 @@
+{
+  "name": "tradecraft-lab",
+  "owner": {
+    "name": "Grimblaz-and-Friends"
+  },
+  "plugins": [
+    {
+      "name": "steward-wake",
+      "source": "./",
+      "description": "The Steward's wake and handover (tradecraft #890); lab only."
+    }
+  ]
+}
