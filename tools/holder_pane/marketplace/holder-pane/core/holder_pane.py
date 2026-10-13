@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -38,8 +39,10 @@ STAGES = (
     "proof", "ready-reviewers", "release-report", "catch-up",
 )
 DISPATCHING = frozenset({"artifact", "cold-seat", "build", "floor", "use",
-                         "review-disposition", "catch-up"})
-HOLDER_ONLY = frozenset({"proof", "ready-reviewers", "release-report"})
+                         "review-disposition"})
+# Stages that launch nobody: each publishes, merges or reports for itself, so the
+# call's own report is the reading.
+HOLDER_ONLY = frozenset({"proof", "ready-reviewers", "release-report", "catch-up"})
 SEAT_STAGES = frozenset({"cold-seat", "use"})
 
 # What a returned stage leaves, and for whom (artifact section 4's table).
@@ -49,9 +52,9 @@ RETURN_TABLE: dict[str, tuple[str, str]] = {
     "build": ("holder", "read the builder's return and record it"),
     "floor": ("holder", "read the builder's return and record it"),
     "review-disposition": ("holder", "read the builder's return and record it"),
-    "catch-up": ("holder", "read the builder's return and record it"),
+    "catch-up": ("holder", "run floor, then proof, at the new head"),
     "use": ("holder", "write the session note and post the use marker"),
-    "proof": ("holder", "post the generated proof"),
+    "proof": ("holder", "read the entrance's next step (the proof is published)"),
     "ready-reviewers": ("reviewer", "connected reviewers run"),
     "release-report": ("holder", "post the release report"),
 }
@@ -59,6 +62,7 @@ RETURN_TABLE: dict[str, tuple[str, str]] = {
 # The read floor (row 3): one entrance read per change per 35 minutes.
 FLOOR_SECONDS = 2100
 ENTRANCE_TIMEOUT_SECONDS = 540
+GH_TIMEOUT_SECONDS = 60
 STALE_LOCK_SECONDS = 660
 PENDING_RECORD_SECONDS = 600
 BUNDLE_MATCH_SLACK_SECONDS = 5
@@ -77,11 +81,14 @@ STAGE_PARTIES: dict[str, tuple[str, str]] = {
     "convergence": ("owner", "affirm the brief"),
     "artifact-source": ("holder", "repair the artifact source"),
     "implementation-scope": ("holder", "run the entrance with --instalment"),
+    "merged-pull-request": ("holder", "decide what the issue still owes: close it, build again, "
+                                      "or run a use owed after the merge"),
 }
 STAGE_REASON_PARTIES: dict[tuple[str, str], tuple[str, str]] = {
     ("build", "build-budget-holder-owned"): ("holder", "resolve the build budget"),
     ("build", "fresh-build-requires-released-registration"):
         ("holder", "run release for this work before a fresh build"),
+    ("floor", "floor-command-missing"): ("holder", "rerun floor with --floor-command"),
 }
 # Waiting reasons built from a prefix in the entrance: each asks the holder for something.
 HOLDER_WAITING_PREFIXES: dict[str, str] = {
@@ -90,7 +97,9 @@ HOLDER_WAITING_PREFIXES: dict[str, str] = {
     "holder-session-id-required-for-": "pass --holder-session-id",
     "resume-session-identifies-holder-for-": "pass the builder's session, not the holder's",
 }
-FINAL_STAGES = frozenset({"terminal", "merged-pull-request"})
+# Only a terminal issue or pull request stops the pane; a merge with the issue open
+# is holder-owned and still owes a decision.
+FINAL_STAGES = frozenset({"terminal"})
 
 STEWARD = "steward"
 RENAMING_SOURCES = frozenset({"auto", "tool"})
@@ -111,8 +120,10 @@ class Ctx:
 
     def __init__(self, *, home: Path | None = None, now: float | None = None,
                  runner: Callable[..., Any] | None = None,
-                 environ: dict[str, str] | None = None) -> None:
+                 environ: dict[str, str] | None = None,
+                 liveness: Callable[[Any], str] | None = None) -> None:
         self.home = home if home is not None else Path.home()
+        self.liveness = liveness if liveness is not None else process_liveness
         self._now = now
         self.runner = runner if runner is not None else subprocess.run
         self.environ = environ if environ is not None else dict(os.environ)
@@ -266,6 +277,7 @@ def parse_entrance_call(command: str) -> dict[str, Any] | None:
     return {
         "verb": verb[0], "stage": verb[1], "repository": repository,
         "issue": int(issue), "root": _option(tokens, "--root"), "entrance": entrance,
+        "instalment": _option(tokens, "--instalment"),
     }
 
 
@@ -302,7 +314,8 @@ def last_json_object(text: str) -> dict[str, Any] | None:
 
 
 def _is_decision(value: Any) -> bool:
-    return isinstance(value, dict) and all(key in value for key in ("stage", "status", "reason"))
+    """An entrance report: it names a stage and a status (a reason is optional)."""
+    return isinstance(value, dict) and all(key in value for key in ("stage", "status"))
 
 
 # --- classifying a decision --------------------------------------------------
@@ -363,7 +376,7 @@ def _head(decision: dict[str, Any]) -> str | None:
     return None
 
 
-def gate_text(decision: dict[str, Any]) -> str:
+def gate_text(decision: dict[str, Any], pr: dict[str, Any] | None = None) -> str:
     gate = decision.get("required_gate")
     if isinstance(gate, dict) and gate.get("verdict"):
         return str(gate["verdict"])
@@ -372,7 +385,7 @@ def gate_text(decision: dict[str, Any]) -> str:
         return "green"
     if any(marker in reason for marker in GATE_REASON_MARKERS):
         return reason
-    if _pull_request(decision) is None:
+    if _pull_request(decision) is None and _pr_number(pr) is None:
         return "not reached"
     return "-"
 
@@ -394,16 +407,17 @@ def _stalled_by_entrance(decision: dict[str, Any] | None) -> bool:
         isinstance(floor, dict) and floor.get("outcome") == "stalled")
 
 
-def reading_from_decision(decision: dict[str, Any], source: str, now: float) -> dict[str, Any]:
+def reading_from_decision(decision: dict[str, Any], source: str, now: float,
+                          pr: dict[str, Any] | None = None) -> dict[str, Any]:
     reading = {
         "stage": str(decision.get("stage") or ""),
         "status": str(decision.get("status") or ""),
         "reason": str(decision.get("reason") or ""),
-        "gate": gate_text(decision),
+        "gate": gate_text(decision, pr),
         "floor": floor_value(decision),
         "source": source,
         "read_at": now,
-        "pull_request": _pull_request(decision),
+        "pull_request": _pull_request(decision) or _pr_number(pr),
         "head": _head(decision),
         "entrance_stalled": _stalled_by_entrance(decision),
         "dispatch_id": None,
@@ -413,16 +427,41 @@ def reading_from_decision(decision: dict[str, Any], source: str, now: float) -> 
 
 
 def reading_from_return(stage: str, source_decision: dict[str, Any] | None, now: float,
-                        dispatch_id: str | None = None) -> dict[str, Any]:
+                        dispatch_id: str | None = None,
+                        pr: dict[str, Any] | None = None) -> dict[str, Any]:
     waiting_on, step = RETURN_TABLE[stage]
     base = source_decision if isinstance(source_decision, dict) else {}
     return {
         "stage": stage, "status": "returned", "reason": str(base.get("reason") or ""),
-        "gate": gate_text(base) if base else "-", "floor": floor_value(base),
-        "source": "stage-return", "read_at": now, "pull_request": _pull_request(base),
+        "gate": gate_text(base, pr) if base else "-", "floor": floor_value(base),
+        "source": "stage-return", "read_at": now,
+        "pull_request": _pull_request(base) or _pr_number(pr),
         "head": _head(base), "entrance_stalled": _stalled_by_entrance(base),
         "dispatch_id": dispatch_id, "waiting_on": waiting_on, "next_step": step,
     }
+
+
+def _pr_number(pr: Any) -> int | None:
+    return int(pr["number"]) if isinstance(pr, dict) and isinstance(pr.get("number"), int) else None
+
+
+def no_launch_reading(stage: str, report: dict[str, Any] | None, output: str, now: float,
+                      pr: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """A stage that launches nobody: its own report is the reading.
+
+    A report carrying the entrance's `next` decision (catch-up) reads as that
+    decision; a report for another stage, or one refused, waiting or terminal,
+    reads through the classifier; the stage's own success reads through the
+    return table. No output at all keeps the previous reading.
+    """
+    if isinstance(report, dict) and _is_decision(report.get("next")):
+        return reading_from_decision(report["next"], "stage-return", now, pr)
+    if _is_decision(report) and (report["stage"] != stage or report["status"] in (
+            "refused", "waiting", "terminal")):
+        return reading_from_decision(report, "stage-return", now, pr)
+    if report is not None or output.strip():
+        return reading_from_return(stage, report, now, pr=pr)
+    return None
 
 
 # --- state -------------------------------------------------------------------
@@ -574,10 +613,91 @@ def bundles_for(ctx: Ctx, work: str) -> list[dict[str, Any]]:
         except OSError:
             finished = None
         found.append({**entry, "lifecycle": run.get("lifecycle"), "logs": logs,
+                      "processes": [run[name] for name in ("launcher_process",
+                                                           "recipient_process")
+                                    if isinstance(run.get(name), dict)],
                       "dispatch_id": run.get("dispatch_id") or entry.get("dispatch_id"),
                       "run_mtime": finished})
     found.sort(key=lambda bundle: bundle["launched_at"])
     return found
+
+
+def process_liveness(identity: Any) -> str:
+    """`active`, `stopped` or `unresolved`, by pid and birth, as lib/run_lifecycle.py does."""
+    if not isinstance(identity, dict) or identity.get("host") != socket.gethostname():
+        return "unresolved"
+    pid, birth = identity.get("pid"), identity.get("birth")
+    if not isinstance(pid, int) or not birth:
+        return "unresolved"
+    try:
+        current = _process_birth(pid)
+    except ProcessLookupError:
+        return "stopped"
+    except (OSError, ValueError, IndexError):
+        return "unresolved"
+    return "active" if current == str(birth) else "stopped"
+
+
+def _process_birth(pid: int) -> str:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetProcessTimes.argtypes = [wintypes.HANDLE,
+                                           *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        handle = kernel.OpenProcess(0x101000, False, pid)
+        if not handle:
+            if ctypes.get_last_error() == 87:
+                raise ProcessLookupError(pid)
+            raise OSError("cannot read process identity")
+        try:
+            status = kernel.WaitForSingleObject(handle, 0)
+            if status == 0:
+                raise ProcessLookupError(pid)
+            if status != 258:
+                raise OSError("cannot establish process liveness")
+            values = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel.GetProcessTimes(handle, *(ctypes.byref(v) for v in values)):
+                raise OSError("cannot read process creation time")
+            return str(values[0].dwHighDateTime << 32 | values[0].dwLowDateTime)
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()
+    except FileNotFoundError:
+        if Path("/proc").is_dir():
+            raise ProcessLookupError(pid) from None
+        raise OSError("no /proc") from None
+    if fields[0] == b"Z":
+        raise ProcessLookupError(pid)
+    return fields[19].decode("ascii")
+
+
+def live_running(ctx: Ctx, bundles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bundles still running: `running` on record, not superseded, and not proven dead.
+
+    A killed launcher leaves `lifecycle: running` behind. Such a record is not
+    running once a newer bundle of the same stage has finished, or once every
+    process it names is proven gone; `unresolved` keeps it, as recovery does.
+    """
+    live = []
+    for index, bundle in enumerate(bundles):
+        if bundle.get("lifecycle") != "running":
+            continue
+        later = bundles[index + 1:]
+        if any(other.get("stage") == bundle.get("stage") and other.get("lifecycle") != "running"
+               for other in later):
+            continue
+        processes = bundle.get("processes") or []
+        if processes and all(ctx.liveness(identity) == "stopped" for identity in processes):
+            continue
+        live.append(bundle)
+    return live
 
 
 def running_overlay(bundle: dict[str, Any], now: float) -> dict[str, Any]:
@@ -617,6 +737,7 @@ def bind(ctx: Ctx, session_id: str, binding: dict[str, Any], title: dict[str, An
     record = {
         "repository": binding["repository"], "issue": int(binding["issue"]),
         "root": binding.get("root"), "entrance": entrance, "session_id": session_id,
+        "instalment": binding.get("instalment"),
         "bound_at": binding.get("bound_at") or ctx.now(),
     }
     _write_json(binding_path(ctx, session_id), record)
@@ -654,27 +775,31 @@ def recover(ctx: Ctx, session_id: str, root: str) -> dict[str, Any] | None:
     if len(matches) != 1:
         return None
     row = matches[0]
+    instalment = row.get("instalment") if isinstance(row.get("instalment"), str) else None
     return {"repository": row["repository"], "issue": row["issue"],
-            "root": row["holder_root"], "entrance": newest_cached_entrance(ctx)}
+            "root": row["holder_root"], "entrance": newest_cached_entrance(ctx),
+            "instalment": instalment}
 
 
 # --- observing the holder's own calls ----------------------------------------
 
-def _posts_to_pull_request(command: str, pull_request: int) -> bool:
+def _posts_to_pull_request(command: str, pull_request: int | None) -> int | None:
+    """The PR this command posts to, when it is `pull_request`; any named PR when that is unknown."""
     for match in GH_POST.finditer(command):
         rest = match.group("rest")
         tokens = [_unquote(token) for token in _tokens(rest)]
         if len(tokens) >= 3 and tokens[0] == "pr" and tokens[1] in ("comment", "edit"):
-            if tokens[2].lstrip("#") == str(pull_request) or tokens[2].endswith(
-                    f"/pull/{pull_request}"):
-                return True
+            named = re.search(r"(?:^#?|/pull/)(\d+)$", tokens[2])
+            if named and (pull_request is None or int(named.group(1)) == pull_request):
+                return int(named.group(1))
         if tokens and tokens[0] == "api":
             target = re.search(r"issues/(\d+)/comments", rest)
             post = re.search(r"(?:-X|--method)[\s=]+POST", rest, re.IGNORECASE) or re.search(
                 r"(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?:\s|=)", rest)
-            if target and post and int(target.group(1)) == pull_request:
-                return True
-    return False
+            if target and post and pull_request is not None and int(
+                    target.group(1)) == pull_request:
+                return pull_request
+    return None
 
 
 def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
@@ -699,35 +824,35 @@ def observe(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
         unbind(ctx, session_id)
         return {"bound": False}
     state = load_session(ctx, session_id)
+    pr = load_change(ctx, change_key(binding["repository"], binding["issue"])).get("pull_request")
     same_change = call is not None and (call["repository"], call["issue"]) == (
         binding["repository"], binding["issue"])
     if same_change and call["verb"] == "run":
         stage = call["stage"]
         if stage in DISPATCHING:
-            _observe_launch(ctx, binding, state, stage, output, started, ended)
+            _observe_launch(ctx, binding, state, stage, output, started, ended, pr)
         else:
-            decision = last_json_object(output)
-            if _is_decision(decision) and (decision["stage"] != stage or decision["status"] in (
-                    "refused", "waiting", "terminal")):
-                state["reading"] = reading_from_decision(decision, "stage-return", ended)
-            elif decision is not None or output.strip():
-                state["reading"] = reading_from_return(stage, decision, ended)
+            reading = no_launch_reading(stage, last_json_object(output), output, ended, pr)
+            if reading is not None:
+                state["reading"] = reading
             state.pop("pending", None)
             state.pop("tracked", None)
             state.pop("release_report_posted", None)
     reading = state.get("reading")
     if call is None and isinstance(reading, dict) and reading.get("stage") == "release-report" \
-            and reading.get("source") == "stage-return" and isinstance(
-                reading.get("pull_request"), int) \
-            and _posts_to_pull_request(command, int(reading["pull_request"])):
-        state["release_report_posted"] = {"head": reading.get("head"),
-                                          "pull_request": reading["pull_request"]}
+            and reading.get("source") == "stage-return":
+        known = reading.get("pull_request") if isinstance(reading.get("pull_request"), int) \
+            else _pr_number(pr)
+        posted = _posts_to_pull_request(command, known)
+        if posted is not None:
+            state["release_report_posted"] = {"head": reading.get("head"), "pull_request": posted}
     save_session(ctx, session_id, state)
     return {"bound": True, "binding": binding}
 
 
 def _observe_launch(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any], stage: str,
-                    output: str, started: float, ended: float) -> None:
+                    output: str, started: float, ended: float,
+                    pr: dict[str, Any] | None = None) -> None:
     state.pop("tracked", None)
     state.pop("release_report_posted", None)
     work = f"{binding['repository']}#{binding['issue']}"
@@ -737,13 +862,16 @@ def _observe_launch(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any], st
         if match.get("lifecycle") == "running":
             state["tracked"] = match.get("dispatch_id")
         else:
-            state["reading"] = reading_from_return(stage, None, ended, match.get("dispatch_id"))
+            state["reading"] = reading_from_return(stage, None, ended,
+                                                   match.get("dispatch_id"), pr)
         return
     decision = last_json_object(output)
-    if _is_decision(decision) and decision["status"] in ("refused", "waiting"):
-        # The entrance launched nobody and no bundle will come: its decision is the reading.
+    if _is_decision(decision) and (decision.get("dispatch") is False
+                                   or decision["status"] != "runnable"):
+        # The entrance launched nobody and no bundle will come: its report is the reading,
+        # whatever its status (a holder-owned budget or scope refusal included).
         state.pop("pending", None)
-        state["reading"] = reading_from_decision(decision, "stage-return", ended)
+        state["reading"] = reading_from_decision(decision, "stage-return", ended, pr)
         return
     state["pending"] = {"stage": stage, "started_at": started, "ended_at": ended}
 
@@ -826,15 +954,16 @@ def compute_view(ctx: Ctx, binding: dict[str, Any], state: dict[str, Any]) -> di
                       "read_at", "dispatch_id", "head"):
             view[field] = reading.get(field, view[field])
         if reading.get("stage") in FINAL_STAGES or reading.get("status") == "terminal":
-            view["final"] = "merged" if reading.get("stage") == "merged-pull-request" or \
-                "merged" in str(reading.get("reason") or "") else "closed"
+            # Merged or closed is the pull request's own state, never the reason text.
+            pr = change.get("pull_request")
+            view["final"] = "merged" if isinstance(pr, dict) and pr.get("merged") else "closed"
             view["waiting_on"] = "none"
         posted = state.get("release_report_posted")
         if isinstance(posted, dict) and reading.get("stage") == "release-report" and (
                 posted.get("head") in (None, reading.get("head"))):
             view["waiting_on"] = "owner"
             view["next_step"] = "merge"
-    running = [bundle for bundle in bundles if bundle.get("lifecycle") == "running"]
+    running = live_running(ctx, bundles)
     if view["final"] is None and isinstance(pending, dict):
         stage = pending["stage"]
         view.update({"stage": stage, "status": "launched", "source": "stage-return",
@@ -1000,6 +1129,8 @@ def read(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
         _write_json(change_path(ctx, key), change)
         argv = [sys.executable, str(entrance), "--repo", binding["repository"],
                 "--issue", str(binding["issue"]), "--root", str(binding["root"])]
+        if binding.get("instalment"):
+            argv += ["--instalment", str(binding["instalment"])]
         decision = None
         try:
             completed = ctx.runner(argv, stdin=subprocess.DEVNULL, capture_output=True,
@@ -1011,8 +1142,12 @@ def read(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
         except (OSError, subprocess.SubprocessError):
             decision = None
         change = load_change(ctx, key)
+        pr = lookup_pull_request(ctx, binding["repository"], int(binding["issue"]))
+        if pr is not None:
+            change["pull_request"] = pr
         if _is_decision(decision):
-            change["reading"] = reading_from_decision(decision, "entrance", ctx.now())
+            change["reading"] = reading_from_decision(decision, "entrance", ctx.now(),
+                                                      change.get("pull_request"))
             change.pop("read_failed_at", None)
         else:
             change["read_failed_at"] = ctx.now()
@@ -1020,6 +1155,41 @@ def read(ctx: Ctx, payload: dict[str, Any]) -> dict[str, Any]:
         return {"ran": True, "ok": _is_decision(decision)}
     finally:
         _remove(lock_path(ctx, key))
+
+
+def lookup_pull_request(ctx: Ctx, repository: str, issue: int) -> dict[str, Any] | None:
+    """The change's implementing PR: one `gh pr list` read, inside the floored read.
+
+    The read-only report carries no PR number, so the pane finds the PR whose
+    body closes the issue: an open one first, else the newest merged, else the
+    newest closed. Returns None when none is found or gh fails.
+    """
+    argv = ["gh", "pr", "list", "--repo", repository, "--state", "all",
+            "--search", f"{issue} in:body", "--json", "number,state,mergedAt,body",
+            "--limit", "30"]
+    try:
+        completed = ctx.runner(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                               timeout=GH_TIMEOUT_SECONDS)
+        stdout = completed.stdout
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        rows = json.loads(stdout or "[]")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    closes = re.compile(rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#{issue}\b",
+                        re.IGNORECASE)
+    found = [row for row in rows if isinstance(row, dict) and isinstance(row.get("number"), int)
+             and closes.search(str(row.get("body") or ""))]
+    for wanted in ("OPEN", "MERGED", "CLOSED"):
+        matches = sorted((row for row in found if str(row.get("state")).upper() == wanted),
+                         key=lambda row: row["number"])
+        if matches:
+            row = matches[-1]
+            return {"number": row["number"], "state": wanted,
+                    "merged": wanted == "MERGED" or bool(row.get("mergedAt"))}
+    return None
 
 
 # --- the reminder (row 6) -----------------------------------------------------------

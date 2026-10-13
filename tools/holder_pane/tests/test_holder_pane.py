@@ -44,13 +44,18 @@ T0 = 1_800_000_000.0
 class Entrance:
     """A fake entrance: logs each run and answers a fixed decision."""
 
-    def __init__(self, decision: dict | None = None):
+    def __init__(self, decision: dict | None = None, prs: list | None = None):
         self.calls: list[list[str]] = []
+        self.gh_calls: list[list[str]] = []
+        self.prs = prs or []
         self.decision = decision or {"stage": "waiting", "status": "waiting",
                                      "reason": "latest-check-run-pending", "floor": None}
 
     def __call__(self, argv, **kwargs):
         assert kwargs.get("stdin") is subprocess.DEVNULL and kwargs.get("capture_output") is True
+        if argv[0] == "gh":
+            self.gh_calls.append(list(argv))
+            return SimpleNamespace(returncode=0, stdout=json.dumps(self.prs), stderr="")
         self.calls.append(list(argv))
         return SimpleNamespace(returncode=0, stdout=json.dumps(self.decision), stderr="")
 
@@ -62,9 +67,10 @@ def home(tmp_path):
     return root
 
 
-def ctx_at(home: Path, now: float, runner=None, environ=None):
+def ctx_at(home: Path, now: float, runner=None, environ=None, liveness=None):
     return core.Ctx(home=home, now=now, runner=runner or Entrance(),
-                    environ=environ if environ is not None else {})
+                    environ=environ if environ is not None else {},
+                    liveness=liveness or (lambda identity: "unresolved"))
 
 
 def allow_title(title: str, source: str | None = None) -> dict:
@@ -87,7 +93,8 @@ def bind(home: Path, now: float = T0, title=None, command: str = RUN_BUILD, outp
 
 def write_bundle(home: Path, name: str, *, stage: str, launched: float, lifecycle: str,
                  work: str = f"{REPO_NAME}#888", limit: float | None = 7200.0,
-                 dispatch_id: str = "d1", log_mtime: float | None = None) -> Path:
+                 dispatch_id: str = "d1", log_mtime: float | None = None,
+                 processes: dict | None = None) -> Path:
     directory = home / ".tradecraft" / "dispatches" / name
     directory.mkdir(parents=True, exist_ok=True)
     stdout = directory / "result.md.claude.stdout.log"
@@ -100,13 +107,14 @@ def write_bundle(home: Path, name: str, *, stage: str, launched: float, lifecycl
                "caller_limit_seconds": limit, "stage_ceiling_seconds": 9000.0}
     (directory / "result.md.request.json").write_text(json.dumps(request), encoding="utf-8")
     run = {"dispatch_id": dispatch_id, "lifecycle": lifecycle,
-           "attempts": [{"stdout": str(stdout), "stderr": str(directory / "missing.log")}]}
+           "attempts": [{"stdout": str(stdout), "stderr": str(directory / "missing.log")}],
+           **(processes or {})}
     (directory / "result.md.run.json").write_text(json.dumps(run), encoding="utf-8")
     return directory
 
 
-def tick(home: Path, now: float, title=None, runner=None):
-    return core.tick(ctx_at(home, now, runner), {
+def tick(home: Path, now: float, title=None, runner=None, liveness=None):
+    return core.tick(ctx_at(home, now, runner, liveness=liveness), {
         "session_id": SID, "title": title if title is not None else allow_title("Start 888", "auto")})
 
 
@@ -158,7 +166,8 @@ def test_c2_5_detached_wrapper_binds_and_read_only_does_not(home):
         f"python launch_stage.py artifact1 -- run artifact --repo {REPO_NAME} --issue 888 "
         f"--root D:/Code/x")
     assert parsed == {"verb": "run", "stage": "artifact", "repository": REPO_NAME,
-                      "issue": 888, "root": "D:/Code/x", "entrance": None}
+                      "issue": 888, "root": "D:/Code/x", "entrance": None,
+                      "instalment": None}
     named = core.parse_entrance_call(
         f'python "C:/p/lib/work.py" run build --repo {REPO_NAME} --issue 888 --root D:/x')
     assert named["entrance"] == "C:/p/lib/work.py"
@@ -313,8 +322,8 @@ def test_c3_1_floor_and_single_flight_across_sessions(home, tmp_path):
     assert core.read(ctx_at(home, later, runner), {"session_id": SID})["ran"] is True
     assert len(runner.calls) == 3 and not lock.exists()
     # Nothing runs after a terminal reading.
-    runner.decision = {"stage": "merged-pull-request", "status": "holder-owned",
-                       "reason": "merged"}
+    runner.decision = {"stage": "terminal", "status": "terminal",
+                       "reason": "issue-or-pull-request-terminal"}
     assert core.read(ctx_at(home, later + 3000, runner), {"session_id": SID})["ran"] is True
     assert core.read(ctx_at(home, later + 9000, runner), {"session_id": SID})["why"] == "stopped"
     assert len(runner.calls) == 4
@@ -345,8 +354,10 @@ def test_c3_2_only_subprocess_is_the_entrance(home, tmp_path, monkeypatch):
     core.read(ctx, {"session_id": SID})
     tick(home, T0 + 1)
     remind(home, T0 + 2)
-    assert len(seen) == 1 and seen[0][2:] == ["--repo", REPO_NAME, "--issue", "888",
+    # The entrance, then the one PR lookup inside the same floored read; nothing else.
+    assert len(seen) == 2 and seen[0][2:] == ["--repo", REPO_NAME, "--issue", "888",
                                                "--root", "D:/root"]
+    assert seen[1][:3] == ["gh", "pr", "list"] and "--state" in seen[1]
 
 
 def test_c3_3_read_returns_at_once_when_refused(home, tmp_path):
@@ -355,16 +366,36 @@ def test_c3_3_read_returns_at_once_when_refused(home, tmp_path):
     core.read(ctx_at(home, T0, runner), {"session_id": SID})
     assert core.read(ctx_at(home, T0 + 1, runner), {"session_id": SID}) == {
         "ran": False, "why": "floor"}
-    assert len(runner.calls) == 1
+    assert len(runner.calls) == 1 and len(runner.gh_calls) == 1
 
 
-RELEASE_REPORT_OUTPUT = json.dumps({
-    "stage": "release-report", "status": "holder-owned",
-    "reason": "all-evidence-complete-release-report-ready", "dispatch": False,
-    "synchronization": {"pull_request": 900}, "floor": {"outcome": "ci-met", "satisfied": True,
-                                                        "head": "abc"},
-    "required_gate": {"verdict": "green", "head": "abc"},
-})
+def decision_dict(stage, status, reason, *, dispatch=False, detail=None, **extra):
+    """`lib/work.py` Decision.as_dict's keys, as `_emit_report` prints them."""
+    report = {
+        "schema_version": 1, "work": f"{REPO_NAME}#888", "producer_version": "0.195.0",
+        "stage": stage, "dispatch": dispatch, "status": status, "continuity": None,
+        "reason": reason, "detail": detail, "lawful_markers": [], "invalid_markers": [],
+        "quotations": [], "latest_checks": [], "launch_settings": None,
+        "synchronization": {"base": "main", "head": "abc", "behind": 0, "strict": True,
+                            "conflict": False, "mergeability_known": True,
+                            "uncertainties": []},
+        "use_application": None,
+        "floor": {"base": "main", "policy": ".github/change-proof.json", "head": "abc",
+                  "outcome": "ci-met", "checks": [], "executions": [], "excluded": [],
+                  "limitations": []},
+        "raw_output": None, "version_obligation": None, "proof_version_obligation": None,
+        "reach": None, "artifact_interpretation": None,
+    }
+    report.update(extra)
+    return report
+
+
+RELEASE_REPORT_OUTPUT = json.dumps(decision_dict(
+    "release-report", "holder-owned", "all-evidence-complete-release-report-ready",
+    required_gate={"verdict": "green", "head": "abc", "reason": "", "requirement_known": True},
+    path_departures={"restate": False, "instruction": "no restatement"},
+    holder_close={"instruction": "close"},
+))
 
 
 def test_c3_4_holder_only_stage_return_reads_its_own_output(home):
@@ -375,7 +406,7 @@ def test_c3_4_holder_only_stage_return_reads_its_own_output(home):
     assert runner.calls == []
     assert view["next_step"] == "post the release report"
     assert view["waiting_on"] == "holder" and view["source"] == "stage-return"
-    assert view["gate"] == "green" and view["floor"] == {"outcome": "ci-met", "satisfied": True}
+    assert view["gate"] == "green" and view["floor"] == {"outcome": "ci-met", "satisfied": None}
 
 
 def test_c3_5_detached_dispatch_reads_running_until_its_bundle_returns(home):
@@ -648,7 +679,16 @@ def test_c5_3_classifier_order():
         "waiting_on"] == "unknown"
 
 
+def seed_pull_request(home, number=900, state="OPEN", merged=False):
+    key = core.change_key(REPO_NAME, 888)
+    path = core.change_path(ctx_at(home, T0), key)
+    change = core.load_change(ctx_at(home, T0), key)
+    change["pull_request"] = {"number": number, "state": state, "merged": merged}
+    core._write_json(path, change)
+
+
 def test_c5_4_release_report_posted_waits_on_the_owner(home):
+    seed_pull_request(home, 900)
     command = f"python lib/work.py run release-report --repo {REPO_NAME} --issue 888 --root D:/r"
     bind(home, command=command, output=RELEASE_REPORT_OUTPUT)
     core.observe(ctx_at(home, T0 + 10), {"session_id": SID, "command": "gh pr comment 901 -F x",
@@ -660,6 +700,166 @@ def test_c5_4_release_report_posted_waits_on_the_owner(home):
     view = tick(home, T0 + 13)["view"]
     assert view["waiting_on"] == "owner" and view["next_step"] == "merge"
     assert view["label"] == "waiting on you"
+
+
+def test_c5_4_release_report_handoff_with_the_pr_unknown_takes_the_named_pr(home):
+    # The real report carries no PR number (thread 4255043360): with none cached
+    # either, the holder's own `gh pr comment <n>` names it.
+    command = f"python lib/work.py run release-report --repo {REPO_NAME} --issue 888 --root D:/r"
+    bind(home, command=command, output=RELEASE_REPORT_OUTPUT)
+    core.observe(ctx_at(home, T0 + 1), {"session_id": SID, "output": "",
+                                        "command": "gh pr comment 900 --body-file r.md"})
+    view = tick(home, T0 + 2)["view"]
+    assert view["waiting_on"] == "owner" and view["next_step"] == "merge"
+
+
+def test_floored_read_finds_the_implementing_pr_and_the_gate_is_not_unreached(home, tmp_path):
+    bound_for_reads(home, tmp_path)
+    runner = Entrance(decision=decision_dict("waiting", "waiting", "latest-check-run-pending"),
+                      prs=[{"number": 700, "state": "OPEN", "mergedAt": None,
+                            "body": "mentions 888 but closes nothing"},
+                           {"number": 905, "state": "OPEN", "mergedAt": None,
+                            "body": "Builds it.\n\nCloses #888\n"}])
+    assert core.read(ctx_at(home, T0, runner), {"session_id": SID})["ok"] is True
+    change = core.load_change(ctx_at(home, T0), core.change_key(REPO_NAME, 888))
+    assert change["pull_request"] == {"number": 905, "state": "OPEN", "merged": False}
+    view = tick(home, T0 + 1)["view"]
+    assert view["gate"] != "not reached" and view["waiting_on"] == "ci"
+
+
+def test_lookup_prefers_open_then_newest_merged():
+    runner = Entrance(prs=[{"number": 1, "state": "MERGED", "mergedAt": "x", "body": "Fixes #888"},
+                           {"number": 3, "state": "CLOSED", "mergedAt": None, "body": "closes #888"},
+                           {"number": 2, "state": "MERGED", "mergedAt": "y", "body": "Closes #888"},
+                           {"number": 9, "state": "OPEN", "mergedAt": None, "body": "Closes #8880"}])
+    ctx = core.Ctx(home=Path("."), now=T0, runner=runner, environ={})
+    assert core.lookup_pull_request(ctx, REPO_NAME, 888) == {"number": 2, "state": "MERGED",
+                                                             "merged": True}
+
+
+def test_catch_up_launches_nobody_and_reads_its_next_decision(home):
+    # The real catch-up report: no reason, dispatch false, and the entrance's next decision.
+    report = {"schema_version": 1, "stage": "catch-up", "dispatch": False,
+              "status": "holder-owned", "starting_head": "a", "pinned_base": "b", "head": "c",
+              "version_adjustment": None, "landing": "", "landing_error": "",
+              "next": decision_dict("waiting", "waiting", "latest-check-run-pending")}
+    command = f"python lib/work.py run catch-up --repo {REPO_NAME} --issue 888 --root D:/r"
+    bind(home, command=command, output=json.dumps(report))
+    view = tick(home, T0 + 700)["view"]
+    assert view["record_pending"] is False and view["running"] is None
+    assert view["waiting_on"] == "ci" and view["label"] == "waiting on CI"
+    assert "no dispatch record" not in view["next_step"]
+
+
+@pytest.mark.parametrize("stage,reason,step", [
+    ("build", "build-budget-holder-owned", "resolve the build budget"),
+    ("floor", "floor-command-missing", "rerun floor with --floor-command"),
+    ("implementation-scope", "implementation-instalment-required",
+     "run the entrance with --instalment"),
+])
+def test_holder_owned_refusal_of_a_dispatching_stage_is_the_reading(home, stage, reason, step):
+    report = decision_dict(stage, "holder-owned", reason)
+    run = "floor" if stage == "floor" else "build"
+    command = f"python lib/work.py run {run} --repo {REPO_NAME} --issue 888 --root D:/r"
+    bind(home, command=command, output=json.dumps(report))
+    view = tick(home, T0 + 1)["view"]
+    assert view["record_pending"] is False and view["waiting_on"] == "holder"
+    assert view["next_step"] == step
+    assert remind(home, T0 + 2) == f"next: {step} (yours)"
+
+
+def test_successful_proof_never_asks_the_holder_to_post_it(home):
+    report = {"schema_version": 1, "work": f"{REPO_NAME}#888", "producer_version": "0.195.0",
+              "stage": "proof", "status": "holder-owned", "head": "abc",
+              "comment": {"id": 1}, "gate_reruns": []}
+    command = f"python lib/work.py run proof --repo {REPO_NAME} --issue 888 --root D:/r"
+    bind(home, command=command, output=json.dumps(report))
+    view = tick(home, T0 + 1)["view"]
+    assert "post the generated proof" not in view["next_step"]
+    assert "post" not in (remind(home, T0 + 2) or "")
+
+
+def test_merged_with_the_issue_open_is_holder_owned_not_final(home, tmp_path):
+    bound_for_reads(home, tmp_path)
+    runner = Entrance(decision=decision_dict(
+        "merged-pull-request", "holder-owned",
+        "implementing-pull-request-merged-while-issue-open"))
+    core.read(ctx_at(home, T0, runner), {"session_id": SID})
+    answer = tick(home, T0 + 1)
+    assert answer["stopped"] is False and answer["view"]["final"] is None
+    assert answer["view"]["waiting_on"] == "holder"
+    assert remind(home, T0 + 2) is not None
+    assert core.read(ctx_at(home, T0 + 3000, runner), {"session_id": SID})["ran"] is True
+
+
+@pytest.mark.parametrize("pr,label", [
+    ({"number": 905, "state": "MERGED", "mergedAt": "x", "body": "Closes #888"}, "merged"),
+    ({"number": 905, "state": "CLOSED", "mergedAt": None, "body": "Closes #888"}, "closed"),
+    (None, "closed"),
+])
+def test_terminal_label_comes_from_the_pull_request(home, tmp_path, pr, label):
+    bound_for_reads(home, tmp_path)
+    runner = Entrance(decision=decision_dict("terminal", "terminal",
+                                             "issue-or-pull-request-terminal"),
+                      prs=[pr] if pr else [])
+    core.read(ctx_at(home, T0, runner), {"session_id": SID})
+    answer = tick(home, T0 + 1)
+    assert answer["view"]["label"] == label and answer["stopped"] is True
+
+
+def test_dead_or_superseded_running_bundle_does_not_overlay(home):
+    bind(home, output="12345\n")
+    dead = {"launcher_process": {"pid": 1, "host": "h", "birth": "1"},
+            "recipient_process": {"pid": 2, "host": "h", "birth": "2"}}
+    write_bundle(home, "b1", stage="build", launched=T0, lifecycle="running", dispatch_id="old",
+                 processes=dead)
+    alive = tick(home, T0 + 60, liveness=lambda identity: "active")["view"]
+    assert alive["running"] is not None
+    gone = tick(home, T0 + 120, liveness=lambda identity: "stopped")["view"]
+    assert gone["running"] is None
+    write_bundle(home, "b2", stage="build", launched=T0 + 200, lifecycle="completed",
+                 dispatch_id="new")
+    superseded = tick(home, T0 + 300, liveness=lambda identity: "active")["view"]
+    assert superseded["running"] is None
+
+
+def test_instalment_is_kept_and_passed_on_every_read(home, tmp_path):
+    entrance = tmp_path / "work.py"
+    entrance.write_text("", encoding="utf-8")
+    command = (f"python {entrance.as_posix()} run proof --repo {REPO_NAME} --issue 888 "
+               f"--root D:/root --instalment b")
+    bind(home, command=command)
+    path = core.binding_path(ctx_at(home, T0), SID)
+    binding = json.loads(path.read_text())
+    assert binding["instalment"] == "b"
+    binding["entrance"] = str(entrance)
+    path.write_text(json.dumps(binding), encoding="utf-8")
+    runner = Entrance()
+    core.read(ctx_at(home, T0, runner), {"session_id": SID})
+    assert runner.calls[0][-2:] == ["--instalment", "b"]
+
+
+def test_uninstall_keeps_an_opt_in_that_predates_the_install(checkout):
+    path = checkout / ".claude" / "settings.local.json"
+    path.write_text(json.dumps({"env": {"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1",
+                                        "OTHER": "x"}}), encoding="utf-8")
+    tools = FakeTools()
+    installer.install(checkout, Path("claude.exe"), tools, marketplace=Path("M"))
+    installer.uninstall(checkout, Path("claude.exe"), tools)
+    assert json.loads(path.read_text())["env"] == {"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1",
+                                                   "OTHER": "x"}
+
+
+def test_worktree_copy_requires_the_enabled_plugin_entry(checkout, tmp_path):
+    (checkout / ".claude" / "settings.local.json").write_text(json.dumps({
+        "extraKnownMarketplaces": {"tradecraft-lab": {"source": {"source": "directory",
+                                                                  "path": "M"}}},
+        "enabledPlugins": {"other@x": True}}), encoding="utf-8")
+    worktree = tmp_path / "wt2"
+    (worktree / ".claude").mkdir(parents=True)
+    with pytest.raises(installer.Refused):
+        installer.install_worktree(worktree, checkout, FakeTools())
+    assert not (worktree / ".claude" / "settings.local.json").exists()
 
 
 # --- row 6: the reminder ------------------------------------------------------------------------------

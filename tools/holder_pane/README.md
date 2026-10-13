@@ -52,7 +52,7 @@ python tools/holder_pane/install.py install --worktree <the existing holder work
 python tools/holder_pane/install.py uninstall --checkout <main checkout>
 ```
 
-It runs `claude plugin uninstall holder-pane@tradecraft-lab --scope local`, then `claude plugin marketplace remove tradecraft-lab --scope local`, then removes the opt-in key (and `env` if that leaves it empty). Session worktrees keep their copied file until they're removed.
+It runs `claude plugin uninstall holder-pane@tradecraft-lab --scope local`, then `claude plugin marketplace remove tradecraft-lab --scope local`, then removes the opt-in key (and `env` if that leaves it empty) only if this installer added it; an opt-in that was already there stays. Whether it added the key is recorded in `~/.tradecraft/status/.pane/installs.json`. Session worktrees keep their copied file until they're removed.
 
 ## Updating
 
@@ -61,7 +61,7 @@ The marketplace is a folder with a relative source, so sessions read the plugin 
 ## How it behaves
 
 - **Sessions holding no change get nothing.** A session binds to a change only when its own shell call runs the entrance with `run <stage>` or `adopt` and `--repo`/`--issue` (a detached launcher wrapping those arguments counts), or, at restart, when exactly one active registry row's `holder_root` is the session's root. Until then the only work is an in-memory test of each shell command. A session whose live title is `Steward` never binds.
-- **Reads.** The read-only entrance runs at most once every 35 minutes per change, across every session and trigger, never while another run for that change is under way, in the background, and never after the change merges or closes. A holder's own stage return is read from its local output and dispatch records, at no GitHub cost.
+- **Reads.** The read-only entrance runs at most once every 35 minutes per change, across every session and trigger, never while another run for that change is under way, in the background, and never after the issue or pull request is terminal. A pull request merged while the issue stays open is holder-owned, so reading goes on. Each floored read also makes one `gh pr list` call to find the implementing pull request (the one whose body closes the issue), which the read-only report doesn't name. A binding made with `--instalment` passes it on every read. A holder's own stage return is read from its local output and dispatch records, at no GitHub cost.
 - **Stalled** shows only past the stage's deadline or when the entrance reports it. Otherwise a silent stage shows `quiet for N min`.
 - **The name** is `#N · <state>`, changed only when the state changes. It's renamed only when the title's source is `auto` or `tool` and Claude Code's own permission check for the call answers `allow`; a title the owner set, an unknown source or a check that would prompt means no rename, and the pane says why.
 - **The reminder** gives the holder one line, `next: <step> (yours)`, before it ends a turn whose next step is its own, once per distinct step, never twice in a row and never starting a turn.
@@ -80,7 +80,7 @@ Each bound session writes its latest reading to `~/.tradecraft/status/<owner>__<
 | `stage` | the entrance's stage, or the stage the holder ran |
 | `waiting_on` | `owner`, `holder`, `builder`, `ci`, `reviewer`, `none` or `unknown` |
 | `next_step` | the next step, as text |
-| `gate` | the required gate's verdict, `green`, a gate-family reason, `not reached` before a pull request, or `-` |
+| `gate` | the required gate's verdict, `green`, a gate-family reason, `not reached` when no implementing pull request is found (one whose body closes the issue), or `-` when one is open but this reading names no gate |
 | `floor` | `{"outcome": ..., "satisfied": true, false or null}` |
 | `status` | the entrance's status; for a reading taken locally, `returned`, `launched` or `running` |
 | `source` | `entrance` or `stage-return` |
@@ -98,14 +98,16 @@ python -m pytest tools/holder_pane/tests -q
 
 ## Trial checklist (row 9)
 
-Run it on **one product change's holder first**, then on every holder. Record each result in the release record.
+Run it on **one product change's holder first**, then on every holder. **The release record** is the change's release report on its pull request: record each result there.
 
-1. **The pane draws** in the desktop app (2.1.295 or newer) after the holder's first `run <stage>`.
-2. **The sidebar name changes** when the state changes: record the title tool's `Renamed ... (was ...)` results.
-3. **The reminder fires** at a release-report handoff: `next: post the release report (yours)`, once, before the holder stops.
-4. **Reads stay within the floor:** across the trial window, `last_read_started` in `~/.tradecraft/status/.pane/changes/<key>.json` never moves by less than 35 minutes.
-5. **No builder or seat loads it:** launch a builder and a seat through the real `work.py run` from the installed checkout; `holder-pane` must be absent from the plugin list in each one's stream-json `system.init` line, in the bundle's stdout log.
-6. **A session holding no change** in the same repository (the Steward's, in tradecraft) keeps its name and draws nothing.
-7. **The installer touches only local files:** compare `~/.claude/settings.json` byte for byte before and after a real install and uninstall, and check the registries and local file are restored.
+**Before installing,** snapshot the four files the install may touch, so step 7 can compare them byte for byte: `~/.claude/settings.json`, `~/.claude/plugins/known_marketplaces.json`, `~/.claude/plugins/installed_plugins.json`, and the checkout's `.claude/settings.local.json` (for example `copy` each to a dated folder).
+
+1. **The pane draws** in the desktop app (2.1.295 or newer) after the holder's first `run <stage>`. It opens as a pane tab titled `#N` beside the transcript (reopen it with `/holder-pane`). A correct pane shows, one line each: `stage`, `waiting on`, `next step`, `gate`, `floor`, `read <HH:MM> (<source>)`, and, while a stage runs, `elapsed <m>/<deadline>` and `quiet for N min`. The status line under the prompt shows the same state on one line, starting `#N · `.
+2. **The sidebar name changes** when the state changes. The title tool's result, `Renamed this session to "#N · <state>" (was "...")`, is in the session's debug log (`claude --debug`, or the desktop's session log); the sidebar shows the new name. Record each result.
+3. **The reminder fires** at a release-report handoff. Bring one about by running `run release-report` on a change whose entrance reports `release-report` (all evidence complete). Before the holder stops, it gets `next: post the release report (yours)`, once. After it posts the report with `gh pr comment <PR>`, the pane shows `waiting on you` and `merge`.
+4. **Reads stay within the floor.** `<key>` in `~/.tradecraft/status/.pane/changes/<key>.json` is `<owner>__<repo>__<issue>`, for example `Grimblaz-and-Friends__tradecraft__888`. Sample its `last_read_started` (epoch seconds) every 10 minutes across the trial window; no two values may be less than 2,100 s apart.
+5. **No builder or seat loads it.** Launch a builder and a seat through the real `work.py run` from the installed checkout. Each bundle's stdout log is `~/.tradecraft/dispatches/<bundle>/*.claude.stdout.log` (its `.run.json` names it under `attempts[].stdout`). In the stream-json `system.init` line there, `holder-pane` must be absent from the plugin list.
+6. **A session holding no change** in the same repository (the Steward's, in tradecraft) keeps its name and draws nothing. Observable: no `~/.tradecraft/status/.pane/bindings/<its session id>.json`, no `.pane/sessions/<its session id>.json`, and no status file naming its `session_id`.
+7. **The installer touches only local files:** after a real install and uninstall, compare the four snapshots byte for byte; `settings.json` must be identical, and the registries and the local file restored.
 8. **A hand-titled session** gets no prompt and no rename, and its pane shows `rename skipped (owner-set title)`.
 9. **Two checkouts share the marketplace:** install in two checkouts, uninstall from one, and confirm the other still loads the mod.

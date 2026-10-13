@@ -91,13 +91,46 @@ def _write_settings(path: Path, value: dict[str, Any]) -> None:
     path.write_bytes((json.dumps(value, indent=2) + "\n").encode("utf-8"))
 
 
-def set_opt_in(path: Path) -> None:
+def _install_record_path() -> Path:
+    return Path.home() / ".tradecraft" / "status" / ".pane" / "installs.json"
+
+
+def _install_records() -> dict[str, Any]:
+    try:
+        value = json.loads(_install_record_path().read_bytes().decode("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _remember(checkout: Path, added_opt_in: bool) -> None:
+    records = _install_records()
+    records[str(checkout)] = {"added_opt_in": added_opt_in}
+    path = _install_record_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes((json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+
+
+def _forget(checkout: Path) -> bool:
+    """Drop the checkout's install record; answer whether this installer added the opt-in."""
+    records = _install_records()
+    record = records.pop(str(checkout), None)
+    path = _install_record_path()
+    if path.exists():
+        path.write_bytes((json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    return isinstance(record, dict) and record.get("added_opt_in") is True
+
+
+def set_opt_in(path: Path) -> bool:
+    """Set the opt-in; answer whether it was absent before (so this installer added it)."""
     settings = _read_settings(path)
     env = settings.get("env")
     env = dict(env) if isinstance(env, dict) else {}
+    added = OPT_IN not in env
     env[OPT_IN] = "1"
     settings["env"] = env
     _write_settings(path, settings)
+    return added
 
 
 def clear_opt_in(path: Path) -> None:
@@ -130,35 +163,38 @@ def install(checkout: Path, claude: Path, runner: Runner = subprocess.run,
     _claude(runner, claude, checkout, "plugin", "marketplace", "add", str(marketplace),
             "--scope", "local")
     _claude(runner, claude, checkout, "plugin", "install", PLUGIN_REF, "--scope", "local")
-    set_opt_in(checkout / LOCAL)
+    added = set_opt_in(checkout / LOCAL)
+    # A reinstall keeps the first install's answer: the opt-in it found is not its own.
+    if str(checkout) not in _install_records():
+        _remember(checkout, added)
 
 
 def uninstall(checkout: Path, claude: Path, runner: Runner = subprocess.run) -> None:
     _claude(runner, claude, checkout, "plugin", "uninstall", PLUGIN_REF, "--scope", "local")
     _claude(runner, claude, checkout, "plugin", "marketplace", "remove", MARKETPLACE,
             "--scope", "local")
-    clear_opt_in(checkout / LOCAL)
+    # Other function hooks in the checkout may rely on an opt-in that predates this install.
+    if _forget(checkout):
+        clear_opt_in(checkout / LOCAL)
 
 
 def install_worktree(worktree: Path, main_checkout: Path, runner: Runner = subprocess.run) -> None:
     """Copy the main checkout's install keys into an existing worktree's local file."""
     check_local_file(worktree, runner)
     source = _read_settings(main_checkout / LOCAL)
+    plugins = source.get("enabledPlugins")
+    marketplaces = source.get("extraKnownMarketplaces")
+    if not (isinstance(plugins, dict) and plugins.get(PLUGIN_REF) is True
+            and isinstance(marketplaces, dict) and MARKETPLACE in marketplaces):
+        raise Refused(f"{main_checkout}: no enabled {PLUGIN_REF} install found in "
+                      f"{LOCAL.as_posix()}; install the main checkout first.")
     target_path = worktree / LOCAL
     target = _read_settings(target_path)
-    copied = False
-    for key in ("extraKnownMarketplaces", "enabledPlugins"):
-        value = source.get(key)
-        if isinstance(value, dict):
-            merged = dict(target.get(key) or {})
-            for name, entry in value.items():
-                if MARKETPLACE in name or name == PLUGIN_REF:
-                    merged[name] = entry
-                    copied = True
-            target[key] = merged
-    if not copied:
-        raise Refused(f"{main_checkout}: no {PLUGIN_REF} install found in {LOCAL.as_posix()}; "
-                      f"install the main checkout first.")
+    for key, name, entry in (("extraKnownMarketplaces", MARKETPLACE, marketplaces[MARKETPLACE]),
+                             ("enabledPlugins", PLUGIN_REF, True)):
+        merged = dict(target.get(key) or {})
+        merged[name] = entry
+        target[key] = merged
     env = dict(target.get("env") or {})
     env[OPT_IN] = "1"
     target["env"] = env
