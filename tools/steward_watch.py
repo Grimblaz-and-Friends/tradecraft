@@ -122,6 +122,17 @@ class WatchError(Exception):
     """A fault the caller must see, named in plain words."""
 
 
+# Every way a read can fail besides a refused gh call: output that is not JSON
+# (ValueError), a row or record missing a field (KeyError, TypeError), and a
+# file that cannot be read (OSError). The wake and the cover treat each like a
+# WatchError, so the cover's state and its run record survive any of them.
+READ_FAULTS = (WatchError, ValueError, KeyError, TypeError, OSError)
+
+
+def fault_text(exc: BaseException) -> str:
+    return str(exc) if isinstance(exc, WatchError) else f"{type(exc).__name__}: {exc}"
+
+
 # ---------------------------------------------------------------- time
 
 
@@ -397,13 +408,13 @@ def read_merges(github: GitHub, cutoff: str, repos: list[str]) -> tuple[list[dic
     for repo in repos:
         try:
             rows = github.merges_since(repo, cutoff)
-        except WatchError as exc:
-            reach[repo] = f"error: {exc}"
+            found = [{"repo": repo, "number": row["number"], "mergedAt": row["mergedAt"]}
+                     for row in rows if parse_time(row["mergedAt"]) > bound]
+        except READ_FAULTS as exc:
+            reach[repo] = f"error: {fault_text(exc)}"
             continue
         reach[repo] = f"ok ({len(rows)} rows)"
-        for row in rows:
-            if parse_time(row["mergedAt"]) > bound:
-                merges.append({"repo": repo, "number": row["number"], "mergedAt": row["mergedAt"]})
+        merges.extend(found)
     merges.sort(key=lambda row: parse_time(row["mergedAt"]))
     return merges, reach
 
@@ -502,9 +513,9 @@ def wake(github: GitHub, state_dir: Path, page_number: int, now: datetime,
         if failed:
             raise WatchError("merge read failed for " + ", ".join(failed)
                              + "; nothing woken and nothing pruned")
-    except WatchError as exc:
+    except READ_FAULTS as exc:
         return {"schema_version": 1, "paused": None, "triggers": [], "cover": cover,
-                "error": str(exc)}
+                "error": fault_text(exc)}
     triggers = compute_triggers(page, mark, merges)
     present = {scope + t["key"] for t in triggers}
     if cover["key"]:
@@ -869,8 +880,8 @@ def cover(github: GitHub, state_dir: Path, page_number: int, now: datetime, *,
             if fresh and not dry_run:
                 github.dispatch_alert(mark["alerts"], fresh)
                 outcome["dispatched"] = fresh
-        except WatchError as exc:
-            outcome["error"] = str(exc)
+        except READ_FAULTS as exc:
+            outcome["error"] = fault_text(exc)
         if not dry_run:
             write_json_atomic(state_dir / "cover-last-run.json", outcome)
             if outcome["error"] is None:

@@ -966,3 +966,76 @@ def test_mod_reads_a_failed_wake_and_gives_every_step_the_turn_facts():
     assert "(allowError && value.schema_version)" in text
     assert "'--turn-running', state.turnRunning ? '1' : '0'," in text
     assert "'--since-turn-complete', String((Date.now() - state.lastTurnComplete) / 1000)," in text
+
+
+# ---------------------------------------------------------------- second review repairs (PR #909)
+
+
+def garbled(lab: FakeLab, repo: str, rows: str):
+    """A runner that answers one repository's merge query with the given raw text."""
+    def runner(args, input_text=None, timeout=60):
+        if args[0] == "pr" and args[args.index("--repo") + 1] == repo:
+            lab.calls.append(list(args))
+            return rows
+        return lab(args, input_text, timeout)
+    return sw.GitHub(runner=runner)
+
+
+@pytest.mark.parametrize("raw,fault", [
+    ("<html>not json</html>", "JSONDecodeError"),
+    (json.dumps([{"number": 1, "url": "u"}]), "KeyError"),
+    (json.dumps([{"number": 1, "mergedAt": "not-a-time", "url": "u"}]), "ValueError"),
+])
+def test_a_malformed_merge_read_still_reports_the_cover(tmp_path, raw, fault):
+    """Row 4: non-JSON gh output or a bad mergedAt is a read fault like any other:
+    the wake returns its JSON with the cover's state, and the cover writes its run record."""
+    sw.write_json_atomic(tmp_path / "cover-last-success.json",
+                         {"at": sw.iso(NOW - timedelta(hours=3))})
+    lab = cover_lab(merges=merges(5, 8))
+    found = sw.wake(garbled(lab, REPOS[3], raw), tmp_path, PAGE, NOW, REPOS)
+    assert found["triggers"] == [] and "merge read failed" in found["error"]
+    assert found["cover"]["stale"] is True
+    state = tmp_path / "cover"
+    outcome = sw.cover(garbled(lab, REPOS[3], raw), state, PAGE, NOW, repos=REPOS)
+    assert fault in outcome["reach"][REPOS[3]] and outcome["error"]
+    assert json.loads((state / "cover-last-run.json").read_bytes())["error"]
+    assert not (state / "cover-last-success.json").exists()
+    assert not any(c[0] == "workflow" for c in lab.calls)
+
+
+def test_a_non_json_page_read_and_an_unreadable_config_are_read_faults(tmp_path, monkeypatch):
+    """Faults outside the merge loop take the same path: a page answer that is not
+    JSON, and a missing .tradecraft/work.json."""
+    def runner(args, input_text=None, timeout=60):
+        return "not json"
+    found = sw.wake(sw.GitHub(runner=runner), tmp_path, PAGE, NOW, REPOS)
+    assert found["error"].startswith("JSONDecodeError") and "cover" in found
+    monkeypatch.setattr(sw, "WORK_CONFIG", tmp_path / "missing" / "work.json")
+    lab = cover_lab()
+    found = sw.wake(lab.github(), tmp_path, PAGE, NOW)
+    assert found["error"].startswith("FileNotFoundError")
+    outcome = sw.cover(lab.github(), tmp_path / "c", PAGE, NOW)
+    assert outcome["error"].startswith("FileNotFoundError")
+    assert (tmp_path / "c" / "cover-last-run.json").exists()
+
+
+def test_the_wake_cli_prints_json_on_a_non_json_gh_answer(tmp_path, monkeypatch):
+    monkeypatch.setattr(sw, "GH_COMMAND", [sys.executable, "-c", "print('<html>')"])
+    out = io.StringIO()
+    monkeypatch.setattr(sw.sys, "stdout", out)
+    assert sw.main(["wake", "--state-dir", str(tmp_path)]) == 1
+    reported = json.loads(out.getvalue())
+    assert reported["error"].startswith("JSONDecodeError") and "cover" in reported
+
+
+def test_mod_acknowledges_the_stale_note_only_after_delivery():
+    """Row 4: the note's key is marked only once the turn carrying it was delivered,
+    on the wake-submit path and the prompt.submit path, so a failed delivery leaves
+    it eligible on the next tick."""
+    text = MOD.read_bytes().decode("utf-8")
+    pending = text.split("async function pendingNotes()", 1)[1].split("\n}\n", 1)[0]
+    assert "mark-woken" not in pending
+    wake_loop = text.split("for (const trigger of found.triggers || []) {", 1)[1].split("\n  }\n", 1)[0]
+    assert wake_loop.index("await state.host.submit(") < wake_loop.index("await acknowledge(pending.cover)")
+    hook = text.split("on('prompt.submit'", 1)[1].split("\n  })\n", 1)[0]
+    assert hook.index("const delivered = await next(") < hook.index("acknowledge(cover)")

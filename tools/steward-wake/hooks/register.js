@@ -195,24 +195,32 @@ async function wake() {
   // A prompt the mod submits does not pass through `prompt.submit`, so the
   // notes that hook adds to other prompts ride in the wake turn's own text.
   for (const trigger of found.triggers || []) {
-    const notes = await pendingNotes()
-    await state.host.submit([trigger.text, ...notes].join('\n\n'))
+    const pending = await pendingNotes()
+    await state.host.submit([trigger.text, ...pending.notes].join('\n\n'))
     await script(['mark-woken', trigger.key])
+    await acknowledge(pending.cover)
   }
 }
 
 // The notes every turn carries now: the awaiting-clear update note while a
 // handover waits on the owner, and a stale cover's note once per episode.
+// Nothing is acknowledged here: the caller acknowledges the cover note only
+// once the turn carrying it was delivered, so a failed delivery leaves the
+// note eligible on the next tick.
 async function pendingNotes() {
   const notes = []
   const step = await script(['handover-step', '--event', 'prompt'])
   if (step.action === 'note') notes.push(step.text)
-  if (state.coverNote) {
-    notes.push(state.coverNote.text)
-    await script(['mark-woken', state.coverNote.key])
-    state.coverNote = null
-  }
-  return notes
+  const cover = state.coverNote
+  if (cover) notes.push(cover.text)
+  return { notes, cover }
+}
+
+// Marks a delivered stale-cover note, so each stale episode is noted once.
+async function acknowledge(cover) {
+  if (!cover) return
+  await script(['mark-woken', cover.key])
+  if (state.coverNote === cover) state.coverNote = null
 }
 
 async function guarded(fn) {
@@ -296,13 +304,18 @@ export function register(on) {
   on('prompt.submit', async ($, e, next) => {
     if (!state.cfg) return next(e)
     const context = [...(e.context || [])]
+    let cover = null
     await guarded(async () => {
       const kind = (e.origin && e.origin.kind) || 'unclassified'
       const verdict = await script(['origin-is-owner', kind, '--record'])
       if (verdict.owner) state.ownerAt = Date.now()
-      context.push(...(await pendingNotes()))
+      const pending = await pendingNotes()
+      context.push(...pending.notes)
+      cover = pending.cover
     })
-    return next({ ...e, context })
+    const delivered = await next({ ...e, context })
+    await guarded(() => acknowledge(cover))
+    return delivered
   })
 
   on('session.end', async ($, e, next) => {
