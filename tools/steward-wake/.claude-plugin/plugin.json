@@ -1,0 +1,8 @@
+{
+  "name": "steward-wake",
+  "version": "0.1.0",
+  "description": "tradecraft lab only: wakes the Steward on due reads and intake, and hands it over before its conversation grows costly (#890). Install at local scope in the Steward's checkout only.",
+  "author": {
+    "name": "Grimblaz-and-Friends"
+  }
+}
