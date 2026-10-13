@@ -38,6 +38,9 @@ if native:
         request = json.loads(line)
         requests.append(request)
         method = request.get("method")
+        if method and method == scenario.get("fail_method"):
+            emit({"id": request["id"], "error": {"code": -32000, "message": "fixture " + method + " failure"}})
+            sys.exit(1)
         if method == "initialize":
             emit({"id": request["id"], "result": {"userAgent": "fixture"}})
         elif method == "config/read":

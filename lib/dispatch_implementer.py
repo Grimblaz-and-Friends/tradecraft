@@ -469,6 +469,10 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     # remains the latest resumable invocation.
                     raise
                 except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, AttributeError, UnicodeError) as exc:
+                    # A probe stopped at the edge of the caller's window is the
+                    # same missing launch window; only a failure leaving a
+                    # useful window is an ordinary recorded preparation failure.
+                    deadline.remaining()
                     preparation_error = "implementer preparation failed: " + str(exc)
                     intent["status"] = "failed"
                     intent["reason"] = preparation_error
@@ -523,9 +527,11 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             if args.stage != "artifact":
                 request.setdefault("budget_lineage", hashlib.sha256(
                     (args.work + str(root) + str(args.lineage_branch)).encode("utf-8")).hexdigest())
+                snapshot_timeout = deadline.probe()
                 try:
-                    request["launch_snapshot"] = lifecycle.content_snapshot(root, timeout=deadline.probe())
+                    request["launch_snapshot"] = lifecycle.content_snapshot(root, timeout=snapshot_timeout)
                 except TimeoutError as exc:
+                    deadline.remaining()  # A slow snapshot is recorded; an exhausted window is not.
                     request["launch_snapshot"] = {"digest": None, "unavailable_reason": str(exc)}
                 request.setdefault("progress_baseline", request["launch_snapshot"])
             request["context"] = (
@@ -575,6 +581,10 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             if brief_path:
                 streams[brief_path].write(artifact_brief)
                 streams[brief_path].flush()
+            # Version and revision probes swallow their own timeouts. Recheck
+            # the window before publishing, so an exhausted caller limit leaves
+            # no bundle that would displace an earlier stopped, resumable run.
+            deadline.remaining()
             streams.mark_ready()
             print(f"implementer: dispatch {request['dispatch_id']} -> {output}")
             attempt: dict[str, object] = {
@@ -733,13 +743,17 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                     if native.valid and native.completed and not ceiling:
                         # Completion is owned by the stream; process status remains evidence.
                         reason = ""
-                    session_id, session_source = native.session, "Codex native startup response.thread.id"
+                    # Only a session this invocation's runtime returned carries
+                    # the native label; an inherited id keeps its own source.
+                    session_id = native.session
+                    session_source = "Codex native startup response.thread.id" if session_id else ""
                     message = (native.final_message or "").encode("utf-8")
                     complete = native.valid and native.completed
                     failure_reason = native.error or "Codex native stream returned no completed current turn"
                 retained = record.get("session_identity", {})
-                session_id = session_id or retained.get("session_id")
-                session_source = session_source or retained.get("source") or ""
+                if not session_id:
+                    session_id = retained.get("session_id")
+                    session_source = (retained.get("source") or "") if session_id else ""
                 reason = record.get("session_identity_error") or reason
                 if args.holder_session_id and session_id == args.holder_session_id:
                     reason = "runtime returned the holder session as the builder session"

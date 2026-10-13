@@ -155,3 +155,35 @@ def test_inherited_inline_tradecraft_never_disables_launchers_plugin(tmp_path, m
     assert {"id": "tradecraft@inline", "path": str(root)} in intent["allowed_plugins"]
     assert path.read_bytes() == before and child.get(key) == (supplied if source == "parent" else None)
     assert key not in effective
+
+
+@pytest.mark.parametrize("case", ["missing-manifest", "empty-component", "not-a-directory"])
+@pytest.mark.parametrize("key", ["CLAUDE_CODE_PLUGIN_DIR", "CLAUDE_CODE_PLUGIN_DIRS"])
+def test_unusable_inherited_inline_entries_are_skipped_and_recorded(tmp_path, monkeypatch, case, key):
+    # The child never receives these variables, so an unusable entry cannot
+    # refuse the launch; a usable sibling is still excluded.
+    root = plugin(tmp_path / "tradecraft")
+    foreign = plugin(tmp_path / "foreign", "foreign")
+    config = tmp_path / "native"
+    config.mkdir()
+    if case == "missing-manifest":
+        bad = tmp_path / "no-manifest"
+        bad.mkdir()
+        supplied = os.pathsep.join((str(bad), str(foreign)))
+    elif case == "not-a-directory":
+        bad = tmp_path / "file"
+        bad.write_bytes(b"")
+        supplied = os.pathsep.join((str(bad), str(foreign)))
+    else:
+        bad = None
+        supplied = os.pathsep.join(("", str(foreign), " "))
+    monkeypatch.setattr(policy, "discover", lambda *_a, **_k: [])
+    intent, child = policy.claude_prepare([], tmp_path, None, tmp_path, root,
+        env={"CLAUDE_CONFIG_DIR": str(config), key: supplied})
+    assert intent["disabled_plugin_ids"] == ["foreign@inline"]
+    assert key not in child
+    skipped = [v for v in intent["discovery_sources"] if v.startswith(key + ": skipped")]
+    if bad is None:
+        assert skipped == [key + ": skipped empty path component"] * 2
+    else:
+        assert skipped == [f"{key}: skipped {bad} (no readable plugin manifest name)"]

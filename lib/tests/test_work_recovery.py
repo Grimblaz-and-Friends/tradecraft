@@ -125,6 +125,61 @@ def test_expired_real_discovery_probe_publishes_nothing_and_preserves_stopped_bu
     assert recovery.stopped_source(fixture, "build").session == SESSION
 
 
+@pytest.mark.parametrize("vendor", ["codex", "claude"])
+def test_probe_stopped_by_deadline_in_real_process_publishes_nothing(stopped_build, monkeypatch, tmp_path, vendor):
+    # A real discovery child outlives the remaining window, so the genuine
+    # run_process stops it with TimeoutExpired at deadline.probe(). That is a
+    # missing launch window, not a recorded preparation failure.
+    import dispatch_implementer as implementer
+    fixture, root, request, run, save = stopped_build
+    run.update(outcome="interrupted", lifecycle="completed", interruption_cause="ceiling",
+               completed_at="2026-10-03T11:00:00+00:00", cleanup_proven=True,
+               attempts=[{"launched": True, "elapsed_seconds": 20}])
+    save()
+    before = {p: p.read_bytes() for p in fixture.record_root.iterdir() if p.is_file()}
+    slow = tmp_path / "slow_vendor.py"
+    slow.write_bytes(b"import time\ntime.sleep(60)\n")
+    dispatch = root.parent / "dispatch.md"
+    dispatch.write_bytes(b"Resume only this build.\n")
+    args = implementer.parser().parse_args([
+        "--dispatch", str(dispatch), "--root", str(root), "--work", "example/product#12",
+        "--stage", "build", "--vendor", vendor, "--model", "model", "--effort", "low",
+        "--settings-source", "fixture", "--settings-scope", "this build",
+        "--output", str(fixture.record_root / "new.md"), "--timeout-seconds", "60"])
+    # With the ten-second cleanup reserve the probe receives about four seconds.
+    monkeypatch.setattr(implementer.lifecycle, "stage_deadline",
+                        lambda *_a, **_k: lifecycle.Deadline(14))
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_a: [sys.executable, str(slow)])
+    monkeypatch.setattr(implementer.records, "runtime_version", lambda *_a: "fixture")
+    with pytest.raises(TimeoutError, match="no useful launch window"):
+        implementer.run_implementer(args)
+    assert {p: p.read_bytes() for p in fixture.record_root.iterdir() if p.is_file()} == before
+    assert recovery.latest_stopped(fixture, "build")[1] == str(fixture.record_root / "stopped.run.json")
+    assert recovery.stopped_source(fixture, "build").session == SESSION
+
+
+def test_probe_failure_with_useful_window_is_still_a_recorded_preparation_failure(stopped_build, monkeypatch):
+    import subprocess
+    import dispatch_implementer as implementer
+    fixture, root, *_ = stopped_build
+    dispatch = root.parent / "dispatch.md"
+    dispatch.write_bytes(b"Build.\n")
+    args = implementer.parser().parse_args([
+        "--dispatch", str(dispatch), "--root", str(root), "--work", "example/product#12",
+        "--stage", "build", "--vendor", "codex", "--model", "model", "--effort", "low",
+        "--settings-source", "fixture", "--settings-scope", "this build",
+        "--output", str(fixture.record_root / "new.md"), "--timeout-seconds", "600"])
+    monkeypatch.setattr(implementer, "resolve_command", lambda *_a: [sys.executable])
+    monkeypatch.setattr(implementer.records, "runtime_version", lambda *_a: "fixture")
+    def slow_probe(*_a, **_k):
+        raise subprocess.TimeoutExpired(["codex", "plugin", "list"], 20)
+    monkeypatch.setattr(implementer.policy, "codex_prepare", slow_probe)
+    assert implementer.run_implementer(args) == 1
+    logged = json.loads((fixture.record_root / "new.md.run.json").read_bytes())
+    assert logged["outcome"] == "error" and not logged["attempts"][0]["launched"]
+    assert "implementer preparation failed" in logged["attempts"][0]["reason"]
+
+
 @pytest.mark.parametrize("configuration", ["repository-session", "adopter"])
 @pytest.mark.parametrize("has_pr", [False, True])
 @pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])

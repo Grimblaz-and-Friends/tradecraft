@@ -21,7 +21,7 @@ class PreparationError(OSError):
 def _read(path, *, optional=False):
     try:
         return json.loads(path.read_bytes())
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         if optional:
             return {}
         raise
@@ -107,15 +107,24 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
                 paths.append(manifest)
     # Inherited inline directories are session inputs, not owner config. Their
     # names are disabled as well as suppressing the child-only sideload source.
+    # The child never receives these variables, so an empty component or a
+    # directory without a manifest is recorded as skipped rather than refusing
+    # the launch.
+    skipped = []
     for key in ("CLAUDE_CODE_PLUGIN_DIR", "CLAUDE_CODE_PLUGIN_DIRS"):
         supplied = child.pop(key, None)
         if supplied:
             for directory in supplied.split(os.pathsep):
+                if not directory.strip():
+                    skipped.append(f"{key}: skipped empty path component")
+                    continue
                 path = Path(directory) / ".claude-plugin/plugin.json"
-                value = _read(path)
+                value = _read(path, optional=True)
                 if isinstance(value, dict) and isinstance(value.get("name"), str):
                     ids.add(value["name"] + "@inline")
                     paths.append(path)
+                else:
+                    skipped.append(f"{key}: skipped {directory} (no readable plugin manifest name)")
     # The verified launcher root is always supplied explicitly. Discovery or
     # inherited origins may name that same inline identity; disabling it would
     # also disable the launcher's own tradecraft skills.
@@ -128,7 +137,7 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
         override.chmod(0o600)
     return {"disabled_plugin_ids": sorted(ids), "allowed_plugins": [
         *allowed, {"id": "tradecraft@inline", "path": str(plugin_root)}],
-        "discovery_sources": ["claude plugin list --json", *map(str, paths)],
+        "discovery_sources": ["claude plugin list --json", *map(str, paths), *skipped],
         "override_sha256": hashlib.sha256(data).hexdigest(),
         "function_hooks_requested": "disabled by child process environment override",
         "settings_path": str(override)}, child

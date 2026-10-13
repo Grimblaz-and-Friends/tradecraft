@@ -722,6 +722,26 @@ def test_malformed_preparation_is_recorded_unlaunched_without_fallback(job, monk
     assert not args.output.exists()
 
 
+def test_failed_native_resume_keeps_inherited_identity_source(job):
+    # An id this invocation's runtime never returned must not carry the native
+    # startup label; it keeps its retained predecessor provenance.
+    args, _ = job
+    session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
+    args.resume, args.vendor = session, "codex"
+    args.lifecycle_input = args.dispatch.with_name("lifecycle.json")
+    args.lifecycle_input.write_bytes(json.dumps({"retained_session_id": session,
+        "retained_session_source": "predecessor.run.json"}).encode())
+    configure(job, {"stdout": success_events(session), "message": "unused",
+                    "fail_method": "thread/resume"})
+    assert implementer.run_implementer(args) == 1
+    attempt = record(args)["attempts"][0]
+    assert attempt["outcome"] == "error" and "thread/resume" in attempt["reason"]
+    assert attempt["observed"]["session_id"] == session
+    assert attempt["observed"]["session_id_source"] == "proved predecessor"
+    assert record(args)["session_identity"]["reported_session_id"] is None
+    assert not args.output.exists()
+
+
 def test_resume_names_exact_session_and_keeps_usage_scope_unknown(job):
     args, _ = job
     session = "0199a213-81c0-7800-8aa1-bbab2a035a53"
