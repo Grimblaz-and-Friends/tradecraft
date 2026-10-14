@@ -1788,6 +1788,32 @@ def test_unplaceable_shim_refuses_before_any_bundle_or_process(job, monkeypatch)
     assert not args.output.parent.exists() or not list(args.output.parent.iterdir())
 
 
+@pytest.mark.parametrize("cause", ["explicit", "unresolved"])
+def test_unavailable_claude_in_an_unplaceable_tree_records_its_attempt_without_a_shim_refusal(
+        job, monkeypatch, cause):
+    # Review thread 4257986260: only a launch that will start a
+    # Claude process plans its shim, so the unavailable record survives call 5's case.
+    args, _ = claude_job(job, monkeypatch)
+    args.root = agents_only(args.root.parent / "tree #1")
+    monkeypatch.setattr(implementer.records, "git_directory", lambda root: None)
+    if cause == "explicit":
+        args.handover_from = "predecessor-bundle"
+        args.claude_unavailable_reason = "Claude CLI not installed"
+        monkeypatch.setattr(implementer, "resolve_command",
+                            lambda *_: pytest.fail("unavailable runtime must not be resolved"))
+    else:
+        def missing(*_a, **_k):
+            raise vendor_cli.CliError("claude was not found on PATH")
+        monkeypatch.setattr(implementer, "resolve_command", missing)
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "unavailable"
+    if cause == "explicit":
+        assert logged["handover"] == {"from_bundle": "predecessor-bundle", "to_vendor": "claude",
+                                      "replacement_session": None, "phase": "unavailable"}
+    assert "#" not in logged["attempts"][0]["reason"]
+
+
 def instructions_line(session, files):
     return {"type": "attachment", "sessionId": session,
             "attachment": {"type": "instructions", "files": files}}

@@ -84,7 +84,7 @@ def read_machine_vendor(setting_path: Path | None = None) -> tuple[str, str]:
     return vendor, f"machine file {path}: {vendor}"
 
 
-INSTRUCTION_SHIM_PREFIX = "tradecraft-instructions-"
+INSTRUCTION_SHIM_PREFIX = environments.INSTRUCTION_SHIM_PREFIX
 
 
 def _import_path(path: str) -> str:
@@ -507,21 +507,25 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
             raise ImplementerError(f"output destination is also an input: {path}")
         if path.exists() or path.is_symlink():
             raise ImplementerError(f"refusing existing output: {path}")
-    shim_plan = instruction_shim_plan(root, records.git_directory(root)) if args.vendor == "claude" else []
+    executable = explicit_executable
+    if executable is None and unavailable_reason is None:
+        try:
+            executable = resolve_command(args.vendor, None)
+        except CliError as exc:
+            unavailable_reason = str(exc)
+    # Only a launch that will start a Claude process plans its shim; an
+    # unavailable attempt keeps its recorded bundle and handover phase.
+    shim_plan = (instruction_shim_plan(root, records.git_directory(root))
+                 if args.vendor == "claude" and executable is not None and unavailable_reason is None
+                 else [])
     dispatch_id = uuid.uuid4().hex
     output.parent.mkdir(parents=True, exist_ok=True)
     continuity = "resume" if args.resume else "fresh"
     with records.reserve_bundle(destinations, output) as streams:
-        with tempfile.TemporaryDirectory(prefix="tradecraft-implementer-") as temporary, \
+        with tempfile.TemporaryDirectory(prefix=environments.INVOCATION_TEMPORARY_PREFIX) as temporary, \
                 instruction_shim(shim_plan, Path(temporary), dispatch_id) as shim:
             args.instruction_shim = shim
             last_message = Path(temporary) / "last.txt"
-            executable = explicit_executable
-            if executable is None and unavailable_reason is None:
-                try:
-                    executable = resolve_command(args.vendor, None)
-                except CliError as exc:
-                    unavailable_reason = str(exc)
             child_env = artifact_tree.environment() if args.stage == "artifact" else None
             intent = {"status": "unprepared", "disabled_plugin_ids": [], "allowed_plugins": []}
             preparation_error = None
@@ -860,7 +864,8 @@ def _run_implementer(args: argparse.Namespace, deadline) -> int:
                 attempt["observed"]["session_id_source"] = session_source or None
                 if args.vendor == "claude" and attempt["launched"]:
                     environments.claude_instructions(attempt["environment"], projects=projects,
-                        session=session_id, offset=offset, resumed=bool(args.resume), shim=shim)
+                        session=session_id, offset=offset, resumed=bool(args.resume), shim=shim,
+                        git_dir=records.git_directory(root))
                 if args.resume and session_id and session_id != args.resume:
                     reason = f"returned session id {session_id} does not match requested resume {args.resume}"
                 if args.session_id and session_id and session_id != args.session_id:

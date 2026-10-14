@@ -309,3 +309,23 @@ def test_projects_root_follows_the_child_configuration(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     assert env.claude_projects({}) == tmp_path / "home" / ".claude" / "projects"
     assert env.claude_projects({"CLAUDE_CONFIG_DIR": str(tmp_path / "cfg")}) == tmp_path / "cfg" / "projects"
+
+
+@pytest.mark.parametrize("earlier_home", ["git-directory", "temporary"])
+def test_every_launcher_shim_in_a_resumed_session_is_marked_whichever_invocation_wrote_it(tmp_path, earlier_home):
+    git_dir = tmp_path / "tree" / ".git"
+    current = git_dir / (env.INSTRUCTION_SHIM_PREFIX + "second")
+    earlier = (git_dir if earlier_home == "git-directory"
+               else tmp_path / "tmp" / (env.INVOCATION_TEMPORARY_PREFIX + "abc")) / (env.INSTRUCTION_SHIM_PREFIX + "first")
+    own = tmp_path / "tree" / (env.INSTRUCTION_SHIM_PREFIX + "named-by-the-tree") / "CLAUDE.md"
+    first = attachment([{"path": str(earlier / "CLAUDE.md"), "type": "Project", "content": "@../../AGENTS.md"},
+                        {"path": str(tmp_path / "tree" / "AGENTS.md"), "type": "Project", "content": "rules"},
+                        {"path": str(own), "type": "Project", "content": "the tree's own"}])
+    transcript(tmp_path / "projects", first,
+               attachment([{"path": str(current / "CLAUDE.md"), "type": "Project", "content": "@../../AGENTS.md"}]))
+    value = instructions(tmp_path / "projects", offset=len(first) + 1, resumed=True, shim=current, git_dir=git_dir)
+    assert {Path(v["path"]).parent.name: (v["launcher_shim"], v["delivered"]) for v in value["values"]} == {
+        env.INSTRUCTION_SHIM_PREFIX + "first": (True, "earlier-in-session"),
+        "tree": (False, "earlier-in-session"),
+        env.INSTRUCTION_SHIM_PREFIX + "named-by-the-tree": (False, "earlier-in-session"),
+        env.INSTRUCTION_SHIM_PREFIX + "second": (True, "this-invocation")}

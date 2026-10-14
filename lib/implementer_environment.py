@@ -169,6 +169,24 @@ def claude_init(environment, event, *, path, line, allowed=()):
     return True
 
 
+# The launcher's AGENTS.md shim is <git dir or invocation temporary
+# directory>/<INSTRUCTION_SHIM_PREFIX><dispatch id>/CLAUDE.md (#893 R2).
+INSTRUCTION_SHIM_PREFIX = "tradecraft-instructions-"
+INVOCATION_TEMPORARY_PREFIX = "tradecraft-implementer-"
+
+
+def launcher_shim(path, *, shim=None, git_dir=None):
+    """A recorded instruction file the launcher wrote, from this or an earlier invocation."""
+    path = Path(path)
+    if shim is not None and _same_path(path, Path(shim) / "CLAUDE.md"):
+        return True
+    if path.name != "CLAUDE.md" or not path.parent.name.startswith(INSTRUCTION_SHIM_PREFIX):
+        return False
+    home = path.parent.parent
+    return (home.name.startswith(INVOCATION_TEMPORARY_PREFIX)
+            or (git_dir is not None and _same_path(home, git_dir)))
+
+
 def claude_projects(env=None):
     """The transcript root a Claude child launched with this environment writes."""
     configured = (os.environ if env is None else env).get("CLAUDE_CONFIG_DIR", "")
@@ -201,7 +219,7 @@ def _same_path(left, right):
     return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
 
 
-def claude_instructions(environment, *, projects, session, offset, resumed, shim=None):
+def claude_instructions(environment, *, projects, session, offset, resumed, shim=None, git_dir=None):
     """Record the instruction files the runtime's transcript says it delivered.
 
     The session transcript's ``instructions`` attachments name each file with
@@ -256,7 +274,7 @@ def claude_instructions(environment, *, projects, session, offset, resumed, shim
                 "path": entry["path"], "runtime_type": entry["type"],
                 "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content),
                 "delivered": delivered,
-                "launcher_shim": shim is not None and _same_path(entry["path"], Path(shim) / "CLAUDE.md")}
+                "launcher_shim": launcher_shim(entry["path"], shim=shim, git_dir=git_dir)}
     if not sources:
         return unknown("no instructions attachment for this session")
     if resumed:
