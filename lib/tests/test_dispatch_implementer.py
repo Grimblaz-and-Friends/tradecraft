@@ -456,12 +456,14 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
         "-p", "--model", "claude-opus-5-5", "--effort", "high",
         "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
         "--setting-sources", "user", "--plugin-dir", str(LIB.parent),
-        "--strict-mcp-config", "--no-chrome", "--settings", args.launch_settings_path,
+        "--strict-mcp-config", "--no-chrome", "--add-dir", str(args.root.resolve()),
+        "--settings", args.launch_settings_path,
     ]
     if resume:
         expected.extend(("--resume", session))
     assert observed["argv"] == expected
     assert observed["pytest_addopts"] == inherited
+    assert observed["additional_claude_md"] == "1"
     assert dict(os.environ) == before
 
 
@@ -991,6 +993,9 @@ def test_claude_author_uses_auto_user_settings_and_separate_context(job, monkeyp
     assert flags[flags.index("--effort") + 1] == "high"
     assert flags[flags.index("--permission-mode") + 1] == "auto"
     assert flags[flags.index("--setting-sources") + 1] == "user"
+    # The author's own copy, never the holder checkout it was copied from.
+    assert flags[flags.index("--add-dir") + 1] == str(args.root) and flags.count("--add-dir") == 1
+    assert json.loads((args.root / "seen-claude.json").read_bytes())["additional_claude_md"] == "1"
     assert "--no-session-persistence" not in flags
     assert "--safe-mode" not in flags
     request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
@@ -1645,3 +1650,207 @@ def test_claude_account_skills_are_reported_as_excess_fresh_and_resumed(job, mon
     assert [v["name"] for v in observed["unclassified"] if isinstance(v, dict)] == ["update-config"]
     assert "not checked" in observed["unclassified_note"]
     assert args.output.read_bytes() == b"built"
+
+
+# #893: a Claude builder's own tree instructions load natively; nothing above it.
+
+def claude_job(job, monkeypatch, result="built", session="f0cb89b1-e040-4e6e-919b-4b4e58c717d2", **extra):
+    args, scenario = job
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    args.vendor = "claude"
+    scenario.write_bytes(json.dumps({"claude": {
+        **native_artifact_result("claude", result, session), **extra}}).encode())
+    return args, scenario
+
+
+def seen_claude(args):
+    return json.loads((args.root / "seen-claude.json").read_bytes())
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+@pytest.mark.parametrize("route", ["fresh", "resume", "handover"])
+def test_every_claude_route_loads_the_tree_through_the_same_command(job, monkeypatch, stage, route):
+    session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    args, _ = claude_job(job, monkeypatch, session=session)
+    args.stage = stage
+    if route == "resume":
+        args.resume = session
+    elif route == "handover":
+        args.session_id = session
+    assert implementer.run_implementer(args) == 0
+    observed = seen_claude(args)
+    flags = observed["argv"]
+    assert flags[flags.index("--setting-sources") + 1] == "user"
+    assert [flags[i + 1] for i, flag in enumerate(flags) if flag == "--add-dir"] == [str(args.root.resolve())]
+    assert observed["additional_claude_md"] == "1"
+
+
+def test_codex_command_and_environment_carry_no_claude_instruction_route(job):
+    args, _ = job
+    configure(job, {"stdout": success_events(), "message": "built\n"})
+    assert implementer.run_implementer(args) == 0
+    assert "--add-dir" not in seen(args)["argv"]
+    assert not list(args.root.glob("**/" + implementer.INSTRUCTION_SHIM_PREFIX + "*"))
+
+
+def agents_only(tree):
+    tree.mkdir(parents=True, exist_ok=True)
+    (tree / "AGENTS.md").write_bytes(b"rules\n")
+    return tree
+
+
+@pytest.mark.parametrize("present", ["CLAUDE.md", ".claude/CLAUDE.md"])
+def test_a_tree_with_its_own_claude_md_gets_no_shim(tmp_path, present):
+    tree = agents_only(tmp_path / "tree")
+    (tree / present).parent.mkdir(parents=True, exist_ok=True)
+    (tree / present).write_bytes(b"@AGENTS.md\n")
+    assert implementer.instruction_shim_plan(tree, tree / ".git") == []
+    assert implementer.instruction_shim_plan(tmp_path / "empty", None) == []
+
+
+@pytest.mark.parametrize("segment", ["space dir/tree one", "a #1 b", "caf" + chr(0xE9) + " (x86) o'k"])
+def test_normal_checkout_shim_imports_agents_relatively_from_its_git_directory(tmp_path, segment):
+    tree = agents_only(tmp_path / segment)
+    candidates = implementer.instruction_shim_plan(tree, tree / ".git")
+    assert candidates[0] == (tree / ".git", "@../../AGENTS.md")
+    absolute = [line for parent, line in candidates if parent is None]
+    if "#" in str(tree):
+        assert absolute == []
+    else:
+        assert absolute == ["@" + (tree / "AGENTS.md").as_posix().replace(" ", "\\ ")]
+
+
+def test_linked_worktree_shim_reaches_its_tree_past_a_holder_path_with_hash(tmp_path):
+    holder = tmp_path / ("Hold #2 " + chr(0xE9) + " y")
+    tree = agents_only(holder / ".claude" / "worktrees" / "b-893")
+    candidates = implementer.instruction_shim_plan(tree, holder / ".git" / "worktrees" / "b-893")
+    assert candidates == [(holder / ".git" / "worktrees" / "b-893",
+                           "@../../../../.claude/worktrees/b-893/AGENTS.md")]
+
+
+def test_hash_in_both_import_paths_refuses_with_the_tree_named(tmp_path):
+    holder = tmp_path / "holder"
+    tree = agents_only(holder / ".claude" / "worktrees" / "b #1")
+    with pytest.raises(implementer.ImplementerError, match="neither shim placement") as refused:
+        implementer.instruction_shim_plan(tree, holder / ".git" / "worktrees" / "b #1")
+    assert str(tree) in str(refused.value)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only Windows paths have drives")
+def test_cross_drive_git_directory_falls_back_to_the_absolute_import_or_refuses(tmp_path):
+    other = "Y:" if str(tmp_path).upper().startswith("Z:") else "Z:"
+    tree = agents_only(tmp_path / "tree one")
+    assert implementer.instruction_shim_plan(tree, Path(other + "/repo/.git/worktrees/t")) == [
+        (None, "@" + (tree / "AGENTS.md").as_posix().replace(" ", "\\ "))]
+    hashed = agents_only(tmp_path / "t #1")
+    with pytest.raises(implementer.ImplementerError, match="neither shim placement"):
+        implementer.instruction_shim_plan(hashed, Path(other + "/repo/.git/worktrees/t"))
+
+
+def test_git_directory_names_a_real_linked_worktree(tmp_path):
+    from test_work import git
+    holder = tmp_path / ("Hold #2 " + chr(0xE9) + " y")
+    holder.mkdir()
+    git(holder, "init")
+    git(holder, "-c", "user.name=f", "-c", "user.email=f@x", "commit", "--allow-empty", "-m", "base")
+    tree = holder / ".claude" / "worktrees" / "b-893"
+    git(holder, "worktree", "add", "-b", "b-893", str(tree))
+    assert implementer.records.git_directory(tree).resolve() == (holder / ".git" / "worktrees" / "b-893").resolve()
+    assert implementer.records.git_directory(tmp_path) is None
+
+
+def test_agents_only_tree_launch_carries_its_shim_and_removes_it(job, monkeypatch):
+    from test_work import git
+    args, _ = claude_job(job, monkeypatch)
+    git(args.root, "init")
+    agents_only(args.root)
+    assert implementer.run_implementer(args) == 0
+    observed = seen_claude(args)
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    shim = implementer.records.git_directory(args.root) / (implementer.INSTRUCTION_SHIM_PREFIX + request["dispatch_id"])
+    assert observed["add_dirs"] == {str(args.root.resolve()): None, str(shim): "@../../AGENTS.md\n"}
+    assert not shim.exists()
+    status = git(args.root, "status", "--porcelain", "--untracked-files=all").stdout.decode()
+    assert "tradecraft-instructions" not in status
+
+
+def test_unplaceable_shim_refuses_before_any_bundle_or_process(job, monkeypatch):
+    args, _ = claude_job(job, monkeypatch)
+    args.root = agents_only(args.root.parent / "tree #1")
+    prepared = []
+    monkeypatch.setattr(implementer.records, "git_directory", lambda root: None)
+    monkeypatch.setattr(implementer.policy, "claude_prepare", lambda *a, **k: prepared.append(a))
+    with pytest.raises(implementer.ImplementerError, match="tree #1"):
+        implementer.run_implementer(args)
+    assert prepared == [] and not (args.root / "seen-claude.json").exists()
+    assert not args.output.parent.exists() or not list(args.output.parent.iterdir())
+
+
+@pytest.mark.parametrize("cause", ["explicit", "unresolved"])
+def test_unavailable_claude_in_an_unplaceable_tree_records_its_attempt_without_a_shim_refusal(
+        job, monkeypatch, cause):
+    # Review thread 4257986260: only a launch that will start a
+    # Claude process plans its shim, so the unavailable record survives call 5's case.
+    args, _ = claude_job(job, monkeypatch)
+    args.root = agents_only(args.root.parent / "tree #1")
+    monkeypatch.setattr(implementer.records, "git_directory", lambda root: None)
+    if cause == "explicit":
+        args.handover_from = "predecessor-bundle"
+        args.claude_unavailable_reason = "Claude CLI not installed"
+        monkeypatch.setattr(implementer, "resolve_command",
+                            lambda *_: pytest.fail("unavailable runtime must not be resolved"))
+    else:
+        def missing(*_a, **_k):
+            raise vendor_cli.CliError("claude was not found on PATH")
+        monkeypatch.setattr(implementer, "resolve_command", missing)
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "unavailable"
+    if cause == "explicit":
+        assert logged["handover"] == {"from_bundle": "predecessor-bundle", "to_vendor": "claude",
+                                      "replacement_session": None, "phase": "unavailable"}
+    assert "#" not in logged["attempts"][0]["reason"]
+
+
+def instructions_line(session, files):
+    return {"type": "attachment", "sessionId": session,
+            "attachment": {"type": "instructions", "files": files}}
+
+
+def test_launched_claude_records_the_transcript_instruction_files(job, monkeypatch):
+    session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    home = Path.home()
+    transcript = home / ".claude" / "projects" / "slug" / f"{session}.jsonl"
+    tree_file = str(job[0].root.resolve() / "CLAUDE.md")
+    args, _ = claude_job(job, monkeypatch, session=session, transcript={"path": str(transcript), "lines": [
+        instructions_line(session, [
+            {"path": str(home / ".claude" / "CLAUDE.md"), "type": "User", "content": "global words"},
+            {"path": tree_file, "type": "Project", "content": "tree rules"}])]})
+    assert implementer.run_implementer(args) == 0
+    instructions = record(args)["attempts"][0]["environment"]["categories"]["instructions"]
+    assert instructions["status"] == "known"
+    assert [(v["path"], v["runtime_type"], v["delivered"]) for v in instructions["values"]] == [
+        (str(home / ".claude" / "CLAUDE.md"), "User", "this-invocation"),
+        (tree_file, "Project", "this-invocation")]
+    assert instructions["values"][1]["sha256"] == hashlib.sha256(b"tree rules").hexdigest()
+    text = json.dumps(record(args))
+    assert "tree rules" not in text and "global words" not in text
+
+
+def test_resumed_claude_separates_this_invocations_attachment(job, monkeypatch):
+    session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    transcript = Path.home() / ".claude" / "projects" / "slug" / f"{session}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_bytes((json.dumps(instructions_line(session, [
+        {"path": "/t/CLAUDE.md", "type": "Project", "content": "a"},
+        {"path": "/t/docs/a.md", "type": "Project", "content": "old"}])) + "\n").encode())
+    args, _ = claude_job(job, monkeypatch, session=session, transcript={"path": str(transcript), "lines": [
+        instructions_line(session, [{"path": "/t/docs/a.md", "type": "Project", "content": "changed"}])]})
+    args.resume = session
+    assert implementer.run_implementer(args) == 0
+    instructions = record(args)["attempts"][0]["environment"]["categories"]["instructions"]
+    assert instructions["status"] == "partial"
+    assert {v["path"]: v["delivered"] for v in instructions["values"]} == {
+        "/t/CLAUDE.md": "earlier-in-session", "/t/docs/a.md": "this-invocation"}

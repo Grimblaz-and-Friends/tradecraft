@@ -169,6 +169,125 @@ def claude_init(environment, event, *, path, line, allowed=()):
     return True
 
 
+# The launcher's AGENTS.md shim is <git dir or invocation temporary
+# directory>/<INSTRUCTION_SHIM_PREFIX><dispatch id>/CLAUDE.md (#893 R2).
+INSTRUCTION_SHIM_PREFIX = "tradecraft-instructions-"
+INVOCATION_TEMPORARY_PREFIX = "tradecraft-implementer-"
+
+
+def launcher_shim(path, *, shim=None, git_dir=None):
+    """A recorded instruction file the launcher wrote, from this or an earlier invocation."""
+    path = Path(path)
+    if shim is not None and _same_path(path, Path(shim) / "CLAUDE.md"):
+        return True
+    if path.name != "CLAUDE.md" or not path.parent.name.startswith(INSTRUCTION_SHIM_PREFIX):
+        return False
+    home = path.parent.parent
+    return (home.name.startswith(INVOCATION_TEMPORARY_PREFIX)
+            or (git_dir is not None and _same_path(home, git_dir)))
+
+
+def claude_projects(env=None):
+    """The transcript root a Claude child launched with this environment writes."""
+    configured = (os.environ if env is None else env).get("CLAUDE_CONFIG_DIR", "")
+    return (Path(configured).expanduser() if configured else Path.home() / ".claude") / "projects"
+
+
+def claude_transcript(projects, session):
+    """The one native transcript for a session id, or why it cannot be named."""
+    if not isinstance(session, str) or not re.fullmatch(r"[0-9a-f-]{36}", session, re.I):
+        return None, "runtime returned no session identity"
+    try:
+        found = list(Path(projects).glob(f"*/{session}.jsonl"))
+    except OSError as exc:
+        return None, f"transcript directory unreadable: {exc}"
+    if len(found) != 1:
+        return None, (f"no transcript for session {session} under {projects}" if not found
+                      else f"{len(found)} transcripts for session {session} under {projects}")
+    return found[0], None
+
+
+def transcript_size(projects, session):
+    path, _reason = claude_transcript(projects, session)
+    try:
+        return path.stat().st_size if path is not None else None
+    except OSError:
+        return None
+
+
+def _same_path(left, right):
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
+
+
+def claude_instructions(environment, *, projects, session, offset, resumed, shim=None, git_dir=None):
+    """Record the instruction files the runtime's transcript says it delivered.
+
+    The session transcript's ``instructions`` attachments name each file with
+    the content the runtime loaded. Nothing is inferred from launch flags, the
+    files on disk or what the launcher meant to supply; only digests are kept.
+    """
+    cats = environment["categories"]
+    if cats["instructions"]["status"] != "unknown":
+        return environment  # a runtime init inventory keeps priority
+
+    def unknown(reason):
+        cats["instructions"] = category(reason="Claude transcript instructions: " + reason)
+        return environment
+
+    if resumed and offset is None:
+        return unknown("the resumed transcript was not found before launch, so this "
+                       "invocation's attachments cannot be told from earlier ones")
+    path, reason = claude_transcript(projects, session)
+    if path is None:
+        return unknown(reason)
+    try:
+        lines = path.read_bytes().split(b"\n")
+    except OSError as exc:
+        return unknown(f"transcript unreadable: {exc}")
+    files, sources, current, position = {}, [], False, 0
+    for number, line in enumerate(lines, 1):
+        start, position = position, position + len(line) + 1
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except (UnicodeError, ValueError):
+            if number == len(lines):
+                continue  # an interrupted final write
+            return unknown(f"transcript line {number} is unparseable")
+        attachment = event.get("attachment") if isinstance(event, dict) else None
+        if (not isinstance(attachment, dict) or event.get("type") != "attachment"
+                or attachment.get("type") != "instructions" or event.get("sessionId") != session):
+            continue
+        entries = attachment.get("files")
+        if not isinstance(entries, list) or not all(
+                isinstance(v, dict) and all(isinstance(v.get(key), str) for key in ("path", "type", "content"))
+                for v in entries):
+            return unknown(f"transcript line {number} has an unsupported instructions attachment")
+        delivered = "this-invocation" if start >= offset else "earlier-in-session"
+        current = current or delivered == "this-invocation"
+        sources.append(coordinate(path, number, "attachment.files"))
+        for entry in entries:
+            content = entry["content"].encode("utf-8")
+            # A later entry for the same path replaces an earlier one.
+            files[os.path.normcase(os.path.normpath(entry["path"]))] = {
+                "path": entry["path"], "runtime_type": entry["type"],
+                "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content),
+                "delivered": delivered,
+                "launcher_shim": launcher_shim(entry["path"], shim=shim, git_dir=git_dir)}
+    if not sources:
+        return unknown("no instructions attachment for this session")
+    if resumed:
+        status, reason = "partial", "resume attachments list new or changed files; earlier entries carried"
+    elif current:
+        status, reason = "known", None
+    else:
+        return unknown("no instructions attachment from this invocation")
+    cats["instructions"] = category(status, list(files.values()), reason)
+    cats["instructions"]["sources"] = sources
+    return environment
+
+
 def skill_catalog(body):
     """Decode only native catalog paths and its own aliases, never skill contents."""
     roots = dict(re.findall(r"^- `([^`]+)` = `([^`]+)`", body, re.M))

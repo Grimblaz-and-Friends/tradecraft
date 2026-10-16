@@ -12,6 +12,10 @@ TRADECRAFT_ID = "tradecraft@tradecraft"
 HOMEPAGE = "https://github.com/Grimblaz-and-Friends/tradecraft"
 FEATURES = ("apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser")
 FUNCTION_HOOKS = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"
+# With --add-dir <tree>, the runtime loads that tree's own CLAUDE.md and its
+# imports while --setting-sources stays user: project settings, hooks and
+# tree skills stay out (#893).
+ADDITIONAL_CLAUDE_MD = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"
 # A cold plugin cache made `codex plugin list --json` take 24 s once on the
 # owner's machine (#886 reading 6). Discovery and config reads get their own
 # allowance, still capped by the caller's remaining window; the 20 s default
@@ -81,6 +85,7 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
     # before discovery and retain it for the child; a settings-only override
     # cannot turn off a value inherited from the parent process.
     child[FUNCTION_HOOKS] = "0"
+    child[ADDITIONAL_CLAUDE_MD] = "1"
     if not verified_root(plugin_root):
         raise PreparationError("explicit tradecraft plugin directory failed identity verification")
     entries = discover("claude", executable, cwd, deadline, env=child)
@@ -146,6 +151,7 @@ def claude_prepare(executable, cwd, deadline, temporary, plugin_root, *, env=Non
         "discovery_sources": ["claude plugin list --json", *map(str, paths), *skipped],
         "override_sha256": hashlib.sha256(data).hexdigest(),
         "function_hooks_requested": "disabled by child process environment override",
+        "tree_instructions_requested": "loaded from --add-dir by child process environment override",
         "settings_path": str(override)}, child
 
 

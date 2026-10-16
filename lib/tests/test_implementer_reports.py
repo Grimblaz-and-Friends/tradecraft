@@ -1,4 +1,5 @@
 """The entrance retains failed/latest/historical evidence in its normal scope."""
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -143,3 +144,33 @@ def test_partial_positive_inventory_without_source_stays_unknown(tmp_path, monke
     monkeypatch.setattr(work, "_change_rows", lambda *_a, **_k: [])
     reported = work._implementer_environments(state)["attempts"][0]["environment"]
     assert reported["categories"]["plugins"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("stage", ["artifact", "build", "floor", "review-disposition"])
+def test_report_shows_each_claude_instruction_file_and_history_reads_unknown(tmp_path, monkeypatch, stage):
+    observed = environment.unknown("not reported", vendor="claude")
+    session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
+    native = tmp_path / "projects" / "slug" / f"{session}.jsonl"
+    native.parent.mkdir(parents=True)
+    native.write_bytes((json.dumps({"type": "attachment", "sessionId": session, "attachment": {
+        "type": "instructions", "files": [
+            {"path": "/tree/AGENTS.md", "type": "Project", "content": "rules"},
+            {"path": "/tree/.git/tradecraft-instructions-1/CLAUDE.md", "type": "Project",
+             "content": "@../../AGENTS.md"}]}}) + "\n").encode())
+    environment.claude_instructions(observed, projects=tmp_path / "projects", session=session, offset=0,
+        resumed=False, shim="/tree/.git/tradecraft-instructions-1")
+    bundle(tmp_path / "records", "current", stage=stage, env=observed)
+    historical = bundle(tmp_path / "records", "historical", stage=stage)
+    before = historical.with_name("historical.run.json").read_bytes()
+    state = work.WorkState("owner/repo", 886, {}, record_root=tmp_path / "records")
+    monkeypatch.setattr(work, "_change_rows", lambda *_a, **_k: [])
+    attempts = {v["dispatch_id"]: v for v in work._implementer_environments(state)["attempts"]}
+    assert attempts["current"]["instructions"] == {"status": "known", "reason": None, "files": [
+        {"path": "/tree/AGENTS.md", "runtime_type": "Project",
+         "sha256": hashlib.sha256(b"rules").hexdigest(), "delivered": "this-invocation", "launcher_shim": False},
+        {"path": "/tree/.git/tradecraft-instructions-1/CLAUDE.md", "runtime_type": "Project",
+         "sha256": hashlib.sha256(b"@../../AGENTS.md").hexdigest(), "delivered": "this-invocation",
+         "launcher_shim": True}]}
+    assert attempts["historical"]["instructions"]["status"] == "unknown"
+    assert attempts["historical"]["instructions"]["files"] == []
+    assert historical.with_name("historical.run.json").read_bytes() == before

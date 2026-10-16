@@ -11418,3 +11418,21 @@ def test_changed_handover_identity_refuses_before_recipient(tmp_path, monkeypatc
     monkeypatch.setattr(work, "_recipient_run", launch)
     with pytest.raises(work.WorkError, match="handover identity changed"):
         work.execute_stage(fixture, work.Decision("floor", True, "resume", "fixture"), root, None, "holder", floor_command="python fixture-check.py")
+
+
+
+def test_claude_preamble_says_root_instructions_are_loaded_and_sends_nowhere_above_the_tree(tmp_path):
+    # #893 R3: the tree's root instructions arrive natively; nested in-tree
+    # files are still read, and nothing sends the builder to an ancestor copy.
+    preamble = work.implementer_preamble("claude", tmp_path / "plugin").decode("utf-8")
+    assert preamble.startswith("You are the implementer for this stage. Your tree's root instructions "
+                               "(its CLAUDE.md and the files it imports, or its AGENTS.md where it has no "
+                               "CLAUDE.md) are already loaded. ")
+    assert ("Before editing a file, read any CLAUDE.md or AGENTS.md inside this tree that applies to it. "
+            "Do not read instruction files in directories above this tree; they belong to another checkout.") in preamble
+    assert "ancestor" not in preamble
+    assert ("Project and local Claude settings are omitted so the holder hook does not run in this child; "
+            "the tree's root instructions are loaded without them.") in preamble
+    assert f"The shipped tradecraft plugin is at {tmp_path / 'plugin'}." in preamble
+    assert preamble.endswith("unknowns and excess are recorded separately.\n")
+    assert work.implementer_preamble("codex", tmp_path / "plugin") == b""

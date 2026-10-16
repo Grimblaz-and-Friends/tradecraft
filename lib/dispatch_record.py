@@ -112,10 +112,10 @@ def runtime_version(executable: list[str]) -> str | None:
         return None
 
 
-def git_revision(root: Path) -> str | None:
+def _git_probe(root: Path, arguments: tuple[str, ...], encoding: str) -> str | None:
     started = time.monotonic()
     try:
-        result = run_process(["git", "-C", str(root), "rev-parse", "HEAD"], input=b"", cwd=Path.cwd(),
+        result = run_process(["git", "-C", str(root), *arguments], input=b"", cwd=Path.cwd(),
                              timeout=lifecycle.probe_timeout(), on_tick=lambda: None,
                              cleanup_deadline=lifecycle.cleanup_deadline())
     except (OSError, subprocess.TimeoutExpired, TimeoutError):
@@ -127,9 +127,19 @@ def git_revision(root: Path) -> str | None:
     if result.returncode:
         return None
     try:
-        return result.stdout.decode("ascii").strip() or None
+        return result.stdout.decode(encoding).strip() or None
     except UnicodeError:
         return None
+
+
+def git_revision(root: Path) -> str | None:
+    return _git_probe(root, ("rev-parse", "HEAD"), "ascii")
+
+
+def git_directory(root: Path) -> Path | None:
+    """The tree's own Git directory; a linked worktree's lives in its holder's."""
+    value = _git_probe(root, ("rev-parse", "--absolute-git-dir"), "utf-8")
+    return Path(value) if value else None
 
 
 def json_bytes(value: object) -> bytes:
