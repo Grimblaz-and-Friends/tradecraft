@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import subprocess
 import sys
 import time
@@ -806,6 +807,46 @@ def test_mod_calls_no_model_writes_nothing_and_passes_the_state_dir():
     assert "STEWARD_LAB_STATE_DIR: await $.env.get('STEWARD_LAB_STATE_DIR')" in text
     for name in sw.PROBE_ENV:
         assert f"'{name}'" in text
+
+
+def _body(text: str, signature: str) -> str:
+    """A top-level function's body in the mod: from its signature to its closing brace."""
+    return text.split(signature, 1)[1].split("\n}\n", 1)[0]
+
+
+def test_only_a_steward_title_reaches_the_script():
+    """#915 row 3 (C3.7): the mod loads in every tradecraft session, so `start`, the
+    only path to `config` and every later script call, is reached only from the gate,
+    and only once the title read answers `Steward`, trimmed and case-insensitive."""
+    text = MOD.read_bytes().decode("utf-8")
+    calls = [m.start() for m in re.finditer(r"(?<![\w.])start\(", text)
+             if not text[:m.start()].endswith("function ")]
+    admit_at = text.index("async function admit(host) {")
+    admit = _body(text, "async function admit(host) {")
+    assert len(calls) == 1 and admit_at < calls[0] < admit_at + len(admit)
+    assert admit.index("if (isSteward(read.title)) {") < admit.index("state.gate = 'on'") < admit.index(
+        "await start(host, state.cwd)")
+    assert "const STEWARD = 'steward'" in text
+    assert "title.trim().toLowerCase() === STEWARD" in _body(text, "function isSteward(title) {")
+    # Every hook that reaches the script waits on `state.cfg`, which only `start` sets.
+    assert text.count("state.cfg = ") == 1 and "state.cfg = await script(['config'" in _body(
+        text, "async function start(host, cwd) {")
+
+
+def test_the_title_read_calls_get_session_only_behind_an_allow():
+    """#915 row 3 (C3.7): the read is the pane's: get_session for `self`, called only
+    when Claude Code's own check answers `allow`, so it never prompts; anything else
+    leaves the wake off with the reason on the status line."""
+    text = MOD.read_bytes().decode("utf-8")
+    assert "const GET_SESSION = 'mcp__ccd_session_mgmt__get_session'" in text
+    assert set(re.findall(r"'(mcp__[a-z_]+)'", text)) == {"mcp__ccd_session_mgmt__get_session"}
+    assert text.count("$.tool.call(") == 1 and text.count("host.call(") == 1
+    read = _body(text, "async function readTitle(host) {")
+    assert "const input = { session_id: 'self' }" in read
+    assert (read.index("host.tools()") < read.index("host.check(GET_SESSION, input)")
+            < read.index("if (decision !== 'allow') return") < read.index("host.call(GET_SESSION, input)"))
+    assert "return { title: null, reason: 'failed' }" in read
+    assert "status('steward-wake off: title unreadable (' + read.reason + ')')" in text
 
 
 def test_handover_check_accepts_a_write_stamped_at_the_request_second(tmp_path):

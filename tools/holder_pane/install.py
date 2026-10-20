@@ -25,7 +25,7 @@ from typing import Any, Callable
 
 HERE = Path(__file__).resolve().parent
 MARKETPLACE_DIR = HERE / "marketplace"
-MARKETPLACE = "tradecraft-lab"
+MARKETPLACE = "tradecraft-holder-pane"
 PLUGIN = "holder-pane"
 PLUGIN_REF = f"{PLUGIN}@{MARKETPLACE}"
 OPT_IN = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"
