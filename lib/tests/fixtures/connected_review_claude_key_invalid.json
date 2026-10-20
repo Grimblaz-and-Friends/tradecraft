@@ -1,0 +1,22 @@
+{
+  "events": [
+    {
+      "apiKeySource": "ANTHROPIC_API_KEY",
+      "subtype": "init",
+      "type": "system"
+    },
+    {
+      "api_error_status": 401,
+      "is_error": true,
+      "result": "Invalid API key \u00b7 Fix external API key",
+      "subtype": "success",
+      "type": "result",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    }
+  ],
+  "returncode": 1,
+  "stderr": ""
+}

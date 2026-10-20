@@ -352,13 +352,13 @@ def _run_finders_at_effort(
     diff: str,
     rules: str,
     lines: dict[tuple[str, str], set[int]],
-    token: str,
+    credentials: cr.ReviewCredentials,
     effort: str,
     preloaded_changed_files: dict[str, Any] | None,
     exclusions: list[dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     return cr.run_finders(
-        executable, run_root, snapshot, instructions, diff, rules, lines, token, preloaded_changed_files,
+        executable, run_root, snapshot, instructions, diff, rules, lines, credentials, preloaded_changed_files,
         effort=effort, exclusions=exclusions,
     )
 
@@ -371,18 +371,18 @@ def _run_finders_for_replay(
     diff: str,
     rules: str,
     lines: dict[tuple[str, str], set[int]],
-    token: str,
+    credentials: cr.ReviewCredentials,
     effort: str | None,
     preloaded_changed_files: dict[str, Any] | None,
     exclusions: list[dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     if effort is None:
         return cr.run_finders(
-            executable, run_root, snapshot, instructions, diff, rules, lines, token,
+            executable, run_root, snapshot, instructions, diff, rules, lines, credentials,
             preloaded_changed_files, exclusions=exclusions,
         )
     return _run_finders_at_effort(
-        executable, run_root, snapshot, instructions, diff, rules, lines, token, effort,
+        executable, run_root, snapshot, instructions, diff, rules, lines, credentials, effort,
         preloaded_changed_files, exclusions,
     )
 
@@ -396,13 +396,13 @@ def _run_checkers_at_effort(
     rules: str,
     candidates: list[dict[str, Any]],
     lines: dict[tuple[str, str], set[int]],
-    token: str,
+    credentials: cr.ReviewCredentials,
     effort: str,
     preloaded_changed_files: dict[str, Any] | None,
     exclusions: list[dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     return cr.run_checkers(
-        executable, run_root, snapshot, instructions, diff, rules, candidates, lines, token, preloaded_changed_files,
+        executable, run_root, snapshot, instructions, diff, rules, candidates, lines, credentials, preloaded_changed_files,
         effort=effort, exclusions=exclusions,
     )
 
@@ -416,7 +416,7 @@ def _run_checkers_for_replay(
     rules: str,
     candidates: list[dict[str, Any]],
     lines: dict[tuple[str, str], set[int]],
-    token: str,
+    credentials: cr.ReviewCredentials,
     effort: str | None,
     preloaded_changed_files: dict[str, Any] | None,
     exclusions: list[dict[str, str]] | None = None,
@@ -424,11 +424,11 @@ def _run_checkers_for_replay(
     if effort is None:
         return cr.run_checkers(
             executable, run_root, snapshot, instructions, diff, rules,
-            candidates, lines, token, preloaded_changed_files, exclusions=exclusions,
+            candidates, lines, credentials, preloaded_changed_files, exclusions=exclusions,
         )
     return _run_checkers_at_effort(
         executable, run_root, snapshot, instructions, diff, rules,
-        candidates, lines, token, effort, preloaded_changed_files, exclusions,
+        candidates, lines, credentials, effort, preloaded_changed_files, exclusions,
     )
 
 
@@ -472,10 +472,11 @@ def run_replay(
             resume, manifest, current_reviewer,
         )
     pending = [case for case in manifest["cases"] if case["id"] not in completed]
-    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    if pending and not token:
-        raise ReplayError("CLAUDE_CODE_OAUTH_TOKEN is unavailable")
     if pending:
+        try:
+            cr.review_credentials(os.environ)
+        except cr.ReviewError as exc:
+            raise ReplayError(str(exc)) from exc
         cr.verify_managed_settings()
         cr.verify_claude_version(executable, version)
     order = {case["id"]: index for index, case in enumerate(manifest["cases"])}
@@ -503,6 +504,8 @@ def run_replay(
         case_result: dict[str, Any] = {
             "case_id": case["id"], "head": case["head"], "base": case["base"],
         }
+        # Each case starts on the key, as each live review does.
+        credentials = cr.review_credentials(os.environ)
         try:
             with tempfile.TemporaryDirectory(prefix="connected-review-replay-case-") as temporary:
                 temporary_root = Path(temporary)
@@ -548,7 +551,7 @@ def run_replay(
                 }
                 candidates, finder_usage, finder_trace = _run_finders_for_replay(
                     executable, case_root, snapshot, finder_text, diff_text,
-                    rules_text, lines, token, finder_effort, preloaded, exclusions,
+                    rules_text, lines, credentials, finder_effort, preloaded, exclusions,
                 )
                 if single_pass:
                     survivors = cr.deduplicate_root_causes(candidates)
@@ -558,7 +561,7 @@ def run_replay(
                     assert checker_text is not None
                     survivors, checker_usage, checker_trace = _run_checkers_for_replay(
                         executable, case_root, snapshot, checker_text, diff_text,
-                        rules_text, candidates, lines, token, checker_effort,
+                        rules_text, candidates, lines, credentials, checker_effort,
                         preloaded, exclusions,
                     )
                 finder_leaks = []
@@ -589,6 +592,7 @@ def run_replay(
                 case_result.update(completed_result)
         except (ReplayError, cr.ReviewError, OSError) as exc:
             case_result.update({"status": "error", "error": str(exc)})
+        case_result["credential"] = credentials.record
         record["cases"].append(case_result)
         record["cases"].sort(key=lambda row: order[row["case_id"]])
         record["case_harness_sha256"][case["id"]] = current_reviewer["harness_sha256"]
