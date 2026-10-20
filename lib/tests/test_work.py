@@ -2436,7 +2436,7 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
     pull = None
     if pr:
         pull = {"number": 7, "state": "open", "draft": draft, "merged_at": None, "mergeable": True,
-                "head": {"sha": SHA},
+                "mergeable_state": "clean", "head": {"sha": SHA},
                 "base": {
                     "ref": "main", "sha": BASE_SHA,
                     "repo": {"id": 1, "full_name": "example/product"},
@@ -2450,7 +2450,8 @@ def state(*texts, pr=False, draft=True, paths=None, issue_state="open",
     )
     if pr:
         fixture.synchronization = {"base": {"sha": BASE_SHA}, "behind": False, "strict": False,
-                                   "conflict": False, "mergeability_known": True, "uncertainties": []}
+                                   "conflict": False, "mergeability_known": True,
+                                   "merge_state": "clean", "uncertainties": []}
         fixture.required_gate = {
             "status": "identified",
             "base": {
@@ -3841,6 +3842,8 @@ def test_completed_proof_and_successful_gate_reach_release_report():
 def test_release_report_names_gate_verdict_run_and_path_departure_action(
         expected, run_head, conclusion, restate, tmp_path, capsys):
     fixture = state(pr=True)
+    # GitHub's verdict follows the gate it waits on (#884).
+    fixture.pr["mergeable_state"] = "clean" if expected == "green" else "blocked"
     if run_head is not None:
         fixture.checks = [gate_check(head=run_head, conclusion=conclusion)]
 
@@ -3859,6 +3862,9 @@ def test_release_report_names_gate_verdict_run_and_path_departure_action(
 
     assert report["required_gate"]["verdict"] == expected
     assert report["required_gate"]["head"] == SHA
+    assert report["merge_verdict"]["ready"] is (expected == "green")
+    if expected != "green":
+        assert report["reason"] == "merge-blocked-required-gate"
     runs = report["required_gate"]["runs"]
     assert len(runs) == (0 if expected == "absent" else 1)
     if runs:
@@ -3889,6 +3895,7 @@ def test_release_report_distinguishes_no_gate_from_unreadable_rules(
         requirement, verdict, restate, phrase, tmp_path, capsys):
     fixture = state(pr=True)
     fixture.required_gate = requirement
+    fixture.pr["mergeable_state"] = "clean" if verdict == "none" else "blocked"
 
     class ReleaseTransport:
         def get(self, endpoint, *, paginate=False):
@@ -3902,6 +3909,7 @@ def test_release_report_distinguishes_no_gate_from_unreadable_rules(
     assert report["required_gate"]["verdict"] == verdict
     assert report["path_departures"]["restate"] is restate
     assert phrase in report["path_departures"]["instruction"]
+    assert report["merge_verdict"]["ready"] is (verdict == "none")
 
 
 def test_release_report_refuses_when_base_moves_after_collection(tmp_path):
@@ -4954,7 +4962,12 @@ def test_synchronization_reads_effective_strictness_sources(source):
     assert facts["strict"] is (None if source == "unavailable" else source in {"ruleset", "protection"})
     assert all(method == "GET" for method, _, _ in transport.calls)
     if source == "ruleset":
-        assert not any(endpoint.endswith("/protection") for _, endpoint, _ in transport.calls)
+        # The thread-resolution rule (#884) now reads classic protection once; a strict
+        # ruleset still proves strictness without it, even where protection is unreadable.
+        assert sum(endpoint.endswith("/protection") for _, endpoint, _ in transport.calls) == 1
+        values["repos/example/product/branches/main/protection"] = work.WorkError("403 cannot read protection")
+        unreadable = work._collect_synchronization(FakeTransport(values), fixture.pr)
+        assert unreadable["strict"] is True and unreadable["uncertainties"] == []
 
 
 @pytest.mark.parametrize("error", ["403 Resource not accessible", "404 Not Found"])
@@ -11468,3 +11481,445 @@ def test_claude_preamble_says_root_instructions_are_loaded_and_sends_nowhere_abo
     assert f"The shipped tradecraft plugin is at {tmp_path / 'plugin'}." in preamble
     assert preamble.endswith("unknowns and excess are recorded separately.\n")
     assert work.implementer_preamble("codex", tmp_path / "plugin") == b""
+
+
+# --- #884: GitHub's merge verdict in release readiness, and rule-required thread resolution ---
+
+RULES_ENDPOINT = "repos/example/product/rules/branches/main?per_page=100"
+PROTECTION_ENDPOINT = "repos/example/product/branches/main/protection"
+DAEMON_RULES = [
+    {"type": "pull_request", "ruleset_source": "example", "ruleset_id": 1,
+     "parameters": {"required_review_thread_resolution": False}},
+    {"type": "pull_request", "ruleset_source": "example/product", "ruleset_id": 2,
+     "parameters": {"required_review_thread_resolution": True}},
+]
+TRADECRAFT_RULES = [
+    {"type": "pull_request", "ruleset_source": "example", "ruleset_id": 1,
+     "parameters": {"required_review_thread_resolution": False}},
+    {"type": "pull_request", "ruleset_source": "example/product", "ruleset_id": 2,
+     "parameters": {"required_review_thread_resolution": False}},
+    {"type": "required_status_checks", "ruleset_source": "example/product", "ruleset_id": 2,
+     "parameters": {"strict_required_status_checks_policy": True}},
+]
+NOT_PROTECTED = work.WorkError("GitHub GET failed: Branch not protected (HTTP 404)")
+
+
+def _thread(identity, comment_id, author, resolved=False):
+    return {"id": identity, "isResolved": resolved, "isOutdated": False,
+            "comments": {"nodes": [{"databaseId": comment_id, "author": {"login": author}}]}}
+
+
+def _thread_page(nodes, cursor=None):
+    return {"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor}, "nodes": nodes}}}}}
+
+
+class ThreadTransport(FakeTransport):
+    """A read-only transport: every mutation fails the test, and threads come from a fixed query."""
+
+    def __init__(self, values, pages=None, thread_error=None):
+        super().__init__(values)
+        self.pages = list(pages or [_thread_page([])])
+        self.thread_error = thread_error
+        self.thread_calls = []
+
+    def review_threads(self, query, variables):
+        self.thread_calls.append((query, dict(variables)))
+        if self.thread_error is not None:
+            raise self.thread_error
+        return self.pages[(len(self.thread_calls) - 1) % len(self.pages)]
+
+    def post(self, *_args, **_kwargs):
+        pytest.fail("the read-only entrance posted")
+
+    def patch(self, *_args, **_kwargs):
+        pytest.fail("the read-only entrance patched")
+
+    def mutate(self, *_args, **_kwargs):
+        pytest.fail("the read-only entrance mutated")
+
+    def graphql(self, *_args, **_kwargs):
+        pytest.fail("the read-only entrance ran a mutating GraphQL call")
+
+
+def release_ready(word="clean", *, checks=None):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, FLOOR, USE,
+                    pr=True, draft=False, reviewer_ran=True)
+    fixture.pr_comments.append({
+        "id": 71, "body": f"<!-- tradecraft:proof:v1 head={SHA} -->",
+        "user": {"login": PRODUCER},
+    })
+    fixture.proof_current = True
+    fixture.checks = [gate_check()] if checks is None else checks
+    # A declared CI floor met at this head: a failing check outside it leaves the floor intact.
+    fixture.floor_public = {"outcome": "ci-met", "head": SHA}
+    if word is None:
+        fixture.pr.pop("mergeable_state")
+    else:
+        fixture.pr["mergeable_state"] = word
+    fixture.synchronization["merge_state"] = work._merge_state_word(fixture.pr)
+    return fixture
+
+
+def run_release(fixture, tmp_path, capsys, transport=None, reason="holder-named-stage"):
+    if transport is None:
+        transport = FakeTransport({})
+    transport.values["repos/example/product/pulls/7"] = deepcopy(fixture.pr)
+    decision = work.Decision("release-report", False, None, reason)
+    assert work.execute_stage(fixture, decision, tmp_path, None, transport=transport,
+                              floor_command="python fixture-check.py") == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def optional_check(name="optional-lint", conclusion="failure", status="completed"):
+    return {"id": 95, "name": name, "status": status, "conclusion": conclusion,
+            "head_sha": SHA, "started_at": "2026-09-23T12:00:00Z"}
+
+
+@pytest.mark.parametrize("word", ["clean", "has_hooks", "unstable", "blocked"])
+def test_884_C1_release_needs_a_verdict_github_will_merge(word, tmp_path, capsys):
+    fixture = release_ready(word)
+    decision = work.decide(fixture, RULES)
+    report = run_release(fixture, tmp_path, capsys, reason=decision.reason)
+    if word == "blocked":
+        assert decision.stage != "release-report"
+        assert report["reason"] != "all-evidence-complete"
+        assert report["merge_verdict"]["ready"] is False
+    else:
+        assert (decision.stage, decision.reason) == ("release-report", "all-evidence-complete")
+        assert report["merge_verdict"]["ready"] is True
+        assert report["merge_verdict"]["verdict"] == word
+        assert report["reason"] == "all-evidence-complete"
+
+
+def test_884_C2_unstable_lists_failing_optional_checks_as_information(tmp_path, capsys):
+    fixture = release_ready("unstable", checks=[gate_check(), optional_check()])
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == ("release-report", "all-evidence-complete")
+    assert "optional-lint" in decision.detail
+    report = run_release(fixture, tmp_path, capsys, reason=decision.reason)
+    merge = report["merge_verdict"]
+    assert merge["ready"] is True and merge["blocks"] == []
+    assert [item["name"] for item in merge["information"]] == ["optional-lint"]
+    assert report["reason"] == "all-evidence-complete"
+    assert "optional-lint" in report["detail"] and "not a block" in report["detail"]
+    quiet = release_ready("unstable")
+    verdict = work._merge_readiness(quiet, SHA, work._release_gate_status(quiet, SHA))
+    assert verdict["ready"] is True and verdict["blocks"] == []
+    assert "no non-successful check run is visible" in verdict["information"][0]["note"]
+
+
+def _daemon_threads_fixture(resolved=(False, False), *, rules=DAEMON_RULES, human_answered=False):
+    fixture = release_ready("blocked")
+    fixture.review_comments = [
+        {"id": 501, "body": "finding", "user": {"login": REVIEWER, "type": "Bot"}},
+        {"id": 503, "in_reply_to_id": 501, "body": "fixed", "user": {"login": PRODUCER}},
+        {"id": 502, "body": "a human's question", "user": {"login": "maintainer"}},
+    ]
+    if human_answered:
+        fixture.review_comments.append(
+            {"id": 504, "in_reply_to_id": 502, "body": "declined - outside the brief",
+             "user": {"login": PRODUCER}})
+    transport = ThreadTransport(
+        {RULES_ENDPOINT: rules, PROTECTION_ENDPOINT: NOT_PROTECTED},
+        pages=[_thread_page([_thread("PRRT_a", 501, "reviewer-fixture", resolved[0]),
+                             _thread("PRRT_b", 502, "maintainer", resolved[1])])],
+    )
+    fixture.synchronization = work._collect_synchronization(transport, fixture.pr)
+    transport.thread_calls.clear()
+    return fixture, transport
+
+
+def test_884_C3_unresolved_threads_on_a_requiring_base_block_by_id(tmp_path, capsys):
+    # The answered connected-reviewer thread 501 first returns to the builder (holder reading
+    # for review disposition); the holder-named release report still names both threads by id.
+    fixture, transport = _daemon_threads_fixture()
+    assert fixture.synchronization["thread_resolution"]["required"] is True
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason, decision.detail) == (
+        "review-disposition", "reviewer-thread-answered-unresolved", "501")
+    report = run_release(fixture, tmp_path, capsys, transport=transport)
+    assert report["reason"] == "merge-blocked-unresolved-review-threads"
+    block = report["merge_verdict"]["blocks"][0]
+    assert block["kind"] == "unresolved-review-threads"
+    assert [(item["comment_id"], item["thread_id"]) for item in block["threads"]] == [
+        (501, "PRRT_a"), (502, "PRRT_b")]
+    assert [item["answered"] for item in block["threads"]] == [True, False]
+    assert work.RESOLVE_THREAD_COMMAND in report["detail"]
+    human, _transport = _daemon_threads_fixture(resolved=(True, False))
+    decision = work.decide(human, RULES)
+    assert (decision.stage, decision.reason) == (
+        "waiting", "merge-blocked-unresolved-review-threads")
+    assert "comment 502" in decision.detail and "comment 501" not in decision.detail
+    assert work.RESOLVE_THREAD_COMMAND not in decision.detail
+    resolved, _transport = _daemon_threads_fixture(resolved=(True, True))
+    assert work.decide(resolved, RULES).reason == "merge-blocked-unattributed"
+
+
+def test_884_answered_unresolved_connected_thread_returns_to_the_builder_to_resolve():
+    fixture, _transport = _daemon_threads_fixture(resolved=(False, True))
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.dispatch, decision.continuity, decision.reason) == (
+        "review-disposition", True, "resume", "reviewer-thread-answered-unresolved")
+    prompt = work._stage_prompt(fixture, decision, floor_command="python fixture-check.py").decode()
+    assert work.THREAD_RESOLUTION_INSTRUCTION in prompt
+    assert ("Already answered; resolve without a new reply (root comment id -> thread id): "
+            "501 -> PRRT_a.") in prompt
+    assert "except a thread listed below as already answered" in prompt
+    onward, _transport = _daemon_threads_fixture(resolved=(True, True))
+    assert work.decide(onward, RULES).reason != "reviewer-thread-answered-unresolved"
+    assert work._answered_unresolved_threads(onward) == []
+
+
+def test_884_a_holder_answered_non_connected_thread_stays_a_block_with_the_command():
+    fixture, _transport = _daemon_threads_fixture(resolved=(True, False), human_answered=True)
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "waiting", "merge-blocked-unresolved-review-threads")
+    assert "comment 502 (thread PRRT_b, maintainer, answered)" in decision.detail
+    assert work.RESOLVE_THREAD_COMMAND in decision.detail
+
+
+def test_884_a_non_requiring_base_never_routes_answered_threads_for_resolution():
+    fixture, _transport = _daemon_threads_fixture(rules=TRADECRAFT_RULES)
+    assert fixture.synchronization["thread_resolution"]["required"] is False
+    assert fixture.synchronization["review_threads"]["status"] == "read"
+    assert work._answered_unresolved_threads(fixture) == []
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "review-disposition"
+    assert decision.reason == "merge-blocked-unattributed"
+
+
+@pytest.mark.parametrize("gate,reason,verdict", [
+    (gate_check(conclusion="failure"), "latest-gate-evaluation-failed", "red"),
+    (gate_check(status="in_progress", conclusion=None), "latest-gate-evaluation-pending", "absent"),
+    (None, "current-head-gate-evaluation-absent", "absent"),
+])
+def test_884_C4_a_red_or_pending_gate_inside_blocked_is_named_as_the_gate(
+        gate, reason, verdict, tmp_path, capsys):
+    fixture = release_ready("blocked", checks=[] if gate is None else [gate])
+    assert work.decide(fixture, RULES).reason == reason
+    report = run_release(fixture, tmp_path, capsys)
+    assert report["reason"] == "merge-blocked-required-gate"
+    blocks = report["merge_verdict"]["blocks"]
+    assert blocks[0]["kind"] == "required-gate" and blocks[0]["verdict"] == verdict
+    assert all(block["kind"] != "unattributed" for block in blocks)
+
+
+@pytest.mark.parametrize("word", ["unknown", "UNKNOWN", None])
+def test_884_C5_an_uncomputed_verdict_waits_and_names_the_rerun(word, tmp_path, capsys):
+    fixture = release_ready(word)
+    assert fixture.pr["mergeable"] is True
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == ("waiting", "merge-verdict-unknown")
+    assert "rerun" in decision.detail
+    report = run_release(fixture, tmp_path, capsys)
+    assert report["reason"] == "merge-verdict-unknown"
+    assert report["merge_verdict"]["ready"] is False and "rerun" in report["detail"]
+    fixture.pr["mergeable_state"] = ""
+    fixture.synchronization["merge_state"] = work._merge_state_word(fixture.pr)
+    assert work.decide(fixture, RULES).reason == "merge-verdict-unknown"
+
+
+def test_884_C6a_a_failing_required_context_is_an_unattributed_candidate(tmp_path, capsys):
+    fixture = release_ready("blocked", checks=[
+        gate_check(), optional_check("lint-and-test (ubuntu-latest)")])
+    fixture.synchronization = work._collect_synchronization(FakeTransport({}), fixture.pr)
+    assert fixture.synchronization["thread_resolution"]["required"] is False
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "merge-blocked-unattributed"
+    assert "lint-and-test (ubuntu-latest)" in decision.detail
+    report = run_release(fixture, tmp_path, capsys)
+    block = report["merge_verdict"]["blocks"][0]
+    assert block["kind"] == "unattributed" and block["github_state"] == "blocked"
+    assert [item["name"] for item in block["candidates"]["checks"]] == [
+        "lint-and-test (ubuntu-latest)"]
+    assert "threads" not in block["candidates"]
+
+
+@pytest.mark.parametrize("unreadable", ["protection-403", "non-boolean"])
+def test_884_C6b_an_unresolved_thread_under_an_unreadable_rule_is_unattributed(unreadable):
+    fixture = release_ready("blocked")
+    rules = deepcopy(TRADECRAFT_RULES)
+    values = {RULES_ENDPOINT: rules, PROTECTION_ENDPOINT: NOT_PROTECTED}
+    if unreadable == "protection-403":
+        values[PROTECTION_ENDPOINT] = work.WorkError("GitHub GET failed (HTTP 403)")
+    else:
+        rules[1]["parameters"]["required_review_thread_resolution"] = "yes"
+    transport = ThreadTransport(values, pages=[_thread_page([_thread("PRRT_c", 601, "maintainer")])])
+    fixture.synchronization = work._collect_synchronization(transport, fixture.pr)
+    assert fixture.synchronization["thread_resolution"]["required"] is None
+    assert fixture.required_gate["status"] == "identified"
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "merge-blocked-unattributed"
+    verdict = work._merge_readiness(fixture, SHA, work._release_gate_status(fixture, SHA))
+    block = verdict["blocks"][0]
+    assert block["kind"] == "unattributed"
+    assert [item["thread_id"] for item in block["candidates"]["threads"]] == ["PRRT_c"]
+    assert any("thread-resolution rule unreadable" in note for note in block["notes"])
+    assert "PRRT_c" in decision.detail
+
+
+def test_884_C6c_d_an_unknown_word_or_failed_thread_read_is_unattributed():
+    fixture = release_ready("foo")
+    assert work.decide(fixture, RULES).reason == "merge-blocked-unattributed"
+    fixture = release_ready("blocked")
+    transport = ThreadTransport({RULES_ENDPOINT: DAEMON_RULES, PROTECTION_ENDPOINT: NOT_PROTECTED},
+                                thread_error=work.WorkError("GraphQL 502"))
+    fixture.synchronization = work._collect_synchronization(transport, fixture.pr)
+    assert fixture.synchronization["review_threads"]["status"] == "unavailable"
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "merge-blocked-unattributed"
+    assert "review-thread read failed: GraphQL 502" in decision.detail
+
+
+@pytest.mark.parametrize("strict", [False, None])
+def test_884_C7_githubs_behind_proves_strictness_for_catch_up(strict):
+    fixture = release_ready("behind")
+    fixture.synchronization.update(behind=True, strict=strict)
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == ("catch-up", "strict-base-behind")
+
+
+def test_884_C7_behind_against_a_current_comparison_is_unattributed_and_named():
+    fixture = release_ready("behind")
+    decision = work.decide(fixture, RULES)
+    assert decision.reason == "merge-blocked-unattributed"
+    assert "GitHub reports behind but the base comparison says the head is current" in decision.detail
+
+
+def test_884_C7_a_draft_verdict_routes_ready_reviewers_in_both_reads(tmp_path, capsys):
+    fixture = release_ready("draft")
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == ("ready-reviewers", "floor-complete-pr-draft")
+    report = run_release(fixture, tmp_path, capsys)
+    assert (report["stage"], report["reason"]) == ("ready-reviewers", "floor-complete-pr-draft")
+
+
+def _disposition_prompt(synchronization):
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True, draft=False)
+    fixture.review_comments = [
+        {"id": 701, "body": "finding one", "user": {"login": REVIEWER}},
+        {"id": 702, "body": "finding two", "user": {"login": REVIEWER}},
+    ]
+    fixture.synchronization = synchronization
+    decision = work.Decision("review-disposition", True, "resume",
+                             "reviewer-thread-lacks-disposition", "701,702")
+    return work._stage_prompt(fixture, decision, floor_command="python fixture-check.py").decode()
+
+
+def test_884_C8_a_requiring_base_composes_the_resolution_clause_with_thread_ids():
+    transport = ThreadTransport({RULES_ENDPOINT: DAEMON_RULES, PROTECTION_ENDPOINT: NOT_PROTECTED},
+                                pages=[_thread_page([_thread("PRRT_x", 701, "reviewer-fixture"),
+                                                     _thread("PRRT_y", 702, "reviewer-fixture")])])
+    prompt = _disposition_prompt(work._collect_synchronization(transport, state(pr=True).pr))
+    assert work.THREAD_RESOLUTION_INSTRUCTION in prompt
+    assert work.RESOLVE_THREAD_COMMAND in prompt
+    assert "resolveReviewThread(input:{threadId:$id})" in prompt
+    assert "701 -> PRRT_x" in prompt and "702 -> PRRT_y" in prompt
+    assert "do not guess it" not in prompt
+
+
+def test_884_C8_an_unknown_thread_id_gets_the_lookup_command_not_a_guess():
+    transport = ThreadTransport({RULES_ENDPOINT: DAEMON_RULES, PROTECTION_ENDPOINT: NOT_PROTECTED},
+                                thread_error=work.WorkError("GraphQL 502"))
+    prompt = _disposition_prompt(work._collect_synchronization(transport, state(pr=True).pr))
+    assert work.RESOLVE_THREAD_COMMAND in prompt
+    assert "701 -> thread id unknown" in prompt and "702 -> thread id unknown" in prompt
+    assert "do not guess it" in prompt
+    assert "-f owner=example -f name=product -F number=7" in prompt
+    assert "PRRT_" not in prompt
+
+
+@pytest.mark.parametrize("shape", ["tradecraft", "rules-unavailable", "protection-403"])
+def test_884_C8_no_resolution_instruction_where_rules_do_not_require_or_cannot_be_read(shape):
+    values = {RULES_ENDPOINT: TRADECRAFT_RULES, PROTECTION_ENDPOINT: NOT_PROTECTED}
+    if shape == "rules-unavailable":
+        values[RULES_ENDPOINT] = work.WorkError("GitHub GET failed (HTTP 500)")
+    if shape == "protection-403":
+        values[PROTECTION_ENDPOINT] = work.WorkError("GitHub GET failed (HTTP 403)")
+    facts = work._collect_synchronization(ThreadTransport(values), state(pr=True).pr)
+    assert facts["thread_resolution"]["required"] is (False if shape == "tradecraft" else None)
+    prompt = _disposition_prompt(facts)
+    assert "resolveReviewThread" not in prompt
+    assert "resolve" not in prompt.split("--- affirmed implementation brief begin ---")[0].lower()
+
+
+@pytest.mark.parametrize(("shape", "required", "strict", "uncertainties"), [
+    ("daemon", True, False, []),
+    ("classic-required", True, False, []),
+    ("tradecraft", False, True, []),
+    ("rules-unavailable", None, None,
+     ["ruleset strictness unavailable: GitHub GET failed (HTTP 500)"]),
+    ("protection-403", None, True, []),
+])
+def test_884_C9_the_thread_rule_reads_without_moving_strictness(shape, required, strict, uncertainties):
+    values = {f"repos/example/product/compare/{BASE_SHA}...{SHA}": {"behind_by": 1}}
+    if shape == "daemon":
+        values.update({RULES_ENDPOINT: DAEMON_RULES, PROTECTION_ENDPOINT: NOT_PROTECTED})
+    if shape == "classic-required":
+        values[PROTECTION_ENDPOINT] = {"required_status_checks": {"strict": False},
+                                       "required_conversation_resolution": {"enabled": True}}
+    if shape in {"tradecraft", "protection-403"}:
+        values[RULES_ENDPOINT] = TRADECRAFT_RULES
+        values[PROTECTION_ENDPOINT] = (NOT_PROTECTED if shape == "tradecraft"
+                                       else work.WorkError("GitHub GET failed (HTTP 403)"))
+    if shape == "rules-unavailable":
+        values[RULES_ENDPOINT] = work.WorkError("GitHub GET failed (HTTP 500)")
+    transport = ThreadTransport(values)
+    facts = work._collect_synchronization(transport, state(pr=True).pr)
+    assert facts["thread_resolution"]["required"] is required
+    assert facts["strict"] is strict and facts["uncertainties"] == uncertainties
+    assert sum(endpoint == PROTECTION_ENDPOINT for _, endpoint, _ in transport.calls) <= 1
+    if required is None:
+        assert facts["thread_resolution"]["uncertainties"]
+
+
+def test_884_C10_the_threads_read_is_fixed_paginated_and_never_mutates():
+    fixture = release_ready("blocked")
+    transport = ThreadTransport(
+        {RULES_ENDPOINT: DAEMON_RULES, PROTECTION_ENDPOINT: NOT_PROTECTED},
+        pages=[_thread_page([_thread("PRRT_1", 801, "maintainer")], cursor="CURSOR1"),
+               _thread_page([_thread("PRRT_2", 802, "maintainer")])],
+    )
+    fixture.synchronization = work._collect_synchronization(transport, fixture.pr)
+    assert [query for query, _ in transport.thread_calls] == [work.REVIEW_THREADS_QUERY] * 2
+    assert [variables["after"] for _, variables in transport.thread_calls] == [None, "CURSOR1"]
+    assert [item["thread_id"] for item in fixture.synchronization["review_threads"]["threads"]] == [
+        "PRRT_1", "PRRT_2"]
+    assert all(method == "GET" for method, _, _ in transport.calls)
+    assert work.decide(fixture, RULES).reason == "merge-blocked-unresolved-review-threads"
+    clean = release_ready("clean")
+    quiet = ThreadTransport({RULES_ENDPOINT: TRADECRAFT_RULES, PROTECTION_ENDPOINT: NOT_PROTECTED})
+    work._collect_synchronization(quiet, clean.pr)
+    assert quiet.thread_calls == []
+
+
+def test_884_C10_the_rest_transport_refuses_any_other_thread_query(monkeypatch):
+    monkeypatch.setattr(work, "_run_probe", lambda *_a, **_k: pytest.fail("ran a refused query"))
+    variables = {"owner": "example", "name": "product", "number": 7, "after": None}
+    with pytest.raises(work.WorkError, match="only the fixed review-thread query"):
+        work.GitHubREST().review_threads(
+            "mutation{resolveReviewThread(input:{threadId:\"x\"}){thread{id}}}", variables)
+    with pytest.raises(work.WorkError, match="only the fixed review-thread query"):
+        work.GitHubREST().review_threads(work.REVIEW_THREADS_QUERY, {**variables, "extra": 1})
+
+
+def test_884_C13_stage_safety_names_the_new_mechanisms():
+    assert ("0.198.0", "merge-verdict readiness") in work.STAGE_SAFETY["release-report"]
+    # The running entrance composes the resolution clause, so a resumed builder needs nothing
+    # from its source bundle's version and review-disposition carries no 0.198.0 entry.
+    assert all(minimum != "0.198.0" for minimum, _ in work.STAGE_SAFETY["review-disposition"])
+
+
+def test_884_review_disposition_resumes_a_source_bundle_from_0_197_0():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True, draft=False)
+    decision = work.Decision("review-disposition", True, "resume",
+                             "reviewer-thread-lacks-disposition")
+    source = work.ResumeSource(completed="2026-10-20T18:00:00Z", path="bundle/result.md",
+                               request={"producer_version": "0.197.0"}, run={}, session="builder")
+    assert work._version_refusal(fixture, decision, source) is None
+    older = work.ResumeSource(completed="2026-10-20T18:00:00Z", path="bundle/result.md",
+                              request={"producer_version": "0.153.0"}, run={}, session="builder")
+    refused = work._version_refusal(fixture, decision, older)
+    assert refused is not None and refused.reason == "unsafe-source-version-for-review-disposition"
