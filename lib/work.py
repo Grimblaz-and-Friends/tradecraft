@@ -196,7 +196,10 @@ STAGE_SAFETY = {
     ),
     "proof": ((PROOF_MECHANISM_VERSION, "composed proof publication"),),
     "ready-reviewers": ((PROOF_MECHANISM_VERSION, "configured reviewer readiness"),),
-    "release-report": ((NEW_MECHANISM_VERSION, "holder-owned release report"),),
+    "release-report": (
+        (NEW_MECHANISM_VERSION, "holder-owned release report"),
+        ("0.198.0", "merge-verdict readiness"),
+    ),
     "catch-up": (("0.173.0", "holder-owned checked catch-up"),),
 }
 MARKER_CONTRACTS: dict[str, dict[str, object]] = {
@@ -269,6 +272,36 @@ WORKFLOW_RUN_FILES_QUERY = """query($ids:[ID!]!){
     }
   }
 }"""
+REVIEW_THREADS_QUERY = """query($owner:String!,$name:String!,$number:Int!,$after:String){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      reviewThreads(first:100,after:$after){
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          comments(first:1){ nodes { databaseId author { login } } }
+        }
+      }
+    }
+  }
+}"""
+RESOLVE_THREAD_COMMAND = (
+    "gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id})"
+    "{thread{isResolved}}}' -f id=THREAD_ID"
+)
+THREAD_RESOLUTION_INSTRUCTION = (
+    " The base branch's rules require review threads to be resolved before GitHub will merge. "
+    "In this same turn, after posting each inline disposition reply, whatever its disposition, "
+    "resolve that reply's thread with exactly this command, putting the thread id in place of "
+    "THREAD_ID:\n" + RESOLVE_THREAD_COMMAND + "\n"
+    "Resolve no thread you did not answer in this turn, except a thread listed below as already "
+    "answered; a body finding has no thread."
+)
+# GitHub's mergeable_state words it will merge on; `unstable` means only non-required checks fail.
+MERGEABLE_STATES = frozenset({"clean", "has_hooks", "unstable"})
+NON_FAILING_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 
 
 class WorkError(RuntimeError):
@@ -543,6 +576,36 @@ class GitHubREST:
             return json.loads(result.stdout.decode("utf-8"))
         except (UnicodeError, ValueError) as exc:
             raise WorkError("GitHub GraphQL workflow provenance returned invalid JSON") from exc
+
+    def review_threads(self, query: str, variables: dict[str, object]) -> object:
+        """Run the fixed read-only query that lists a pull request's review threads."""
+        if query != REVIEW_THREADS_QUERY or set(variables) != {"owner", "name", "number", "after"}:
+            raise WorkError("review-thread reading accepts only the fixed review-thread query")
+        owner, name, number, after = (
+            variables["owner"], variables["name"], variables["number"], variables["after"]
+        )
+        if (not isinstance(owner, str) or not owner or not isinstance(name, str) or not name
+                or type(number) is not int or number <= 0
+                or (after is not None and not isinstance(after, str))):
+            raise WorkError("review-thread reading requires a repository, number and cursor")
+        payload = {
+            "query": REVIEW_THREADS_QUERY,
+            "variables": {"owner": owner, "name": name, "number": number, "after": after},
+        }
+        result = _run_probe(
+            ["gh", "api", "graphql", "--input", "-"],
+            input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=lifecycle.probe_timeout(120),
+        )
+        if result.returncode:
+            diagnostic = result.stderr.decode("utf-8", errors="backslashreplace").strip()
+            raise WorkError(
+                f"GitHub GraphQL review-thread read failed: {diagnostic or result.returncode}"
+            )
+        try:
+            return json.loads(result.stdout.decode("utf-8"))
+        except (UnicodeError, ValueError) as exc:
+            raise WorkError("GitHub GraphQL review-thread read returned invalid JSON") from exc
 
 
 def _dict(value: object, endpoint: str) -> dict[str, object]:
@@ -836,6 +899,116 @@ def _collect_required_gate(transport: GitHubREST,
     }
 
 
+def _merge_state_word(pr: dict[str, object]) -> str | None:
+    value = pr.get("mergeable_state")
+    return value.lower() if isinstance(value, str) and value else None
+
+
+def _collect_thread_rule(rule: dict[str, object],
+                         rules: list[dict[str, object]] | None,
+                         classic_protection) -> None:
+    """Whether the base branch's rules require resolved review threads: True, False or None.
+
+    Its errors stay in the rule's own uncertainties so an unreadable thread rule never
+    becomes a synchronization wait where strictness is unaffected.
+    """
+    uncertainties = rule["uncertainties"]
+    sources = rule["sources"]
+    required = False
+    if rules is not None:
+        for item in rules:
+            if item.get("type") != "pull_request":
+                continue
+            parameters = item.get("parameters")
+            value = (parameters.get("required_review_thread_resolution")
+                     if isinstance(parameters, dict) else None)
+            sources.append({
+                "source": "ruleset",
+                "ruleset_id": item.get("ruleset_id") if isinstance(item.get("ruleset_id"), int) else None,
+                "ruleset_source": (item.get("ruleset_source")
+                                   if isinstance(item.get("ruleset_source"), str) else None),
+                "required": value if type(value) is bool else None,
+            })
+            if value is True:
+                required = True
+            elif value is not False:
+                uncertainties.append("a pull_request rule has no boolean required_review_thread_resolution")
+    if required:
+        rule["required"] = True
+        return
+    protection, error = classic_protection()
+    if error is not None:
+        if (isinstance(error, WorkError) and "404" in str(error)
+                and "branch not protected" in str(error).lower()):
+            sources.append({"source": "branch-protection", "required": False})
+        else:
+            uncertainties.append(f"branch-protection thread-resolution rule unavailable: {error}")
+    else:
+        setting = protection.get("required_conversation_resolution")
+        enabled = setting.get("enabled") if isinstance(setting, dict) else None
+        if enabled is True:
+            sources.append({"source": "branch-protection", "required": True})
+            rule["required"] = True
+            return
+        if setting is None or enabled is False:
+            sources.append({"source": "branch-protection", "required": False})
+        else:
+            uncertainties.append("branch protection has no boolean required_conversation_resolution")
+    if rules is not None and not uncertainties:
+        rule["required"] = False
+
+
+def _collect_review_threads(transport: GitHubREST, pr: dict[str, object],
+                            base: dict[str, object]) -> dict[str, object]:
+    """Read every review thread through the fixed read-only query; never mutate."""
+    reader = getattr(transport, "review_threads", None)
+    if not callable(reader):
+        return {"status": "unavailable", "threads": [],
+                "error": "GitHub transport cannot read review threads"}
+    owner, _, name = str(base.get("repository") or "").partition("/")
+    number = pr.get("number")
+    if not owner or not name or type(number) is not int:
+        return {"status": "unavailable", "threads": [],
+                "error": "pull-request repository or number is unavailable"}
+    threads: list[dict[str, object]] = []
+    after: str | None = None
+    try:
+        for _page in range(100):
+            response = reader(REVIEW_THREADS_QUERY,
+                              {"owner": owner, "name": name, "number": number, "after": after})
+            if not isinstance(response, dict) or response.get("errors"):
+                raise WorkError("review-thread response is not an error-free object")
+            connection = (((response.get("data") or {}).get("repository") or {})
+                          .get("pullRequest") or {}).get("reviewThreads")
+            if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+                raise WorkError("review-thread response has no reviewThreads nodes")
+            for node in connection["nodes"]:
+                thread_id = node.get("id") if isinstance(node, dict) else None
+                resolved = node.get("isResolved") if isinstance(node, dict) else None
+                if not isinstance(thread_id, str) or type(resolved) is not bool:
+                    raise WorkError("a review thread has no id or resolution state")
+                first = ((node.get("comments") or {}).get("nodes") or [None])[0]
+                comment_id = first.get("databaseId") if isinstance(first, dict) else None
+                author = (first.get("author") or {}).get("login") if isinstance(first, dict) else None
+                threads.append({
+                    "comment_id": comment_id if type(comment_id) is int else None,
+                    "thread_id": thread_id,
+                    "author": author.lower() if isinstance(author, str) else None,
+                    "outdated": node.get("isOutdated") is True,
+                    "resolved": resolved,
+                })
+            page = connection.get("pageInfo")
+            if not isinstance(page, dict) or page.get("hasNextPage") is not True:
+                return {"status": "read", "threads": threads, "error": None}
+            after = page.get("endCursor")
+            if not isinstance(after, str) or not after:
+                raise WorkError("review-thread page has no end cursor")
+        raise WorkError("review-thread pagination did not finish")
+    except (AttributeError, KeyError, OSError, TypeError, UnicodeError, ValueError,
+            WorkError) as exc:
+        return {"status": "unavailable", "threads": [], "error": f"review-thread read failed: {exc}"}
+
+
 def _collect_synchronization(transport: GitHubREST, pr: dict[str, object]) -> dict[str, object]:
     base, problem = _gate_base(pr)
     result: dict[str, object] = {
@@ -844,13 +1017,29 @@ def _collect_synchronization(transport: GitHubREST, pr: dict[str, object]) -> di
             pr.get("mergeable") is False
             or str(pr.get("mergeable_state") or "").lower() in {"dirty", "conflicting"}
         ), "mergeability_known": isinstance(pr.get("mergeable"), bool),
+        "merge_state": _merge_state_word(pr),
         "uncertainties": [],
+        "thread_resolution": {"required": None, "sources": [], "uncertainties": []},
+        "review_threads": {"status": "not-read", "threads": [], "error": None},
     }
     if base is None:
         result["uncertainties"] = [problem]
+        result["thread_resolution"]["uncertainties"] = [problem]
         return result
     encoded = urllib.parse.quote(str(base["ref"]), safe="")
     prefix = f"repos/{base['repository']}"
+    protection_cache: list[tuple[dict[str, object] | None, Exception | None]] = []
+
+    def classic_protection() -> tuple[dict[str, object] | None, Exception | None]:
+        # Strictness and the thread rule share one read of classic protection.
+        if not protection_cache:
+            try:
+                protection_cache.append((_dict(
+                    transport.get(f"{prefix}/branches/{encoded}/protection"),
+                    "branch protection"), None))
+            except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+                protection_cache.append((None, exc))
+        return protection_cache[0]
     try:
         tip = _dict(transport.get(f"{prefix}/git/ref/heads/{encoded}"), "base ref")
         revision = _dict(tip.get("object"), "base ref object").get("sha")
@@ -867,9 +1056,11 @@ def _collect_synchronization(transport: GitHubREST, pr: dict[str, object]) -> di
     except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
         result["uncertainties"].append(f"base reachability unavailable: {exc}")
     strict_values = []
+    rules_read: list[dict[str, object]] | None = None
     try:
         rules = _list(transport.get(f"{prefix}/rules/branches/{encoded}?per_page=100",
                                     paginate=True), "base rules")
+        rules_read = rules
         for rule in rules:
             if rule.get("type") == "required_status_checks":
                 strict = (rule.get("parameters") or {}).get("strict_required_status_checks_policy")
@@ -879,11 +1070,16 @@ def _collect_synchronization(transport: GitHubREST, pr: dict[str, object]) -> di
         strict_values.append(False)
     except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
         result["uncertainties"].append(f"ruleset strictness unavailable: {exc}")
+        if rules_read is None:
+            result["thread_resolution"]["uncertainties"].append(
+                f"ruleset thread-resolution rule unavailable: {exc}")
     if not any(strict_values):
         # A readable strict ruleset already proves the requirement. Classic
         # protection can add it, but its endpoint may require administration.
         try:
-            protection = _dict(transport.get(f"{prefix}/branches/{encoded}/protection"), "branch protection")
+            protection, protection_error = classic_protection()
+            if protection_error is not None:
+                raise protection_error
             checks = protection.get("required_status_checks")
             strict = checks.get("strict") if isinstance(checks, dict) else False
             if type(strict) is not bool:
@@ -901,6 +1097,10 @@ def _collect_synchronization(transport: GitHubREST, pr: dict[str, object]) -> di
         result["strict"] = True
     elif len(strict_values) >= 2 and not result["uncertainties"]:
         result["strict"] = False
+    _collect_thread_rule(result["thread_resolution"], rules_read, classic_protection)
+    if (result["thread_resolution"]["required"] is True
+            or result["merge_state"] == "blocked"):
+        result["review_threads"] = _collect_review_threads(transport, pr, base)
     try:
         confirmed = _dict(transport.get(f"{prefix}/git/ref/heads/{encoded}"), "confirmed base ref")
         if (confirmed.get("object") or {}).get("sha") != (result.get("base") or {}).get("sha"):
@@ -916,7 +1116,9 @@ def _synchronization_decision(state: WorkState) -> Decision | None:
     facts = state.synchronization or {}
     conflict = (facts.get("conflict") is True or state.pr.get("mergeable") is False
                 or str(state.pr.get("mergeable_state") or "").lower() in {"dirty", "conflicting"})
-    if conflict or (facts.get("behind") is True and facts.get("strict") is True):
+    # GitHub's own `behind` verdict proves a rule requires the branch current.
+    if conflict or (facts.get("behind") is True and (
+            facts.get("strict") is True or facts.get("merge_state") == "behind")):
         return Decision("catch-up", False, None,
                         "pull-request-conflicting" if conflict else "strict-base-behind",
                         "Run the holder-owned catch-up; other conflicts return to the builder.")
@@ -4232,12 +4434,9 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
     latest_use = next((marker for marker in reversed(state.markers) if marker.name == "use"), None)
     if latest_use and latest_use.attributes.get("head") == sha and latest_use.attributes.get("changed") == "true":
         return result("build", True, "resume", "use-finding-changed-behavior-or-instructions")
-    if bool(state.pr.get("draft")):
+    if bool(state.pr.get("draft")) or (state.synchronization or {}).get("merge_state") == "draft":
         return result("ready-reviewers", False, None, "floor-complete-pr-draft",
-                      "Before authorizing ready-reviewers, account for every "
-                      + ("affirmed brief row" if policy.mechanical else "artifact criterion") + " in the latest "
-                      "build or repair return and record all owed non-CI results and holder-launched "
-                      "fresh-reader returns; green CI does not discharge them.")
+                      _draft_ready_detail(policy.mechanical))
     reviewers = state.config.connected_reviewers
     if reviewers and not _reviewer_ran(state):
         return result("waiting", False, None, "required-connected-reviewer-has-not-run")
@@ -4252,6 +4451,12 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
         return result(
             "review-disposition", True, "resume", "reviewer-body-lacks-disposition",
             _body_disposition_detail(state, bodies),
+        )
+    answered_unresolved = _answered_unresolved_threads(state)
+    if answered_unresolved:
+        return result(
+            "review-disposition", True, "resume", "reviewer-thread-answered-unresolved",
+            ",".join(str(thread["comment_id"]) for thread in answered_unresolved),
         )
     panel_stage = _panel_next(state, lane)
     if panel_stage:
@@ -4306,8 +4511,25 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
             "waiting", False, None, "latest-gate-evaluation-not-successful",
             str(gate["reason"]),
         )
+    merge = _merge_readiness(state, sha, gate)
+    if merge["reason"] == "merge-verdict-unknown":
+        return result("waiting", False, None, "merge-verdict-unknown", merge["detail"])
+    if merge["reason"] == "merge-blocked-required-gate":
+        return result("waiting", False, None, "merge-blocked-required-gate", merge["detail"])
+    if merge["reason"] == "merge-blocked-unresolved-review-threads":
+        return result("waiting", False, None, "merge-blocked-unresolved-review-threads",
+                      merge["detail"])
+    if merge["reason"] == "merge-blocked-unattributed":
+        return result("waiting", False, None, "merge-blocked-unattributed", merge["detail"])
     reason = "all-evidence-complete" if reviewers else "all-evidence-complete;no-connected-reviewer-configured"
-    return result("release-report", False, None, reason)
+    return result("release-report", False, None, reason, merge["detail"])
+
+
+def _draft_ready_detail(mechanical: bool) -> str:
+    return ("Before authorizing ready-reviewers, account for every "
+            + ("affirmed brief row" if mechanical else "artifact criterion") + " in the latest "
+            "build or repair return and record all owed non-CI results and holder-launched "
+            "fresh-reader returns; green CI does not discharge them.")
 
 
 def registry_path() -> Path:
@@ -4944,6 +5166,8 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             "text for a separate holder-launched recorded seat; do not launch or judge that reader. "
             "Repairs renew this duty even on an already-ready pull request."
         )
+    if decision.stage == "review-disposition":
+        instruction += _thread_resolution_clause(state)
     explicit_artifact = decision.stage == "artifact"
     phase = state.artifact_phase or _artifact_phase(state)
     problem = _artifact_source_problem(state, decision.stage)
@@ -5044,6 +5268,45 @@ def _stage_prompt(state: WorkState, decision: Decision, root: Path | None = None
             )
     sections.append("Fetch current state only if this stage needs it:\n" + "\n".join(fetches))
     return ("\n\n".join(sections) + "\n").encode("utf-8")
+
+
+def _thread_resolution_clause(state: WorkState) -> str:
+    """Where the base branch's rules require it, the answering turn resolves each thread."""
+    facts = state.synchronization or {}
+    if (facts.get("thread_resolution") or {}).get("required") is not True:
+        return ""
+    read = facts.get("review_threads") or {}
+    known = {
+        thread.get("comment_id"): thread.get("thread_id")
+        for thread in (read.get("threads") or [])
+        if isinstance(thread, dict) and isinstance(thread.get("comment_id"), int)
+        and isinstance(thread.get("thread_id"), str)
+    } if read.get("status") == "read" else {}
+    unanswered, _ignored = _undisposed_threads(state)
+    clause = THREAD_RESOLUTION_INSTRUCTION
+    if unanswered:
+        clause += " Unanswered inline threads (root comment id -> thread id): " + "; ".join(
+            f"{identity} -> {known.get(identity) or 'thread id unknown'}" for identity in unanswered
+        ) + "."
+    answered = _answered_unresolved_threads(state)
+    if answered:
+        clause += (
+            " Already answered; resolve without a new reply (root comment id -> thread id): "
+            + "; ".join(f"{thread['comment_id']} -> {thread['thread_id']}" for thread in answered)
+            + "."
+        )
+    if any(identity not in known for identity in unanswered):
+        owner, _, name = state.repo.partition("/")
+        number = state.pr.get("number") if state.pr else None
+        clause += (
+            " Where a thread id is unknown, do not guess it: read it with exactly this command "
+            "and take the id of the thread whose first comment's databaseId is the root comment "
+            "id:\ngh api graphql -f query='query($owner:String!,$name:String!,$number:Int!)"
+            "{repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads"
+            "(first:100){nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}' "
+            f"-f owner={owner} -f name={name} -F number={number}\n"
+        )
+    return clause
 
 
 def _branch_instruction(branch: str) -> str:
@@ -5362,6 +5625,159 @@ def _release_gate_status(state: WorkState, head: str | None = None) -> dict[str,
         "requirement_known": True,
         "pending": any(bool(item.get("pending")) for item in evaluations),
     }
+
+
+def _thread_answered(state: WorkState, comment_id: int) -> bool:
+    # The same reply rule `_undisposed_threads` applies to a connected reviewer's thread.
+    return any(
+        reply.get("in_reply_to_id") == comment_id
+        and _disposition(str(reply.get("body") or ""))
+        and _author(reply) in state.config.marker_producers
+        for reply in state.review_comments
+    )
+
+
+def _unresolved_review_threads(state: WorkState) -> list[dict[str, object]]:
+    read = (state.synchronization or {}).get("review_threads") or {}
+    authors = {item.get("id"): _author(item) for item in state.review_comments
+               if isinstance(item.get("id"), int)}
+    unresolved = []
+    for thread in read.get("threads") or []:
+        if not isinstance(thread, dict) or thread.get("resolved") is not False:
+            continue
+        comment_id = thread.get("comment_id")
+        unresolved.append({
+            "comment_id": comment_id,
+            "thread_id": thread.get("thread_id"),
+            "author": authors.get(comment_id) or thread.get("author"),
+            "outdated": thread.get("outdated") is True,
+            "answered": isinstance(comment_id, int) and _thread_answered(state, comment_id),
+        })
+    return unresolved
+
+
+def _answered_unresolved_threads(state: WorkState) -> list[dict[str, object]]:
+    """Connected-reviewer threads already answered but left open where the rules require resolution.
+
+    Answered before resolution shipped, or after a failed resolve, they have no other stage
+    that clears them, so they return to the builder to resolve without a new reply.
+    """
+    if ((state.synchronization or {}).get("thread_resolution") or {}).get("required") is not True:
+        return []
+    roots = {
+        item.get("id") for item in state.review_comments
+        if isinstance(item.get("id"), int) and item.get("in_reply_to_id") is None
+        and _author(item) in state.config.connected_reviewers
+    }
+    return [thread for thread in _unresolved_review_threads(state)
+            if thread["comment_id"] in roots and thread["answered"]]
+
+
+def _non_successful_checks(state: WorkState, head: str | None) -> list[dict[str, object]]:
+    return [
+        _check_record(state, check) for check in latest_checks(state)
+        if head is not None and _check_head(state, check) == head and (
+            str(check.get("status") or "").lower() in PENDING_CHECK_STATUSES
+            or check.get("conclusion") is None
+            or str(check.get("conclusion")).lower() not in NON_FAILING_CONCLUSIONS)
+    ]
+
+
+def _thread_label(thread: dict[str, object]) -> str:
+    return (f"comment {thread.get('comment_id')} (thread {thread.get('thread_id')}, "
+            f"{thread.get('author') or 'unknown author'}, "
+            f"{'answered' if thread.get('answered') else 'unanswered'})")
+
+
+def _check_label(check: dict[str, object]) -> str:
+    return f"{check.get('name')} ({check.get('conclusion') or check.get('status') or 'pending'})"
+
+
+def _merge_readiness(state: WorkState, head: str | None,
+                     gate: dict[str, object]) -> dict[str, object]:
+    """Whether GitHub will merge this head, and what blocks it when it will not."""
+    facts = state.synchronization or {}
+    word = facts.get("merge_state")
+    word = word if isinstance(word, str) and word else None
+    shown = head or "unknown-current-head"
+    verdict: dict[str, object] = {
+        "verdict": word, "ready": False, "reason": None, "blocks": [],
+        "information": [], "detail": None,
+    }
+    if word in MERGEABLE_STATES:
+        verdict["ready"] = True
+        if word == "unstable":
+            failing = _non_successful_checks(state, head)
+            verdict["information"] = failing or [{
+                "note": "GitHub reports unstable but no non-successful check run is "
+                        "visible at this head",
+            }]
+            verdict["detail"] = (
+                f"GitHub will merge head {shown} (unstable); its failing optional checks are "
+                "information, not a block: "
+                + (", ".join(_check_label(check) for check in failing) if failing
+                   else "no non-successful check run is visible at this head") + "."
+            )
+        return verdict
+    if word is None or word == "unknown":
+        verdict["reason"] = "merge-verdict-unknown"
+        verdict["detail"] = (
+            f"GitHub has not yet computed whether it will merge head {shown}; rerun the "
+            "read-only entrance, or `run release-report`, once GitHub has computed it."
+        )
+        return verdict
+    blocks: list[dict[str, object]] = []
+    if gate.get("verdict") not in {"green", "none"}:
+        blocks.append({"kind": "required-gate", "verdict": gate.get("verdict"),
+                       "reason": gate.get("reason")})
+    rule = facts.get("thread_resolution") or {}
+    read = facts.get("review_threads") or {}
+    unresolved = _unresolved_review_threads(state)
+    if rule.get("required") is True and read.get("status") == "read" and unresolved:
+        blocks.append({"kind": "unresolved-review-threads", "threads": unresolved})
+    if not blocks:
+        notes: list[str] = []
+        candidates: dict[str, object] = {"checks": _non_successful_checks(state, head)}
+        if rule.get("required") is None:
+            candidates["threads"] = unresolved
+            notes.extend(f"thread-resolution rule unreadable: {message}"
+                         for message in rule.get("uncertainties") or ["no reason recorded"])
+        if read.get("status") == "unavailable":
+            notes.append(str(read.get("error") or "review-thread read failed"))
+        if word == "behind":
+            notes.append("GitHub reports behind but the base comparison says the head is "
+                         "current; reread")
+        blocks.append({"kind": "unattributed", "github_state": word,
+                       "candidates": candidates, "notes": notes})
+    verdict["blocks"] = blocks
+    verdict["reason"] = "merge-blocked-" + str(blocks[0]["kind"])
+    named = []
+    for block in blocks:
+        if block["kind"] == "required-gate":
+            named.append(f"the required gate is {block['verdict']} ({block['reason']})")
+        elif block["kind"] == "unresolved-review-threads":
+            named.append("unresolved review threads: "
+                         + "; ".join(_thread_label(thread) for thread in block["threads"]))
+            if any(thread.get("answered") for thread in block["threads"]):
+                named.append("resolve each answered thread with: " + RESOLVE_THREAD_COMMAND)
+        else:
+            parts = [f"GitHub reports {word} for a reason the entrance cannot attribute"]
+            checks = block["candidates"]["checks"]
+            if checks:
+                parts.append("non-successful checks at this head: "
+                             + ", ".join(_check_label(check) for check in checks))
+            threads = block["candidates"].get("threads")
+            if threads:
+                parts.append("unresolved review threads under an unreadable thread rule: "
+                             + "; ".join(_thread_label(thread) for thread in threads))
+            parts.extend(block["notes"])
+            named.append("unattributed: " + "; ".join(parts))
+    verdict["detail"] = (
+        f"GitHub will not merge head {shown} (mergeable_state {word}). Blocks: "
+        + " | ".join(named) + ". GitHub may hold a further block the entrance cannot see; "
+        "clear these and rerun the read-only entrance, or `run release-report`, to name it."
+    )
+    return verdict
 
 
 def _unverifiable_declaration(stage: str, reason: str) -> dict[str, object]:
@@ -7524,6 +7940,7 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                     "Write and deliver the release report from the completed evidence; launch nobody."),
         ))
         current_head = _head_sha(state)
+        fresh_sync = state
         if (transport is not None and state.pr is not None
                 and isinstance(state.pr.get("number"), int)):
             endpoint = f"repos/{state.repo}/pulls/{int(state.pr['number'])}"
@@ -7543,6 +7960,9 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                                   "required_gate": _release_gate_status(state, current_head)}, state)
                 return 0
         required_gate = _release_gate_status(state, current_head)
+        merge_verdict = _merge_readiness(
+            replace(state, synchronization=fresh_sync.synchronization), current_head, required_gate,
+        )
         refusal = _reach_refusal(state, "release-report")
         if refusal is not None:
             _emit_report(_reported_decision(state, refusal).as_dict(), state)
@@ -7551,6 +7971,13 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
         if terms is not None:
             refusal = replace(terms, dispatch=False, status="holder-owned")
             _emit_report({**_reported_decision(state, refusal).as_dict(),
+                          "required_gate": required_gate}, state)
+            return 0
+        if (fresh_sync.synchronization or {}).get("merge_state") == "draft":
+            _brief, lane_pair = _affirmed_review(state)
+            draft = Decision("ready-reviewers", False, None, "floor-complete-pr-draft",
+                             _draft_ready_detail(lane_pair == ("ordinary", "mechanical")))
+            _emit_report({**_reported_decision(fresh_sync, draft).as_dict(),
                           "required_gate": required_gate}, state)
             return 0
         verdict = required_gate["verdict"]
@@ -7622,7 +8049,18 @@ def _execute_stage(state: WorkState, decision: Decision, root: Path, instalment:
                 + (",".join(str(identity) for identity in threads) + "; " if threads else "")
                 + _body_disposition_detail(state, bodies)
             )
+        if not merge_verdict["ready"]:
+            # A report GitHub will not merge never says all evidence is complete.
+            payload["reason"] = merge_verdict["reason"]
+            payload["detail"] = (
+                str(merge_verdict["detail"]) + " " + payload["detail"]
+                if not payload["review_dispositions"]["complete"]
+                else merge_verdict["detail"]
+            )
+        elif merge_verdict["detail"] and str(merge_verdict["detail"]) not in str(payload["detail"]):
+            payload["detail"] = str(payload["detail"]) + " " + str(merge_verdict["detail"])
         payload.update({
+            "merge_verdict": merge_verdict,
             "required_gate": required_gate,
             "path_departures": path_departures,
             "holder_close": _release_holder_close(state),

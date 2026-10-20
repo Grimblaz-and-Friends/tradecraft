@@ -69,7 +69,7 @@ def fixture_state(*, version="2.9.9", base_version="2.9.9", files=None,
                 for index, text in enumerate(texts)]
     inventory = deepcopy(files if files is not None else [{"filename": "runtime/code.py", "status": "modified"}])
     pull = {"number": 7, "state": "open", "draft": draft, "merged_at": None, "mergeable": True,
-            "node_id": "PR_fixture", "body": "Closes #12", "changed_files": len(inventory),
+            "mergeable_state": "clean", "node_id": "PR_fixture", "body": "Closes #12", "changed_files": len(inventory),
             "head": {"sha": HEAD, "ref": "change", "repo": {"full_name": FORK if fork else REPO, "id": 2}},
             # Deliberately historical: the current GET tip, not this SHA, is the basis.
             "base": {"ref": ref, "sha": "b" * 40, "repo": {"full_name": REPO, "id": 1}}}
