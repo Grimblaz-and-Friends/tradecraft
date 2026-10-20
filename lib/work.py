@@ -193,7 +193,6 @@ STAGE_SAFETY = {
         (REGISTERED_ROOT_VERSION, "registered implementation root"),
         (NEW_MECHANISM_VERSION, "bounded prompt and explicit run"),
         (TRUTHFUL_ENTRANCE_VERSION, "explicit launch settings and runtime executable"),
-        ("0.198.0", "rule-required thread resolution"),
     ),
     "proof": ((PROOF_MECHANISM_VERSION, "composed proof publication"),),
     "ready-reviewers": ((PROOF_MECHANISM_VERSION, "configured reviewer readiness"),),
@@ -297,7 +296,8 @@ THREAD_RESOLUTION_INSTRUCTION = (
     "In this same turn, after posting each inline disposition reply, whatever its disposition, "
     "resolve that reply's thread with exactly this command, putting the thread id in place of "
     "THREAD_ID:\n" + RESOLVE_THREAD_COMMAND + "\n"
-    "Resolve no thread you did not answer in this turn; a body finding has no thread."
+    "Resolve no thread you did not answer in this turn, except a thread listed below as already "
+    "answered; a body finding has no thread."
 )
 # GitHub's mergeable_state words it will merge on; `unstable` means only non-required checks fail.
 MERGEABLE_STATES = frozenset({"clean", "has_hooks", "unstable"})
@@ -4353,6 +4353,12 @@ def _decide(state: WorkState, rules: dict[str, object]) -> Decision:
             "review-disposition", True, "resume", "reviewer-body-lacks-disposition",
             _body_disposition_detail(state, bodies),
         )
+    answered_unresolved = _answered_unresolved_threads(state)
+    if answered_unresolved:
+        return result(
+            "review-disposition", True, "resume", "reviewer-thread-answered-unresolved",
+            ",".join(str(thread["comment_id"]) for thread in answered_unresolved),
+        )
     panel_stage = _panel_next(state, lane)
     if panel_stage:
         return result("panel", False, None, "bought-panel-incomplete", panel_stage)
@@ -5183,6 +5189,13 @@ def _thread_resolution_clause(state: WorkState) -> str:
         clause += " Unanswered inline threads (root comment id -> thread id): " + "; ".join(
             f"{identity} -> {known.get(identity) or 'thread id unknown'}" for identity in unanswered
         ) + "."
+    answered = _answered_unresolved_threads(state)
+    if answered:
+        clause += (
+            " Already answered; resolve without a new reply (root comment id -> thread id): "
+            + "; ".join(f"{thread['comment_id']} -> {thread['thread_id']}" for thread in answered)
+            + "."
+        )
     if any(identity not in known for identity in unanswered):
         owner, _, name = state.repo.partition("/")
         number = state.pr.get("number") if state.pr else None
@@ -5544,6 +5557,23 @@ def _unresolved_review_threads(state: WorkState) -> list[dict[str, object]]:
     return unresolved
 
 
+def _answered_unresolved_threads(state: WorkState) -> list[dict[str, object]]:
+    """Connected-reviewer threads already answered but left open where the rules require resolution.
+
+    Answered before resolution shipped, or after a failed resolve, they have no other stage
+    that clears them, so they return to the builder to resolve without a new reply.
+    """
+    if ((state.synchronization or {}).get("thread_resolution") or {}).get("required") is not True:
+        return []
+    roots = {
+        item.get("id") for item in state.review_comments
+        if isinstance(item.get("id"), int) and item.get("in_reply_to_id") is None
+        and _author(item) in state.config.connected_reviewers
+    }
+    return [thread for thread in _unresolved_review_threads(state)
+            if thread["comment_id"] in roots and thread["answered"]]
+
+
 def _non_successful_checks(state: WorkState, head: str | None) -> list[dict[str, object]]:
     return [
         _check_record(state, check) for check in latest_checks(state)
@@ -5629,6 +5659,8 @@ def _merge_readiness(state: WorkState, head: str | None,
         elif block["kind"] == "unresolved-review-threads":
             named.append("unresolved review threads: "
                          + "; ".join(_thread_label(thread) for thread in block["threads"]))
+            if any(thread.get("answered") for thread in block["threads"]):
+                named.append("resolve each answered thread with: " + RESOLVE_THREAD_COMMAND)
         else:
             parts = [f"GitHub reports {word} for a reason the entrance cannot attribute"]
             checks = block["candidates"]["checks"]

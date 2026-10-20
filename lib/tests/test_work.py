@@ -11577,17 +11577,21 @@ def test_884_C2_unstable_lists_failing_optional_checks_as_information(tmp_path, 
     assert "no non-successful check run is visible" in verdict["information"][0]["note"]
 
 
-def _daemon_threads_fixture(resolved=False):
+def _daemon_threads_fixture(resolved=(False, False), *, rules=DAEMON_RULES, human_answered=False):
     fixture = release_ready("blocked")
     fixture.review_comments = [
         {"id": 501, "body": "finding", "user": {"login": REVIEWER, "type": "Bot"}},
         {"id": 503, "in_reply_to_id": 501, "body": "fixed", "user": {"login": PRODUCER}},
         {"id": 502, "body": "a human's question", "user": {"login": "maintainer"}},
     ]
+    if human_answered:
+        fixture.review_comments.append(
+            {"id": 504, "in_reply_to_id": 502, "body": "declined - outside the brief",
+             "user": {"login": PRODUCER}})
     transport = ThreadTransport(
-        {RULES_ENDPOINT: DAEMON_RULES, PROTECTION_ENDPOINT: NOT_PROTECTED},
-        pages=[_thread_page([_thread("PRRT_a", 501, "reviewer-fixture", resolved),
-                             _thread("PRRT_b", 502, "maintainer", resolved)])],
+        {RULES_ENDPOINT: rules, PROTECTION_ENDPOINT: NOT_PROTECTED},
+        pages=[_thread_page([_thread("PRRT_a", 501, "reviewer-fixture", resolved[0]),
+                             _thread("PRRT_b", 502, "maintainer", resolved[1])])],
     )
     fixture.synchronization = work._collect_synchronization(transport, fixture.pr)
     transport.thread_calls.clear()
@@ -11595,12 +11599,13 @@ def _daemon_threads_fixture(resolved=False):
 
 
 def test_884_C3_unresolved_threads_on_a_requiring_base_block_by_id(tmp_path, capsys):
+    # The answered connected-reviewer thread 501 first returns to the builder (holder reading
+    # for review disposition); the holder-named release report still names both threads by id.
     fixture, transport = _daemon_threads_fixture()
     assert fixture.synchronization["thread_resolution"]["required"] is True
     decision = work.decide(fixture, RULES)
-    assert (decision.stage, decision.reason) == (
-        "waiting", "merge-blocked-unresolved-review-threads")
-    assert "comment 501" in decision.detail and "comment 502" in decision.detail
+    assert (decision.stage, decision.reason, decision.detail) == (
+        "review-disposition", "reviewer-thread-answered-unresolved", "501")
     report = run_release(fixture, tmp_path, capsys, transport=transport)
     assert report["reason"] == "merge-blocked-unresolved-review-threads"
     block = report["merge_verdict"]["blocks"][0]
@@ -11608,8 +11613,49 @@ def test_884_C3_unresolved_threads_on_a_requiring_base_block_by_id(tmp_path, cap
     assert [(item["comment_id"], item["thread_id"]) for item in block["threads"]] == [
         (501, "PRRT_a"), (502, "PRRT_b")]
     assert [item["answered"] for item in block["threads"]] == [True, False]
-    resolved, _transport = _daemon_threads_fixture(resolved=True)
+    assert work.RESOLVE_THREAD_COMMAND in report["detail"]
+    human, _transport = _daemon_threads_fixture(resolved=(True, False))
+    decision = work.decide(human, RULES)
+    assert (decision.stage, decision.reason) == (
+        "waiting", "merge-blocked-unresolved-review-threads")
+    assert "comment 502" in decision.detail and "comment 501" not in decision.detail
+    assert work.RESOLVE_THREAD_COMMAND not in decision.detail
+    resolved, _transport = _daemon_threads_fixture(resolved=(True, True))
     assert work.decide(resolved, RULES).reason == "merge-blocked-unattributed"
+
+
+def test_884_answered_unresolved_connected_thread_returns_to_the_builder_to_resolve():
+    fixture, _transport = _daemon_threads_fixture(resolved=(False, True))
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.dispatch, decision.continuity, decision.reason) == (
+        "review-disposition", True, "resume", "reviewer-thread-answered-unresolved")
+    prompt = work._stage_prompt(fixture, decision, floor_command="python fixture-check.py").decode()
+    assert work.THREAD_RESOLUTION_INSTRUCTION in prompt
+    assert ("Already answered; resolve without a new reply (root comment id -> thread id): "
+            "501 -> PRRT_a.") in prompt
+    assert "except a thread listed below as already answered" in prompt
+    onward, _transport = _daemon_threads_fixture(resolved=(True, True))
+    assert work.decide(onward, RULES).reason != "reviewer-thread-answered-unresolved"
+    assert work._answered_unresolved_threads(onward) == []
+
+
+def test_884_a_holder_answered_non_connected_thread_stays_a_block_with_the_command():
+    fixture, _transport = _daemon_threads_fixture(resolved=(True, False), human_answered=True)
+    decision = work.decide(fixture, RULES)
+    assert (decision.stage, decision.reason) == (
+        "waiting", "merge-blocked-unresolved-review-threads")
+    assert "comment 502 (thread PRRT_b, maintainer, answered)" in decision.detail
+    assert work.RESOLVE_THREAD_COMMAND in decision.detail
+
+
+def test_884_a_non_requiring_base_never_routes_answered_threads_for_resolution():
+    fixture, _transport = _daemon_threads_fixture(rules=TRADECRAFT_RULES)
+    assert fixture.synchronization["thread_resolution"]["required"] is False
+    assert fixture.synchronization["review_threads"]["status"] == "read"
+    assert work._answered_unresolved_threads(fixture) == []
+    decision = work.decide(fixture, RULES)
+    assert decision.stage != "review-disposition"
+    assert decision.reason == "merge-blocked-unattributed"
 
 
 @pytest.mark.parametrize("gate,reason,verdict", [
@@ -11829,4 +11875,19 @@ def test_884_C10_the_rest_transport_refuses_any_other_thread_query(monkeypatch):
 
 def test_884_C13_stage_safety_names_the_new_mechanisms():
     assert ("0.198.0", "merge-verdict readiness") in work.STAGE_SAFETY["release-report"]
-    assert ("0.198.0", "rule-required thread resolution") in work.STAGE_SAFETY["review-disposition"]
+    # The running entrance composes the resolution clause, so a resumed builder needs nothing
+    # from its source bundle's version and review-disposition carries no 0.198.0 entry.
+    assert all(minimum != "0.198.0" for minimum, _ in work.STAGE_SAFETY["review-disposition"])
+
+
+def test_884_review_disposition_resumes_a_source_bundle_from_0_197_0():
+    fixture = state(AFFIRMED, ARTIFACT, WOULD, HOLDER, pr=True, draft=False)
+    decision = work.Decision("review-disposition", True, "resume",
+                             "reviewer-thread-lacks-disposition")
+    source = work.ResumeSource(completed="2026-10-20T18:00:00Z", path="bundle/result.md",
+                               request={"producer_version": "0.197.0"}, run={}, session="builder")
+    assert work._version_refusal(fixture, decision, source) is None
+    older = work.ResumeSource(completed="2026-10-20T18:00:00Z", path="bundle/result.md",
+                              request={"producer_version": "0.153.0"}, run={}, session="builder")
+    refused = work._version_refusal(fixture, decision, older)
+    assert refused is not None and refused.reason == "unsafe-source-version-for-review-disposition"
