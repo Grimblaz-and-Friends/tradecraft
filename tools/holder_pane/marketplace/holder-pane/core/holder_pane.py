@@ -78,7 +78,10 @@ OWNER_REASONS = frozenset({"practice-work-has-no-product-incident",
 CI_REASON_PREFIXES = ("latest-check-run-", "declared-floor-")
 GATE_REASON_MARKERS = ("gate-evaluation", "required-gate-")
 REVIEWER_REASONS = frozenset({"required-connected-reviewer-has-not-run"})
-HOLDER_WAITING_REASONS = frozenset({"base-synchronization-unavailable"})
+HOLDER_WAITING_REASONS = frozenset({
+    "base-synchronization-unavailable", "merge-verdict-unknown", "merge-blocked-required-gate",
+    "merge-blocked-unresolved-review-threads", "merge-blocked-unattributed",
+})
 # Decisions that stop the flow under a stage of their own, matched by stage ahead
 # of the status-level rules. A `build` stage is also a runnable stage, so its two
 # are matched with their reason.
