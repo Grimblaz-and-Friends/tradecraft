@@ -680,3 +680,46 @@ def test_C5_merge_obligation_follows_the_same_owing_answer(launch, case):
     expected = {"lab-only-field-conflict": "1.4.0", "shipped-field-conflict": "1.5.0",
                 "lab-only-base-value": "1.4.0"}[case]
     assert json.loads((implementation / "version.json").read_bytes())["version"] == expected
+
+
+def test_C5_conflicted_shipped_deletion_counts_toward_owing(launch):
+    registered, fixture, inputs, compose = launch
+    holder, implementation, branch, remote, transport, catch_state = registered
+    commit(holder, "version.json", '{"version":"1.3.0","name":"fixture"}\n')
+    git(implementation, "merge", "--no-ff", "-m", "fixture merge base", "main")
+    git(implementation, "rm", "src/other")
+    git(implementation, "commit", "-m", "Ship a deletion")
+    commit(implementation, "version.json", '{"version":"1.4.0","name":"fixture"}\n')
+    commit(holder, "src/other", "base modified\n")
+    pinned = commit(holder, "version.json", '{"version":"1.5.0","name":"fixture"}\n')
+    git(implementation, "push")
+    git(holder, "push", "origin", "main")
+    # Only the deleted path ships; merge-ort leaves the base's content there in the dry run.
+    rules = {"schema_version": 1, "rules": [{"include": ["src/other"], "exclude": []}], "version": SPEC}
+    record = compose(rules=rules)
+    assert_obligation(record, pinned, ["src/other"], "1.6.0")
+    assert (b"Reason: owed (src/other); base changed the declared file: "
+            b"base 1.5.0 incremented to 1.6.0.") in record["prompt"]
+
+
+@pytest.mark.parametrize("carried", ["1.3.0", None])
+def test_C5_residual_version_conflict_reason_names_what_the_change_carried(launch, carried):
+    registered, fixture, inputs, compose = launch
+    holder, implementation, branch, remote, transport, catch_state = registered
+    if carried:
+        pinned = mixed(registered, outside=True)
+        expected = ["src/own", "version.json"]
+    else:
+        # The pull request side's blob has no readable field, so the clause is left out.
+        commit(implementation, "version.json", "invalid JSON\n")
+        pinned = commit(holder, "version.json", '{"version":"1.4.0","name":"fixture"}\n')
+        git(implementation, "push")
+        git(holder, "push", "origin", "main")
+        expected = ["version.json"]
+    rules = {"schema_version": 1, "rules": [{"include": ["lib/**"], "exclude": []}], "version": SPEC}
+    record = compose(rules=rules)
+    assert_obligation(record, pinned, expected, "1.4.0")
+    reason = "Reason: not owed: field set back to the base's 1.4.0" + (
+        f" (the change carried {carried})." if carried else ".")
+    assert reason.encode() + b"\n" in record["prompt"]
+    assert b"carried None" not in record["prompt"]

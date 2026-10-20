@@ -3410,18 +3410,28 @@ def _version_merge_base(transport: GitHubREST, pr: dict, evidence: dict) -> tupl
 
 def _version_report_field_only(transport: GitHubREST | None, pr: dict, spec: dict,
                                evidence: dict) -> bool:
-    """Judge field-only confinement on the merge-base and head trees the file list describes."""
+    """Judge field-only confinement on the merge-base and head trees the file list describes.
+
+    Evidence that cannot be read is recorded and makes the report unverifiable; it never
+    makes the change owe. Content that was read but is not valid JSON still counts.
+    """
     try:
         if transport is None:
-            return False
+            raise WorkError("version evidence needs the entrance's read-only GitHub transport")
         base, common, head = _version_merge_base(transport, pr, evidence)
         repository = ((pr.get("head") or {}).get("repo") or {}).get("full_name")
         if not isinstance(repository, str) or not repository:
-            return False
+            raise WorkError("version head repository is unavailable")
         before = _version_blob(transport, base["repository"], common, spec)
         after = _version_blob(transport, repository, head, spec)
+    except (AttributeError, KeyError, OSError, TypeError, UnicodeError, ValueError, WorkError) as exc:
+        evidence["field_only_error"] = (
+            f"field-only version evidence for {spec['path']} field {spec['field']}: "
+            f"{exc or type(exc).__name__}")
+        return False
+    try:
         return version_policy.only_version(before, after, spec)
-    except (AttributeError, KeyError, OSError, TypeError, UnicodeError, ValueError, WorkError):
+    except (UnicodeError, ValueError):
         return False
 
 
@@ -3510,6 +3520,10 @@ def _assess_version(state: WorkState, rules: dict, source: str,
         report["base"] = {**base, "sha": None, "value": None} if base else None
         if problem and not composition:
             return _version_unknown(report, problem)
+        if evidence.get("field_only_error"):
+            # Unread evidence leaves owing unknown; recollect rather than count the file.
+            report["owed"] = None
+            return _version_unknown(report, evidence["field_only_error"])
     try:
         if transport is None:
             raise WorkError("version evidence needs the entrance's read-only GitHub transport")
@@ -6585,10 +6599,29 @@ def _local_version_records(root: Path, pinned: str, merged: str) -> list[dict]:
     return records
 
 
+def _conflict_side_field(root: Path, spec: dict, stages: dict[int, tuple[str, str]]) -> str | None:
+    """Read the field the pull request side (stage 2) carried into a conflict, if it can be read."""
+    ours = stages.get(2)
+    if ours is None:
+        return None
+    result = _git(["cat-file", "blob", ours[1]], root)
+    if result.returncode:
+        return None
+    try:
+        return version_policy.document(result.stdout, spec)[spec["field"]]
+    except (UnicodeError, ValueError):
+        return None
+
+
 def _merge_version_decision(root: Path, start: str, pinned: str, spec: dict | None,
                             rules: dict, *, merged: str, declared_override: bytes | None = None,
-                            field_conflicted: bool = False, pr_value: str | None = None) -> dict | None:
-    """Decide the declared field for a merge from the one owing count the next report applies."""
+                            field_conflicted: bool = False, pr_value: str | None = None,
+                            conflicted: tuple[str, ...] = ()) -> dict | None:
+    """Decide the declared field for a merge from the one owing count the next report applies.
+
+    conflicted names the paths still left to the builder: the pull request side changed each
+    of them, whatever content the dry run left there, so each counts as a changed record.
+    """
     if spec is None:
         return None
     path, field = spec["path"], spec["field"]
@@ -6603,9 +6636,14 @@ def _merge_version_decision(root: Path, start: str, pinned: str, spec: dict | No
         except (OSError, UnicodeError, ValueError, WorkError):
             return False
 
+    records = _local_version_records(root, pinned, merged)
+    named = {record["filename"] for record in records}
+    # Merge-ort can leave the base's content at a conflicted path (a modify/delete), so the
+    # tree diff alone would miss the pull request's change there.
+    records.extend({"status": "changed", "filename": name, "previous_filename": None}
+                   for name in sorted(set(conflicted) - named))
     paths, declared_field_only = version_policy.owing(
-        _local_version_records(root, pinned, merged), spec,
-        lambda name: use_required([name], rules), field_only)
+        records, spec, lambda name: use_required([name], rules), field_only)
     if not field_conflicted:
         # The field as the pull request side carried it into this merge.
         content = declared_override if declared_override is not None else _policy_blob(root, merged, path)
@@ -6626,13 +6664,15 @@ def _merge_version_decision(root: Path, start: str, pinned: str, spec: dict | No
                       f"base {base_value} incremented to {value}")
         else:
             value = None
+            kept = f"the change's version {pr_value}" if pr_value is not None else "the change's version"
             reason = (f"owed ({', '.join(paths)}); base did not change the declared file: "
-                      f"the change's version {pr_value} is kept for the report to judge")
+                      f"{kept} is kept for the report to judge")
     elif field_conflicted or pr_value != base_value:
         if base_value is None:
             raise WorkError("declared base version file is unavailable")
         value = base_value
-        reason = f"not owed: field set back to the base's {base_value} (the change carried {pr_value})"
+        reason = f"not owed: field set back to the base's {base_value}" + (
+            f" (the change carried {pr_value})" if pr_value is not None else "")
     else:
         value = None
         reason = f"not owed: field already holds the base's {base_value}"
@@ -6753,7 +6793,9 @@ def _compose_merge_obligation(state: WorkState, decision: Decision, holder: Path
             _content, base_value = _declared_base_value(root, pinned, spec)
             field_conflicted, pr_value, override = spec["path"] in conflicts, None, None
             if field_conflicted:
-                # Decide on the field as the PR side carried it, before any placeholder.
+                # Decide on the field as the PR side carried it, before any placeholder;
+                # read it even when the conflict turns out not to be field-only.
+                pr_value = _conflict_side_field(root, spec, conflicts[spec["path"]])
                 try:
                     override, pr_value = _version_conflict_content(
                         root, spec, conflicts[spec["path"]], base_value)
@@ -6763,7 +6805,8 @@ def _compose_merge_obligation(state: WorkState, decision: Decision, holder: Path
                     del conflicts[spec["path"]]
             decision = _merge_version_decision(
                 root, start, pinned, spec, rules, merged=tree.decode("ascii"),
-                declared_override=override, field_conflicted=field_conflicted, pr_value=pr_value)
+                declared_override=override, field_conflicted=field_conflicted, pr_value=pr_value,
+                conflicted=tuple(conflicts))
             if decision["value"] is not None:
                 adjustment = {**spec, "value": decision["value"], "owed": decision["owed"],
                               "reason": decision["reason"]}

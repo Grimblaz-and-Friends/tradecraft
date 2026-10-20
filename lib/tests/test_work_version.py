@@ -898,3 +898,44 @@ def test_C10_change_that_lost_its_last_shipped_path_after_a_bump_is_refused():
     refusal = work._version_obligation_refusal(state, "proof")
     assert refusal.reason == "version-obligation-blocked"
     assert refusal.detail.count("package.json") == 1
+
+
+UNREAD_ENDPOINTS = {
+    "compare": f"repos/{REPO}/compare/{BASE}...{HEAD}",
+    "merge-base-blob": f"repos/{REPO}/contents/package.json?ref={'b' * 40}",
+    "head-blob": f"repos/{REPO}/contents/package.json?ref={HEAD}",
+}
+
+
+@pytest.mark.parametrize("failure", sorted(UNREAD_ENDPOINTS))
+def test_C6_unread_field_only_evidence_is_unverifiable_never_owed(failure):
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0")
+    transport.overrides[UNREAD_ENDPOINTS[failure]] = work.WorkError("connection timed out")
+    report = assess(state, transport)
+    assert (report["status"], report["owed"], report["remedy"]) == ("unverifiable", None, "recollect")
+    assert "field-only version evidence for package.json field release" in report["message"]
+    assert "connection timed out" in report["message"]
+
+
+def test_C6_read_but_invalid_declared_content_still_counts():
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD))
+    transport.version = b'{"release": "2.10.0",'
+    report = assess(state, transport)
+    assert report["owed"] is True and report["paths"] == ["package.json"]
+    assert report["declared_field_only"] is False
+
+
+@pytest.mark.parametrize("stage", ["ready-reviewers", "proof"])
+def test_C9_unread_field_only_evidence_refuses_readiness_and_proof(stage, tmp_path, capsys, monkeypatch):
+    state, transport = fixture_state(files=deepcopy(LAB_FIELD), version="2.10.0")
+    transport.overrides[UNREAD_ENDPOINTS["merge-base-blob"]] = work.WorkError("connection timed out")
+    root = tmp_path / "adopter"
+    adopted_repository(root)
+    monkeypatch.setattr(work, "compose_proof", lambda *a: pytest.fail("unread evidence composed proof"))
+    assert named(stage, state, transport, root) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "version-obligation-unverifiable"
+    assert report["version_obligation"]["owed"] is None
+    assert "Recollect version evidence" in report["detail"]
+    assert "owed version is met" not in json.dumps(report)
+    assert not transport.effects
