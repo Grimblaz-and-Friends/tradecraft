@@ -382,6 +382,17 @@ def test_lab_stub_and_downstream_example_call_one_release_control():
     procedure = (ROOT / "docs/cells/steward/references/connected-review-releases.md").read_text(encoding="utf-8")
     documented = procedure.split("```yaml\n", 1)[1].split("\n```", 1)[0] + "\n"
     assert documented == stub.replace("@main", "@reviewer-stable")
+    # GitHub refuses a caller passing an undeclared secret, so the key line waits
+    # for a declaring tag, and rollback cannot return below one while it is passed.
+    assert (
+        "A carrier adds the `ANTHROPIC_API_KEY` line only once `reviewer-stable` points at a "
+        "release whose shared workflow declares that secret"
+    ) in procedure
+    assert (
+        "Once any carrier passes `ANTHROPIC_API_KEY`, every rollback target must be a release "
+        "whose shared workflow declares that secret"
+    ) in procedure
+    assert "first remove the key line from every carrier's stub" in procedure
     steward = (ROOT / "docs/cells/steward/SKILL.md").read_text(encoding="utf-8")
     assert "`references/connected-review-releases.md`" in steward
 
@@ -555,6 +566,7 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
         "`ANTHROPIC_API_KEY` on the repository or organization",
         "Each review starts on the key", "moves to the token for the rest of that review",
         "keep the token set", "`Credential:` line", "runs on the token as before",
+        "ends the review with a cause naming the key rather than falling back",
         "purchased credit or auto-reload", "every key in the organization draws on the same balance",
     ):
         assert phrase in key, phrase

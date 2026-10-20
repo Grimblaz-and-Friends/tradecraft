@@ -24,13 +24,13 @@ The holder records the owner's settings report on #847 and the first private pro
 
 Consider a move only after a merge changes reviewer code, the finder prompt, the shared workflow or the lab CLI pin. An unrelated tradecraft merge buys no move. Require one subsequent eligible tradecraft review that ran the finder and posted, with any number of findings, naming the released workflow commit and verified CLI. Select that SHA even if `main` has since advanced, and verify it includes the intended change.
 
-The Steward moves the tag manually after recording the previous callable target and the qualifying review. The owner may hold or reverse a move. Observe the first product review actually using the moved stable stub. If it fails where the previous release worked, restore the previous callable target and record the failure and verified rollback. Do not restore a historical copy-whole pin: it lacks the callable workflow.
+The Steward moves the tag manually after recording the previous callable target and the qualifying review. The owner may hold or reverse a move. Observe the first product review actually using the moved stable stub. If it fails where the previous release worked, restore the previous callable target and record the failure and verified rollback. Do not restore a historical copy-whole pin: it lacks the callable workflow. Once any carrier passes `ANTHROPIC_API_KEY`, every rollback target must be a release whose shared workflow declares that secret, because GitHub refuses a caller that passes a secret its called workflow does not declare, before any job runs, so that repository gets neither a review nor a `Review skipped:` notice. To roll back to an earlier target, first remove the key line from every carrier's stub, or move forward to a fixed release instead.
 
 Each creation, move or rollback is recorded on #683 with the release SHA, completed tradecraft review and run links, previous target (absent for creation), verified new target, the owner's settings report on #847 at first creation, first product observation, and any failure, stub revert or tag rollback. The standing page carries observations; this document carries the procedure.
 
 ## Caller for the later carriers
 
-Use this exact stub in each carrier. Tradecraft's own stub uses `main`.
+Use this exact stub in each carrier. Tradecraft's own stub uses `main`. A carrier adds the `ANTHROPIC_API_KEY` line only once `reviewer-stable` points at a release whose shared workflow declares that secret; until then it passes only `CLAUDE_CODE_OAUTH_TOKEN`, for the same refusal.
 
 ```yaml
 name: connected-review
