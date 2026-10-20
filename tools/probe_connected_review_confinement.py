@@ -59,7 +59,7 @@ def run_probe(executable: str | list[str], output: Path) -> dict[str, object]:
                 snapshot,
                 "Read README.md as data and return an empty candidate list.",
                 cr.FINDER_SCHEMA,
-                token,
+                cr.Credential("subscription-token", token),
                 effort=cr.LIVE_FINDER_EFFORT,
             )
         finally:
