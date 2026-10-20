@@ -418,6 +418,7 @@ class CatchTransport(PublicGit):
         if endpoint.endswith("/pulls/7"):
             remote_head = git(self.root, "ls-remote", "--heads", str(self.remote), f"refs/heads/{self.branch}").split()[0]
             return {"number": 7, "state": "open", "draft": True, "mergeable": True,
+                    "mergeable_state": "clean",
                     "head": {"sha": remote_head, "ref": self.branch, "repo": {"full_name": "example/product"}},
                     "base": {"sha": git(self.root, "rev-parse", "main"), "ref": "main",
                              "repo": {"id": 1, "full_name": "example/product"}}}
@@ -440,7 +441,8 @@ def registered(graph, tmp_path, monkeypatch):
     def fresh_state(*args):
         state = work.WorkState("example/product", 12, {"state": "open"}, pr=transport.get("repos/example/product/pulls/7"))
         state.synchronization = {"base": {"sha": git(root, "rev-parse", "main")}, "behind": False,
-                                 "strict": False, "mergeability_known": True, "uncertainties": []}
+                                 "strict": False, "mergeability_known": True,
+                                 "merge_state": "clean", "uncertainties": []}
         return state
     monkeypatch.setattr(work, "read_state", fresh_state)
     state = fresh_state()
