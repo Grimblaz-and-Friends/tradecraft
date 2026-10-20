@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+from dataclasses import dataclass, field
 import hashlib
 import io
 import json
@@ -86,6 +87,86 @@ class FinderPromptTooLarge(ReviewError):
         self.measured_bytes = measured_bytes
         self.budget_bytes = MAX_FINDER_PROMPT_BYTES
         self.exclusions = exclusions
+
+
+API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
+OAUTH_TOKEN_VARIABLE = "CLAUDE_CODE_OAUTH_TOKEN"
+CREDENTIAL_VARIABLES = {
+    "api-key": API_KEY_VARIABLE,
+    "subscription-token": OAUTH_TOKEN_VARIABLE,
+}
+CREDENTIAL_LABELS = {"api-key": "API key", "subscription-token": "subscription token"}
+CREDENTIAL_REDACTIONS = {
+    "api-key": "[redacted-key]",
+    "subscription-token": "[redacted-token]",
+}
+NO_CREDENTIAL = (
+    f"no Claude credential is available; set {API_KEY_VARIABLE} or {OAUTH_TOKEN_VARIABLE}"
+)
+MAX_SWITCH_REPLY = 300
+
+
+@dataclass(frozen=True)
+class Credential:
+    """One Claude credential; each model process receives exactly one."""
+
+    kind: str
+    secret: str = field(repr=False)
+
+    @property
+    def env_name(self) -> str:
+        return CREDENTIAL_VARIABLES[self.kind]
+
+    @property
+    def label(self) -> str:
+        return CREDENTIAL_LABELS[self.kind]
+
+
+class KeyBudgetSpent(ReviewError):
+    """An API-key pass got one of the replies meaning the key's budget is spent."""
+
+    def __init__(
+        self, reply_class: str, reply_text: str, *, usage: dict[str, Any] | None = None,
+    ):
+        super().__init__(f"Claude API key budget spent ({reply_class}): {reply_text}", usage=usage)
+        self.reply_class = reply_class
+        self.reply_text = reply_text
+
+
+class ReviewCredentials:
+    """The credentials one review holds, which one pays now, and who paid each pass."""
+
+    def __init__(self, api_key: str | None, token: str | None):
+        self.api_key = Credential("api-key", api_key) if api_key else None
+        self.token = Credential("subscription-token", token) if token else None
+        current = self.api_key or self.token
+        if current is None:
+            raise ReviewError(NO_CREDENTIAL)
+        self.current: Credential = current
+        self.record: dict[str, dict[str, Any]] = {}
+
+    def secrets(self) -> tuple[str, ...]:
+        return tuple(
+            credential.secret for credential in (self.api_key, self.token)
+            if credential is not None
+        )
+
+    def redact(self, text: str) -> str:
+        for credential in (self.api_key, self.token):
+            if credential is not None:
+                text = text.replace(credential.secret, CREDENTIAL_REDACTIONS[credential.kind])
+        return text
+
+
+def review_credentials(environ: Any) -> ReviewCredentials:
+    """Read both credential variables; an empty or blank value counts as unset."""
+
+    def value(name: str) -> str | None:
+        raw = environ.get(name)
+        # A workflow's missing secret expands to an empty string.
+        return raw if isinstance(raw, str) and raw.strip() else None
+
+    return ReviewCredentials(value(API_KEY_VARIABLE), value(OAUTH_TOKEN_VARIABLE))
 
 
 def coverage_settings() -> dict[str, Any]:
@@ -1205,11 +1286,8 @@ CHECKER_SCHEMA = {
 }
 
 
-def _runtime_environment(run_root: Path, token: str) -> dict[str, str]:
-    run_root.mkdir(parents=True, exist_ok=False)
-    profile = run_root / "profile"
-    profile.mkdir()
-    environment = {
+def _allowlisted_environment() -> dict[str, str]:
+    return {
         key: value
         for key, value in os.environ.items()
         if key.upper() in {
@@ -1217,8 +1295,16 @@ def _runtime_environment(run_root: Path, token: str) -> dict[str, str]:
             "LC_ALL", "TMP", "TEMP", "TMPDIR",
         }
     }
+
+
+def _runtime_environment(run_root: Path, credential: Credential) -> dict[str, str]:
+    run_root.mkdir(parents=True, exist_ok=False)
+    profile = run_root / "profile"
+    profile.mkdir()
+    environment = _allowlisted_environment()
+    # The allowlist drops every other credential, so the CLI's own precedence never chooses.
     environment.update({
-        "CLAUDE_CODE_OAUTH_TOKEN": token,
+        credential.env_name: credential.secret,
         "DISABLE_AUTOUPDATER": "1",
         "HOME": str(profile),
         "USERPROFILE": str(profile),
@@ -1259,7 +1345,11 @@ def _command_prefix(executable: str | list[str]) -> list[str]:
 
 
 def verify_claude_version(executable: str | list[str], expected: str) -> None:
-    actual = _decode(_run([*_command_prefix(executable), "--version"]).stdout).strip().split(" ", 1)[0]
+    # The version check needs no credential, so it receives none.
+    environment = {**_allowlisted_environment(), "DISABLE_AUTOUPDATER": "1"}
+    actual = _decode(_run(
+        [*_command_prefix(executable), "--version"], environment=environment,
+    ).stdout).strip().split(" ", 1)[0]
     if actual != expected:
         raise ReviewError(f"Claude CLI version is {actual}, expected {expected}")
 
@@ -1294,18 +1384,19 @@ def _claude_failure(
     result: subprocess.CompletedProcess[bytes],
     parsed: dict[str, Any] | None,
     *,
-    token: str,
+    credential: Credential,
     run_root: Path,
     snapshot: Path,
 ) -> str:
+    """Name a failed pass's cause; raise KeyBudgetSpent when a key's budget is spent."""
     replacements = {
-        token: "[redacted-token]",
+        credential.secret: CREDENTIAL_REDACTIONS[credential.kind],
         str(run_root): "[run]",
         str(snapshot): "[snapshot]",
     }
     evidence = []
     if parsed is not None:
-        for key in ("subtype", "is_error", "api_error_status", "result"):
+        for key in ("subtype", "is_error", "api_error_status", "api_error_code", "result"):
             if key not in parsed:
                 continue
             value = _failure_text(parsed.get(key), replacements)
@@ -1315,23 +1406,53 @@ def _claude_failure(
     if stderr:
         evidence.append(f"stderr_tail={stderr}")
     joined = "; ".join(evidence) or f"exit_status={result.returncode}"
+    if credential.kind == "api-key":
+        # The key's spent budget is told apart before the ladder, whose "usage
+        # limit" marker would otherwise read a spend limit as the plan's limit.
+        reply_class = _key_budget_reply(parsed, joined.lower())
+        if reply_class is not None:
+            reply = parsed.get("result") if parsed is not None else None
+            reply_text = " ".join(_failure_text(
+                reply if isinstance(reply, str) and reply.strip() else joined, replacements,
+            ).split())[:MAX_SWITCH_REPLY]
+            raise KeyBudgetSpent(reply_class, reply_text)
     classification = joined.lower().replace("_", "-")
+    prefix = "Claude API key" if credential.kind == "api-key" else "Claude"
     if any(marker in classification for marker in (
         "usage limit", "hit your limit", "weekly limit", "monthly limit",
     )):
-        cause = "Claude usage limit reached"
+        cause = f"{prefix} usage limit reached"
     elif "rate limit" in classification or "rate-limit" in classification or (
         parsed is not None and str(parsed.get("api_error_status")) == "429"
     ):
-        cause = "Claude rate limit reached"
+        cause = f"{prefix} rate limit reached"
     elif any(marker in classification for marker in (
         "authentication", "authentication-error", "unauthorized",
         "invalid authentication credentials",
     )) or (parsed is not None and str(parsed.get("api_error_status")) == "401"):
-        cause = "Claude authentication failed"
+        cause = f"{prefix} authentication failed"
     else:
-        cause = "Claude command failed"
+        cause = f"{prefix} command failed"
     return f"{cause}: {joined}"
+
+
+def _key_budget_reply(parsed: dict[str, Any] | None, evidence: str) -> str | None:
+    """Return the class of the API reply meaning the key's budget is spent, if any."""
+    # The CLI renders the exhaustion reply either way; both name the same balance.
+    if "credit balance is too low" in evidence or "credit balance too low" in evidence:
+        return "credit balance too low"
+    if (
+        "you have reached your specified api usage limits" in evidence
+        or "you have reached your specified workspace api usage limits" in evidence
+    ):
+        return "spend limit reached"
+    if (
+        parsed is not None and parsed.get("api_error_code") == "enforced_spend_limit_reached"
+    ) or "enforced_spend_limit_reached" in evidence or (
+        "you have reached your api usage limits" in evidence
+    ):
+        return "monthly spend cap reached"
+    return None
 
 
 def run_pass(
@@ -1340,11 +1461,11 @@ def run_pass(
     snapshot: Path,
     prompt: str,
     schema: dict[str, Any],
-    token: str,
+    credential: Credential,
     *,
     effort: str,
 ) -> tuple[Any, dict[str, Any], list[dict[str, Any]]]:
-    environment = _runtime_environment(run_root, token)
+    environment = _runtime_environment(run_root, credential)
     workspace = run_root / "work"
     workspace.mkdir()
     command = [
@@ -1422,9 +1543,13 @@ def run_pass(
     usage = parsed.get("usage") if parsed is not None else None
     observed = usage if isinstance(usage, dict) else {}
     if result.returncode or (parsed is not None and parsed.get("is_error")):
-        cause = _claude_failure(
-            result, parsed, token=token, run_root=run_root, snapshot=snapshot,
-        )
+        try:
+            cause = _claude_failure(
+                result, parsed, credential=credential, run_root=run_root, snapshot=snapshot,
+            )
+        except KeyBudgetSpent as exc:
+            exc.usage = observed or None
+            raise
         if malformed_stream:
             cause += "; stdout_stream=partly-malformed"
         raise ReviewError(cause, usage=observed or None)
@@ -1434,6 +1559,68 @@ def run_pass(
     except ReviewError as exc:
         raise ReviewError(str(exc), usage=observed or None) from exc
     return value, observed, trace
+
+
+def _redacted_failure(exc: ReviewError, credentials: ReviewCredentials) -> ReviewError:
+    message = credentials.redact(str(exc))
+    if message == str(exc):
+        return exc
+    return ReviewError(message, usage=exc.usage)
+
+
+def run_credentialed_pass(
+    executable: str | list[str],
+    run_root: Path,
+    snapshot: Path,
+    prompt: str,
+    schema: dict[str, Any],
+    credentials: ReviewCredentials,
+    pass_name: str,
+    *,
+    effort: str,
+) -> tuple[Any, dict[str, Any], list[dict[str, Any]]]:
+    """Run one pass on the review's current credential and record who paid for it.
+
+    A key whose budget is spent hands this pass, and the rest of the review, to
+    the subscription token; every other failure ends the review as before.
+    """
+    credential = credentials.current
+    try:
+        result = run_pass(executable, run_root, snapshot, prompt, schema, credential, effort=effort)
+    except KeyBudgetSpent as exc:
+        reply_text = credentials.redact(exc.reply_text)
+        if credentials.token is None:
+            credentials.record[pass_name] = {"credentials": [credential.kind]}
+            raise ReviewError(
+                f"Claude API key budget spent ({exc.reply_class}) and no subscription "
+                f"token is set: {reply_text}",
+                usage=exc.usage,
+            ) from None
+        credentials.current = credentials.token
+        credentials.record[pass_name] = {
+            "credentials": [credential.kind, credentials.token.kind],
+            "switch_reply": exc.reply_class,
+            "switch_text": reply_text,
+            "api_key_attempt_usage": exc.usage or {},
+        }
+        # The token pass keeps the pass's own root, so its layout and the replay's
+        # pass-root rule are unchanged; the key attempt stays beside it.
+        if run_root.exists():
+            run_root.rename(run_root.with_name(run_root.name + ".api-key-attempt"))
+        try:
+            return run_pass(
+                executable, run_root, snapshot, prompt, schema, credentials.token, effort=effort,
+            )
+        except ReviewError as retry:
+            raise _redacted_failure(retry, credentials) from None
+    except ReviewError as exc:
+        credentials.record[pass_name] = {"credentials": [credential.kind]}
+        failure = _redacted_failure(exc, credentials)
+        if failure is exc:
+            raise
+        raise failure from None
+    credentials.record[pass_name] = {"credentials": [credential.kind]}
+    return result
 
 
 def _nonempty(value: Any) -> bool:
@@ -1573,6 +1760,36 @@ def _usage_text(
     return result
 
 
+def _credential_text(record: Any) -> str:
+    """Name the credential that paid for each pass, or nothing when no pass ran."""
+    if not isinstance(record, dict):
+        return ""
+    entries = []
+    for name, entry in record.items():
+        kinds = entry.get("credentials") if isinstance(entry, dict) else None
+        if (
+            not isinstance(name, str)
+            or not isinstance(kinds, list)
+            or not kinds
+            or not all(kind in CREDENTIAL_LABELS for kind in kinds)
+        ):
+            continue
+        stage, _separator, pass_name = name.partition(":")
+        if kinds == ["api-key", "subscription-token"]:
+            reply = entry.get("switch_reply")
+            text = " ".join(str(entry.get("switch_text", "")).split())[:MAX_SWITCH_REPLY]
+            paid = (
+                "API key, then subscription token after the key's budget was spent"
+                f' ({reply}: "{text}")'
+            )
+        else:
+            paid = ", then ".join(CREDENTIAL_LABELS[kind] for kind in kinds)
+        entries.append(f"{stage} {pass_name}={paid}" if pass_name else f"{stage}={paid}")
+    if not entries:
+        return ""
+    return "Credential: " + "; ".join(entries) + "."
+
+
 def is_review_job(name: object) -> bool:
     """Match a direct review or the exact leaf of a called job's display name."""
     if not isinstance(name, str):
@@ -1611,6 +1828,7 @@ def review_payload(
     coverage: str | None = None,
     reviewer_revision: str | None = None,
     claude_version: str | None = None,
+    credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if survivors:
         summary = f"{len(survivors)} validated finding(s)."
@@ -1636,6 +1854,10 @@ def review_payload(
     elif exclusions:
         body_parts.append(coverage_text(exclusions))
     body_parts.append(_usage_text(finder_usage, checker_usage))
+    # Direct callers that record no credential publish their existing body.
+    credential_line = _credential_text(credentials)
+    if credential_line:
+        body_parts.append(credential_line)
     provenance = _provenance_text(reviewer_revision, claude_version)
     if provenance:
         body_parts.append(provenance)
@@ -1765,7 +1987,7 @@ def run_finders(
     diff: str,
     rules: str,
     lines: dict[tuple[str, str], set[int]],
-    token: str,
+    credentials: ReviewCredentials,
     preloaded_changed_files: dict[str, Any] | None = None,
     *,
     effort: str = FINDER_EFFORT,
@@ -1780,13 +2002,14 @@ def run_finders(
     )
     for name, prompt in prompts:
         try:
-            value, pass_usage, trace = run_pass(
+            value, pass_usage, trace = run_credentialed_pass(
                 executable,
                 run_root / f"finder-{name}",
                 snapshot,
                 prompt,
                 FINDER_SCHEMA,
-                token,
+                credentials,
+                f"finder:{name}",
                 effort=effort,
             )
             usage[name] = pass_usage
@@ -1828,7 +2051,7 @@ def run_checkers(
     rules: str,
     candidates: list[dict[str, Any]],
     lines: dict[tuple[str, str], set[int]],
-    token: str,
+    credentials: ReviewCredentials,
     preloaded_changed_files: dict[str, Any] | None = None,
     *,
     effort: str = CHECKER_EFFORT,
@@ -1848,7 +2071,7 @@ def run_checkers(
             + f"\n\nThis is checker {name}. Decide all {len(batch)} supplied candidates."
         )
         try:
-            value, pass_usage, trace = run_pass(
+            value, pass_usage, trace = run_credentialed_pass(
                 executable,
                 run_root / f"checker-{name}",
                 snapshot,
@@ -1858,7 +2081,8 @@ def run_checkers(
                     exclusions,
                 ),
                 CHECKER_SCHEMA,
-                token,
+                credentials,
+                f"checker:{name}",
                 effort=effort,
             )
             usage[name] = pass_usage
@@ -1895,9 +2119,9 @@ def execute_review(
         head_sha = admitted["head"]
         if completed_review_at_head(repo, number, head_sha) is not None:
             return {"status": "suppressed", "cause": "current head already has this review"}
-        token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-        if not token:
-            raise ReviewError("authentication token is unavailable")
+        credentials = review_credentials(os.environ)
+        # Every failure after this point carries who paid for each pass so far.
+        ledger["credential"] = credentials.record
         verify_managed_settings()
         verify_claude_version(executable, expected_version)
         with tempfile.TemporaryDirectory(prefix="connected-review-") as temporary:
@@ -1925,7 +2149,7 @@ def execute_review(
                     diff_text,
                     rules_text,
                     lines,
-                    token,
+                    credentials,
                     None,
                     effort=LIVE_FINDER_EFFORT,
                     exclusions=exclusions,
@@ -1950,10 +2174,11 @@ def execute_review(
             payload = review_payload(
                 survivors, head_sha, attempt, finder_usage,
                 reviewer_revision=reviewer_revision, claude_version=expected_version,
+                credentials=credentials.record,
             )
-            if _payload_contains_secret(publication, token):
+            if any(_payload_contains_secret(publication, secret) for secret in credentials.secrets()):
                 raise ReviewError("coverage contained the model credential; nothing was published")
-            if _payload_contains_secret(payload, token):
+            if any(_payload_contains_secret(payload, secret) for secret in credentials.secrets()):
                 raise ReviewError(
                     "finder output contained the model credential; nothing was published"
                 )
@@ -1962,6 +2187,7 @@ def execute_review(
             payload = review_payload(
                 survivors, head_sha, attempt, finder_usage, coverage=coverage,
                 reviewer_revision=reviewer_revision, claude_version=expected_version,
+                credentials=credentials.record,
             )
             try:
                 gh_json(f"repos/{repo}/pulls/{number}/reviews", method="POST", payload=payload)
@@ -1973,6 +2199,7 @@ def execute_review(
                 "head": head_sha,
                 "survivors": len(survivors),
                 "finder_usage": finder_usage,
+                "credential": credentials.record,
             }
     except FinderPromptTooLarge:
         raise
@@ -2061,6 +2288,7 @@ def report_skip(
         )
     named = " ".join(named.split())[:500]
     usage_line = "Usage unavailable."
+    credential_line = ""
     exclusions = []
     if isinstance(usage, str) and usage.strip():
         try:
@@ -2069,6 +2297,7 @@ def report_skip(
             observed = None
         if isinstance(observed, dict):
             exclusions = observed.pop("excluded_files", [])
+            credential_line = _credential_text(observed.pop("credential", None))
             usage_line = "Usage: " + json.dumps(
                 observed, ensure_ascii=True, sort_keys=True, separators=(",", ":")
             )
@@ -2079,6 +2308,9 @@ def report_skip(
     ):
         usage_line = 'Usage: {"finder":{"observed_usage":0,"status":"not-started"}}'
     parts = [f"Review skipped: {named}"]
+    # Only an attempt that ran a pass names who paid for it.
+    if credential_line:
+        parts.append(credential_line)
     if provenance:
         parts.append(provenance)
     if exclusions:

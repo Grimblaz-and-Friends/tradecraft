@@ -27,6 +27,17 @@ from test_work import (  # noqa: E402
 
 HEAD = "a" * 40
 BASE = "b" * 40
+TOKEN = cr.Credential("subscription-token", "oauth")
+
+
+def token_credentials(token="oauth"):
+    return cr.review_credentials({"CLAUDE_CODE_OAUTH_TOKEN": token})
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_api_key(monkeypatch):
+    # A runner's own key must never decide which credential a test review uses.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
 def fixture(name: str):
@@ -555,7 +566,7 @@ def test_model_process_has_only_read_tools_and_no_github_credential(tmp_path, mo
 
     monkeypatch.setattr(cr, "_run", run)
     value, usage, trace = cr.run_pass(
-        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth",
+        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, TOKEN,
         effort=cr.FINDER_EFFORT,
     )
     assert value == {"candidates": []}
@@ -647,7 +658,7 @@ def test_one_finder_combines_coverage_lenses_and_prefixes_candidates(
     snapshot.mkdir()
     calls = []
 
-    def run(_executable, run_root, _snapshot, prompt, _schema, _token, *, effort):
+    def run(_executable, run_root, _snapshot, prompt, _schema, _credential, *, effort):
         calls.append((run_root.name, prompt, effort))
         row = candidate(id="one", root_cause=f"root in {run_root.name}")
         return {"candidates": [row]}, {"output_tokens": 3}, []
@@ -655,7 +666,7 @@ def test_one_finder_combines_coverage_lenses_and_prefixes_candidates(
     monkeypatch.setattr(cr, "run_pass", run)
     candidates, usage, traces = cr.run_finders(
         "claude", tmp_path, snapshot, "finder instructions", "diff", "rules",
-        {("app.py", "RIGHT"): {2}}, "oauth",
+        {("app.py", "RIGHT"): {2}}, token_credentials(),
     )
     assert [row["id"] for row in candidates] == ["coverage:one"]
     assert [name for name, _prompt, _effort in calls] == ["finder-coverage"]
@@ -678,7 +689,7 @@ def test_checker_uses_fresh_xhigh_batches_and_decides_every_candidate(
     candidates[-1]["root_cause"] = candidates[0]["root_cause"]
     calls = []
 
-    def run(_executable, run_root, _snapshot, prompt, _schema, _token, *, effort):
+    def run(_executable, run_root, _snapshot, prompt, _schema, _credential, *, effort):
         start = len(calls) * cr.MAX_CHECKER_CANDIDATES_PER_BATCH
         batch = candidates[start:start + cr.MAX_CHECKER_CANDIDATES_PER_BATCH]
         calls.append((run_root.name, prompt, effort, len(batch)))
@@ -703,7 +714,7 @@ def test_checker_uses_fresh_xhigh_batches_and_decides_every_candidate(
     monkeypatch.setattr(cr, "run_pass", run)
     survivors, usage, traces = cr.run_checkers(
         "claude", tmp_path, snapshot, "checker instructions", "diff", "rules",
-        candidates, {("app.py", "RIGHT"): {2}}, "oauth",
+        candidates, {("app.py", "RIGHT"): {2}}, token_credentials(),
     )
     assert [row["id"] for row in survivors] == ["candidate-0"]
     assert [(name, effort, count) for name, _prompt, effort, count in calls] == [
@@ -737,7 +748,7 @@ def test_model_stream_keeps_structured_output_tool_uses_and_hook_events(tmp_path
 
     monkeypatch.setattr(cr, "_run", run)
     value, usage, trace = cr.run_pass(
-        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth",
+        "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, TOKEN,
         effort=cr.FINDER_EFFORT,
     )
     assert value == {"candidates": []}
@@ -764,7 +775,7 @@ def test_failed_model_process_preserves_observed_usage(tmp_path, monkeypatch):
     monkeypatch.setattr(cr, "_run", run)
     with pytest.raises(cr.ReviewError, match="usage limit") as raised:
         cr.run_pass(
-            "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, "oauth",
+            "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA, TOKEN,
             effort=cr.FINDER_EFFORT,
         )
     assert raised.value.usage == {"input_tokens": 17}
@@ -791,7 +802,7 @@ def test_nonzero_model_process_classifies_recorded_failure_evidence(
     with pytest.raises(cr.ReviewError, match=cause) as raised:
         cr.run_pass(
             "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA,
-            "oauth-secret", effort=cr.FINDER_EFFORT,
+            cr.Credential("subscription-token", "oauth-secret"), effort=cr.FINDER_EFFORT,
         )
     message = str(raised.value)
     for field in ("subtype=", "is_error=", "api_error_status=", "result=", "stderr_tail="):
@@ -812,7 +823,7 @@ def test_recorded_usage_limit_cause_reaches_live_skip_notice(tmp_path, monkeypat
     with pytest.raises(cr.ReviewError) as raised:
         cr.run_pass(
             "claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA,
-            "oauth", effort=cr.FINDER_EFFORT,
+            TOKEN, effort=cr.FINDER_EFFORT,
         )
     assert "usage limit" in str(raised.value).lower()
     notices = []
@@ -978,6 +989,7 @@ def test_execute_review_preserves_finder_usage_on_validation_failure(tmp_path, m
         run_execute(finder, checker)
     assert raised.value.usage == {
         "finder": {"coverage": {"input_tokens": 11}},
+        "credential": {"finder:coverage": {"credentials": ["subscription-token"]}},
     }
 
 
@@ -1059,6 +1071,7 @@ def test_execute_review_names_finder_timeout_and_marks_usage_unavailable(tmp_pat
         run_execute(finder, checker)
     assert raised.value.usage == {
         "finder": {"coverage": {"status": "unavailable"}},
+        "credential": {"finder:coverage": {"credentials": ["subscription-token"]}},
     }
 
 
@@ -1068,7 +1081,7 @@ def test_execute_review_live_prompt_never_preloads_changed_files(
     finder, checker = execute_fixture(monkeypatch, tmp_path, [])
     prompts = []
 
-    def run(_executable, _root, _snapshot, prompt, schema, _token, *, effort):
+    def run(_executable, _root, _snapshot, prompt, schema, _credential, *, effort):
         prompts.append((schema, prompt, effort))
         return {"candidates": []}, {}, []
 
@@ -1087,7 +1100,7 @@ def test_live_default_runs_one_high_finder_and_publishes_validated_deduplicated_
     calls = []
     posts = []
 
-    def run(_executable, _root, _snapshot, prompt, schema, _token, *, effort):
+    def run(_executable, _root, _snapshot, prompt, schema, _credential, *, effort):
         calls.append((prompt, schema, effort))
         return {"candidates": [
             candidate(id="first"),
@@ -2097,3 +2110,349 @@ def test_failed_targeted_base_lookup_is_never_no_attributes(monkeypatch):
     monkeypatch.setattr(cr, "gh_json", tree)
     with pytest.raises(cr.ReviewError, match="base attribute tree lookup failed for src: HTTP 503"):
         cr.base_attribute_material("owner/repo", BASE, ["src/app.py"])
+
+
+# The reviewer's two credentials (#917): an API key first, the subscription token after.
+
+REAL_RUN_PASS = cr.run_pass
+KEY_SECRET = "test-api-key-secret"
+TOKEN_SECRET = "test-oauth-secret"
+BUDGET_FIXTURES = [
+    ("connected_review_claude_key_credit_too_low.json", "credit balance too low"),
+    ("connected_review_claude_key_org_spend_limit.json", "spend limit reached"),
+    ("connected_review_claude_key_workspace_spend_limit.json", "spend limit reached"),
+    ("connected_review_claude_key_spend_cap.json", "monthly spend cap reached"),
+]
+OTHER_KEY_FIXTURES = [
+    ("connected_review_claude_key_rate_limit.json", "Claude API key rate limit reached"),
+    ("connected_review_claude_key_invalid.json", "Claude API key authentication failed"),
+    ("connected_review_claude_usage_limit.json", "Claude API key usage limit reached"),
+    ("connected_review_claude_authentication.json", "Claude API key authentication failed"),
+]
+
+
+def set_credentials(monkeypatch, *, key=None, token=None):
+    for name, value in (("ANTHROPIC_API_KEY", key), ("CLAUDE_CODE_OAUTH_TOKEN", token)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+
+def success_process(command, candidates=()):
+    body = {"is_error": False, "structured_output": {"candidates": list(candidates)}, "usage": {"input_tokens": 5}}
+    return subprocess.CompletedProcess(command, 0, json.dumps(body).encode(), b"")
+
+
+def sequenced_cli(monkeypatch, outcomes):
+    """Run the real pass against a scripted CLI and record every process it starts."""
+    processes = []
+    queue = list(outcomes)
+
+    def run(command, **kwargs):
+        environment = kwargs.get("environment")
+        processes.append({
+            "version": "--version" in command,
+            "environment": dict(environment) if environment is not None else None,
+            "cwd": kwargs.get("cwd"),
+        })
+        if "--version" in command:
+            return subprocess.CompletedProcess(command, 0, f"{cr.DEFAULT_CLAUDE_VERSION} (Claude Code)\n".encode(), b"")
+        outcome = queue.pop(0)
+        return outcome(command, kwargs) if callable(outcome) else cli_failure(outcome, command)
+
+    monkeypatch.setattr(cr, "_run", run)
+    monkeypatch.setattr(cr, "run_pass", REAL_RUN_PASS)
+    return processes
+
+
+def credential_names(environment):
+    return {name for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN") if name in environment}
+
+
+def review_and_skip(monkeypatch, finder):
+    """Run one review; return the posted reviews, or the skip body its failure posts."""
+    reviews = []
+
+    def gh(endpoint, **kwargs):
+        if endpoint.endswith("/pulls/746"):
+            return {"head": {"sha": HEAD}, "draft": False}
+        if endpoint.endswith("/pulls/746/reviews") and kwargs.get("method") == "POST":
+            reviews.append(kwargs["payload"])
+            return {"id": 1}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(cr, "gh_json", gh)
+    try:
+        result = run_execute(finder)
+    except cr.ReviewError as exc:
+        notices = []
+        monkeypatch.setattr(cr, "existing_skip", lambda *_args: False)
+        monkeypatch.setattr(cr, "completed_review_for_attempt", lambda *_args: None)
+        monkeypatch.setattr(cr, "gh_json", lambda _endpoint, **kwargs: notices.append(kwargs["payload"]["body"]))
+        # The workflow hands the review job's usage output to the reporter as JSON.
+        cr.report_skip(event(), "Grimblaz", "92", "failure", str(exc), "92",
+                       json.dumps(exc.usage, ensure_ascii=True, sort_keys=True))
+        return None, reviews, notices[0]
+    return result, reviews, None
+
+
+@pytest.mark.parametrize(("key", "token", "expected"), [
+    (KEY_SECRET, None, {"ANTHROPIC_API_KEY"}),
+    (None, TOKEN_SECRET, {"CLAUDE_CODE_OAUTH_TOKEN"}),
+    (KEY_SECRET, TOKEN_SECRET, {"ANTHROPIC_API_KEY"}),
+    ("", TOKEN_SECRET, {"CLAUDE_CODE_OAUTH_TOKEN"}),
+])
+def test_each_claude_process_holds_exactly_one_credential_and_the_key_starts(
+    tmp_path, monkeypatch, key, token, expected,
+):
+    verify = cr.verify_claude_version
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cr, "verify_claude_version", verify)
+    set_credentials(monkeypatch, key=key, token=token)
+    processes = sequenced_cli(monkeypatch, [lambda command, _kwargs: success_process(command)])
+    result, reviews, skip = review_and_skip(monkeypatch, finder)
+    assert skip is None and result["status"] == "reviewed" and len(reviews) == 1
+    version, model = processes
+    assert version["version"] and credential_names(version["environment"]) == set()
+    assert credential_names(model["environment"]) == expected
+    kind = "api-key" if expected == {"ANTHROPIC_API_KEY"} else "subscription-token"
+    assert model["environment"][cr.CREDENTIAL_VARIABLES[kind]] == (key if kind == "api-key" else token)
+    assert result["credential"] == {"finder:coverage": {"credentials": [kind]}}
+
+
+@pytest.mark.parametrize(("key", "token"), [(None, None), ("", ""), ("  ", "\n")])
+def test_no_credential_is_refused_before_any_pass_and_names_both_variables(
+    tmp_path, monkeypatch, key, token,
+):
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    set_credentials(monkeypatch, key=key, token=token)
+    monkeypatch.setattr(cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("no pass may start"))
+    _result, reviews, skip = review_and_skip(monkeypatch, finder)
+    assert not reviews
+    assert skip.startswith(
+        "Review skipped: no Claude credential is available; set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN"
+    )
+    assert "Credential:" not in skip
+
+
+@pytest.mark.parametrize(("fixture_name", "reply_class"), BUDGET_FIXTURES)
+def test_key_pass_recognises_each_budget_spent_reply(tmp_path, monkeypatch, fixture_name, reply_class):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    monkeypatch.setattr(cr, "_run", lambda command, **_kwargs: cli_failure(fixture_name, command))
+    with pytest.raises(cr.KeyBudgetSpent) as raised:
+        cr.run_pass("claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA,
+                    cr.Credential("api-key", KEY_SECRET), effort=cr.FINDER_EFFORT)
+    assert raised.value.reply_class == reply_class
+    assert raised.value.reply_text == fixture(fixture_name)["events"][-1]["result"]
+    assert raised.value.usage == {"input_tokens": 0, "output_tokens": 0}
+
+
+def test_cli_short_exhaustion_rendering_is_the_same_spent_balance(tmp_path):
+    result = subprocess.CompletedProcess(["claude"], 1, b"", b"")
+    parsed = {"is_error": True, "api_error_status": 400,
+              "result": f"Credit balance too low {chr(0xB7)} Add funds: https://platform.claude.com/settings/billing"}
+    with pytest.raises(cr.KeyBudgetSpent) as raised:
+        cr._claude_failure(result, parsed, credential=cr.Credential("api-key", KEY_SECRET),
+                           run_root=tmp_path, snapshot=tmp_path)
+    assert raised.value.reply_class == "credit balance too low"
+
+
+@pytest.mark.parametrize(("fixture_name", "cause"), OTHER_KEY_FIXTURES)
+def test_other_key_failures_are_not_a_spent_budget_and_name_the_key(tmp_path, monkeypatch, fixture_name, cause):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    monkeypatch.setattr(cr, "_run", lambda command, **_kwargs: cli_failure(fixture_name, command))
+    with pytest.raises(cr.ReviewError) as raised:
+        cr.run_pass("claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA,
+                    cr.Credential("api-key", KEY_SECRET), effort=cr.FINDER_EFFORT)
+    assert not isinstance(raised.value, cr.KeyBudgetSpent)
+    assert str(raised.value).startswith(cause + ":")
+
+
+@pytest.mark.parametrize(("fixture_name", "_reply_class"), BUDGET_FIXTURES)
+def test_budget_texts_on_a_token_pass_keep_todays_token_causes(tmp_path, monkeypatch, fixture_name, _reply_class):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    monkeypatch.setattr(cr, "_run", lambda command, **_kwargs: cli_failure(fixture_name, command))
+    with pytest.raises(cr.ReviewError) as raised:
+        cr.run_pass("claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA,
+                    TOKEN, effort=cr.FINDER_EFFORT)
+    assert not isinstance(raised.value, cr.KeyBudgetSpent)
+    assert str(raised.value).startswith("Claude ") and "API key" not in str(raised.value).split(":", 1)[0]
+
+
+@pytest.mark.parametrize(("fixture_name", "reply_class"), BUDGET_FIXTURES)
+def test_spent_key_falls_back_to_the_token_and_the_review_posts(
+    tmp_path, monkeypatch, fixture_name, reply_class,
+):
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    set_credentials(monkeypatch, key=KEY_SECRET, token=TOKEN_SECRET)
+    processes = sequenced_cli(monkeypatch, [fixture_name, lambda command, _kwargs: success_process(command)])
+    monkeypatch.setattr(cr, "verify_claude_version", lambda *_: None)
+    result, reviews, skip = review_and_skip(monkeypatch, finder)
+    assert skip is None and result["status"] == "reviewed" and len(reviews) == 1
+    key_pass, token_pass = processes
+    assert credential_names(key_pass["environment"]) == {"ANTHROPIC_API_KEY"}
+    assert credential_names(token_pass["environment"]) == {"CLAUDE_CODE_OAUTH_TOKEN"}
+    # The token pass runs at the pass's own root; the key attempt keeps a sibling.
+    assert Path(token_pass["cwd"]) == Path(key_pass["cwd"])
+    assert Path(token_pass["cwd"]).parent.name == "finder-coverage"
+    entry = result["credential"]["finder:coverage"]
+    assert entry["credentials"] == ["api-key", "subscription-token"]
+    assert entry["switch_reply"] == reply_class
+    assert entry["api_key_attempt_usage"] == {"input_tokens": 0, "output_tokens": 0}
+    reply = fixture(fixture_name)["events"][-1]["result"]
+    assert (
+        "Credential: finder coverage=API key, then subscription token after the key's budget "
+        f'was spent ({reply_class}: "{reply}").'
+    ) in reviews[0]["body"]
+
+
+def test_after_a_switch_the_rest_of_the_review_stays_on_the_token(tmp_path, monkeypatch):
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cr, "FINDER_PASSES", (("coverage", "lens one."), ("second", "lens two.")))
+    set_credentials(monkeypatch, key=KEY_SECRET, token=TOKEN_SECRET)
+    processes = sequenced_cli(monkeypatch, [
+        "connected_review_claude_key_credit_too_low.json",
+        lambda command, _kwargs: success_process(command),
+        lambda command, _kwargs: success_process(command),
+    ])
+    monkeypatch.setattr(cr, "verify_claude_version", lambda *_: None)
+    result, reviews, _skip = review_and_skip(monkeypatch, finder)
+    assert len(reviews) == 1 and len(processes) == 3
+    assert [credential_names(row["environment"]) for row in processes] == [
+        {"ANTHROPIC_API_KEY"}, {"CLAUDE_CODE_OAUTH_TOKEN"}, {"CLAUDE_CODE_OAUTH_TOKEN"},
+    ]
+    assert result["credential"]["finder:second"] == {"credentials": ["subscription-token"]}
+    assert "; finder second=subscription token." in reviews[0]["body"]
+
+
+@pytest.mark.parametrize(("fixture_name", "cause"), OTHER_KEY_FIXTURES[:2])
+def test_other_key_failure_ends_the_review_without_a_token_process(tmp_path, monkeypatch, fixture_name, cause):
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    set_credentials(monkeypatch, key=KEY_SECRET, token=TOKEN_SECRET)
+    processes = sequenced_cli(monkeypatch, [fixture_name])
+    monkeypatch.setattr(cr, "verify_claude_version", lambda *_: None)
+    _result, reviews, skip = review_and_skip(monkeypatch, finder)
+    assert not reviews and len(processes) == 1
+    assert skip.startswith(f"Review skipped: {cause}:")
+    assert "Credential: finder coverage=API key." in skip
+
+
+@pytest.mark.parametrize(("fixture_name", "reply_class"), BUDGET_FIXTURES)
+def test_spent_key_with_no_token_ends_the_review_with_a_named_cause(tmp_path, monkeypatch, fixture_name, reply_class):
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    set_credentials(monkeypatch, key=KEY_SECRET)
+    processes = sequenced_cli(monkeypatch, [fixture_name])
+    monkeypatch.setattr(cr, "verify_claude_version", lambda *_: None)
+    _result, reviews, skip = review_and_skip(monkeypatch, finder)
+    assert not reviews and len(processes) == 1
+    assert skip.startswith(
+        f"Review skipped: Claude API key budget spent ({reply_class}) and no subscription token is set: "
+    )
+    assert "Credential: finder coverage=API key." in skip
+
+
+@pytest.mark.parametrize(("key", "token", "line"), [
+    (KEY_SECRET, None, "Credential: finder coverage=API key."),
+    (None, TOKEN_SECRET, "Credential: finder coverage=subscription token."),
+])
+def test_review_names_who_paid_between_usage_and_provenance(tmp_path, monkeypatch, key, token, line):
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    set_credentials(monkeypatch, key=key, token=token)
+    sequenced_cli(monkeypatch, [lambda command, _kwargs: success_process(command)])
+    monkeypatch.setattr(cr, "verify_claude_version", lambda *_: None)
+    _comments, reviews, _writes = coverage_transport(monkeypatch)
+    cr.execute_review(event(), "Grimblaz", "93", "claude", cr.DEFAULT_CLAUDE_VERSION, finder,
+                      reviewer_revision="c" * 40)
+    parts = reviews[0]["body"].split("\n\n")
+    assert parts.count(line) == 1 and sum(part.startswith("Credential:") for part in parts) == 1
+    position = parts.index(line)
+    assert parts[position - 1].startswith("Usage: ") and parts[position + 1].startswith("Reviewer: ")
+
+
+def test_skip_without_a_pass_carries_no_credential_line(tmp_path, monkeypatch):
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    set_credentials(monkeypatch, key=KEY_SECRET, token=TOKEN_SECRET)
+    monkeypatch.setattr(cr, "verify_claude_version", lambda *_: (_ for _ in ()).throw(
+        cr.ReviewError("Claude CLI version is 2.1.1, expected 2.1.280")))
+    _result, _reviews, skip = review_and_skip(monkeypatch, finder)
+    assert skip.startswith("Review skipped: Claude CLI version") and "Credential:" not in skip
+    monkeypatch.setattr(cr, "MAX_FINDER_PROMPT_BYTES", 10)
+    monkeypatch.setattr(cr, "verify_claude_version", lambda *_: None)
+    with pytest.raises(cr.FinderPromptTooLarge) as raised:
+        run_execute(finder)
+    assert "credential" not in raised.value.usage
+
+
+def test_no_published_or_recorded_text_carries_either_secret(tmp_path, monkeypatch):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    credentials = cr.ReviewCredentials(KEY_SECRET, TOKEN_SECRET)
+    monkeypatch.setattr(cr, "_run", lambda command, **_kwargs: cli_failure(
+        "connected_review_claude_key_invalid.json", command,
+        stderr_suffix=f" key={KEY_SECRET} token={TOKEN_SECRET}\n"))
+    with pytest.raises(cr.ReviewError) as raised:
+        cr.run_credentialed_pass("claude", tmp_path / "pass", snapshot, "prompt", cr.FINDER_SCHEMA,
+                                 credentials, "finder:coverage", effort=cr.FINDER_EFFORT)
+    message = str(raised.value)
+    assert "[redacted-key]" in message and "[redacted-token]" in message
+    assert KEY_SECRET not in message and TOKEN_SECRET not in message
+    # A spent-budget reply that echoes a secret is redacted before the record keeps it.
+    spent = fixture("connected_review_claude_key_credit_too_low.json")
+    spent["events"][-1]["result"] += f" {KEY_SECRET} {TOKEN_SECRET}"
+    calls = iter([spent, None])
+
+    def run(command, **_kwargs):
+        recorded = next(calls)
+        if recorded is None:
+            return success_process(command)
+        stdout = "\n".join(json.dumps(item) for item in recorded["events"]).encode()
+        return subprocess.CompletedProcess(command, 1, stdout, b"")
+
+    monkeypatch.setattr(cr, "_run", run)
+    credentials = cr.ReviewCredentials(KEY_SECRET, TOKEN_SECRET)
+    cr.run_credentialed_pass("claude", tmp_path / "pass-two", snapshot, "prompt", cr.FINDER_SCHEMA,
+                             credentials, "finder:coverage", effort=cr.FINDER_EFFORT)
+    recorded = json.dumps(credentials.record)
+    assert KEY_SECRET not in recorded and TOKEN_SECRET not in recorded
+    assert "[redacted-key] [redacted-token]" in recorded
+    line = cr._credential_text(credentials.record)
+    assert KEY_SECRET not in line and TOKEN_SECRET not in line
+
+
+@pytest.mark.parametrize("secret", [KEY_SECRET, TOKEN_SECRET])
+def test_finder_output_containing_either_secret_publishes_nothing(tmp_path, monkeypatch, secret):
+    finder, _ = execute_fixture(monkeypatch, tmp_path, [])
+    set_credentials(monkeypatch, key=KEY_SECRET, token=TOKEN_SECRET)
+    sequenced_cli(monkeypatch, [lambda command, _kwargs: success_process(
+        command, [candidate(wrong_result=f"publishes {secret}")])])
+    monkeypatch.setattr(cr, "verify_claude_version", lambda *_: None)
+    _result, reviews, skip = review_and_skip(monkeypatch, finder)
+    assert not reviews
+    assert skip.startswith("Review skipped: finder output contained the model credential")
+    assert secret not in skip
+
+
+def test_private_cli_install_never_receives_the_api_key(tmp_path, monkeypatch):
+    tools = tmp_path / "tool-cache" / "claude-cli"
+    calls = []
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-reach-npm")
+
+    def run(command, **kwargs):
+        calls.append(kwargs)
+        private_cli_fixture(tools, cr.DEFAULT_CLAUDE_VERSION)
+        return subprocess.CompletedProcess(command, 0, b"installed", b"")
+
+    monkeypatch.setattr(cr, "_run", run)
+    cr.ensure_private_claude_cli(tools, cr.DEFAULT_CLAUDE_VERSION, npm_command=["npm"], platform="posix")
+    assert "ANTHROPIC_API_KEY" not in calls[0]["environment"]
+
+
+def test_direct_payload_without_a_credential_record_is_unchanged():
+    assert cr.review_payload([], HEAD, "91", {}) == cr.review_payload([], HEAD, "91", {}, credentials={})
+    assert "Credential:" not in cr.review_payload([], HEAD, "91", {})["body"]
+    assert cr._credential_text({"finder:coverage": {"credentials": ["unknown"]}}) == ""
+    assert cr._credential_text("not a record") == ""

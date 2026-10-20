@@ -82,7 +82,9 @@ Codex has no configuration key for this contract; the section in the repository'
 
 ## `connected-review.yml` in the repository's GitHub Actions workflows directory
 
-**Adopter cost:** copy the one workflow file, set the one secret, and, on a private repository, install the runner. Run `claude setup-token` as the owner to print the long-lived token, then store it as `CLAUDE_CODE_OAUTH_TOKEN` on the repository or organization. `REVIEW_OWNER_LOGIN` names the one account whose pull requests the workflow reviews and whose token that secret holds. This copy already names the lab owner, `Grimblaz`, so the lab owner edits nothing; a pull request by any other author is refused without a notice, by design.
+**Adopter cost:** copy the one workflow file, set the token secret, and, on a private repository, install the runner. Run `claude setup-token` as the owner to print the long-lived token, then store it as `CLAUDE_CODE_OAUTH_TOKEN` on the repository or organization. `REVIEW_OWNER_LOGIN` names the one account whose pull requests the workflow reviews and whose token that secret holds. This copy already names the lab owner, `Grimblaz`, so the lab owner edits nothing; a pull request by any other author is refused without a notice, by design.
+
+**Optional API key.** To run reviews on API credit instead of the plan, also store an Anthropic API key as `ANTHROPIC_API_KEY` on the repository or organization, from a Console organization that holds that credit or other funds; a key whose organization has nothing to spend only adds a failed first attempt to each review. Max and Team plans include monthly API credit for one linked Console organization; it expires each billing cycle, purchased credit or auto-reload in that organization is spent before the reviewer falls back, and every key in the organization draws on the same balance. Each review starts on the key and, once the key's budget is spent, moves to the token for the rest of that review, so keep the token set: with the key alone, a spent budget skips the review. Every review names the credential that paid for each pass on its `Credential:` line. Leave the key unset and the workflow runs on the token as before.
 
 Before activation, put `gh`, `git`, Python 3.14, Node and npm on a private repository's self-hosted runner PATH, run the runner as the account whose PATH holds them, and give `RUNNER_TOOL_CACHE` a stable writable location. On Windows, a runner installed as a service runs under a service account that does not see per-user installs such as a default Python install; run it as that user, for example from a logon task, or install the tools for all users. The review job installs Claude CLI 2.1.280 under that cache's `claude-cli` directory, uses only that pinned installation, and disables its auto-updater. Installation is trusted runner setup: it finishes before pull-request snapshot handling and never installs or executes pull-request content; an unavailable npm registry or failed install takes the ordinary `Review skipped:` path rather than falling back to another CLI. The hosted `prepare` job, and the hosted `report` job when it runs, consume a small amount of hosted time.
 
@@ -181,6 +183,7 @@ jobs:
       - name: Run connected review
         id: review
         env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CONNECTED_REVIEW_VISIBILITY: ${{ needs.prepare.outputs.visibility }}
           DISABLE_AUTOUPDATER: "1"
