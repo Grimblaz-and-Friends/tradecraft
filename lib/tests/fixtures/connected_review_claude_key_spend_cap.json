@@ -1,0 +1,23 @@
+{
+  "events": [
+    {
+      "apiKeySource": "ANTHROPIC_API_KEY",
+      "subtype": "init",
+      "type": "system"
+    },
+    {
+      "api_error_code": "enforced_spend_limit_reached",
+      "api_error_status": 429,
+      "is_error": true,
+      "result": "API Error: Request rejected (429) \u00b7 You have reached your API usage limits: your organization has crossed its monthly API usage threshold, set based on your organization's API tier. You will regain access on 2026-11-01 at 00:00 UTC.",
+      "subtype": "success",
+      "type": "result",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    }
+  ],
+  "returncode": 1,
+  "stderr": ""
+}
