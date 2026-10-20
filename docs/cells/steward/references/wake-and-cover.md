@@ -111,7 +111,7 @@ Then, with the default state directory and no probe variable set:
 7. Prove the dispatch route: `gh workflow run steward-alert.yml --repo Grimblaz-and-Friends/tradecraft --ref main -f issue=<alert issue> -f items=probe:1`, and check the bot comment mentions the owner. Then, with one item actually waiting, run `cover` twice in a row and check the alert issue gains exactly one bot comment for that key.
 8. Record the install on #890 and #683, with the before-and-after diff of `~/.claude/settings.json`, `~/.claude/plugins/known_marketplaces.json`, `~/.claude/plugins/installed_plugins.json` and `<main checkout>/.claude/settings.local.json`, and whether that file's `env` held `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` before step 6.
 
-**While the wake is installed, your session and your checkout stay.** Do not archive the session or remove its worktree: the mod, the script it runs and the cover all live in that checkout, so the wake, the handover and the cover would stop together, and nothing would alert, since the cover is what alerts. A move to another session or checkout runs Undo, then Install from the new one.
+**While the wake is installed, your session and your checkout stay.** Do not archive the session or remove its worktree: the mod, the script it runs and the cover all live in that checkout, so the wake, the handover and the cover would stop together, and nothing would alert, since the cover is what alerts. A move to another session or checkout follows Moving below, not Undo then Install.
 
 **Watch after install, and record on #890:**
 
@@ -128,6 +128,21 @@ Then, with the default state directory and no probe variable set:
 6. Close the alert issue.
 7. The state directory `~/.tradecraft-lab/steward` stays where it is. Read its `handover.md` first and carry anything still owed to #683; deleting the directory afterwards is the owner's call, because it is a delete. The install sets no `STEWARD_LAB_STATE_DIR`, so there is nothing to unset; if one was set by hand for a probe, unset it.
 8. Deleting the watermark comment is the owner's call, because it is a delete.
+
+## Moving
+
+Undo removes the wake altogether. A move to another session or checkout moves only what lives in your checkout: the mod's marketplace and the hourly cover. The main checkout's opt-in, the alert issue, the watermark and the state directory stay as they are, because none of them lives in a checkout. Running Undo then Install instead would close the alert issue while the watermark still names it, and Install's `seed` is refused while a watermark exists.
+
+1. Bring the new checkout to a commit that contains #890's and #915's changes, and check with `git status` that nothing of your own is at risk there.
+2. Move the cover: from the old checkout, `python tools/steward_watch.py cover-task --unregister`; then from the new checkout, `python tools/steward_watch.py cover-task --register`. The cover is registered before the mod reloads, as in Install.
+3. Repoint the mod at the new checkout, without relying on `marketplace add` repointing a name already registered:
+   1. With tradecraft's main checkout as the working directory: `claude plugin uninstall steward-wake@tradecraft-lab --scope local`.
+   2. `claude plugin marketplace remove tradecraft-lab`.
+   3. `claude plugin marketplace add <new checkout>\tools\steward-wake`.
+   4. With tradecraft's main checkout as the working directory: `claude plugin install steward-wake@tradecraft-lab --scope local`.
+4. If the new session is a different one, title it `Steward`, and ask the owner to archive the old session or rename it away from `Steward` and restart it, so that only one session wakes: a wake already on reads its title again only when its process restarts.
+5. Ask the owner to restart the new session, then run Install's check in step 6: the status line shows `steward-wake on · <root>`, `<root>` is the new checkout and matches the cover's Task To Run path, and `origins.log` gains a line on your next prompt.
+6. Record the move on #890 and #683, with the before-and-after diff of `~/.claude/plugins/known_marketplaces.json`, `~/.claude/plugins/installed_plugins.json` and `<main checkout>/.claude/settings.local.json`.
 
 ## Updating
 
