@@ -203,6 +203,7 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
     assert "CLAUDE_CODE_OAUTH_TOKEN" in workflow
     report = workflow.split("  report:\n", 1)[1]
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in report
+    assert "ANTHROPIC_API_KEY" not in report
     assert "needs.prepare.result != 'success'" in report
     assert "PREPARE_RESULT: ${{ needs.prepare.result }}" in report
     assert "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09" in workflow
@@ -215,8 +216,15 @@ def test_canonical_workflow_has_trusted_boundary_and_no_push_trigger():
     assert "CONNECTED_REVIEW_PRELOAD_CHANGED_FILES" not in workflow
     assert "${{ vars." not in workflow
     assert set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)) == {
-        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
     }
+    # Only the finder step receives either credential, each exactly once.
+    prepare, rest = workflow.split("  review:\n", 1)
+    before, finder = rest.split("  report:\n", 1)[0].split("      - name: Run connected review\n")
+    assert "secrets." not in prepare and "secrets." not in before
+    for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        assert workflow.count(f"secrets.{name}") == 1
+        assert finder.count(f"{name}: ${{{{ secrets.{name} }}}}") == 1
     lint = (ROOT / "tools/lint.py").read_text(encoding="utf-8")
     assert "connected-review.yml" not in lint
     assert "github-actions[bot]" not in lint
@@ -368,11 +376,23 @@ def test_lab_stub_and_downstream_example_call_one_release_control():
         "      pull-requests: write\n"
         "    uses: Grimblaz-and-Friends/tradecraft/.github/workflows/connected-review-shared.yml@main\n"
         "    secrets:\n"
+        "      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n"
         "      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n"
     )
     procedure = (ROOT / "docs/cells/steward/references/connected-review-releases.md").read_text(encoding="utf-8")
     documented = procedure.split("```yaml\n", 1)[1].split("\n```", 1)[0] + "\n"
     assert documented == stub.replace("@main", "@reviewer-stable")
+    # GitHub refuses a caller passing an undeclared secret, so the key line waits
+    # for a declaring tag, and rollback cannot return below one while it is passed.
+    assert (
+        "A carrier adds the `ANTHROPIC_API_KEY` line only once `reviewer-stable` points at a "
+        "release whose shared workflow declares that secret"
+    ) in procedure
+    assert (
+        "Once any carrier passes `ANTHROPIC_API_KEY`, every rollback target must be a release "
+        "whose shared workflow declares that secret"
+    ) in procedure
+    assert "first remove the key line from every carrier's stub" in procedure
     steward = (ROOT / "docs/cells/steward/SKILL.md").read_text(encoding="utf-8")
     assert "`references/connected-review-releases.md`" in steward
 
@@ -381,8 +401,8 @@ def test_shared_workflow_preserves_security_and_runtime_boundaries():
     workflow = lab_workflow()
     trigger = workflow.split("on:\n", 1)[1].split("\nenv:", 1)[0]
     assert trigger == (
-        "  workflow_call:\n    secrets:\n      CLAUDE_CODE_OAUTH_TOKEN:\n"
-        "        required: true\n"
+        "  workflow_call:\n    secrets:\n      ANTHROPIC_API_KEY:\n        required: false\n"
+        "      CLAUDE_CODE_OAUTH_TOKEN:\n        required: true\n"
     )
     assert "inputs:" not in workflow
     assert workflow.count("CLAUDE_CLI_VERSION: 2.1.280") == 1
@@ -417,6 +437,7 @@ def test_shared_workflow_preserves_security_and_runtime_boundaries():
             before, finder = body.split("      - name: Run connected review\n")
             assert "secrets." not in before
             assert finder.count("secrets.CLAUDE_CODE_OAUTH_TOKEN") == 1
+            assert finder.count("secrets.ANTHROPIC_API_KEY") == 1
     assert "always() &&" in lab_job("report")
     assert "needs.prepare.result != 'success'" in lab_job("report")
     assert "reviewer_sha: ${{ steps.identity.outputs.reviewer_sha }}" in lab_job("prepare")
@@ -536,10 +557,20 @@ def test_setup_names_login_only_enablement_and_private_prerequisites():
     )[1].split("```yaml\n", 1)[0]
     assert "repository's GitHub Actions workflows directory" in reference
     assert (
-        "copy the one workflow file, set the one secret, and, on a private "
+        "copy the one workflow file, set the token secret, and, on a private "
         "repository, install the runner"
     ) in prose
     assert "`claude setup-token` as the owner" in prose
+    key = reference.split("**Optional API key.**", 1)[1].split("\n\n", 1)[0]
+    for phrase in (
+        "`ANTHROPIC_API_KEY` on the repository or organization",
+        "Each review starts on the key", "moves to the token for the rest of that review",
+        "keep the token set", "`Credential:` line", "runs on the token as before",
+        "ends the review with a cause naming the key rather than falling back",
+        "purchased credit or auto-reload", "every key in the organization draws on the same balance",
+    ):
+        assert phrase in key, phrase
+    assert "docs/" not in key and "tools/" not in key
     assert "long-lived token" in prose
     assert "on the repository or organization" in prose
     assert "`REVIEW_OWNER_LOGIN` names the one account" in prose

@@ -1,0 +1,22 @@
+{
+  "events": [
+    {
+      "apiKeySource": "ANTHROPIC_API_KEY",
+      "subtype": "init",
+      "type": "system"
+    },
+    {
+      "api_error_status": 429,
+      "is_error": true,
+      "result": "API Error: Request rejected (429) \u00b7 This request would exceed the rate limit for your organization of 1,000 requests per minute. For details, refer to: https://docs.claude.com/en/api/rate-limits.",
+      "subtype": "success",
+      "type": "result",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    }
+  ],
+  "returncode": 1,
+  "stderr": ""
+}

@@ -21,6 +21,12 @@ HEAD = "a" * 40
 BASE = "b" * 40
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_api_key(monkeypatch):
+    # A runner's own key must never decide which credential a test replay uses.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
 def write(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
@@ -362,7 +368,7 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
     efforts = []
     calls = 0
 
-    def run(_executable, _root, snapshot, _prompt, schema, _token, *, effort):
+    def run(_executable, _root, snapshot, _prompt, schema, _credential, *, effort):
         nonlocal calls
         calls += 1
         snapshots.append(sorted(path.name for path in snapshot.iterdir()))
@@ -405,6 +411,10 @@ def test_run_records_each_case_error_incrementally_and_isolates_other_trees(tmp_
         "case_id": "pr-2", "head": "2" * 40, "base": BASE,
         "status": "error", "error": "case-specific failure", "excluded_files": [],
         "finder_input_utf8_bytes": result["cases"][1]["finder_input_utf8_bytes"],
+        "credential": {
+            "finder:coverage": {"credentials": ["subscription-token"]},
+            "checker:batch-1": {"credentials": ["subscription-token"]},
+        },
     }
     assert all(size > 0 for size in result["cases"][1]["finder_input_utf8_bytes"].values())
     assert result["complete"] is False
@@ -433,7 +443,7 @@ def test_run_copies_only_the_two_manifest_hashed_input_files(tmp_path, monkeypat
     output = tmp_path / "results.json"
     prepare_run(monkeypatch)
 
-    def run(_executable, run_root, _snapshot, prompt, _schema, _token, *, effort):
+    def run(_executable, run_root, _snapshot, prompt, _schema, _credential, *, effort):
         assert effort == replay.cr.LIVE_FINDER_EFFORT
         inputs = run_root.parent / "input"
         assert sorted(path.name for path in inputs.iterdir()) == [
@@ -463,7 +473,7 @@ def test_run_records_canaries_tool_trace_and_invalidates_outside_read(tmp_path, 
     monkeypatch.setattr(replay.cr, "verify_managed_settings", lambda: None)
     monkeypatch.setattr(replay.cr, "verify_claude_version", lambda *_: None)
 
-    def run(_executable, _root, snapshot, _prompt, schema, _token, *, effort):
+    def run(_executable, _root, snapshot, _prompt, schema, _credential, *, effort):
         expected = (
             replay.cr.FINDER_EFFORT
             if schema is replay.cr.FINDER_SCHEMA else replay.cr.CHECKER_EFFORT
@@ -616,7 +626,7 @@ def test_resume_reruns_only_incomplete_cases_and_preserves_completed_case(tmp_pa
     monkeypatch.setattr(replay.cr, "verify_claude_version", lambda *_: None)
     visited = []
 
-    def run(_executable, _root, snapshot, _prompt, schema, _token, *, effort):
+    def run(_executable, _root, snapshot, _prompt, schema, _credential, *, effort):
         visited.append((next(snapshot.iterdir()).name, schema, effort))
         if schema is replay.cr.FINDER_SCHEMA:
             return {"candidates": []}, {}, []
@@ -931,7 +941,7 @@ def test_replay_uses_offline_base_policy_for_all_prompt_paths(tmp_path, monkeypa
     monkeypatch.setattr(replay.cr, "gh_json", lambda *_args, **_kwargs: pytest.fail("must be offline"))
     monkeypatch.setattr(replay.cr, "gh_bytes", lambda *_args, **_kwargs: pytest.fail("must be offline"))
     prompts = []
-    def run(_exe, _root, _snapshot, prompt, schema, _token, **kwargs):
+    def run(_exe, _root, _snapshot, prompt, schema, _credential, **kwargs):
         prompts.append(prompt)
         assert (_snapshot / "package-lock.json").read_bytes().startswith(b"LOCK_SECRET")
         return ({"candidates": []} if schema == replay.cr.FINDER_SCHEMA else {"decisions": []}), {}, []
@@ -1016,3 +1026,89 @@ def test_resume_compares_captured_base_attribute_source_hashes(tmp_path):
     replay.write_object(results, record)
     with pytest.raises(replay.ReplayError, match="base attribute source hashes differ"):
         replay._resume_cases(results, manifest, reviewer)
+
+
+# The replay takes the reviewer's credentials with the same precedence and fallback (#917).
+
+def replay_cli(monkeypatch, outcomes):
+    processes = []
+    queue = list(outcomes)
+
+    def run(command, **kwargs):
+        environment = kwargs["environment"]
+        pass_root = Path(kwargs["cwd"]).parent
+        processes.append({
+            "credentials": {name for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN") if name in environment},
+            "pass_root": pass_root,
+        })
+        outcome = queue.pop(0)
+        if outcome == "success":
+            # The paying pass spills a tool result under its own root and reads it back.
+            spill = pass_root / "profile/claude/projects/p/session/tool-results/spill.txt"
+            spill.parent.mkdir(parents=True)
+            spill.write_text("spill", encoding="utf-8")
+            events = [
+                {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": str(spill)}},
+                ]}},
+                {"type": "result", "is_error": False, "structured_output": {"candidates": []}, "usage": {}},
+            ]
+            stdout = "\n".join(json.dumps(item) for item in events).encode()
+            return replay.cr.subprocess.CompletedProcess(command, 0, stdout, b"")
+        recorded = json.loads((FIXTURES / outcome).read_text(encoding="utf-8"))
+        stdout = "\n".join(json.dumps(item) for item in recorded["events"]).encode()
+        return replay.cr.subprocess.CompletedProcess(command, 1, stdout, recorded["stderr"].encode())
+
+    monkeypatch.setattr(replay.cr, "_run", run)
+    return processes
+
+
+def single_pass_replay(tmp_path, cases):
+    export = build_export(tmp_path / "export", cases=cases)
+    finder = tmp_path / "finder.md"
+    finder.write_text("finder", encoding="utf-8")
+    return replay.run_replay(export, tmp_path / "results.json", finder, None, ["claude.cmd"],
+                             replay.cr.DEFAULT_CLAUDE_VERSION, HEAD, single_pass=True)
+
+
+def test_replay_runs_on_the_key_alone(tmp_path, monkeypatch):
+    prepare_run(monkeypatch)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "replay-key")
+    processes = replay_cli(monkeypatch, ["success"])
+    result = single_pass_replay(tmp_path, 1)
+    assert result["complete"]
+    assert [row["credentials"] for row in processes] == [{"ANTHROPIC_API_KEY"}]
+    assert result["cases"][0]["credential"] == {"finder:coverage": {"credentials": ["api-key"]}}
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_replay_with_no_credential_refuses_before_any_case(tmp_path, monkeypatch, value):
+    prepare_run(monkeypatch)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN")
+    if value is not None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", value)
+    monkeypatch.setattr(replay.cr, "run_pass", lambda *_args, **_kwargs: pytest.fail("must not launch"))
+    with pytest.raises(replay.ReplayError, match="no Claude credential is available; set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN"):
+        single_pass_replay(tmp_path, 1)
+
+
+def test_each_replay_case_starts_on_the_key_and_falls_back_like_the_reviewer(tmp_path, monkeypatch):
+    prepare_run(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "replay-key")
+    processes = replay_cli(monkeypatch, [
+        "connected_review_claude_key_spend_cap.json", "success",
+        "connected_review_claude_key_credit_too_low.json", "success",
+    ])
+    result = single_pass_replay(tmp_path, 2)
+    assert result["complete"], result["cases"]
+    assert [row["credentials"] for row in processes] == [
+        {"ANTHROPIC_API_KEY"}, {"CLAUDE_CODE_OAUTH_TOKEN"},
+        {"ANTHROPIC_API_KEY"}, {"CLAUDE_CODE_OAUTH_TOKEN"},
+    ]
+    # The token pass keeps the pass root, so the leak check accepts its own spill.
+    assert processes[0]["pass_root"] == processes[1]["pass_root"]
+    assert all(case["outside_reads"] == [] for case in result["cases"])
+    assert [case["credential"]["finder:coverage"]["switch_reply"] for case in result["cases"]] == [
+        "monthly spend cap reached", "credit balance too low",
+    ]
