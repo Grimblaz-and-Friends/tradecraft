@@ -1,6 +1,7 @@
 import base64
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -101,6 +102,14 @@ def seen(args, vendor):
     return json.loads((args.root / f"seen-{vendor}.json").read_bytes())
 
 
+def sent(args, vendor, dispatch):
+    """The bytes a child receives: a Claude child's close with the #887 notice."""
+    if vendor != "claude":
+        return dispatch
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    return dispatch + b"\n\n" + request["launch_controls"]["notice"].encode("utf-8")
+
+
 @pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
 @pytest.mark.parametrize("fallback", [False, True])
 def test_C3_direct_cold_launch_and_fallback_share_exact_frozen_binding(job, monkeypatch, ending, fallback):
@@ -127,7 +136,8 @@ def test_C3_direct_cold_launch_and_fallback_share_exact_frozen_binding(job, monk
     assert original[binding["body_offset"]:binding["body_offset"] + binding["body_bytes"]] == body.encode()
     assert len(calls) == 2
     assert args.dispatch.read_bytes() == original
-    assert base64.b64decode(seen(args, "codex" if fallback else "claude")["stdin"]) == original
+    used = "codex" if fallback else "claude"
+    assert base64.b64decode(seen(args, used)["stdin"]) == sent(args, used, original)
     assert seat.cold_draft.completed_binding(request, run) == binding
 
 
@@ -298,7 +308,7 @@ def test_real_child_receives_large_utf8_dispatch_and_exact_launch(job, monkeypat
     args.dispatch.write_bytes(prompt)
     assert seat.run_dispatch(args) == 0
     observed = seen(args, vendor)
-    assert base64.b64decode(observed["stdin"]) == prompt
+    assert base64.b64decode(observed["stdin"]) == sent(args, vendor, prompt)
     assert Path(observed["cwd"]) == args.root.resolve()
     flags = observed["argv"]
     if vendor == "claude":
@@ -952,7 +962,8 @@ def test_unavailable_falls_back_once_and_records_reason(job, monkeypatch, vendor
         "cross_vendor_satisfied": False, "same_vendor_reason": None,
         "comparison_vendor": args.own_vendor,
     }
-    assert base64.b64decode(seen(args, args.own_vendor)["stdin"]) == args.dispatch.read_bytes()
+    assert base64.b64decode(seen(args, args.own_vendor)["stdin"]) == sent(
+        args, args.own_vendor, args.dispatch.read_bytes())
     fallback = log["attempts"][1]
     expected_effort = (
         seat.CLAUDE_EFFORTS[args.classification]
@@ -1747,3 +1758,53 @@ def test_real_missing_vendor_does_not_credit_a_seat_launch(job, monkeypatch):
     monkeypatch.setattr(seat, "resolve_command", lambda *_a: [str(args.root / "missing-vendor")])
     assert seat.run_dispatch(args) == 1
     assert all(not attempt["launched"] for attempt in record(args)["attempts"])
+
+
+def test_887_R1_1_R2_1_R4_1_claude_seat_launches_protected_and_says_so(job, monkeypatch):
+    args, _ = job
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0")
+    monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "300000")
+    configure(job, {"claude": {}})
+    assert seat.run_dispatch(args) == 0
+    captured = seen(args, "claude")
+    request = json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    controls = request["launch_controls"]
+    ceiling = math.floor(request["recipient_allocation_seconds"] * 1000)
+    assert captured["background_switch"] == "1"
+    assert captured["command_ceiling"] == str(ceiling) and controls["command_ceiling_ms"] == ceiling
+    # The notice reaches a holder-written dispatch too; the retained input stays the dispatch.
+    assert base64.b64decode(captured["stdin"]) == (
+        args.dispatch.read_bytes() + b"\n\n" + controls["notice"].encode("utf-8"))
+    assert f"({ceiling} ms)" in controls["notice"]
+    assert seat.sidecar(args.output, ".dispatch.bin").read_bytes() == args.dispatch.read_bytes()
+    assert controls["disallowed_tools"] == [] and controls["background_tasks"] == "disabled"
+    assert record(args)["attempts"][0]["stream_check"]["status"] == "clean"
+
+
+def test_887_R4_1_codex_seat_records_carry_neither_field(job):
+    args, _ = job
+    args.vendor = args.own_vendor = "codex"
+    assert seat.run_dispatch(args) == 0
+    assert seen(args, "codex")["background_switch"] is None
+    assert "launch_controls" not in json.loads(seat.sidecar(args.output, ".request.json").read_bytes())
+    assert "stream_check" not in record(args)["attempts"][0]
+
+
+@pytest.mark.parametrize("face", ["daemon", "late-reply"])
+def test_887_R3_2_seat_refuses_work_outliving_the_return_without_fallback(job, capsys, face):
+    from test_launch_controls import daemon_face, late_reply_face
+    args, _ = job
+    raw = (daemon_face() if face == "daemon" else late_reply_face()).decode("utf-8")
+    configure(job, {"claude": {"stdout": raw}})
+    assert seat.run_dispatch(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "work_outlived_return"
+    assert [attempt["vendor"] for attempt in logged["attempts"]] == ["claude"]
+    attempt = logged["attempts"][0]
+    assert attempt["outcome"] == "work_outlived_return"
+    assert attempt["stream_check"]["status"] == "work_outlived_return"
+    assert "work outlived the return" in attempt["reason"]
+    assert not args.output.exists() and logged["result"]["published_output"] is None
+    assert not seat.sidecar(args.output, ".source.bin").read_bytes()
+    assert seat.sidecar(args.output, ".claude.stdout.log").read_bytes() == raw.encode("utf-8")
+    assert "work outlived the return" in capsys.readouterr().err

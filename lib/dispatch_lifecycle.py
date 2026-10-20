@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -61,6 +63,171 @@ def claude_terminal(raw):
         if isinstance(event, dict) and event.get("type") == "result":
             result = event
     return result
+
+
+# Every Claude launch from either launcher runs with background work switched
+# off and one command allowed to run as long as the launch itself (#887). The
+# process environment wins over every settings source a launch reads, so these
+# overwrite any inherited value rather than defer to one.
+CLAUDE_BACKGROUND_SWITCH = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+CLAUDE_COMMAND_CEILING = "BASH_MAX_TIMEOUT_MS"
+# Each can leave work running past the reply, or schedule a continuation the
+# reply ends, even with background tasks switched off. Seats and use consumers
+# name none of them in their --tools list.
+CLAUDE_DISALLOWED_TOOLS = ("Monitor", "ScheduleWakeup", "CronCreate", "Workflow")
+CLAUDE_DISALLOWED_ARGUMENT = "--disallowedTools=" + ",".join(CLAUDE_DISALLOWED_TOOLS)
+NOT_RECORDED = "not recorded: launched before #887"
+
+
+def claude_command_ceiling_ms(allocation_seconds):
+    return max(1, math.floor(allocation_seconds * 1000))
+
+
+def claude_launch_env(base, allocation_seconds):
+    env = dict(os.environ if base is None else base)
+    env[CLAUDE_BACKGROUND_SWITCH] = "1"
+    env[CLAUDE_COMMAND_CEILING] = str(claude_command_ceiling_ms(allocation_seconds))
+    return env
+
+
+def claude_launch_notice(allocation_seconds):
+    ceiling = claude_command_ceiling_ms(allocation_seconds)
+    seconds = f"{ceiling / 1000:.3f}".rstrip("0").rstrip(".")
+    return (
+        "Launcher notice: background work is switched off in this session. A command that "
+        "outlives its timeout is stopped and reported to you, and work still running when you "
+        "give your final reply fails this turn. One command may run up to "
+        f"{seconds} seconds ({ceiling} ms), the time this launch gives you: when a command needs "
+        f"longer than the 2-minute default, pass a Bash timeout of up to {ceiling}.\n"
+    ).encode("utf-8")
+
+
+def claude_launch_controls(allocation_seconds, notice, *, disallowed):
+    return {
+        "background_tasks": "disabled",
+        "background_tasks_source": f"child process environment {CLAUDE_BACKGROUND_SWITCH}=1",
+        "command_ceiling_ms": claude_command_ceiling_ms(allocation_seconds),
+        "command_ceiling_source": f"child process environment {CLAUDE_COMMAND_CEILING}",
+        "disallowed_tools": list(disallowed),
+        "notice": notice.decode("utf-8"),
+        "notice_sha256": hashlib.sha256(notice).hexdigest(),
+    }
+
+
+TASK_EVENTS = frozenset({"task_started", "task_updated", "task_progress", "task_notification"})
+TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "killed", "stopped"})
+
+
+def _opener(event):
+    text = event.get("result")
+    return event.get("num_turns") == 0 and not (isinstance(text, str) and text.strip())
+
+
+def _task_status(event):
+    if event.get("subtype") == "task_updated":
+        patch = event.get("patch")
+        return patch.get("status") if isinstance(patch, dict) else None
+    if event.get("subtype") == "task_notification":
+        return event.get("status")
+    return None
+
+
+def claude_stream_check(raw):
+    """Find work that outlived the session's return in a stream-json log.
+
+    The return is the first result that is not a resumed session's opening
+    empty result. The turn ends at the first post_turn_summary before it, or at
+    the return. Events at or before the last opener belong to an earlier
+    session and never count. The check fires on (a) a further result after the
+    return, (b) a task event after it, or (c) a task still running when the
+    turn ended, including one that reports completion afterwards.
+    """
+    events = []
+    for number, line in enumerate(raw.splitlines(), 1):
+        try:
+            event = json.loads(line)
+        except (UnicodeError, ValueError):
+            continue
+        if isinstance(event, dict):
+            events.append((number, event))
+    check = {"status": "unread", "reason": None, "return_line": None, "turn_end_line": None,
+             "result_lines": [n for n, e in events if e.get("type") == "result"],
+             "causes": [], "backgrounded_tasks_observed": [], "return": None}
+    if not events:
+        check["reason"] = "no stream events were parsed"
+        return check
+    backgrounded = []
+    for _number, event in events:
+        if event.get("type") != "system" or event.get("subtype") not in TASK_EVENTS:
+            continue
+        patch = event.get("patch") if isinstance(event.get("patch"), dict) else {}
+        if (event.get("is_backgrounded") is True or patch.get("is_backgrounded") is True
+                or event.get("task_type") == "local_workflow"):
+            task = event.get("task_id")
+            if task not in backgrounded:
+                backgrounded.append(task)
+    check["backgrounded_tasks_observed"] = backgrounded
+    opener_line, returned = 0, None
+    for number, event in events:
+        if event.get("type") != "result":
+            continue
+        if _opener(event):
+            opener_line = number
+            continue
+        returned = (number, event)
+        break
+    if returned is None:
+        check["reason"] = "no result followed the session's opening"
+        return check
+    return_line, check["return"] = returned
+    turn_end = next((number for number, event in events if opener_line < number < return_line
+                     and event.get("type") == "system" and event.get("subtype") == "post_turn_summary"),
+                    return_line)
+    check.update(return_line=return_line, turn_end_line=turn_end)
+    causes = []
+    for number, event in events:
+        if number > return_line and event.get("type") == "result":
+            causes.append({"kind": "further_reply", "task_id": None, "line": number})
+    for number, event in events:
+        if (number > return_line and event.get("type") == "system"
+                and event.get("subtype") in TASK_EVENTS):
+            causes.append({"kind": "task_event_after_return", "task_id": event.get("task_id"),
+                           "line": number})
+    seen, ended = {}, set()
+    for number, event in events:
+        if not opener_line < number < turn_end:
+            continue
+        if event.get("type") != "system" or event.get("subtype") not in TASK_EVENTS:
+            continue
+        task = event.get("task_id")
+        seen.setdefault(task, number)
+        if _task_status(event) in TERMINAL_TASK_STATUSES:
+            ended.add(task)
+    for task, number in seen.items():
+        if task not in ended:
+            causes.append({"kind": "task_running_at_return", "task_id": task, "line": number})
+    check["causes"] = causes
+    check["status"] = "work_outlived_return" if causes else "clean"
+    return check
+
+
+def stream_check_record(check):
+    """The run-record form: everything but the selected return's payload."""
+    return {key: value for key, value in check.items() if key != "return"}
+
+
+def stream_check_reason(check):
+    described = []
+    for cause in check["causes"]:
+        if cause["kind"] == "further_reply":
+            described.append(f"a further reply at stdout line {cause['line']}")
+        elif cause["kind"] == "task_event_after_return":
+            described.append(f"task {cause['task_id']} reported at stdout line {cause['line']} after the return")
+        else:
+            described.append(f"task {cause['task_id']} (started by stdout line {cause['line']}) "
+                             "was still running when the turn ended")
+    return ("work outlived the return: " + "; ".join(described)
+            + f"; the earlier reply is the result at stdout line {check['return_line']}, retained in the log")
 
 
 class GrowingRun:

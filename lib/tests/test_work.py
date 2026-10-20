@@ -8152,6 +8152,38 @@ def test_invalid_artifact_outcome_cannot_supply_other_stage_continuity(tmp_path)
     assert work._resume_source("example/product#12", "build", store) is None
 
 
+def test_R3_5_refused_turn_is_never_success_but_resumes_its_own_session(tmp_path):
+    """#887 R3-5: work that outlived the return keeps its session, never its credit."""
+    assert "work_outlived_return" in work.RESUMABLE_BUNDLE_OUTCOMES
+    assert "work_outlived_return" not in work.SUCCESSFUL_BUNDLE_OUTCOMES
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="build", outcome="work_outlived_return")
+    assert work._matching_bundles("example/product#12", {"build"}, store) == []
+    source = work._resume_source("example/product#12", "build", store)
+    assert source is not None and source.session == SESSION
+    for stage in ("floor", "review-disposition"):
+        assert work._resume_source("example/product#12", stage, store).session == SESSION
+    fixture = state(AFFIRMED)
+    fixture.record_root = store
+    assert work._producer_vendor(fixture, work.RESUME_SOURCE_STAGES["build"])[0] == "codex"
+
+
+def test_R3_5_refused_author_flags_a_later_draft_and_resumes(tmp_path):
+    store = tmp_path / "dispatches"
+    dispatch_bundle(store, stage="artifact", outcome="work_outlived_return")
+    failed_path = store / "artifact" / "result.md.run.json"
+    fixture = state(AFFIRMED, ARTIFACT)
+    fixture.issue_comments[0]["created_at"] = "2026-09-19T00:00:00Z"
+    fixture.record_root = store
+    lawful, invalid = work.validate_marker_claims(fixture)
+    assert not any(marker.name == "artifact" for marker in lawful)
+    claim = next(claim for claim in invalid if claim["name"] == "artifact")
+    assert claim["reason"] == f"latest artifact dispatch has a failed return: {failed_path}"
+    assert work.resume_session(fixture, "artifact", store) == SESSION
+    recommendation = work.decide(fixture, RULES)
+    assert work._named_continuity(fixture, "artifact", recommendation) == "resume"
+
+
 @pytest.mark.parametrize("vendor", ["codex", "claude"])
 @pytest.mark.parametrize("first_return", ["/tmp/private/artifact.md", "", "oversized"])
 @pytest.mark.parametrize("custom_dispatch", [False, True])

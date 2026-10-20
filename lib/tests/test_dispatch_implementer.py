@@ -1,6 +1,7 @@
 import json
 import base64
 import hashlib
+import math
 import subprocess
 import os
 from pathlib import Path
@@ -438,6 +439,9 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
     args, scenario = job
     inherited = '-q -k "passing or policy"'
     monkeypatch.setenv("PYTEST_ADDOPTS", inherited)
+    # A parent that switches background work back on cannot reach the child (#887 R1-1).
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0")
+    monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "300000")
     before = dict(os.environ)
     args.vendor = "claude"
     session = "f0cb89b1-e040-4e6e-919b-4b4e58c717d2"
@@ -457,6 +461,7 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
         "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
         "--setting-sources", "user", "--plugin-dir", str(LIB.parent),
         "--strict-mcp-config", "--no-chrome", "--add-dir", str(args.root.resolve()),
+        "--disallowedTools=Monitor,ScheduleWakeup,CronCreate,Workflow",
         "--settings", args.launch_settings_path,
     ]
     if resume:
@@ -464,6 +469,9 @@ def test_claude_launch_and_resume_keep_pytest_environment(job, monkeypatch, resu
     assert observed["argv"] == expected
     assert observed["pytest_addopts"] == inherited
     assert observed["additional_claude_md"] == "1"
+    assert observed["background_switch"] == "1"
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert observed["command_ceiling"] == str(math.floor(request["recipient_allocation_seconds"] * 1000))
     assert dict(os.environ) == before
 
 
@@ -1583,6 +1591,9 @@ def test_artifact_byte_bound_keeps_exact_return_and_generated_context(
     assert Path(request["context"]["path"]).read_bytes() == effective_context
     captured = json.loads((args.root / f"seen-{vendor}.json").read_bytes())
     effective_input = effective_context + b"\n\n" + original_dispatch
+    if vendor == "claude":
+        # The launcher's #887 notice closes the bytes the child receives.
+        effective_input += b"\n\n" + request["launch_controls"]["notice"].encode("utf-8")
     assert base64.b64decode(captured["stdin"]) == effective_input
     assert request["effective_input_sha256"] == hashlib.sha256(effective_input).hexdigest()
     assert request["context"]["sha256"] == hashlib.sha256(effective_context).hexdigest()
@@ -1854,3 +1865,92 @@ def test_resumed_claude_separates_this_invocations_attachment(job, monkeypatch):
     assert instructions["status"] == "partial"
     assert {v["path"]: v["delivered"] for v in instructions["values"]} == {
         "/t/CLAUDE.md": "earlier-in-session", "/t/docs/a.md": "this-invocation"}
+
+
+def claude_job(job, monkeypatch, stdout):
+    args, scenario = job
+    args.vendor = "claude"
+    monkeypatch.setattr(implementer, "resolve_command",
+                        lambda *_: [sys.executable, str(LIB / "tests/seat_cli.py"), "claude", str(scenario)])
+    scenario.write_bytes(json.dumps({"claude": {"stdout": stdout}}).encode())
+    return args
+
+
+@pytest.mark.parametrize("stage", ["build", "floor", "review-disposition"])
+@pytest.mark.parametrize("continuity", ["fresh", "resume", "handover"])
+def test_887_R1_1_R2_1_R4_1_every_claude_route_is_protected_and_recorded(job, monkeypatch, stage, continuity):
+    from test_launch_controls import SESSION, healthy
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0")
+    args = claude_job(job, monkeypatch, healthy().decode("utf-8"))
+    args.stage = stage
+    if continuity == "resume":
+        args.resume = SESSION
+    elif continuity == "handover":
+        args.session_id = SESSION
+    assert implementer.run_implementer(args) == 0
+    captured = json.loads((args.root / "seen-claude.json").read_bytes())
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    controls = request["launch_controls"]
+    assert captured["background_switch"] == "1"
+    assert captured["command_ceiling"] == str(math.floor(request["recipient_allocation_seconds"] * 1000))
+    assert controls["command_ceiling_ms"] == int(captured["command_ceiling"])
+    assert controls["disallowed_tools"] == ["Monitor", "ScheduleWakeup", "CronCreate", "Workflow"]
+    assert "--disallowedTools=Monitor,ScheduleWakeup,CronCreate,Workflow" in captured["argv"]
+    sent = base64.b64decode(captured["stdin"])
+    assert sent.endswith(b"\n\n" + controls["notice"].encode("utf-8"))
+    assert request["effective_input_sha256"] == hashlib.sha256(sent).hexdigest()
+    assert request["prompt_composition"]["effective_input_sha256"] == hashlib.sha256(sent).hexdigest()
+    assert record(args)["attempts"][0]["stream_check"]["status"] == "clean"
+    # The entrance's composition check reproduces the same bytes from the record.
+    import work
+    assert work._composition_error(request, None) is None
+    request["launch_controls"]["notice"] += "changed"
+    assert "launch notice" in work._composition_error(request, None)
+
+
+def test_887_R4_1_codex_implementer_records_carry_neither_field(job):
+    args, scenario = job
+    configure(job, {"stdout": success_events(), "message": "built"})
+    assert implementer.run_implementer(args) == 0
+    request = json.loads(implementer.records.sidecar(args.output, ".request.json").read_bytes())
+    assert "launch_controls" not in request
+    assert "stream_check" not in record(args)["attempts"][0]
+    assert seen(args)["background_switch"] is None
+
+
+@pytest.mark.parametrize("face", ["daemon", "late-reply"])
+def test_887_R3_2_R3_3_refused_turn_publishes_nothing_and_keeps_its_session(job, monkeypatch, capsys, face):
+    from test_launch_controls import SESSION, daemon_face, late_reply_face
+    raw = daemon_face() if face == "daemon" else late_reply_face()
+    args = claude_job(job, monkeypatch, raw.decode("utf-8"))
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "work_outlived_return"
+    attempt = logged["attempts"][0]
+    assert attempt["outcome"] == "work_outlived_return"
+    assert attempt["observed"]["session_id"] == SESSION
+    check = attempt["stream_check"]
+    expected = ({"task_event_after_return", "task_running_at_return"} if face == "daemon"
+                else {"further_reply"})
+    assert {cause["kind"] for cause in check["causes"]} == expected
+    assert f"result at stdout line {check['return_line']}" in attempt["reason"]
+    assert not args.output.exists() and logged["result"]["published_output"] is None
+    assert not implementer.records.sidecar(args.output, ".source.bin").read_bytes()
+    # Every event is retained, the earlier reply and any later one included.
+    assert implementer.records.sidecar(args.output, ".claude.stdout.log").read_bytes() == raw
+    assert logged["attempts"][0]["usage"]["dispatch"]["staffing_status"] == "qualified"
+    diagnostic = capsys.readouterr().err
+    assert "refused turn" in diagnostic and SESSION in diagnostic
+
+
+def test_887_R3_2_refused_author_resumes_and_is_not_validated(job, monkeypatch):
+    from test_launch_controls import daemon_face
+    args = claude_job(job, monkeypatch, daemon_face().decode("utf-8"))
+    args.stage = "artifact"
+    supply_artifact_brief(args)
+    assert implementer.run_implementer(args) == 1
+    logged = record(args)
+    assert logged["outcome"] == "work_outlived_return"
+    assert "return_validation" not in logged["result"]
+    captured = json.loads((args.root / "seen-claude.json").read_bytes())
+    assert captured["background_switch"] == "1"

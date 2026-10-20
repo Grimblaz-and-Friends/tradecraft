@@ -31,7 +31,9 @@ import uuid
 
 import dispatch_record as records
 import cold_draft
-from dispatch_lifecycle import claude_terminal
+from dispatch_lifecycle import (claude_launch_controls, claude_launch_env, claude_launch_notice,
+                                claude_stream_check, claude_terminal, stream_check_reason,
+                                stream_check_record)
 import launch_settings
 import run_lifecycle as lifecycle
 from codex_pytest import pytest_addopts_override
@@ -302,14 +304,19 @@ def error_reason(value) -> str | None:
     return None
 
 
-def interpret(vendor, result, last_message):
+def interpret(vendor, result, last_message, check=None):
     """Return (outcome, reason, verdict); an adverse judgement is still success."""
     stdout = result.stdout.decode("utf-8")
     stderr = result.stderr.decode("utf-8", errors="replace")
     message = ""
     failure = None
     if vendor == "claude":
-        payload = claude_terminal(result.stdout)
+        check = claude_stream_check(result.stdout) if check is None else check
+        # Work that outlived the return is never success and never a reason to
+        # try another vendor; every event stays in the stdout log.
+        if check["status"] == "work_outlived_return":
+            return "work_outlived_return", stream_check_reason(check), ""
+        payload = check["return"] or claude_terminal(result.stdout)
         if isinstance(payload, dict) and payload.get("type") == "result":
             message = payload.get("result")
             message = message if isinstance(message, str) else ""
@@ -563,6 +570,13 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
         request["comparison_vendor_source"] = args.own_vendor_source or "caller-selected"
         request["caller_limit_seconds"] = args.timeout_seconds
         request["recipient_allocation_seconds"] = deadline.remaining()
+        claude_notice = None
+        if "claude" in vendors:
+            # One ceiling for the request: a Claude attempt's own allocation is
+            # never larger, and the process is stopped there regardless.
+            claude_notice = claude_launch_notice(request["recipient_allocation_seconds"])
+            request["launch_controls"] = claude_launch_controls(
+                request["recipient_allocation_seconds"], claude_notice, disallowed=())
         request["revision_before"] = records.git_revision(root)
         request["input"] = str(input_path)
         if judged_draft is not None:
@@ -663,7 +677,13 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                 record["actual_vendor"] = vendor
                                 allocation = deadline.remaining()
                                 attempt["allocation_seconds"] = allocation
-                                result = run_process(command, input=prompt, cwd=root, timeout=allocation,
+                                launch_input, launch_env = prompt, None
+                                if vendor == "claude":
+                                    launch_input = prompt + b"\n\n" + claude_notice
+                                    launch_env = claude_launch_env(
+                                        os.environ, request["recipient_allocation_seconds"])
+                                result = run_process(command, input=launch_input, cwd=root, timeout=allocation,
+                                                     env=launch_env,
                                                      on_output=growing.output, on_tick=growing.tick,
                                                      on_launch=growing.launched,
                                                      cleanup_deadline=deadline.cleanup_end)
@@ -720,9 +740,13 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                                     growing.finish_attempt()
                                 attempt[stream] = str(log)
                                 attempt[stream + "_encoding"] = "raw-bytes"
+                            check = None
+                            if vendor == "claude" and attempt["launched"]:
+                                check = claude_stream_check(result.stdout)
+                                attempt["stream_check"] = stream_check_record(check)
                             if returned:
                                 try:
-                                    outcome, reason, message = interpret(vendor, result, last_message)
+                                    outcome, reason, message = interpret(vendor, result, last_message, check)
                                 except (UnicodeError, ValueError) as exc:
                                     reason = f"could not interpret {vendor} return: {exc}"
                                     attempt.update(outcome="error", reason=reason)
@@ -786,6 +810,10 @@ def _run_dispatch(args, deadline, *, now=None) -> int:
                     streams[source_path].flush()
                     record["result"]["source_output"] = str(source_path)
                     record["result"]["source_output_unavailable_reason"] = None
+                elif any(attempt["outcome"] == "work_outlived_return"
+                         for attempt in record["attempts"]):
+                    # Recorded as itself, never as the vendor-availability outcome.
+                    record["outcome"] = "work_outlived_return"
                 elif any(attempt["outcome"] == "completed_no_output"
                          for attempt in record["attempts"]):
                     record["outcome"] = "completed_no_output"
