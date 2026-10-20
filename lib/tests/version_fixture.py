@@ -22,6 +22,7 @@ FORK = "contributor/product"
 HEAD = "a" * 40
 BASE = "c" * 40
 ADVANCED = "d" * 40
+MERGE_BASE = "b" * 40
 PRODUCER = "fixture-holder"
 SPEC = {"path": "package.json", "field": "release", "increment": "minor"}
 RULES = {"schema_version": 1, "rules": [
@@ -44,7 +45,8 @@ def brief(risk="ordinary", lane="mechanical"):
 
 
 def fixture_state(*, version="2.9.9", base_version="2.9.9", files=None,
-                  risk="ordinary", lane="mechanical", draft=True, pr=True, ref="main", fork=False):
+                  risk="ordinary", lane="mechanical", draft=True, pr=True, ref="main", fork=False,
+                  merge_base_version=None):
     term = brief(risk, lane)
     texts = [term]
     if lane != "mechanical":
@@ -73,16 +75,20 @@ def fixture_state(*, version="2.9.9", base_version="2.9.9", files=None,
                            "user": {"login": PRODUCER}}, issue_comments=comments, pr=pull if pr else None,
                            config=work.WorkConfig(marker_producers=frozenset({PRODUCER}), reviewer_label="reviewers"),
                            files=inventory, changed_paths=[item.get("filename", "") for item in inventory if isinstance(item, dict)])
-    transport = RecordingGitHub(state, version=version, base_version=base_version)
+    transport = RecordingGitHub(state, version=version, base_version=base_version,
+                                merge_base_version=merge_base_version)
     return state, transport
 
 
 class RecordingGitHub:
-    def __init__(self, state, *, version="2.9.9", base_version="2.9.9"):
+    def __init__(self, state, *, version="2.9.9", base_version="2.9.9", merge_base_version=None):
         self.state = state
         self.version = json.dumps({SPEC["field"]: version}).encode()
         self.base_version = json.dumps({SPEC["field"]: base_version}).encode()
+        # The merge base the PR's three-dot file list is taken against.
+        self.merge_base_version = json.dumps({SPEC["field"]: merge_base_version or base_version}).encode()
         self.base_sha = BASE
+        self.merge_base_sha = MERGE_BASE
         self.labels = set()
         self.calls = []
         self.effects = []
@@ -113,12 +119,14 @@ class RecordingGitHub:
             if f"ref={self.base_sha}" in endpoint:
                 return blob(json.dumps(self.floor_case["base_policy"]["content"]).encode()
                             if "/change-proof.json?" in endpoint else self.base_version)
+            if f"ref={self.merge_base_sha}" in endpoint and endpoint.startswith(f"{prefix}/contents/"):
+                return blob(self.merge_base_version)
             head = self.state.pr["head"]
             if endpoint.startswith(f"repos/{head['repo']['full_name']}/contents/") and f"ref={head['sha']}" in endpoint:
                 return blob(self.version)
             raise work.WorkError(f"unexpected version source: {endpoint}")
         if "/compare/" in endpoint:
-            return {"behind_by": 0}
+            return {"behind_by": 0, "merge_base_commit": {"sha": self.merge_base_sha}}
         if "/rules/branches/" in endpoint:
             return []
         if "/protection" in endpoint:
@@ -204,6 +212,8 @@ def _save_fixture(path, transport):
                "pr": state.pr, "files": state.files,
                "base_sha": transport.base_sha,
                "base_version": base64.b64encode(transport.base_version).decode(),
+               "merge_base_sha": transport.merge_base_sha,
+               "merge_base_version": base64.b64encode(transport.merge_base_version).decode(),
                "version": base64.b64encode(transport.version).decode(),
                "labels": sorted(transport.labels), "comments": transport.comments,
                "calls": transport.calls, "effects": transport.effects}
@@ -217,6 +227,8 @@ def _load_fixture(path):
     transport = RecordingGitHub(state)
     transport.base_sha = data["base_sha"]
     transport.base_version = base64.b64decode(data["base_version"])
+    transport.merge_base_sha = data.get("merge_base_sha", MERGE_BASE)
+    transport.merge_base_version = base64.b64decode(data.get("merge_base_version", data["base_version"]))
     transport.version = base64.b64decode(data["version"])
     transport.labels = set(data["labels"])
     transport.comments = data["comments"]

@@ -74,6 +74,31 @@ def only_version(before: bytes, after: bytes, spec: dict) -> bool:
     return json_equal(left, right)
 
 
+def owing(records, spec, matches, field_only) -> tuple[list[str], bool]:
+    """Count the use-rule paths that make a change owe a version.
+
+    records: [{"status": str, "filename": str, "previous_filename": str | None}],
+    removals kept and both names of a rename. A declared file confined to its
+    field owes nothing by itself; field_only is consulted only for one ordinary
+    modification of that file, and every other shape still counts.
+    """
+    names = set()
+    for record in records:
+        names.add(record["filename"])
+        if record.get("status") == "renamed" and record.get("previous_filename"):
+            names.add(record["previous_filename"])
+    matched = {name for name in names if matches(name)}
+    if spec is None or spec["path"] not in matched:
+        return sorted(matched), False
+    naming = [record for record in records
+              if spec["path"] in (record.get("filename"), record.get("previous_filename"))]
+    if (len(naming) == 1 and naming[0].get("status") == "modified"
+            and not naming[0].get("previous_filename") and field_only()):
+        matched.discard(spec["path"])
+        return sorted(matched), True
+    return sorted(matched), False
+
+
 def increment(content: bytes, spec: dict) -> str:
     parts = [int(part) for part in document(content, spec)[spec["field"]].split(".")]
     selected = ("major", "minor", "patch").index(spec["increment"])

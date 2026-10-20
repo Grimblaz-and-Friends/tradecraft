@@ -12,7 +12,7 @@ import pytest
 LIB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LIB))
 import work
-from test_catch_up import SPEC, RULES, graph, registered, git, commit
+from test_catch_up import SPEC, RULES, LAB_RULES, graph, registered, git, commit
 from test_catch_up import duplicate_member_conflict, invalid_version_stage, INVALID_VERSION_STAGES, masked_merge_results
 from test_work import AFFIRMED, ARTIFACT, WOULD, HOLDER, SESSION, state, dispatch_bundle
 
@@ -168,15 +168,18 @@ def test_C1_C6_mixed_catch_up_then_composed_builder_lands(launch, monkeypatch, c
     original = work._catch_up_version_conflict
     observed = []
     def resolved(*args):
-        original(*args)
-        observed.append((work._catch_up_conflicts(implementation), json.loads((implementation / "version.json").read_bytes())))
+        carried = original(*args)
+        observed.append((carried, work._catch_up_conflicts(implementation), json.loads((implementation / "version.json").read_bytes())))
+        return carried
     monkeypatch.setattr(work, "_catch_up_version_conflict", resolved)
     work._execute_catch_up(transport, catch_state, holder, None, "holder-id", RULES)
     refused = json.loads(capsys.readouterr().out)
     assert refused["reason"] == "builder-required"
     assert refused["conflicts"] == ["src/own"] and "version.json" not in refused["detail"]
     assert refused["next"] == {"stage": "build", "continuity": "resume"}
-    assert observed == [(["src/own"], {"version": "1.5.0", "name": "own"})]
+    # The resolver stages the base's value as a placeholder and reports the PR side's field;
+    # the version decision runs only once no conflict remains.
+    assert observed == [("1.3.0", ["src/own"], {"version": "1.4.0", "name": "own"})]
     after = snapshot(implementation)
     assert after[0] == before[0] and after[2:] == before[2:]
     assert git(implementation, "ls-files", "-u") == ""
@@ -646,3 +649,34 @@ def test_C11_legacy_recomposition_retains_final_obligation_and_sources(launch, m
     assert work.build_reach.PRESERVATION.encode() in record["prompt"]
     assert b"map every artifact acceptance criterion" in record["prompt"]
     assert b"Remain on that branch" in record["prompt"]
+
+
+@pytest.mark.parametrize("case", ["lab-only-field-conflict", "shipped-field-conflict", "lab-only-base-value"])
+def test_C5_merge_obligation_follows_the_same_owing_answer(launch, case):
+    registered, fixture, inputs, compose = launch
+    holder, implementation, branch, remote, transport, catch_state = registered
+    if case == "lab-only-base-value":
+        # The field does not conflict and the merged result already holds the base's value.
+        commit(holder, "src/own", "incoming\n")
+    else:
+        commit(implementation, "version.json", '{"version":"1.3.0","name":"fixture"}\n')
+    pinned = commit(holder, "version.json", '{"version":"1.4.0","name":"fixture"}\n')
+    git(implementation, "push")
+    git(holder, "push", "origin", "main")
+    rules = RULES if case == "shipped-field-conflict" else LAB_RULES
+    record = compose(rules=rules)
+    prompt = record["prompt"].decode("utf-8")
+    if case == "lab-only-field-conflict":
+        assert_obligation(record, pinned, [], "1.4.0")
+        assert "Reason: not owed: field set back to the base's 1.4.0 (the change carried 1.3.0)." in prompt
+    elif case == "shipped-field-conflict":
+        assert_obligation(record, pinned, [], "1.5.0")
+        assert "Reason: owed (src/own); base changed the declared file: base 1.4.0 incremented to 1.5.0." in prompt
+    else:
+        assert_obligation(record, pinned, ["src/own"], None)
+        assert "Reason:" not in prompt
+    assert "governs the merge" in prompt if case != "lab-only-base-value" else "governs the merge" not in prompt
+    follow_merge_input(registered, record["prompt"])
+    expected = {"lab-only-field-conflict": "1.4.0", "shipped-field-conflict": "1.5.0",
+                "lab-only-base-value": "1.4.0"}[case]
+    assert json.loads((implementation / "version.json").read_bytes())["version"] == expected

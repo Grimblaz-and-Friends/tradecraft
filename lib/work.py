@@ -3346,9 +3346,10 @@ def _version_needs_builder(report: dict | None) -> bool:
             or (report.get("status") == "unverifiable" and report.get("remedy") == "builder-repair"))
 
 
-def _version_inventory(state: WorkState, rules: dict) -> tuple[list[str], str | None]:
-    """Use the existing matcher, with removals and both rename names retained."""
-    matched = set()
+def _version_inventory(state: WorkState, rules: dict, spec: dict | None = None,
+                       field_only=None) -> tuple[list[str], bool, bool, str | None]:
+    """Feed the shared owing count, with removals and both rename names retained."""
+    records = []
     seen = set()
     problems = []
     if state.file_inventory_error:
@@ -3369,7 +3370,7 @@ def _version_inventory(state: WorkState, rules: dict) -> tuple[list[str], str | 
         if name in seen:
             problems.append(f"Duplicate PR filename: {name}")
         seen.add(name)
-        names = [name]
+        record = {"status": item.get("status"), "filename": name, "previous_filename": None}
         status = item.get("status")
         if not isinstance(status, str) or status not in raw_output.STATUSES:
             problems.append(f"Missing or unknown PR file status for {name}")
@@ -3378,9 +3379,50 @@ def _version_inventory(state: WorkState, rules: dict) -> tuple[list[str], str | 
             if previous is None:
                 problems.append(f"Renamed PR file has no previous_filename: {name}")
             else:
-                names.append(previous)
-        matched.update(path for path in names if use_required([path], rules))
-    return sorted(matched), "; ".join(problems) or None
+                record["previous_filename"] = previous
+        records.append(record)
+    problem = "; ".join(problems) or None
+    declared_changed = spec is not None and any(
+        spec["path"] in (record["filename"], record["previous_filename"]) for record in records)
+    # An incomplete inventory grants no field-only exemption.
+    check = field_only if field_only is not None and problem is None else (lambda: False)
+    paths, declared_field_only = version_policy.owing(
+        records, spec, lambda path: use_required([path], rules), check)
+    return paths, declared_field_only, declared_changed, problem
+
+
+def _version_merge_base(transport: GitHubREST, pr: dict, evidence: dict) -> tuple[dict, str, str]:
+    """Read the base tip once and the merge base GitHub's PR file list is taken against."""
+    head = (pr.get("head") or {}).get("sha")
+    if not isinstance(head, str) or HEAD_SHA.fullmatch(head) is None:
+        raise WorkError("version head has no full revision")
+    if "tip" not in evidence:
+        evidence["tip"] = _floor_base_tip(transport, pr)
+    base, _endpoint = evidence["tip"]
+    if "merge_base" not in evidence:
+        endpoint = f"repos/{base['repository']}/compare/{base['sha']}...{head}"
+        common = _dict(_dict(transport.get(endpoint), endpoint).get("merge_base_commit"), endpoint).get("sha")
+        if not isinstance(common, str) or HEAD_SHA.fullmatch(common) is None:
+            raise WorkError("version merge base has no full revision")
+        evidence["merge_base"] = common
+    return base, evidence["merge_base"], head
+
+
+def _version_report_field_only(transport: GitHubREST | None, pr: dict, spec: dict,
+                               evidence: dict) -> bool:
+    """Judge field-only confinement on the merge-base and head trees the file list describes."""
+    try:
+        if transport is None:
+            return False
+        base, common, head = _version_merge_base(transport, pr, evidence)
+        repository = ((pr.get("head") or {}).get("repo") or {}).get("full_name")
+        if not isinstance(repository, str) or not repository:
+            return False
+        before = _version_blob(transport, base["repository"], common, spec)
+        after = _version_blob(transport, repository, head, spec)
+        return version_policy.only_version(before, after, spec)
+    except (AttributeError, KeyError, OSError, TypeError, UnicodeError, ValueError, WorkError):
+        return False
 
 
 def _version_coordinates(pr: dict, *, require_head_repository: bool = True) -> dict:
@@ -3454,9 +3496,13 @@ def _assess_version(state: WorkState, rules: dict, source: str,
     if state.pr is None and not composition:
         return report
     problem = None
+    declared_changed = False
+    evidence: dict = {}
     if state.pr is not None:
-        paths, problem = _version_inventory(state, rules)
-        report.update(paths=paths, owed=True if paths else None if problem else False)
+        paths, field_only, declared_changed, problem = _version_inventory(
+            state, rules, spec, lambda: _version_report_field_only(transport, state.pr, spec, evidence))
+        report.update(paths=paths, owed=True if paths else None if problem else False,
+                      declared_field_only=field_only, declared_changed=declared_changed)
         head = state.pr.get("head") or {}
         report["head"] = {"repository": (head.get("repo") or {}).get("full_name"),
                           "sha": head.get("sha"), "value": None}
@@ -3468,19 +3514,23 @@ def _assess_version(state: WorkState, rules: dict, source: str,
         if transport is None:
             raise WorkError("version evidence needs the entrance's read-only GitHub transport")
         if state.pr is not None:
-            require_head_repository = composition or report["owed"] is not False
+            require_head_repository = composition or report["owed"] is not False or declared_changed
             expected = _version_coordinates(state.pr, require_head_repository=require_head_repository)
             # Confirm inventory identity even when no path matches.
             pull_endpoint = f"repos/{state.repo}/pulls/{state.pr['number']}"
             current = _dict(transport.get(pull_endpoint), pull_endpoint)
             if _version_coordinates(current, require_head_repository=require_head_repository) != expected:
                 raise WorkError("version PR identity moved after inventory collection")
-            if not report["owed"] and not composition:
+            if not report["owed"] and not composition and not declared_changed:
                 report.update(status="not-required", message=(
                     "Complete PR inventory matches no use-rule path; no version bump is owed. "
                     "Base/head version values were not needed or read."))
                 return report
-            base, base_endpoint = _floor_base_tip(transport, state.pr)
+            fresh_tip = _floor_base_tip(transport, state.pr)
+            if "tip" in evidence and evidence["tip"][0]["sha"] != fresh_tip[0]["sha"]:
+                raise WorkError("version base tip moved during collection")
+            evidence["tip"] = fresh_tip
+            base, base_endpoint = fresh_tip
             basis = "actual PR base tip"
         else:
             repository_endpoint = f"repos/{state.repo}"
@@ -3500,6 +3550,17 @@ def _assess_version(state: WorkState, rules: dict, source: str,
             report["target"] = version_policy.increment(content, spec)
         except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
             raise WorkError(f"base version evidence for {spec['path']} field {spec['field']}: {exc}") from exc
+        unowed = state.pr is not None and not report["owed"] and not composition
+        if unowed:
+            # Row 3: a change owing no version must not move the base's value.
+            try:
+                _, common, _ = _version_merge_base(transport, state.pr, evidence)
+                content = _version_blob(transport, base["repository"], common, spec)
+                report["merge_base"] = {"sha": common,
+                                        "value": version_policy.document(content, spec)[spec["field"]]}
+            except (KeyError, OSError, UnicodeError, ValueError, WorkError) as exc:
+                raise WorkError(f"merge-base version evidence for {spec['path']} field {spec['field']}: {exc}") from exc
+            report["target"] = report["base"]["value"]
         head_problem = None
         if not composition:
             try:
@@ -3527,6 +3588,17 @@ def _assess_version(state: WorkState, rules: dict, source: str,
             return _version_unknown(
                 report, f"head version evidence for {spec['path']} field {spec['field']}: {head_problem}",
                 builder_repair=True)
+        if unowed:
+            head, held = report["head"]["value"], report["base"]["value"]
+            if head != report["merge_base"]["value"] and head != held:
+                report.update(status="blocked", met=False, unowed=True, message=(
+                    f"{spec['path']} field {spec['field']}: no version is owed; head {head} "
+                    f"moves the base's value {held}; restore {held}."))
+            else:
+                report.update(status="not-required", unowed=False, message=(
+                    "no version is owed; the declared field holds the base's value" if head == held else
+                    "no version is owed; the declared field is unchanged from the merge base"))
+            return report
         met = version_policy.parts(report["head"]["value"]) >= version_policy.parts(report["target"])
         report.update(status="satisfied" if met else "blocked", met=met,
                       message=f"{spec['path']} field {spec['field']}: base {report['base']['value']}, "
@@ -3546,7 +3618,12 @@ def _version_obligation_refusal(state: WorkState, stage: str) -> Decision | None
     context = (f"{spec.get('path')} field {spec.get('field')}: "
                f"base {(report.get('base') or {}).get('value')}, "
                f"head {(report.get('head') or {}).get('value')}, target {report.get('target')}.")
-    if report["status"] == "blocked":
+    if report["status"] == "blocked" and report.get("unowed"):
+        problem = report["message"]
+        prefix = f"{spec.get('path')} field {spec.get('field')}: "
+        if problem.startswith(prefix):
+            problem = problem[len(prefix):]
+    elif report["status"] == "blocked":
         problem = "owed version is below target."
     else:
         problem = report.get("error") or report["message"]
@@ -3567,14 +3644,15 @@ def _verify_version_identity(transport: GitHubREST, state: WorkState, pr: dict, 
     if report.get("declaration") is None:
         return
     try:
-        coordinates = _version_coordinates(pr, require_head_repository=report.get("owed") is not False)
+        coordinates = _version_coordinates(
+            pr, require_head_repository=report.get("owed") is not False or bool(report.get("declared_changed")))
         head, basis = report.get("head") or {}, report.get("base") or {}
         if (coordinates["head"] != head.get("sha")
                 or coordinates["head_repository"] != head.get("repository")
                 or any(coordinates["base"].get(key) != basis.get(key)
                        for key in ("repository", "repository_id", "ref"))):
             raise WorkError("version head repository, head or base identity moved")
-        if report.get("owed"):
+        if report.get("owed") or (report.get("base") or {}).get("sha"):
             base, _ = _floor_base_tip(transport, pr)
             expected = report.get("base") or {}
             if any(base.get(key) != expected.get(key) for key in ("repository", "repository_id", "ref", "sha")):
@@ -3603,9 +3681,12 @@ def _compose_version_instruction(state: WorkState, transport: GitHubREST | None,
         raise error
     spec, base = report["declaration"], report["base"]
     groups = [{"include": rule["include"], "exclude": rule["exclude"]} for rule in rules["rules"]]
-    action = (f"the merge obligation's prescribed version value {obligation.version_adjustment['value']} "
-              "governs this turn; set the field as that obligation directs. "
-              if obligation is not None and obligation.version_adjustment is not None else
+    prescribed = obligation.version_adjustment if obligation is not None else None
+    reason = f" ({prescribed['reason']})" if prescribed is not None and prescribed.get("reason") else ""
+    action = (f"the merge obligation's prescribed version value {prescribed['value']} "
+              f"governs the merge{reason}; if this turn's later work changes whether the final diff "
+              "owes a version, the final-diff rule here governs what you return. "
+              if prescribed is not None else
               "set that field to the target; retain a valid value already "
               "at least that target and do not downgrade it. ")
     return (f" Conditional version obligation: JSON file {json.dumps(spec['path'])}, top-level field "
@@ -3616,7 +3697,11 @@ def _compose_version_instruction(state: WorkState, transport: GitHubREST | None,
             "and both names of a rename, " + action + "An installed copy keyed on an unmoved "
             "version misses the shipped change. Excludes apply within their own group only: "
             + json.dumps(groups, ensure_ascii=True, sort_keys=True)
-            + ". Current matching paths: " + json.dumps(report["paths"], ensure_ascii=True) + ".")
+            + ". The declared file counts only when it changes beyond that field; a change confined "
+            "to the field owes nothing by itself. If the final PR diff owes no version, keep the field "
+            f"at the base's value {base['value']}; a pull request that owes none but moves it is "
+            "returned before readiness and proof."
+            + " Current matching paths: " + json.dumps(report["paths"], ensure_ascii=True) + ".")
 
 
 def _read_policy_state(transport: GitHubREST, repo: str, issue_number: int,
@@ -6399,7 +6484,8 @@ def _conflict_stages(content: bytes) -> dict[str, dict[int, tuple[str, str]]]:
 
 def _version_conflict_content(root: Path, spec: dict,
                               stages: dict[int, tuple[str, str]],
-                              base_version: str | None) -> bytes:
+                              base_version: str | None) -> tuple[bytes, str]:
+    """Resolve a field-only conflict, returning its bytes and the field as the PR side carried it."""
     modes = {mode for mode, _oid in stages.values()}
     if set(stages) != {1, 2, 3} or len(modes) != 1 or not modes <= {"100644", "100755"}:
         raise _VersionConflict("version conflict includes a replacement or mode change")
@@ -6409,8 +6495,10 @@ def _version_conflict_content(root: Path, spec: dict,
         if result.returncode:
             raise WorkError(f"cannot read version conflict blob: {_git_failure(result)}")
         try:
-            if stage == 2 and base_version is None:
-                base_version = version_policy.document(result.stdout, spec)[spec["field"]]
+            if stage == 2:
+                ours = version_policy.document(result.stdout, spec)[spec["field"]]
+                if base_version is None:
+                    base_version = ours
             contents.append(version_policy.replace_field(result.stdout, spec, "0.0.0"))
         except ValueError as exc:
             raise _VersionConflict(f"version conflict has unsupported JSON: {exc}") from exc
@@ -6426,23 +6514,24 @@ def _version_conflict_content(root: Path, spec: dict,
     if merged.returncode:
         raise WorkError(f"cannot classify version conflict: {_git_failure(merged)}")
     try:
-        return version_policy.replace_field(merged.stdout, spec, str(base_version))
+        return version_policy.replace_field(merged.stdout, spec, str(base_version)), ours
     except ValueError as exc:
         raise _VersionConflict(f"invalid resolved version content: {exc}") from exc
 
 
-def _catch_up_version_conflict(root: Path, spec: dict, base_version: str | None) -> None:
+def _catch_up_version_conflict(root: Path, spec: dict, base_version: str | None) -> str:
     path = spec["path"]
     listed = _git(["ls-files", "-u", "-z", "--", f":(literal){path}"], root)
     if listed.returncode:
         raise WorkError(f"cannot read version conflict stages: {_git_failure(listed)}")
     stages = _conflict_stages(listed.stdout).get(path, {})
-    content = _version_conflict_content(root, spec, stages, base_version)
+    content, ours = _version_conflict_content(root, spec, stages, base_version)
     target = root / path
     if target.is_symlink() or not _path_inside(target, root):
         raise WorkError("version file resolves outside the implementation root")
     target.write_bytes(content)
     _git_text(["add", "--", f":(literal){path}"], root, "stage resolved version field")
+    return ours
 
 
 def _pin_merge_base(transport: GitHubREST, base: dict, root: Path,
@@ -6462,20 +6551,94 @@ def _pin_merge_base(transport: GitHubREST, base: dict, root: Path,
     return pinned, endpoint
 
 
-def _merge_version_adjustment(root: Path, start: str, pinned: str,
-                               spec: dict | None) -> str | None:
-    if spec is None:
-        return None
-    common = _git_text(["merge-base", start, pinned], root, "read merge base")
-    changed = _git_text(
-        ["diff", "--no-renames", "--name-only", "-z", common, pinned,
-         "--", f":(literal){spec['path']}"], root, "read base-side version changes")
-    if not changed:
-        return None
+def _declared_base_value(root: Path, pinned: str, spec: dict) -> tuple[bytes | None, str | None]:
     content = _policy_blob(root, pinned, spec["path"])
     if content is None:
-        raise WorkError("declared base version file is unavailable")
-    return version_policy.increment(content, spec)
+        return None, None
+    try:
+        return content, version_policy.document(content, spec)[spec["field"]]
+    except (UnicodeError, ValueError) as exc:
+        raise WorkError(f"declared base version is unreadable: {exc}") from exc
+
+
+LOCAL_VERSION_STATUSES = {"M": "modified", "A": "added", "D": "removed", "T": "changed"}
+
+
+def _local_version_records(root: Path, pinned: str, merged: str) -> list[dict]:
+    """List the merged result against the pinned base: the PR file list once pushed."""
+    result = _git(["diff", "--no-renames", "--name-status", "-z", pinned, merged], root)
+    if result.returncode:
+        raise WorkError(f"cannot read merged-result changes: {_git_failure(result)}")
+    fields = result.stdout.split(b"\0")
+    if fields[-1] != b"" or len(fields) % 2 != 1:
+        raise WorkError("invalid merged-result change records")
+    records = []
+    for letter, raw in zip(fields[:-1:2], fields[1:-1:2]):
+        status = LOCAL_VERSION_STATUSES.get(letter.decode("ascii", errors="replace"))
+        if status is None or not raw:
+            raise WorkError(f"unexpected merged-result change record: {letter!r}")
+        try:
+            name = raw.decode("utf-8")
+        except UnicodeError as exc:
+            raise WorkError("merged-result path is not UTF-8") from exc
+        records.append({"status": status, "filename": name, "previous_filename": None})
+    return records
+
+
+def _merge_version_decision(root: Path, start: str, pinned: str, spec: dict | None,
+                            rules: dict, *, merged: str, declared_override: bytes | None = None,
+                            field_conflicted: bool = False, pr_value: str | None = None) -> dict | None:
+    """Decide the declared field for a merge from the one owing count the next report applies."""
+    if spec is None:
+        return None
+    path, field = spec["path"], spec["field"]
+    base_content, base_value = _declared_base_value(root, pinned, spec)
+
+    def field_only() -> bool:
+        # A placeholder written into the field cannot affect this: only_version drops that member.
+        try:
+            after = declared_override if declared_override is not None else _policy_blob(root, merged, path)
+            return (base_content is not None and after is not None
+                    and version_policy.only_version(base_content, after, spec))
+        except (OSError, UnicodeError, ValueError, WorkError):
+            return False
+
+    paths, declared_field_only = version_policy.owing(
+        _local_version_records(root, pinned, merged), spec,
+        lambda name: use_required([name], rules), field_only)
+    if not field_conflicted:
+        # The field as the pull request side carried it into this merge.
+        content = declared_override if declared_override is not None else _policy_blob(root, merged, path)
+        try:
+            pr_value = version_policy.document(content, spec)[field] if content is not None else None
+        except (UnicodeError, ValueError):
+            pr_value = None
+    if paths:
+        common = _git_text(["merge-base", start, pinned], root, "read merge base")
+        changed = _git_text(
+            ["diff", "--no-renames", "--name-only", "-z", common, pinned,
+             "--", f":(literal){path}"], root, "read base-side version changes")
+        if changed:
+            if base_content is None:
+                raise WorkError("declared base version file is unavailable")
+            value = version_policy.increment(base_content, spec)
+            reason = (f"owed ({', '.join(paths)}); base changed the declared file: "
+                      f"base {base_value} incremented to {value}")
+        else:
+            value = None
+            reason = (f"owed ({', '.join(paths)}); base did not change the declared file: "
+                      f"the change's version {pr_value} is kept for the report to judge")
+    elif field_conflicted or pr_value != base_value:
+        if base_value is None:
+            raise WorkError("declared base version file is unavailable")
+        value = base_value
+        reason = f"not owed: field set back to the base's {base_value} (the change carried {pr_value})"
+    else:
+        value = None
+        reason = f"not owed: field already holds the base's {base_value}"
+    return {"owed": bool(paths), "paths": paths, "declared_field_only": declared_field_only,
+            "field_conflicted": field_conflicted, "base_value": base_value, "pr_value": pr_value,
+            "value": value, "reason": reason}
 
 
 @dataclass(frozen=True)
@@ -6508,6 +6671,8 @@ class MergeObligation:
             lines.extend(("", "Declared version adjustment:",
                 f"Set {json.dumps(spec['path'])}'s top-level JSON field "
                 f"{json.dumps(spec['field'])} to {json.dumps(spec['value'])} in this merge."))
+            if spec.get("reason"):
+                lines.append(f"Reason: {spec['reason']}.")
         lines.extend(("", "Resolve the conflicts, validate the merged result, and land it through",
                       "persist-changes on the supplied branch before returning to the holder.",
                       f"Persist-changes script (absolute path): {json.dumps(script.as_posix())}",
@@ -6583,15 +6748,25 @@ def _compose_merge_obligation(state: WorkState, decision: Decision, holder: Path
             return None
         if not conflicts:
             raise WorkError("invalid conflicted merge-obligation result has no affected paths")
-        value = _merge_version_adjustment(root, start, pinned, spec)
-        if spec and spec["path"] in conflicts:
-            try:
-                _version_conflict_content(root, spec, conflicts[spec["path"]], value)
-            except _VersionConflict:
-                pass
-            else:
-                del conflicts[spec["path"]]
-        adjustment = {**spec, "value": value} if value is not None else None
+        adjustment = None
+        if spec:
+            _content, base_value = _declared_base_value(root, pinned, spec)
+            field_conflicted, pr_value, override = spec["path"] in conflicts, None, None
+            if field_conflicted:
+                # Decide on the field as the PR side carried it, before any placeholder.
+                try:
+                    override, pr_value = _version_conflict_content(
+                        root, spec, conflicts[spec["path"]], base_value)
+                except _VersionConflict:
+                    pass
+                else:
+                    del conflicts[spec["path"]]
+            decision = _merge_version_decision(
+                root, start, pinned, spec, rules, merged=tree.decode("ascii"),
+                declared_override=override, field_conflicted=field_conflicted, pr_value=pr_value)
+            if decision["value"] is not None:
+                adjustment = {**spec, "value": decision["value"], "owed": decision["owed"],
+                              "reason": decision["reason"]}
         return MergeObligation(start, str(base["repository"]), str(base["ref"]), pinned,
                                tuple(sorted(conflicts)), adjustment)
     except (KeyError, OSError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
@@ -6664,7 +6839,12 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
     if reachable.returncode != 1:
         raise WorkError("catch-up cannot prove base reachability")
     spec = version_policy.declaration(rules)
-    new_version = _merge_version_adjustment(root, start, pinned, spec)
+    placeholder = None
+    if spec:
+        try:
+            _content, placeholder = _declared_base_value(root, pinned, spec)
+        except WorkError:
+            placeholder = None
     attempt_path.parent.mkdir(parents=True, exist_ok=True)
     attempt = {"start": start, "base": pinned, "branch": branch, "result": None}
     attempt_path.write_bytes((json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8"))
@@ -6675,9 +6855,12 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
         conflicts = _catch_up_conflicts(root)
         had_conflicts = bool(conflicts)
         residual = None
+        field_conflicted, pr_value = False, None
         if spec and spec["path"] in conflicts:
+            # The base's value is only a placeholder; the decision reads the PR side's field.
             try:
-                _catch_up_version_conflict(root, spec, new_version)
+                pr_value = _catch_up_version_conflict(root, spec, placeholder)
+                field_conflicted = True
             except _VersionConflict as exc:
                 residual = str(exc)
             conflicts = _catch_up_conflicts(root)
@@ -6687,11 +6870,24 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
             raise WorkError(detail + (f"; {residual}" if residual else ""))
         if prepared.returncode and not had_conflicts:
             raise WorkError(f"catch-up merge failed: {_git_failure(prepared)}")
-        if spec and new_version is not None and not had_conflicts:
+        decision = None
+        if spec:
+            merged = _git_text(["write-tree"], root, "record the catch-up merged result")
+            decision = _merge_version_decision(root, start, pinned, spec, rules, merged=merged,
+                                               field_conflicted=field_conflicted, pr_value=pr_value)
+            decision["policy_sha256"] = (hashlib.sha256(state.readiness_policy[1]).hexdigest()
+                                         if state.readiness_policy else None)
+        new_version = decision["value"] if decision else None
+        if new_version is not None:
             target = root / spec["path"]
             if target.is_symlink() or not _path_inside(target, root):
                 raise WorkError("declared version file is not an in-root regular file")
-            target.write_bytes(version_policy.replace_field(target.read_bytes(), spec, str(new_version)))
+            try:
+                content = version_policy.replace_field(target.read_bytes(), spec, str(new_version))
+            except (OSError, UnicodeError, ValueError) as exc:
+                raise WorkError("builder-required: the declared version field cannot be set in the "
+                                f"merged result: {exc}") from exc
+            target.write_bytes(content)
             _git_text(["add", "--", f":(literal){spec['path']}"], root, "stage catch-up version")
         latest = _dict(transport.get(endpoint), endpoint)
         latest_base = _dict(transport.get(base_endpoint), base_endpoint)
@@ -6710,6 +6906,7 @@ def _execute_catch_up(transport: GitHubREST, state: WorkState, holder: Path,
                   "status": "holder-owned" if landed.returncode == 0 else "refused",
                   "starting_head": start, "pinned_base": pinned, "head": resulting,
                   "version_adjustment": {**spec, "value": new_version} if new_version is not None else None,
+                  "version_decision": decision,
                   "landing": landed.stdout.decode("utf-8", errors="backslashreplace").strip(),
                   "landing_error": landed.stderr.decode("utf-8", errors="backslashreplace").strip()}
         report_state = state
