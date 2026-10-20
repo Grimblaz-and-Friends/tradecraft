@@ -1603,8 +1603,8 @@ def run_credentialed_pass(
             "switch_text": reply_text,
             "api_key_attempt_usage": exc.usage or {},
         }
-        # The token pass keeps the pass's own root, so its layout and the replay's
-        # pass-root rule are unchanged; the key attempt stays beside it.
+        # The token pass keeps the pass's own root, so the pass layout is unchanged;
+        # the key attempt stays beside it.
         if run_root.exists():
             run_root.rename(run_root.with_name(run_root.name + ".api-key-attempt"))
         try:
