@@ -105,7 +105,7 @@ Then, with the default state directory and no probe variable set:
 
    **Why the code still comes from your checkout.** Under that flag the session's root stays its own folder, so the mod runs your checkout's `tools/steward_watch.py`, and the cover is registered from there too. The mod's own code is read from its marketplace folder at each load, not from the install's cached copy, and the marketplace points at your checkout. So the module, the script and the cover all come from one checkout, and the mod and the cover call one script.
 
-   **Why it starts only for you.** Enabled in the main checkout, the mod loads in every tradecraft desktop session. It starts only in a session whose live title is `Steward`, read through `get_session` the way the holder pane reads it; in any other session it does nothing beyond that read and shows nothing.
+   **Why it starts only for you.** Enabled in the main checkout, the mod loads in every tradecraft desktop session. It starts only in a session whose live title is `Steward`, read through `get_session` the way the holder pane reads it; in any other session it does nothing beyond that read and shows nothing. The one exception is a failed read: in any session, it puts the reason on the wake's own status line, which is one per plugin, so it never touches another mod's line.
 
    **Why the opt-in.** CLI 2.1.280, still the `claude` on PATH, loads a hooks module only with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` set. The desktop app's current CLI loads the mod without it, so a missing opt-in was not why the wake was off. The holder pane's installer writes the same key, with the same value, to the same file, so the two installs agree.
 7. Prove the dispatch route: `gh workflow run steward-alert.yml --repo Grimblaz-and-Friends/tradecraft --ref main -f issue=<alert issue> -f items=probe:1`, and check the bot comment mentions the owner. Then, with one item actually waiting, run `cover` twice in a row and check the alert issue gains exactly one bot comment for that key.
@@ -136,7 +136,7 @@ Undo removes the wake altogether. A move moves only what lives in your checkout:
 **In the old session, first:**
 
 1. Handle any pending #683 intake and any due read, as Install's step 2 does, or record what is left of them in the state file. Wake keys already recorded in the state directory do not wake the new session again.
-2. Write the handover state file, `handover.md` in the state directory, with the four headings the handover's step 1 names, and stop taking work.
+2. Write the handover state file, `handover.md` in the state directory, with the four headings the handover's step 1 names, and stop taking work. Intake that arrives after this is left for the new session, and step 8's check is what catches it.
 
 **Then in the new session, started in the new checkout and titled `Steward`:**
 
@@ -149,7 +149,8 @@ Undo removes the wake altogether. A move moves only what lives in your checkout:
    4. With tradecraft's main checkout as the working directory: `claude plugin install steward-wake@tradecraft-lab --scope local`.
 6. Ask the owner to restart the new session, then run Install's check in step 6: the status line shows `steward-wake on · <root>`, `<root>` is the new checkout and matches the cover's Task To Run path, and `origins.log` gains a line on your next prompt.
 7. Only after that check passes, ask the owner to archive the old session, or rename it away from `Steward` and restart it, so that only one session wakes: a wake already on reads its title again only when its process restarts. The old checkout may be removed after that, not before.
-8. Record the move on #890 and #683, with the before-and-after diff of `~/.claude/plugins/known_marketplaces.json`, `~/.claude/plugins/installed_plugins.json` and `<main checkout>/.claude/settings.local.json`.
+8. Run `python tools/steward_watch.py status`, and handle any intake above the watermark and any due read it shows. The old session's wake kept ticking until step 7 and may have recorded their keys in the shared state directory, so the new session's wake would not wake for them.
+9. Record the move on #890 and #683, with the before-and-after diff of `~/.claude/plugins/known_marketplaces.json`, `~/.claude/plugins/installed_plugins.json` and `<main checkout>/.claude/settings.local.json`.
 
 ## Updating
 
