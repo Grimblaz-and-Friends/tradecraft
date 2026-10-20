@@ -1867,7 +1867,7 @@ def test_resumed_claude_separates_this_invocations_attachment(job, monkeypatch):
         "/t/CLAUDE.md": "earlier-in-session", "/t/docs/a.md": "this-invocation"}
 
 
-def claude_job(job, monkeypatch, stdout):
+def stream_claude_job(job, monkeypatch, stdout):
     args, scenario = job
     args.vendor = "claude"
     monkeypatch.setattr(implementer, "resolve_command",
@@ -1881,7 +1881,7 @@ def claude_job(job, monkeypatch, stdout):
 def test_887_R1_1_R2_1_R4_1_every_claude_route_is_protected_and_recorded(job, monkeypatch, stage, continuity):
     from test_launch_controls import SESSION, healthy
     monkeypatch.setenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0")
-    args = claude_job(job, monkeypatch, healthy().decode("utf-8"))
+    args = stream_claude_job(job, monkeypatch, healthy().decode("utf-8"))
     args.stage = stage
     if continuity == "resume":
         args.resume = SESSION
@@ -1922,7 +1922,7 @@ def test_887_R4_1_codex_implementer_records_carry_neither_field(job):
 def test_887_R3_2_R3_3_refused_turn_publishes_nothing_and_keeps_its_session(job, monkeypatch, capsys, face):
     from test_launch_controls import SESSION, daemon_face, late_reply_face
     raw = daemon_face() if face == "daemon" else late_reply_face()
-    args = claude_job(job, monkeypatch, raw.decode("utf-8"))
+    args = stream_claude_job(job, monkeypatch, raw.decode("utf-8"))
     assert implementer.run_implementer(args) == 1
     logged = record(args)
     assert logged["outcome"] == "work_outlived_return"
@@ -1945,7 +1945,7 @@ def test_887_R3_2_R3_3_refused_turn_publishes_nothing_and_keeps_its_session(job,
 
 def test_887_R3_2_refused_author_resumes_and_is_not_validated(job, monkeypatch):
     from test_launch_controls import daemon_face
-    args = claude_job(job, monkeypatch, daemon_face().decode("utf-8"))
+    args = stream_claude_job(job, monkeypatch, daemon_face().decode("utf-8"))
     args.stage = "artifact"
     supply_artifact_brief(args)
     assert implementer.run_implementer(args) == 1
