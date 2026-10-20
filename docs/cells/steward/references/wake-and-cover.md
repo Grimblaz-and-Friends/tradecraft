@@ -131,18 +131,25 @@ Then, with the default state directory and no probe variable set:
 
 ## Moving
 
-Undo removes the wake altogether. A move to another session or checkout moves only what lives in your checkout: the mod's marketplace and the hourly cover. The main checkout's opt-in, the alert issue, the watermark and the state directory stay as they are, because none of them lives in a checkout. Running Undo then Install instead would close the alert issue while the watermark still names it, and Install's `seed` is refused while a watermark exists.
+Undo removes the wake altogether. A move moves only what lives in your checkout: the mod's marketplace and the hourly cover. A session's root is its own folder and never changes, so a move to another checkout is always a move to another session, started in that checkout and titled `Steward`. The main checkout's enablement ends where it began, because step 5 uninstalls and reinstalls it at the same scope. The opt-in, the alert issue, the watermark and the state directory are not touched, because none of them lives in a checkout. Running Undo then Install instead would close the alert issue while the watermark still names it, and Install's `seed` is refused while a watermark exists.
 
-1. Bring the new checkout to a commit that contains #890's and #915's changes, and check with `git status` that nothing of your own is at risk there.
-2. Move the cover: from the old checkout, `python tools/steward_watch.py cover-task --unregister`; then from the new checkout, `python tools/steward_watch.py cover-task --register`. The cover is registered before the mod reloads, as in Install.
-3. Repoint the mod at the new checkout, without relying on `marketplace add` repointing a name already registered:
+**In the old session, first:**
+
+1. Handle any pending #683 intake and any due read, as Install's step 2 does, or record what is left of them in the state file. Wake keys already recorded in the state directory do not wake the new session again.
+2. Write the handover state file, `handover.md` in the state directory, with the four headings the handover's step 1 names, and stop taking work.
+
+**Then in the new session, started in the new checkout and titled `Steward`:**
+
+3. Read the state file with the records `SKILL.md`'s handoff rule names, as a replacement Steward does. Bring the new checkout to a commit that contains #890's and #915's changes, and check with `git status` that nothing of your own is at risk there.
+4. Move the cover: from the old checkout, `python tools/steward_watch.py cover-task --unregister`; then from the new checkout, `python tools/steward_watch.py cover-task --register`. The cover is registered before the mod reloads, as in Install.
+5. Repoint the mod at the new checkout, without relying on `marketplace add` repointing a name already registered:
    1. With tradecraft's main checkout as the working directory: `claude plugin uninstall steward-wake@tradecraft-lab --scope local`.
    2. `claude plugin marketplace remove tradecraft-lab`.
    3. `claude plugin marketplace add <new checkout>\tools\steward-wake`.
    4. With tradecraft's main checkout as the working directory: `claude plugin install steward-wake@tradecraft-lab --scope local`.
-4. If the new session is a different one, title it `Steward`, and ask the owner to archive the old session or rename it away from `Steward` and restart it, so that only one session wakes: a wake already on reads its title again only when its process restarts.
-5. Ask the owner to restart the new session, then run Install's check in step 6: the status line shows `steward-wake on · <root>`, `<root>` is the new checkout and matches the cover's Task To Run path, and `origins.log` gains a line on your next prompt.
-6. Record the move on #890 and #683, with the before-and-after diff of `~/.claude/plugins/known_marketplaces.json`, `~/.claude/plugins/installed_plugins.json` and `<main checkout>/.claude/settings.local.json`.
+6. Ask the owner to restart the new session, then run Install's check in step 6: the status line shows `steward-wake on · <root>`, `<root>` is the new checkout and matches the cover's Task To Run path, and `origins.log` gains a line on your next prompt.
+7. Only after that check passes, ask the owner to archive the old session, or rename it away from `Steward` and restart it, so that only one session wakes: a wake already on reads its title again only when its process restarts. The old checkout may be removed after that, not before.
+8. Record the move on #890 and #683, with the before-and-after diff of `~/.claude/plugins/known_marketplaces.json`, `~/.claude/plugins/installed_plugins.json` and `<main checkout>/.claude/settings.local.json`.
 
 ## Updating
 
