@@ -174,3 +174,54 @@ def test_report_shows_each_claude_instruction_file_and_history_reads_unknown(tmp
     assert attempts["historical"]["instructions"]["status"] == "unknown"
     assert attempts["historical"]["instructions"]["files"] == []
     assert historical.with_name("historical.run.json").read_bytes() == before
+
+
+def test_887_R4_2_report_names_launch_controls_and_stream_check(tmp_path, monkeypatch):
+    import dispatch_lifecycle as lifecycle
+    from test_launch_controls import daemon_face
+    notice = lifecycle.claude_launch_notice(900)
+    controls = lifecycle.claude_launch_controls(900, notice, disallowed=lifecycle.CLAUDE_DISALLOWED_TOOLS)
+    check = lifecycle.stream_check_record(lifecycle.claude_stream_check(daemon_face()))
+    # (name, controls on the request, attempt launched, lifecycle, stream check)
+    cases = (("protected", True, True, "completed", True), ("older", False, True, "completed", False),
+             ("unlaunched", False, False, "completed", False), ("running", True, True, "running", False))
+    for name, protected, launched, phase, checked in cases:
+        path = bundle(tmp_path, name, outcome="work_outlived_return" if checked else "success")
+        request = json.loads(path.read_bytes())
+        request["requested"] = {"vendor": "claude"}
+        if protected:
+            request["launch_controls"] = controls
+        path.write_bytes(json.dumps(request).encode())
+        run_path = path.with_name(name + ".run.json")
+        run = json.loads(run_path.read_bytes())
+        run["actual_vendor"] = "claude"
+        run["attempts"][0].update(vendor="claude", launched=launched)
+        run["lifecycle"] = phase
+        if checked:
+            run["attempts"][0]["stream_check"] = check
+        before = json.dumps(run).encode()
+        run_path.write_bytes(before)
+    bundle(tmp_path, "codex")
+    state = work.WorkState("owner/repo", 886, {}, record_root=tmp_path)
+    monkeypatch.setattr(work, "_change_rows", lambda *_a, **_k: [])
+    rows = {v["dispatch_id"]: v for v in work._implementer_environments(state)["attempts"]}
+    protected = rows["protected"]
+    assert protected["outcome"] == "work_outlived_return"
+    assert protected["launch_controls"] == {"status": "recorded", "background_tasks": "disabled",
+        "background_tasks_source": "child process environment CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1",
+        "command_ceiling_ms": 900000, "command_ceiling_source": "child process environment BASH_MAX_TIMEOUT_MS",
+        "disallowed_tools": ["Monitor", "ScheduleWakeup", "CronCreate", "Workflow"],
+        "notice_sha256": hashlib.sha256(notice).hexdigest()}
+    assert protected["stream_check"]["status"] == "work_outlived_return"
+    assert protected["stream_check"]["return_line"] == 6
+    assert {c["kind"] for c in protected["stream_check"]["causes"]} == {
+        "task_event_after_return", "task_running_at_return"}
+    assert rows["older"]["launch_controls"] == {"status": "not recorded: launched before #887"}
+    assert rows["older"]["stream_check"] == {"status": "not recorded: launched before #887"}
+    # Only a launched, completed attempt from an older launcher is reported as one (PR #924 review).
+    assert rows["unlaunched"]["launch_controls"] == rows["unlaunched"]["stream_check"] == {
+        "status": "not applied: the attempt was not launched"}
+    assert rows["running"]["launch_controls"]["status"] == "recorded"
+    assert rows["running"]["stream_check"] == {"status": "not yet recorded: the launch has not completed"}
+    assert run_path.read_bytes() == before
+    assert rows["codex"]["launch_controls"] is None and rows["codex"]["stream_check"] is None

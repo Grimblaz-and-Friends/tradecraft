@@ -49,6 +49,7 @@ from source_claims import (
 import cold_draft
 from connected_review import is_review_job
 import dispatch_record as records
+from dispatch_lifecycle import NOT_COMPLETED, NOT_LAUNCHED, NOT_RECORDED
 import artifact_tree
 import run_lifecycle as lifecycle
 import work_recovery
@@ -257,8 +258,10 @@ RESUME_SOURCE_STAGES = {
     "review-disposition": frozenset({"build", "floor", "review-disposition"}),
 }
 SUCCESSFUL_BUNDLE_OUTCOMES = frozenset({"success", "success_uncontinuable"})
+# A turn refused because work outlived its return is never success, but it
+# stays its own session's resume source (#887).
 RESUMABLE_BUNDLE_OUTCOMES = SUCCESSFUL_BUNDLE_OUTCOMES | {
-    "completed_no_output", "invalid_artifact_return",
+    "completed_no_output", "invalid_artifact_return", "work_outlived_return",
 }
 WORKFLOW_RUN_FILES_QUERY = """query($ids:[ID!]!){
   nodes(ids:$ids){
@@ -1691,7 +1694,7 @@ def _bundle_marker_error(state: WorkState, marker: Marker) -> str | None:
             _completed, path, _request, run = authors[-1]
             result = run.get("result")
             validation = result.get("return_validation") if isinstance(result, dict) else None
-            if (run.get("outcome") == "invalid_artifact_return"
+            if (run.get("outcome") in {"invalid_artifact_return", "work_outlived_return"}
                     or isinstance(validation, dict) and validation.get("status") == "fail"):
                 return f"latest artifact dispatch has a failed return: {path}"
     stages = {
@@ -2256,6 +2259,14 @@ def _composition_error(request: dict[str, object], record: Marker) -> str | None
     if hashlib.sha256(prompt).hexdigest() != evidence.get("dispatch_sha256"):
         return "composition evidence differs from retained dispatch"
     effective = context + b"\n\n" + prompt if context else prompt
+    controls = request.get("launch_controls")
+    if controls is not None:
+        # A Claude launch closes its effective input with the #887 notice.
+        notice = controls.get("notice") if isinstance(controls, dict) else None
+        if (not isinstance(notice, str)
+                or hashlib.sha256(notice.encode("utf-8")).hexdigest() != controls.get("notice_sha256")):
+            return "retained launch notice is missing or differs from its digest"
+        effective += b"\n\n" + notice.encode("utf-8")
     digest = hashlib.sha256(effective).hexdigest()
     if digest != request.get("effective_input_sha256") or digest != evidence.get("effective_input_sha256"):
         return "composition evidence differs from retained effective input"
@@ -3326,6 +3337,40 @@ def _instruction_report(observed):
                       for entry in value.get("values") or [] if isinstance(entry, dict)]}
 
 
+def _unrecorded_status(run, attempt):
+    """Why a Claude attempt holds no #887 field, from what its record shows."""
+    if attempt.get("launched") is not True:
+        return NOT_LAUNCHED
+    if run.get("lifecycle") != "completed":
+        return NOT_COMPLETED
+    return NOT_RECORDED
+
+
+def _launch_controls_report(request, run, attempt):
+    """What a Claude launch applied (#887); an older record says it holds nothing."""
+    if (attempt.get("vendor") or (request.get("requested") or {}).get("vendor")) != "claude":
+        return None
+    controls = request.get("launch_controls")
+    if not isinstance(controls, dict):
+        # Controls are written with the request, before launch, so only an
+        # unlaunched attempt or an older launcher leaves them absent.
+        return {"status": NOT_LAUNCHED if attempt.get("launched") is not True else NOT_RECORDED}
+    return {"status": "recorded", **{key: controls.get(key) for key in (
+        "background_tasks", "background_tasks_source", "command_ceiling_ms",
+        "command_ceiling_source", "disallowed_tools", "notice_sha256")}}
+
+
+def _stream_check_report(run, attempt):
+    if attempt.get("vendor") != "claude":
+        return None
+    check = attempt.get("stream_check")
+    if not isinstance(check, dict):
+        return {"status": _unrecorded_status(run, attempt)}
+    return {key: check.get(key) for key in (
+        "status", "reason", "return_line", "turn_end_line", "result_lines", "causes",
+        "backgrounded_tasks_observed")}
+
+
 def _implementer_environments(state):
     """Read existing scoped attempts, without runtime/account discovery or mutation."""
     import implementer_environment as environment
@@ -3373,6 +3418,8 @@ def _implementer_environments(state):
                 "outcome": attempt.get("outcome") or run.get("outcome") or "unknown",
                 "record_error": run.get("recovery_error"),
                 "instructions": _instruction_report(observed),
+                "launch_controls": _launch_controls_report(request, run, attempt),
+                "stream_check": _stream_check_report(run, attempt),
                 "environment": observed})
     return {"status": "known", "attempts": values}
 
@@ -8420,7 +8467,8 @@ def _named_continuity(state: WorkState, stage: str, recommendation: Decision) ->
                 state=state, work_value=f"{state.repo}#{state.issue_number}")
         except WorkError:
             return continuity
-        if bundles and bundles[-1][3].get("outcome") in {"invalid_artifact_return", "completed_no_output"}:
+        if bundles and bundles[-1][3].get("outcome") in {
+                "invalid_artifact_return", "completed_no_output", "work_outlived_return"}:
             # The resume route refuses an unproved session rather than replacing the failed author.
             return "resume"
         return continuity
